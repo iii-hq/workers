@@ -172,6 +172,7 @@
     return {
       ...execution,
       id: String(execution.id || ""),
+      label: String(execution.label || ""),
       run_id: String(execution.run_id || ""),
       attempt: Number(execution.attempt) || 1,
       status: normalizeStatus(execution.status, execution),
@@ -371,6 +372,7 @@
       }
       if (!query) return true;
       const haystack = [
+        execution.label,
         execution.id,
         execution.run_id,
         execution.source?.sha,
@@ -921,6 +923,148 @@
     return history?.executions?.find((execution) => execution.id === id) || null;
   }
 
+  function comparisonScenarioMap(execution) {
+    const rows = new Map();
+    for (const subject of execution?.subjects || []) {
+      for (const scenario of subject?.scenarios || []) {
+        const key = `${subject.id || ""}::${scenario.id || ""}`;
+        const metric = (execution?.scenario_metrics || []).find(
+          (candidate) =>
+            candidate.subject_id === (subject.id || "") &&
+            candidate.scenario_id === (scenario.id || ""),
+        );
+        rows.set(key, {
+          subjectId: String(subject.id || ""),
+          subjectLabel: `${subject.provider || "unknown"}/${subject.model || "unknown"}`,
+          scenarioId: String(scenario.id || ""),
+          status: normalizeScenarioStatus(scenario),
+          score: numberOrNull(scenario.median_score),
+          passRate: numberOrNull(scenario.pass_rate),
+          fingerprint: String(metric?.contract_fingerprint || ""),
+          averages: Object.fromEntries(
+            SCENARIO_METRIC_IDS.map((metricId) => [
+              metricId,
+              numberOrNull(metric?.averages?.[metricId]),
+            ]),
+          ),
+        });
+      }
+    }
+    return rows;
+  }
+
+  function metricDelta(left, right) {
+    return left === null || right === null ? null : right - left;
+  }
+
+  function compareExecutions(leftValue, rightValue) {
+    const left = normalizeExecution(leftValue);
+    const right = normalizeExecution(rightValue);
+    const leftRows = comparisonScenarioMap(left);
+    const rightRows = comparisonScenarioMap(right);
+    const keys = [...new Set([...leftRows.keys(), ...rightRows.keys()])].sort();
+    const scenarios = keys.map((key) => {
+      const leftScenario = leftRows.get(key) || null;
+      const rightScenario = rightRows.get(key) || null;
+      let contract = "unavailable";
+      if (leftScenario && rightScenario) {
+        if (leftScenario.fingerprint && rightScenario.fingerprint) {
+          contract =
+            leftScenario.fingerprint === rightScenario.fingerprint
+              ? "same"
+              : "changed";
+        }
+      }
+      return {
+        key,
+        subjectId: leftScenario?.subjectId || rightScenario?.subjectId || "",
+        subjectLabel:
+          leftScenario?.subjectLabel || rightScenario?.subjectLabel || "unknown",
+        scenarioId: leftScenario?.scenarioId || rightScenario?.scenarioId || "",
+        left: leftScenario,
+        right: rightScenario,
+        contract,
+        deltas: {
+          score: metricDelta(leftScenario?.score ?? null, rightScenario?.score ?? null),
+          tokens: metricDelta(
+            leftScenario?.averages.tokens ?? null,
+            rightScenario?.averages.tokens ?? null,
+          ),
+          duration_seconds: metricDelta(
+            leftScenario?.averages.duration_seconds ?? null,
+            rightScenario?.averages.duration_seconds ?? null,
+          ),
+          cost_usd: metricDelta(
+            leftScenario?.averages.cost_usd ?? null,
+            rightScenario?.averages.cost_usd ?? null,
+          ),
+          function_calls: metricDelta(
+            leftScenario?.averages.function_calls ?? null,
+            rightScenario?.averages.function_calls ?? null,
+          ),
+        },
+      };
+    });
+
+    const warnings = [];
+    const leftSubjects = [
+      ...new Set(
+        [...leftRows.values()].map(
+          (row) => `${row.subjectId}::${row.subjectLabel}`,
+        ),
+      ),
+    ].sort();
+    const rightSubjects = [
+      ...new Set(
+        [...rightRows.values()].map(
+          (row) => `${row.subjectId}::${row.subjectLabel}`,
+        ),
+      ),
+    ].sort();
+    if (stableJson(leftSubjects) !== stableJson(rightSubjects)) {
+      warnings.push("The executions use different subject sets.");
+    }
+    if (
+      left.requested_runs != null &&
+      right.requested_runs != null &&
+      Number(left.requested_runs) !== Number(right.requested_runs)
+    ) {
+      warnings.push("The executions requested a different number of runs.");
+    }
+    const missingCount = scenarios.filter((row) => !row.left || !row.right).length;
+    if (missingCount) {
+      warnings.push(`${missingCount} scenario${missingCount === 1 ? " is" : "s are"} present in only one execution.`);
+    }
+    const changedCount = scenarios.filter((row) => row.contract === "changed").length;
+    if (changedCount) {
+      warnings.push(`${changedCount} shared scenario contract${changedCount === 1 ? " differs" : "s differ"}.`);
+    }
+
+    const totalFields = [
+      "scenario_pass_rate",
+      "average_score",
+      "hard_gate_failures",
+      "technical_failures",
+      "missing_reports",
+      "total_tokens",
+      "function_calls",
+      "total_cost_usd",
+      "wall_time_seconds",
+    ];
+    const totals = Object.fromEntries(
+      totalFields.map((field) => {
+        const leftValue = numberOrNull(left.totals?.[field]);
+        const rightValue = numberOrNull(right.totals?.[field]);
+        return [field, {
+          left: leftValue,
+          right: rightValue,
+          delta: metricDelta(leftValue, rightValue),
+        }];
+      }),
+    );
+    return { left, right, scenarios, totals, warnings };
+  }
+
   function groupRunFailures(reports) {
     const groups = [];
     (Array.isArray(reports) ? reports : []).forEach((record) => {
@@ -999,6 +1143,7 @@
   return {
     buildEfficiencyOverview,
     cohortMetricSparkline,
+    compareExecutions,
     contractFingerprint,
     executionEfficiencyTotalsFromDetail,
     executionsWithinDays,

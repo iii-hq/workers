@@ -813,6 +813,7 @@ def build_summary(
         "run_id": metadata["run_id"],
         "attempt": metadata["attempt"],
         "workflow_name": metadata["workflow_name"],
+        "label": str(metadata.get("label") or ""),
         "workflow_url": metadata["workflow_url"],
         "event": metadata["event"],
         "actor": metadata["actor"],
@@ -881,6 +882,7 @@ def _metadata_from_summary(execution: dict[str, Any]) -> dict[str, Any]:
         "run_id": str(execution.get("run_id") or ""),
         "attempt": int(optional_number(execution.get("attempt")) or 1),
         "workflow_name": str(execution.get("workflow_name") or ""),
+        "label": str(execution.get("label") or ""),
         "workflow_url": str(execution.get("workflow_url") or ""),
         "event": str(execution.get("event") or ""),
         "actor": str(execution.get("actor") or ""),
@@ -984,6 +986,7 @@ def publish(
                 key: summary[key]
                 for key in (
                     "workflow_name",
+                    "label",
                     "workflow_url",
                     "event",
                     "actor",

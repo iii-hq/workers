@@ -43,6 +43,10 @@ struct ModelsArgs {
     /// Show models registered by only this provider.
     #[arg(long)]
     provider: Option<String>,
+
+    /// Print the registered model catalog as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -122,10 +126,24 @@ async fn models(args: ModelsArgs) -> Result<()> {
     let context = context::E2eContext::connect(&args.url)
         .await
         .context("connect to the iii stack")?;
+    if !context.function_exists("harness::send").await? {
+        bail!(
+            "connected iii stack does not expose harness::send; verify --url points to the Harness stack"
+        );
+    }
+    if !context.function_exists("router::models::list").await? {
+        bail!(
+            "connected Harness stack does not expose router::models::list; start its llm-router before loading models"
+        );
+    }
     let result = catalog::list(&context, args.provider.as_deref()).await;
     context.shutdown().await;
     let models = result?;
-    print!("{}", catalog::summary(&models));
+    if args.json {
+        println!("{}", serde_json::to_string(&models)?);
+    } else {
+        print!("{}", catalog::summary(&models));
+    }
     Ok(())
 }
 
@@ -218,6 +236,13 @@ mod tests {
         };
         assert_eq!(args.provider.as_deref(), Some("openai-codex"));
         assert_eq!(args.url, "ws://127.0.0.1:49134");
+        assert!(!args.json);
+
+        let cli = Cli::try_parse_from(["harness-e2e", "models", "--json"]).unwrap();
+        let Command::Models(args) = cli.command else {
+            panic!("expected models command");
+        };
+        assert!(args.json);
     }
 
     #[test]

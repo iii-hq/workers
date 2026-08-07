@@ -8,6 +8,7 @@
     window.HARNESS_EXECUTIONS,
     benchmarkData,
   );
+  const isLocal = history.mode === "local";
   const state = {
     matrixCount: 14,
     page: 1,
@@ -17,6 +18,7 @@
     event: "all",
     scenarioHistoryRow: null,
     scenarioHistoryMetric: "cost_usd",
+    comparison: [],
   };
   const efficiencyTrendColors = {
     improved: "var(--success)",
@@ -110,6 +112,7 @@
       "#efficiency-tokens-sparkline",
     ),
     event: document.querySelector("#event-filter"),
+    commitHeading: document.querySelector("#execution-commit-heading"),
     kpiCost: document.querySelector("#kpi-cost"),
     kpiCoverage: document.querySelector("#kpi-coverage"),
     kpiFailures: document.querySelector("#kpi-failures"),
@@ -119,6 +122,26 @@
     efficiencyStatus: document.querySelector("#efficiency-status"),
     efficiencyStatusCaption: document.querySelector("#efficiency-status-caption"),
     lastUpdate: document.querySelector("#last-update"),
+    localRunner: document.querySelector("#local-runner"),
+    localForm: document.querySelector("#local-run-form"),
+    localSubmit: document.querySelector("#local-run-submit"),
+    localCancel: document.querySelector("#local-run-cancel"),
+    localRunStatus: document.querySelector("#local-run-status"),
+    localRunError: document.querySelector("#local-run-error"),
+    localRunLogShell: document.querySelector("#local-run-log-shell"),
+    localRunLog: document.querySelector("#local-run-log"),
+    localCatalogIndicator: document.querySelector("#local-catalog-indicator"),
+    localCatalogStatus: document.querySelector("#local-catalog-status"),
+    localConnectionUrl: document.querySelector("#local-connection-url"),
+    localCatalogRefresh: document.querySelector("#local-catalog-refresh"),
+    localSubject: document.querySelector("#local-subject"),
+    localJudge: document.querySelector("#local-judge"),
+    localScenarioPicker: document.querySelector("#local-scenario-picker"),
+    localScenarioSummary: document.querySelector("#local-scenario-summary"),
+    localScenarioOptions: document.querySelector("#local-scenario-options"),
+    localScenarioAll: document.querySelector("#local-scenario-all"),
+    localScenarioNone: document.querySelector("#local-scenario-none"),
+    localAdvanced: document.querySelector("#local-advanced"),
     matrix: document.querySelector("#health-matrix"),
     next: document.querySelector("#next-page"),
     pageLabel: document.querySelector("#page-label"),
@@ -136,6 +159,9 @@
     scenarioHistoryTitle: document.querySelector("#scenario-history-title"),
     syncLabel: document.querySelector("#sync-label"),
     status: document.querySelector("#status-filter"),
+    comparisonBar: document.querySelector("#comparison-bar"),
+    comparisonCount: document.querySelector("#comparison-count"),
+    comparisonLink: document.querySelector("#comparison-link"),
   };
 
   function escapeHtml(value) {
@@ -1083,6 +1109,35 @@
     }[availability] || "Unknown";
   }
 
+  function renderComparisonBar() {
+    if (!isLocal) {
+      elements.comparisonBar.hidden = true;
+      return;
+    }
+    elements.comparisonBar.hidden = false;
+    const count = state.comparison.length;
+    elements.comparisonCount.textContent =
+      count === 0
+        ? "Select two executions"
+        : count === 1
+          ? "1 of 2 executions selected"
+          : "2 executions selected";
+    const ready = count === 2;
+    elements.comparisonLink.setAttribute("aria-disabled", String(!ready));
+    elements.comparisonLink.href = ready
+      ? `./compare.html?left=${encodeURIComponent(state.comparison[0])}&right=${encodeURIComponent(state.comparison[1])}`
+      : "./compare.html";
+  }
+
+  function toggleComparison(executionId, checked) {
+    state.comparison = state.comparison.filter((id) => id !== executionId);
+    if (checked) {
+      if (state.comparison.length === 2) state.comparison.shift();
+      state.comparison.push(executionId);
+    }
+    renderTable();
+  }
+
   function renderTable() {
     const filtered = executionApi.filterExecutions(history.executions, state);
     const pageCount = Math.max(1, Math.ceil(filtered.length / state.pageSize));
@@ -1100,27 +1155,43 @@
       const failures = failureCount(execution);
       const trigger =
         execution.event === "workflow_dispatch" ? "manual" : execution.event || "unknown";
+      const primaryLabel = execution.label || formatDate(execution.completed_at, true);
+      const secondaryLabel = execution.label
+        ? `${formatDate(execution.completed_at, true)} · run ${execution.run_id || execution.id}`
+        : `run ${execution.run_id || execution.id}`;
+      const comparisonControl = isLocal
+        ? `<label class="execution-compare-control">
+            <input type="checkbox" data-compare-id="${escapeHtml(execution.id)}" ${
+              state.comparison.includes(execution.id) ? "checked" : ""
+            }>
+            <span class="visually-hidden">Select ${escapeHtml(primaryLabel)} for comparison</span>
+          </label>`
+        : "";
+      const commitCell = isLocal
+        ? ""
+        : `<td>${
+            commit
+              ? `<a class="commit-link" href="${escapeHtml(
+                  safeUrl(
+                    `${history.repoUrl.replace(/\/$/, "")}/commit/${encodeURIComponent(commit)}`,
+                  ),
+                )}">${escapeHtml(commit.slice(0, 7))}</a>`
+              : "—"
+          }</td>`;
       row.innerHTML = `
         <td>
-          <div class="release-cell">
+          <div class="execution-identity-cell">
+            ${comparisonControl}
+            <div class="release-cell">
             <a href="${escapeHtml(detailUrl(execution))}">${escapeHtml(
-              formatDate(execution.completed_at, true),
+              primaryLabel,
             )}</a>
-            <span>run ${escapeHtml(execution.run_id || execution.id)} · attempt ${
-              execution.attempt
-            } · ${escapeHtml(trigger)}</span>
+            <span>${escapeHtml(secondaryLabel)} · attempt ${execution.attempt} · ${escapeHtml(trigger)}</span>
+            </div>
           </div>
         </td>
         <td><span class="table-status status-${meta.css}">${meta.label}</span></td>
-        <td>${
-          commit
-            ? `<a class="commit-link" href="${escapeHtml(
-                safeUrl(
-                  `${history.repoUrl.replace(/\/$/, "")}/commit/${encodeURIComponent(commit)}`,
-                ),
-              )}">${escapeHtml(commit.slice(0, 7))}</a>`
-            : "—"
-        }</td>
+        ${commitCell}
         <td title="${escapeHtml(subjectLabels.join(", "))}">${escapeHtml(
           subjectLabels.length === 1
             ? subjectLabels[0]
@@ -1139,12 +1210,15 @@
           execution.availability,
         )}">${escapeHtml(dataLabel(execution.availability))}</span></td>
       `;
+      row.querySelector("[data-compare-id]")?.addEventListener("change", (event) => {
+        toggleComparison(execution.id, event.currentTarget.checked);
+      });
       elements.body.append(row);
     });
     if (!page.length) {
       const row = document.createElement("tr");
       row.innerHTML =
-        '<td class="table-empty" colspan="12">No executions match these filters.</td>';
+        `<td class="table-empty" colspan="${isLocal ? 11 : 12}">No executions match these filters.</td>`;
       elements.body.append(row);
     }
     elements.count.textContent =
@@ -1152,6 +1226,7 @@
     elements.pageLabel.textContent = `Page ${state.page} of ${pageCount}`;
     elements.previous.disabled = state.page === 1;
     elements.next.disabled = state.page === pageCount;
+    renderComparisonBar();
   }
 
   function render() {
@@ -1166,15 +1241,17 @@
   }
 
   async function initialize() {
-    const isLocal = history.mode === "local";
     elements.preview.hidden = !(history.preview || isLocal);
     elements.preview.textContent = isLocal ? "Local data" : "Preview data";
     if (isLocal) {
       elements.syncLabel.textContent = "Last imported";
       elements.emptyTitle.textContent = "No local executions imported";
       elements.emptyDescription.textContent =
-        "Import a results.json file to populate this dashboard.";
+        "Run an E2E experiment above or import a results.json file.";
       elements.actionsLink.textContent = "View repository ↗";
+      elements.localRunner.hidden = false;
+      elements.commitHeading.hidden = true;
+      elements.search.placeholder = "Search label, run, or date";
     }
     const lastUpdate = history.lastUpdate || history.executions[0]?.completed_at;
     if (lastUpdate) {
@@ -1240,10 +1317,302 @@
       state.page += 1;
       renderTable();
     });
+    if (isLocal) initializeLocalRunner();
     render();
     await hydrateExecutionMetrics();
     renderEfficiency();
     renderTable();
+  }
+
+  let localPollTimer = null;
+  let localCatalogReady = false;
+  let localCatalogLoading = false;
+  let localJobActive = false;
+  let localDefaults = {};
+
+  function localFormField(name) {
+    return elements.localForm.elements.namedItem(name);
+  }
+
+  function applyLocalDefaults(defaults) {
+    localDefaults = { ...localDefaults, ...(defaults || {}) };
+    Object.entries(defaults || {}).forEach(([name, value]) => {
+      const field = localFormField(name);
+      if (field && !field.value && value !== null && value !== undefined) {
+        field.value = String(value);
+      }
+    });
+    const url = localFormField("url")?.value || defaults?.url || "";
+    if (url) elements.localConnectionUrl.textContent = url;
+  }
+
+  function setLocalControls(active) {
+    localJobActive = active;
+    for (const field of elements.localForm.elements) {
+      if (field !== elements.localCancel) field.disabled = active;
+    }
+    elements.localSubject.disabled = active || !localCatalogReady;
+    elements.localJudge.disabled = active || !localCatalogReady;
+    elements.localSubmit.disabled = active || !localCatalogReady;
+    elements.localCatalogRefresh.disabled = active || localCatalogLoading;
+    elements.localScenarioPicker.classList.toggle(
+      "local-picker-disabled",
+      active || !localCatalogReady,
+    );
+    elements.localScenarioPicker.setAttribute(
+      "aria-disabled",
+      String(active || !localCatalogReady),
+    );
+  }
+
+  function renderLocalJob(response) {
+    applyLocalDefaults(response?.defaults);
+    const job = response?.job;
+    const active = ["starting", "running", "cancelling"].includes(job?.status);
+    setLocalControls(active);
+    elements.localCancel.hidden = !active;
+    elements.localRunError.hidden = !job?.error;
+    elements.localRunError.textContent = job?.error || "";
+    elements.localRunLogShell.hidden = !job?.log;
+    elements.localRunLog.textContent = job?.log || "";
+    if (job?.log && active) elements.localRunLogShell.open = true;
+    elements.localRunStatus.textContent = !job
+      ? "Ready"
+      : {
+          starting: "Starting…",
+          running: "Running…",
+          cancelling: "Cancelling…",
+          cancelled: "Cancelled",
+          completed: "Results imported",
+          failed: "Runner failed",
+        }[job.status] || job.status;
+    if (active) {
+      clearTimeout(localPollTimer);
+      localPollTimer = setTimeout(refreshLocalJob, 1_000);
+    } else if (job?.status === "completed" && job.execution_id) {
+      const reloadKey = "harness-e2e-local-last-reload";
+      if (sessionStorage.getItem(reloadKey) !== job.id) {
+        sessionStorage.setItem(reloadKey, job.id);
+        window.location.reload();
+      }
+    }
+  }
+
+  async function localApi(path, options = {}) {
+    const response = await fetch(path, {
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+    return payload;
+  }
+
+  async function refreshLocalJob() {
+    try {
+      const response = await localApi("./api/local/run");
+      renderLocalJob(response);
+      return response;
+    } catch (error) {
+      elements.localRunError.hidden = false;
+      elements.localRunError.textContent = error.message;
+      elements.localRunStatus.textContent = "Unavailable";
+      return null;
+    }
+  }
+
+  function modelKey(model) {
+    return `${model.provider}\n${model.model}`;
+  }
+
+  function selectedModel(select) {
+    const option = select.selectedOptions[0];
+    return option?.dataset.model && option?.dataset.provider
+      ? { model: option.dataset.model, provider: option.dataset.provider }
+      : null;
+  }
+
+  function fillModelSelect(select, models, { includeAutomatic = false } = {}) {
+    const selected = selectedModel(select);
+    const preferredKey =
+      (selected && modelKey(selected)) ||
+      localStorage.getItem("harness-e2e-local-subject") ||
+      (localDefaults.model && localDefaults.provider
+        ? modelKey({ model: localDefaults.model, provider: localDefaults.provider })
+        : "");
+    select.replaceChildren();
+    if (includeAutomatic) {
+      const automatic = document.createElement("option");
+      automatic.value = "";
+      automatic.textContent = "Use subject model when required";
+      select.append(automatic);
+    }
+    models.forEach((model, index) => {
+      const option = document.createElement("option");
+      option.value = `model-${index}`;
+      option.dataset.model = model.model;
+      option.dataset.provider = model.provider;
+      option.textContent = `${model.provider} / ${model.model}`;
+      option.selected = !includeAutomatic && modelKey(model) === preferredKey;
+      select.append(option);
+    });
+    if (!includeAutomatic && select.selectedIndex < 0 && select.options.length) {
+      select.selectedIndex = 0;
+    }
+  }
+
+  function scenarioInputs() {
+    return [...elements.localScenarioOptions.querySelectorAll("input[type=checkbox]")];
+  }
+
+  function updateScenarioSummary() {
+    const inputs = scenarioInputs();
+    const selected = inputs.filter((input) => input.checked).length;
+    if (!inputs.length) {
+      elements.localScenarioSummary.textContent = localCatalogLoading
+        ? "Loading scenarios…"
+        : "Catalog unavailable";
+      elements.localSubmit.disabled = true;
+      return;
+    }
+    elements.localScenarioSummary.textContent =
+      selected === inputs.length
+        ? `All ${inputs.length} scenarios`
+        : `${selected} of ${inputs.length} scenarios`;
+    elements.localSubmit.disabled =
+      localJobActive || !localCatalogReady || selected === 0;
+  }
+
+  function fillScenarios(scenarios) {
+    const previous = new Set(
+      scenarioInputs().filter((input) => input.checked).map((input) => input.value),
+    );
+    const selectAll = previous.size === 0;
+    elements.localScenarioOptions.replaceChildren();
+    scenarios.forEach((scenarioId, index) => {
+      const label = document.createElement("label");
+      label.className = "local-scenario-option";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = "scenario";
+      input.value = scenarioId;
+      input.id = `local-scenario-${index}`;
+      input.checked = selectAll || previous.has(scenarioId);
+      const text = document.createElement("span");
+      text.textContent = scenarioId.replaceAll("_", " ");
+      text.title = scenarioId;
+      label.append(input, text);
+      elements.localScenarioOptions.append(label);
+    });
+    updateScenarioSummary();
+  }
+
+  async function refreshLocalCatalog(force = false) {
+    const url = localFormField("url")?.value || localDefaults.url || "";
+    elements.localConnectionUrl.textContent = url;
+    elements.localCatalogStatus.textContent = "Discovering the running Harness…";
+    elements.localCatalogIndicator.className = "local-connection-dot";
+    localCatalogLoading = true;
+    localCatalogReady = false;
+    setLocalControls(localJobActive);
+    try {
+      const query = new URLSearchParams({ url });
+      if (force) query.set("refresh", "1");
+      const catalog = await localApi(`./api/local/catalog?${query}`);
+      fillModelSelect(elements.localSubject, catalog.models);
+      fillModelSelect(elements.localJudge, catalog.models, { includeAutomatic: true });
+      fillScenarios(catalog.scenarios);
+      localCatalogReady = true;
+      elements.localCatalogIndicator.className = "local-connection-dot connected";
+      elements.localCatalogStatus.textContent =
+        `${catalog.models.length} registered model${catalog.models.length === 1 ? "" : "s"} · ${catalog.scenarios.length} scenarios`;
+      elements.localRunError.hidden = true;
+    } catch (error) {
+      elements.localCatalogIndicator.className = "local-connection-dot failed";
+      elements.localCatalogStatus.textContent = "Could not read the Harness catalog";
+      elements.localRunError.hidden = false;
+      elements.localRunError.textContent = error.message;
+      elements.localScenarioSummary.textContent = "Catalog unavailable";
+      elements.localAdvanced.open = true;
+    } finally {
+      localCatalogLoading = false;
+      setLocalControls(localJobActive);
+      updateScenarioSummary();
+    }
+  }
+
+  function initializeLocalRunner() {
+    elements.localForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(elements.localForm);
+      const subject = selectedModel(elements.localSubject);
+      const judge = selectedModel(elements.localJudge);
+      const scenarios = scenarioInputs()
+        .filter((input) => input.checked)
+        .map((input) => input.value);
+      try {
+        if (!subject) throw new Error("Select a registered subject model.");
+        if (!scenarios.length) throw new Error("Select at least one scenario.");
+        localStorage.setItem("harness-e2e-local-subject", modelKey(subject));
+        elements.localRunError.hidden = true;
+        renderLocalJob(
+          await localApi("./api/local/run", {
+            method: "POST",
+            body: JSON.stringify({
+              label: values.get("label"),
+              url: values.get("url"),
+              model: subject.model,
+              provider: subject.provider,
+              judge_model: judge?.model || "",
+              judge_provider: judge?.provider || "",
+              scenarios,
+              runs: Number(values.get("runs")),
+              technical_retries: Number(values.get("technical_retries")),
+            }),
+          }),
+        );
+      } catch (error) {
+        elements.localRunError.hidden = false;
+        elements.localRunError.textContent = error.message;
+        elements.localRunStatus.textContent = "Could not start";
+      }
+    });
+    elements.localCancel.addEventListener("click", async () => {
+      try {
+        renderLocalJob(
+          await localApi("./api/local/run/cancel", {
+            method: "POST",
+            body: "{}",
+          }),
+        );
+      } catch (error) {
+        elements.localRunError.hidden = false;
+        elements.localRunError.textContent = error.message;
+      }
+    });
+    elements.localCatalogRefresh.addEventListener("click", () => {
+      refreshLocalCatalog(true);
+    });
+    elements.localScenarioAll.addEventListener("click", () => {
+      scenarioInputs().forEach((input) => {
+        input.checked = true;
+      });
+      updateScenarioSummary();
+    });
+    elements.localScenarioNone.addEventListener("click", () => {
+      scenarioInputs().forEach((input) => {
+        input.checked = false;
+      });
+      updateScenarioSummary();
+    });
+    elements.localScenarioOptions.addEventListener("change", updateScenarioSummary);
+    elements.localScenarioPicker.addEventListener("toggle", () => {
+      if (!localCatalogReady && elements.localScenarioPicker.open) {
+        elements.localScenarioPicker.open = false;
+      }
+    });
+    refreshLocalJob().then(() => refreshLocalCatalog());
   }
 
   initialize();
