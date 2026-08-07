@@ -1,5 +1,5 @@
 name: Harness E2E Daily
-run-name: Test · harness_source · ${{ inputs.operation_id || github.event_name }}
+run-name: Test · harness_registry · ${{ inputs.operation_id || github.event_name }}
 
 on:
   schedule:
@@ -79,13 +79,15 @@ jobs:
       runs: 3
       max_parallel: 2
       source_ref: ${{ needs.context.outputs.source_sha }}
+      stack_mode: registry
+      resolve_stack: true
       benchmark_lane: daily
       release_tag: daily/${{ needs.context.outputs.benchmark_day }}
-      release_worker: main
-      release_version: ${{ needs.context.outputs.benchmark_day }}
+      release_worker: harness
+      release_version: latest
       release_url: ${{ needs.context.outputs.source_url }}
-      registry_tag: daily
-      coverage: true
+      registry_tag: latest
+      coverage: false
       subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
       judge_model: ${{ inputs.judge_model || vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
       judge_provider: ${{ inputs.judge_provider || vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
@@ -94,17 +96,3 @@ jobs:
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       zai_api_key: ${{ secrets.ZAI_API_KEY }}
       deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
-
-  integration:
-    needs: context
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/_harness-integration.yml
-    with:
-      coverage: true
-      # rust-cache saving is driven by the coverage input; the pinned engine
-      # cache key stays owned by cache-warm.
-      save-cache: false
-      source_ref: ${{ needs.context.outputs.source_sha }}

@@ -20,10 +20,15 @@ install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
 cli_channel=${III_CLI_CHANNEL:-latest}
 worker_tag=${III_WORKER_TAG:-latest}
 stack_versions=${HARNESS_E2E_STACK_VERSIONS:-'{}'}
+resolve_stack=${HARNESS_E2E_RESOLVE_STACK:-false}
+expected_stack_digest=${HARNESS_E2E_STACK_DIGEST:-}
 runs=${HARNESS_E2E_RUNS:-1}
 engine_port=49134
 wait_seconds=180
 add_timeout_seconds=600
+release_worker=$HARNESS_E2E_RELEASE_WORKER
+release_version=$HARNESS_E2E_RELEASE_VERSION
+lock_digest=
 
 if [[ -n "${III_CHANNEL:-}" ]]; then
   echo "III_CHANNEL was split into III_CLI_CHANNEL and III_WORKER_TAG" >&2
@@ -41,21 +46,47 @@ esac
   echo "III_WORKER_TAG must be a valid Registry tag" >&2
   exit 2
 }
-stack_versions=$(jq -c \
-  --arg worker "$HARNESS_E2E_RELEASE_WORKER" \
-  --arg version "$HARNESS_E2E_RELEASE_VERSION" '
-    if length == 0 then {($worker): $version} else . end
-  ' <<<"$stack_versions")
-jq -e --arg worker "$HARNESS_E2E_RELEASE_WORKER" --arg version "$HARNESS_E2E_RELEASE_VERSION" '
-  type == "object" and length > 0 and
-  all(to_entries[];
-    (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
-    (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
-  ) and .[$worker] == $version
-' <<<"$stack_versions" >/dev/null || {
-  echo "HARNESS_E2E_STACK_VERSIONS must contain the release worker and strict exact versions" >&2
+case "$resolve_stack" in
+  true | false) ;;
+  *)
+    echo "HARNESS_E2E_RESOLVE_STACK must be true or false" >&2
+    exit 2
+    ;;
+esac
+if [[ "$resolve_stack" == true ]]; then
+  [[ "$release_worker" == harness ]] || {
+    echo "dynamic Registry stack resolution requires release_worker=harness" >&2
+    exit 2
+  }
+  [[ "$release_version" == latest ]] || {
+    echo "dynamic Registry stack resolution requires release_version=latest" >&2
+    exit 2
+  }
+  jq -e 'type == "object" and length == 0' <<<"$stack_versions" >/dev/null || {
+    echo "dynamic Registry stack resolution requires empty stack_versions" >&2
+    exit 2
+  }
+else
+  stack_versions=$(jq -c \
+    --arg worker "$release_worker" \
+    --arg version "$release_version" '
+      if length == 0 then {($worker): $version} else . end
+    ' <<<"$stack_versions")
+  jq -e --arg worker "$release_worker" --arg version "$release_version" '
+    type == "object" and length > 0 and
+    all(to_entries[];
+      (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+      (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+    ) and .[$worker] == $version
+  ' <<<"$stack_versions" >/dev/null || {
+    echo "HARNESS_E2E_STACK_VERSIONS must contain the release worker and strict exact versions" >&2
+    exit 2
+  }
+fi
+if [[ -n "$expected_stack_digest" && ! "$expected_stack_digest" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "HARNESS_E2E_STACK_DIGEST must be a SHA-256 digest" >&2
   exit 2
-}
+fi
 [[ -x "$e2e_bin" ]] || {
   echo "Harness E2E binary is not executable: $e2e_bin" >&2
   exit 2
@@ -97,20 +128,25 @@ die() {
 }
 
 write_deployment_result() {
-  local status=$1
+  local outcome=$1
+  local result_status=$outcome
+  if [[ "$outcome" != passed && "$failure_phase" == registry ]]; then
+    result_status=infra_failed
+  fi
   jq -n \
-    --arg status "$status" \
+    --arg status "$result_status" \
     --arg reason "$failure_reason" \
     --arg phase "$failure_phase" \
     --arg cli_version "$cli_version" \
     --arg cli_channel "$cli_channel" \
     --arg worker_tag "$worker_tag" \
-    --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" \
-    --arg release_version "$HARNESS_E2E_RELEASE_VERSION" \
+    --arg release_worker "$release_worker" \
+    --arg release_version "$release_version" \
     --arg actual_release_version "$actual_release_version" \
     --arg release_tag "${HARNESS_E2E_RELEASE_TAG:-}" \
     --arg release_run_id "${HARNESS_E2E_RELEASE_RUN_ID:-}" \
     --arg smoke_run_id "${HARNESS_E2E_SMOKE_RUN_ID:-}" \
+    --arg lock_digest "$lock_digest" \
     --argjson stack_versions "$stack_versions" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     '{
@@ -127,8 +163,10 @@ write_deployment_result() {
       release_run_id: $release_run_id,
       smoke_run_id: $smoke_run_id,
       stack_versions: $stack_versions,
+      stack_lock_digest: $lock_digest,
       elapsed_ms: $elapsed_ms
     }' >"$artifact_dir/deployment.json"
+  cp "$artifact_dir/deployment.json" "$artifact_dir/results/deployment.json"
 }
 
 snapshot_stack() {
@@ -311,9 +349,9 @@ printf 'workers: []\n' >"$project_dir/config.yaml"
 engine_pid=$!
 wait_for_engine
 
-# The candidate channel belongs only to the workers pinned in stack_versions.
 # Auxiliary E2E workers are not released as part of this operation and may not
-# expose the candidate tag at all, so keep them on their stable channel.
+# expose a candidate tag, so keep them on their stable channel unless the
+# entire live stack is being frozen below.
 support_worker_tag=latest
 workers=("database@$support_worker_tag" "fp@$support_worker_tag" "web@$support_worker_tag")
 declare -A providers=()
@@ -341,24 +379,44 @@ add_with_retry() {
   return 1
 }
 
-log "Installing stable E2E support stack: ${workers[*]}"
-add_with_retry worker-add "${workers[@]}"
+if [[ "$resolve_stack" == true ]]; then
+  failure_phase=registry
+  log "Resolving the live Registry stack from latest: harness@latest ${workers[*]}"
+  identity=$(add_with_retry live-stack "harness@latest" "${workers[@]}" >/dev/null && \
+    python3 "$repo_root/.github/scripts/registry_stack_identity.py" \
+      --lock "$project_dir/iii.lock")
+  stack_versions=$(jq -c '.stack_versions' <<<"$identity")
+  release_version=$(jq -er '.stack_versions.harness' <<<"$identity")
+  lock_digest=$(jq -er '.lock_digest' <<<"$identity")
+  if [[ -n "$expected_stack_digest" && "$lock_digest" != "$expected_stack_digest" ]]; then
+    die "resolved iii.lock digest $lock_digest does not match expected $expected_stack_digest"
+  fi
+else
+  failure_phase=registry
+  log "Installing stable E2E support stack: ${workers[*]}"
+  add_with_retry worker-add "${workers[@]}"
 
-# Install the released worker first, then apply its exact candidate dependency
-# overrides. Resolving Harness necessarily selects the stable versions allowed
-# by its semver ranges; installing Harness last would overwrite the exact
-# dependency pins that Release Control supplied.
-while IFS=$'\t' read -r candidate_worker candidate_version; do
-  log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
-  add_with_retry "candidate-${candidate_worker}" \
-    "${candidate_worker}@${candidate_version}" --force
-done < <(jq -r --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" '
-  to_entries
-  | sort_by([if .key == $release_worker then 0 else 1 end, .key])[]
-  | [.key, .value]
-  | @tsv
-' <<<"$stack_versions")
+  # Install the released worker first, then apply its exact candidate
+  # dependency overrides. Resolving Harness necessarily selects the stable
+  # versions allowed by its semver ranges; installing Harness last would
+  # overwrite the exact dependency pins that Release Control supplied.
+  while IFS=$'\t' read -r candidate_worker candidate_version; do
+    log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
+    add_with_retry "candidate-${candidate_worker}" \
+      "${candidate_worker}@${candidate_version}" --force
+  done < <(jq -r --arg release_worker "$release_worker" '
+    to_entries
+    | sort_by([if .key == $release_worker then 0 else 1 end])[]
+    | [.key, .value]
+    | @tsv
+  ' <<<"$stack_versions")
+  lock_digest=$(sha256sum "$project_dir/iii.lock" | awk '{print $1}')
+  if [[ -n "$expected_stack_digest" && "$lock_digest" != "$expected_stack_digest" ]]; then
+    die "resolved iii.lock digest $lock_digest does not match expected $expected_stack_digest"
+  fi
+fi
 
+failure_phase=e2e
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
   queue::define session::messages context::assemble router::models::get \
@@ -375,14 +433,15 @@ verify_args=(
   --manifest "$harness_root/iii.worker.yaml"
   --required harness
   --required database
-  --worker "$HARNESS_E2E_RELEASE_WORKER"
-  --version "$HARNESS_E2E_RELEASE_VERSION"
+  --worker "$release_worker"
+  --version "$release_version"
   --expected-versions-json "$stack_versions"
   --output "$stack_dir/lock-verification.json"
 )
 for worker in "${workers[@]}"; do
   verify_args+=(--required "${worker%@*}")
 done
+failure_phase=registry
 verification=$(python3 "$repo_root/.github/scripts/verify_registry_lock.py" "${verify_args[@]}")
 actual_release_version=$(jq -r '.actual_version' <<<"$verification")
 

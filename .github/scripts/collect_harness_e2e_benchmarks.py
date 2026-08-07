@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,9 @@ class CollectionConfig:
     execution_event: str
     execution_actor: str
     generated_at: str
+    stack_mode: str = "source"
+    stack_versions: dict[str, str] = field(default_factory=dict)
+    stack_digest: str = ""
 
 
 def load_json(path: Path) -> Any:
@@ -77,8 +80,11 @@ def semantic_result_status(
     passed: bool,
     hard_gate_failures: int,
     technical_failures: int,
+    infra_failures: int = 0,
     complete: bool = True,
 ) -> str:
+    if infra_failures:
+        return "infra_failed"
     if not complete:
         return "incomplete"
     if technical_failures:
@@ -132,6 +138,23 @@ def parse_scenarios(raw: str) -> list[str]:
     return parsed
 
 
+def parse_stack_versions(raw: str) -> dict[str, str]:
+    try:
+        versions = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CollectionError(f"stack_versions JSON is invalid: {exc}") from exc
+    if not isinstance(versions, dict):
+        raise CollectionError("stack_versions must be a JSON object")
+    parsed: dict[str, str] = {}
+    for worker, version in versions.items():
+        if not isinstance(worker, str) or not worker:
+            raise CollectionError(
+                "stack_versions worker names must be non-empty strings"
+            )
+        parsed[worker] = require_string(version, f"stack_versions[{worker}]")
+    return parsed
+
+
 def discover_contexts(root: Path) -> dict[tuple[str, str], Path]:
     contexts: dict[tuple[str, str], Path] = {}
     if not root.exists():
@@ -151,6 +174,64 @@ def discover_contexts(root: Path) -> dict[tuple[str, str], Path]:
             )
         contexts[key] = path
     return contexts
+
+
+def load_deployment(context_path: Path | None) -> dict[str, Any] | None:
+    if context_path is None:
+        return None
+    candidates = (
+        context_path.parent / "deployment.json",
+        context_path.parent.parent / "deployment.json",
+        context_path.parent.parent.parent / "deployment.json",
+    )
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        value = load_json(candidate)
+        if not isinstance(value, dict):
+            raise CollectionError(f"{candidate} must contain an object")
+        return value
+    return None
+
+
+def stack_metadata(
+    config: CollectionConfig,
+    deployment: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    versions = dict(config.stack_versions)
+    digest = config.stack_digest
+    release_version = config.release_version
+    if deployment is not None:
+        deployment_versions = deployment.get("stack_versions")
+        if isinstance(deployment_versions, dict):
+            versions = {
+                str(worker): str(version)
+                for worker, version in deployment_versions.items()
+                if isinstance(worker, str) and isinstance(version, str)
+            }
+        deployment_digest = deployment.get("stack_lock_digest")
+        if isinstance(deployment_digest, str):
+            digest = deployment_digest
+        actual_version = deployment.get("actual_release_version")
+        if isinstance(actual_version, str) and actual_version:
+            release_version = actual_version
+
+    return (
+        {
+            "tag": config.release_tag,
+            "worker": config.release_worker,
+            "version": release_version,
+            "url": config.release_url,
+            "registry_tag": config.registry_tag,
+        },
+        {
+            "mode": config.stack_mode,
+            "versions": versions,
+            "lock_digest": digest,
+        },
+    )
 
 
 def compact_extra(value: dict[str, Any]) -> str:
@@ -227,6 +308,8 @@ def collect(
     efficiency: list[dict[str, Any]] = []
     snapshot_subjects: list[dict[str, Any]] = []
     execution_reports: list[dict[str, Any]] = []
+    stack_observations: list[dict[str, Any]] = []
+    release_observations: list[dict[str, Any]] = []
     execution_id = f"{config.execution_run_id}-{config.execution_attempt}"
     execution = {
         "id": execution_id,
@@ -245,15 +328,23 @@ def collect(
         report_count = 0
         hard_gate_failures = 0
         technical_failures = 0
+        infra_failures = 0
         retries = 0
         engine_revisions: set[str] = set()
         resolved_judge: dict[str, Any] | None = None
 
         for scenario_id in config.scenarios:
             context_path = contexts.get((subject["id"], scenario_id))
+            deployment = load_deployment(context_path)
             report_path = (
                 context_path.parent / "results.json" if context_path is not None else None
             )
+            release_metadata, stack = stack_metadata(config, deployment)
+            if stack["versions"] or stack["lock_digest"]:
+                if stack not in stack_observations:
+                    stack_observations.append(stack)
+            if deployment is not None and release_metadata not in release_observations:
+                release_observations.append(release_metadata)
             base_extra: dict[str, Any] = {
                 "schema_version": SCHEMA_VERSION,
                 "execution": execution,
@@ -265,13 +356,8 @@ def collect(
                     "repository": config.repository,
                 },
                 "workflow_url": config.workflow_url,
-                "release": {
-                    "tag": config.release_tag,
-                    "worker": config.release_worker,
-                    "version": config.release_version,
-                    "url": config.release_url,
-                    "registry_tag": config.registry_tag,
-                },
+                "release": release_metadata,
+                "stack": stack,
                 "subject": subject,
                 "judge": {
                     "model": config.judge_model,
@@ -282,17 +368,25 @@ def collect(
             }
 
             if report_path is None or not report_path.is_file():
-                execution_reports.append(
-                    {
-                        "subject_id": subject["id"],
-                        "scenario_id": scenario_id,
-                        "available": False,
-                        "report": None,
-                    }
+                execution_report = {
+                    "subject_id": subject["id"],
+                    "scenario_id": scenario_id,
+                    "available": False,
+                    "report": None,
+                }
+                if deployment is not None:
+                    execution_report["deployment"] = deployment
+                execution_reports.append(execution_report)
+                status = (
+                    "infra_failed"
+                    if deployment is not None
+                    and deployment.get("status") == "infra_failed"
+                    else "missing_report"
                 )
+                infra_failures += int(status == "infra_failed")
                 scenario_snapshot = {
                     "id": scenario_id,
-                    "status": "missing_report",
+                    "status": status,
                     "passed": False,
                     "threshold": None,
                     "runs": 0,
@@ -300,6 +394,7 @@ def collect(
                     "pass_rate": None,
                     "hard_gate_failures": None,
                     "technical_failures": None,
+                    "infra_failures": int(status == "infra_failed"),
                     "retries": None,
                     "total_cost_usd": None,
                     "wall_time_seconds": None,
@@ -312,9 +407,21 @@ def collect(
                         "missing_reports",
                         "count",
                         1,
-                        {**base_extra, "passed": False, "status": "missing_report"},
+                        {**base_extra, "passed": False, "status": status},
                     )
                 )
+                if status == "infra_failed":
+                    efficiency.append(
+                        metric(
+                            "reliability",
+                            subject["id"],
+                            scenario_id,
+                            "infra_failed",
+                            "count",
+                            1,
+                            {**base_extra, "passed": False, "status": status},
+                        )
+                    )
                 subject_costs.append(None)
                 subject_wall_times.append(None)
                 scenario_snapshots.append(scenario_snapshot)
@@ -326,14 +433,15 @@ def collect(
                 scenario_id=scenario_id,
                 path=report_path,
             )
-            execution_reports.append(
-                {
-                    "subject_id": subject["id"],
-                    "scenario_id": scenario_id,
-                    "available": True,
-                    "report": report,
-                }
-            )
+            execution_report = {
+                "subject_id": subject["id"],
+                "scenario_id": scenario_id,
+                "available": True,
+                "report": report,
+            }
+            if deployment is not None:
+                execution_report["deployment"] = deployment
+            execution_reports.append(execution_report)
             report_count += 1
             report_passed = bool(scenario.get("passed"))
             subject_passed += int(report_passed)
@@ -362,6 +470,9 @@ def collect(
                     aggregate.get("technical_failures"),
                     f"{report_path}: technical_failures",
                 )
+            )
+            deployment_infra_failed = int(
+                deployment is not None and deployment.get("status") == "infra_failed"
             )
             retry_count = sum(
                 len(run.get("retry_attempts", []))
@@ -407,6 +518,7 @@ def collect(
                 passed=report_passed,
                 hard_gate_failures=hard_gates,
                 technical_failures=technical,
+                infra_failures=deployment_infra_failed,
             )
             extra = {
                 **base_extra,
@@ -486,6 +598,15 @@ def collect(
                         extra,
                     ),
                     metric(
+                        "reliability",
+                        subject["id"],
+                        scenario_id,
+                        "infra_failed",
+                        "count",
+                        0,
+                        extra,
+                    ),
+                    metric(
                         "efficiency",
                         subject["id"],
                         scenario_id,
@@ -535,6 +656,7 @@ def collect(
 
             hard_gate_failures += hard_gates
             technical_failures += technical
+            infra_failures += deployment_infra_failed
             retries += retry_count
             subject_costs.append(total_cost)
             subject_wall_times.append(wall_time_seconds)
@@ -549,6 +671,7 @@ def collect(
                     "pass_rate": pass_rate,
                     "hard_gate_failures": hard_gates,
                     "technical_failures": technical,
+                    "infra_failures": deployment_infra_failed,
                     "retries": retry_count,
                     "total_cost_usd": total_cost,
                     "wall_time_seconds": wall_time_seconds,
@@ -566,16 +689,23 @@ def collect(
             all_reports_present
             and subject_passed == expected_count
             and technical_failures == 0
+            and infra_failures == 0
         )
         suite_status = semantic_result_status(
             passed=suite_passed,
             hard_gate_failures=hard_gate_failures,
             technical_failures=technical_failures,
+            infra_failures=infra_failures,
             complete=all_reports_present,
         )
         engine_revision = (
             next(iter(engine_revisions)) if len(engine_revisions) == 1 else None
         )
+        suite_release, suite_stack = stack_metadata(config, None)
+        if len(release_observations) == 1:
+            suite_release = release_observations[0]
+        if len(stack_observations) == 1:
+            suite_stack = stack_observations[0]
         suite_extra = {
             "schema_version": SCHEMA_VERSION,
             "execution": execution,
@@ -587,13 +717,8 @@ def collect(
                 "repository": config.repository,
             },
             "workflow_url": config.workflow_url,
-            "release": {
-                "tag": config.release_tag,
-                "worker": config.release_worker,
-                "version": config.release_version,
-                "url": config.release_url,
-                "registry_tag": config.registry_tag,
-            },
+            "release": suite_release,
+            "stack": suite_stack,
             "subject": subject,
             "judge": resolved_judge
             or {"model": config.judge_model, "provider": config.judge_provider},
@@ -604,6 +729,7 @@ def collect(
             "status": suite_status,
             "expected_reports": expected_count,
             "received_reports": report_count,
+            "infra_failures": infra_failures,
         }
         quality.extend(
             [
@@ -665,6 +791,15 @@ def collect(
                     missing_reports,
                     suite_extra,
                 ),
+                metric(
+                    "reliability",
+                    subject["id"],
+                    "suite",
+                    "infra_failed",
+                    "count",
+                    infra_failures,
+                    suite_extra,
+                ),
             ]
         )
         if total_cost is not None:
@@ -704,6 +839,7 @@ def collect(
                 "report_coverage": report_coverage / 100,
                 "hard_gate_failures": hard_gate_failures,
                 "technical_failures": technical_failures,
+                "infra_failures": infra_failures,
                 "retry_attempts": retries,
                 "total_cost_usd": total_cost,
                 "wall_time_seconds": total_wall_time,
@@ -711,6 +847,11 @@ def collect(
             }
         )
 
+    snapshot_release, snapshot_stack = stack_metadata(config, None)
+    if len(release_observations) == 1:
+        snapshot_release = release_observations[0]
+    if len(stack_observations) == 1:
+        snapshot_stack = stack_observations[0]
     snapshot = {
         "schema_version": SCHEMA_VERSION,
         "execution": execution,
@@ -722,13 +863,9 @@ def collect(
             "repository": config.repository,
         },
         "workflow_url": config.workflow_url,
-        "release": {
-            "tag": config.release_tag,
-            "worker": config.release_worker,
-            "version": config.release_version,
-            "url": config.release_url,
-            "registry_tag": config.registry_tag,
-        },
+        "release": snapshot_release,
+        "stack": snapshot_stack,
+        "stack_observations": stack_observations,
         "requested_runs": config.requested_runs,
         "subjects": snapshot_subjects,
     }
@@ -775,6 +912,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-version", default="")
     parser.add_argument("--release-url", default="")
     parser.add_argument("--registry-tag", default="")
+    parser.add_argument("--stack-mode", default="source")
+    parser.add_argument("--stack-versions", default="{}")
+    parser.add_argument("--stack-digest", default="")
     parser.add_argument("--judge-model", required=True)
     parser.add_argument("--judge-provider", required=True)
     parser.add_argument("--execution-run-id", required=True)
@@ -815,6 +955,9 @@ def main(argv: list[str] | None = None) -> int:
         execution_event=args.execution_event,
         execution_actor=args.execution_actor,
         generated_at=generated_at,
+        stack_mode=require_string(args.stack_mode, "stack mode"),
+        stack_versions=parse_stack_versions(args.stack_versions),
+        stack_digest=args.stack_digest,
     )
     quality, efficiency, snapshot, execution = collect(config)
     write_outputs(args.output_dir, quality, efficiency, snapshot, execution)
