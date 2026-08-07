@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "eval"
-version = "0.2.1-experimental"
+version = "0.2.2-experimental"
 dependencies = [
  "anyhow",
  "async-trait",
