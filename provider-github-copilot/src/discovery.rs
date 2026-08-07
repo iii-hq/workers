@@ -26,10 +26,20 @@ pub fn models_url(api_url: &str) -> String {
     }
 }
 
-/// Harness-usable models only: chat type, tool support, and enabled for this
-/// subscription. `model_picker_enabled: false` rows are models the plan
-/// knows about but has not enabled — calling one fails with
-/// "model not supported", so they would be dead picker rows.
+/// Harness-usable models only. Four gates, each removing rows that would be
+/// dead or wrong in the picker:
+///
+/// - chat type with `tool_calls` — the agent loop needs both.
+/// - `policy.state != "disabled"` — the real per-account gate. A disabled
+///   policy means the model has not been approved for this account and a
+///   call fails with "model not supported"; absent policy means none needed.
+///   (`model_picker_enabled` is deliberately NOT used: it reflects an
+///   editor-side picker preference and reads `false` for every row on
+///   accounts that have never toggled models in an editor.)
+/// - `supported_endpoints` must include `/chat/completions` when the row
+///   declares them — some models are Messages-API only.
+/// - preview rows with no `model_picker_category` are the editor's internal
+///   feature models (search, compaction, exec agents), not chat models.
 pub fn admit(row: &Value) -> bool {
     let chat = row
         .pointer("/capabilities/type")
@@ -40,11 +50,85 @@ pub fn admit(row: &Value) -> bool {
         .pointer("/capabilities/supports/tool_calls")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let enabled = row
-        .get("model_picker_enabled")
-        .and_then(Value::as_bool)
+    let policy_allows = row
+        .pointer("/policy/state")
+        .and_then(Value::as_str)
+        .map(|s| s != "disabled")
         .unwrap_or(true);
-    chat && tools && enabled
+    let chat_endpoint = match row.get("supported_endpoints").and_then(Value::as_array) {
+        Some(eps) if !eps.is_empty() => eps
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|e| e == "/chat/completions"),
+        _ => true,
+    };
+    let internal_preview = row.get("preview").and_then(Value::as_bool).unwrap_or(false)
+        && row
+            .get("model_picker_category")
+            .and_then(Value::as_str)
+            .is_none();
+    chat && tools && policy_allows && chat_endpoint && !internal_preview
+}
+
+/// Probe concurrency: small enough to look like a client checking its model
+/// list, large enough that a refresh stays quick.
+const PROBE_CONCURRENCY: usize = 4;
+
+/// Ask the upstream whether this account may actually call `model`.
+///
+/// Entitlement is per-plan and NOT exposed anywhere in the listing (two
+/// models from the same vendor with identical `policy`, `capabilities`, and
+/// picker category differ: one answers, the other returns
+/// `model_not_supported`). A one-token request is the only authoritative
+/// check. Refusals are rejected before generation, so they consume no quota,
+/// and successes cost a single token on models the plan already includes.
+async fn probe_model(http: &reqwest::Client, api_url: &str, bearer: &str, model: &str) -> bool {
+    let mut req = http
+        .post(api_url)
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .header("x-initiator", "agent");
+    for (name, value) in client_headers() {
+        req = req.header(name, value);
+    }
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+    let Ok(resp) = req.json(&body).send().await else {
+        // Network trouble is not evidence of unavailability — keep the model
+        // and let the real call surface (and self-heal) any refusal.
+        return true;
+    };
+    if resp.status().is_success() {
+        return true;
+    }
+    let text = resp.text().await.unwrap_or_default();
+    !crate::errors::is_model_not_supported(&text)
+}
+
+/// Keep only the models this account can actually call. Preserves listing
+/// order so the picker stays stable.
+async fn retain_callable(
+    http: &reqwest::Client,
+    api_url: &str,
+    bearer: &str,
+    models: Vec<Model>,
+) -> Vec<Model> {
+    let mut callable = Vec::with_capacity(models.len());
+    for chunk in models.chunks(PROBE_CONCURRENCY) {
+        let checks = chunk.iter().map(|m| {
+            let id = crate::catalog::upstream_id(&m.id).to_string();
+            async move { probe_model(http, api_url, bearer, &id).await }
+        });
+        for (model, ok) in chunk.iter().zip(futures::future::join_all(checks).await) {
+            if ok {
+                callable.push(model.clone());
+            }
+        }
+    }
+    callable
 }
 
 pub fn parse_live_models(json: &Value) -> Vec<Model> {
@@ -123,7 +207,17 @@ pub async fn refresh_models(
         .unwrap_or_else(|| crate::exchange::DEFAULT_API_URL.to_string());
     match fetch_live_models(http, &models_url(&api_url), &bearer.token).await {
         FetchOutcome::Ok(models) => {
+            let listed = models.len();
+            // The listing advertises models this plan cannot call; verify
+            // rather than guess, so the picker only ever offers what works.
+            let models = retain_callable(http, &api_url, &bearer.token, models).await;
             let count = models.len();
+            if count < listed {
+                println!(
+                    "[provider-github-copilot] {} of {listed} listed models are available on this plan",
+                    count
+                );
+            }
             router_client::reconcile(iii, models, token.as_deref()).await?;
             Ok(count)
         }
@@ -158,14 +252,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn row(id: &str, model_type: &str, tools: bool, enabled: bool) -> Value {
+    fn row(id: &str, model_type: &str, tools: bool) -> Value {
         json!({
             "id": id,
             "capabilities": {
                 "type": model_type,
                 "supports": { "tool_calls": tools }
             },
-            "model_picker_enabled": enabled
+            // every row on an account that never toggled models in an editor
+            // reads false here; admission must not gate on it
+            "model_picker_enabled": false
         })
     }
 
@@ -187,29 +283,67 @@ mod tests {
     }
 
     #[test]
-    fn admission_requires_chat_tools_and_plan_enablement() {
-        assert!(admit(&row("gpt-5.2", "chat", true, true)));
+    fn admission_requires_chat_and_tools() {
+        assert!(admit(&row("gpt-5.2", "chat", true)));
         // embeddings and other non-chat types are dead in the agent loop
-        assert!(!admit(&row(
-            "text-embedding-3-small",
-            "embeddings",
-            false,
-            true
-        )));
+        assert!(!admit(&row("text-embedding-3-small", "embeddings", false)));
         // no tool support → dead in the agent loop
-        assert!(!admit(&row("chatty", "chat", false, true)));
-        // known to the plan but not enabled → "model not supported" on call
-        assert!(!admit(&row("locked", "chat", true, false)));
+        assert!(!admit(&row("chatty", "chat", false)));
         // missing capabilities tree → not admitted
         assert!(!admit(&json!({ "id": "bare" })));
     }
 
     #[test]
+    fn admission_honors_the_account_policy_gate() {
+        let mut disabled = row("claude-x", "chat", true);
+        disabled["policy"] = json!({ "state": "disabled" });
+        assert!(!admit(&disabled), "policy-disabled model would 404");
+
+        let mut enabled = row("claude-y", "chat", true);
+        enabled["policy"] = json!({ "state": "enabled" });
+        assert!(admit(&enabled));
+
+        // absent policy = none required
+        assert!(admit(&row("gpt-4o", "chat", true)));
+    }
+
+    #[test]
+    fn admission_requires_a_chat_completions_endpoint_when_declared() {
+        let mut messages_only = row("claude-z", "chat", true);
+        messages_only["supported_endpoints"] = json!(["/v1/messages"]);
+        assert!(!admit(&messages_only));
+
+        let mut both = row("claude-w", "chat", true);
+        both["supported_endpoints"] = json!(["/v1/messages", "/chat/completions"]);
+        assert!(admit(&both));
+
+        // absent or empty list: no constraint declared
+        let mut empty = row("gpt-4o", "chat", true);
+        empty["supported_endpoints"] = json!([]);
+        assert!(admit(&empty));
+    }
+
+    #[test]
+    fn admission_drops_the_editors_internal_preview_models() {
+        // preview + no picker category = an editor feature model (search,
+        // compaction, exec agents), not a chat model
+        let mut internal = row("copilot-search-a", "chat", true);
+        internal["preview"] = json!(true);
+        assert!(!admit(&internal));
+
+        // a real preview model the picker categorizes stays
+        let mut public_preview = row("gemini-3.1-pro-preview", "chat", true);
+        public_preview["preview"] = json!(true);
+        public_preview["model_picker_category"] = json!("versatile");
+        assert!(admit(&public_preview));
+    }
+
+    #[test]
     fn parses_rows_applying_admission_and_prefix() {
         let listing = json!({ "data": [
-            row("gpt-5.2", "chat", true, true),
-            row("claude-sonnet-4.6", "chat", true, true),
-            row("text-embedding-3-small", "embeddings", false, true),
+            row("gpt-5.2", "chat", true),
+            row("claude-sonnet-4.6", "chat", true),
+            row("text-embedding-3-small", "embeddings", false),
             { "id": "", "capabilities": { "type": "chat",
               "supports": { "tool_calls": true } } },
         ]});

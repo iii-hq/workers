@@ -219,15 +219,21 @@ const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/j
 // Copilot-shaped listing. gpt-agentic: full metadata, admitted.
 // bare-chat: sparse but chat+tools, admitted with conservative defaults.
 // chatty: no tool support -> filtered. embed: non-chat type -> filtered.
-// locked: chat+tools but plan-disabled -> filtered.
+// locked: policy disabled for this account -> filtered by admission.
+// premium-only: passes every listing gate, but the upstream refuses it
+// (model_not_supported) -> filtered by the discovery probe.
 const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[\
-{\"id\":\"gpt-agentic\",\"name\":\"GPT Agentic\",\"model_picker_enabled\":true,\
+{\"id\":\"gpt-agentic\",\"name\":\"GPT Agentic\",\"model_picker_enabled\":false,\
 \"capabilities\":{\"type\":\"chat\",\"limits\":{\"max_context_window_tokens\":200000,\"max_output_tokens\":64000},\
 \"supports\":{\"tool_calls\":true,\"streaming\":true,\"vision\":true,\"structured_outputs\":true}}},\
 {\"id\":\"bare-chat\",\"capabilities\":{\"type\":\"chat\",\"supports\":{\"tool_calls\":true}}},\
 {\"id\":\"chatty\",\"capabilities\":{\"type\":\"chat\",\"supports\":{\"tool_calls\":false}}},\
 {\"id\":\"embed\",\"capabilities\":{\"type\":\"embeddings\",\"supports\":{}}},\
-{\"id\":\"locked\",\"model_picker_enabled\":false,\"capabilities\":{\"type\":\"chat\",\"supports\":{\"tool_calls\":true}}}]}";
+{\"id\":\"locked\",\"policy\":{\"state\":\"disabled\"},\"capabilities\":{\"type\":\"chat\",\"supports\":{\"tool_calls\":true}}},\
+{\"id\":\"premium-only\",\"capabilities\":{\"type\":\"chat\",\"supports\":{\"tool_calls\":true}}}]}";
+
+/// What the upstream answers for a model this plan may not call.
+const STUB_NOT_SUPPORTED: &str = "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"The requested model is not supported.\",\"code\":\"model_not_supported\",\"param\":\"model\",\"type\":\"invalid_request_error\"}}";
 
 async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -244,6 +250,8 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
                 let head = String::from_utf8_lossy(&buf[..n]);
                 let response = if head.contains("GET ") && head.contains("/models") {
                     STUB_MODELS
+                } else if head.contains("premium-only") {
+                    STUB_NOT_SUPPORTED
                 } else {
                     messages_response
                 };
@@ -514,7 +522,11 @@ async fn refresh_models_reconciles_admitted_live_catalog_with_metadata() {
     );
     assert!(
         !ids.contains(&"copilot/locked"),
-        "plan-disabled model should be filtered: {ids:?}"
+        "policy-disabled model should be filtered: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"copilot/premium-only"),
+        "model the upstream refuses should be dropped by the probe: {ids:?}"
     );
 
     // the listing's own metadata landed on the record; the sparse row got

@@ -45,12 +45,29 @@ dev sessions).
   sibling single-vendor providers. Catalog ids are `copilot/<id>`; the
   prefix is stripped on every upstream call.
 - **Admission:** a listing row must be `type: chat`, support `tool_calls`,
-  and be enabled for the plan (`model_picker_enabled`) to be reconciled —
-  disabled rows fail with "model not supported" and would be dead picker
-  rows. Windows, ceilings, and capability flags come from the listing's
+  carry a non-`disabled` `policy.state`, and declare `/chat/completions`
+  among its endpoints. The editor's internal feature models (preview rows
+  with no picker category — search, compaction, exec agents) are dropped
+  too. Windows, ceilings, and capability flags come from the listing's
   `capabilities` tree; there is no pricing — a subscription meters in
   premium requests, so records carry no per-token cost and
   `usage.cost_usd` stays unset.
+- **Verified, not guessed:** which models a plan may actually call is *not*
+  in the listing. Two models can be identical across every field the API
+  exposes — same vendor, same `policy: enabled`, same picker category — and
+  one answers while the other returns `model_not_supported` (a free or
+  educational plan carries the base families but no premium requests).
+  Discovery therefore probes each admitted model with a one-token request,
+  four at a time, and reconciles only what answered. Refusals are rejected
+  before generation so they consume no quota, and successes cost a single
+  token on models the plan already includes. Enabling more models upstream
+  needs no code change — the next refresh picks them up.
+- **Self-healing:** if a model refuses between refreshes, the stream returns
+  an actionable permanent error and the row is removed from the catalog, so
+  the picker never offers the same dead model twice.
+- **`model_picker_enabled` is deliberately ignored.** It reflects an
+  editor-side picker preference and reads `false` for every row on accounts
+  that have never toggled models in an editor — gating on it admits nothing.
 - **Registration:** self-declares via `router::provider::register` with
   backoff until acked, and re-declares on the `router::ready` trigger type.
   The declaration carries no static `models` slice; a refresh fires right

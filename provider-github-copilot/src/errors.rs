@@ -97,6 +97,22 @@ fn classify_envelope(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
     }
 }
 
+/// The upstream's "this account cannot call that model" refusal. Entitlement
+/// is per-plan and absent from the model listing, so this is the only
+/// authoritative signal — the caller prunes the row and tells the operator
+/// how to gain access.
+pub fn is_model_not_supported(message: &str) -> bool {
+    serde_json::from_str::<Value>(message)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/error/code")
+                .and_then(Value::as_str)
+                .map(|c| c == "model_not_supported")
+        })
+        .unwrap_or(false)
+        || message.contains("model_not_supported")
+}
+
 fn is_context_overflow_message(message: &str) -> bool {
     let m = message.to_lowercase();
     m.contains("context length")
@@ -199,6 +215,17 @@ mod tests {
         );
         // 5xx wins over message sniffing
         assert_eq!(classify(Some(500), "context blah"), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn model_not_supported_is_detected_and_permanent() {
+        let body = r#"{"error":{"message":"The requested model is not supported.","code":"model_not_supported","param":"model","type":"invalid_request_error"}}"#;
+        assert!(is_model_not_supported(body));
+        assert_eq!(classify(Some(400), body), ErrorKind::Permanent);
+        assert!(!is_model_not_supported(
+            r#"{"error":{"code":"rate_limited"}}"#
+        ));
+        assert!(!is_model_not_supported("plain text"));
     }
 
     #[test]

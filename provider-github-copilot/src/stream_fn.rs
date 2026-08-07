@@ -176,31 +176,78 @@ async fn run_stream_call(
     // A terminal auth_expired means the short-lived bearer died early —
     // drop it so the next call re-exchanges instead of failing again.
     let cache_on_auth = cache.clone();
+    let model_id = cfg.model.clone();
     match abort_reg {
         Some(g) => {
-            pump_with_auth_invalidation(rx, sink, PING_INTERVAL, Some(g), &cache_on_auth).await;
+            pump_with_auth_invalidation(
+                rx,
+                sink,
+                PING_INTERVAL,
+                Some(g),
+                &cache_on_auth,
+                iii,
+                &model_id,
+            )
+            .await;
         }
-        None => pump_with_auth_invalidation(rx, sink, PING_INTERVAL, None, &cache_on_auth).await,
+        None => {
+            pump_with_auth_invalidation(
+                rx,
+                sink,
+                PING_INTERVAL,
+                None,
+                &cache_on_auth,
+                iii,
+                &model_id,
+            )
+            .await
+        }
     }
 }
 
-/// Pump wrapper that watches for a terminal auth_expired error frame and
-/// invalidates the bearer cache when one passes through.
+/// Pump wrapper that reacts to terminal error frames on their way through:
+/// an auth failure drops the cached bearer so the next call re-exchanges,
+/// and an entitlement refusal prunes the model from the catalog (see
+/// [`crate::router_client::prune_model`]) and rewrites the frame with an
+/// actionable message.
 async fn pump_with_auth_invalidation(
     rx: mpsc::Receiver<AssistantMessageEvent>,
     sink: &dyn FrameSink,
     ping_interval: Duration,
     abort: Option<&AbortGuard>,
     cache: &BearerCache,
+    iii: &IIIClient,
+    model: &str,
 ) {
     let (tap_tx, tap_rx) = mpsc::channel(64);
     let cache = cache.clone();
+    let (iii, model) = (iii.clone(), model.to_string());
     let mut rx = rx;
     let forward = tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            if let AssistantMessageEvent::Error { error } = &ev {
+        while let Some(mut ev) = rx.recv().await {
+            if let AssistantMessageEvent::Error { error } = &mut ev {
                 if error.error_kind == Some(ErrorKind::AuthExpired) {
                     cache.invalidate();
+                }
+                let refused = error
+                    .error_message
+                    .as_deref()
+                    .is_some_and(crate::errors::is_model_not_supported);
+                if refused {
+                    let actionable = format!(
+                        "{} is not available on this Copilot plan (upstream: model_not_supported). \
+                         Enable the model in your GitHub Copilot settings, or pick another \
+                         copilot/ model; it has been removed from the catalog until the next refresh.",
+                        upstream_id(&model)
+                    );
+                    error.error_message = Some(actionable.clone());
+                    error.content =
+                        vec![llm_router::types::content::ContentBlock::Text { text: actionable }];
+                    let (iii, model) = (iii.clone(), model.clone());
+                    tokio::spawn(async move {
+                        let token = state::load_token(&iii).await;
+                        router_client::prune_model(&iii, &model, token.as_deref()).await;
+                    });
                 }
             }
             if tap_tx.send(ev).await.is_err() {
@@ -324,7 +371,18 @@ mod tests {
         .await
         .unwrap();
         drop(tx);
-        pump_with_auth_invalidation(rx, &ch.writer, Duration::from_secs(30), None, &cache).await;
+        // no engine in this unit test: iii client is unused on the non-refusal path
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:1", iii_sdk::InitOptions::default());
+        pump_with_auth_invalidation(
+            rx,
+            &ch.writer,
+            Duration::from_secs(30),
+            None,
+            &cache,
+            &iii,
+            "copilot/gpt-test",
+        )
+        .await;
         ch.writer.close();
         // cache stays empty (invalidate on an already-empty cache is a no-op,
         // proving the path executed without panicking)

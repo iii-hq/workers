@@ -58,6 +58,40 @@ pub async fn reconcile(
     Ok(())
 }
 
+/// Drop one model from this provider's catalog slice.
+///
+/// The Copilot listing advertises models the account cannot actually call:
+/// entitlement is per-plan (premium models on a plan without premium
+/// requests answer `model_not_supported`) and no listing field exposes it.
+/// Rather than guess, the slice self-heals — the first upstream refusal
+/// removes the row, so the picker converges on what this account can really
+/// use. A later refresh restores it if the entitlement changes.
+pub async fn prune_model(iii: &IIIClient, model_id: &str, token: Option<&str>) {
+    let Ok(raw) = call(
+        iii,
+        "router::models::list",
+        json!({ "provider": PROVIDER_ID }),
+    )
+    .await
+    else {
+        return;
+    };
+    let Some(models) = raw
+        .get("models")
+        .and_then(|m| serde_json::from_value::<Vec<Model>>(m.clone()).ok())
+    else {
+        return;
+    };
+    let kept: Vec<Model> = models.into_iter().filter(|m| m.id != model_id).collect();
+    if let Err(e) = reconcile(iii, kept, token).await {
+        eprintln!("[provider-github-copilot] pruning {model_id} failed ({e})");
+    } else {
+        println!(
+            "[provider-github-copilot] {model_id} is not available on this plan — removed from the catalog"
+        );
+    }
+}
+
 /// `router::models::get` — authoritative catalog record (None when absent).
 pub async fn models_get(iii: &IIIClient, model_id: &str) -> Option<Model> {
     let raw = call(
