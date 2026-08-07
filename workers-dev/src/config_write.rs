@@ -6,7 +6,8 @@
 //! Anything the scanner cannot own confidently (inline `stacks: {…}`, a
 //! duplicated key) is refused rather than rewritten.
 
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
@@ -432,16 +433,15 @@ fn render_entry(indent: &str, name: &str, roots: &[String]) -> Vec<String> {
 }
 
 /// Replace `path`'s contents with `text`, but only after proving the result
-/// still loads. Writes a sibling temp file and renames over the target, so a
-/// crash mid-write cannot leave a half-written config behind.
+/// still loads. Writes `text` to a sibling temp file — named with this
+/// process's pid so two `workers-dev` instances editing the same config
+/// never share, or delete, each other's temp file — flushed and fsynced
+/// before the rename over the target, so a crash mid-write really cannot
+/// leave a half-written config behind.
 pub fn write_verified(path: &Path, text: &str) -> Result<()> {
     crate::config::validate_config_text(text)?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "workers-dev.yaml".to_string());
-    let tmp = path.with_file_name(format!("{name}.tmp"));
-    std::fs::write(&tmp, text)
+    let tmp = temp_sibling(path);
+    write_synced(&tmp, text)
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
         })
@@ -452,6 +452,30 @@ pub fn write_verified(path: &Path, text: &str) -> Result<()> {
         })
         .with_context(|| format!("replace {} with {}", path.display(), tmp.display()))?;
     Ok(())
+}
+
+/// `path`'s temp-file sibling for `write_verified`, unique per process: a
+/// fixed `<file>.tmp` name would let two `workers-dev` instances writing the
+/// same config collide, with the error path of one instance's write even
+/// `remove_file`-ing the other's in-flight temp file.
+fn temp_sibling(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workers-dev.yaml".to_string());
+    path.with_file_name(format!("{name}.{}.tmp", std::process::id()))
+}
+
+/// Write `text` to `tmp`, flushed and synced to disk before returning.
+/// `std::fs::write` alone only guarantees the bytes reached the OS page
+/// cache, not the disk — a crash between that return and `write_verified`'s
+/// rename could still lose the write, which is exactly what that function's
+/// doc comment promises can't happen.
+fn write_synced(tmp: &Path, text: &str) -> io::Result<()> {
+    let mut file = std::fs::File::create(tmp)?;
+    file.write_all(text.as_bytes())?;
+    file.flush()?;
+    file.sync_all()
 }
 
 #[cfg(test)]
@@ -1022,6 +1046,21 @@ default_stack: tiny
         assert!(!err.to_string().is_empty(), "{err:#}");
         // Must never succeed with an empty file, which `write_verified`
         // would then happily accept.
+    }
+
+    /// Pins the fix directly: a fixed `<file>.tmp` sibling is what let two
+    /// `workers-dev` instances collide (and delete each other's temp file on
+    /// the error path); the name must carry this process's pid instead.
+    #[test]
+    fn temp_sibling_name_carries_the_process_id() {
+        let tmp = temp_sibling(Path::new("/repo/workers-dev.yaml"));
+        assert_eq!(
+            tmp,
+            Path::new(&format!(
+                "/repo/workers-dev.yaml.{}.tmp",
+                std::process::id()
+            ))
+        );
     }
 
     #[test]
