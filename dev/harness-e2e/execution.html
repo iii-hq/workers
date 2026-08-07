@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
-      content="Complete Harness E2E workflow execution details and diagnostics."
+      content="Compact Harness E2E workflow health, metrics, and diagnostics."
     >
     <meta name="color-scheme" content="dark light">
     <title>Harness E2E execution detail</title>
@@ -130,18 +130,18 @@
             </section>
 
             <section id="scenarios" class="detail-section" aria-labelledby="scenarios-heading">
-              <div class="section-kicker">Complete result set</div>
+              <div class="section-kicker">Compact result set</div>
               <h2 id="scenarios-heading">Scenarios and runs</h2>
               <p id="scenario-intro" class="section-description"></p>
               <div id="scenario-details" class="scenario-details"></div>
             </section>
 
             <section id="raw-data" class="detail-section" aria-labelledby="raw-heading">
-              <div class="section-kicker">Source record</div>
-              <h2 id="raw-heading">Raw data</h2>
+              <div class="section-kicker">Public diagnostic record</div>
+              <h2 id="raw-heading">Diagnostic JSON</h2>
               <p class="section-description">
-                The structured views above preserve the source report. Use the raw record for fields
-                that do not yet have a dedicated visualization.
+                This allowlisted record contains metrics, gates, and failure messages. Prompts,
+                transcripts, model responses, and tool payloads are not published.
               </p>
               <div id="raw-actions" class="raw-actions"></div>
               <details id="raw-preview" class="raw-details">
@@ -153,28 +153,6 @@
         </div>
       </div>
 
-      <dialog
-        id="session-transcript-dialog"
-        class="session-transcript-dialog"
-        aria-labelledby="session-transcript-title"
-      >
-        <div class="session-transcript-shell">
-          <header class="session-transcript-header">
-            <div>
-              <div class="section-kicker">Session transcript</div>
-              <h2 id="session-transcript-title">Execution conversation</h2>
-              <p id="session-transcript-context"></p>
-            </div>
-            <button
-              id="session-transcript-close"
-              class="session-transcript-close"
-              type="button"
-              aria-label="Close session transcript"
-            >×</button>
-          </header>
-          <div id="session-transcript-body" class="session-transcript-body"></div>
-        </div>
-      </dialog>
     </main>
 
     <footer>
@@ -194,7 +172,6 @@
     </script>
     <script src="./dashboard-data.js"></script>
     <script src="./execution-data.js"></script>
-    <script src="./execution-transcript.js"></script>
     <script src="./executions.js"></script>
     <script>
       if (!window.HARNESS_EXECUTIONS) {

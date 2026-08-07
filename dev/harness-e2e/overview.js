@@ -121,6 +121,15 @@
     kpiScore: document.querySelector("#kpi-score"),
     kpiStatus: document.querySelector("#kpi-status"),
     kpiStatusCaption: document.querySelector("#kpi-status-caption"),
+    latestCompleteness: document.querySelector("#latest-completeness"),
+    latestFailure: document.querySelector("#latest-failure"),
+    latestFailureDetail: document.querySelector("#latest-failure-detail"),
+    latestFailureLink: document.querySelector("#latest-failure-link"),
+    latestFailureTitle: document.querySelector("#latest-failure-title"),
+    latestIdentity: document.querySelector("#latest-identity"),
+    latestLane: document.querySelector("#latest-lane"),
+    latestRunLink: document.querySelector("#latest-run-link"),
+    latestStatus: document.querySelector("#latest-status"),
     lastUpdate: document.querySelector("#last-update"),
     matrix: document.querySelector("#health-matrix"),
     next: document.querySelector("#next-page"),
@@ -241,8 +250,13 @@
     return {
       passed: { label: "Passed", short: "", css: "pass" },
       failed: { label: "Failed", short: "×", css: "fail" },
+      quality_advisory: { label: "Quality advisory", short: "!", css: "advisory" },
+      hard_gate_failed: { label: "Hard gate failed", short: "×", css: "fail" },
+      technical_failed: { label: "Technical failure", short: "×", css: "fail" },
+      infra_failed: { label: "Infrastructure failure", short: "×", css: "fail" },
       incomplete: { label: "Incomplete", short: "–", css: "incomplete" },
       cancelled: { label: "Cancelled", short: "○", css: "cancelled" },
+      running: { label: "Running", short: "•", css: "running" },
     }[status] || { label: "Unknown", short: "?", css: "incomplete" };
   }
 
@@ -253,6 +267,43 @@
       Number(totals.technical_failures || 0) +
       Number(totals.missing_reports || 0)
     );
+  }
+
+  function renderLatestHealth() {
+    const latest = history.executions[0];
+    if (!latest) return;
+    const model = executionApi.latestHealthModel(latest);
+    const meta = statusMeta(model.status);
+    elements.latestStatus.textContent = meta.label;
+    elements.latestStatus.className = `status-pill status-${meta.css}`;
+    elements.latestLane.textContent = titleCase(model.lane);
+    elements.latestIdentity.textContent = model.identity;
+    elements.latestCompleteness.textContent = model.expectedReports
+      ? `${model.receivedReports}/${model.expectedReports} reports · ${dataLabel(model.availability)}`
+      : dataLabel(model.availability);
+
+    const workflowUrl = safeUrl(model.workflowUrl);
+    elements.latestRunLink.hidden = !workflowUrl;
+    if (workflowUrl) elements.latestRunLink.href = workflowUrl;
+
+    const issue = model.firstFailure;
+    elements.latestFailure.hidden = !issue;
+    if (!issue) return;
+    elements.latestFailure.classList.toggle("failure-advisory", issue.kind === "quality");
+    elements.latestFailureTitle.textContent =
+      issue.kind === "quality" ? "First quality advisory" : "First actionable failure";
+    const context = [
+      issue.job_name,
+      issue.step_name,
+      issue.subject_id,
+      issue.scenario_id,
+      issue.id,
+    ].filter(Boolean);
+    elements.latestFailureDetail.textContent =
+      `${context.length ? `${context.join(" · ")} — ` : ""}${issue.message || "No diagnostic message"}`;
+    const issueUrl = safeUrl(issue.url);
+    elements.latestFailureLink.hidden = !issueUrl;
+    if (issueUrl) elements.latestFailureLink.href = issueUrl;
   }
 
   function renderKpis() {
@@ -652,11 +703,9 @@
         const status =
           execution.status === "cancelled"
             ? "cancelled"
-            : !scenario || scenario.status === "missing_report"
+            : !scenario
               ? "incomplete"
-              : scenario.passed
-                ? "passed"
-                : "failed";
+              : executionApi.normalizeScenarioStatus(scenario);
         return { execution, metric, scenario, status };
       })
       .filter(Boolean)
@@ -1049,7 +1098,10 @@
       executions.forEach((execution) => {
         const cell = executionApi.matrixCell(execution, row);
         const cellStatus =
-          execution.status === "cancelled" ? "cancelled" : cell?.status || "incomplete";
+          cell?.status ||
+          (["cancelled", "running", "infra_failed"].includes(execution.status)
+            ? execution.status
+            : "incomplete");
         const meta = statusMeta(cellStatus);
         const cellLabel = executionApi.matrixCellLabel(cell, cellStatus);
         const data = document.createElement("td");
@@ -1074,7 +1126,7 @@
 
   function dataLabel(availability) {
     return {
-      full: "Full report",
+      full: "Diagnostic detail",
       aggregate: "Aggregate",
       unavailable: "No report",
     }[availability] || "Unknown";
@@ -1156,6 +1208,7 @@
     elements.empty.hidden = hasData;
     elements.content.hidden = !hasData;
     if (!hasData) return;
+    renderLatestHealth();
     renderKpis();
     renderEfficiency();
     renderMatrix();

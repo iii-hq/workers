@@ -114,11 +114,54 @@
     return [...scenarios].sort();
   }
 
-  function normalizeStatus(value) {
-    if (["passed", "failed", "incomplete", "cancelled"].includes(value)) return value;
+  function normalizeStatus(value, execution = {}) {
+    const semanticStatuses = [
+      "passed",
+      "quality_advisory",
+      "hard_gate_failed",
+      "technical_failed",
+      "infra_failed",
+      "incomplete",
+      "cancelled",
+      "running",
+    ];
+    if (semanticStatuses.includes(value)) return value;
     if (value === "pass" || value === "success") return "passed";
-    if (value === "fail" || value === "failure") return "failed";
+    if (value === "cancelled") return "cancelled";
+
+    // Schema 2 collapsed every complete non-pass into `failed`. Reconstruct
+    // the semantic outcome from its retained blocking counters.
+    if (value === "fail" || value === "failed" || value === "failure") {
+      const totals = execution?.totals || {};
+      if (Number(totals.missing_reports || 0) > 0) return "incomplete";
+      if (Number(totals.technical_failures || 0) > 0) return "technical_failed";
+      if (Number(totals.hard_gate_failures || 0) > 0) return "hard_gate_failed";
+      if (String(execution?.conclusion || "") !== "success") return "infra_failed";
+      const subjects = Array.isArray(execution?.subjects) ? execution.subjects : [];
+      if (subjects.length && subjects.some((subject) => !subject?.passed)) {
+        return "quality_advisory";
+      }
+      return "infra_failed";
+    }
     return "incomplete";
+  }
+
+  function normalizeScenarioStatus(value) {
+    const scenario = value && typeof value === "object" ? value : {};
+    const status = String(scenario.status || "");
+    if (status === "cancelled") return "cancelled";
+    if (status === "running") return "running";
+    if (status === "missing_report" || status === "incomplete") return "incomplete";
+    if (status === "technical_failed" || Number(scenario.technical_failures || 0) > 0) {
+      return "technical_failed";
+    }
+    if (status === "hard_gate_failed" || Number(scenario.hard_gate_failures || 0) > 0) {
+      return "hard_gate_failed";
+    }
+    if (status === "infra_failed") return "infra_failed";
+    if (status === "quality_advisory") return "quality_advisory";
+    if (scenario.passed || status === "passed" || status === "success") return "passed";
+    return "quality_advisory";
   }
 
   function normalizeExecution(entry) {
@@ -131,7 +174,7 @@
       id: String(execution.id || ""),
       run_id: String(execution.run_id || ""),
       attempt: Number(execution.attempt) || 1,
-      status: normalizeStatus(execution.status),
+      status: normalizeStatus(execution.status, execution),
       conclusion: String(execution.conclusion || ""),
       event: String(execution.event || ""),
       actor: String(execution.actor || ""),
@@ -166,7 +209,7 @@
     const scenarios = listLegacyScenarios(subject).map((scenarioId) => {
       const score = subject.metrics?.quality?.[scenarioId]?.median_score;
       const passRate = subject.metrics?.quality?.[scenarioId]?.pass_rate;
-      return {
+      const scenario = {
         id: scenarioId,
         status: score?.status || passRate?.status || "unknown",
         passed: score?.passed ?? passRate?.passed ?? false,
@@ -185,6 +228,7 @@
         wall_time_seconds:
           metricValue(subject, "efficiency", scenarioId, "wall_time_seconds"),
       };
+      return { ...scenario, status: normalizeScenarioStatus(scenario) };
     });
     return {
       id: subject.id,
@@ -194,7 +238,7 @@
       engine_revision: subject.engineRevision || "",
       passed: Boolean(subject.passed),
       expected_reports: scenarios.length,
-      received_reports: scenarios.filter((scenario) => scenario.status !== "missing_report")
+      received_reports: scenarios.filter((scenario) => scenario.status !== "incomplete")
         .length,
       scenario_pass_rate:
         (metricValue(subject, "quality", "suite", "scenario_pass_rate") ?? 0) / 100,
@@ -340,6 +384,32 @@
     });
   }
 
+  function latestHealthModel(entry) {
+    const execution = normalizeExecution(entry);
+    const release = execution.release || {};
+    const releaseIdentity = [release.worker, release.version]
+      .filter(Boolean)
+      .join("@");
+    const firstFailure =
+      execution.first_failure && typeof execution.first_failure === "object"
+        ? execution.first_failure
+        : null;
+    return {
+      status: execution.status,
+      lane: String(execution.lane || "daily"),
+      identity:
+        releaseIdentity ||
+        String(release.tag || "") ||
+        String(execution.source?.sha || "").slice(0, 12) ||
+        "Unknown",
+      expectedReports: Number(execution.totals?.expected_reports || 0),
+      receivedReports: Number(execution.totals?.received_reports || 0),
+      availability: execution.availability,
+      firstFailure,
+      workflowUrl: execution.workflow_url,
+    };
+  }
+
   function executionsWithinDays(executions, days, now = Date.now()) {
     const windowDays = Number(days);
     if (!Number.isFinite(windowDays) || windowDays <= 0) return [...(executions || [])];
@@ -384,18 +454,17 @@
     const subject = execution?.subjects?.find((item) => item.id === row.subjectId);
     const scenario = subject?.scenarios?.find((item) => item.id === row.scenarioId);
     if (!scenario) return null;
-    const status =
-      scenario.status === "missing_report"
-        ? "incomplete"
-        : scenario.passed
-          ? "passed"
-          : "failed";
+    const status = normalizeScenarioStatus(scenario);
     return { ...scenario, status };
   }
 
   function matrixCellLabel(cell, status) {
-    if (status === "failed") return "×";
+    if (["failed", "hard_gate_failed", "technical_failed", "infra_failed"].includes(status)) {
+      return "×";
+    }
+    if (status === "quality_advisory") return "!";
     if (status === "cancelled") return "○";
+    if (status === "running") return "•";
     if (status !== "passed") return "–";
 
     const score = numberOrNull(cell?.median_score);
@@ -527,7 +596,7 @@
     const technicalFailures = Number(scenario.technical_failures) || 0;
     return {
       passed: Boolean(scenario.passed),
-      complete: scenario.status !== "missing_report",
+      complete: normalizeScenarioStatus(scenario) !== "incomplete",
       hardGateFailures,
       technicalFailures,
       score: numberOrNull(scenario.median_score),
@@ -936,12 +1005,14 @@
     filterExecutions,
     findExecution,
     groupRunFailures,
+    latestHealthModel,
     legacyExecution,
     matrixCell,
     matrixCellLabel,
     matrixRows,
     mergeExecutionHistory,
     normalizeExecution,
+    normalizeScenarioStatus,
     normalizeStatus,
     scenarioMetricSeries,
     scenarioMetricRows,

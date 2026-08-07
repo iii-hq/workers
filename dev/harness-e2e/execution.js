@@ -39,11 +39,6 @@
     score: document.querySelector("#detail-score"),
     status: document.querySelector("#execution-status"),
     subtitle: document.querySelector("#execution-subtitle"),
-    transcriptBody: document.querySelector("#session-transcript-body"),
-    transcriptClose: document.querySelector("#session-transcript-close"),
-    transcriptContext: document.querySelector("#session-transcript-context"),
-    transcriptDialog: document.querySelector("#session-transcript-dialog"),
-    transcriptTitle: document.querySelector("#session-transcript-title"),
     title: document.querySelector("#execution-title"),
     workflowLink: document.querySelector("#workflow-link"),
     workflowRuntime: document.querySelector("#workflow-runtime"),
@@ -124,6 +119,10 @@
     if (normalized === "passed" || normalized === "success") {
       return { label: "Passed", css: "pass" };
     }
+    if (normalized === "quality_advisory") {
+      return { label: "Quality Advisory", css: "advisory" };
+    }
+    if (normalized === "running") return { label: "Running", css: "running" };
     if (normalized === "cancelled") return { label: "Cancelled", css: "cancelled" };
     if (
       normalized === "failed" ||
@@ -135,6 +134,14 @@
       return { label: titleCase(normalized), css: "fail" };
     }
     return { label: titleCase(normalized || "incomplete"), css: "incomplete" };
+  }
+
+  function availabilityLabel(availability) {
+    return {
+      full: "Compact diagnostics",
+      aggregate: "Aggregate only",
+      unavailable: "No report",
+    }[availability] || "Unknown data";
   }
 
   function scenarioAnchor(subjectId, scenarioId) {
@@ -173,11 +180,7 @@
     elements.status.textContent = meta.label;
     elements.availability.className =
       `data-badge data-${execution.availability}`;
-    elements.availability.textContent = {
-      full: "Full report",
-      aggregate: "Aggregate only",
-      unavailable: "No report",
-    }[execution.availability];
+    elements.availability.textContent = availabilityLabel(execution.availability);
     elements.subtitle.textContent =
       `${formatDate(execution.completed_at || execution.started_at)} · ` +
       `attempt ${execution.attempt} · ${titleCase(execution.event || "unknown trigger")}`;
@@ -326,7 +329,7 @@
         ${metadataItem("Engine revision", revisions.join(", ") || "Unknown", { mono: true })}
         ${metadataItem("Judge protocol", protocols.join(", ") || "Unknown")}
         ${metadataItem("Requested runs", execution.requested_runs ?? "Unknown")}
-        ${metadataItem("Report availability", titleCase(execution.availability))}
+        ${metadataItem("Report availability", availabilityLabel(execution.availability))}
       </div>
     `;
   }
@@ -358,11 +361,7 @@
 
   function renderAggregateScenario(subject, scenario, options = {}) {
     const meta = statusMeta(
-      scenario.status === "missing_report"
-        ? "incomplete"
-        : scenario.passed
-          ? "passed"
-          : "failed",
+      window.HarnessExecutionData.normalizeScenarioStatus(scenario),
     );
     const anchor = scenarioAnchor(subject.id, scenario.id);
     const open = scenario.passed === false || options.soleScenario;
@@ -661,22 +660,14 @@
     `;
   }
 
-  function renderConversationLaunch(messages, run) {
-    const transcript = window.HarnessExecutionTranscript;
-    const events = transcript.normalizeTranscript(messages);
-    const summary = transcript.summarizeTranscript(events);
+  function renderConversationLaunch(run) {
     return `
       <section class="conversation-launch">
         <div>
-          <span>Session transcript</span>
-          <strong>${summary.messages} messages · ${summary.calls} functions</strong>
-          <small class="${summary.errors ? "has-errors" : ""}">
-            ${summary.errors
-              ? `${summary.errors} error${summary.errors === 1 ? "" : "s"} to inspect`
-              : `${escapeHtml(run.session_id || "No session id")} · read-only`}
-          </small>
+          <span>Public diagnostic detail</span>
+          <strong>Prompts and transcripts are not published</strong>
+          <small>${escapeHtml(run.session_id || "No session id")} · metrics and failures only</small>
         </div>
-        <button type="button" class="conversation-open">Open chat</button>
       </section>
     `;
   }
@@ -860,7 +851,7 @@
 
   function renderRawTab(panel, run) {
     panel.innerHTML = runSection(
-      "Complete run record",
+      "Compact diagnostic record",
       '<pre class="prompt-block"></pre>',
       { wide: true },
     );
@@ -870,15 +861,10 @@
   const RUN_TABS = [
     { id: "evaluation", label: "Evaluation", render: renderEvaluationTab },
     { id: "usage", label: "Usage", render: renderUsageTab },
-    { id: "prompt", label: "Prompt", render: renderPromptTab },
-    { id: "sessions", label: "Sessions", render: renderSessionsTab },
-    { id: "raw", label: "Raw", render: renderRawTab },
+    { id: "raw", label: "Diagnostic JSON", render: renderRawTab },
   ];
 
-  function renderRunContent(container, run, context) {
-    const messages = Array.isArray(run.transcript?.messages)
-      ? run.transcript.messages
-      : [];
+  function renderRunContent(container, run) {
     container.innerHTML = `
       <div class="run-overview">
         ${metricBlock("Score", compactNumber(run.score, 1))}
@@ -888,7 +874,7 @@
         ${metricBlock("Retries", compactNumber(run.retry_attempts?.length || 0, 0))}
         ${metricBlock("Session", run.session_id || "Unknown")}
       </div>
-      ${renderConversationLaunch(messages, run)}
+      ${renderConversationLaunch(run)}
       <div class="run-tabs" role="tablist" aria-label="Run diagnostics">
         ${RUN_TABS.map(
           (tab) =>
@@ -900,9 +886,6 @@
           `<div class="run-sections" role="tabpanel" data-panel="${tab.id}" hidden></div>`,
       ).join("")}
     `;
-    container.querySelector(".conversation-open")?.addEventListener("click", () => {
-      openConversationDialog(run, context);
-    });
     const buttons = [...container.querySelectorAll(".run-tabs button")];
     const activateRunTab = (tabId) => {
       RUN_TABS.forEach((tab) => {
@@ -933,8 +916,14 @@
     );
     if (!scenario) return "";
     const subjectId = record.subject_id;
-    const meta = statusMeta(scenario.passed ? "passed" : "failed");
     const aggregate = scenario.aggregate || {};
+    const meta = statusMeta(
+      window.HarnessExecutionData.normalizeScenarioStatus({
+        ...scenario,
+        hard_gate_failures: aggregate.hard_gate_failures,
+        technical_failures: aggregate.technical_failures,
+      }),
+    );
     const policy = scenario.execution_policy || {};
     const anchor = scenarioAnchor(subjectId, scenario.scenario_id);
     const failingRun = (scenario.runs || []).some(
@@ -1023,16 +1012,7 @@
           const container = element.querySelector(".run-content[data-pending='true']");
           if (!container) return;
           container.removeAttribute("data-pending");
-          renderRunContent(container, run, {
-            runIndex: index,
-            scenarioId: record.scenario_id,
-            subjectLabel: [
-              record.report?.subject?.provider,
-              record.report?.subject?.model,
-            ]
-              .filter(Boolean)
-              .join("/"),
-          });
+          renderRunContent(container, run);
         });
       });
     });
@@ -1066,7 +1046,7 @@
     }
     elements.scenarioIntro.textContent =
       execution.availability === "aggregate"
-        ? "The complete report expired after 30 executions. Historical aggregate metrics remain available."
+        ? "The compact diagnostic report expired after 30 executions. Historical aggregate metrics remain available."
         : "This workflow did not produce a complete benchmark report.";
     const aggregateCount = execution.subjects.reduce(
       (total, subject) => total + (subject.scenarios || []).length,
@@ -1242,7 +1222,6 @@
   }
 
   async function initialize() {
-    attachTranscriptDialogControls();
     attachAnchorNavigation();
     if (!execution) {
       elements.loading.hidden = true;

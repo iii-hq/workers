@@ -40,7 +40,7 @@
             Harness E2E
           </div>
           <h1 id="page-title">Execution dashboard</h1>
-          <p>Workflow-level health with scenario results and complete run diagnostics.</p>
+          <p>Workflow-level health with scenario results and compact run diagnostics.</p>
         </div>
         <div class="sync-block">
           <span id="sync-label">Last published</span>
@@ -55,13 +55,103 @@
       </section>
 
       <div id="overview-content">
+        <section class="panel latest-health" aria-labelledby="latest-health-heading">
+          <div class="latest-health-heading">
+            <div>
+              <div class="section-kicker">Latest daily execution</div>
+              <div class="latest-health-title">
+                <h2 id="latest-health-heading">Operational health</h2>
+                <span id="latest-status" class="status-pill status-incomplete">Waiting</span>
+              </div>
+            </div>
+            <a id="latest-run-link" class="button button-secondary" href="#">
+              View workflow <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+          <dl class="latest-health-facts">
+            <div><dt>Lane</dt><dd id="latest-lane">—</dd></div>
+            <div><dt>Source / release</dt><dd id="latest-identity">—</dd></div>
+            <div><dt>Report completeness</dt><dd id="latest-completeness">—</dd></div>
+          </dl>
+          <div id="latest-failure" class="failure-callout" hidden>
+            <div>
+              <strong id="latest-failure-title">First actionable issue</strong>
+              <span id="latest-failure-detail"></span>
+            </div>
+            <a id="latest-failure-link" class="text-link" href="#" hidden>
+              Inspect job <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </section>
+
+        <div class="section-divider-heading">
+          <div>
+            <div class="section-kicker">Outcome guardrails</div>
+            <h2>Latest execution health</h2>
+          </div>
+          <p>Efficiency improvements remain advisory when outcomes regress.</p>
+        </div>
+
+        <section class="kpi-grid execution-kpis" aria-label="Latest execution summary">
+          <article class="kpi-card kpi-primary">
+            <div class="kpi-label">Latest result</div>
+            <div id="kpi-status" class="kpi-value kpi-status-value">—</div>
+            <div id="kpi-status-caption" class="kpi-delta">No execution</div>
+            <div class="kpi-orbit" aria-hidden="true"></div>
+          </article>
+          <article class="kpi-card">
+            <div class="kpi-label">Scenario pass rate</div>
+            <div id="kpi-pass-rate" class="kpi-value">—</div>
+            <div id="kpi-coverage" class="kpi-delta">—</div>
+          </article>
+          <article class="kpi-card">
+            <div class="kpi-label">Quality score</div>
+            <div id="kpi-score" class="kpi-value">—</div>
+            <div class="kpi-delta">Mean of scenario medians</div>
+          </article>
+          <article class="kpi-card">
+            <div class="kpi-label">Reliability events</div>
+            <div id="kpi-failures" class="kpi-value">—</div>
+            <div class="kpi-delta">Gates, technical failures, and missing reports</div>
+          </article>
+          <article class="kpi-card">
+            <div class="kpi-label">Model cost</div>
+            <div id="kpi-cost" class="kpi-value">—</div>
+            <div id="kpi-runtime" class="kpi-delta">—</div>
+          </article>
+        </section>
+
+        <section class="panel health-panel" aria-labelledby="health-heading">
+          <div class="panel-heading">
+            <div>
+              <div class="section-kicker">Execution by execution</div>
+              <h2 id="health-heading">Scenario health matrix</h2>
+              <p class="trend-description">
+                Columns are workflow attempts. Select a cell to inspect that execution and scenario.
+              </p>
+            </div>
+            <div class="range-toggle" role="group" aria-label="Matrix execution count">
+              <button class="range-button active" type="button" data-count="14">14 runs</button>
+              <button class="range-button" type="button" data-count="30">30 runs</button>
+            </div>
+          </div>
+          <div class="matrix-legend" aria-label="Result legend">
+            <span><i class="matrix-key matrix-passed matrix-key-score" aria-hidden="true">92%</i> Score reached</span>
+            <span><i class="matrix-key matrix-quality_advisory" aria-hidden="true">!</i> Quality advisory</span>
+            <span><i class="matrix-key matrix-failed" aria-hidden="true">×</i> Blocking failure</span>
+            <span><i class="matrix-key matrix-incomplete" aria-hidden="true">–</i> Incomplete</span>
+            <span><i class="matrix-key matrix-cancelled" aria-hidden="true">○</i> Cancelled</span>
+          </div>
+          <div id="health-matrix" class="health-matrix-wrap" aria-live="polite"></div>
+        </section>
+
         <section
           class="panel efficiency-overview"
           aria-labelledby="efficiency-overview-heading"
         >
           <div class="panel-heading efficiency-heading">
             <div>
-              <div class="section-kicker">Primary view</div>
+              <div class="section-kicker">Efficiency after health</div>
               <h2 id="efficiency-overview-heading">Efficiency overview</h2>
               <p class="trend-description">
                 Every figure below — value, delta, and trend — reads the
@@ -130,66 +220,6 @@
           </div>
         </section>
 
-        <div class="section-divider-heading">
-          <div>
-            <div class="section-kicker">Outcome guardrails</div>
-            <h2>Latest execution health</h2>
-          </div>
-          <p>Efficiency improvements remain advisory when outcomes regress.</p>
-        </div>
-
-        <section class="kpi-grid execution-kpis" aria-label="Latest execution summary">
-          <article class="kpi-card kpi-primary">
-            <div class="kpi-label">Latest result</div>
-            <div id="kpi-status" class="kpi-value kpi-status-value">—</div>
-            <div id="kpi-status-caption" class="kpi-delta">No execution</div>
-            <div class="kpi-orbit" aria-hidden="true"></div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Scenario pass rate</div>
-            <div id="kpi-pass-rate" class="kpi-value">—</div>
-            <div id="kpi-coverage" class="kpi-delta">—</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Quality score</div>
-            <div id="kpi-score" class="kpi-value">—</div>
-            <div class="kpi-delta">Mean of scenario medians</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Reliability events</div>
-            <div id="kpi-failures" class="kpi-value">—</div>
-            <div class="kpi-delta">Gates, technical failures, and missing reports</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Model cost</div>
-            <div id="kpi-cost" class="kpi-value">—</div>
-            <div id="kpi-runtime" class="kpi-delta">—</div>
-          </article>
-        </section>
-
-        <section class="panel health-panel" aria-labelledby="health-heading">
-          <div class="panel-heading">
-            <div>
-              <div class="section-kicker">Execution by execution</div>
-              <h2 id="health-heading">Scenario health matrix</h2>
-              <p class="trend-description">
-                Columns are workflow attempts. Select a cell to inspect that execution and scenario.
-              </p>
-            </div>
-            <div class="range-toggle" role="group" aria-label="Matrix execution count">
-              <button class="range-button active" type="button" data-count="14">14 runs</button>
-              <button class="range-button" type="button" data-count="30">30 runs</button>
-            </div>
-          </div>
-          <div class="matrix-legend" aria-label="Result legend">
-            <span><i class="matrix-key matrix-passed matrix-key-score" aria-hidden="true">92%</i> Score reached</span>
-            <span><i class="matrix-key matrix-failed" aria-hidden="true">×</i> Failed</span>
-            <span><i class="matrix-key matrix-incomplete" aria-hidden="true">–</i> Incomplete</span>
-            <span><i class="matrix-key matrix-cancelled" aria-hidden="true">○</i> Cancelled</span>
-          </div>
-          <div id="health-matrix" class="health-matrix-wrap" aria-live="polite"></div>
-        </section>
-
         <section class="panel executions-panel" aria-labelledby="executions-heading">
           <div class="panel-heading executions-heading">
             <div>
@@ -208,9 +238,13 @@
               <select id="status-filter">
                 <option value="all">All statuses</option>
                 <option value="passed">Passed</option>
-                <option value="failed">Failed</option>
+                <option value="quality_advisory">Quality advisory</option>
+                <option value="hard_gate_failed">Hard gate failed</option>
+                <option value="technical_failed">Technical failure</option>
+                <option value="infra_failed">Infrastructure failure</option>
                 <option value="incomplete">Incomplete</option>
                 <option value="cancelled">Cancelled</option>
+                <option value="running">Running</option>
               </select>
             </label>
             <label>
@@ -322,7 +356,7 @@
     </main>
 
     <footer>
-      <span>Harness E2E · 100 summaries · 30 complete reports</span>
+      <span>Harness E2E · 100 summaries · 30 compact diagnostic reports</span>
       <a href="https://github.com/iii-hq/workers/tree/main/harness/tests/e2e">
         Suite documentation <span aria-hidden="true">↗</span>
       </a>

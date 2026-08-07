@@ -10,11 +10,13 @@ const {
   filterExecutions,
   findExecution,
   groupRunFailures,
+  latestHealthModel,
   matrixCell,
   matrixCellLabel,
   matrixRows,
   mergeExecutionHistory,
   normalizeExecution,
+  normalizeScenarioStatus,
   scenarioMetricSeries,
   scenarioMetricRows,
   scenarioMetricsFromDetail,
@@ -62,8 +64,72 @@ test("normalizes execution status and availability", () => {
   });
 
   assert.equal(normalized.id, "99");
-  assert.equal(normalized.status, "failed");
+  assert.equal(normalized.status, "infra_failed");
   assert.equal(normalized.availability, "unavailable");
+});
+
+test("normalizes schema 2 failures without turning workflow failures into advisories", () => {
+  assert.equal(
+    normalizeExecution({
+      status: "failed",
+      conclusion: "failure",
+      totals: {},
+      subjects: [{ passed: false }],
+    }).status,
+    "infra_failed",
+  );
+  assert.equal(
+    normalizeExecution({
+      status: "failed",
+      conclusion: "success",
+      totals: { technical_failures: 1, hard_gate_failures: 1 },
+      subjects: [{ passed: false }],
+    }).status,
+    "technical_failed",
+  );
+  assert.equal(
+    normalizeExecution({
+      status: "failed",
+      conclusion: "failure",
+      totals: { hard_gate_failures: 1 },
+      subjects: [{ passed: false }],
+    }).status,
+    "hard_gate_failed",
+  );
+  assert.equal(
+    normalizeExecution({
+      status: "failed",
+      conclusion: "success",
+      totals: {},
+      subjects: [{ passed: false }],
+    }).status,
+    "quality_advisory",
+  );
+});
+
+test("builds the latest health identity, completeness, and compact first failure", () => {
+  const model = latestHealthModel(
+    execution({
+      status: "infra_failed",
+      lane: "daily",
+      release: { worker: "harness", version: "1.7.3" },
+      totals: { expected_reports: 19, received_reports: 0 },
+      first_failure: {
+        kind: "job",
+        job_name: "harness e2e build",
+        step_name: "Validate E2E manifests and lockfiles",
+        message: "provider-deepseek/Cargo.lock needs to be updated",
+      },
+    }),
+  );
+
+  assert.equal(model.status, "infra_failed");
+  assert.equal(model.lane, "daily");
+  assert.equal(model.identity, "harness@1.7.3");
+  assert.equal(model.expectedReports, 19);
+  assert.equal(model.receivedReports, 0);
+  assert.equal(model.firstFailure.step_name, "Validate E2E manifests and lockfiles");
+  assert.equal(model.workflowUrl, "");
 });
 
 test("merges manifest executions and finds a retained detail", () => {
@@ -168,12 +234,44 @@ test("builds subject and scenario matrix rows with result cells", () => {
   assert.equal(cell.median_score, 92);
   assert.equal(matrixCellLabel(cell, cell.status), "92%");
   assert.equal(matrixCellLabel({ passed: false }, "failed"), "×");
+  assert.equal(matrixCellLabel(null, "infra_failed"), "×");
+  assert.equal(matrixCellLabel(null, "quality_advisory"), "!");
+  assert.equal(matrixCellLabel(null, "running"), "•");
   assert.equal(matrixCellLabel(null, "incomplete"), "–");
   assert.equal(matrixCellLabel(null, "cancelled"), "○");
   assert.equal(
     matrixCellLabel({ passed: true, median_score: null, pass_rate: 0.875 }, "passed"),
     "87.5%",
   );
+});
+
+test("normalizes scenario outcomes with the shared blocking precedence", () => {
+  assert.equal(normalizeScenarioStatus({ status: "missing_report" }), "incomplete");
+  assert.equal(
+    normalizeScenarioStatus({ status: "cancelled", technical_failures: 1 }),
+    "cancelled",
+  );
+  assert.equal(
+    normalizeScenarioStatus({
+      passed: false,
+      hard_gate_failures: 1,
+      technical_failures: 1,
+    }),
+    "technical_failed",
+  );
+  assert.equal(
+    normalizeScenarioStatus({ passed: false, hard_gate_failures: 1 }),
+    "hard_gate_failed",
+  );
+  assert.equal(
+    normalizeScenarioStatus({ passed: false, hard_gate_failures: 0 }),
+    "quality_advisory",
+  );
+  assert.equal(
+    normalizeScenarioStatus({ passed: true, hard_gate_failures: 1 }),
+    "hard_gate_failed",
+  );
+  assert.equal(normalizeScenarioStatus({ passed: true }), "passed");
 });
 
 test("derives aggregate legacy entries from benchmark snapshots", () => {
