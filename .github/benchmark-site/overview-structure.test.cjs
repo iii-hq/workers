@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const root = __dirname;
 const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
@@ -12,7 +13,12 @@ const sampleExecutions = fs.readFileSync(
   "utf8",
 );
 const overview = fs.readFileSync(path.join(root, "overview.js"), "utf8");
+const localRunner = fs.readFileSync(path.join(root, "local-runner.js"), "utf8");
 const styles = fs.readFileSync(path.join(root, "styles.css"), "utf8");
+const publisher = fs.readFileSync(
+  path.join(root, "..", "scripts", "publish_harness_e2e_dashboard.py"),
+  "utf8",
+);
 
 test("places efficiency overview first and removes the operational health panel", () => {
   const latest = index.indexOf('class="panel latest-health"');
@@ -80,16 +86,45 @@ test("discovers local models and scenarios while keeping runner knobs advanced",
   assert.match(index, /class="local-advanced local-field-wide"/);
   assert.match(index, /id="local-catalog-refresh"/);
   assert.doesNotMatch(index, /name="model"|name="provider"/);
-  assert.match(overview, /api\/local\/catalog/);
-  assert.match(overview, /catalog\.models/);
-  assert.match(overview, /catalog\.scenarios/);
+  assert.match(localRunner, /api\/local\/catalog/);
+  assert.match(localRunner, /catalog\.models/);
+  assert.match(localRunner, /catalog\.scenarios/);
 });
 
 test("uses the native local-run contract without import compatibility", () => {
   assert.match(overview, /Last completed/);
-  assert.match(overview, /Results saved/);
-  assert.match(overview, /job\?\.status === "completed" && job\.id/);
-  assert.doesNotMatch(overview, /execution_id|Results imported|results\.json file/);
+  assert.match(localRunner, /Results saved/);
+  assert.match(localRunner, /job\?\.status === "completed" && job\.id/);
+  assert.doesNotMatch(
+    overview + localRunner,
+    /execution_id|Results imported|results\.json file/,
+  );
+});
+
+test("loads the local runner only for native local manifests", () => {
+  assert.match(
+    index,
+    /if \(window\.HARNESS_EXECUTIONS\?\.mode === "local"\) \{\s*document\.write\('<script src="\.\/local-runner\.js"/s,
+  );
+  assert.match(overview, /if \(isLocal\) window\.HarnessLocalRunner\.initialize\(\)/);
+  assert.doesNotMatch(overview, /api\/local|local-run-form|local-run-cancel/);
+  assert.match(publisher, /"mode": "published"/);
+
+  const loader = index.match(
+    /<script>\s*(if \(window\.HARNESS_EXECUTIONS\?\.mode === "local"\) \{[\s\S]*?local-runner\.js[\s\S]*?\})\s*<\/script>/,
+  )[1];
+  const writesFor = (mode) => {
+    const writes = [];
+    vm.runInNewContext(loader, {
+      document: { write: (value) => writes.push(value) },
+      window: { HARNESS_EXECUTIONS: { mode } },
+    });
+    return writes;
+  };
+  assert.deepEqual(writesFor("published"), []);
+  assert.deepEqual(writesFor("local"), [
+    '<script src="./local-runner.js"></script>',
+  ]);
 });
 
 test("keeps the completed runner log inside a padded local panel", () => {

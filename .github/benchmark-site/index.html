@@ -445,6 +445,11 @@
         document.write('<script src="./sample-executions.js"><\/script>');
       }
     </script>
+    <script>
+      if (window.HARNESS_EXECUTIONS?.mode === "local") {
+        document.write('<script src="./local-runner.js"><\/script>');
+      }
+    </script>
     <script src="./overview.js"></script>
   </body>
 </html>

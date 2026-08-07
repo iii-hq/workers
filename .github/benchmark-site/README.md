@@ -26,6 +26,11 @@ The dashboard executes itself as an isolated child process, so changing and
 restarting the Harness never recompiles the E2E client. `serve` is an alias for
 `dashboard`; neither command has a Cargo fallback.
 
+`local-runner.js` owns the browser-side execution controls and is loaded only
+when `executions.js` declares `mode: "local"`. The Pages publisher always emits
+`mode: "published"`, so the published dashboard keeps using only its static
+history and never calls the loopback execution APIs.
+
 The execution label is optional and intentionally descriptive only. The local
 dashboard does not inspect or record Harness code changes: restart or modify the
 Harness however you want, run another experiment, then select any two execution

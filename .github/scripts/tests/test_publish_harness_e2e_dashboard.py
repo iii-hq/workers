@@ -199,6 +199,8 @@ def test_retains_summaries_and_prunes_complete_details(tmp_path: Path) -> None:
     publish_run(tmp_path, "10000000002")
     manifest = publish_run(tmp_path, "10000000003")
 
+    assert manifest["mode"] == "published"
+    assert '"mode": "published"' in (tmp_path / "site/executions.js").read_text()
     assert [entry["id"] for entry in manifest["executions"]] == [
         "10000000003-1",
         "10000000002-1",
