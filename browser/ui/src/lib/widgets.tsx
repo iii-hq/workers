@@ -1,19 +1,25 @@
-/** Small shared UI pieces used across the page views. */
+/** Small shared UI pieces + inline icons for the browser page. */
 
-import { useCallback, useState } from 'react'
+import { StatusDot } from '@iii-dev/console-ui'
 
-export function LiveDot() {
+/** Header live / polling indicator for the session feed. */
+export function LivePill({ live }: { live: boolean }) {
   return (
     <span
-      className="state-ui-live"
-      title="live — subscribed to the state trigger type; created/updated/deleted events stream in"
+      className="br-ui-live"
+      title={
+        live
+          ? 'live — updates arrive on the browser session triggers'
+          : 'polling — live bindings unavailable; refreshing on a timer'
+      }
     >
-      <span className="dot">●</span> live
+      <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />
+      {live ? 'live' : 'polling'}
     </span>
   )
 }
 
-/** Narrow-mode drill-out affordance (scopes ← keys ← value). */
+/** Narrow-mode drill-out affordance (session list ← workspace). */
 export function BackButton({
   onClick,
   label,
@@ -24,12 +30,12 @@ export function BackButton({
   return (
     <button
       type="button"
-      className="state-ui-back"
+      className="br-ui-back"
       onClick={onClick}
       aria-label={label}
       title={label}
     >
-      <ChevronLeftIcon className="state-ui-back-icon" />
+      <ChevronLeftIcon className="br-ui-back-icon" />
     </button>
   )
 }
@@ -38,44 +44,36 @@ export function BackButton({
 export function RefreshButton({
   onClick,
   label,
+  disabled,
+  spinning,
 }: {
   onClick: () => void
   label: string
+  disabled?: boolean
+  spinning?: boolean
 }) {
   return (
     <button
       type="button"
-      className="state-ui-iconbtn"
+      className="br-ui-iconbtn"
       onClick={onClick}
       aria-label={label}
       title={label}
+      disabled={disabled}
     >
-      <RotateIcon className="state-ui-iconbtn-icon" />
+      <RotateIcon
+        className={`br-ui-iconbtn-icon${spinning ? ' br-ui-spin' : ''}`}
+      />
     </button>
   )
-}
-
-/** Transient per-row highlight for live-arrived changes. */
-export function useFlash(): [ReadonlySet<string>, (k: string) => void] {
-  const [flashed, setFlashed] = useState<ReadonlySet<string>>(new Set())
-  const mark = useCallback((k: string) => {
-    setFlashed((prev) => new Set(prev).add(k))
-    window.setTimeout(() => {
-      setFlashed((prev) => {
-        const next = new Set(prev)
-        next.delete(k)
-        return next
-      })
-    }, 1400)
-  }, [])
-  return [flashed, mark]
 }
 
 /* ── inline icons ─────────────────────────────────────────────────────
  * Injected UI has no icon library to import — these are hand-inlined
  * 24×24 stroke glyphs (lucide geometry: 1.5px stroke, round caps) sized
  * by the caller's className. All are decorative (aria-hidden); the
- * enclosing control carries the accessible name. */
+ * enclosing control carries the accessible name. (src/lib/icons.tsx keeps
+ * the older size-prop set the chat cards and rail rows use.) */
 
 function iconProps(className?: string) {
   return {
@@ -89,13 +87,13 @@ function iconProps(className?: string) {
   } as const
 }
 
-/** Stacked-cylinders glyph: the key–value store identity. */
-export function DatabaseIcon({ className }: { className?: string }) {
+/** Globe glyph: the browser worker's identity. */
+export function GlobeIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)} aria-hidden="true">
-      <ellipse cx="12" cy="5" rx="9" ry="3" />
-      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
-      <path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3" />
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10" />
+      <path d="M2 12h20" />
     </svg>
   )
 }

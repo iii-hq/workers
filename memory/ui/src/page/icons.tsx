@@ -3,8 +3,8 @@
  * (nothing is bundled but zod), so the handful of glyphs the ported components
  * used are hand-drawn here. Every icon inherits `currentColor` and takes a
  * numeric `size` (Tailwind `w-*`/`h-*` classes don't apply in injected UI).
- * `className` is accepted so components like the console's `StatusPanel` /
- * `EmptyState`, which pass one, type-check.
+ * `className` is accepted for page styling (spin animation, hero icon) and so
+ * console components that pass one (e.g. `EmptyState`'s `icon`) type-check.
  */
 
 import type { CSSProperties, ReactNode } from 'react'
@@ -59,15 +59,6 @@ export function RefreshCw(props: IconProps) {
       <path d="M21 3v5h-5" />
       <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
       <path d="M3 21v-5h5" />
-    </Svg>
-  )
-}
-
-export function AlertCircle(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 8v4M12 16h.01" />
     </Svg>
   )
 }

@@ -126,17 +126,17 @@ export function lifecycleTone(
 
 /**
  * Static tone -> scoped class map. Injected CSS has no Tailwind, so every
- * surface that tints by lifecycle tone shares this table of `wt-tone-*`
+ * surface that tints by lifecycle tone shares this table of scoped tone
  * classes (defined in styles.css) instead of a `text-${tone}` utility.
  */
 export const lifecycleToneClass: Record<
   ReturnType<typeof lifecycleTone>,
   string
 > = {
-  ink: 'wt-tone-ink',
-  accent: 'wt-tone-accent',
-  warn: 'wt-tone-warn',
-  alert: 'wt-tone-alert',
+  ink: 'wt-ui-tone-ink',
+  accent: 'wt-ui-tone-accent',
+  warn: 'wt-ui-tone-warn',
+  alert: 'wt-ui-tone-alert',
 }
 
 export interface WorktreeIndicators {

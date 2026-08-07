@@ -1,50 +1,34 @@
 /**
- * The state-manager page: scopes → keys → JSON value editor, all live.
+ * The state-manager page (#/ext/state-manager): the standard page chrome
+ * (PageShell/PageHeader from @iii-dev/console-ui) over the scopes × keys
+ * browser (./browser) and its Monaco JSON value editor (./ValueEditor).
+ *
  * One `state` trigger binding for the whole page (src/lib/events.ts),
- * fanned out to whichever view is mounted.
+ * fanned out to whichever views are mounted.
  */
 
-import { useState } from 'react'
-import type { Host } from '@iii-dev/console-ui'
+import { type Host, PageHeader, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
 import { useStateEventHub } from '../lib/events'
-import { ItemsView } from './ItemsView'
-import { ItemView } from './ItemView'
-import { ScopesView } from './ScopesView'
+import { DatabaseIcon, LiveDot } from '../lib/widgets'
+import { StateBrowser } from './browser'
 
-type Route =
-  | { view: 'scopes' }
-  | { view: 'items'; scope: string }
-  | { view: 'item'; scope: string; key: string }
-
-export function StateManagerPage({ host }: { host: Host }) {
-  const [route, setRoute] = useState<Route>({ view: 'scopes' })
+export function StateManagerPage({
+  host,
+  panelSide = 'left',
+  onRequestClose,
+}: { host: Host } & Partial<PageRenderProps>) {
   const subscribe = useStateEventHub(host)
 
   return (
-    <div className="state-ui">
-      {route.view === 'scopes' ? (
-        <ScopesView
-          host={host}
-          subscribe={subscribe}
-          onOpen={(scope) => setRoute({ view: 'items', scope })}
-        />
-      ) : route.view === 'items' ? (
-        <ItemsView
-          host={host}
-          scope={route.scope}
-          subscribe={subscribe}
-          onBack={() => setRoute({ view: 'scopes' })}
-          onOpen={(key) => setRoute({ view: 'item', scope: route.scope, key })}
-        />
-      ) : (
-        <ItemView
-          host={host}
-          scope={route.scope}
-          itemKey={route.key}
-          subscribe={subscribe}
-          onBack={() => setRoute({ view: 'items', scope: route.scope })}
-        />
-      )}
-    </div>
+    <PageShell className="state-ui-shell">
+      <PageHeader
+        icon={<DatabaseIcon />}
+        title="state"
+        description="scoped key–value store, live"
+        actions={<LiveDot />}
+        onClose={onRequestClose}
+      />
+      <StateBrowser host={host} subscribe={subscribe} panelSide={panelSide} />
+    </PageShell>
   )
 }

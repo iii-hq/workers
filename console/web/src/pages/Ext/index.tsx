@@ -47,6 +47,11 @@ interface ExtPageProps {
    * Absent when rendered outside a closable pane.
    */
   onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory — forwarded live so
+   * filesystem-shaped pages can follow the chat's folder.
+   */
+  workingDir?: string | null
 }
 
 export function ExtPage({
@@ -55,6 +60,7 @@ export function ExtPage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  workingDir,
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
@@ -107,6 +113,7 @@ export function ExtPage({
         panelSide={panelSide}
         tabId={tabId}
         onRequestClose={onRequestClose}
+        workingDir={workingDir}
       />
     </div>
   )

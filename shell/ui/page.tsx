@@ -25,9 +25,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'shell',
     title: 'shell',
-    render: ({ panelSide, tabId }: PageRenderProps) => (
-      <ShellExplorerPage host={host} panelSide={panelSide} tabId={tabId} />
-    ),
+    render: (props: PageRenderProps) => <ShellExplorerPage host={host} {...props} />,
   })
 
   host.functionTriggers.register(createShellTriggerRenderer())

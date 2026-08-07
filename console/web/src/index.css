@@ -1,6 +1,6 @@
-@import "@fontsource/geist/400.css";
-@import "@fontsource/geist/500.css";
-@import "@fontsource/geist/600.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
 @import "@fontsource/chivo-mono/400.css";
 @import "@fontsource/chivo-mono/500.css";
 @import "@fontsource/chivo-mono/600.css";
@@ -11,7 +11,7 @@
 
 @theme {
   --font-sans:
-    "Geist", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono:
     "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
@@ -218,7 +218,7 @@
   }
 }
 
-/* Configuration uses Geist for UI chrome; Chivo Mono only on code surfaces. */
+/* Configuration uses Inter for UI chrome; Chivo Mono only on code surfaces. */
 .configuration-surface {
   font-family: var(--font-sans);
 }
@@ -235,7 +235,7 @@
   font-family: var(--font-mono);
 }
 
-/* Chat uses Geist for UI chrome; Chivo Mono only on code/terminal surfaces. */
+/* Chat uses Inter for UI chrome; Chivo Mono only on code/terminal surfaces. */
 .chat-surface {
   font-family: var(--font-sans);
 }

@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 /** Mouse dwell on an edge before the add-column affordance reveals. */
-const EDGE_REVEAL_MS = 2000
+const EDGE_REVEAL_MS = 500
 /** Revealed affordance auto-hides after the pointer leaves it. */
 const EDGE_HIDE_MS = 400
 /** Keyboard resize step, as a fraction of the container width. */

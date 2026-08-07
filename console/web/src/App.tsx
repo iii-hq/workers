@@ -24,7 +24,10 @@ import {
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
-import { ConversationsProvider } from '@/lib/conversations-context'
+import {
+  ConversationsProvider,
+  useConversationsCtx,
+} from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import {
   CHAT_SCREEN,
@@ -362,6 +365,9 @@ function ScreenBody({
   onClose,
   onExtMissing,
 }: ScreenBodyProps) {
+  // The active conversation's working dir, forwarded live so ext pages
+  // (e.g. the shell explorer) can follow the chat's folder in a split.
+  const { active } = useConversationsCtx()
   const extId = extPageIdForScreen(screen)
   if (extId !== null) {
     return (
@@ -371,6 +377,7 @@ function ScreenBody({
         tabId={tabId}
         onRequestClose={onClose}
         onMissing={onExtMissing}
+        workingDir={active?.workingDir ?? null}
       />
     )
   }
@@ -380,7 +387,7 @@ function ScreenBody({
       // same way the old side dock was, especially in two-column layouts.
       return <ChatPanel density="dock" onRequestClose={onClose} />
     case 'workers':
-      return <Workers />
+      return <Workers onRequestClose={onClose} />
     default:
       return <TracesV2 onRequestClose={onClose} />
   }

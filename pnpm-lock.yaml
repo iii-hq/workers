@@ -67,10 +67,10 @@ importers:
       '@fontsource/chivo-mono':
         specifier: ^5.2.8
         version: 5.3.0
-      '@fontsource/geist':
+      '@fontsource/geist-mono':
         specifier: ^5.2.8
         version: 5.3.0
-      '@fontsource/geist-mono':
+      '@fontsource/inter':
         specifier: ^5.2.8
         version: 5.3.0
       '@lexical/react':
@@ -146,6 +146,9 @@ importers:
       '@biomejs/biome':
         specifier: ^2.4.15
         version: 2.5.4
+      '@fontsource/geist':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../../packages/console-ui
@@ -812,6 +815,9 @@ packages:
 
   '@fontsource/geist@5.3.0':
     resolution: {integrity: sha512-u03ftlfVwb05uijq2jGDJ03/HKGqMKaNFk7KOhkpBUex8+BhrAOfMs/XciJ2UUNUX9fEsZbZQld/RWMA2oFU7g==}
+
+  '@fontsource/inter@5.3.0':
+    resolution: {integrity: sha512-RofMylZmjlJEfELXeNHFWBRcSs75rGU/6bV2S2jfnvv/3rPXPGe0LgUJTklcHZ9lM4OZmAVFhcJPnACfb91A3g==}
 
   '@iii-dev/helpers@0.22.0':
     resolution: {integrity: sha512-GYmAFmGoRcHIggvtPOIjQ3/ZzpMe0uGkj1FpXnOEpr1WFalzbs5T50WmhUOaZZ73UjfSiya0hv+oFm1+Rg4Pkw==}
@@ -3754,6 +3760,8 @@ snapshots:
   '@fontsource/geist-mono@5.3.0': {}
 
   '@fontsource/geist@5.3.0': {}
+
+  '@fontsource/inter@5.3.0': {}
 
   '@iii-dev/helpers@0.22.0':
     dependencies:

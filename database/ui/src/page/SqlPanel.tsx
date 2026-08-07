@@ -39,6 +39,13 @@ interface SqlPanelProps {
    * disconfirms what just happened.
    */
   onWrite?: () => void
+  /**
+   * Reports whether the editor holds a statement worth guarding — the page
+   * asks before a database switch remounts (and so empties) this panel.
+   * Seeded text is recreatable in one click, so only a statement the user
+   * typed or edited counts.
+   */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 const HISTORY_LIMIT = 20
@@ -103,7 +110,7 @@ function saveHistory(db: string, entries: string[]) {
   }
 }
 
-export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite }: SqlPanelProps) {
+export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDirtyChange }: SqlPanelProps) {
   const [sql, setSql] = useState(seedSql ?? '')
   const completions = useMemo(() => Array.from(new Set([...(tables ?? []), ...SQL_KEYWORDS])), [tables])
   const [running, setRunning] = useState(false)
@@ -142,9 +149,23 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite }: Sql
     }
   }, [historyOpen])
 
+  // The last seeded statement, so dirtiness means "the user's own text" —
+  // a seeded prefill must not trip the discard guard.
+  const seededRef = useRef(seedSql ?? '')
   useEffect(() => {
-    if (seedSql) setSql(seedSql)
+    if (seedSql) {
+      setSql(seedSql)
+      seededRef.current = seedSql
+    }
   }, [seedSql])
+
+  const onDirtyChangeRef = useRef(onDirtyChange)
+  onDirtyChangeRef.current = onDirtyChange
+  useEffect(() => {
+    onDirtyChangeRef.current?.(sql.trim() !== '' && sql !== seededRef.current)
+  }, [sql])
+  // Unmount (db switch, page close) always releases the guard.
+  useEffect(() => () => onDirtyChangeRef.current?.(false), [])
 
   const run = useCallback(
     async (statement: string) => {
