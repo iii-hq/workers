@@ -13,6 +13,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  runner:
+    name: Build immutable E2E runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+
+      - uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Restore E2E Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harness-e2e-runner
+          save-if: true
+          workspaces: harness -> target
+
+      - name: Test E2E crate
+        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
+
+      - name: Lint E2E crate
+        run: cargo clippy --locked --manifest-path harness/Cargo.toml -p harness-e2e --all-targets -- -D warnings
+
+      - name: Build E2E runner
+        run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
+
+      - name: Package immutable runner
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          output=target/harness-e2e-runner
+          mkdir -p "$output"
+          tar -czf "$output/harness-e2e-runner.tar.gz" \
+            -C harness/target/release harness-e2e
+          checksum=$(sha256sum "$output/harness-e2e-runner.tar.gz" | awk '{print $1}')
+          scenarios=$(harness/target/release/harness-e2e list)
+          runner_version=$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          print(tomllib.loads(Path("harness/Cargo.toml").read_text())["package"]["version"])
+          PY
+          )
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg sha256 "$checksum" \
+            --arg runner_version "$runner_version" \
+            --argjson scenario_ids "$scenarios" '
+              {
+                schema_version: 1,
+                source_sha: $source_sha,
+                sha256: $sha256,
+                runner_version: $runner_version,
+                scenario_ids: $scenario_ids
+              }
+            ' >"$output/harness-e2e-runner.json"
+          printf '%s  %s\n' "$checksum" harness-e2e-runner.tar.gz \
+            >"$output/harness-e2e-runner.sha256"
+
+      - name: Upload immutable runner
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-runner-${{ github.sha }}
+          path: target/harness-e2e-runner/
+          retention-days: 14
+          if-no-files-found: error
+
   changes:
     name: Discover E2E changes
     runs-on: ubuntu-latest

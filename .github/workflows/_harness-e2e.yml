@@ -98,6 +98,11 @@ on:
         required: false
         type: boolean
         default: false
+      prebuilt_runner:
+        description: Download the immutable runner for source_ref instead of compiling it
+        required: false
+        type: boolean
+        default: false
       validation_profile:
         description: Scenario profile resolved for this execution
         required: false
@@ -193,9 +198,11 @@ jobs:
       # stack mode (Test/Lint E2E crate), so both lanes need the same
       # Node/pnpm toolchain as the regular CI worker builds.
       - name: Setup pnpm
+        if: inputs.stack_mode == 'source' || !inputs.prebuilt_runner
         uses: pnpm/action-setup@v5
 
       - name: Setup Node
+        if: inputs.stack_mode == 'source' || !inputs.prebuilt_runner
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -214,6 +221,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
           STACK_VERSIONS: ${{ inputs.stack_versions }}
           RESOLVE_STACK: ${{ inputs.resolve_stack }}
+          PREBUILT_RUNNER: ${{ inputs.prebuilt_runner }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -235,6 +243,9 @@ jobs:
               [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
               [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
               [[ "$COVERAGE" == "false" ]]
+              if [[ "$PREBUILT_RUNNER" == "true" ]]; then
+                [[ "${{ inputs.source_ref }}" =~ ^[0-9a-f]{40}$ ]]
+              fi
               if [[ "$RESOLVE_STACK" == "true" ]]; then
                 [[ "$RELEASE_WORKER" == "harness" ]]
                 [[ "$RELEASE_VERSION" == "latest" ]]
@@ -258,6 +269,7 @@ jobs:
           esac
 
       - uses: dtolnay/rust-toolchain@stable
+        if: inputs.stack_mode == 'source' || !inputs.prebuilt_runner
         with:
           components: ${{ inputs.coverage && 'clippy,llvm-tools' || 'clippy' }}
 
@@ -299,6 +311,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore E2E Rust cache
+        if: inputs.stack_mode == 'source' || !inputs.prebuilt_runner
         uses: Swatinem/rust-cache@v2
         with:
           # Instrumented builds have different fingerprints; keep them on their
@@ -326,9 +339,11 @@ jobs:
             web -> target
 
       - name: Test E2E crate
+        if: inputs.stack_mode == 'source' || !inputs.prebuilt_runner
         run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
 
       - name: Lint E2E crate
+        if: inputs.stack_mode == 'source' || !inputs.prebuilt_runner
         run: cargo clippy --locked --manifest-path harness/Cargo.toml -p harness-e2e --all-targets -- -D warnings
 
       - name: Build source E2E stack
@@ -363,8 +378,53 @@ jobs:
             -p harness-e2e
 
       - name: Build registry E2E runner
-        if: inputs.stack_mode == 'registry'
+        if: inputs.stack_mode == 'registry' && !inputs.prebuilt_runner
         run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
+
+      - name: Find immutable E2E runner
+        if: inputs.stack_mode == 'registry' && inputs.prebuilt_runner
+        id: prebuilt-runner
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          runner=$(python3 .github/scripts/find_harness_e2e_runner.py \
+            --api-url "$GITHUB_API_URL" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow harness-e2e-main.yml \
+            --source-sha "$SOURCE_SHA" \
+            --token "$GITHUB_TOKEN")
+          {
+            echo "run_id=$(jq -r .run_id <<<"$runner")"
+            echo "artifact_name=$(jq -r .artifact_name <<<"$runner")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download immutable E2E runner
+        if: inputs.stack_mode == 'registry' && inputs.prebuilt_runner
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ steps.prebuilt-runner.outputs.artifact_name }}
+          path: target/prebuilt-runner
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.prebuilt-runner.outputs.run_id }}
+
+      - name: Verify immutable E2E runner
+        if: inputs.stack_mode == 'registry' && inputs.prebuilt_runner
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_harness_e2e_runner.py \
+            --metadata target/prebuilt-runner/harness-e2e-runner.json \
+            --archive target/prebuilt-runner/harness-e2e-runner.tar.gz \
+            --source-sha "$SOURCE_SHA"
+          mkdir -p harness/target/release target
+          tar -xzf target/prebuilt-runner/harness-e2e-runner.tar.gz \
+            -C harness/target/release
+          cp target/prebuilt-runner/harness-e2e-runner.tar.gz \
+            target/harness-e2e-stack.tar.gz
+          test -x harness/target/release/harness-e2e
 
       - name: Read code-defined scenarios
         id: scenarios
@@ -432,7 +492,7 @@ jobs:
           tar -czf target/harness-e2e-stack.tar.gz "${paths[@]}"
 
       - name: Package registry E2E runner
-        if: inputs.stack_mode == 'registry'
+        if: inputs.stack_mode == 'registry' && !inputs.prebuilt_runner
         # Registry mode builds only the runner (harness/target/release), so the
         # repo-root target/ this writes into does not exist yet — source mode
         # gets it from the engine install. Both harness release attempts died
