@@ -37,6 +37,7 @@ pub fn upsert_stack(text: &str, name: &str, roots: &[String]) -> Result<String> 
     };
     ensure_block_style(&lines, head)?;
     let block = block_range(&lines, head);
+    ensure_block_entries_recognized(&lines, block)?;
     let entry = render_entry(&block_indent(&lines, block), name, roots);
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     match entry_range(&lines, block, name) {
@@ -56,6 +57,7 @@ pub fn remove_stack(text: &str, name: &str) -> Result<String> {
     };
     ensure_block_style(&lines, head)?;
     let block = block_range(&lines, head);
+    ensure_block_entries_recognized(&lines, block)?;
     let Some((start, end)) = entry_range(&lines, block, name) else {
         bail!(missing());
     };
@@ -191,6 +193,18 @@ fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
 }
 
 /// `("  ", "console")` for a `  console:` line; None for list items and blanks.
+///
+/// Deliberately looser than `valid_stack_name`: that governs what this tool
+/// may *write*, not what an existing entry may be named. `Config::load` (via
+/// `parse_stacks`) accepts any string key — `my.stack`, `'quoted'`, `tiny :`
+/// — so a scanner that only recognised `valid_stack_name` shapes would go
+/// blind on everything else, silently swallowing it into a neighbouring
+/// entry's range or, if it's the last entry left, making `remove_stack`
+/// drop the whole `stacks:` block out from under it. A key is only rejected
+/// here for shapes that line surgery genuinely cannot own: empty, a list item
+/// (`-` prefixed, or no colon at all), or stray whitespace around the name
+/// (`tiny :`) that `ensure_block_entries_recognized` then refuses to edit
+/// past rather than misreading.
 fn entry_key(line: &str) -> Option<(String, String)> {
     let indent: String = line.chars().take_while(|c| *c == ' ').collect();
     if indent.is_empty() || indent.len() == line.len() {
@@ -198,10 +212,50 @@ fn entry_key(line: &str) -> Option<(String, String)> {
     }
     let rest = &line[indent.len()..];
     let key = rest.split(':').next()?;
-    if key.is_empty() || key.len() == rest.len() || !valid_stack_name(key) {
+    if key.is_empty() || key.len() == rest.len() || key.starts_with('-') || key.trim() != key {
         return None;
     }
     Some((indent, key.to_string()))
+}
+
+fn indent_len(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ').count()
+}
+
+/// Refuse a `stacks:` block containing a line that is neither a recognized
+/// entry key (`entry_key`, at the block's own indentation) nor a list item
+/// indented under one — e.g. `tiny :` (space before the colon), which
+/// `entry_key` correctly declines to recognize but which would otherwise
+/// read as an ordinary line neither `upsert_stack` nor `remove_stack` can
+/// see. Layer (a) (`entry_key` above) widened what gets recognized; this is
+/// layer (b), for the shapes even that still can't own — refusing is always
+/// better than mangling, which is this module's stated contract.
+fn ensure_block_entries_recognized(lines: &[&str], block: (usize, usize)) -> Result<()> {
+    let Some(entry_depth) = (block.0..block.1)
+        .map(|i| strip_cr(lines[i]))
+        .find(|line| !is_blank_or_comment(line))
+        .map(indent_len)
+    else {
+        return Ok(()); // Empty block: nothing to misread.
+    };
+    for &line in &lines[block.0..block.1] {
+        let line = strip_cr(line);
+        if is_blank_or_comment(line) {
+            continue;
+        }
+        let recognized = if indent_len(line) == entry_depth {
+            entry_key(line).is_some()
+        } else {
+            indent_len(line) > entry_depth && line.trim_start().starts_with('-')
+        };
+        if !recognized {
+            bail!(
+                "`stacks:` entry {line:?} isn't a name or a list item this tool can read — \
+                 edit it by hand"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Indentation the block's entries already use, or two spaces for a new block.
@@ -557,6 +611,63 @@ default_stack: tiny
             "{out:?}"
         );
         assert!(parses(&out));
+    }
+
+    /// Critical fix: `entry_key` used to gate recognition on
+    /// `valid_stack_name`, so a sibling entry named `my.stack` — fully
+    /// supported by `Config::load`/`parse_stacks`, just not a name this tool
+    /// would ever write itself — was invisible to the scanner and got
+    /// swallowed into the entry actually being edited.
+    #[test]
+    fn upsert_stack_does_not_swallow_a_dotted_sibling_key() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  my.stack:\n    - console\n";
+        let out = upsert_stack(src, "tiny", &roots(&["console"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - console\n  my.stack:\n    - console\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Same fix, on the remove path — this used to drop `my.stack` right
+    /// along with `tiny`, which combined with a `default_stack: my.stack`
+    /// elsewhere in the file left the result unable to load at all.
+    #[test]
+    fn remove_stack_does_not_swallow_a_dotted_sibling_key() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  my.stack:\n    - console\ncolor: auto\ndefault_stack: my.stack\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  my.stack:\n    - console\ncolor: auto\ndefault_stack: my.stack\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// No edit may ever leave the file empty when the input had entries —
+    /// the sharpest form of the swallowed-sibling bug: removing `tiny` used
+    /// to take `my.stack` down with it, and then the now-seemingly-empty
+    /// `stacks:` key too, truncating the whole file to 0 bytes.
+    #[test]
+    fn remove_stack_never_empties_the_file_when_a_sibling_entry_remains() {
+        let src = "stacks:\n  my.stack:\n    - console\n  tiny:\n    - session-manager\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(!out.is_empty(), "{out:?}");
+        assert!(out.contains("my.stack"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// A shape `entry_key` still can't recognize even once widened (`tiny :`,
+    /// a stray space before the colon) must refuse the whole edit rather than
+    /// mangle a block it can't fully see — layer (b) of the fix, and the
+    /// backstop for whatever layer (a) still misses.
+    #[test]
+    fn refuses_a_stacks_block_with_an_unrecognizable_entry() {
+        let src = "stacks:\n  tiny :\n    - session-manager\n  console:\n    - console\n";
+        let err = upsert_stack(src, "console", &roots(&["console", "state"])).unwrap_err();
+        assert!(err.to_string().contains("tiny"), "{err:#}");
+
+        let err = remove_stack(src, "console").unwrap_err();
+        assert!(err.to_string().contains("tiny"), "{err:#}");
     }
 
     #[test]
