@@ -13,7 +13,7 @@ use serde_json::Value;
 
 /// The public device-flow OAuth client id used across the Copilot editor
 /// plugin ecosystem (copilot.vim and derivatives).
-pub const OAUTH_CLIENT_ID: &str = "Iv1.b507a08c8fd9d3ea";
+pub const OAUTH_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 pub const DEFAULT_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const DEFAULT_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
