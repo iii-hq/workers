@@ -68,7 +68,7 @@ const ENGINE_START_WAIT_MS: u64 = 8_000;
 /// Footer help, by available width. The narrowest tier always keeps the two
 /// keys a lost user needs (help, quit).
 const HELP_FULL: &str =
-    " ↑↓ select · s start · x stop · r restart · w ui-watch · / filter · f follow · ? keys · q quit ";
+    " ↑↓ select · Space mark · s start · x stop · r restart · w ui-watch · / filter · f follow · ? keys · q quit ";
 const HELP_MID: &str = " s start · x stop · r restart · / filter · ? keys · q quit ";
 const HELP_MIN: &str = " / filter · ? keys · q quit ";
 
@@ -158,6 +158,8 @@ struct UiCtx<'a> {
     default_stack: &'a str,
     stacks: &'a [(String, Vec<String>)],
     views: &'a [WorkerView],
+    /// Workers marked with Space for a new stack (Task 5 saves these).
+    marked: &'a std::collections::HashSet<String>,
     engine_error: Option<&'a str>,
     display_rows: &'a [DisplayRow],
     mode: &'a UiMode,
@@ -242,6 +244,9 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         let mut table_state = TableState::default();
         let mut mode = UiMode::Dashboard;
         let mut filter = String::new();
+        // Workers marked with Space, held by name so a mark survives filtering
+        // and re-sorting. Cleared after a successful save.
+        let mut marked: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut follow = true;
         let mut log_scroll: usize = 0;
         let mut log_height: u16 = LOG_HEIGHT_DEFAULT;
@@ -286,6 +291,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                     default_stack: &orchestrator.config.default_stack,
                     stacks: &orchestrator.config.stacks,
                     views: &state.views,
+                    marked: &marked,
                     engine_error: state.engine_error.as_deref(),
                     display_rows: &display_rows,
                     mode: &mode,
@@ -413,6 +419,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &mut table_state,
                                     &mut mode,
                                     &mut filter,
+                                    &mut marked,
                                     &mut follow,
                                     &mut log_scroll,
                                     &mut log_height,
@@ -487,6 +494,7 @@ fn handle_dashboard_key(
     table_state: &mut TableState,
     mode: &mut UiMode,
     filter: &mut String,
+    marked: &mut std::collections::HashSet<String>,
     follow: &mut bool,
     log_scroll: &mut usize,
     log_height: &mut u16,
@@ -531,6 +539,15 @@ fn handle_dashboard_key(
                 table_state.select(target);
                 *follow = true;
                 *log_scroll = 0;
+            }
+        }
+        // Mark for stack creation (n). Marks are independent of selection and
+        // of the filter — the name prompt shows what will be saved.
+        KeyCode::Char(' ') => {
+            if let Some(name) = worker_name {
+                if !marked.remove(&name) {
+                    marked.insert(name);
+                }
             }
         }
         KeyCode::Char('/') => *mode = UiMode::Filter,
@@ -1239,12 +1256,19 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
             DisplayRowKind::Worker(idx) => {
                 let v = &ctx.views[idx];
                 let icon = status_icon(&v.display_status, ctx.spinner_frame);
-                // Name cell is just glyph + name. The wide "(iii worker add)"
-                // label and the crash exit code moved to the Process column, so
-                // the name sits right next to its status instead of behind a
-                // column sized for the longest label.
+                // Name cell is the mark (Space-toggled, for stack creation) +
+                // glyph + name; unmarked rows get a space so names still line
+                // up. The wide "(iii worker add)" label and the crash exit
+                // code moved to the Process column, so the name sits right
+                // next to its status instead of behind a column sized for the
+                // longest label.
+                let mark = if ctx.marked.contains(&v.name) {
+                    "✓"
+                } else {
+                    " "
+                };
                 let name_cell = Cell::from(Span::styled(
-                    format!("{icon} {}", v.name),
+                    format!("{mark}{icon} {}", v.name),
                     styled_if(color, status_style(&v.display_status)),
                 ));
                 let (process_text, process_st) = process_cell(v, color);
@@ -1287,15 +1311,19 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
             .count()
     };
     let total = worker_count(ctx.display_rows);
+    let marked_suffix = match ctx.marked.len() {
+        0 => String::new(),
+        n => format!("· {n} marked "),
+    };
     let title = match table_state.selected() {
         Some(sel) if sel < ctx.display_rows.len() => {
             format!(
-                " Workers {}/{} ",
+                " Workers {}/{} {marked_suffix}",
                 worker_count(&ctx.display_rows[..=sel]),
                 total
             )
         }
-        _ => format!(" Workers ({total}) "),
+        _ => format!(" Workers ({total}) {marked_suffix}"),
     };
 
     // Content-fit, left-packed widths: the worker name sits right next to its
@@ -1563,6 +1591,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     let keys = [
         ("↑ ↓  k j", "select worker"),
         ("g G", "jump to first / last worker"),
+        ("Space", "mark worker for a new stack"),
         ("s", "start selected worker"),
         ("x", "stop selected worker"),
         ("r", "restart selected + dependents"),
@@ -1675,6 +1704,79 @@ fn status_icon(status: &str, spinner_frame: usize) -> &'static str {
 mod tests {
     use super::*;
 
+    /// Shared worker fixture for table-rendering tests: a real name, stable
+    /// defaults for everything else that don't matter to the assertions.
+    fn view_fixture(name: &str) -> WorkerView {
+        WorkerView {
+            name: name.to_string(),
+            group: WorkerGroup::Other,
+            spawnable: true,
+            display_status: "stopped".to_string(),
+            process_status: "stopped".to_string(),
+            engine_status: "—".to_string(),
+            local_pid: None,
+            uptime: "—".to_string(),
+            exit_code: None,
+            ui_watch: None,
+        }
+    }
+
+    /// Render just the worker table into an in-memory buffer, the way
+    /// `draw_ui` would for one frame — for tests that only care about table
+    /// content, not the full dashboard chrome. No filter; selection lands on
+    /// the first worker row, same as a fresh dashboard.
+    fn render_table_for_test(
+        views: &[WorkerView],
+        marked: &std::collections::HashSet<String>,
+        width: u16,
+        height: u16,
+    ) -> ratatui::buffer::Buffer {
+        let display_rows = build_display_rows(views, "");
+        let mut table_state = TableState::default();
+        table_state.select(first_worker_row(&display_rows));
+        let ctx = UiCtx {
+            engine_url: "",
+            repo_branch: None,
+            current_stack: "s",
+            default_stack: "s",
+            stacks: &[],
+            views,
+            marked,
+            engine_error: None,
+            display_rows: &display_rows,
+            mode: &UiMode::Dashboard,
+            filter: "",
+            selected_name: None,
+            log_lines: &[],
+            log_scroll: 0,
+            follow: true,
+            log_height: LOG_HEIGHT_DEFAULT,
+            table_width: TABLE_PANE_WIDTH,
+            spinner_frame: 0,
+            color_enabled: false,
+            error: None,
+        };
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_table(f, f.area(), &mut table_state, &ctx))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Flatten a rendered buffer into one string, so a test can assert on
+    /// content without caring which exact cell it landed in.
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     /// Regression test for a prior review finding: a group-header row used to
     /// be a single Cell sized to the Worker column (`Constraint::Length(24)`).
     /// Ratatui's `Table` has no colspan, so that clipped any label past 24
@@ -1698,6 +1800,7 @@ mod tests {
         let display_rows = vec![DisplayRow {
             kind: DisplayRowKind::Header(WorkerGroup::Stack, count),
         }];
+        let marked = std::collections::HashSet::new();
         let ctx = UiCtx {
             engine_url: "",
             repo_branch: None,
@@ -1705,6 +1808,7 @@ mod tests {
             default_stack: stack_name,
             stacks: &[],
             views: &[],
+            marked: &marked,
             engine_error: None,
             display_rows: &display_rows,
             mode: &UiMode::Dashboard,
@@ -1749,23 +1853,13 @@ mod tests {
     /// line. Also `TestBackend`, still no real terminal.
     #[test]
     fn group_header_row_paints_correctly_after_scrolling() {
-        fn view(name: &str) -> WorkerView {
-            WorkerView {
-                name: name.to_string(),
-                group: WorkerGroup::Other,
-                spawnable: true,
-                display_status: "stopped".to_string(),
-                process_status: "stopped".to_string(),
-                engine_status: "—".to_string(),
-                local_pid: None,
-                uptime: "—".to_string(),
-                exit_code: None,
-                ui_watch: None,
-            }
-        }
-
         let stack_name = "s";
-        let views = vec![view("a1"), view("a2"), view("b1"), view("b2")];
+        let views = vec![
+            view_fixture("a1"),
+            view_fixture("a2"),
+            view_fixture("b1"),
+            view_fixture("b2"),
+        ];
         // Two groups, two headers: [H(Stack,2), W(a1), W(a2), H(Other,2), W(b1), W(b2)].
         let display_rows = vec![
             DisplayRow {
@@ -1791,6 +1885,7 @@ mod tests {
             "── {} (2) ──",
             crate::status::group_label(WorkerGroup::Other, stack_name)
         );
+        let marked = std::collections::HashSet::new();
         let ctx = UiCtx {
             engine_url: "",
             repo_branch: None,
@@ -1798,6 +1893,7 @@ mod tests {
             default_stack: stack_name,
             stacks: &[],
             views: &views,
+            marked: &marked,
             engine_error: None,
             display_rows: &display_rows,
             mode: &UiMode::Dashboard,
@@ -1838,5 +1934,24 @@ mod tests {
             label_other,
             "scrolled header row painted at the wrong screen line: {row:?}"
         );
+    }
+
+    #[test]
+    fn marked_rows_show_a_check_and_the_title_counts_them() {
+        let mut views = vec![view_fixture("alpha"), view_fixture("beta")];
+        crate::status::assign_view_groups(
+            &mut views,
+            &["alpha".to_string(), "beta".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        let marked: std::collections::HashSet<String> = ["beta".to_string()].into_iter().collect();
+        let buf = render_table_for_test(&views, &marked, 40, 8);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("✓"),
+            "marked worker must show a check:\n{text}"
+        );
+        assert!(text.contains("1 marked"), "title must count marks:\n{text}");
     }
 }
