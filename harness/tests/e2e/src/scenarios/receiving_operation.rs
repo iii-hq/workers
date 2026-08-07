@@ -5,8 +5,9 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
     ScenarioObservation, ScenarioSpec,
 };
 
@@ -33,12 +34,38 @@ const COURIER_FUNCTIONS: [&str; 6] = [
     "engine::functions::info",
     "engine::functions::list",
 ];
+const COURIER_WORKLOAD: AssessmentSpec = AssessmentSpec::required(
+    "courier_workload",
+    30,
+    "Three least-privilege couriers produce the exact shipments, corrections, and completion rows.",
+);
+const LIVE_LEDGER: AssessmentSpec = AssessmentSpec::required(
+    "live_ledger",
+    25,
+    "A database-native or mechanical reaction keeps the ledger current without model turns.",
+);
+const DATABASE_FAN_IN: AssessmentSpec = AssessmentSpec::required(
+    "database_fan_in",
+    25,
+    "The root learns completion from one database wake without polling.",
+);
+const VERIFICATION_CLEANUP: AssessmentSpec = AssessmentSpec::required(
+    "verification_cleanup",
+    20,
+    "The root reports verified evidence and removes all standing machinery.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    COURIER_WORKLOAD,
+    LIVE_LEDGER,
+    DATABASE_FAN_IN,
+    VERIFICATION_CLEANUP,
+];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -49,28 +76,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         },
         denied_functions: &["state::*"],
         threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "courier_workload",
-                weight: 30,
-                description: "Three least-privilege couriers produce the exact shipments, corrections, and completion rows.",
-            },
-            CriterionSpec {
-                id: "live_ledger",
-                weight: 25,
-                description: "A database-native or mechanical reaction keeps the ledger current without model turns.",
-            },
-            CriterionSpec {
-                id: "database_fan_in",
-                weight: 25,
-                description: "The root learns completion from one database wake without polling.",
-            },
-            CriterionSpec {
-                id: "verification_cleanup",
-                weight: 20,
-                description: "The root reports verified evidence and removes all standing machinery.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -275,84 +281,48 @@ fn evaluate<'a>(
         let cleanup_passed =
             response_has_evidence && active_bindings == 0 && standing_sql_triggers == 0;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "database_only_couriers_completed",
-                    workload_passed,
-                    format!(
-                        "relations={required_relations}, shipments={shipments_match}, \
+        Ok(assessment::objective([
+            COURIER_WORKLOAD.binary(
+                workload_passed,
+                format!(
+                    "relations={required_relations}, shipments={shipments_match}, \
                          couriers_done={couriers_done}, completion_rows={completion_rows}, \
                          minimal_spawns={spawn_policy_ok}, courier_execution={}, \
                          sessions={}, shared_medium={no_shared_medium_violation}",
-                        courier_execution_ok.completed,
-                        observation.metrics.by_session.len(),
-                    ),
+                    courier_execution_ok.completed,
+                    observation.metrics.by_session.len(),
                 ),
-                common::gate(
-                    "live_ledger_matches",
-                    ledger_passed,
-                    format!(
-                        "live_strategy={live_strategy}, no_late_root_repair={no_late_root_repair}, \
-                         expected={ledger_matches_expected}, source={ledger_matches_source}"
-                    ),
+            ),
+            LIVE_LEDGER.binary(
+                ledger_passed,
+                format!(
+                    "live_strategy={live_strategy}, no_late_root_repair={no_late_root_repair}, \
+                        expected={ledger_matches_expected}, source={ledger_matches_source}"
                 ),
-                common::gate(
-                    "single_database_completion_wake",
-                    fan_in_passed,
-                    format!(
-                        "watch_before_spawn={completion_watch_before_spawn}, \
+            ),
+            DATABASE_FAN_IN.binary(
+                fan_in_passed,
+                format!(
+                    "watch_before_spawn={completion_watch_before_spawn}, \
                          wake_records={wake_records}, notifications={}, no_polling={no_polling}, \
                          root_did_not_signal={root_did_not_signal_completion}",
-                        notifications.len(),
-                    ),
+                    notifications.len(),
                 ),
-                common::gate(
-                    "verification_and_cleanup_completed",
-                    cleanup_passed,
-                    format!(
-                        "response_evidence={response_has_evidence}, \
-                         active_bindings={active_bindings}, sql_triggers={standing_sql_triggers}"
-                    ),
+            ),
+            VERIFICATION_CLEANUP.binary(
+                cleanup_passed,
+                format!(
+                    "response_evidence={response_has_evidence}, \
+                        active_bindings={active_bindings}, sql_triggers={standing_sql_triggers}"
                 ),
-            ],
-            awards: vec![
-                common::award(
-                    "courier_workload",
-                    if workload_passed { 30 } else { 0 },
-                    "awarded for the exact corrected workload through three least-privilege couriers",
-                ),
-                common::award(
-                    "live_ledger",
-                    if ledger_passed { 25 } else { 0 },
-                    "awarded for an event-driven ledger matching the shipment rows",
-                ),
-                common::award(
-                    "database_fan_in",
-                    if fan_in_passed { 25 } else { 0 },
-                    "awarded for one database completion wake without polling",
-                ),
-                common::award(
-                    "verification_cleanup",
-                    if cleanup_passed { 20 } else { 0 },
-                    "awarded for a passing evidence report and no standing trigger machinery",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
 fn missing_database() -> ObjectiveEvaluation {
     let reason = "database::query is unavailable";
-    ObjectiveEvaluation {
-        hard_gates: vec![common::gate("database_capability_available", false, reason)],
-        awards: vec![
-            common::award("courier_workload", 0, reason),
-            common::award("live_ledger", 0, reason),
-            common::award("database_fan_in", 0, reason),
-            common::award("verification_cleanup", 0, reason),
-        ],
-    }
+    unavailable_with_prerequisite_gate("database_capability_available", reason)
 }
 
 fn missing_primary(databases: &BTreeSet<String>) -> ObjectiveEvaluation {
@@ -360,19 +330,20 @@ fn missing_primary(databases: &BTreeSet<String>) -> ObjectiveEvaluation {
         "database `primary` is unavailable; configured databases: {}",
         databases.iter().cloned().collect::<Vec<_>>().join(", ")
     );
-    ObjectiveEvaluation {
-        hard_gates: vec![common::gate(
-            "primary_database_available",
-            false,
-            reason.clone(),
-        )],
-        awards: vec![
-            common::award("courier_workload", 0, reason.clone()),
-            common::award("live_ledger", 0, reason.clone()),
-            common::award("database_fan_in", 0, reason.clone()),
-            common::award("verification_cleanup", 0, reason),
-        ],
-    }
+    unavailable_with_prerequisite_gate("primary_database_available", &reason)
+}
+
+fn unavailable_with_prerequisite_gate(gate_id: &str, reason: &str) -> ObjectiveEvaluation {
+    let mut evaluation = assessment::objective(
+        ASSESSMENTS
+            .iter()
+            .copied()
+            .map(|spec| spec.unavailable(reason)),
+    );
+    evaluation
+        .hard_gates
+        .push(common::gate(gate_id, false, reason));
+    evaluation
 }
 
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
@@ -1013,8 +984,23 @@ mod tests {
     fn scenario_is_valid_and_removes_state_capability() {
         let scenario = scenario("aB19");
         scenario.validate().unwrap();
+        assert_eq!(scenario.version, 2);
         assert_eq!(scenario.denied_functions, ["state::*"]);
         assert!(!scenario.needs_judge());
+        assert_eq!(scenario.threshold, 90);
+        assert_eq!(
+            scenario
+                .criteria
+                .iter()
+                .map(|criterion| (criterion.id, criterion.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                ("courier_workload", 30),
+                ("live_ledger", 25),
+                ("database_fan_in", 25),
+                ("verification_cleanup", 20),
+            ]
+        );
     }
 
     #[test]
@@ -1080,15 +1066,53 @@ mod tests {
     }
 
     #[test]
-    fn missing_primary_is_a_behavioral_gate_not_an_infrastructure_error() {
-        let evaluation = missing_primary(&BTreeSet::from([
-            "mysql".to_string(),
-            "postgres".to_string(),
-            "sqlite".to_string(),
-        ]));
+    fn missing_database_emits_one_prerequisite_gate_and_ordered_zero_awards() {
+        assert_unavailable_evaluation(
+            missing_database(),
+            "database_capability_available",
+            "database::query is unavailable",
+        );
+    }
 
-        assert_eq!(evaluation.hard_gates[0].id, "primary_database_available");
+    #[test]
+    fn missing_primary_emits_one_prerequisite_gate_and_ordered_zero_awards() {
+        assert_unavailable_evaluation(
+            missing_primary(&BTreeSet::from([
+                "mysql".to_string(),
+                "postgres".to_string(),
+                "sqlite".to_string(),
+            ])),
+            "primary_database_available",
+            "postgres",
+        );
+    }
+
+    fn assert_unavailable_evaluation(
+        evaluation: ObjectiveEvaluation,
+        gate_id: &str,
+        reason_fragment: &str,
+    ) {
+        assert_eq!(evaluation.hard_gates.len(), 1);
+        assert_eq!(evaluation.hard_gates[0].id, gate_id);
         assert!(!evaluation.hard_gates[0].passed);
-        assert!(evaluation.hard_gates[0].reason.contains("postgres"));
+        assert!(evaluation.hard_gates[0].reason.contains(reason_fragment));
+        let prerequisite_reason = &evaluation.hard_gates[0].reason;
+        assert_eq!(
+            evaluation
+                .awards
+                .iter()
+                .map(|award| (award.id.as_str(), award.awarded))
+                .collect::<Vec<_>>(),
+            vec![
+                ("courier_workload", 0),
+                ("live_ledger", 0),
+                ("database_fan_in", 0),
+                ("verification_cleanup", 0),
+            ]
+        );
+        assert!(evaluation
+            .awards
+            .iter()
+            .all(|award| &award.reason == prerequisite_reason));
     }
 }

@@ -368,7 +368,9 @@ rules:
   `AssessmentSpec`: use `required` for conditions that must emit a hard gate and
   `binary` when the gate controls a full-or-zero award, `required_points` when
   the gate outcome and quality award are evaluated independently, and `signal`
-  for non-blocking quality awards; existing evaluators can migrate to this
+  for non-blocking quality awards; when an explicit prerequisite gate prevents
+  a check from running, use `unavailable` to retain its zero-point award without
+  emitting a duplicate hard gate; existing evaluators can migrate to this
   pattern incrementally;
 - prompts describe user intent and never prescribe function ids;
 - declare a scenario-sized execution policy;

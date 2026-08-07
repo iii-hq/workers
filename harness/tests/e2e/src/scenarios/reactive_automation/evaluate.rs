@@ -2,21 +2,25 @@ use std::collections::BTreeSet;
 
 use super::evidence::{Evidence, FinalReport};
 use super::names::ScenarioNames;
-use super::{EXPECTED_ORDERS, EXPECTED_WRITERS, ORDERS_PER_WRITER};
-use crate::scenarios::{common, ObjectiveEvaluation};
+use super::{
+    EXPECTED_ORDERS, EXPECTED_WRITERS, FINALIZATION_CLEANUP, ORDERS_PER_WRITER, PARALLEL_WRITES,
+    REACTIVE_AGGREGATES, TRIGGER_ORCHESTRATION,
+};
+use crate::scenarios::{assessment, common, ObjectiveEvaluation};
 
 pub(super) fn missing_database() -> ObjectiveEvaluation {
     let reason = "database capability is unavailable; the agent was expected to discover and \
                   install the database worker before executing the scenario";
-    ObjectiveEvaluation {
-        hard_gates: vec![common::gate("database_capability_available", false, reason)],
-        awards: vec![
-            common::award("parallel_writes", 0, reason),
-            common::award("reactive_aggregates", 0, reason),
-            common::award("trigger_orchestration", 0, reason),
-            common::award("finalization_cleanup", 0, reason),
-        ],
-    }
+    let mut evaluation = assessment::objective([
+        PARALLEL_WRITES.unavailable(reason),
+        REACTIVE_AGGREGATES.unavailable(reason),
+        TRIGGER_ORCHESTRATION.unavailable(reason),
+        FINALIZATION_CLEANUP.unavailable(reason),
+    ]);
+    evaluation
+        .hard_gates
+        .push(common::gate("database_capability_available", false, reason));
+    evaluation
 }
 
 pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEvaluation {
@@ -129,72 +133,48 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
         && finalizer_completed
         && evidence.active_run_triggers == 0;
 
-    ObjectiveEvaluation {
-        hard_gates: vec![
-            common::gate(
-                "parallel_writers_completed",
-                workload_passed,
-                format!(
-                    "tables={all_tables_exist}, parallel_writers={parallel_writers}, \
-                     orders_complete={orders_complete}, invalid_amounts={invalid_amounts:?}, \
-                     writers_done={writers_done}"
-                ),
+    assessment::objective([
+        PARALLEL_WRITES.binary(
+            workload_passed,
+            format!(
+                "tables={all_tables_exist}, parallel_writers={parallel_writers}, \
+                 orders_complete={orders_complete}, invalid_amounts={invalid_amounts:?}, \
+                 writers_done={writers_done}"
             ),
-            common::gate(
-                "reactive_totals_match",
-                aggregates_passed,
-                format!("totals_match={totals_match}, report_counts_match={report_counts_match}"),
+        ),
+        REACTIVE_AGGREGATES.binary(
+            aggregates_passed,
+            format!("totals_match={totals_match}, report_counts_match={report_counts_match}"),
+        ),
+        TRIGGER_ORCHESTRATION.binary(
+            orchestration_passed,
+            format!(
+                "watch_before_writers={watch_before_writers}, \
+                 watch_documented={watch_documented}, \
+                 aggregate_deliveries={}, completion_wake={}",
+                evidence.aggregate_deliveries, evidence.completion_wake_delivered
             ),
-            common::gate(
-                "trigger_orchestration_proven",
-                orchestration_passed,
-                format!(
-                    "watch_before_writers={watch_before_writers}, \
-                     watch_documented={watch_documented}, \
-                     aggregate_deliveries={}, completion_wake={}",
-                    evidence.aggregate_deliveries, evidence.completion_wake_delivered
-                ),
+        ),
+        FINALIZATION_CLEANUP.binary(
+            finalization_passed,
+            format!(
+                "report_rows={}, report_identity={report_identity_matches}, \
+                 report_checks={report_checks_pass}, completion_wake={}, \
+                 report_watch_before_finalizer={}, report_wake={}, finalizer_spawns={}, \
+                 finalizer_in_tree={}, finalizer_wrote_report={}, root_wrote_report={}, \
+                 active_run_triggers={}",
+                evidence.reports.len(),
+                evidence.completion_wake_delivered,
+                evidence.report_wake_before_finalizer,
+                evidence.report_wake_delivered,
+                evidence.finalizer_spawn_count,
+                evidence.finalizer_in_tree,
+                evidence.finalizer_wrote_report,
+                evidence.root_wrote_report,
+                evidence.active_run_triggers,
             ),
-            common::gate(
-                "finalizer_and_cleanup_completed",
-                finalization_passed,
-                format!(
-                    "report_rows={}, report_identity={report_identity_matches}, \
-                     report_checks={report_checks_pass}, completion_wake={}, \
-                     report_watch_before_finalizer={}, report_wake={}, finalizer_spawns={}, \
-                     finalizer_in_tree={}, finalizer_wrote_report={}, root_wrote_report={}, \
-                     active_run_triggers={}",
-                    evidence.reports.len(), evidence.completion_wake_delivered,
-                    evidence.report_wake_before_finalizer, evidence.report_wake_delivered,
-                    evidence.finalizer_spawn_count, evidence.finalizer_in_tree,
-                    evidence.finalizer_wrote_report, evidence.root_wrote_report,
-                    evidence.active_run_triggers,
-                ),
-            ),
-        ],
-        awards: vec![
-            common::award(
-                "parallel_writes",
-                if workload_passed { 25 } else { 0 },
-                "awarded for three parallel writers and 15 valid rows",
-            ),
-            common::award(
-                "reactive_aggregates",
-                if aggregates_passed { 30 } else { 0 },
-                "awarded when stored totals and event counts cover the source rows exactly",
-            ),
-            common::award(
-                "trigger_orchestration",
-                if orchestration_passed { 25 } else { 0 },
-                "awarded for bounded discovery, a mechanical aggregate reaction, and a barrier wake",
-            ),
-            common::award(
-                "finalization_cleanup",
-                if finalization_passed { 20 } else { 0 },
-                "awarded when the barrier-woken root directly spawns one report-writing finalizer and cleans up",
-            ),
-        ],
-    }
+        ),
+    ])
 }
 
 fn order_summary_complete(summary: Option<&super::evidence::OrderSummary>) -> bool {
@@ -315,6 +295,32 @@ mod tests {
         assert!(evaluation.hard_gates.iter().all(|gate| gate.passed));
         assert_eq!(
             evaluation
+                .hard_gates
+                .iter()
+                .map(|gate| gate.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "parallel_writes",
+                "reactive_aggregates",
+                "trigger_orchestration",
+                "finalization_cleanup",
+            ]
+        );
+        assert_eq!(
+            evaluation
+                .awards
+                .iter()
+                .map(|award| award.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "parallel_writes",
+                "reactive_aggregates",
+                "trigger_orchestration",
+                "finalization_cleanup",
+            ]
+        );
+        assert_eq!(
+            evaluation
                 .awards
                 .iter()
                 .map(|award| u16::from(award.awarded))
@@ -356,6 +362,19 @@ mod tests {
         assert_eq!(evaluation.hard_gates.len(), 1);
         assert_eq!(evaluation.hard_gates[0].id, "database_capability_available");
         assert!(!evaluation.hard_gates[0].passed);
+        assert_eq!(
+            evaluation
+                .awards
+                .iter()
+                .map(|award| award.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "parallel_writes",
+                "reactive_aggregates",
+                "trigger_orchestration",
+                "finalization_cleanup",
+            ]
+        );
         assert_eq!(
             evaluation
                 .awards
