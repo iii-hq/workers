@@ -1,0 +1,32 @@
+{
+  "description": "Complete the device-flow sign-in: exchanges the device_code once the operator has entered the user_code; on success the GitHub credential is stored and discovery runs. Returns ok | pending | expired | denied.",
+  "function_id": "provider::github-copilot::login::poll",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "device_code": {
+        "description": "The `device_code` from `login::start`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "device_code"
+    ],
+    "title": "LoginPollRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "status": {
+        "description": "`ok` (token stored), `pending` (user has not finished), or a terminal failure (`expired`, `denied`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "title": "LoginPollResponse",
+    "type": "object"
+  }
+}
