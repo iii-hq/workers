@@ -364,6 +364,10 @@ rules:
 - start `ScenarioSpec::version` at `1`; increment it when prompts, hard gates,
   criteria, thresholds, execution policy, setup, or evaluation behavior changes,
   while structural refactors that preserve the behavioral contract keep it;
+- for new code-defined objective evaluators, declare each check once as a static
+  `AssessmentSpec`: use `required` for conditions that must emit a hard gate and
+  a binary award, and `signal` for non-blocking quality awards; existing
+  evaluators can migrate to this pattern incrementally;
 - prompts describe user intent and never prescribe function ids;
 - declare a scenario-sized execution policy;
 - objective effects are hard gates, not judge opinions;
