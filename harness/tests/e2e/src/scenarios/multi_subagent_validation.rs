@@ -25,17 +25,17 @@ const HOOK_TYPE: &str = "harness::hook::post-turn";
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
 const WRITERS: [&str; 2] = ["w1", "w2"];
-const CHILDREN_GOAL: AssessmentSpec = AssessmentSpec::required(
+const CHILDREN_GOAL: AssessmentSpec = AssessmentSpec::hard_gated(
     "children_goal",
     35,
     "Both writers exceed the threshold and both verdict keys carry their accepted counts.",
 );
-const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::required(
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "orchestration_discipline",
     35,
     "Two child-scoped validators and two wakes registered before any spawn; both children looped under their own gate.",
 );
-const FAN_IN_REPORT: AssessmentSpec = AssessmentSpec::required(
+const FAN_IN_REPORT: AssessmentSpec = AssessmentSpec::hard_gated(
     "fan_in_report",
     30,
     "The parent tallies both verdicts and finishes with the exact report line.",
@@ -180,8 +180,8 @@ fn evaluate<'a>(
 
         let orchestration_discipline = validator_count == 2 && ordered && both_looped;
 
-        Ok(assessment::objective([
-            CHILDREN_GOAL.required_points(
+        Ok(assessment::build_evaluation([
+            CHILDREN_GOAL.gate_and_points(
                 goal,
                 children_goal_points(goal, &rows),
                 format!(
@@ -189,7 +189,7 @@ fn evaluate<'a>(
                      marks at exactly {EXPECTED_ROWS} rows each"
                 ),
             )?,
-            ORCHESTRATION_DISCIPLINE.binary(
+            ORCHESTRATION_DISCIPLINE.full_or_zero(
                 orchestration_discipline,
                 format!(
                     "observed {validator_count} post-turn registration(s), expected two; \
@@ -198,7 +198,7 @@ fn evaluate<'a>(
                      needs at least one"
                 ),
             ),
-            FAN_IN_REPORT.binary(reported, "expected the exact report line"),
+            FAN_IN_REPORT.full_or_zero(reported, "expected the exact report line"),
         ]))
     })
 }

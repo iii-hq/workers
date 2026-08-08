@@ -28,17 +28,17 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 pub const ID: &str = "validation_scope_enforcement";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
-const FOREIGN_SCOPE_REFUSED: AssessmentSpec = AssessmentSpec::required(
+const FOREIGN_SCOPE_REFUSED: AssessmentSpec = AssessmentSpec::hard_gated(
     "foreign_scope_refused",
     35,
     "The forbidden registration failed with the out-of-scope error and the agent continued.",
 );
-const SELF_GATE_ENGAGED: AssessmentSpec = AssessmentSpec::required(
+const SELF_GATE_ENGAGED: AssessmentSpec = AssessmentSpec::hard_gated(
     "self_gate_engaged",
     30,
     "The self-registration gated the session: exactly one denial with the marker unset.",
 );
-const TEARDOWN_UNGATED: AssessmentSpec = AssessmentSpec::required(
+const TEARDOWN_UNGATED: AssessmentSpec = AssessmentSpec::hard_gated(
     "teardown_ungated",
     35,
     "Owner unregistration removed the gate mid-loop: the turn completed with the marker still absent.",
@@ -147,14 +147,14 @@ fn evaluate<'a>(
             0
         };
 
-        Ok(assessment::objective([
-            FOREIGN_SCOPE_REFUSED.binary(
+        Ok(assessment::build_evaluation([
+            FOREIGN_SCOPE_REFUSED.full_or_zero(
                 foreign_scope_refused,
                 format!(
                     "attempted={foreign_attempted}, out-of-scope error visible={refusal_delivered}"
                 ),
             ),
-            SELF_GATE_ENGAGED.required_points(
+            SELF_GATE_ENGAGED.gate_and_points(
                 nudges == 1,
                 self_gate_points,
                 format!(
@@ -162,7 +162,7 @@ fn evaluate<'a>(
                      exactly one before teardown"
                 ),
             )?,
-            TEARDOWN_UNGATED.binary(
+            TEARDOWN_UNGATED.full_or_zero(
                 teardown_ungated,
                 format!(
                     "marker={marker}, teardown_called={teardown_called}, reported={reported} \

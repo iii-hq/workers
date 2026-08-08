@@ -24,17 +24,17 @@ const HOOK_TYPE: &str = "harness::hook::post-turn";
 /// Goal: more than 6 rows; 4-row batches → exactly one denial, pass at 8.
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
-const GOAL_REACHED: AssessmentSpec = AssessmentSpec::required(
+const GOAL_REACHED: AssessmentSpec = AssessmentSpec::hard_gated(
     "goal_reached",
     40,
     "The goal table ends with more rows than the validator threshold.",
 );
-const VALIDATOR_DISCIPLINE: AssessmentSpec = AssessmentSpec::required(
+const VALIDATOR_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "validator_discipline",
     30,
     "Exactly one post-turn validator registration, carrying the custom retry_prompt.",
 );
-const LOOP_EVIDENCE: AssessmentSpec = AssessmentSpec::required(
+const LOOP_EVIDENCE: AssessmentSpec = AssessmentSpec::hard_gated(
     "loop_evidence",
     30,
     "At least one harness validation nudge was delivered and the loop converged at exactly the expected row count.",
@@ -120,12 +120,12 @@ fn evaluate<'a>(
         };
         let loop_points = loop_evidence_points(nudges, converged_exactly);
 
-        Ok(assessment::objective([
-            GOAL_REACHED.binary(
+        Ok(assessment::build_evaluation([
+            GOAL_REACHED.full_or_zero(
                 goal_reached,
                 format!("observed {rows} row(s), need more than {THRESHOLD}"),
             ),
-            VALIDATOR_DISCIPLINE.required_points(
+            VALIDATOR_DISCIPLINE.gate_and_points(
                 single_registration,
                 validator_points,
                 format!(
@@ -135,7 +135,7 @@ fn evaluate<'a>(
                     observation.metrics.totals.function_call_errors
                 ),
             )?,
-            LOOP_EVIDENCE.required_points(
+            LOOP_EVIDENCE.gate_and_points(
                 nudges >= 1,
                 loop_points,
                 format!("nudges={nudges}, rows={rows} (full marks at exactly {EXPECTED_ROWS})"),

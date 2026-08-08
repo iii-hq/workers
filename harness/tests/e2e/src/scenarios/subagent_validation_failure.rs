@@ -33,17 +33,17 @@ const EXPECTED_NUDGES: usize = 2;
 /// Wake deadline: comfortably after the child fails (~1 min), well inside
 /// the stuck timeout.
 const EXPIRY_DELAY_MS: u64 = 150_000;
-const BOUNDED_FAILURE: AssessmentSpec = AssessmentSpec::required(
+const BOUNDED_FAILURE: AssessmentSpec = AssessmentSpec::hard_gated(
     "bounded_failure",
     40,
     "The child fails after exactly the budgeted denials; the verdict key is never written.",
 );
-const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::signal(
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::score_only(
     "orchestration_discipline",
     30,
     "Validator scoped to the child and the deadline wake armed before the spawn.",
 );
-const EXPIRY_REPORT: AssessmentSpec = AssessmentSpec::required(
+const EXPIRY_REPORT: AssessmentSpec = AssessmentSpec::hard_gated(
     "expiry_report",
     30,
     "The parent is woken by the expiry notice and reports the give-up with the exact line.",
@@ -176,8 +176,8 @@ fn evaluate<'a>(
         let reported = observation.response.contains("CHILD GAVE UP")
             && observation.response.contains("PARENT DONE");
 
-        Ok(assessment::objective([
-            BOUNDED_FAILURE.binary(
+        Ok(assessment::build_evaluation([
+            BOUNDED_FAILURE.full_or_zero(
                 child_failed && verdict_absent && bounded,
                 format!(
                     "child status `{child_status}`, expected `failed`; verdict key holds \
@@ -185,14 +185,14 @@ fn evaluate<'a>(
                      {EXPECTED_NUDGES} (the child budget)"
                 ),
             ),
-            ORCHESTRATION_DISCIPLINE.binary(
+            ORCHESTRATION_DISCIPLINE.full_or_zero(
                 ordered,
                 format!(
                     "validator@{validator_index:?} wake@{wake_index:?} \
                      spawn@{spawn_index:?} — both must precede the spawn"
                 ),
             ),
-            EXPIRY_REPORT.binary(reported, "expected the exact give-up report line"),
+            EXPIRY_REPORT.full_or_zero(reported, "expected the exact give-up report line"),
         ]))
     })
 }

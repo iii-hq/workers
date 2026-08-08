@@ -365,13 +365,14 @@ rules:
   criteria, thresholds, execution policy, setup, or evaluation behavior changes,
   while structural refactors that preserve the behavioral contract keep it;
 - for new code-defined objective evaluators, declare each check once as a static
-  `AssessmentSpec`: use `required` for conditions that must emit a hard gate and
-  `binary` when the gate controls a full-or-zero award, `required_points` when
-  the gate outcome and quality award are evaluated independently, and `signal`
-  for non-blocking quality awards; when an explicit prerequisite gate prevents
-  a check from running, use `unavailable` to retain its zero-point award without
-  emitting a duplicate hard gate; existing evaluators can migrate to this
-  pattern incrementally;
+  `AssessmentSpec`: use `hard_gated` for conditions that must emit a hard gate
+  and `full_or_zero` when that condition controls a full-or-zero award,
+  `gate_and_points` when the gate outcome and quality award are evaluated
+  independently, and `score_only` for quality awards that do not emit a hard
+  gate; when an explicit prerequisite gate prevents a check from running, use
+  `assessment::prerequisite_failure(...)` to emit the failed gate and retain
+  each assessment's zero-point award atomically; existing evaluators can migrate
+  to this pattern incrementally;
 - prompts describe user intent and never prescribe function ids;
 - declare a scenario-sized execution policy;
 - objective effects are hard gates, not judge opinions;

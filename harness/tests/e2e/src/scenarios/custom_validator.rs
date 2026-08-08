@@ -36,17 +36,17 @@ const HOOK_TYPE: &str = "harness::hook::post-turn";
 /// footgun for anyone writing a validator, so this scenario pins it.
 const HOOK_POINT: &str = "post_turn";
 const TOKENS: [&str; 3] = ["E2E-ACCEPT-1", "E2E-ACCEPT-2", "E2E-ACCEPT-3"];
-const ENVELOPE_REGISTRATION: AssessmentSpec = AssessmentSpec::required(
+const ENVELOPE_REGISTRATION: AssessmentSpec = AssessmentSpec::hard_gated(
     "envelope_registration",
     30,
     "Exactly one post-turn registration targeting the temporary function, envelope mode (no payload template).",
 );
-const CUSTOM_REASONS_DROVE_THE_LOOP: AssessmentSpec = AssessmentSpec::required(
+const CUSTOM_REASONS_DROVE_THE_LOOP: AssessmentSpec = AssessmentSpec::hard_gated(
     "custom_reasons_drove_the_loop",
     30,
     "Both corrective prompts carry the validator's own reasons naming the next rung.",
 );
-const LADDER_CONVERGED: AssessmentSpec = AssessmentSpec::required(
+const LADDER_CONVERGED: AssessmentSpec = AssessmentSpec::hard_gated(
     "ladder_converged",
     40,
     "The final result carries the terminal token — reachable only by following two custom denials.",
@@ -225,12 +225,12 @@ fn evaluate<'a>(
             0
         };
 
-        Ok(assessment::objective([
-            LADDER_CONVERGED.binary(
+        Ok(assessment::build_evaluation([
+            LADDER_CONVERGED.full_or_zero(
                 converged,
                 format!("final response must contain {}", TOKENS[2]),
             ),
-            ENVELOPE_REGISTRATION.required_points(
+            ENVELOPE_REGISTRATION.gate_and_points(
                 envelope_mode,
                 envelope_points,
                 format!(
@@ -240,7 +240,7 @@ fn evaluate<'a>(
                     observation.metrics.totals.function_call_errors
                 ),
             )?,
-            CUSTOM_REASONS_DROVE_THE_LOOP.binary(
+            CUSTOM_REASONS_DROVE_THE_LOOP.full_or_zero(
                 laddered,
                 format!("nudges: {nudge_texts:?} — expected the two ladder reasons in order"),
             ),

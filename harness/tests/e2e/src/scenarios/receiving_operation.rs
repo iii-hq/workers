@@ -34,22 +34,22 @@ const COURIER_FUNCTIONS: [&str; 6] = [
     "engine::functions::info",
     "engine::functions::list",
 ];
-const COURIER_WORKLOAD: AssessmentSpec = AssessmentSpec::required(
+const COURIER_WORKLOAD: AssessmentSpec = AssessmentSpec::hard_gated(
     "courier_workload",
     30,
     "Three least-privilege couriers produce the exact shipments, corrections, and completion rows.",
 );
-const LIVE_LEDGER: AssessmentSpec = AssessmentSpec::required(
+const LIVE_LEDGER: AssessmentSpec = AssessmentSpec::hard_gated(
     "live_ledger",
     25,
     "A database-native or mechanical reaction keeps the ledger current without model turns.",
 );
-const DATABASE_FAN_IN: AssessmentSpec = AssessmentSpec::required(
+const DATABASE_FAN_IN: AssessmentSpec = AssessmentSpec::hard_gated(
     "database_fan_in",
     25,
     "The root learns completion from one database wake without polling.",
 );
-const VERIFICATION_CLEANUP: AssessmentSpec = AssessmentSpec::required(
+const VERIFICATION_CLEANUP: AssessmentSpec = AssessmentSpec::hard_gated(
     "verification_cleanup",
     20,
     "The root reports verified evidence and removes all standing machinery.",
@@ -65,7 +65,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -281,8 +281,8 @@ fn evaluate<'a>(
         let cleanup_passed =
             response_has_evidence && active_bindings == 0 && standing_sql_triggers == 0;
 
-        Ok(assessment::objective([
-            COURIER_WORKLOAD.binary(
+        Ok(assessment::build_evaluation([
+            COURIER_WORKLOAD.full_or_zero(
                 workload_passed,
                 format!(
                     "relations={required_relations}, shipments={shipments_match}, \
@@ -293,14 +293,14 @@ fn evaluate<'a>(
                     observation.metrics.by_session.len(),
                 ),
             ),
-            LIVE_LEDGER.binary(
+            LIVE_LEDGER.full_or_zero(
                 ledger_passed,
                 format!(
                     "live_strategy={live_strategy}, no_late_root_repair={no_late_root_repair}, \
                         expected={ledger_matches_expected}, source={ledger_matches_source}"
                 ),
             ),
-            DATABASE_FAN_IN.binary(
+            DATABASE_FAN_IN.full_or_zero(
                 fan_in_passed,
                 format!(
                     "watch_before_spawn={completion_watch_before_spawn}, \
@@ -309,7 +309,7 @@ fn evaluate<'a>(
                     notifications.len(),
                 ),
             ),
-            VERIFICATION_CLEANUP.binary(
+            VERIFICATION_CLEANUP.full_or_zero(
                 cleanup_passed,
                 format!(
                     "response_evidence={response_has_evidence}, \
@@ -322,7 +322,7 @@ fn evaluate<'a>(
 
 fn missing_database() -> ObjectiveEvaluation {
     let reason = "database::query is unavailable";
-    unavailable_with_prerequisite_gate("database_capability_available", reason)
+    assessment::prerequisite_failure(ASSESSMENTS, "database_capability_available", reason)
 }
 
 fn missing_primary(databases: &BTreeSet<String>) -> ObjectiveEvaluation {
@@ -330,20 +330,7 @@ fn missing_primary(databases: &BTreeSet<String>) -> ObjectiveEvaluation {
         "database `primary` is unavailable; configured databases: {}",
         databases.iter().cloned().collect::<Vec<_>>().join(", ")
     );
-    unavailable_with_prerequisite_gate("primary_database_available", &reason)
-}
-
-fn unavailable_with_prerequisite_gate(gate_id: &str, reason: &str) -> ObjectiveEvaluation {
-    let mut evaluation = assessment::objective(
-        ASSESSMENTS
-            .iter()
-            .copied()
-            .map(|spec| spec.unavailable(reason)),
-    );
-    evaluation
-        .hard_gates
-        .push(common::gate(gate_id, false, reason));
-    evaluation
+    assessment::prerequisite_failure(ASSESSMENTS, "primary_database_available", reason)
 }
 
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
@@ -984,7 +971,7 @@ mod tests {
     fn scenario_is_valid_and_removes_state_capability() {
         let scenario = scenario("aB19");
         scenario.validate().unwrap();
-        assert_eq!(scenario.version, 2);
+        assert_eq!(scenario.version, 3);
         assert_eq!(scenario.denied_functions, ["state::*"]);
         assert!(!scenario.needs_judge());
         assert_eq!(scenario.threshold, 90);
@@ -1067,7 +1054,7 @@ mod tests {
 
     #[test]
     fn missing_database_emits_one_prerequisite_gate_and_ordered_zero_awards() {
-        assert_unavailable_evaluation(
+        assert_prerequisite_failure(
             missing_database(),
             "database_capability_available",
             "database::query is unavailable",
@@ -1076,7 +1063,7 @@ mod tests {
 
     #[test]
     fn missing_primary_emits_one_prerequisite_gate_and_ordered_zero_awards() {
-        assert_unavailable_evaluation(
+        assert_prerequisite_failure(
             missing_primary(&BTreeSet::from([
                 "mysql".to_string(),
                 "postgres".to_string(),
@@ -1087,7 +1074,7 @@ mod tests {
         );
     }
 
-    fn assert_unavailable_evaluation(
+    fn assert_prerequisite_failure(
         evaluation: ObjectiveEvaluation,
         gate_id: &str,
         reason_fragment: &str,

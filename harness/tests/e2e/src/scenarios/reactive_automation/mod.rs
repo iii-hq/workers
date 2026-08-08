@@ -23,22 +23,22 @@ const STUCK_WATCHDOG_SECONDS: u64 = 600;
 // workload without relaxing any behavioral gate.
 const SCENARIO_MAX_TOTAL_TOKENS: u64 = 2_000_000;
 
-const PARALLEL_WRITES: AssessmentSpec = AssessmentSpec::required(
+const PARALLEL_WRITES: AssessmentSpec = AssessmentSpec::hard_gated(
     "parallel_writes",
     25,
     "Three parallel writer sessions produce exactly five valid orders each.",
 );
-const REACTIVE_AGGREGATES: AssessmentSpec = AssessmentSpec::required(
+const REACTIVE_AGGREGATES: AssessmentSpec = AssessmentSpec::hard_gated(
     "reactive_aggregates",
     30,
     "A mechanical trigger call maintains totals that exactly match the source rows.",
 );
-const TRIGGER_ORCHESTRATION: AssessmentSpec = AssessmentSpec::required(
+const TRIGGER_ORCHESTRATION: AssessmentSpec = AssessmentSpec::hard_gated(
     "trigger_orchestration",
     25,
     "The aggregate call and barrier wake are armed before writers start and proven by delivery records.",
 );
-const FINALIZATION_CLEANUP: AssessmentSpec = AssessmentSpec::required(
+const FINALIZATION_CLEANUP: AssessmentSpec = AssessmentSpec::hard_gated(
     "finalization_cleanup",
     20,
     "The barrier-woken root directly spawns one finalizer, which writes a passing report before cleanup.",
@@ -54,7 +54,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = ScenarioNames::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: prompt::build(&names, STUCK_WATCHDOG_SECONDS),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -97,7 +97,7 @@ mod tests {
         let spec = scenario("run");
 
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(spec.threshold, 90);
         assert_eq!(
             spec.criteria

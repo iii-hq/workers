@@ -10,22 +10,22 @@ use super::{
 pub const ID: &str = "timer_wake";
 
 const RESULT_KEY: &str = "result";
-const TIMER_ARMED: AssessmentSpec = AssessmentSpec::required(
+const TIMER_ARMED: AssessmentSpec = AssessmentSpec::hard_gated(
     "timer_armed",
     30,
     "One wake-only relative timer is armed before any result write.",
 );
-const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::required(
+const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::hard_gated(
     "parent_woken",
     30,
     "The timer retires after waking the original session exactly once.",
 );
-const WAKE_ACTION: AssessmentSpec = AssessmentSpec::required(
+const WAKE_ACTION: AssessmentSpec = AssessmentSpec::hard_gated(
     "wake_action",
     25,
     "The timer-woken turn persists the requested result.",
 );
-const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::required(
+const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::hard_gated(
     "clean_completion",
     15,
     "The root completes without children, errors, or surviving bindings.",
@@ -129,8 +129,8 @@ fn evaluate<'a>(
         let wake_action = exact_write && observed == expected;
         let clean_completion = active_bindings == 0 && no_errors && confirmed;
 
-        Ok(assessment::objective([
-            TIMER_ARMED.binary(
+        Ok(assessment::build_evaluation([
+            TIMER_ARMED.full_or_zero(
                 timer_armed,
                 format!(
                     "registrations={}, timers={}, writes={}",
@@ -139,15 +139,15 @@ fn evaluate<'a>(
                     writes.len()
                 ),
             ),
-            PARENT_WOKEN.binary(
+            PARENT_WOKEN.full_or_zero(
                 parent_woken,
                 format!("timer_fired={timer_fired}, root_only={root_only}"),
             ),
-            WAKE_ACTION.binary(
+            WAKE_ACTION.full_or_zero(
                 wake_action,
                 format!("exact_write={exact_write}, observed={observed}"),
             ),
-            CLEAN_COMPLETION.binary(
+            CLEAN_COMPLETION.full_or_zero(
                 clean_completion,
                 format!(
                     "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",

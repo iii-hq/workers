@@ -11,22 +11,22 @@ pub const ID: &str = "mechanical_reaction";
 
 const SOURCE_KEY: &str = "source";
 const MIRROR_KEY: &str = "mirror";
-const REACTIONS_ARMED: AssessmentSpec = AssessmentSpec::required(
+const REACTIONS_ARMED: AssessmentSpec = AssessmentSpec::hard_gated(
     "reactions_armed",
     30,
     "The wake and mechanical call are registered before the source write.",
 );
-const MECHANICAL_MIRROR: AssessmentSpec = AssessmentSpec::required(
+const MECHANICAL_MIRROR: AssessmentSpec = AssessmentSpec::hard_gated(
     "mechanical_mirror",
     35,
     "The call binding mirrors the complete source event without a root write.",
 );
-const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::required(
+const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::hard_gated(
     "parent_woken",
     20,
     "The mirror state event wakes only the original session.",
 );
-const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::required(
+const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::hard_gated(
     "clean_completion",
     15,
     "The run finishes without children, errors, or surviving bindings.",
@@ -161,8 +161,8 @@ fn evaluate<'a>(
             exact_source_write && mirror_valid && call_delivered && call_payload_recorded;
         let clean_completion = active_bindings == 0 && no_errors && confirmed;
 
-        Ok(assessment::objective([
-            REACTIONS_ARMED.binary(
+        Ok(assessment::build_evaluation([
+            REACTIONS_ARMED.full_or_zero(
                 reactions_armed,
                 format!(
                     "registrations={}, wakes={}, call_bindings={}, writes={}",
@@ -172,14 +172,14 @@ fn evaluate<'a>(
                     writes.len()
                 ),
             ),
-            MECHANICAL_MIRROR.binary(
+            MECHANICAL_MIRROR.full_or_zero(
                 mechanical_mirror,
                 format!(
                     "exact_source_write={exact_source_write}, mirror_valid={mirror_valid}, \
                          call_delivered={call_delivered}, call_payload_recorded={call_payload_recorded}"
                 ),
             ),
-            PARENT_WOKEN.binary(
+            PARENT_WOKEN.full_or_zero(
                 parent_woken,
                 format!(
                     "wake_records={}, sessions={}",
@@ -187,7 +187,7 @@ fn evaluate<'a>(
                     observation.metrics.totals.sessions
                 ),
             ),
-            CLEAN_COMPLETION.binary(
+            CLEAN_COMPLETION.full_or_zero(
                 clean_completion,
                 format!(
                     "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",

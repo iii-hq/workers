@@ -17,22 +17,22 @@ const SUMMARY_KEY: &str = "summary";
 const FACTS_KEY: &str = "facts";
 const MIN_ARTICLE_CHARS: usize = 5_000;
 const MAX_ARTICLE_CHARS: usize = 6_500;
-const SOURCE_CAPTURE: AssessmentSpec = AssessmentSpec::required(
+const SOURCE_CAPTURE: AssessmentSpec = AssessmentSpec::hard_gated(
     "source_capture",
     25,
     "All wakes are armed before the Wikipedia article is fetched and saved.",
 );
-const PARALLEL_ANALYSIS: AssessmentSpec = AssessmentSpec::required(
+const PARALLEL_ANALYSIS: AssessmentSpec = AssessmentSpec::hard_gated(
     "parallel_analysis",
     30,
     "The article wake causes two analysts to be spawned directly and in parallel.",
 );
-const BARRIER_FAN_IN: AssessmentSpec = AssessmentSpec::required(
+const BARRIER_FAN_IN: AssessmentSpec = AssessmentSpec::hard_gated(
     "barrier_fan_in",
     25,
     "The analysts persist valid outputs and the named barrier retires after both arrive.",
 );
-const RESEARCH_BRIEF: AssessmentSpec = AssessmentSpec::required(
+const RESEARCH_BRIEF: AssessmentSpec = AssessmentSpec::hard_gated(
     "research_brief",
     20,
     "The coordinator returns a merged brief in its barrier-woken turn and leaves no binding armed.",
@@ -285,15 +285,15 @@ fn evaluate<'a>(
             && barrier_woke;
         let report_complete = report_merged && active_bindings == 0 && no_errors;
 
-        Ok(assessment::objective([
-            SOURCE_CAPTURE.binary(
+        Ok(assessment::build_evaluation([
+            SOURCE_CAPTURE.full_or_zero(
                 source_captured,
                 format!(
                     "armed_before_fetch={armed_before_fetch}, source_order={source_order}, \
                      article_valid={article_valid}, exact_write={exact_article_write}"
                 ),
             ),
-            PARALLEL_ANALYSIS.binary(
+            PARALLEL_ANALYSIS.full_or_zero(
                 direct_parallel_analysis,
                 format!(
                     "spawns={}, parallel_calls={parallel_calls}, \
@@ -301,7 +301,7 @@ fn evaluate<'a>(
                     spawns.len()
                 ),
             ),
-            BARRIER_FAN_IN.binary(
+            BARRIER_FAN_IN.full_or_zero(
                 fan_in_complete,
                 format!(
                     "summary_valid={summary_valid}, facts_valid={facts_valid}, \
@@ -309,7 +309,7 @@ fn evaluate<'a>(
                      article_woke={article_woke}, barrier_woke={barrier_woke}"
                 ),
             ),
-            RESEARCH_BRIEF.binary(
+            RESEARCH_BRIEF.full_or_zero(
                 report_complete,
                 format!(
                     "report_merged={report_merged}, active_bindings={active_bindings}, \
