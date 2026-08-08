@@ -1641,10 +1641,6 @@ footer {
   color: var(--warning);
 }
 
-.text-advisory {
-  color: var(--warning);
-}
-
 .text-running {
   color: var(--accent-blue);
 }
@@ -1657,12 +1653,6 @@ footer {
   border-color: rgba(168, 176, 169, 0.28);
   background: rgba(168, 176, 169, 0.08);
   color: var(--text-soft);
-}
-
-.status-advisory {
-  border-color: rgba(255, 209, 102, 0.28);
-  background: rgba(255, 209, 102, 0.08);
-  color: var(--warning);
 }
 
 .status-running {
@@ -1903,12 +1893,6 @@ footer {
   border-color: rgba(255, 120, 111, 0.3);
   background: rgba(255, 120, 111, 0.13);
   color: var(--danger);
-}
-
-.matrix-quality_advisory {
-  border-color: rgba(255, 209, 102, 0.3);
-  background: rgba(255, 209, 102, 0.1);
-  color: var(--warning);
 }
 
 .matrix-running {

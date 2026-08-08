@@ -19,8 +19,9 @@ Each scenario:
 6. Optionally asks a fixed judge model to score qualitative criteria.
 7. Calls `harness::teardown` and removes scenario-owned state.
 
-Hard gates and a score threshold both apply. A persuasive response cannot pass
-when the requested durable result was not produced.
+Hard gates determine pass or fail. Weighted scores remain quality signals, so a
+persuasive response cannot override a missing durable result and a low score
+does not hide a mechanically correct execution.
 
 Before execution, the runner resolves the exact subject and judge records with
 `router::models::get`. Each scenario declares its own turn, token, and timeout
@@ -123,19 +124,17 @@ cargo run -p harness-e2e -- run \
 `HARNESS_E2E_OUTPUT` are accepted as environment variables. `--runs` accepts
 values from 1 through 20.
 
-Scores are quality data and never determine the CI exit status. Quality
-failures remain visible in the report, while empty reports, hard-gate
-failures, and technical failures remain blocking.
+Scores are quality data and never determine the CI exit status. Empty reports,
+hard-gate failures, and technical failures remain blocking.
 
 The runner emits a progress heartbeat every 15 seconds with the active turn,
 step, pending function count, child-session count, and descendant-tree size.
 Set `--progress-interval-seconds 0` to disable it.
 
 Transient provider and transport failures receive one retry by default.
-Quality failures, hard-gate failures, cleanup failures, and resource limits are
-never retried. `--technical-retries` accepts values from 0 through 3. Retried
-attempts, their failure reasons, elapsed time, and cost remain visible in the
-report.
+Hard-gate failures, cleanup failures, and resource limits are never retried.
+`--technical-retries` accepts values from 0 through 3. Retried attempts, their
+failure reasons, elapsed time, and cost remain visible in the report.
 
 The judge protocol deliberately uses plain text JSON, which works across
 providers without native structured-output support. The response is parsed and
@@ -145,30 +144,22 @@ attempts; a third invalid response is a `judge_error`, not a zero quality score.
 ## Scores and reports
 
 Criterion weights total 100. A run passes when every hard gate passes and its
-score reaches the scenario threshold. For repeated runs, the aggregate requires
-at least two thirds of the runs to pass and the median score to reach the
-threshold. Technical failures stop further repetitions for that
-subject/scenario pair and always fail the aggregate. A hard-gate failure is a
-quality result, not an execution error: the run keeps its objective partial
-credit (zero when every criterion is judge-delegated), enters the aggregate as
-a poor score, and shares the two-of-three tolerance used by score-only
-failures.
+evaluation produces a complete score. For repeated runs, the aggregate requires
+at least two thirds of the runs to pass and no technical failures. A hard-gate
+failure is an evaluated result, not an execution error: the run keeps its
+objective partial credit (zero when every criterion is judge-delegated) and
+enters the aggregate as a failed run.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
 Scenarios without one award every criterion objectively in code. Mechanical
-effects remain hard gates in both cases. Judge-backed scenarios use a 50-point
-pass floor so a mediocre but usable answer remains a passing execution while
-its full score still exposes the quality gap in reports and historical trends.
-Scores below 50 continue to be reported as semantically inadequate, but do not
-fail CI by themselves. The
-`shell_coder_sandbox` scenario also uses a 50-point floor because its required
-effects remain hard gates; an error-free execution earns 45 additional quality
-points, while a recovered function error stays visible without failing an
-otherwise verified result.
+effects remain hard gates in both cases. Scores expose quality gaps in reports
+and historical trends but never decide pass or fail. In `shell_coder_sandbox`,
+for example, recovered function errors reduce the quality score without
+overriding independently verified effects.
 
 Every run has one explicit status:
 
-- `passed`, `quality_failed`, or `hard_gate_failed` for evaluated quality;
+- `passed` or `hard_gate_failed` for completed evaluations;
 - `subject_error`, `judge_error`, `resource_limit`, or `infrastructure_error`
   for failures that must not be interpreted as a score.
 
@@ -176,8 +167,8 @@ Scores and criterion awards are `null` when evaluation did not complete. A
 technical failure is never converted into a zero score.
 
 Every execution also prints a compact terminal summary with scenario status,
-median score, threshold, elapsed time, cost, failed gates, partial criteria, and
-technical failure reasons. Inspect a saved artifact without a running stack:
+median score, elapsed time, cost, failed gates, partial criteria, and technical
+failure reasons. Inspect a saved artifact without a running stack:
 
 ```bash
 cargo run -p harness-e2e -- report target/e2e
@@ -342,9 +333,8 @@ Each matrix job publishes its result for 14 days; failed jobs also publish
 diagnostics for 14 days. The workflow summary shows subject, judge, and total
 cost per scenario and consolidated by subject. The daily dashboard retains the
 latest 100 comparable points and summaries, plus complete reports for the latest
-30 workflow attempts. Fixed code-defined thresholds remain evaluation criteria;
-they do not determine CI success. Historical deltas are a team-facing signal
-and do not add an implicit threshold.
+30 workflow attempts. Historical score deltas are team-facing quality signals;
+they do not affect pass or fail.
 
 The source launcher performs a clean first boot with isolated configuration,
 session, queue, state, and log directories. It starts the provider workers
@@ -362,14 +352,15 @@ Add a module returning `ScenarioSpec` and register its `ScenarioId`. Keep these
 rules:
 
 - start `ScenarioSpec::version` at `1`; increment it when prompts, hard gates,
-  criteria, thresholds, execution policy, setup, or evaluation behavior changes,
+  criteria, execution policy, setup, or evaluation behavior changes,
   while structural refactors that preserve the behavioral contract keep it;
 - for new code-defined objective evaluators, declare each check once as a static
   `AssessmentSpec`: use `hard_gated` for conditions that must emit a hard gate
   and `full_or_zero` when that condition controls a full-or-zero award,
   `gate_and_points` when the gate outcome and quality award are evaluated
   independently, and `score_only` for quality awards that do not emit a hard
-  gate; when an explicit prerequisite gate prevents a check from running, use
+  gate and never affect pass or fail; when an explicit prerequisite gate
+  prevents a check from running, use
   `assessment::prerequisite_failure(...)` to emit the failed gate and retain
   each assessment's zero-point award atomically; existing evaluators can migrate
   to this pattern incrementally;
@@ -383,4 +374,4 @@ rules:
 
 Unit tests validate the registry, rubric weights, objective awards, judge
 responses and usage, transcript call normalization, blocking-gate behavior,
-cost aggregation, advisory mode, and report schema.
+cost aggregation, score reporting, and report schema.

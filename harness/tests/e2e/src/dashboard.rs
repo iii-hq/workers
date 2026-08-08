@@ -196,7 +196,6 @@ mod tests {
             vec![E2eScenarioReport::aggregate(
                 "direct_answer",
                 1,
-                80,
                 ExecutionPolicy {
                     max_turns: 1,
                     max_output_tokens: Some(10),
@@ -275,9 +274,8 @@ mod tests {
             "execution_policy": {},
             "scenario_id": "direct_answer",
             "scenario_version": 1,
-            "threshold": 50,
         });
-        assert_eq!(contract_fingerprint(&value), "fnv1a32:607c4fd2");
+        assert_eq!(contract_fingerprint(&value), "fnv1a32:2302d094");
     }
 
     #[test]

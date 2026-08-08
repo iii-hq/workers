@@ -1,14 +1,14 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec, JUDGE_BACKED_PASS_THRESHOLD};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
 
 pub const ID: &str = "security_triage";
 
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: r#"Triage these four independent Python snippets. Not every snippet is vulnerable; classify each one.
 
 1.
@@ -50,7 +50,6 @@ The values filename, sort, name, body, and signature_header are attacker-control
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "true_positives",

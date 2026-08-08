@@ -7,7 +7,6 @@
     "security_review",
     "reactive_automation",
   ];
-  const thresholds = [80, 90, 80, 90];
   const releases = [
     {
       tag: "daily/2026-07-22",
@@ -136,7 +135,6 @@
 
   function scenarioPassed(release, index) {
     return (
-      release.scores[index] >= thresholds[index] &&
       release.passRates[index] >= 67 &&
       release.hardGates[index] === 0 &&
       release.technical[index] === 0
@@ -147,7 +145,7 @@
     return scenarios.every((_scenario, index) => scenarioPassed(release, index));
   }
 
-  function extra(release, scenario, threshold = null, passed = null) {
+  function extra(release, scenario, passed = null) {
     const resolvedPassed = passed ?? releasePassed(release);
     const runId = String(Math.floor(release.date / 1000));
     return JSON.stringify({
@@ -178,7 +176,6 @@
       judge: { model: "glm-5.2", provider: "zai" },
       engine_revision: "c84f918f6f5e92e32ad78e6695d581c9e1995c9b",
       scenario,
-      threshold,
       requested_runs: 3,
       passed: resolvedPassed,
       status: resolvedPassed ? "passed" : "failed",
@@ -200,7 +197,6 @@
           extra(
             release,
             scenario,
-            thresholds[index],
             scenarioPassed(release, index),
           ),
         ),
@@ -211,7 +207,6 @@
           extra(
             release,
             scenario,
-            thresholds[index],
             scenarioPassed(release, index),
           ),
         ),
@@ -248,7 +243,6 @@
       const metricExtra = extra(
         release,
         scenario,
-        thresholds[index],
         scenarioPassed(release, index),
       );
       benches.push(

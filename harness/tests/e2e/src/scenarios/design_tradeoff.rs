@@ -1,14 +1,14 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec, JUDGE_BACKED_PASS_THRESHOLD};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
 
 pub const ID: &str = "design_tradeoff";
 
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: "You are advising a five-engineer team that operates a payments ledger \
 service on a single PostgreSQL instance. Facts: storage sits at 70% of the current \
 instance's capacity, and one larger instance size (double the capacity) is still \
@@ -35,7 +35,6 @@ perform any external action."
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "commitment",

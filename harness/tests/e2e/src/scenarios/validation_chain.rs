@@ -64,7 +64,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let broken = broken_fn(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "You are testing a CHAIN of validators on your own session. Follow the steps \
              exactly.\n\n\
@@ -108,7 +108,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -255,7 +254,7 @@ mod tests {
         assert!(spec.prompt.contains("CHAIN-A"));
         assert!(spec.prompt.contains("CHAIN-B"));
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()

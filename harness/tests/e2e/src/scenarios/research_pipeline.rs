@@ -48,7 +48,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -58,7 +58,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -650,8 +649,7 @@ mod tests {
         scenario.validate().unwrap();
         assert!(!scenario.needs_judge());
         assert!(!scenario.prompt.contains("harness::react"));
-        assert_eq!(scenario.version, 2);
-        assert_eq!(scenario.threshold, 90);
+        assert_eq!(scenario.version, 3);
         assert_eq!(
             scenario
                 .criteria

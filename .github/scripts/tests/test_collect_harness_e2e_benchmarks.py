@@ -39,7 +39,7 @@ def test_semantic_result_status_uses_blocking_precedence() -> None:
             hard_gate_failures=0,
             technical_failures=0,
         )
-        == "quality_advisory"
+        == "infra_failed"
     )
     assert (
         semantic_result_status(
@@ -72,7 +72,7 @@ def test_semantic_result_status_uses_blocking_precedence() -> None:
 @pytest.mark.parametrize(
     ("passed", "hard_gates", "technical", "expected"),
     (
-        (False, 0, 0, "quality_advisory"),
+        (False, 0, 0, "infra_failed"),
         (False, 1, 0, "hard_gate_failed"),
         (False, 0, 1, "technical_failed"),
     ),
@@ -148,7 +148,6 @@ def write_report(
                 "scenarios": [
                     {
                         "scenario_id": scenario_id,
-                        "threshold": 80,
                         "aggregate": {
                             "runs": 1,
                             "scored_runs": int(median_score is not None),
@@ -180,7 +179,7 @@ def write_report(
                                 "prompt": "Complete the E2E task.",
                                 "wall_time_ms": wall_time_ms,
                                 "score": median_score,
-                                "status": "passed" if passed else "quality_failed",
+                                "status": "passed" if passed else "hard_gate_failed",
                                 "hard_gates": [
                                     {
                                         "id": "state_present",

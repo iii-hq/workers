@@ -18,7 +18,6 @@ const FINAL_SCRIPT: &str = "values = [2, 3, 5, 7]\nprint(f\"host-check:{sum(valu
 const HOST_STDOUT: &str = "host-check:17";
 const SANDBOX_STDOUT: &str = "sandbox-check:35";
 const EXPECTED_CORE_OPERATIONS: usize = 12;
-const PASS_THRESHOLD: u8 = 50;
 const EXECUTION_QUALITY_WEIGHT: u8 = 45;
 const WORKER_SETUP: AssessmentSpec = AssessmentSpec::hard_gated(
     "worker_setup",
@@ -63,7 +62,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "Perform this verification entirely in the current workspace and in the stated order.\n\n\
              1. Add the `shell` worker from the public registry and wait for that add operation to \
@@ -101,7 +100,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 600,
         },
         denied_functions: &[],
-        threshold: PASS_THRESHOLD,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -760,7 +758,7 @@ mod tests {
         let spec = scenario("1234567890abcdef");
         spec.validate().unwrap();
 
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()
@@ -854,7 +852,6 @@ mod tests {
             .find(|criterion| criterion.id == "execution_quality")
             .expect("execution quality criterion");
 
-        assert_eq!(spec.threshold, PASS_THRESHOLD);
         assert_eq!(execution_quality.weight, EXECUTION_QUALITY_WEIGHT);
         let total_weight = spec
             .criteria
@@ -865,13 +862,8 @@ mod tests {
 
         assert_eq!(total_weight, 100);
         assert_eq!(verified_outcome_weight, 55);
-        assert!(verified_outcome_weight >= u16::from(PASS_THRESHOLD));
         assert_eq!(execution_quality_award(0), EXECUTION_QUALITY_WEIGHT);
         assert_eq!(execution_quality_award(1), 0);
-
-        let aggregate_score = (100.0 + f64::from(verified_outcome_weight)) / 2.0;
-        assert_eq!(aggregate_score, 77.5);
-        assert!(aggregate_score >= f64::from(PASS_THRESHOLD));
     }
 
     #[test]

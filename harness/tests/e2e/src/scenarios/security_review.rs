@@ -1,14 +1,14 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec, JUDGE_BACKED_PASS_THRESHOLD};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
 
 pub const ID: &str = "security_review";
 
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: r#"Review these independent snippets for security vulnerabilities:
 
 1. `const API_KEY = "sk-live-example";`
@@ -25,7 +25,6 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "coverage",

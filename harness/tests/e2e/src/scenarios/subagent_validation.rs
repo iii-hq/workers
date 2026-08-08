@@ -29,7 +29,7 @@ const EXPECTED_ROWS: u64 = 8;
 const CHILD_GOAL: AssessmentSpec = AssessmentSpec::hard_gated(
     "child_goal",
     35,
-    "The child's table work exceeds the validator threshold and the verdict key carries the accepted count.",
+    "The child's table work reaches the exact expected count and the verdict key carries the accepted count.",
 );
 const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "orchestration_discipline",
@@ -49,7 +49,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let child = child_session(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "You orchestrate one validated sub-agent. You never poll and never judge its work \
              yourself: a validator gates every child reply and a verdict wake drives you. Follow \
@@ -96,7 +96,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 420,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -169,10 +168,11 @@ fn evaluate<'a>(
             && observation.response.contains("PARENT DONE");
         let (orchestration_passed, orchestration_points) =
             orchestration_outcome(ordered, child_nudges);
+        let child_goal_passed = goal && rows == EXPECTED_ROWS;
 
         Ok(assessment::build_evaluation([
             CHILD_GOAL.gate_and_points(
-                goal,
+                child_goal_passed,
                 child_goal_points(goal, rows),
                 format!(
                     "rows={rows}, verdict={verdict}, need both above {THRESHOLD}; full marks at \
@@ -259,7 +259,7 @@ mod tests {
         assert!(spec.prompt.contains("e2e_aB19-rest-child-1"));
         assert!(spec.prompt.contains("subvtest_aB19"));
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()

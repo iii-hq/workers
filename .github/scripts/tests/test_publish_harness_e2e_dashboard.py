@@ -75,7 +75,6 @@ def snapshot(run_id: str, attempt: int = 1, *, passed: bool = True) -> dict:
                         "id": "direct_answer",
                         "status": "passed" if passed else "failed",
                         "passed": passed,
-                        "threshold": 80,
                         "runs": 3,
                         "median_score": 92 if passed else 60,
                         "pass_rate": 1 if passed else 0.33,
@@ -104,7 +103,6 @@ def detail(run_id: str, attempt: int = 1) -> dict:
                     {
                         "scenario_id": "direct_answer",
                         "scenario_version": 1,
-                        "threshold": 80,
                         "execution_policy": {
                             "max_turns": 2,
                             "max_output_tokens": 2048,
@@ -255,7 +253,7 @@ def test_records_cancelled_execution_without_artifacts(tmp_path: Path) -> None:
 
 def test_publishes_schema_three_and_classifies_semantic_outcomes() -> None:
     complete_subjects = [{"passed": True}]
-    advisory_subjects = [{"passed": False}]
+    invalid_subjects = [{"passed": False}]
 
     assert execution_status("", [], 0, 0, 0, 0) == "running"
     assert execution_status("cancelled", [], 0, 0, 0, 0) == "cancelled"
@@ -270,8 +268,8 @@ def test_publishes_schema_three_and_classifies_semantic_outcomes() -> None:
         == "hard_gate_failed"
     )
     assert (
-        execution_status("success", advisory_subjects, 1, 1, 0, 0)
-        == "quality_advisory"
+        execution_status("success", invalid_subjects, 1, 1, 0, 0)
+        == "infra_failed"
     )
     assert execution_status("success", complete_subjects, 1, 1, 0, 0) == "passed"
 
@@ -315,23 +313,6 @@ def test_failed_build_without_artifacts_uses_first_failed_job(tmp_path: Path) ->
         "url": "https://github.com/iii-hq/workers/actions/runs/10000000006/job/1",
     }
     assert "steps" not in json.dumps(execution)
-
-
-def test_quality_only_failure_is_advisory_and_surfaces_score() -> None:
-    value = snapshot("10000000017", passed=False)
-    subject = value["subjects"][0]
-    subject["hard_gate_failures"] = 0
-    subject["scenarios"][0]["hard_gate_failures"] = 0
-
-    summary = build_summary(value, metadata("10000000017"))
-
-    assert summary["status"] == "quality_advisory"
-    assert summary["first_failure"] == {
-        "kind": "quality",
-        "subject_id": "glm",
-        "scenario_id": "direct_answer",
-        "message": "Median score 60 is below threshold 80",
-    }
 
 
 def test_hard_gate_event_blocks_even_when_subject_aggregate_passed() -> None:

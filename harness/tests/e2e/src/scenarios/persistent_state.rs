@@ -33,7 +33,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let expected = expected(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")
@@ -46,7 +46,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 240,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -184,8 +183,7 @@ mod tests {
         let spec = scenario("run");
 
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
-        assert_eq!(spec.threshold, 90);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()

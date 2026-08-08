@@ -47,7 +47,6 @@ test("keeps hidden preview and diagnostic controls out of layout", () => {
 test("offers every semantic execution status as a filter", () => {
   for (const status of [
     "passed",
-    "quality_advisory",
     "hard_gate_failed",
     "technical_failed",
     "infra_failed",

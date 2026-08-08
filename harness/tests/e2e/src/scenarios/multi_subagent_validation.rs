@@ -28,7 +28,7 @@ const WRITERS: [&str; 2] = ["w1", "w2"];
 const CHILDREN_GOAL: AssessmentSpec = AssessmentSpec::hard_gated(
     "children_goal",
     35,
-    "Both writers exceed the threshold and both verdict keys carry their accepted counts.",
+    "Both writers reach the exact expected counts and both verdict keys carry their accepted counts.",
 );
 const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "orchestration_discipline",
@@ -49,7 +49,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let child_2 = child_session(run_id, 2);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "You orchestrate TWO validated sub-agents in parallel. You never poll and never judge \
              work yourself: per-child validators gate every child reply, and verdict wakes drive \
@@ -103,7 +103,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 420,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -179,10 +178,11 @@ fn evaluate<'a>(
             && observation.response.contains("ORCHESTRATION DONE");
 
         let orchestration_discipline = validator_count == 2 && ordered && both_looped;
+        let children_goal_passed = goal && rows.iter().all(|count| *count == EXPECTED_ROWS);
 
         Ok(assessment::build_evaluation([
             CHILDREN_GOAL.gate_and_points(
-                goal,
+                children_goal_passed,
                 children_goal_points(goal, &rows),
                 format!(
                     "rows={rows:?}, verdicts={verdicts:?}, all must exceed {THRESHOLD}; full \
@@ -257,7 +257,7 @@ mod tests {
         assert!(spec.prompt.contains("e2e_aB19-rest-child-2"));
         assert!(spec.prompt.contains("msubvtest_aB19"));
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()

@@ -133,14 +133,12 @@ def scenario_contract(
     execution_policy = scenario.get("execution_policy", {})
     if not isinstance(execution_policy, dict):
         execution_policy = {}
-    threshold = optional_number(scenario.get("threshold"))
     return {
         "execution_policy": execution_policy,
         "scenario_id": scenario_id,
         "scenario_version": int(
             optional_number(scenario.get("scenario_version")) or 1
         ),
-        "threshold": int(threshold) if threshold is not None else None,
     }
 
 
@@ -437,7 +435,7 @@ def _public_scenario(value: Any) -> dict[str, Any] | None:
         return None
     scenario = _pick(
         value,
-        ("scenario_id", "scenario_version", "passed", "threshold"),
+        ("scenario_id", "scenario_version", "passed"),
     )
     aggregate = _pick(
         value.get("aggregate"),
@@ -497,7 +495,6 @@ def _public_subject_summary(value: Any) -> dict[str, Any] | None:
                 "id",
                 "status",
                 "passed",
-                "threshold",
                 "runs",
                 "median_score",
                 "pass_rate",
@@ -574,7 +571,7 @@ def execution_status(
     if conclusion != "success" or has_failed_job:
         return "infra_failed"
     if not all(bool(subject.get("passed")) for subject in subjects):
-        return "quality_advisory"
+        return "infra_failed"
     return "passed"
 
 
@@ -714,24 +711,6 @@ def report_diagnostic(
                         "message": _compact_message(gate.get("reason"), "Hard gate failed"),
                     }
 
-    if status == "quality_advisory" and snapshot:
-        for subject in snapshot.get("subjects", []):
-            if not isinstance(subject, dict):
-                continue
-            for scenario in subject.get("scenarios", []):
-                if not isinstance(scenario, dict) or scenario.get("passed"):
-                    continue
-                score = optional_number(scenario.get("median_score"))
-                threshold = optional_number(scenario.get("threshold"))
-                description = "Quality result did not meet the scenario threshold"
-                if score is not None and threshold is not None:
-                    description = f"Median score {score:g} is below threshold {threshold:g}"
-                return {
-                    "kind": "quality",
-                    "subject_id": str(subject.get("id") or ""),
-                    "scenario_id": str(scenario.get("id") or ""),
-                    "message": description,
-                }
     return None
 
 

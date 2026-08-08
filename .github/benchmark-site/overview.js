@@ -246,7 +246,6 @@
     return {
       passed: { label: "Passed", short: "", css: "pass" },
       failed: { label: "Failed", short: "×", css: "fail" },
-      quality_advisory: { label: "Quality advisory", short: "!", css: "advisory" },
       hard_gate_failed: { label: "Hard gate failed", short: "×", css: "fail" },
       technical_failed: { label: "Technical failure", short: "×", css: "fail" },
       infra_failed: { label: "Infrastructure failure", short: "×", css: "fail" },

@@ -36,7 +36,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             r#"Test the parent-owned timer control plane in isolated state scope `{scope}`.
 
@@ -63,7 +63,6 @@ fired. Leave no binding armed."#,
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -243,7 +242,7 @@ mod tests {
 
         let spec = scenario("run");
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()

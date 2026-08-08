@@ -32,7 +32,7 @@ const GOAL_REACHED: AssessmentSpec = AssessmentSpec::hard_gated(
 const VALIDATOR_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "validator_discipline",
     30,
-    "Exactly one post-turn validator registration, carrying the custom retry_prompt.",
+    "Exactly one post-turn validator registration carries the custom retry_prompt without function-call errors.",
 );
 const LOOP_EVIDENCE: AssessmentSpec = AssessmentSpec::hard_gated(
     "loop_evidence",
@@ -45,7 +45,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "You are testing a self-installed validation loop. Follow these steps exactly.\n\n\
              Step 1 — prepare the goal table. Call database::execute (db \"primary\") twice: first \
@@ -77,7 +77,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -113,30 +112,26 @@ fn evaluate<'a>(
         let goal_reached = rows > THRESHOLD;
         let converged_exactly = rows == EXPECTED_ROWS;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
-        let validator_points = if single_registration && carries_retry_prompt && no_errors {
-            VALIDATOR_DISCIPLINE.weight()
-        } else {
-            0
-        };
         let loop_points = loop_evidence_points(nudges, converged_exactly);
+        let validator_passed = single_registration && carries_retry_prompt && no_errors;
+        let loop_passed = nudges >= 1 && converged_exactly;
 
         Ok(assessment::build_evaluation([
             GOAL_REACHED.full_or_zero(
                 goal_reached,
                 format!("observed {rows} row(s), need more than {THRESHOLD}"),
             ),
-            VALIDATOR_DISCIPLINE.gate_and_points(
-                single_registration,
-                validator_points,
+            VALIDATOR_DISCIPLINE.full_or_zero(
+                validator_passed,
                 format!(
                     "observed {} post-turn registration(s), expected exactly one; \
                      carries_retry_prompt={carries_retry_prompt}; function_call_errors={}",
                     registrations.len(),
                     observation.metrics.totals.function_call_errors
                 ),
-            )?,
+            ),
             LOOP_EVIDENCE.gate_and_points(
-                nudges >= 1,
+                loop_passed,
                 loop_points,
                 format!("nudges={nudges}, rows={rows} (full marks at exactly {EXPECTED_ROWS})"),
             )?,
@@ -208,7 +203,7 @@ mod tests {
         assert!(spec.prompt.contains(HOOK_TYPE));
         assert!(spec.prompt.contains("{value}"));
         spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
+        assert_eq!(spec.version, 3);
         assert_eq!(
             spec.criteria
                 .iter()

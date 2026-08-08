@@ -575,9 +575,9 @@ jobs:
             if [[ -f "$results" ]]; then
               jq -r '
                 .scenarios[0] |
-                "| Score median | Threshold | Pass rate | Hard-gate failures | Technical failures | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
-                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-                "| \(.aggregate.median_score // "n/a") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.hard_gate_failures) | \(.aggregate.technical_failures) | \(.aggregate.cost.subject_usd // "n/a") | \(.aggregate.cost.judge_usd // "n/a") | \(.aggregate.cost.total_usd // "n/a") | \(if .passed then "pass" else "fail" end) |",
+                "| Score median | Pass rate | Hard-gate failures | Technical failures | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| \(.aggregate.median_score // "n/a") | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.hard_gate_failures) | \(.aggregate.technical_failures) | \(.aggregate.cost.subject_usd // "n/a") | \(.aggregate.cost.judge_usd // "n/a") | \(.aggregate.cost.total_usd // "n/a") | \(if .passed then "pass" else "fail" end) |",
                 "",
                 "| Run | Score | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
                 "| --- | ---: | ---: | ---: | ---: | --- |",

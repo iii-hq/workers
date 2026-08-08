@@ -34,10 +34,6 @@ pub mod validation_loop;
 pub mod validation_scope_enforcement;
 pub mod validation_self_repair;
 
-/// Judge-backed scenarios keep a low semantic floor while exposing the full
-/// score as a quality signal. Objective contract violations remain hard gates.
-pub(super) const JUDGE_BACKED_PASS_THRESHOLD: u8 = 50;
-
 pub type EvaluationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
 pub type CleanupFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
@@ -108,7 +104,6 @@ pub struct ScenarioSpec {
     pub filesystem_root: Option<PathBuf>,
     pub execution: ExecutionPolicy,
     pub denied_functions: &'static [&'static str],
-    pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
     pub judge_reference: Option<Value>,
     /// Runs BEFORE the prompt is sent; a failure aborts the run.
@@ -129,19 +124,6 @@ impl ScenarioSpec {
             bail!("scenario '{}': version=0; expected version >= 1", self.id);
         }
         self.execution.validate(self.id)?;
-        if !(1..=100).contains(&self.threshold) {
-            bail!(
-                "scenario '{}': threshold={}; expected a value in 1..=100",
-                self.id,
-                self.threshold
-            );
-        }
-        if self.needs_judge() && self.threshold != JUDGE_BACKED_PASS_THRESHOLD {
-            bail!(
-                "scenario '{}': judge-backed threshold={}; expected {JUDGE_BACKED_PASS_THRESHOLD}; set this threshold or remove judge_reference",
-                self.id, self.threshold
-            );
-        }
         let mut ids = HashMap::new();
         for (index, criterion) in self.criteria.iter().enumerate() {
             if criterion.id.trim().is_empty() {
@@ -371,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn judge_backed_scenarios_use_the_quality_signal_floor() {
+    fn judge_backed_scenarios_are_identified_by_their_reference() {
         for scenario in [
             ScenarioId::DirectAnswer,
             ScenarioId::SecurityReview,
@@ -380,19 +362,7 @@ mod tests {
         ] {
             let spec = scenario.spec("run");
             assert!(spec.needs_judge());
-            assert_eq!(spec.threshold, JUDGE_BACKED_PASS_THRESHOLD);
         }
-    }
-
-    #[test]
-    fn validation_rejects_a_different_judge_backed_threshold() {
-        let mut spec = ScenarioId::DirectAnswer.spec("run");
-        spec.threshold = JUDGE_BACKED_PASS_THRESHOLD + 1;
-
-        assert_eq!(
-            spec.validate().unwrap_err().to_string(),
-            "scenario 'direct_answer': judge-backed threshold=51; expected 50; set this threshold or remove judge_reference"
-        );
     }
 
     #[test]

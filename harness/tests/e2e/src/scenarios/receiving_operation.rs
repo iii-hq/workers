@@ -65,7 +65,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 3,
+        version: 4,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -75,7 +75,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 360,
         },
         denied_functions: &["state::*"],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -971,10 +970,9 @@ mod tests {
     fn scenario_is_valid_and_removes_state_capability() {
         let scenario = scenario("aB19");
         scenario.validate().unwrap();
-        assert_eq!(scenario.version, 3);
+        assert_eq!(scenario.version, 4);
         assert_eq!(scenario.denied_functions, ["state::*"]);
         assert!(!scenario.needs_judge());
-        assert_eq!(scenario.threshold, 90);
         assert_eq!(
             scenario
                 .criteria

@@ -96,7 +96,7 @@ test("compares any two executions and exposes incompatible scenario contracts", 
           {
             id: "security_review",
             passed: false,
-            status: "quality_advisory",
+            status: "infra_failed",
             median_score: 45,
             pass_rate: 0,
           },
@@ -130,7 +130,7 @@ test("compares any two executions and exposes incompatible scenario contracts", 
   ]);
 });
 
-test("normalizes schema 2 failures without turning workflow failures into advisories", () => {
+test("normalizes schema 2 failures with blocking precedence", () => {
   assert.equal(
     normalizeExecution({
       status: "failed",
@@ -165,7 +165,7 @@ test("normalizes schema 2 failures without turning workflow failures into adviso
       totals: {},
       subjects: [{ passed: false }],
     }).status,
-    "quality_advisory",
+    "infra_failed",
   );
 });
 
@@ -297,7 +297,6 @@ test("builds subject and scenario matrix rows with result cells", () => {
   assert.equal(matrixCellLabel(cell, cell.status), "92%");
   assert.equal(matrixCellLabel({ passed: false }, "failed"), "×");
   assert.equal(matrixCellLabel(null, "infra_failed"), "×");
-  assert.equal(matrixCellLabel(null, "quality_advisory"), "!");
   assert.equal(matrixCellLabel(null, "running"), "•");
   assert.equal(matrixCellLabel(null, "incomplete"), "–");
   assert.equal(matrixCellLabel(null, "cancelled"), "○");
@@ -327,7 +326,7 @@ test("normalizes scenario outcomes with the shared blocking precedence", () => {
   );
   assert.equal(
     normalizeScenarioStatus({ passed: false, hard_gate_failures: 0 }),
-    "quality_advisory",
+    "infra_failed",
   );
   assert.equal(
     normalizeScenarioStatus({ passed: true, hard_gate_failures: 1 }),
@@ -390,7 +389,6 @@ test("derives per-scenario run averages from a full execution detail", () => {
             {
               scenario_id: "direct_answer",
               scenario_version: 1,
-              threshold: 50,
               execution_policy: {
                 max_turns: 2,
                 max_total_tokens: 32768,
