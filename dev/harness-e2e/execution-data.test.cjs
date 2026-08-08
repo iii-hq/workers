@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   buildEfficiencyOverview,
   cohortMetricSparkline,
+  compareExecutions,
   contractFingerprint,
   executionEfficiencyTotalsFromDetail,
   executionsWithinDays,
@@ -66,6 +67,67 @@ test("normalizes execution status and availability", () => {
   assert.equal(normalized.id, "99");
   assert.equal(normalized.status, "infra_failed");
   assert.equal(normalized.availability, "unavailable");
+});
+
+test("compares any two executions and exposes incompatible scenario contracts", () => {
+  const left = execution({
+    id: "left",
+    requested_runs: 1,
+    scenario_metrics: [
+      {
+        subject_id: "glm",
+        scenario_id: "direct_answer",
+        contract_fingerprint: "contract-a",
+        averages: { tokens: 100, duration_seconds: 10, cost_usd: 0.2 },
+      },
+    ],
+    totals: { average_score: 80, scenario_pass_rate: 100, total_tokens: 100 },
+  });
+  const right = execution({
+    id: "right",
+    requested_runs: 2,
+    subjects: [
+      ...execution().subjects,
+      {
+        id: "other",
+        model: "gpt-5",
+        provider: "openai",
+        scenarios: [
+          {
+            id: "security_review",
+            passed: false,
+            status: "quality_advisory",
+            median_score: 45,
+            pass_rate: 0,
+          },
+        ],
+      },
+    ],
+    scenario_metrics: [
+      {
+        subject_id: "glm",
+        scenario_id: "direct_answer",
+        contract_fingerprint: "contract-b",
+        averages: { tokens: 120, duration_seconds: 8, cost_usd: 0.15 },
+      },
+    ],
+    totals: { average_score: 70, scenario_pass_rate: 50, total_tokens: 120 },
+  });
+
+  const comparison = compareExecutions(left, right);
+
+  assert.equal(comparison.left.id, "left");
+  assert.equal(comparison.right.id, "right");
+  assert.equal(comparison.totals.total_tokens.delta, 20);
+  assert.equal(comparison.scenarios[0].contract, "changed");
+  assert.equal(comparison.scenarios[0].deltas.duration_seconds, -2);
+  assert.equal(comparison.scenarios.length, 2);
+  assert.deepEqual(comparison.warnings, [
+    "The executions use different subject sets.",
+    "The executions requested a different number of runs.",
+    "1 scenario is present in only one execution.",
+    "1 shared scenario contract differs.",
+  ]);
 });
 
 test("normalizes schema 2 failures without turning workflow failures into advisories", () => {

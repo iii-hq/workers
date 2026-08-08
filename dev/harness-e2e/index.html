@@ -48,6 +48,90 @@
         </div>
       </section>
 
+      <section id="local-runner" class="panel local-runner" aria-labelledby="local-runner-title" hidden>
+        <div class="panel-heading local-runner-heading">
+          <div>
+            <div class="section-kicker">Local experiment</div>
+            <h2 id="local-runner-title">Run E2E scenarios</h2>
+            <p class="trend-description">
+              Uses the Harness already running at the selected iii URL. Each run is
+              saved as an independent execution that can be compared with any other.
+            </p>
+          </div>
+          <span id="local-run-status" class="local-run-status">Ready</span>
+        </div>
+        <div class="local-connection" aria-live="polite">
+          <div>
+            <span id="local-catalog-indicator" class="local-connection-dot" aria-hidden="true"></span>
+            <span id="local-catalog-status">Discovering the running Harness…</span>
+            <code id="local-connection-url"></code>
+          </div>
+          <button id="local-catalog-refresh" class="button" type="button">
+            Refresh catalog
+          </button>
+        </div>
+        <form id="local-run-form" class="local-run-form">
+          <label class="local-field">
+            <span>Execution label <small>optional</small></span>
+            <input name="label" maxlength="120" placeholder="Before system prompt change">
+          </label>
+          <label class="local-field">
+            <span>Subject model</span>
+            <select id="local-subject" name="subject" required disabled>
+              <option value="">Loading registered models…</option>
+            </select>
+          </label>
+          <div class="local-field local-field-wide">
+            <span>Scenarios <small>all selected by default</small></span>
+            <details id="local-scenario-picker" class="local-scenario-picker">
+              <summary>
+                <strong id="local-scenario-summary">Loading scenarios…</strong>
+                <span>Choose</span>
+              </summary>
+              <div class="local-scenario-toolbar">
+                <button id="local-scenario-all" type="button">Select all</button>
+                <button id="local-scenario-none" type="button">Clear</button>
+              </div>
+              <div id="local-scenario-options" class="local-scenario-options"></div>
+            </details>
+          </div>
+          <details id="local-advanced" class="local-advanced local-field-wide">
+            <summary>Advanced options</summary>
+            <div class="local-advanced-grid">
+              <label class="local-field local-field-wide">
+                <span>iii WebSocket URL <small>refresh after changing</small></span>
+                <input name="url" required placeholder="ws://127.0.0.1:49134">
+              </label>
+              <label class="local-field local-field-wide">
+                <span>Judge override <small>automatic when blank</small></span>
+                <select id="local-judge" name="judge" disabled>
+                  <option value="">Use subject model when required</option>
+                </select>
+              </label>
+              <label class="local-field">
+                <span>Runs</span>
+                <input name="runs" type="number" min="1" max="20" value="1" required>
+              </label>
+              <label class="local-field">
+                <span>Technical retries</span>
+                <input name="technical_retries" type="number" min="0" max="3" value="1" required>
+              </label>
+            </div>
+          </details>
+          <div class="local-run-actions">
+            <button id="local-run-submit" class="button local-run-submit" type="submit">
+              Run selected E2E
+            </button>
+            <button id="local-run-cancel" class="button" type="button" hidden>Cancel</button>
+          </div>
+        </form>
+        <p id="local-run-error" class="local-run-error" role="alert" hidden></p>
+        <details id="local-run-log-shell" class="local-run-log-shell" hidden>
+          <summary>Live runner output</summary>
+          <pre id="local-run-log" class="local-run-log" aria-live="polite"></pre>
+        </details>
+      </section>
+
       <section id="empty-state" class="empty-state" hidden>
         <div class="empty-icon" aria-hidden="true">⌁</div>
         <h2 id="empty-title">No executions published</h2>
@@ -229,13 +313,22 @@
               </select>
             </label>
           </div>
+          <div id="comparison-bar" class="comparison-bar" hidden>
+            <div>
+              <strong id="comparison-count">Select two executions</strong>
+              <span>Comparison is allowed even when subjects, scenarios, or contracts differ.</span>
+            </div>
+            <a id="comparison-link" class="button" href="./compare.html" aria-disabled="true">
+              Compare selected
+            </a>
+          </div>
           <div class="table-wrap">
             <table class="execution-table">
               <thead>
                 <tr>
                   <th scope="col">Execution</th>
                   <th scope="col">Result</th>
-                  <th scope="col">Commit</th>
+                  <th id="execution-commit-heading" scope="col">Commit</th>
                   <th scope="col">Subjects</th>
                   <th scope="col">Pass rate</th>
                   <th scope="col">Score</th>
@@ -328,7 +421,7 @@
     </main>
 
     <footer>
-      <span>Harness E2E · 100 summaries · 30 compact diagnostic reports</span>
+      <span id="dashboard-footer-summary">Harness E2E · 100 summaries · 30 compact diagnostic reports</span>
       <a href="https://github.com/iii-hq/workers/tree/main/harness/tests/e2e">
         Suite documentation <span aria-hidden="true">↗</span>
       </a>
@@ -350,6 +443,11 @@
     <script>
       if (!window.HARNESS_EXECUTIONS) {
         document.write('<script src="./sample-executions.js"><\/script>');
+      }
+    </script>
+    <script>
+      if (window.HARNESS_EXECUTIONS?.mode === "local") {
+        document.write('<script src="./local-runner.js"><\/script>');
       }
     </script>
     <script src="./overview.js"></script>

@@ -5,7 +5,7 @@
     "completed_at": "2026-08-07T12:00:57Z",
     "conclusion": "failure",
     "event": "workflow_dispatch",
-    "head_branch": "main",
+    "head_branch": "daily/2026-08-07",
     "head_sha": "fc24e3cd5a3596b485b30511f2fa79db8551e851",
     "id": "31173225962-1",
     "repository": "iii-hq/workers",
