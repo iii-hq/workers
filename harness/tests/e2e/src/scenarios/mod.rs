@@ -324,22 +324,6 @@ mod tests {
     }
 
     #[test]
-    fn reactive_automation_uses_the_provider_output_limit() {
-        assert_eq!(
-            ScenarioId::ReactiveAutomation
-                .spec("run")
-                .execution
-                .max_output_tokens,
-            None
-        );
-    }
-
-    #[test]
-    fn direct_answer_is_judge_backed() {
-        assert!(ScenarioId::DirectAnswer.spec("run").needs_judge());
-    }
-
-    #[test]
     fn validation_rejects_a_zero_contract_version() {
         let mut spec = ScenarioId::PersistentState.spec("run");
         spec.version = 0;

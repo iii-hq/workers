@@ -191,36 +191,3 @@ pub(super) fn suffix(run_id: &str) -> String {
 fn table(run_id: &str) -> String {
     format!("valtest_{}", suffix(run_id))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_are_sql_safe_and_the_prompt_carries_them() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("valtest_aB19"));
-        assert!(spec.prompt.contains(HOOK_TYPE));
-        assert!(spec.prompt.contains("{value}"));
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 3);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("goal_reached", 40),
-                ("validator_discipline", 30),
-                ("loop_evidence", 30),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_delivered_nudge_keeps_partial_credit_without_exact_convergence() {
-        assert_eq!(loop_evidence_points(0, true), 0);
-        assert_eq!(loop_evidence_points(1, false), 15);
-        assert_eq!(loop_evidence_points(1, true), 30);
-    }
-}

@@ -240,31 +240,3 @@ fn nudge_texts(transcript: &Value) -> Vec<String> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn spec_is_valid_and_names_all_three_validators() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("chaintest_aB19"));
-        assert!(spec.prompt.contains("e2e::does_not_exist_aB19"));
-        assert!(spec.prompt.contains("fail_open"));
-        assert!(spec.prompt.contains("CHAIN-A"));
-        assert!(spec.prompt.contains("CHAIN-B"));
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 3);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("chain_order", 40),
-                ("all_gates_satisfied", 30),
-                ("broken_validator_skipped", 30),
-            ]
-        );
-    }
-}

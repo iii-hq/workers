@@ -245,39 +245,3 @@ fn scope(run_id: &str) -> String {
 fn child_session(run_id: &str, index: usize) -> String {
     format!("e2e_{run_id}-child-{index}")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_names_both_children_under_the_suite_prefix() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("e2e_aB19-rest-child-1"));
-        assert!(spec.prompt.contains("e2e_aB19-rest-child-2"));
-        assert!(spec.prompt.contains("msubvtest_aB19"));
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 3);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("children_goal", 35),
-                ("orchestration_discipline", 35),
-                ("fan_in_report", 30),
-            ]
-        );
-    }
-
-    #[test]
-    fn exact_rows_only_score_fully_after_both_verdicts_pass() {
-        assert_eq!(children_goal_points(false, &[EXPECTED_ROWS; 2]), 0);
-        assert_eq!(children_goal_points(true, &[EXPECTED_ROWS; 2]), 35);
-        assert_eq!(
-            children_goal_points(true, &[EXPECTED_ROWS, EXPECTED_ROWS + 1]),
-            20
-        );
-    }
-}

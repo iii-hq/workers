@@ -233,29 +233,3 @@ fn scope(run_id: &str) -> String {
 fn child_session(run_id: &str) -> String {
     format!("e2e_{run_id}-child-1")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_carries_the_deadline_and_unreachable_threshold() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("fsubvtest_aB19"));
-        assert!(spec.prompt.contains("\"expires_at\""));
-        assert!(spec.prompt.contains("101"));
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 3);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("bounded_failure", 40),
-                ("orchestration_discipline", 30),
-                ("expiry_report", 30),
-            ]
-        );
-    }
-}

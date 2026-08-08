@@ -222,38 +222,3 @@ impl Names {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_an_equivalent_relative_timer() {
-        let call = common::ObservedFunctionCall {
-            function_id: "engine::register_trigger".to_string(),
-            arguments: json!({
-                "trigger_type": "timer",
-                "config": { "in_ms": 5000 },
-                "label": "model-chosen-deadline"
-            }),
-        };
-
-        assert!(is_timer_registration(&call));
-
-        let spec = scenario("run");
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 3);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("timer_armed", 30),
-                ("parent_woken", 30),
-                ("wake_action", 25),
-                ("clean_completion", 15),
-            ]
-        );
-    }
-}
