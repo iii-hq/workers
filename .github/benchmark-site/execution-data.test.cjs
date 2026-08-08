@@ -94,7 +94,7 @@ test("compares any two executions and exposes incompatible scenario contracts", 
         provider: "openai",
         scenarios: [
           {
-            id: "security_review",
+            id: "persistent_state",
             passed: false,
             status: "infra_failed",
             median_score: 45,
@@ -175,7 +175,7 @@ test("builds the latest health identity, completeness, and compact first failure
       status: "infra_failed",
       lane: "daily",
       release: { worker: "harness", version: "1.7.3" },
-      totals: { expected_reports: 19, received_reports: 0 },
+      totals: { expected_reports: 16, received_reports: 0 },
       first_failure: {
         kind: "job",
         job_name: "harness e2e build",
@@ -188,7 +188,7 @@ test("builds the latest health identity, completeness, and compact first failure
   assert.equal(model.status, "infra_failed");
   assert.equal(model.lane, "daily");
   assert.equal(model.identity, "harness@1.7.3");
-  assert.equal(model.expectedReports, 19);
+  assert.equal(model.expectedReports, 16);
   assert.equal(model.receivedReports, 0);
   assert.equal(model.firstFailure.step_name, "Validate E2E manifests and lockfiles");
   assert.equal(model.workflowUrl, "");
@@ -534,7 +534,7 @@ test("keeps scenario metrics as one point per workflow execution", () => {
             samples: { tokens: 2 },
           },
           {
-            scenario_id: "security_review",
+            scenario_id: "persistent_state",
             averages: { tokens: 200 },
             samples: { tokens: 2 },
           },
@@ -557,7 +557,7 @@ test("keeps scenario metrics as one point per workflow execution", () => {
         values: [100, 300],
       },
       {
-        scenarioId: "security_review",
+        scenarioId: "persistent_state",
         executionIds: ["older"],
         values: [200],
       },
@@ -736,7 +736,7 @@ test("groupRunFailures groups failures and failed gates per run", () => {
       report: {
         scenarios: [
           {
-            scenario_id: "security_review",
+            scenario_id: "persistent_state",
             runs: [
               {
                 failures: [{ phase: "execute", message: "boom" }],
@@ -756,7 +756,7 @@ test("groupRunFailures groups failures and failed gates per run", () => {
   assert.equal(groups.length, 2);
   assert.deepEqual(groups[0], {
     subjectId: "anthropic-sonnet",
-    scenarioId: "security_review",
+    scenarioId: "persistent_state",
     runIndex: 0,
     items: [
       { kind: "failure", phase: "execute", message: "boom" },

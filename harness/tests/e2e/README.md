@@ -41,8 +41,6 @@ scenario through one global `allow: ["*"]` policy:
   correctness, clarity, and instruction adherence.
 - `persistent_state`: discovers and performs one exact durable state write,
   evaluated entirely in code.
-- `security_review`: reviews three vulnerable snippets; a judge scores coverage,
-  accuracy, remediation, and clarity.
 - `reactive_automation`: orchestrates three parallel database writers,
   trigger-spawned aggregate reactors, and a single finalizer. The CI stack uses
   SQLite, so the scenario proves bounded `database::row-changed` discovery and
@@ -56,13 +54,6 @@ scenario through one global `allow: ["*"]` policy:
   evaluator verifies every effect, exact stdout from both environments,
   operation ordering, shutdown, and scenario-owned cleanup. Recovered function
   errors reduce its quality score without overriding those validated effects.
-- `design_tradeoff`: recommends one side of a contested database-scaling
-  decision with facts that pull in opposite directions; a judge scores
-  commitment to a single pick, constraint-grounded reasoning, honest costs of
-  the chosen option, and concrete reversal conditions.
-- `security_triage`: classifies four snippets where two are subtly exploitable
-  and two only look vulnerable; a judge scores true positives, false-positive
-  control, remediation, and clarity.
 - `research_pipeline`: arms article and fan-in wakes before fetching a
   Wikipedia page, directly spawns two least-privilege analysts, and returns
   their barrier-gated research brief in the coordinator session.
@@ -115,7 +106,7 @@ Select one scenario and repeat it three times:
 cargo run -p harness-e2e -- run \
   --model claude-sonnet-4-6 \
   --provider anthropic \
-  --scenario security_review \
+  --scenario direct_answer \
   --runs 3
 ```
 

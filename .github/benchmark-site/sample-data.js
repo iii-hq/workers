@@ -4,7 +4,7 @@
   const scenarios = [
     "direct_answer",
     "persistent_state",
-    "security_review",
+    "validation_loop",
     "reactive_automation",
   ];
   const releases = [

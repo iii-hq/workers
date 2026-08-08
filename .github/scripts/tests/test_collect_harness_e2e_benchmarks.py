@@ -273,14 +273,14 @@ def test_collects_quality_reliability_and_efficiency(tmp_path: Path) -> None:
     write_report(
         tmp_path,
         subject_id="glm",
-        scenario_id="security_review",
+        scenario_id="persistent_state",
         median_score=88,
         total_cost=0.75,
         wall_time_ms=28_000,
     )
 
     quality, efficiency, snapshot, execution = collect(
-        config(tmp_path, ["direct_answer", "security_review"])
+        config(tmp_path, ["direct_answer", "persistent_state"])
     )
     quality_by_name = by_name(quality)
     efficiency_by_name = by_name(efficiency)
@@ -322,7 +322,7 @@ def test_missing_report_is_visible_and_totals_are_not_fabricated(
     write_report(tmp_path, subject_id="glm", scenario_id="direct_answer")
 
     quality, efficiency, snapshot, execution = collect(
-        config(tmp_path, ["direct_answer", "security_review"])
+        config(tmp_path, ["direct_answer", "persistent_state"])
     )
     quality_by_name = by_name(quality)
     efficiency_by_name = by_name(efficiency)
@@ -341,7 +341,7 @@ def test_missing_report_is_visible_and_totals_are_not_fabricated(
     assert subject["scenarios"][1]["status"] == "missing_report"
     assert execution["reports"][1] == {
         "subject_id": "glm",
-        "scenario_id": "security_review",
+        "scenario_id": "persistent_state",
         "available": False,
         "report": None,
     }
@@ -351,10 +351,10 @@ def test_registry_identity_is_recorded_and_registry_failure_is_infra_failed(
     tmp_path: Path,
 ) -> None:
     write_report(tmp_path, subject_id="glm", scenario_id="direct_answer")
-    directory = tmp_path / "harness-e2e-glm-security_review-results"
+    directory = tmp_path / "harness-e2e-glm-persistent_state-results"
     directory.mkdir()
     (directory / "benchmark-context.json").write_text(
-        json.dumps({"subject_id": "glm", "scenario_id": "security_review"})
+        json.dumps({"subject_id": "glm", "scenario_id": "persistent_state"})
     )
     (directory / "deployment.json").write_text(
         json.dumps(
@@ -369,25 +369,25 @@ def test_registry_identity_is_recorded_and_registry_failure_is_infra_failed(
 
     _, efficiency, snapshot, execution = collect(
         replace(
-            config(tmp_path, ["direct_answer", "security_review"]),
+            config(tmp_path, ["direct_answer", "persistent_state"]),
             stack_mode="registry",
         )
     )
     efficiency_by_name = by_name(efficiency)
-    security_extra = json.loads(
+    state_extra = json.loads(
         efficiency_by_name[
-            "reliability::glm::security_review::infra_failed"
+            "reliability::glm::persistent_state::infra_failed"
         ]["extra"]
     )
 
-    assert security_extra["status"] == "infra_failed"
-    assert security_extra["release"]["version"] == "1.8.0"
-    assert security_extra["stack"]["versions"] == {
+    assert state_extra["status"] == "infra_failed"
+    assert state_extra["release"]["version"] == "1.8.0"
+    assert state_extra["stack"]["versions"] == {
         "harness": "1.8.0",
         "state": "0.22.0",
     }
-    assert security_extra["stack"]["lock_digest"] == "a" * 64
-    assert snapshot["stack"] == security_extra["stack"]
+    assert state_extra["stack"]["lock_digest"] == "a" * 64
+    assert snapshot["stack"] == state_extra["stack"]
     assert snapshot["subjects"][0]["infra_failures"] == 1
     assert execution["reports"][1]["deployment"]["status"] == "infra_failed"
 
