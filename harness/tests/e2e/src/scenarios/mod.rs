@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::context::E2eContext;
 use crate::report::HardGateReport;
 
+mod assessment;
 pub mod common;
 pub mod custom_validator;
 pub mod design_tradeoff;
