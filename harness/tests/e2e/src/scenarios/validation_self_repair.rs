@@ -31,17 +31,17 @@ pub const ID: &str = "validation_self_repair";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
 const REQUIRED_NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
-const DATA_REPAIRED: AssessmentSpec = AssessmentSpec::required(
+const DATA_REPAIRED: AssessmentSpec = AssessmentSpec::hard_gated(
     "data_repaired",
     40,
     "All invariants hold at the end and every required name survived the repair.",
 );
-const DIAGNOSIS_DRIVEN: AssessmentSpec = AssessmentSpec::required(
+const DIAGNOSIS_DRIVEN: AssessmentSpec = AssessmentSpec::hard_gated(
     "diagnosis_driven",
     30,
     "The auditor rejected the flawed seed with a factual defect list (no prescribed fix), via one envelope-mode registration.",
 );
-const DECISIVE_REPAIR: AssessmentSpec = AssessmentSpec::signal(
+const DECISIVE_REPAIR: AssessmentSpec = AssessmentSpec::score_only(
     "decisive_repair",
     30,
     "The model's own repair converged in one round (half credit for two).",
@@ -250,12 +250,12 @@ fn evaluate<'a>(
                 && text.contains("duplicate name: beta")
         });
 
-        Ok(assessment::objective([
-            DATA_REPAIRED.binary(
+        Ok(assessment::build_evaluation([
+            DATA_REPAIRED.full_or_zero(
                 repaired,
                 format!("rows={}, remaining violations: {remaining:?}", rows.len()),
             ),
-            DIAGNOSIS_DRIVEN.binary(
+            DIAGNOSIS_DRIVEN.full_or_zero(
                 diagnosed && envelope_mode,
                 format!(
                     "first audit nudge: {:?}; observed {} post-turn registration(s); need \
@@ -264,7 +264,7 @@ fn evaluate<'a>(
                     registrations.len()
                 ),
             ),
-            DECISIVE_REPAIR.points(
+            DECISIVE_REPAIR.award(
                 match nudges.len() {
                     1 => 30,
                     2 => 15,

@@ -16,7 +16,9 @@ use crate::report::{
     RetryAttemptReport, RunStatus,
 };
 use crate::scenarios::common;
-use crate::scenarios::{CriterionAward, ScenarioId, ScenarioObservation, ScenarioSpec};
+use crate::scenarios::{
+    CriterionAward, ObjectiveEvaluation, ScenarioId, ScenarioObservation, ScenarioSpec,
+};
 
 const MAX_RUNS: u32 = 20;
 const MAX_TECHNICAL_RETRIES: u8 = 3;
@@ -243,7 +245,10 @@ async fn run_once(
         report.push_failure(
             RunStatus::InfrastructureError,
             FailurePhase::Cleanup,
-            format!("harness::teardown: {error}"),
+            format!(
+                "scenario '{}': harness::teardown failed: {error:#}",
+                spec.id
+            ),
         );
     }
     if let Some(cleanup) = spec.cleanup {
@@ -251,7 +256,7 @@ async fn run_once(
             report.push_failure(
                 RunStatus::InfrastructureError,
                 FailurePhase::Cleanup,
-                error.to_string(),
+                format!("scenario '{}': scenario cleanup failed: {error:#}", spec.id),
             );
         }
     }
@@ -272,7 +277,10 @@ async fn run_once(
             report.push_failure(
                 RunStatus::InfrastructureError,
                 FailurePhase::Evaluate,
-                "evaluation completed without a score",
+                format!(
+                    "scenario '{}': evaluation completed without a score; expected criterion awards or a judge score",
+                    spec.id
+                ),
             );
         }
     }
@@ -453,10 +461,10 @@ async fn execute(
             RunFailure::new(
                 RunStatus::InfrastructureError,
                 FailurePhase::Evaluate,
-                error.to_string(),
+                format!("scenario '{}' evaluator failed: {error:#}", spec.id),
             )
         })?;
-    validate_objective_awards(spec, &objective.awards).map_err(|error| {
+    validate_objective_evaluation(spec, &objective).map_err(|error| {
         RunFailure::new(
             RunStatus::InfrastructureError,
             FailurePhase::Evaluate,
@@ -484,7 +492,7 @@ async fn execute(
                 return Err(RunFailure::new(
                     RunStatus::JudgeError,
                     FailurePhase::Evaluate,
-                    error.to_string(),
+                    format!("scenario '{}' judge evaluation failed: {error:#}", spec.id),
                 ));
             }
         }
@@ -639,42 +647,115 @@ fn update_score(report: &mut E2eRunReport) {
     });
 }
 
-fn validate_objective_awards(spec: &ScenarioSpec, awards: &[CriterionAward]) -> Result<()> {
+fn validate_objective_evaluation(
+    spec: &ScenarioSpec,
+    evaluation: &ObjectiveEvaluation,
+) -> Result<()> {
+    let mut gate_ids = HashSet::new();
+    for gate in &evaluation.hard_gates {
+        if gate.id.trim().is_empty() {
+            bail!(
+                "scenario '{}': evaluation contract violation: hard gate id is empty; expected a stable non-empty identifier",
+                spec.id
+            );
+        }
+        if gate.reason.trim().is_empty() {
+            bail!(
+                "scenario '{}': evaluation contract violation: hard gate '{}' has an empty reason; include the observed evidence",
+                spec.id, gate.id
+            );
+        }
+        if !gate_ids.insert(gate.id.as_str()) {
+            bail!(
+                "scenario '{}': evaluation contract violation: hard gate '{}' was returned more than once; expected unique gate ids",
+                spec.id, gate.id
+            );
+        }
+    }
+
     if spec.needs_judge() {
-        if awards.is_empty() {
+        if evaluation.awards.is_empty() {
             return Ok(());
         }
         bail!(
-            "scenario {} delegates all criterion scores to the judge",
-            spec.id
+            "scenario '{}': evaluation contract violation: judge-backed evaluator returned awards [{}]; expected no awards because the judge owns criterion scoring",
+            spec.id,
+            evaluation
+                .awards
+                .iter()
+                .map(|award| format!("'{}'", award.id))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
+
     let criteria: HashMap<_, _> = spec
         .criteria
         .iter()
         .map(|criterion| (criterion.id, criterion))
         .collect();
     let mut seen = HashSet::new();
-    for award in awards {
+    for award in &evaluation.awards {
+        if award.id.trim().is_empty() {
+            bail!(
+                "scenario '{}': evaluation contract violation: criterion award id is empty; expected one award per configured criterion",
+                spec.id
+            );
+        }
+        if award.reason.trim().is_empty() {
+            bail!(
+                "scenario '{}': evaluation contract violation: criterion '{}' has an empty reason; include the observed evidence",
+                spec.id, award.id
+            );
+        }
         let criterion = criteria
             .get(award.id.as_str())
-            .with_context(|| format!("unknown objective criterion {}", award.id))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "scenario '{}': evaluation contract violation: unknown criterion '{}'; expected one of [{}]; action: return exactly one award for each configured criterion",
+                    spec.id,
+                    award.id,
+                    spec.criteria
+                        .iter()
+                        .map(|criterion| format!("'{}'", criterion.id))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
         if award.awarded > criterion.weight {
             bail!(
-                "criterion {} awarded {} of {} points",
-                award.id,
+                "scenario '{}': evaluation contract violation: criterion '{}' awarded {}; expected awarded in 0..={}; action: reduce the award or change the configured weight",
+                spec.id, award.id,
                 award.awarded,
                 criterion.weight
             );
         }
         if !seen.insert(award.id.as_str()) {
-            bail!("objective evaluator repeated criterion {}", criterion.id);
+            bail!(
+                "scenario '{}': evaluation contract violation: criterion '{}' was returned more than once; expected exactly one award per configured criterion",
+                spec.id, criterion.id
+            );
         }
     }
-    for criterion in &spec.criteria {
-        if !seen.contains(criterion.id) {
-            bail!("objective evaluator omitted criterion {}", criterion.id);
-        }
+    let missing = spec
+        .criteria
+        .iter()
+        .filter(|criterion| !seen.contains(criterion.id))
+        .map(|criterion| format!("'{}'", criterion.id))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        let received = evaluation
+            .awards
+            .iter()
+            .map(|award| format!("'{}'", award.id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "scenario '{}': evaluation contract violation: missing awards [{}]; received [{}]; expected exactly one award per configured criterion",
+            spec.id,
+            missing.join(", "),
+            received
+        );
     }
     Ok(())
 }
@@ -761,25 +842,108 @@ mod tests {
     #[test]
     fn objective_awards_must_be_complete_and_bounded() {
         let spec = spec();
-        assert!(validate_objective_awards(
+        assert!(validate_objective_evaluation(
             &spec,
-            &[CriterionAward {
-                id: "objective".into(),
-                awarded: 100,
-                reason: "ok".into(),
-            }]
+            &ObjectiveEvaluation {
+                hard_gates: Vec::new(),
+                awards: vec![CriterionAward {
+                    id: "objective".into(),
+                    awarded: 100,
+                    reason: "ok".into(),
+                }],
+            }
         )
         .is_ok());
-        assert!(validate_objective_awards(&spec, &[]).is_err());
-        assert!(validate_objective_awards(
+        assert!(validate_objective_evaluation(
             &spec,
-            &[CriterionAward {
-                id: "objective".into(),
-                awarded: 101,
-                reason: "too high".into(),
-            }]
+            &ObjectiveEvaluation {
+                hard_gates: Vec::new(),
+                awards: Vec::new(),
+            }
         )
         .is_err());
+        let error = validate_objective_evaluation(
+            &spec,
+            &ObjectiveEvaluation {
+                hard_gates: Vec::new(),
+                awards: vec![CriterionAward {
+                    id: "objective".into(),
+                    awarded: 101,
+                    reason: "too high".into(),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "scenario 'case': evaluation contract violation: criterion 'objective' awarded 101; expected awarded in 0..=100; action: reduce the award or change the configured weight"
+        );
+    }
+
+    #[test]
+    fn objective_contract_errors_identify_the_invalid_ids_and_values() {
+        let spec = spec();
+        let unknown = validate_objective_evaluation(
+            &spec,
+            &ObjectiveEvaluation {
+                hard_gates: Vec::new(),
+                awards: vec![CriterionAward {
+                    id: "unknown".into(),
+                    awarded: 1,
+                    reason: "observed".into(),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            unknown.to_string(),
+            "scenario 'case': evaluation contract violation: unknown criterion 'unknown'; expected one of ['objective']; action: return exactly one award for each configured criterion"
+        );
+
+        let duplicate = validate_objective_evaluation(
+            &spec,
+            &ObjectiveEvaluation {
+                hard_gates: Vec::new(),
+                awards: vec![
+                    CriterionAward {
+                        id: "objective".into(),
+                        awarded: 1,
+                        reason: "first".into(),
+                    },
+                    CriterionAward {
+                        id: "objective".into(),
+                        awarded: 1,
+                        reason: "second".into(),
+                    },
+                ],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            duplicate.to_string(),
+            "scenario 'case': evaluation contract violation: criterion 'objective' was returned more than once; expected exactly one award per configured criterion"
+        );
+
+        let empty_gate = validate_objective_evaluation(
+            &spec,
+            &ObjectiveEvaluation {
+                hard_gates: vec![HardGateReport {
+                    id: String::new(),
+                    passed: false,
+                    reason: "observed".into(),
+                }],
+                awards: vec![CriterionAward {
+                    id: "objective".into(),
+                    awarded: 1,
+                    reason: "observed".into(),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            empty_gate.to_string(),
+            "scenario 'case': evaluation contract violation: hard gate id is empty; expected a stable non-empty identifier"
+        );
     }
 
     #[test]

@@ -20,32 +20,32 @@ const SANDBOX_STDOUT: &str = "sandbox-check:35";
 const EXPECTED_CORE_OPERATIONS: usize = 12;
 const PASS_THRESHOLD: u8 = 50;
 const EXECUTION_QUALITY_WEIGHT: u8 = 45;
-const WORKER_SETUP: AssessmentSpec = AssessmentSpec::required(
+const WORKER_SETUP: AssessmentSpec = AssessmentSpec::hard_gated(
     "worker_setup",
     10,
     "Both registry workers are added and expose their required surfaces.",
 );
-const CODER_WORKFLOW: AssessmentSpec = AssessmentSpec::required(
+const CODER_WORKFLOW: AssessmentSpec = AssessmentSpec::hard_gated(
     "coder_workflow",
     20,
     "Coder inspection, create, update, move, and read operations produce the exact file.",
 );
-const HOST_EXECUTION: AssessmentSpec = AssessmentSpec::required(
+const HOST_EXECUTION: AssessmentSpec = AssessmentSpec::hard_gated(
     "host_execution",
     10,
     "The final file runs successfully on the host with exact stdout.",
 );
-const SANDBOX_LIFECYCLE: AssessmentSpec = AssessmentSpec::required(
+const SANDBOX_LIFECYCLE: AssessmentSpec = AssessmentSpec::hard_gated(
     "sandbox_lifecycle",
     10,
     "A named isolated sandbox is created, executed in, listed, and stopped.",
 );
-const COMPLETION_REPORT: AssessmentSpec = AssessmentSpec::signal(
+const COMPLETION_REPORT: AssessmentSpec = AssessmentSpec::score_only(
     "completion_report",
     5,
     "The final response includes both exact observed outputs.",
 );
-const EXECUTION_QUALITY: AssessmentSpec = AssessmentSpec::signal(
+const EXECUTION_QUALITY: AssessmentSpec = AssessmentSpec::score_only(
     "execution_quality",
     EXECUTION_QUALITY_WEIGHT,
     "The workflow completes without function-call errors; recovered errors lower quality without overriding validated effects.",
@@ -227,8 +227,8 @@ fn evaluate<'a>(
         let response_reports_outputs = observation.response.contains(HOST_STDOUT)
             && observation.response.contains(SANDBOX_STDOUT);
 
-        let mut evaluation = assessment::objective([
-            WORKER_SETUP.binary(
+        let mut evaluation = assessment::build_evaluation([
+            WORKER_SETUP.full_or_zero(
                 worker_setup,
                 format!(
                     "shell add={installed_shell}, iii-sandbox add={installed_sandbox}, \
@@ -236,7 +236,7 @@ fn evaluate<'a>(
                      sandbox ready={sandbox_surface_ready}"
                 ),
             ),
-            CODER_WORKFLOW.binary(
+            CODER_WORKFLOW.full_or_zero(
                 coder_workflow,
                 match &final_read {
                     Ok(_) => format!(
@@ -252,18 +252,18 @@ fn evaluate<'a>(
                     ),
                 },
             ),
-            HOST_EXECUTION.binary(
+            HOST_EXECUTION.full_or_zero(
                 host_execution,
                 format!(
                     "exact host execution call={host_exec}, exact successful stdout={host_output}"
                 ),
             ),
-            SANDBOX_LIFECYCLE.binary(sandbox_lifecycle, sandbox.summary()),
-            COMPLETION_REPORT.binary(
+            SANDBOX_LIFECYCLE.full_or_zero(sandbox_lifecycle, sandbox.summary()),
+            COMPLETION_REPORT.full_or_zero(
                 response_reports_outputs,
                 "awarded when the final response includes both exact outputs",
             ),
-            EXECUTION_QUALITY.points(
+            EXECUTION_QUALITY.award(
                 execution_quality_award(function_call_errors),
                 format!(
                     "observed {function_call_errors} function-call error(s); recovered errors reduce quality but validated outcomes remain authoritative"
@@ -800,14 +800,14 @@ mod tests {
             ]
         );
 
-        let mut evaluation = assessment::objective([
-            WORKER_SETUP.binary(true, "worker setup"),
-            CODER_WORKFLOW.binary(true, "coder workflow"),
-            HOST_EXECUTION.binary(true, "host execution"),
-            SANDBOX_LIFECYCLE.binary(true, "sandbox lifecycle"),
-            COMPLETION_REPORT.binary(true, "completion report"),
+        let mut evaluation = assessment::build_evaluation([
+            WORKER_SETUP.full_or_zero(true, "worker setup"),
+            CODER_WORKFLOW.full_or_zero(true, "coder workflow"),
+            HOST_EXECUTION.full_or_zero(true, "host execution"),
+            SANDBOX_LIFECYCLE.full_or_zero(true, "sandbox lifecycle"),
+            COMPLETION_REPORT.full_or_zero(true, "completion report"),
             EXECUTION_QUALITY
-                .points(EXECUTION_QUALITY_WEIGHT, "execution quality")
+                .award(EXECUTION_QUALITY_WEIGHT, "execution quality")
                 .unwrap(),
         ]);
         evaluation

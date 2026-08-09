@@ -11,17 +11,17 @@ use super::{
 
 pub const ID: &str = "persistent_state";
 const KEY: &str = "persistent_state";
-const DURABLE_RESULT: AssessmentSpec = AssessmentSpec::required(
+const DURABLE_RESULT: AssessmentSpec = AssessmentSpec::hard_gated(
     "durable_result",
     60,
     "The exact requested JSON is present at the requested state key.",
 );
-const FUNCTION_DISCIPLINE: AssessmentSpec = AssessmentSpec::required(
+const FUNCTION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "function_discipline",
     30,
     "Exactly one successful write targets the requested scope and key.",
 );
-const CONFIRMATION: AssessmentSpec = AssessmentSpec::signal(
+const CONFIRMATION: AssessmentSpec = AssessmentSpec::score_only(
     "confirmation",
     10,
     "The final response briefly confirms completion.",
@@ -105,18 +105,18 @@ fn assess(
         0
     };
 
-    Ok(assessment::objective([
-        DURABLE_RESULT.binary(
+    Ok(assessment::build_evaluation([
+        DURABLE_RESULT.full_or_zero(
             state_matches,
             format!("expected {expected}, observed {observed}"),
         ),
-        FUNCTION_DISCIPLINE.binary(
+        FUNCTION_DISCIPLINE.full_or_zero(
             function_discipline,
             format!(
                 "exact_write={exact_write}; observed {state_set_calls} state::set call(s); observed {function_call_errors} function-call error(s)"
             ),
         ),
-        CONFIRMATION.points(
+        CONFIRMATION.award(
             confirmation_points,
             format!(
                 "response_present={response_present}; observed {response_chars} character(s); limit 240"

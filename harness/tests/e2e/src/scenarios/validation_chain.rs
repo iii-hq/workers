@@ -28,17 +28,17 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 pub const ID: &str = "validation_chain";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
-const BROKEN_VALIDATOR_SKIPPED: AssessmentSpec = AssessmentSpec::required(
+const BROKEN_VALIDATOR_SKIPPED: AssessmentSpec = AssessmentSpec::hard_gated(
     "broken_validator_skipped",
     30,
     "The fail_open validator errored invisibly: registered, never a nudge of its own, never blocking.",
 );
-const CHAIN_ORDER: AssessmentSpec = AssessmentSpec::required(
+const CHAIN_ORDER: AssessmentSpec = AssessmentSpec::hard_gated(
     "chain_order",
     40,
     "Exactly two denials, CHAIN-A then CHAIN-B — ascending priority, first deny wins each attempt.",
 );
-const ALL_GATES_SATISFIED: AssessmentSpec = AssessmentSpec::required(
+const ALL_GATES_SATISFIED: AssessmentSpec = AssessmentSpec::hard_gated(
     "all_gates_satisfied",
     30,
     "Rows AND marker both end satisfied — one passing validator never completes the turn alone.",
@@ -175,16 +175,16 @@ fn evaluate<'a>(
             0
         };
 
-        Ok(assessment::objective([
-            CHAIN_ORDER.binary(
+        Ok(assessment::build_evaluation([
+            CHAIN_ORDER.full_or_zero(
                 ordered,
                 format!("nudges in order: {nudges:?} — expected CHAIN-A then CHAIN-B"),
             ),
-            ALL_GATES_SATISFIED.binary(
+            ALL_GATES_SATISFIED.full_or_zero(
                 satisfied,
                 format!("rows={rows} (need 3), marker={marker} (need 1)"),
             ),
-            BROKEN_VALIDATOR_SKIPPED.required_points(
+            BROKEN_VALIDATOR_SKIPPED.gate_and_points(
                 three_registrations,
                 broken_validator_points,
                 format!(

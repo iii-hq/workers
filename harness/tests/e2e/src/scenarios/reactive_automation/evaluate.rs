@@ -2,25 +2,16 @@ use std::collections::BTreeSet;
 
 use super::evidence::{Evidence, FinalReport};
 use super::names::ScenarioNames;
-use super::{
-    EXPECTED_ORDERS, EXPECTED_WRITERS, FINALIZATION_CLEANUP, ORDERS_PER_WRITER, PARALLEL_WRITES,
-    REACTIVE_AGGREGATES, TRIGGER_ORCHESTRATION,
-};
-use crate::scenarios::{assessment, common, ObjectiveEvaluation};
+use super::{ASSESSMENTS, EXPECTED_ORDERS, EXPECTED_WRITERS, ORDERS_PER_WRITER};
+use super::{FINALIZATION_CLEANUP, PARALLEL_WRITES, REACTIVE_AGGREGATES, TRIGGER_ORCHESTRATION};
+use crate::scenarios::{assessment, ObjectiveEvaluation};
 
 pub(super) fn missing_database() -> ObjectiveEvaluation {
-    let reason = "database capability is unavailable; the agent was expected to discover and \
-                  install the database worker before executing the scenario";
-    let mut evaluation = assessment::objective([
-        PARALLEL_WRITES.unavailable(reason),
-        REACTIVE_AGGREGATES.unavailable(reason),
-        TRIGGER_ORCHESTRATION.unavailable(reason),
-        FINALIZATION_CLEANUP.unavailable(reason),
-    ]);
-    evaluation
-        .hard_gates
-        .push(common::gate("database_capability_available", false, reason));
-    evaluation
+    assessment::prerequisite_failure(
+        ASSESSMENTS,
+        "database_capability_available",
+        "database capability is unavailable; the agent was expected to discover and install the database worker before executing the scenario",
+    )
 }
 
 pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEvaluation {
@@ -133,8 +124,8 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
         && finalizer_completed
         && evidence.active_run_triggers == 0;
 
-    assessment::objective([
-        PARALLEL_WRITES.binary(
+    assessment::build_evaluation([
+        PARALLEL_WRITES.full_or_zero(
             workload_passed,
             format!(
                 "tables={all_tables_exist}, parallel_writers={parallel_writers}, \
@@ -142,11 +133,11 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
                  writers_done={writers_done}"
             ),
         ),
-        REACTIVE_AGGREGATES.binary(
+        REACTIVE_AGGREGATES.full_or_zero(
             aggregates_passed,
             format!("totals_match={totals_match}, report_counts_match={report_counts_match}"),
         ),
-        TRIGGER_ORCHESTRATION.binary(
+        TRIGGER_ORCHESTRATION.full_or_zero(
             orchestration_passed,
             format!(
                 "watch_before_writers={watch_before_writers}, \
@@ -155,7 +146,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
                 evidence.aggregate_deliveries, evidence.completion_wake_delivered
             ),
         ),
-        FINALIZATION_CLEANUP.binary(
+        FINALIZATION_CLEANUP.full_or_zero(
             finalization_passed,
             format!(
                 "report_rows={}, report_identity={report_identity_matches}, \

@@ -26,17 +26,17 @@ pub const ID: &str = "subagent_validation";
 const HOOK_TYPE: &str = "harness::hook::post-turn";
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
-const CHILD_GOAL: AssessmentSpec = AssessmentSpec::required(
+const CHILD_GOAL: AssessmentSpec = AssessmentSpec::hard_gated(
     "child_goal",
     35,
     "The child's table work exceeds the validator threshold and the verdict key carries the accepted count.",
 );
-const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::required(
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "orchestration_discipline",
     35,
     "Validator scoped to the child, wake armed before the spawn, and the child spawned with the named session.",
 );
-const WAKE_REPORT: AssessmentSpec = AssessmentSpec::required(
+const WAKE_REPORT: AssessmentSpec = AssessmentSpec::hard_gated(
     "wake_report",
     30,
     "The parent finishes from the verdict wake with the exact report line.",
@@ -170,8 +170,8 @@ fn evaluate<'a>(
         let (orchestration_passed, orchestration_points) =
             orchestration_outcome(ordered, child_nudges);
 
-        Ok(assessment::objective([
-            CHILD_GOAL.required_points(
+        Ok(assessment::build_evaluation([
+            CHILD_GOAL.gate_and_points(
                 goal,
                 child_goal_points(goal, rows),
                 format!(
@@ -179,7 +179,7 @@ fn evaluate<'a>(
                      exactly {EXPECTED_ROWS} rows"
                 ),
             )?,
-            ORCHESTRATION_DISCIPLINE.required_points(
+            ORCHESTRATION_DISCIPLINE.gate_and_points(
                 orchestration_passed,
                 orchestration_points,
                 format!(
@@ -188,7 +188,7 @@ fn evaluate<'a>(
                      in the child transcript"
                 ),
             )?,
-            WAKE_REPORT.binary(reported, "expected the exact report line"),
+            WAKE_REPORT.full_or_zero(reported, "expected the exact report line"),
         ]))
     })
 }
