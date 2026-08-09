@@ -10,11 +10,8 @@ harness_e2e:
   scenarios:
     - { id: direct_answer, group: Quality }
     - { id: persistent_state, group: Operations }
-    - { id: security_review, group: Quality }
     - { id: reactive_automation, group: Operations }
     - { id: shell_coder_sandbox, group: Operations }
-    - { id: design_tradeoff, group: Quality }
-    - { id: security_triage, group: Quality }
     - { id: research_pipeline, group: Operations }
     - { id: mechanical_reaction, group: Operations }
     - { id: timer_wake, group: Operations }

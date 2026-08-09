@@ -71,7 +71,6 @@
   function status(value) {
     return {
       passed: "Passed",
-      quality_advisory: "Quality advisory",
       hard_gate_failed: "Hard gate failed",
       technical_failed: "Technical failure",
       infra_failed: "Infrastructure failure",
@@ -139,7 +138,7 @@
     const score = typeof value.score === "number" ? ` · score ${number(value.score, 1)}` : "";
     const passRate =
       typeof value.passRate === "number" ? ` · ${number(value.passRate * 100, 1)}% pass` : "";
-    return `<span class="table-status status-${value.status === "passed" ? "pass" : value.status === "quality_advisory" ? "advisory" : "fail"}">${escapeHtml(status(value.status))}</span>${score}${passRate}`;
+    return `<span class="table-status status-${value.status === "passed" ? "pass" : "fail"}">${escapeHtml(status(value.status))}</span>${score}${passRate}`;
   }
 
   if (!left || !right || left.id === right.id) {

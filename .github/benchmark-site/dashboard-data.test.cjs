@@ -49,9 +49,7 @@ test("merges quality and efficiency records for the same release", () => {
   const raw = {
     entries: {
       "Harness E2E Quality": [
-        record(1, 90, "quality::glm::direct_answer::median_score", {
-          threshold: 80,
-        }),
+        record(1, 90, "quality::glm::direct_answer::median_score"),
         record(1, 100, "quality::glm::suite::scenario_pass_rate"),
       ],
       "Harness E2E Efficiency and Reliability": [
@@ -68,7 +66,6 @@ test("merges quality and efficiency records for the same release", () => {
   assert.equal(summary.scenarioPassRate, 100);
   assert.equal(summary.totalCost, 0.42);
   const scenario = scenarioSummary(subject, "direct_answer");
-  assert.equal(scenario.threshold, 80);
   assert.equal(scenario.passed, true);
 });
 

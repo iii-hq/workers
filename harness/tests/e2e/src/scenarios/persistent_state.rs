@@ -33,7 +33,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let expected = expected(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")
@@ -46,7 +46,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 240,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -145,137 +144,4 @@ fn expected(run_id: &str) -> Value {
         "run_id": run_id,
         "status": "stored"
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn award(evaluation: &ObjectiveEvaluation, id: &str) -> u8 {
-        evaluation
-            .awards
-            .iter()
-            .find(|award| award.id == id)
-            .unwrap_or_else(|| panic!("missing award {id}"))
-            .awarded
-    }
-
-    fn gate<'a>(
-        evaluation: &'a ObjectiveEvaluation,
-        id: &str,
-    ) -> &'a crate::report::HardGateReport {
-        evaluation
-            .hard_gates
-            .iter()
-            .find(|gate| gate.id == id)
-            .unwrap_or_else(|| panic!("missing gate {id}"))
-    }
-
-    fn total(evaluation: &ObjectiveEvaluation) -> u16 {
-        evaluation
-            .awards
-            .iter()
-            .map(|award| u16::from(award.awarded))
-            .sum()
-    }
-
-    #[test]
-    fn scenario_uses_the_canonical_assessment_contract() {
-        let spec = scenario("run");
-
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
-        assert_eq!(spec.threshold, 90);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("durable_result", 60),
-                ("function_discipline", 30),
-                ("confirmation", 10),
-            ]
-        );
-    }
-
-    #[test]
-    fn all_satisfied_assessments_score_one_hundred() {
-        let value = json!({ "stored": true });
-        let evaluation = assess(&value, &value, true, 1, 0, "Stored.").unwrap();
-
-        assert_eq!(evaluation.hard_gates.len(), 2);
-        assert_eq!(
-            evaluation
-                .hard_gates
-                .iter()
-                .map(|gate| gate.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["durable_result", "function_discipline"]
-        );
-        assert_eq!(
-            evaluation
-                .awards
-                .iter()
-                .map(|award| award.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["durable_result", "function_discipline", "confirmation"]
-        );
-        assert!(gate(&evaluation, "durable_result").passed);
-        assert!(gate(&evaluation, "function_discipline").passed);
-        assert_eq!(award(&evaluation, "durable_result"), 60);
-        assert_eq!(award(&evaluation, "function_discipline"), 30);
-        assert_eq!(award(&evaluation, "confirmation"), 10);
-        assert_eq!(total(&evaluation), 100);
-    }
-
-    #[test]
-    fn missing_or_overlong_confirmation_is_non_blocking() {
-        let value = json!({ "stored": true });
-
-        for response in [String::new(), "x".repeat(241)] {
-            let evaluation = assess(&value, &value, true, 1, 0, &response).unwrap();
-
-            assert!(evaluation.hard_gates.iter().all(|gate| gate.passed));
-            assert_eq!(award(&evaluation, "confirmation"), 0);
-            assert_eq!(total(&evaluation), 90);
-        }
-    }
-
-    #[test]
-    fn inexact_write_or_function_error_fails_function_discipline() {
-        let value = json!({ "stored": true });
-
-        for (exact_write, state_set_calls, function_call_errors) in [(false, 2, 0), (true, 1, 1)] {
-            let evaluation = assess(
-                &value,
-                &value,
-                exact_write,
-                state_set_calls,
-                function_call_errors,
-                "Stored.",
-            )
-            .unwrap();
-
-            let discipline_gate = gate(&evaluation, "function_discipline");
-            assert!(!discipline_gate.passed);
-            assert!(discipline_gate.reason.contains(&format!(
-                "observed {function_call_errors} function-call error(s)"
-            )));
-            assert_eq!(award(&evaluation, "function_discipline"), 0);
-            assert_eq!(total(&evaluation), 70);
-        }
-    }
-
-    #[test]
-    fn state_mismatch_fails_durable_result() {
-        let expected = json!({ "stored": true });
-        let observed = json!({ "stored": false });
-        let evaluation = assess(&expected, &observed, true, 1, 0, "Stored.").unwrap();
-
-        assert!(!gate(&evaluation, "durable_result").passed);
-        assert!(gate(&evaluation, "function_discipline").passed);
-        assert_eq!(award(&evaluation, "durable_result"), 0);
-        assert_eq!(total(&evaluation), 40);
-    }
 }

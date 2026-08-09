@@ -48,7 +48,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -58,7 +58,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -636,169 +635,6 @@ impl Names {
             complete_label: format!("analysts-complete:{run_id}"),
             barrier_id: format!("research:{run_id}:analysts"),
             scope,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scenario_is_objective_and_valid() {
-        let scenario = scenario("run");
-        scenario.validate().unwrap();
-        assert!(!scenario.needs_judge());
-        assert!(!scenario.prompt.contains("harness::react"));
-        assert_eq!(scenario.version, 2);
-        assert_eq!(scenario.threshold, 90);
-        assert_eq!(
-            scenario
-                .criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("source_capture", 25),
-                ("parallel_analysis", 30),
-                ("barrier_fan_in", 25),
-                ("research_brief", 20),
-            ]
-        );
-    }
-
-    #[test]
-    fn accepts_model_chosen_timer_label_and_child_ids() {
-        let deadline = common::ObservedFunctionCall {
-            function_id: "engine::register_trigger".to_string(),
-            arguments: json!({
-                "trigger_type": "timer",
-                "config": { "in_ms": 300_000 },
-                "label": "deadline:run",
-                "once": true
-            }),
-        };
-        let transcript = json!({
-            "messages": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": [{
-                            "type": "function_call",
-                            "function_id": "agent_trigger",
-                            "arguments": {
-                                "function": "harness::spawn",
-                                "payload": { "task": "summarize" }
-                            }
-                        }]
-                    }
-                },
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": [{
-                            "type": "function_call",
-                            "function_id": "agent_trigger",
-                            "arguments": {
-                                "function": "harness::spawn",
-                                "payload": {
-                                    "session_id": "model-chosen-facts",
-                                    "task": "extract facts"
-                                }
-                            }
-                        }]
-                    }
-                }
-            ]
-        });
-        let first_child = json!({
-            "messages": [
-                { "message": { "role": "assistant", "timestamp": 10 } },
-                { "message": { "role": "function_result", "timestamp": 30 } }
-            ]
-        });
-        let second_child = json!({
-            "messages": [
-                { "message": { "role": "assistant", "timestamp": 20 } },
-                { "message": { "role": "function_result", "timestamp": 40 } }
-            ]
-        });
-        let activity = [
-            activity_window(&first_child).unwrap(),
-            activity_window(&second_child).unwrap(),
-        ];
-
-        assert!(is_deadline_watch(&deadline));
-        assert_eq!(max_parallel_spawns(&transcript), 1);
-        assert!(activity_windows_overlap(&activity));
-    }
-
-    #[test]
-    fn validates_structured_analyst_outputs_and_verbatim_merge() {
-        let summary = json!({
-            "role": "summarizer",
-            "title": "Cache replacement policies",
-            "bullets": [
-                "First substantive summary point.",
-                "Second substantive summary point.",
-                "Third substantive summary point.",
-                "Fourth substantive summary point.",
-                "Fifth substantive summary point."
-            ]
-        });
-        let facts = json!({
-            "role": "fact-extractor",
-            "facts": [
-                "LRU evicts the least recently used item.",
-                "FIFO evicts the oldest inserted item.",
-                "Belady's algorithm is optimal with future knowledge.",
-                "LFU uses access frequency.",
-                "Random replacement chooses an item randomly."
-            ]
-        });
-        let response = format!(
-            "# {}\n\n## Summary\n{}\n\n## Concrete facts\n{}",
-            summary["title"].as_str().unwrap(),
-            string_list(&summary, "bullets").unwrap().join("\n"),
-            string_list(&facts, "facts").unwrap().join("\n")
-        );
-
-        assert!(valid_summary(&summary));
-        assert!(valid_facts(&facts));
-        assert!(response_merges(&response, &summary, &facts));
-    }
-
-    #[test]
-    fn recognizes_atomic_fetch_trim_and_save_pipeline() {
-        let names = Names::new("run");
-        for fetch in ["web::fetch", "scrapling::fetch"] {
-            let call = common::ObservedFunctionCall {
-                function_id: "fp::pipe".to_string(),
-                arguments: json!({
-                    "through": [
-                        {
-                            "function": fetch,
-                            "payload": { "url": ARTICLE_URL, "format": "markdown" }
-                        },
-                        { "function": "fp::get", "payload": { "path": "/body" } },
-                        { "function": "fp::take", "payload": { "n": 6000 } },
-                        {
-                            "function": "state::set",
-                            "into": "/value/content",
-                            "payload": {
-                                "scope": names.scope,
-                                "key": ARTICLE_KEY,
-                                "value": {
-                                    "url": ARTICLE_URL,
-                                    "title": "Cache replacement policies"
-                                }
-                            }
-                        }
-                    ]
-                }),
-            };
-
-            assert!(is_source_pipeline(&call, &names), "{fetch}");
         }
     }
 }

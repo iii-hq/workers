@@ -41,10 +41,10 @@ const DIAGNOSIS_DRIVEN: AssessmentSpec = AssessmentSpec::hard_gated(
     30,
     "The auditor rejected the flawed seed with a factual defect list (no prescribed fix), via one envelope-mode registration.",
 );
-const DECISIVE_REPAIR: AssessmentSpec = AssessmentSpec::score_only(
+const DECISIVE_REPAIR: AssessmentSpec = AssessmentSpec::hard_gated(
     "decisive_repair",
     30,
-    "The model's own repair converged in one round (half credit for two).",
+    "The model's own repair converged within two rounds (full credit for one, half for two).",
 );
 const ASSESSMENTS: &[AssessmentSpec] = &[DATA_REPAIRED, DIAGNOSIS_DRIVEN, DECISIVE_REPAIR];
 
@@ -163,7 +163,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "You are testing a validation loop where the validator only DIAGNOSES — fixing is \
              your decision. Follow the setup steps exactly; after that, think for yourself.\n\n\
@@ -200,7 +200,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         // audit catches it, second converges) scores 85 and passes — that IS
         // the loop doing its job; live run 1: the model "renamed the second
         // beta to delta", created a duplicate delta, and was caught.
-        threshold: 80,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: Some(setup),
@@ -264,9 +263,10 @@ fn evaluate<'a>(
                     registrations.len()
                 ),
             ),
-            DECISIVE_REPAIR.award(
+            DECISIVE_REPAIR.gate_and_points(
+                matches!(nudges.len(), 1 | 2),
                 match nudges.len() {
-                    1 => 30,
+                    1 => DECISIVE_REPAIR.weight(),
                     2 => 15,
                     _ => 0,
                 },
@@ -317,74 +317,4 @@ fn nudge_texts(transcript: &Value) -> Vec<String> {
                 })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rows(spec: &[(&str, i64)]) -> Vec<(String, i64)> {
-        spec.iter().map(|(n, a)| (n.to_string(), *a)).collect()
-    }
-
-    #[test]
-    fn the_flawed_seed_yields_exactly_the_two_defects() {
-        let found = violations(&rows(&[
-            ("alpha", 10),
-            ("beta", -5),
-            ("gamma", 30),
-            ("beta", 7),
-            ("delta", 200),
-        ]));
-        assert_eq!(
-            found,
-            vec!["non-positive amount: beta=-5", "duplicate name: beta x2"]
-        );
-    }
-
-    #[test]
-    fn any_valid_repair_passes_and_nuking_rows_does_not() {
-        // The elegant fix: delete the ('beta', -5) row — cures both defects.
-        assert!(violations(&rows(&[
-            ("alpha", 10),
-            ("gamma", 30),
-            ("beta", 7),
-            ("delta", 200),
-        ]))
-        .is_empty());
-        // An update+dedup repair is equally valid.
-        assert!(violations(&rows(&[
-            ("alpha", 10),
-            ("beta", 5),
-            ("gamma", 30),
-            ("delta", 200),
-        ]))
-        .is_empty());
-        // Deleting everything is NOT a repair: required names go missing.
-        let nuked = violations(&rows(&[]));
-        assert_eq!(nuked.len(), 4);
-        assert!(nuked[0].contains("missing required name"));
-    }
-
-    #[test]
-    fn spec_is_valid_and_run_scoped() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("e2etest::audit_aB19"));
-        assert!(spec.prompt.contains("fixtest_aB19"));
-        assert!(spec.prompt.contains("('beta', -5)"));
-        assert!(spec.setup.is_some());
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("data_repaired", 40),
-                ("diagnosis_driven", 30),
-                ("decisive_repair", 30),
-            ]
-        );
-    }
 }

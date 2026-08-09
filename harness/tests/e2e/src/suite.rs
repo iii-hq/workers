@@ -107,7 +107,6 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
         scenario_reports.push(E2eScenarioReport::aggregate(
             definition.id,
             definition.version,
-            definition.threshold,
             definition.execution,
             runs,
         ));
@@ -267,12 +266,8 @@ async fn run_once(
             // criterion awards; the run must still enter the aggregate as a score.
             report.score.get_or_insert(0);
             report.finish(RunStatus::HardGateFailed);
-        } else if let Some(score) = report.score {
-            report.finish(if score >= spec.threshold {
-                RunStatus::Passed
-            } else {
-                RunStatus::QualityFailed
-            });
+        } else if report.score.is_some() {
+            report.finish(RunStatus::Passed);
         } else {
             report.push_failure(
                 RunStatus::InfrastructureError,
@@ -808,7 +803,6 @@ mod tests {
                 stuck_timeout_seconds: 1,
             },
             denied_functions: &[],
-            threshold: 80,
             criteria: vec![CriterionSpec {
                 id: "objective",
                 weight: 100,
@@ -963,15 +957,11 @@ mod tests {
             }],
         );
         update_score(&mut report);
-        report.finish(
-            if report.hard_gates.iter().all(|gate| gate.passed)
-                && report.score.is_some_and(|score| score >= spec().threshold)
-            {
-                RunStatus::Passed
-            } else {
-                RunStatus::HardGateFailed
-            },
-        );
+        report.finish(if report.hard_gates.iter().all(|gate| gate.passed) {
+            RunStatus::Passed
+        } else {
+            RunStatus::HardGateFailed
+        });
         assert_eq!(report.status, RunStatus::HardGateFailed);
     }
 

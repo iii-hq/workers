@@ -76,7 +76,6 @@
           : {},
       scenario_id: scenarioId,
       scenario_version: Number(scenario?.scenario_version) || 1,
-      threshold: numberOrNull(scenario?.threshold),
     };
   }
 
@@ -117,7 +116,6 @@
   function normalizeStatus(value, execution = {}) {
     const semanticStatuses = [
       "passed",
-      "quality_advisory",
       "hard_gate_failed",
       "technical_failed",
       "infra_failed",
@@ -136,11 +134,6 @@
       if (Number(totals.missing_reports || 0) > 0) return "incomplete";
       if (Number(totals.technical_failures || 0) > 0) return "technical_failed";
       if (Number(totals.hard_gate_failures || 0) > 0) return "hard_gate_failed";
-      if (String(execution?.conclusion || "") !== "success") return "infra_failed";
-      const subjects = Array.isArray(execution?.subjects) ? execution.subjects : [];
-      if (subjects.length && subjects.some((subject) => !subject?.passed)) {
-        return "quality_advisory";
-      }
       return "infra_failed";
     }
     return "incomplete";
@@ -159,9 +152,8 @@
       return "hard_gate_failed";
     }
     if (status === "infra_failed") return "infra_failed";
-    if (status === "quality_advisory") return "quality_advisory";
     if (scenario.passed || status === "passed" || status === "success") return "passed";
-    return "quality_advisory";
+    return "infra_failed";
   }
 
   function normalizeExecution(entry) {
@@ -214,7 +206,6 @@
         id: scenarioId,
         status: score?.status || passRate?.status || "unknown",
         passed: score?.passed ?? passRate?.passed ?? false,
-        threshold: score?.threshold ?? passRate?.threshold ?? null,
         median_score: score?.value ?? null,
         pass_rate: passRate?.value === null || passRate?.value === undefined
           ? null
@@ -464,7 +455,6 @@
     if (["failed", "hard_gate_failed", "technical_failed", "infra_failed"].includes(status)) {
       return "×";
     }
-    if (status === "quality_advisory") return "!";
     if (status === "cancelled") return "○";
     if (status === "running") return "•";
     if (status !== "passed") return "–";
@@ -603,7 +593,6 @@
       technicalFailures,
       score: numberOrNull(scenario.median_score),
       passRate: numberOrNull(scenario.pass_rate),
-      threshold: numberOrNull(scenario.threshold),
     };
   }
 

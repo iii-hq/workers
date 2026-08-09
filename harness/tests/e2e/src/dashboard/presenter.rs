@@ -220,7 +220,6 @@ fn scenario_summary(scenario: &E2eScenarioReport) -> Value {
         "id": scenario.scenario_id,
         "status": semantic_status(scenario.passed, scenario.aggregate.hard_gate_failures, scenario.aggregate.technical_failures),
         "passed": scenario.passed,
-        "threshold": scenario.threshold,
         "runs": scenario.aggregate.runs,
         "median_score": scenario.aggregate.median_score,
         "pass_rate": scenario.aggregate.pass_rate,
@@ -241,7 +240,7 @@ fn semantic_status(passed: bool, hard_gates: u32, technical: u32) -> &'static st
     } else if passed {
         "passed"
     } else {
-        "quality_advisory"
+        "infra_failed"
     }
 }
 
@@ -300,7 +299,6 @@ fn scenario_metrics(subject_id: &str, report: &E2eReport) -> Vec<Value> {
                 "execution_policy": scenario.execution_policy,
                 "scenario_id": scenario.scenario_id,
                 "scenario_version": scenario.scenario_version,
-                "threshold": scenario.threshold,
             });
             json!({
                 "subject_id": subject_id,

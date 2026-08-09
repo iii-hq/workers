@@ -1,14 +1,14 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec, JUDGE_BACKED_PASS_THRESHOLD};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
 
 pub const ID: &str = "direct_answer";
 
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: "Explain to a non-technical reader, in at most two sentences, the difference between authentication and authorization. Do not perform any external action.".into(),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -18,7 +18,6 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "correctness",

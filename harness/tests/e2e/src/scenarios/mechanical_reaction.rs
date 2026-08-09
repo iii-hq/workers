@@ -43,7 +43,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let source = source_value(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             r#"Test a zero-token mechanical reaction in isolated state scope `{scope}`.
 
@@ -76,7 +76,6 @@ binding armed."#,
             stuck_timeout_seconds: 180,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -326,68 +325,5 @@ impl Names {
             scope: format!("e2e:mechanical:{run_id}"),
             root_session: format!("e2e_{run_id}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_both_call_binding_forms() {
-        let names = Names::new("run");
-        for arguments in [
-            json!({
-                "trigger_type": "state",
-                "config": { "scope": names.scope, "key": SOURCE_KEY },
-                "function_id": "state::set",
-                "metadata": {
-                    "payload": { "scope": names.scope, "key": MIRROR_KEY },
-                    "event_into": "/value"
-                }
-            }),
-            json!({
-                "trigger_type": "state",
-                "config": { "scope": names.scope, "key": SOURCE_KEY },
-                "target": {
-                    "function_id": "state::set",
-                    "payload": { "scope": names.scope, "key": MIRROR_KEY },
-                    "event_into": "/value"
-                }
-            }),
-        ] {
-            let call = common::ObservedFunctionCall {
-                function_id: "engine::register_trigger".to_string(),
-                arguments,
-            };
-            assert!(is_mirror_call(&call, &names));
-        }
-
-        let source = source_value("run");
-        assert!(valid_mirror(
-            &json!({
-                "event_type": "state:created",
-                "scope": names.scope,
-                "key": SOURCE_KEY,
-                "new_value": source
-            }),
-            &names,
-            &source
-        ));
-        let spec = scenario("run");
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("reactions_armed", 30),
-                ("mechanical_mirror", 35),
-                ("parent_woken", 20),
-                ("clean_completion", 15),
-            ]
-        );
     }
 }

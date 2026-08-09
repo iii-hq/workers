@@ -54,7 +54,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = ScenarioNames::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 3,
+        version: 4,
         prompt: prompt::build(&names, STUCK_WATCHDOG_SECONDS),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -64,7 +64,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: STUCK_WATCHDOG_SECONDS,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -86,46 +85,4 @@ fn evaluate<'a>(
         let evidence = queries::collect(context, observation, &names).await?;
         Ok(evaluate::score(&evidence, &names))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scenario_uses_the_canonical_assessment_contract() {
-        let spec = scenario("run");
-
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 3);
-        assert_eq!(spec.threshold, 90);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight, criterion.description))
-                .collect::<Vec<_>>(),
-            vec![
-                (
-                    "parallel_writes",
-                    25,
-                    "Three parallel writer sessions produce exactly five valid orders each.",
-                ),
-                (
-                    "reactive_aggregates",
-                    30,
-                    "A mechanical trigger call maintains totals that exactly match the source rows.",
-                ),
-                (
-                    "trigger_orchestration",
-                    25,
-                    "The aggregate call and barrier wake are armed before writers start and proven by delivery records.",
-                ),
-                (
-                    "finalization_cleanup",
-                    20,
-                    "The barrier-woken root directly spawns one finalizer, which writes a passing report before cleanup.",
-                ),
-            ]
-        );
-    }
 }

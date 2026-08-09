@@ -110,8 +110,6 @@
             value: bench.value,
             unit: bench.unit || "",
             range: bench.range || "",
-            threshold:
-              typeof extra.threshold === "number" ? extra.threshold : null,
             passed:
               typeof extra.passed === "boolean" ? extra.passed : null,
             status: extra.status || "unknown",
@@ -287,7 +285,6 @@
     return {
       id: scenarioId,
       medianScore: scoreMetric?.value ?? null,
-      threshold: scoreMetric?.threshold ?? passRateMetric?.threshold ?? null,
       passed: scoreMetric?.passed ?? passRateMetric?.passed ?? false,
       status: scoreMetric?.status ?? passRateMetric?.status ?? "unknown",
       passRate: passRateMetric?.value ?? null,
@@ -352,7 +349,6 @@
             "unknown",
           value: metric.value,
           unit: metric.unit,
-          threshold: metric.threshold,
           snapshot,
         });
       }

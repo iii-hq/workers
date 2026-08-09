@@ -32,11 +32,10 @@ impl E2eReport {
                 .unwrap_or_else(|| "n/a".to_string());
             let _ = writeln!(
                 output,
-                "{} {}  score={}/{}  passed={}/{}  time={}  cost={}",
+                "{} {}  score={}  passed={}/{}  time={}  cost={}",
                 if scenario.passed { "PASS" } else { "FAIL" },
                 scenario.scenario_id,
                 score,
-                scenario.threshold,
                 scenario.aggregate.passed_runs,
                 scenario.aggregate.runs,
                 format_duration(duration_ms),

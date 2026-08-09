@@ -92,7 +92,7 @@ def semantic_result_status(
     if hard_gate_failures:
         return "hard_gate_failed"
     if not passed:
-        return "quality_advisory"
+        return "infra_failed"
     return "passed"
 
 
@@ -388,7 +388,6 @@ def collect(
                     "id": scenario_id,
                     "status": status,
                     "passed": False,
-                    "threshold": None,
                     "runs": 0,
                     "median_score": None,
                     "pass_rate": None,
@@ -450,9 +449,6 @@ def collect(
             if not isinstance(aggregate, dict) or not isinstance(runs, list):
                 raise CollectionError(f"{report_path}: aggregate and runs are required")
 
-            threshold = require_number(
-                scenario.get("threshold"), f"{report_path}: threshold"
-            )
             median_score = optional_number(
                 aggregate.get("median_score"), f"{report_path}: median_score"
             )
@@ -524,7 +520,6 @@ def collect(
                 **base_extra,
                 "judge": report.get("judge") or base_extra["judge"],
                 "engine_revision": engine_revision,
-                "threshold": threshold,
                 "passed": report_passed,
                 "status": status,
                 "runs": len(runs),
@@ -665,7 +660,6 @@ def collect(
                     "id": scenario_id,
                     "status": status,
                     "passed": report_passed,
-                    "threshold": threshold,
                     "runs": len(runs),
                     "median_score": median_score,
                     "pass_rate": pass_rate,

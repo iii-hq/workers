@@ -19,7 +19,7 @@
       event: index === 3 ? "workflow_dispatch" : "schedule",
       actor: index === 3 ? "iii-team" : "github-actions",
       conclusion:
-        execution.status === "passed" || execution.status === "quality_advisory"
+        execution.status === "passed"
           ? "success"
           : execution.status === "cancelled"
             ? "cancelled"
@@ -49,7 +49,7 @@
       ? "passed"
       : scenario.hard_gate_failures
         ? "hard_gate_failed"
-        : "quality_failed";
+        : "infrastructure_error";
     return {
       run_id: runId,
       session_id: sessionId,
@@ -89,7 +89,7 @@
             phase: scenario.hard_gate_failures ? "evaluate" : "collect",
             message: scenario.hard_gate_failures
               ? "A required hard gate did not pass."
-              : "The score did not meet the scenario threshold.",
+              : "The required run pass rate was not met.",
           }],
       transcript: {
         messages: [
@@ -230,7 +230,6 @@
               {
                 scenario_id: scenario.id,
                 scenario_version: scenario.scenario_version || 1,
-                threshold: scenario.threshold,
                 execution_policy: { max_turns: 16, max_total_tokens: 250000 },
                 aggregate: {
                   runs: runs.length,

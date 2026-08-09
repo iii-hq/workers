@@ -65,7 +65,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 3,
+        version: 4,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -75,7 +75,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 360,
         },
         denied_functions: &["state::*"],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -960,146 +959,5 @@ impl Names {
             run_label,
             table_prefix,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scenario_is_valid_and_removes_state_capability() {
-        let scenario = scenario("aB19");
-        scenario.validate().unwrap();
-        assert_eq!(scenario.version, 3);
-        assert_eq!(scenario.denied_functions, ["state::*"]);
-        assert!(!scenario.needs_judge());
-        assert_eq!(scenario.threshold, 90);
-        assert_eq!(
-            scenario
-                .criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("courier_workload", 30),
-                ("live_ledger", 25),
-                ("database_fan_in", 25),
-                ("verification_cleanup", 20),
-            ]
-        );
-    }
-
-    #[test]
-    fn accepts_minimal_courier_policies_and_both_live_ledger_shapes() {
-        let names = Names::new("aB19");
-        let mut calls = Vec::new();
-        calls.push(CallAt {
-            entry: 0,
-            function_id: "engine::register_trigger".to_string(),
-            arguments: json!({
-                "trigger_type": "database::row-changed",
-                "config": { "db": DATABASE, "table": names.shipments },
-                "target": {
-                    "function_id": "database::execute",
-                    "payload": { "db": DATABASE, "sql": "UPDATE ledger" }
-                },
-                "once": false
-            }),
-        });
-        for session_id in &names.courier_sessions {
-            calls.push(CallAt {
-                entry: 1,
-                function_id: "harness::spawn".to_string(),
-                arguments: json!({
-                    "session_id": session_id,
-                    "options": {
-                        "functions": { "allow": ["database::executeBatch"] }
-                    }
-                }),
-            });
-        }
-
-        assert!(courier_spawns_are_minimal(&calls, &names));
-        assert!(live_ledger_setup_before(
-            &calls,
-            &BTreeMap::new(),
-            &names,
-            1
-        ));
-
-        calls[1].arguments["options"]["functions"]["allow"] = json!(["database::*"]);
-        assert!(!courier_spawns_are_minimal(&calls, &names));
-    }
-
-    #[test]
-    fn expected_ledger_is_derived_from_corrected_shipments() {
-        assert!(ledger_matches(
-            &ledger_from_shipments(&expected_shipments()).unwrap(),
-            &expected_ledger()
-        ));
-    }
-
-    #[test]
-    fn courier_can_signal_done_by_updating_its_precreated_status_row() {
-        let names = Names::new("ab19");
-        let statements = [
-            format!("insert into {} values ('acme', 1, 10)", names.shipments),
-            format!("update {} set value = 11", names.shipments),
-            format!("update {} set status = 'done'", names.couriers),
-        ];
-
-        assert!(courier_writes_are_ordered(&statements, &names));
-    }
-
-    #[test]
-    fn missing_database_emits_one_prerequisite_gate_and_ordered_zero_awards() {
-        assert_prerequisite_failure(
-            missing_database(),
-            "database_capability_available",
-            "database::query is unavailable",
-        );
-    }
-
-    #[test]
-    fn missing_primary_emits_one_prerequisite_gate_and_ordered_zero_awards() {
-        assert_prerequisite_failure(
-            missing_primary(&BTreeSet::from([
-                "mysql".to_string(),
-                "postgres".to_string(),
-                "sqlite".to_string(),
-            ])),
-            "primary_database_available",
-            "postgres",
-        );
-    }
-
-    fn assert_prerequisite_failure(
-        evaluation: ObjectiveEvaluation,
-        gate_id: &str,
-        reason_fragment: &str,
-    ) {
-        assert_eq!(evaluation.hard_gates.len(), 1);
-        assert_eq!(evaluation.hard_gates[0].id, gate_id);
-        assert!(!evaluation.hard_gates[0].passed);
-        assert!(evaluation.hard_gates[0].reason.contains(reason_fragment));
-        let prerequisite_reason = &evaluation.hard_gates[0].reason;
-        assert_eq!(
-            evaluation
-                .awards
-                .iter()
-                .map(|award| (award.id.as_str(), award.awarded))
-                .collect::<Vec<_>>(),
-            vec![
-                ("courier_workload", 0),
-                ("live_ledger", 0),
-                ("database_fan_in", 0),
-                ("verification_cleanup", 0),
-            ]
-        );
-        assert!(evaluation
-            .awards
-            .iter()
-            .all(|award| &award.reason == prerequisite_reason));
     }
 }

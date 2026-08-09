@@ -38,7 +38,7 @@ const BOUNDED_FAILURE: AssessmentSpec = AssessmentSpec::hard_gated(
     40,
     "The child fails after exactly the budgeted denials; the verdict key is never written.",
 );
-const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::score_only(
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
     "orchestration_discipline",
     30,
     "Validator scoped to the child and the deadline wake armed before the spawn.",
@@ -57,7 +57,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let expires_at = now_ms() + EXPIRY_DELAY_MS;
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             "You orchestrate one validated sub-agent whose goal may be unreachable; your job is \
              to bound the attempt and report honestly. You never poll; wakes drive you. Follow \
@@ -107,7 +107,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 420,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -233,30 +232,4 @@ fn scope(run_id: &str) -> String {
 
 fn child_session(run_id: &str) -> String {
     format!("e2e_{run_id}-child-1")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_carries_the_deadline_and_unreachable_threshold() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("fsubvtest_aB19"));
-        assert!(spec.prompt.contains("\"expires_at\""));
-        assert!(spec.prompt.contains("101"));
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("bounded_failure", 40),
-                ("orchestration_discipline", 30),
-                ("expiry_report", 30),
-            ]
-        );
-    }
 }

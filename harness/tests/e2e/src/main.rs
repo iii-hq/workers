@@ -72,7 +72,7 @@ struct RunArgs {
     #[arg(long, default_value_t = 1)]
     runs: u32,
 
-    /// Retry transient provider and transport failures, never quality or resource failures.
+    /// Retry transient provider and transport failures, never hard-gate or resource failures.
     #[arg(long, env = "HARNESS_E2E_TECHNICAL_RETRIES", default_value_t = 1)]
     technical_retries: u8,
 
@@ -181,15 +181,8 @@ async fn run(args: RunArgs) -> Result<()> {
 
     print!("{}", outcome.report.summary(false));
     println!("report: {}", outcome.report_path.display());
-    if !outcome.report.passed && outcome.report.has_ci_blocking_failure() {
-        bail!("E2E suite failed");
-    }
     if !outcome.report.passed {
-        tracing::warn!(
-            path = %outcome.report_path.display(),
-            "E2E quality score is below the scenario threshold but remains advisory"
-        );
-        return Ok(());
+        bail!("E2E suite failed");
     }
     tracing::info!(path = %outcome.report_path.display(), "E2E quality suite passed");
     Ok(())

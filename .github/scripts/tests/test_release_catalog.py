@@ -16,7 +16,7 @@ def test_repository_catalog_is_valid():
     assert catalog["harness"]["required_validation"] == "full"
     profiles = load_profile_catalog()
     assert profiles.required_profile == "release"
-    assert len(profiles.ids) == 19
+    assert len(profiles.ids) == 16
     assert len(profiles.release_scenarios) == 9
     assert catalog["lsp-vscode"]["release_workflow"] == "release-lsp-vscode.yml"
     resolved = {entry["slug"]: entry for entry in resolved_entries(catalog)}

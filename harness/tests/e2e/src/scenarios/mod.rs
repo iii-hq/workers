@@ -15,7 +15,6 @@ use crate::report::HardGateReport;
 mod assessment;
 pub mod common;
 pub mod custom_validator;
-pub mod design_tradeoff;
 pub mod direct_answer;
 pub mod mechanical_reaction;
 pub mod multi_subagent_validation;
@@ -23,8 +22,6 @@ pub mod persistent_state;
 pub mod reactive_automation;
 pub mod receiving_operation;
 pub mod research_pipeline;
-pub mod security_review;
-pub mod security_triage;
 pub mod shell_coder_sandbox;
 pub mod subagent_validation;
 pub mod subagent_validation_failure;
@@ -33,10 +30,6 @@ pub mod validation_chain;
 pub mod validation_loop;
 pub mod validation_scope_enforcement;
 pub mod validation_self_repair;
-
-/// Judge-backed scenarios keep a low semantic floor while exposing the full
-/// score as a quality signal. Objective contract violations remain hard gates.
-pub(super) const JUDGE_BACKED_PASS_THRESHOLD: u8 = 50;
 
 pub type EvaluationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
@@ -108,7 +101,6 @@ pub struct ScenarioSpec {
     pub filesystem_root: Option<PathBuf>,
     pub execution: ExecutionPolicy,
     pub denied_functions: &'static [&'static str],
-    pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
     pub judge_reference: Option<Value>,
     /// Runs BEFORE the prompt is sent; a failure aborts the run.
@@ -129,19 +121,6 @@ impl ScenarioSpec {
             bail!("scenario '{}': version=0; expected version >= 1", self.id);
         }
         self.execution.validate(self.id)?;
-        if !(1..=100).contains(&self.threshold) {
-            bail!(
-                "scenario '{}': threshold={}; expected a value in 1..=100",
-                self.id,
-                self.threshold
-            );
-        }
-        if self.needs_judge() && self.threshold != JUDGE_BACKED_PASS_THRESHOLD {
-            bail!(
-                "scenario '{}': judge-backed threshold={}; expected {JUDGE_BACKED_PASS_THRESHOLD}; set this threshold or remove judge_reference",
-                self.id, self.threshold
-            );
-        }
         let mut ids = HashMap::new();
         for (index, criterion) in self.criteria.iter().enumerate() {
             if criterion.id.trim().is_empty() {
@@ -212,16 +191,10 @@ pub enum ScenarioId {
     DirectAnswer,
     #[value(name = "persistent_state")]
     PersistentState,
-    #[value(name = "security_review")]
-    SecurityReview,
     #[value(name = "reactive_automation")]
     ReactiveAutomation,
     #[value(name = "shell_coder_sandbox")]
     ShellCoderSandbox,
-    #[value(name = "design_tradeoff")]
-    DesignTradeoff,
-    #[value(name = "security_triage")]
-    SecurityTriage,
     #[value(name = "research_pipeline")]
     ResearchPipeline,
     #[value(name = "mechanical_reaction")]
@@ -249,14 +222,11 @@ pub enum ScenarioId {
 }
 
 impl ScenarioId {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 16] = [
         Self::DirectAnswer,
         Self::PersistentState,
-        Self::SecurityReview,
         Self::ReactiveAutomation,
         Self::ShellCoderSandbox,
-        Self::DesignTradeoff,
-        Self::SecurityTriage,
         Self::ResearchPipeline,
         Self::MechanicalReaction,
         Self::TimerWake,
@@ -275,11 +245,8 @@ impl ScenarioId {
         match self {
             Self::DirectAnswer => direct_answer::ID,
             Self::PersistentState => persistent_state::ID,
-            Self::SecurityReview => security_review::ID,
             Self::ReactiveAutomation => reactive_automation::ID,
             Self::ShellCoderSandbox => shell_coder_sandbox::ID,
-            Self::DesignTradeoff => design_tradeoff::ID,
-            Self::SecurityTriage => security_triage::ID,
             Self::ResearchPipeline => research_pipeline::ID,
             Self::MechanicalReaction => mechanical_reaction::ID,
             Self::TimerWake => timer_wake::ID,
@@ -299,11 +266,8 @@ impl ScenarioId {
         match self {
             Self::DirectAnswer => direct_answer::scenario(run_id),
             Self::PersistentState => persistent_state::scenario(run_id),
-            Self::SecurityReview => security_review::scenario(run_id),
             Self::ReactiveAutomation => reactive_automation::scenario(run_id),
             Self::ShellCoderSandbox => shell_coder_sandbox::scenario(run_id),
-            Self::DesignTradeoff => design_tradeoff::scenario(run_id),
-            Self::SecurityTriage => security_triage::scenario(run_id),
             Self::ResearchPipeline => research_pipeline::scenario(run_id),
             Self::MechanicalReaction => mechanical_reaction::scenario(run_id),
             Self::TimerWake => timer_wake::scenario(run_id),
@@ -338,13 +302,13 @@ mod tests {
 
     use super::*;
     #[test]
-    fn registry_contains_nineteen_unique_valid_scenarios() {
+    fn registry_contains_sixteen_unique_valid_scenarios() {
         let mut ids = HashSet::new();
         for scenario in ScenarioId::ALL {
             assert!(ids.insert(scenario.as_str()));
             scenario.spec("run").validate().unwrap();
         }
-        assert_eq!(ids.len(), 19);
+        assert_eq!(ids.len(), 16);
     }
 
     #[test]
@@ -356,42 +320,6 @@ mod tests {
                 ScenarioId::ReactiveAutomation,
             ]),
             vec![ScenarioId::ReactiveAutomation, ScenarioId::DirectAnswer]
-        );
-    }
-
-    #[test]
-    fn reactive_automation_uses_the_provider_output_limit() {
-        assert_eq!(
-            ScenarioId::ReactiveAutomation
-                .spec("run")
-                .execution
-                .max_output_tokens,
-            None
-        );
-    }
-
-    #[test]
-    fn judge_backed_scenarios_use_the_quality_signal_floor() {
-        for scenario in [
-            ScenarioId::DirectAnswer,
-            ScenarioId::SecurityReview,
-            ScenarioId::DesignTradeoff,
-            ScenarioId::SecurityTriage,
-        ] {
-            let spec = scenario.spec("run");
-            assert!(spec.needs_judge());
-            assert_eq!(spec.threshold, JUDGE_BACKED_PASS_THRESHOLD);
-        }
-    }
-
-    #[test]
-    fn validation_rejects_a_different_judge_backed_threshold() {
-        let mut spec = ScenarioId::DirectAnswer.spec("run");
-        spec.threshold = JUDGE_BACKED_PASS_THRESHOLD + 1;
-
-        assert_eq!(
-            spec.validate().unwrap_err().to_string(),
-            "scenario 'direct_answer': judge-backed threshold=51; expected 50; set this threshold or remove judge_reference"
         );
     }
 

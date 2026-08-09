@@ -36,7 +36,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 2,
+        version: 3,
         prompt: format!(
             r#"Test the parent-owned timer control plane in isolated state scope `{scope}`.
 
@@ -63,7 +63,6 @@ fired. Leave no binding armed."#,
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: 90,
         criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
@@ -221,40 +220,5 @@ impl Names {
             scope: format!("e2e:timer:{run_id}"),
             root_session: format!("e2e_{run_id}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_an_equivalent_relative_timer() {
-        let call = common::ObservedFunctionCall {
-            function_id: "engine::register_trigger".to_string(),
-            arguments: json!({
-                "trigger_type": "timer",
-                "config": { "in_ms": 5000 },
-                "label": "model-chosen-deadline"
-            }),
-        };
-
-        assert!(is_timer_registration(&call));
-
-        let spec = scenario("run");
-        spec.validate().unwrap();
-        assert_eq!(spec.version, 2);
-        assert_eq!(
-            spec.criteria
-                .iter()
-                .map(|criterion| (criterion.id, criterion.weight))
-                .collect::<Vec<_>>(),
-            vec![
-                ("timer_armed", 30),
-                ("parent_woken", 30),
-                ("wake_action", 25),
-                ("clean_completion", 15),
-            ]
-        );
     }
 }

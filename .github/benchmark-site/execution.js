@@ -124,9 +124,6 @@
     if (normalized === "passed" || normalized === "success") {
       return { label: "Passed", css: "pass" };
     }
-    if (normalized === "quality_advisory") {
-      return { label: "Quality Advisory", css: "advisory" };
-    }
     if (normalized === "running") return { label: "Running", css: "running" };
     if (normalized === "cancelled") return { label: "Cancelled", css: "cancelled" };
     if (
@@ -375,7 +372,7 @@
         ${scenarioSummaryRow({
           title: titleCase(scenario.id),
           subjectLabel: `${subject.provider}/${subject.model}`,
-          median: `${compactNumber(scenario.median_score, 1)} / ${compactNumber(scenario.threshold, 0)}`,
+          median: compactNumber(scenario.median_score, 1),
           passRate: formatPercent(
             typeof scenario.pass_rate === "number" ? scenario.pass_rate * 100 : null,
           ),
@@ -385,7 +382,7 @@
         })}
         <div class="scenario-detail-body">
           <div class="scenario-detail-metrics">
-            ${metricBlock("Median score", compactNumber(scenario.median_score, 1), `target ${compactNumber(scenario.threshold, 0)}`)}
+            ${metricBlock("Median score", compactNumber(scenario.median_score, 1))}
             ${metricBlock("Pass rate", formatPercent(typeof scenario.pass_rate === "number" ? scenario.pass_rate * 100 : null))}
             ${metricBlock("Cost", formatCurrency(scenario.total_cost_usd))}
             ${metricBlock("Runtime", formatDuration(scenario.wall_time_seconds))}
@@ -958,7 +955,7 @@
         ${scenarioSummaryRow({
           title: titleCase(scenario.scenario_id),
           subjectLabel: `${report.subject.provider}/${report.subject.model}`,
-          median: `${compactNumber(aggregate.median_score, 1)} / ${compactNumber(scenario.threshold, 0)}`,
+          median: compactNumber(aggregate.median_score, 1),
           passRate: formatPercent(
             typeof aggregate.pass_rate === "number" ? aggregate.pass_rate * 100 : null,
           ),
@@ -968,7 +965,7 @@
         })}
         <div class="scenario-detail-body">
         <div class="scenario-detail-metrics">
-          ${metricBlock("Median score", compactNumber(aggregate.median_score, 1), `target ${compactNumber(scenario.threshold, 0)}`)}
+          ${metricBlock("Median score", compactNumber(aggregate.median_score, 1))}
           ${metricBlock("Pass rate", formatPercent(
             typeof aggregate.pass_rate === "number" ? aggregate.pass_rate * 100 : null,
           ))}
