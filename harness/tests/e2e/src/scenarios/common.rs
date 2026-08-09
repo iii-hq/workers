@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::context::E2eContext;
 use crate::report::HardGateReport;
 
-use super::{CriterionAward, EvaluationFuture, ObjectiveEvaluation, ScenarioObservation};
+use super::{EvaluationFuture, ObjectiveEvaluation, ScenarioObservation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservedFunctionCall {
@@ -116,14 +116,6 @@ pub fn gate(id: &str, passed: bool, reason: impl Into<String>) -> HardGateReport
     HardGateReport {
         id: id.to_string(),
         passed,
-        reason: reason.into(),
-    }
-}
-
-pub fn award(id: &'static str, awarded: u8, reason: impl Into<String>) -> CriterionAward {
-    CriterionAward {
-        id: id.to_string(),
-        awarded,
         reason: reason.into(),
     }
 }

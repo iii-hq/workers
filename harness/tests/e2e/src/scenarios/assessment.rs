@@ -50,6 +50,16 @@ impl AssessmentSpec {
         }
     }
 
+    /// Records a check that could not run behind an explicit prerequisite gate.
+    pub(super) fn unavailable(self, reason: impl Into<String>) -> AssessmentResult {
+        AssessmentResult {
+            spec: self,
+            awarded: 0,
+            gate_passed: None,
+            reason: reason.into(),
+        }
+    }
+
     pub(super) fn points(self, awarded: u8, reason: impl Into<String>) -> Result<AssessmentResult> {
         if self.kind == AssessmentKind::Required {
             bail!(
@@ -272,6 +282,29 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "signal assessment signal cannot produce a required gate"
+        );
+    }
+
+    #[test]
+    fn unavailable_assessments_preserve_order_without_duplicate_gates() {
+        let evaluation = objective([
+            REQUIRED.unavailable("required prerequisite unavailable"),
+            SIGNAL.unavailable("signal prerequisite unavailable"),
+        ]);
+
+        assert!(evaluation.hard_gates.is_empty());
+        assert_eq!(evaluation.awards.len(), 2);
+        assert_eq!(evaluation.awards[0].id, "required");
+        assert_eq!(evaluation.awards[0].awarded, 0);
+        assert_eq!(
+            evaluation.awards[0].reason,
+            "required prerequisite unavailable"
+        );
+        assert_eq!(evaluation.awards[1].id, "signal");
+        assert_eq!(evaluation.awards[1].awarded, 0);
+        assert_eq!(
+            evaluation.awards[1].reason,
+            "signal prerequisite unavailable"
         );
     }
 }
