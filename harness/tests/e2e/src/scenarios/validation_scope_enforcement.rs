@@ -20,16 +20,31 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "validation_scope_enforcement";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
+const FOREIGN_SCOPE_REFUSED: AssessmentSpec = AssessmentSpec::required(
+    "foreign_scope_refused",
+    35,
+    "The forbidden registration failed with the out-of-scope error and the agent continued.",
+);
+const SELF_GATE_ENGAGED: AssessmentSpec = AssessmentSpec::required(
+    "self_gate_engaged",
+    30,
+    "The self-registration gated the session: exactly one denial with the marker unset.",
+);
+const TEARDOWN_UNGATED: AssessmentSpec = AssessmentSpec::required(
+    "teardown_ungated",
+    35,
+    "Owner unregistration removed the gate mid-loop: the turn completed with the marker still absent.",
+);
+const ASSESSMENTS: &[AssessmentSpec] =
+    &[FOREIGN_SCOPE_REFUSED, SELF_GATE_ENGAGED, TEARDOWN_UNGATED];
 
 fn scope(run_id: &str) -> String {
     format!("scopetest-{}", suffix(run_id))
@@ -39,7 +54,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let scope = scope(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: format!(
             "You are testing the security boundaries of self-registered validators. Follow the \
              steps exactly and report what actually happens.\n\n\
@@ -72,26 +87,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         },
         denied_functions: &[],
         threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "foreign_scope_refused",
-                weight: 35,
-                description: "The forbidden registration failed with the out-of-scope error and \
-                              the agent continued.",
-            },
-            CriterionSpec {
-                id: "self_gate_engaged",
-                weight: 30,
-                description: "The self-registration gated the session: exactly one denial with \
-                              the marker unset.",
-            },
-            CriterionSpec {
-                id: "teardown_ungated",
-                weight: 35,
-                description: "Owner unregistration removed the gate mid-loop: the turn completed \
-                              with the marker still absent.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -143,56 +139,37 @@ fn evaluate<'a>(
 
         let nudges = common::validation_nudges(&observation.transcript);
         let reported = observation.response.contains("TEARDOWN COMPLETE");
+        let foreign_scope_refused = foreign_attempted && refusal_delivered;
+        let teardown_ungated = marker_absent && teardown_called && reported;
+        let self_gate_points = if self_registered && nudges == 1 {
+            SELF_GATE_ENGAGED.weight()
+        } else {
+            0
+        };
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "foreign_scope_refused",
-                    foreign_attempted && refusal_delivered,
-                    format!(
-                        "attempted={foreign_attempted}, out-of-scope error visible={refusal_delivered}"
-                    ),
+        Ok(assessment::objective([
+            FOREIGN_SCOPE_REFUSED.binary(
+                foreign_scope_refused,
+                format!(
+                    "attempted={foreign_attempted}, out-of-scope error visible={refusal_delivered}"
                 ),
-                common::gate(
-                    "gate_denied_once",
-                    nudges == 1,
-                    format!("observed {nudges} nudge(s), expected exactly one before teardown"),
+            ),
+            SELF_GATE_ENGAGED.required_points(
+                nudges == 1,
+                self_gate_points,
+                format!(
+                    "self_registered={self_registered}; observed {nudges} nudge(s), expected \
+                     exactly one before teardown"
                 ),
-                common::gate(
-                    "teardown_ungated_completion",
-                    marker_absent && teardown_called && reported,
-                    format!(
-                        "marker={marker}, teardown_called={teardown_called}, reported={reported} \
-                         — completion must come from the teardown, never from passing"
-                    ),
+            )?,
+            TEARDOWN_UNGATED.binary(
+                teardown_ungated,
+                format!(
+                    "marker={marker}, teardown_called={teardown_called}, reported={reported} \
+                     — completion must come from the teardown, never from passing"
                 ),
-            ],
-            awards: vec![
-                common::award(
-                    "foreign_scope_refused",
-                    if foreign_attempted && refusal_delivered {
-                        35
-                    } else {
-                        0
-                    },
-                    "awarded when the boundary refused the foreign scope loudly",
-                ),
-                common::award(
-                    "self_gate_engaged",
-                    if self_registered && nudges == 1 { 30 } else { 0 },
-                    "awarded for the force-stamped self gate denying exactly once",
-                ),
-                common::award(
-                    "teardown_ungated",
-                    if marker_absent && teardown_called && reported {
-                        35
-                    } else {
-                        0
-                    },
-                    "awarded for the owner teardown ungating the loop",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
@@ -219,5 +196,17 @@ mod tests {
         assert!(spec.prompt.contains("scopetest-aB19"));
         assert!(spec.prompt.contains("TEARDOWN COMPLETE"));
         spec.validate().unwrap();
+        assert_eq!(spec.version, 2);
+        assert_eq!(
+            spec.criteria
+                .iter()
+                .map(|criterion| (criterion.id, criterion.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                ("foreign_scope_refused", 35),
+                ("self_gate_engaged", 30),
+                ("teardown_ungated", 35),
+            ]
+        );
     }
 }

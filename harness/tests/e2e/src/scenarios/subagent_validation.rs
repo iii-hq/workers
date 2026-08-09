@@ -16,18 +16,32 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "subagent_validation";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
+const CHILD_GOAL: AssessmentSpec = AssessmentSpec::required(
+    "child_goal",
+    35,
+    "The child's table work exceeds the validator threshold and the verdict key carries the accepted count.",
+);
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::required(
+    "orchestration_discipline",
+    35,
+    "Validator scoped to the child, wake armed before the spawn, and the child spawned with the named session.",
+);
+const WAKE_REPORT: AssessmentSpec = AssessmentSpec::required(
+    "wake_report",
+    30,
+    "The parent finishes from the verdict wake with the exact report line.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[CHILD_GOAL, ORCHESTRATION_DISCIPLINE, WAKE_REPORT];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
@@ -35,7 +49,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let child = child_session(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: format!(
             "You orchestrate one validated sub-agent. You never poll and never judge its work \
              yourself: a validator gates every child reply and a verdict wake drives you. Follow \
@@ -83,26 +97,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         },
         denied_functions: &[],
         threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "child_goal",
-                weight: 35,
-                description: "The child's table work exceeds the validator threshold and the \
-                              verdict key carries the accepted count.",
-            },
-            CriterionSpec {
-                id: "orchestration_discipline",
-                weight: 35,
-                description: "Validator scoped to the child, wake armed before the spawn, and \
-                              the child spawned with the named session.",
-            },
-            CriterionSpec {
-                id: "wake_report",
-                weight: 30,
-                description: "The parent finishes from the verdict wake with the exact report \
-                              line.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -170,56 +165,53 @@ fn evaluate<'a>(
         };
 
         let goal = rows > THRESHOLD && verdict > THRESHOLD;
-        let report = observation.response.contains("CHILD VALIDATED")
+        let reported = observation.response.contains("CHILD VALIDATED")
             && observation.response.contains("PARENT DONE");
+        let (orchestration_passed, orchestration_points) =
+            orchestration_outcome(ordered, child_nudges);
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "child_goal_reached",
-                    goal,
-                    format!("rows={rows}, verdict={verdict}, need both above {THRESHOLD}"),
+        Ok(assessment::objective([
+            CHILD_GOAL.required_points(
+                goal,
+                child_goal_points(goal, rows),
+                format!(
+                    "rows={rows}, verdict={verdict}, need both above {THRESHOLD}; full marks at \
+                     exactly {EXPECTED_ROWS} rows"
                 ),
-                common::gate(
-                    "arm_before_spawn",
-                    ordered,
-                    format!(
-                        "validator@{validator_index:?} wake@{wake_index:?} spawn@{spawn_index:?} \
-                         — validator and wake must precede the spawn"
-                    ),
+            )?,
+            ORCHESTRATION_DISCIPLINE.required_points(
+                orchestration_passed,
+                orchestration_points,
+                format!(
+                    "validator@{validator_index:?} wake@{wake_index:?} spawn@{spawn_index:?} — \
+                     validator and wake must precede the spawn; observed {child_nudges} nudge(s) \
+                     in the child transcript"
                 ),
-                common::gate(
-                    "child_loop_ran",
-                    child_nudges >= 1,
-                    format!("observed {child_nudges} nudge(s) in the child transcript"),
-                ),
-                common::gate("parent_report", report, "expected the exact report line"),
-            ],
-            awards: vec![
-                common::award(
-                    "child_goal",
-                    if goal && rows == EXPECTED_ROWS {
-                        35
-                    } else if goal {
-                        20
-                    } else {
-                        0
-                    },
-                    format!("rows={rows} (full marks at exactly {EXPECTED_ROWS})"),
-                ),
-                common::award(
-                    "orchestration_discipline",
-                    if ordered { 35 } else { 0 },
-                    "awarded for validator+wake registered before the spawn, all correctly named",
-                ),
-                common::award(
-                    "wake_report",
-                    if report { 30 } else { 0 },
-                    "awarded for the exact wake-driven report line",
-                ),
-            ],
-        })
+            )?,
+            WAKE_REPORT.binary(reported, "expected the exact report line"),
+        ]))
     })
+}
+
+fn child_goal_points(goal: bool, rows: u64) -> u8 {
+    if goal && rows == EXPECTED_ROWS {
+        CHILD_GOAL.weight()
+    } else if goal {
+        20
+    } else {
+        0
+    }
+}
+
+fn orchestration_outcome(ordered: bool, child_nudges: usize) -> (bool, u8) {
+    (
+        ordered && child_nudges >= 1,
+        if ordered {
+            ORCHESTRATION_DISCIPLINE.weight()
+        } else {
+            0
+        },
+    )
 }
 
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
@@ -267,5 +259,28 @@ mod tests {
         assert!(spec.prompt.contains("e2e_aB19-rest-child-1"));
         assert!(spec.prompt.contains("subvtest_aB19"));
         spec.validate().unwrap();
+        assert_eq!(spec.version, 2);
+        assert_eq!(
+            spec.criteria
+                .iter()
+                .map(|criterion| (criterion.id, criterion.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                ("child_goal", 35),
+                ("orchestration_discipline", 35),
+                ("wake_report", 30),
+            ]
+        );
+    }
+
+    #[test]
+    fn scoring_keeps_goal_and_orchestration_signals_independent() {
+        assert_eq!(child_goal_points(false, EXPECTED_ROWS), 0);
+        assert_eq!(child_goal_points(true, EXPECTED_ROWS), 35);
+        assert_eq!(child_goal_points(true, EXPECTED_ROWS + 1), 20);
+
+        assert_eq!(orchestration_outcome(true, 0), (false, 35));
+        assert_eq!(orchestration_outcome(true, 1), (true, 35));
+        assert_eq!(orchestration_outcome(false, 1), (false, 0));
     }
 }

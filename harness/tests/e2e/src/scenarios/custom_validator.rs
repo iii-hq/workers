@@ -23,12 +23,10 @@ use serde_json::Value;
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "custom_validator";
 
@@ -38,6 +36,26 @@ const HOOK_TYPE: &str = "harness::hook::post-turn";
 /// footgun for anyone writing a validator, so this scenario pins it.
 const HOOK_POINT: &str = "post_turn";
 const TOKENS: [&str; 3] = ["E2E-ACCEPT-1", "E2E-ACCEPT-2", "E2E-ACCEPT-3"];
+const ENVELOPE_REGISTRATION: AssessmentSpec = AssessmentSpec::required(
+    "envelope_registration",
+    30,
+    "Exactly one post-turn registration targeting the temporary function, envelope mode (no payload template).",
+);
+const CUSTOM_REASONS_DROVE_THE_LOOP: AssessmentSpec = AssessmentSpec::required(
+    "custom_reasons_drove_the_loop",
+    30,
+    "Both corrective prompts carry the validator's own reasons naming the next rung.",
+);
+const LADDER_CONVERGED: AssessmentSpec = AssessmentSpec::required(
+    "ladder_converged",
+    40,
+    "The final result carries the terminal token — reachable only by following two custom denials.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    LADDER_CONVERGED,
+    ENVELOPE_REGISTRATION,
+    CUSTOM_REASONS_DROVE_THE_LOOP,
+];
 
 /// Lenient view of the post-turn hook envelope (harness → validator).
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -130,7 +148,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let validator = function_id(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: format!(
             "You are testing a validation loop driven by a custom validator function. Follow \
              these steps exactly.\n\n\
@@ -157,26 +175,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         },
         denied_functions: &[],
         threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "ladder_converged",
-                weight: 40,
-                description: "The final result carries the terminal token — reachable only by \
-                              following two custom denials.",
-            },
-            CriterionSpec {
-                id: "envelope_registration",
-                weight: 30,
-                description: "Exactly one post-turn registration targeting the temporary \
-                              function, envelope mode (no payload template).",
-            },
-            CriterionSpec {
-                id: "custom_reasons_drove_the_loop",
-                weight: 30,
-                description: "Both corrective prompts carry the validator's own reasons naming \
-                              the next rung.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: Some(setup),
         evaluate,
@@ -220,47 +219,32 @@ fn evaluate<'a>(
                 .all(|text| text.contains("custom validator"));
         let converged = observation.response.contains(TOKENS[2]);
         let no_errors = observation.metrics.totals.function_call_errors == 0;
+        let envelope_points = if envelope_mode && no_errors {
+            ENVELOPE_REGISTRATION.weight()
+        } else {
+            0
+        };
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "envelope_registration",
-                    envelope_mode,
-                    format!(
-                        "observed {} post-turn registration(s); need exactly one targeting \
-                         {validator} with no payload",
-                        registrations.len()
-                    ),
+        Ok(assessment::objective([
+            LADDER_CONVERGED.binary(
+                converged,
+                format!("final response must contain {}", TOKENS[2]),
+            ),
+            ENVELOPE_REGISTRATION.required_points(
+                envelope_mode,
+                envelope_points,
+                format!(
+                    "observed {} post-turn registration(s); need exactly one targeting \
+                     {validator} with no payload; function_call_errors={}",
+                    registrations.len(),
+                    observation.metrics.totals.function_call_errors
                 ),
-                common::gate(
-                    "custom_reasons_delivered",
-                    laddered,
-                    format!("nudges: {nudge_texts:?} — expected the two ladder reasons in order"),
-                ),
-                common::gate(
-                    "ladder_converged",
-                    converged,
-                    format!("final response must contain {}", TOKENS[2]),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "ladder_converged",
-                    if converged { 40 } else { 0 },
-                    "awarded when the terminal token is reached",
-                ),
-                common::award(
-                    "envelope_registration",
-                    if envelope_mode && no_errors { 30 } else { 0 },
-                    "awarded for one clean envelope-mode registration",
-                ),
-                common::award(
-                    "custom_reasons_drove_the_loop",
-                    if laddered { 30 } else { 0 },
-                    "awarded when both nudges carry the validator's own rung-naming reasons",
-                ),
-            ],
-        })
+            )?,
+            CUSTOM_REASONS_DROVE_THE_LOOP.binary(
+                laddered,
+                format!("nudges: {nudge_texts:?} — expected the two ladder reasons in order"),
+            ),
+        ]))
     })
 }
 
@@ -351,5 +335,17 @@ mod tests {
         assert!(spec.prompt.contains("e2etest::validate_aB19"));
         assert!(spec.setup.is_some());
         spec.validate().unwrap();
+        assert_eq!(spec.version, 2);
+        assert_eq!(
+            spec.criteria
+                .iter()
+                .map(|criterion| (criterion.id, criterion.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                ("ladder_converged", 40),
+                ("envelope_registration", 30),
+                ("custom_reasons_drove_the_loop", 30),
+            ]
+        );
     }
 }
