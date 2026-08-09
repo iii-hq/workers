@@ -4,9 +4,9 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "research_pipeline";
@@ -17,12 +17,38 @@ const SUMMARY_KEY: &str = "summary";
 const FACTS_KEY: &str = "facts";
 const MIN_ARTICLE_CHARS: usize = 5_000;
 const MAX_ARTICLE_CHARS: usize = 6_500;
+const SOURCE_CAPTURE: AssessmentSpec = AssessmentSpec::required(
+    "source_capture",
+    25,
+    "All wakes are armed before the Wikipedia article is fetched and saved.",
+);
+const PARALLEL_ANALYSIS: AssessmentSpec = AssessmentSpec::required(
+    "parallel_analysis",
+    30,
+    "The article wake causes two analysts to be spawned directly and in parallel.",
+);
+const BARRIER_FAN_IN: AssessmentSpec = AssessmentSpec::required(
+    "barrier_fan_in",
+    25,
+    "The analysts persist valid outputs and the named barrier retires after both arrive.",
+);
+const RESEARCH_BRIEF: AssessmentSpec = AssessmentSpec::required(
+    "research_brief",
+    20,
+    "The coordinator returns a merged brief in its barrier-woken turn and leaves no binding armed.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    SOURCE_CAPTURE,
+    PARALLEL_ANALYSIS,
+    BARRIER_FAN_IN,
+    RESEARCH_BRIEF,
+];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -33,28 +59,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         },
         denied_functions: &[],
         threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "source_capture",
-                weight: 25,
-                description: "All wakes are armed before the Wikipedia article is fetched and saved.",
-            },
-            CriterionSpec {
-                id: "parallel_analysis",
-                weight: 30,
-                description: "The article wake causes two analysts to be spawned directly and in parallel.",
-            },
-            CriterionSpec {
-                id: "barrier_fan_in",
-                weight: 25,
-                description: "The analysts persist valid outputs and the named barrier retires after both arrive.",
-            },
-            CriterionSpec {
-                id: "research_brief",
-                weight: 20,
-                description: "The coordinator returns a merged brief in its barrier-woken turn and leaves no binding armed.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -280,68 +285,39 @@ fn evaluate<'a>(
             && barrier_woke;
         let report_complete = report_merged && active_bindings == 0 && no_errors;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "source_captured_after_watches",
-                    source_captured,
-                    format!(
-                        "armed_before_fetch={armed_before_fetch}, source_order={source_order}, \
-                         article_valid={article_valid}, exact_write={exact_article_write}"
-                    ),
+        Ok(assessment::objective([
+            SOURCE_CAPTURE.binary(
+                source_captured,
+                format!(
+                    "armed_before_fetch={armed_before_fetch}, source_order={source_order}, \
+                     article_valid={article_valid}, exact_write={exact_article_write}"
                 ),
-                common::gate(
-                    "analysts_spawned_directly_in_parallel",
-                    direct_parallel_analysis,
-                    format!(
-                        "spawns={}, parallel_calls={parallel_calls}, \
-                         overlapping_sessions={overlapping_sessions}, \
-                         direct_sessions={sessions_direct}",
-                        spawns.len()
-                    ),
+            ),
+            PARALLEL_ANALYSIS.binary(
+                direct_parallel_analysis,
+                format!(
+                    "spawns={}, parallel_calls={parallel_calls}, \
+                     overlapping_sessions={overlapping_sessions}, direct_sessions={sessions_direct}",
+                    spawns.len()
                 ),
-                common::gate(
-                    "analyst_outputs_joined_by_barrier",
-                    fan_in_complete,
-                    format!(
-                        "summary_valid={summary_valid}, facts_valid={facts_valid}, \
-                         analyst_writes={analyst_writes}, analyst_discipline={analyst_discipline}, \
-                         article_woke={article_woke}, barrier_woke={barrier_woke}"
-                    ),
+            ),
+            BARRIER_FAN_IN.binary(
+                fan_in_complete,
+                format!(
+                    "summary_valid={summary_valid}, facts_valid={facts_valid}, \
+                     analyst_writes={analyst_writes}, analyst_discipline={analyst_discipline}, \
+                     article_woke={article_woke}, barrier_woke={barrier_woke}"
                 ),
-                common::gate(
-                    "brief_returned_and_bindings_clean",
-                    report_complete,
-                    format!(
-                        "report_merged={report_merged}, active_bindings={active_bindings}, \
-                         function_errors={}",
-                        observation.metrics.totals.function_call_errors
-                    ),
+            ),
+            RESEARCH_BRIEF.binary(
+                report_complete,
+                format!(
+                    "report_merged={report_merged}, active_bindings={active_bindings}, \
+                     function_errors={}",
+                    observation.metrics.totals.function_call_errors
                 ),
-            ],
-            awards: vec![
-                common::award(
-                    "source_capture",
-                    if source_captured { 25 } else { 0 },
-                    "awarded when all wakes precede one valid markdown fetch and article write",
-                ),
-                common::award(
-                    "parallel_analysis",
-                    if direct_parallel_analysis { 30 } else { 0 },
-                    "awarded for two direct, parallel analyst sessions",
-                ),
-                common::award(
-                    "barrier_fan_in",
-                    if fan_in_complete { 25 } else { 0 },
-                    "awarded when both durable analyst outputs retire the named barrier",
-                ),
-                common::award(
-                    "research_brief",
-                    if report_complete { 20 } else { 0 },
-                    "awarded for a merged root-session brief and complete binding cleanup",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
@@ -674,6 +650,21 @@ mod tests {
         scenario.validate().unwrap();
         assert!(!scenario.needs_judge());
         assert!(!scenario.prompt.contains("harness::react"));
+        assert_eq!(scenario.version, 2);
+        assert_eq!(scenario.threshold, 90);
+        assert_eq!(
+            scenario
+                .criteria
+                .iter()
+                .map(|criterion| (criterion.id, criterion.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                ("source_capture", 25),
+                ("parallel_analysis", 30),
+                ("barrier_fan_in", 25),
+                ("research_brief", 20),
+            ]
+        );
     }
 
     #[test]
