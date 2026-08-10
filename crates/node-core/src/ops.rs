@@ -197,7 +197,7 @@ fn op_iii_log(state: &mut OpState, #[string] level: String, #[string] message: S
         }
         ops.detached_log_bytes += message.len();
         tracing::info!(
-            target: "node-engine::js",
+            target: "code-runner::js",
             namespace = %ops.namespace,
             %level,
             message = %message.escape_debug(),
@@ -212,7 +212,7 @@ fn op_iii_log(state: &mut OpState, #[string] level: String, #[string] message: S
             ops.logs.push(LogLine {
                 level: "warn".to_string(),
                 message: format!(
-                    "[node-engine] log output truncated at {MAX_LOG_LINES} lines / \
+                    "[code-runner] log output truncated at {MAX_LOG_LINES} lines / \
                      {MAX_LOG_BYTES} bytes; further console output is dropped"
                 ),
             });
@@ -399,7 +399,7 @@ fn require_own_namespace(namespace: &str, fn_id: String) -> Result<String, JsErr
                 id: fn_id,
                 namespace: namespace.to_string(),
             }
-            .to_string(),
+            .message(),
         ))
     }
 }
@@ -553,7 +553,7 @@ fn op_iii_register(
         // callback, which aborts the process rather than unwinding.
         if !ops.ids.claim(&fn_id, &ops.runtime_id) {
             return Err(JsErrorBox::generic(
-                NodeEngineError::IdTaken(fn_id).to_string(),
+                NodeEngineError::IdTaken(fn_id).message(),
             ));
         }
 
@@ -840,7 +840,7 @@ fn op_iii_register_trigger_type(
         // costs nothing when it already isn't needed for a crash.
         if !ops.ids.claim(&type_id, &ops.runtime_id) {
             return Err(JsErrorBox::generic(
-                NodeEngineError::IdTaken(type_id).to_string(),
+                NodeEngineError::IdTaken(type_id).message(),
             ));
         }
 
@@ -1354,7 +1354,7 @@ mod tests {
                 id: id.to_string(),
                 namespace: "attacker::".to_string(),
             }
-            .to_string()
+            .message()
         };
         assert_eq!(err.to_string(), expected("victim::secret"));
         assert_eq!(missing.to_string(), expected("victim::never-existed"));

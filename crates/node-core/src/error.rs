@@ -55,7 +55,11 @@ impl NodeEngineError {
         }
     }
 
-    fn message(&self) -> String {
+    /// The human half of the error, without the `node-engine::<code>` prefix
+    /// `Display` adds. Hosting workers surface THIS to callers and guests —
+    /// they re-code errors under their own taxonomy, so the core's prefix
+    /// would only echo a retired worker name nobody can call.
+    pub fn message(&self) -> String {
         match self {
             Self::EvalFailed { message, .. } => message.clone(),
             Self::Timeout => "execution exceeded its deadline; the runtime was terminated".into(),

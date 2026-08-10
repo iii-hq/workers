@@ -289,12 +289,12 @@ impl RuntimeManager {
             // Exempt from the one-segment rule by construction, not by flag:
             // this is the `None` arm, so it never passes through
             // `normalize_namespace` — which would refuse it, since
-            // `node-engine::<runtime_id>` is two segments. Its FIRST segment is
-            // `node-engine`, this worker's own name on the bus, which is what
-            // the rule actually protects; the runtime_id below it only keeps two
-            // eval runtimes from colliding. Leave it: routing it through
-            // validation would refuse every namespace-less eval.
-            None => format!("node-engine::{runtime_id}::"),
+            // `code-runner::<runtime_id>` is two segments. Its FIRST segment
+            // is `code-runner`, the hosting worker's own name on the bus, which
+            // is what the rule actually protects; the runtime_id below it only
+            // keeps two eval runtimes from colliding. Leave it: routing it
+            // through validation would refuse every namespace-less eval.
+            None => format!("code-runner::{runtime_id}::"),
             Some(ns) => normalize_namespace(&ns, &[]).map_err(NodeEngineError::InvalidRequest)?,
         };
         // Built BEFORE `spawn` and cloned into `RuntimeOpts` so the manager
@@ -904,7 +904,7 @@ mod tests {
     async fn the_default_namespace_is_derived_from_the_runtime_id() {
         let (m, fake) = manager(NodeEngineConfig::default());
         let created = m.run(kept(req("return 1", None))).await.unwrap();
-        let ns = format!("node-engine::{}::", addr(&created));
+        let ns = format!("code-runner::{}::", addr(&created));
 
         let ok = m
             .run(req(
@@ -1440,7 +1440,7 @@ mod tests {
         let err = m.register(reg("app::a", "42", None)).await.unwrap_err();
 
         let msg = err.to_string();
-        for frame in ["node-engine:prelude", "node-engine:eval", "Array.map", "\n"] {
+        for frame in ["code-runner:prelude", "code-runner:eval", "Array.map", "\n"] {
             assert!(
                 !msg.contains(frame),
                 "definition error leaked {frame:?}: {msg}"
@@ -2134,7 +2134,7 @@ mod tests {
             .expect("evaluates");
         let ns = derived.result.as_str().expect("a string namespace");
         assert!(
-            ns.starts_with("node-engine::rt-") && ns.ends_with("::"),
+            ns.starts_with("code-runner::rt-") && ns.ends_with("::"),
             "default namespace should be readable: {ns}"
         );
 

@@ -134,7 +134,7 @@ fn make_scratch(opts: &RuntimeOpts) -> std::io::Result<Option<tempfile::TempDir>
         return Ok(None);
     }
     let mut builder = tempfile::Builder::new();
-    builder.prefix("node-engine-");
+    builder.prefix("code-runner-");
     let dir = match &opts.scratch_root {
         Some(root) => {
             std::fs::create_dir_all(root)?;
@@ -175,7 +175,7 @@ impl RuntimeThread {
         let unregisters: Unregisters = Arc::new(std::sync::Mutex::new(Vec::new()));
         let thread_unregisters = unregisters.clone();
         let join = std::thread::Builder::new()
-            .name("node-engine-isolate".to_string())
+            .name("code-runner-isolate".to_string())
             .spawn(move || {
                 let tokio_rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -319,7 +319,7 @@ fn spawn_watchdog(
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
-        .name("node-engine-watchdog".to_string())
+        .name("code-runner-watchdog".to_string())
         .spawn(move || {
             // ponytail: 25ms poll rather than a condvar. Deadlines are in the
             // seconds range, so finer wakeups buy nothing; switch to a condvar
@@ -466,7 +466,7 @@ async fn run_loop(
     // no recovering a runtime past this point — it dies and callers are told.
     let mut fatal: Option<FatalExit> = None;
 
-    if let Err(e) = js.execute_script("[node-engine:prelude]", include_str!("prelude.js")) {
+    if let Err(e) = js.execute_script("[code-runner:prelude]", include_str!("prelude.js")) {
         tracing::error!(error = %e, "prelude failed to evaluate; runtime is unusable");
         closed = true;
     }
@@ -504,7 +504,7 @@ Object.freeze(globalThis.iii);"#,
         drop_files,
         serde_json::to_string(&opts.namespace).expect("namespace serializes")
     );
-    if let Err(e) = js.execute_script("[node-engine:namespace]", publish_ns) {
+    if let Err(e) = js.execute_script("[code-runner:namespace]", publish_ns) {
         tracing::error!(error = %e, "namespace publish failed; runtime is unusable");
         closed = true;
     }
@@ -753,7 +753,7 @@ fn start(
                 s.registered.clear();
             });
             (
-                "[node-engine:eval]",
+                "[code-runner:eval]",
                 wrap_eval(&code),
                 now + timeout,
                 Reply::Eval(reply),
@@ -766,7 +766,7 @@ fn start(
             reply,
             method,
         } => (
-            "[node-engine:invoke]",
+            "[code-runner:invoke]",
             wrap_invoke(&fn_id, &payload, method.as_deref()),
             now + timeout,
             Reply::Invoke(reply),
@@ -2264,7 +2264,7 @@ mod tests {
         .await
         .unwrap();
         let msg = out.result.as_str().unwrap();
-        assert!(msg.contains("node-engine::teardown"), "unhelpful: {msg}");
+        assert!(msg.contains("code-runner::teardown"), "unhelpful: {msg}");
         assert!(msg.contains("shared by every runtime"), "unhelpful: {msg}");
     }
 

@@ -95,7 +95,11 @@ pub fn node_err(
         NodeEngineError::NamespaceDenied { .. }
         | NodeEngineError::IdTaken(_)
         | NodeEngineError::InvalidRequest(_) => {
-            Err(CodeRunnerError::InvalidRequest(err.to_string()))
+            // `message()`, not `to_string()`: Display prefixes the core's own
+            // `node-engine::<code>`, and this error is about to be surfaced
+            // under the REAL wire code — the engine shows `code: message`, so
+            // the core's prefix would read as a second, phantom code.
+            Err(CodeRunnerError::InvalidRequest(err.message()))
         }
     }
 }
@@ -163,6 +167,21 @@ mod tests {
             let got = node_err(err, None, 0).expect_err("must stay an error");
             assert_eq!(got.code(), code);
         }
+    }
+
+    /// The caller-facing message must not smuggle the core's retired
+    /// `node-engine::<code>` prefix past the re-coding above. Mutation: build
+    /// the message with `err.to_string()` again.
+    #[test]
+    fn re_coded_errors_do_not_leak_the_core_s_own_code() {
+        let got = node_err(NodeEngineError::IdTaken("app::x".into()), None, 0)
+            .expect_err("an id clash stays an error");
+        let msg = got.to_string();
+        assert!(
+            msg.contains("id app::x is already registered"),
+            "lost the actual explanation: {msg}"
+        );
+        assert!(!msg.contains("node-engine::"), "core code leaked: {msg}");
     }
 
     #[test]

@@ -28,7 +28,7 @@
 
   // `formatError` without the stack. A handler that fails at DEFINITION time
   // has a stack made entirely of prelude internals — `Array.map`, the
-  // generated `[node-engine:eval]` wrapper, `toHandler` itself. None of it is
+  // generated `[code-runner:eval]` wrapper, `toHandler` itself. None of it is
   // the caller's code, none of it is actionable, and it buries the one line
   // that is. Runtime errors keep their stack: that one points at tenant code.
   function formatCause(e) {
@@ -217,7 +217,7 @@
       throw new TypeError(
         "registerFunction(functionId, handler, options?): handler must be a function — an " +
           "HttpInvocationConfig object registers an engine-side HTTP binding with no isolate " +
-          "involved, which node-engine does not publish; call engine::functions::register for that",
+          "involved, which code-runner does not publish; call engine::functions::register for that",
       );
     }
     if (options !== undefined && (options === null || typeof options !== "object")) {
@@ -317,9 +317,9 @@
   // "undefined is not a function".
   function shutdown() {
     throw new Error(
-      "iii.shutdown() is not available in a node-engine runtime — the engine " +
+      "iii.shutdown() is not available in a code-runner runtime — the engine " +
         "connection belongs to the worker and is shared by every runtime. Use " +
-        "node-engine::teardown to dispose this runtime.",
+        "code-runner::teardown to dispose this runtime.",
     );
   }
 
@@ -329,7 +329,7 @@
   // worked out what the global even was. `String(iii)` and Node's inspect
   // both answer with this instead.
   const HINT =
-    "[iii: node-engine host client. e.g. await iii.trigger({ function_id: 'worker::fn', " +
+    "[iii: code-runner host client. e.g. await iii.trigger({ function_id: 'worker::fn', " +
     "payload: {} }); registerFunction(id, handler, opts?); iii.namespace is the prefix this " +
     "runtime may register under. iii.files is a private scratch directory " +
     "(write/read/readText/list/remove) that lives as long as this runtime. " +
