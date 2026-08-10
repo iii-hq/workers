@@ -81,6 +81,7 @@ standard_workers:
   - provider-anthropic
   - provider-claude-code
   - provider-deepseek
+  - provider-github-copilot
   - provider-kimi
   - provider-llamacpp
   - provider-openai

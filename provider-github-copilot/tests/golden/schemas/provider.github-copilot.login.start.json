@@ -1,0 +1,47 @@
+{
+  "description": "Begin the GitHub device-flow sign-in: returns the user_code to enter at the verification URL plus the device_code for login::poll. Operator-only.",
+  "function_id": "provider::github-copilot::login::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "LoginStartRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "device_code": {
+        "description": "Opaque device code to pass to `login::poll`.",
+        "type": "string"
+      },
+      "expires_in": {
+        "description": "Seconds until the device code expires.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "interval": {
+        "description": "Seconds to wait between polls (GitHub's requested cadence).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "user_code": {
+        "description": "Code the operator types at `verification_uri`.",
+        "type": "string"
+      },
+      "verification_uri": {
+        "description": "Where to type it (github.com/login/device).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "device_code",
+      "expires_in",
+      "interval",
+      "user_code",
+      "verification_uri"
+    ],
+    "title": "LoginStartResponse",
+    "type": "object"
+  }
+}

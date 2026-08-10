@@ -1,0 +1,14 @@
+# Agent permissions for the provider-github-copilot worker.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # Direct provider calls bypass the router's accounting, budgets, and retry
+  # policy — never agent-callable. The router invokes these worker-to-worker;
+  # the login surface is an operator action.
+  - '!provider::github-copilot::stream'
+  - '!provider::github-copilot::abort'
+  - '!provider::github-copilot::refresh_models'
+  - '!provider::github-copilot::on_router_ready'
+  - '!provider::github-copilot::login::start'
+  - '!provider::github-copilot::login::poll'
