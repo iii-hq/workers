@@ -64,16 +64,30 @@ pub async fn handle(
     let mode = req
         .mode
         .or_else(|| record.as_ref().and_then(|r| r.options.mode));
-    let identity = if cfg.provider_identity_prompt {
+    // With no caller-supplied selection, the turn record's RESOLVED prompt is
+    // the session's truth: it is what the last turn ran under and — prompt
+    // fields omitted — what the next send inherits. A `None` there (a
+    // `disabled` turn) means no built-in layer at all. A selection previews a
+    // NEW composition instead, so it rebuilds the built-in fresh.
+    let frozen = match (&req.selected_prompt, record.as_ref()) {
+        (None, Some(record)) => Some(record.options.system_prompt.clone()),
+        _ => None,
+    };
+    let identity = if cfg.provider_identity_prompt && frozen.is_none() {
         deps.router().await.system_prompt_get(provider).await
     } else {
         None
     };
-    let built_in_name = built_in_name(provider, identity.as_deref());
-    let built_in = prompt::build_system_prompt(SystemPromptOpts {
-        mode,
-        identity: identity.as_deref(),
-    });
+    let (built_in_name, built_in) = match frozen {
+        Some(prompt) => ("session (frozen at send)".to_string(), prompt),
+        None => (
+            built_in_name(provider, identity.as_deref()),
+            Some(prompt::build_system_prompt(SystemPromptOpts {
+                mode,
+                identity: identity.as_deref(),
+            })),
+        ),
+    };
 
     let filesystem_root = req.filesystem_root.or_else(|| match record.as_ref() {
         Some(record) => record.options.filesystem_root().map(str::to_string),
@@ -140,7 +154,7 @@ fn worker_name(function_id: &str) -> String {
 
 fn build_parts(
     built_in_name: String,
-    built_in: String,
+    built_in: Option<String>,
     selected: Option<SelectedSystemPrompt>,
     runtime: String,
     registry_notice: Option<String>,
@@ -149,15 +163,17 @@ fn build_parts(
     let selected = selected.filter(|prompt| !prompt.body.is_empty());
     let strategy = selected.as_ref().map(|prompt| prompt.strategy);
     let mut parts = Vec::new();
-    if !matches!(
-        strategy,
-        Some(SystemPromptStrategy::Override | SystemPromptStrategy::Disabled)
-    ) {
-        parts.push(SystemPromptPart {
-            kind: SystemPromptPartKind::BuiltIn,
-            name: Some(built_in_name),
-            body: built_in,
-        });
+    if let Some(built_in) = built_in {
+        if !matches!(
+            strategy,
+            Some(SystemPromptStrategy::Override | SystemPromptStrategy::Disabled)
+        ) {
+            parts.push(SystemPromptPart {
+                kind: SystemPromptPartKind::BuiltIn,
+                name: Some(built_in_name),
+                body: built_in,
+            });
+        }
     }
     if let Some(prompt) =
         selected.filter(|prompt| prompt.strategy != SystemPromptStrategy::Disabled)
@@ -192,7 +208,7 @@ mod tests {
     fn enrich_preview_keeps_layers_separate_and_in_send_order() {
         let parts = build_parts(
             "embedded harness default".into(),
-            "built in".into(),
+            Some("built in".into()),
             Some(SelectedSystemPrompt {
                 name: "ptbr".into(),
                 body: "selected".into(),
@@ -222,7 +238,7 @@ mod tests {
     fn override_preview_omits_the_replaced_built_in_layer() {
         let parts = build_parts(
             "embedded harness default".into(),
-            "built in".into(),
+            Some("built in".into()),
             Some(SelectedSystemPrompt {
                 name: "strict".into(),
                 body: "selected".into(),
@@ -235,6 +251,35 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].kind, SystemPromptPartKind::Selected);
         assert_eq!(parts[1].kind, SystemPromptPartKind::Runtime);
+    }
+
+    #[test]
+    fn frozen_record_prompt_replaces_the_rebuilt_built_in() {
+        // No caller selection + a turn record → the record's resolved prompt
+        // IS the first part, whatever it resolved to at send time.
+        let parts = build_parts(
+            "session (frozen at send)".into(),
+            Some("You are TESTBOT.".into()),
+            None,
+            "session context".into(),
+            None,
+            Vec::new(),
+        );
+        assert_eq!(parts[0].kind, SystemPromptPartKind::BuiltIn);
+        assert_eq!(parts[0].name.as_deref(), Some("session (frozen at send)"));
+        assert_eq!(parts[0].body, "You are TESTBOT.");
+
+        // A prior `disabled` turn resolved to no prompt: no built-in layer.
+        let parts = build_parts(
+            "session (frozen at send)".into(),
+            None,
+            None,
+            "session context".into(),
+            None,
+            Vec::new(),
+        );
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].kind, SystemPromptPartKind::Runtime);
     }
 
     #[test]

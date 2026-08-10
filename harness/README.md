@@ -186,7 +186,11 @@ operating-mode paragraph — resend the prompt fields to re-resolve.
 
 Trusted console surfaces can preview the built-in, selected, runtime-context,
 registry-notice, and declarative worker-injection layers with
-`harness::system-prompt::get`, without making a model request. Static
+`harness::system-prompt::get`, without making a model request. When the caller
+passes no `selected_prompt` and the session has a turn record, the preview
+reports the record's RESOLVED prompt (labeled `session (frozen at send)`) —
+the truth for what ran and what the next send inherits — instead of
+rebuilding the built-in. Static
 `pre_generate` hooks publish their exact contribution as trigger metadata
 `inject_prompt`; request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
