@@ -79,3 +79,64 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
 export const WORKERS_FIXTURE_EMPTY: WorkerRow[] = []
 
 export const WORKERS_FIXTURE_LOADING: null = null
+
+/**
+ * One worker's registered surface, as `engine::workers::info` answers it.
+ * Backs the expanded-row story so the drill-down renders without an engine.
+ */
+export const WORKER_SURFACE_FIXTURE = {
+  worker: {
+    id: '7fa8e8a4-1c3d-44b2-9a5f-1234567890ab',
+    name: 'harness',
+    status: 'connected',
+    function_count: 3,
+    connected_at_ms: 1_785_930_000_000,
+    active_invocations: 1,
+    internal: false,
+  },
+  functions: [
+    {
+      function_id: 'harness::spawn',
+      worker_name: 'harness',
+      description: 'Spawn a sub-agent for a task and return its session id.',
+    },
+    {
+      function_id: 'harness::triggers::list',
+      worker_name: 'harness',
+      description: 'List the triggers this session has registered.',
+    },
+    {
+      function_id: 'harness::sweep-pending',
+      worker_name: 'harness',
+      description: null,
+    },
+  ],
+  trigger_types: [
+    {
+      id: 'harness::turn-completed',
+      worker_name: 'harness',
+      description: 'A turn finished, successfully or not.',
+    },
+    {
+      id: 'harness::hook::pre-generate',
+      worker_name: 'harness',
+      description: 'Runs before every model generation.',
+    },
+  ],
+  registered_triggers: [
+    {
+      id: 'f8aa4183-1549-4dd2-a3e9-83719f5ee2cc',
+      trigger_type: 'cron',
+      function_id: 'harness::sweep-pending',
+      worker_name: 'harness',
+      config_summary: '{"expression":"0 0 0 * * *"}',
+    },
+    {
+      id: '05238e9a-1a9f-4966-9f8b-3949fcf5dcc6',
+      trigger_type: 'harness::hook::pre-generate',
+      function_id: 'fp::inject-guidance',
+      worker_name: 'fp',
+      config_summary: '{"on_error":"fail_open"}',
+    },
+  ],
+}

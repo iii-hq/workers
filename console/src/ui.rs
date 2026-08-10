@@ -2,11 +2,18 @@
 //! `console:script` / `console:style` trigger types it hosts (the engine
 //! routes the registration straight back to this worker).
 //!
-//! One contribution: a custom configuration form for the `console` entry
-//! (`host.configForms`), replacing the schema-generated JSON editor with the
-//! injectable-UI toggle board — one bordered card per worker (title +
-//! description + switch) flipping `injectableUi.disabledWorkers`, which
-//! [`crate::configuration::start_injectable_ui_sync`] applies live.
+//! Two contributions:
+//!
+//! - a custom configuration form for the `console` entry
+//!   (`host.configForms`), replacing the schema-generated JSON editor with
+//!   the injectable-UI toggle board — one bordered card per worker (title +
+//!   description + switch) flipping `injectableUi.disabledWorkers`, which
+//!   [`crate::configuration::start_injectable_ui_sync`] applies live;
+//! - the engine-catalogue pages (`host.pages`): functions and triggers,
+//!   reading `engine::functions::*` / `engine::triggers::*` /
+//!   `engine::registered-triggers::list`. They are engine-level views no
+//!   single worker owns, and they ship injected so the console SPA carries
+//!   no per-view code.
 //!
 //! Registration machinery comes from the shared `iii-console-ui` crate
 //! (workers/crates/console-ui); this module only names the assets and embeds
@@ -23,6 +30,7 @@ use iii_console_ui::ConsoleUi;
 use iii_sdk::IIIClient;
 
 pub const CONFIG_FORM_PATH: &str = "console/config-form.js";
+pub const CATALOG_PAGE_PATH: &str = "console/catalog-page.js";
 pub const STYLES_PATH: &str = "console/styles.css";
 
 /// Built by `build.rs` (esbuild over `ui/`).
@@ -30,11 +38,16 @@ const CONFIG_FORM_JS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/ui/dist/config-form.js"
 ));
+const CATALOG_PAGE_JS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/ui/dist/catalog-page.js"
+));
 const STYLES_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css"));
 
 fn console_ui() -> ConsoleUi {
     ConsoleUi::new("console")
         .script(CONFIG_FORM_PATH, CONFIG_FORM_JS)
+        .script(CATALOG_PAGE_PATH, CATALOG_PAGE_JS)
         .style(STYLES_PATH, STYLES_CSS)
 }
 
@@ -60,6 +73,42 @@ mod tests {
             CONFIG_FORM_JS.contains("export"),
             "built config-form.js looks wrong"
         );
+    }
+
+    #[test]
+    fn embedded_catalog_page_is_nonempty_esm() {
+        assert!(
+            CATALOG_PAGE_JS.contains("export"),
+            "built catalog-page.js looks wrong"
+        );
+    }
+
+    /// The pages are useless if their ids drift from the routes the nav and
+    /// deep links use (`#/ext/functions`, `#/ext/triggers`).
+    #[test]
+    fn embedded_catalog_page_registers_every_page() {
+        for id in ["functions", "triggers"] {
+            assert!(
+                CATALOG_PAGE_JS.contains(id),
+                "built catalog-page.js is missing the `{id}` page"
+            );
+        }
+    }
+
+    /// The pages are live over engine signals, not timers. A build that lost
+    /// the subscriptions would look fine and silently go stale.
+    #[test]
+    fn embedded_catalog_page_subscribes_to_engine_signals() {
+        for signal in [
+            "engine::functions-available",
+            "engine::workers-available",
+            "trace",
+        ] {
+            assert!(
+                CATALOG_PAGE_JS.contains(signal),
+                "built catalog-page.js no longer subscribes to `{signal}`"
+            );
+        }
     }
 
     #[test]
