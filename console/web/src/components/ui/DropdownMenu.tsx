@@ -107,7 +107,7 @@ export function DropdownMenuSeparator({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
   return (
     <DropdownMenuPrimitive.Separator
-      className={cn('-mx-1 my-1 h-px bg-rule-2', className)}
+      className={cn('-mx-1 my-1 h-px bg-edge', className)}
       {...props}
     />
   )

@@ -143,7 +143,9 @@ pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
         trigger_type: "harness::hook::pre-generate".to_string(),
         function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
         config: serde_json::json!({ "on_error": "fail_open" }),
-        metadata: None,
+        metadata: Some(serde_json::json!({
+            "inject_prompt": inject_guidance::CODE_RUNNER_GUIDANCE
+        })),
     }) {
         Ok(_) => tracing::info!(
             "sandbox-code-runner pre-generate hook bound (guidance injection active)"

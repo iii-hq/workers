@@ -22,7 +22,7 @@ function DemoContextChip({ contextWindow }: SessionChipProps) {
       title={`${used.toLocaleString()} / ${window.toLocaleString()} tokens (${pct}%)`}
     >
       <span>ctx</span>
-      <span className="relative h-[6px] w-14 overflow-hidden border border-rule bg-rule-2">
+      <span className="relative h-[6px] w-14 overflow-hidden bg-surface-active">
         <span
           className="absolute inset-y-0 left-0 bg-accent"
           style={{ width: `${pct}%` }}

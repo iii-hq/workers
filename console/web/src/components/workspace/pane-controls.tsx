@@ -60,7 +60,7 @@ export function ResizeHandle({
         'after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] after:-translate-x-1/2 after:rounded-full after:transition-colors',
         active
           ? 'after:bg-accent'
-          : 'after:bg-transparent hover:after:bg-rule-strong focus-visible:after:bg-accent',
+          : 'after:bg-transparent hover:after:bg-edge focus-visible:after:bg-accent',
       )}
       onKeyDown={(e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return

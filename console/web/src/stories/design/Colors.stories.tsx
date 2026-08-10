@@ -31,9 +31,22 @@ const INK: Swatch[] = [
   },
 ]
 
+/* Both are TRANSPARENT in both themes — the system draws no lines, and these
+   survive only so legacy `border-rule*` utilities stay inert without shifting
+   layout. Never paint with them: a track, separator or highlight set to
+   `rule` renders nothing at all. Use `edge` for the one sanctioned stroke,
+   and the `surface` ramp for fills. */
 const RULES: Swatch[] = [
-  { token: 'rule', className: 'bg-rule', note: 'default 1px borders' },
-  { token: 'rule-2', className: 'bg-rule-2', note: 'nested separators' },
+  {
+    token: 'rule',
+    className: 'bg-rule',
+    note: 'transparent — inert legacy borders only',
+  },
+  {
+    token: 'rule-2',
+    className: 'bg-rule-2',
+    note: 'transparent — inert legacy borders only',
+  },
 ]
 
 const STATUS: Swatch[] = [

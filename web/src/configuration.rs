@@ -31,7 +31,7 @@ fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -
         trigger_type: trigger_type.to_string(),
         function_id: function_id.to_string(),
         config,
-        metadata: None,
+        metadata: Some(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
     }) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");

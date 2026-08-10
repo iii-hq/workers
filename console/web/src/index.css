@@ -117,6 +117,7 @@
 }
 
 [data-theme="dark"] {
+    color-scheme: dark;
   /* Neutral grays derived from black — no blue cast in the base ramp. The
      component fills (surface*) are white-alpha so a step reads identically
      over any base layer; the ONLY chromatic surface is surface-selected,
@@ -193,6 +194,16 @@
   ::selection {
     background-color: var(--color-accent);
     color: var(--color-accent-fg);
+  }
+
+  /* Tailwind v4's preflight leaves buttons on `cursor: default`, so every
+     button without an explicit `cursor-pointer` reads as inert text (the
+     header's copy/export/close all did). Restore the v3 behavior once,
+     here; disabled buttons keep the default and `cursor-not-allowed`
+     utilities still win. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
   }
 
   /* Scrollbars stay system-default — no ::-webkit-scrollbar restyling. */

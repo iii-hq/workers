@@ -5,12 +5,13 @@
  * is its own asset: ../styles.css ships over `console:style` as
  * iii-directory/styles.css.
  *
- * `setup(host)` composes the worker's three console contributions, one
+ * `setup(host)` composes the worker's four console contributions, one
  * module each:
  *
  * - src/page/             — the skills & prompts browser/editor (#/ext/directory)
  * - src/configuration/    — custom form for the `iii-directory` configuration entry
  * - src/function-trigger/ — how directory::* function triggers render in chat/traces
+ * - src/session-chip/     — the chat header's system-prompt read-out + dialog
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.
@@ -20,6 +21,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { DirectoryConfigForm } from './src/configuration'
 import { createDirectoryTriggerRenderer } from './src/function-trigger'
 import { DirectoryPage } from './src/page'
+import { createSystemPromptChip } from './src/session-chip'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -31,4 +33,11 @@ export default function setup(host: Host) {
   host.functionTriggers.register(createDirectoryTriggerRenderer())
 
   host.configForms.register('iii-directory', DirectoryConfigForm)
+
+  /* Optional chained: the slot postdates the published Host type, so a
+     console that predates session chips just skips this contribution. */
+  host.chat?.registerSessionChip({
+    id: 'system-prompt',
+    render: createSystemPromptChip(host),
+  })
 }

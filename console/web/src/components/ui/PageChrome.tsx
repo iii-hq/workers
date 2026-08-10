@@ -100,12 +100,15 @@ export function PageHeader({
       {actions ? (
         <div className="shrink-0 flex items-center gap-1.5">{actions}</div>
       ) : null}
+      {/* No tooltip on the ✕ — a lone close glyph at a pane's corner is
+          self-describing, and a box popping over the tab bar to say "close
+          panel" costs more attention than it saves. aria-label still names
+          it for screen readers. */}
       {onClose ? (
         <button
           type="button"
           onClick={onClose}
           aria-label="close panel"
-          title="close panel"
           className="shrink-0 flex items-center justify-center size-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
         >
           <X aria-hidden className="size-4" />

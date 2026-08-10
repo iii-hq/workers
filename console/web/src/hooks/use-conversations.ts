@@ -26,6 +26,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  type SystemPromptState,
+} from '@/components/chat/system-prompt-selection'
 import { getIiiClient } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
@@ -104,13 +108,63 @@ function isMode(v: unknown): v is Mode {
   return v === 'ask' || v === 'agent'
 }
 
+/**
+ * Wire shape for `metadata.system_prompt`. Undefined for the `default`
+ * choice, so the key is absent rather than present-and-empty (same
+ * convention as `fs_scope` / `memory_bank`).
+ */
+function encodeSystemPrompt(
+  s: SystemPromptState | undefined,
+): Record<string, unknown> | undefined {
+  if (!s || s.choice === 'default') return undefined
+  return {
+    choice: s.choice === 'custom' ? 'custom' : { named: s.choice.named },
+    strategy: s.strategy,
+    named_body: s.namedBody,
+  }
+}
+
+/**
+ * Decode `metadata.system_prompt` defensively — it is untrusted wire JSON,
+ * and an unreadable value must degrade to the default rather than throw.
+ *
+ * ponytail: only the `{named}` choice round-trips. `custom` cannot reach
+ * here today because the sole writer is the new-session picker, which
+ * renders no `custom…` row; extend this if another surface ever persists a
+ * free-text choice.
+ */
+function decodeSystemPrompt(v: unknown): SystemPromptState {
+  if (typeof v !== 'object' || v === null) return DEFAULT_SYSTEM_PROMPT_STATE
+  const md = v as Record<string, unknown>
+  const choice = md.choice
+  const named =
+    typeof choice === 'object' &&
+    choice !== null &&
+    typeof (choice as Record<string, unknown>).named === 'string'
+      ? ((choice as Record<string, unknown>).named as string)
+      : null
+  if (!named) return DEFAULT_SYSTEM_PROMPT_STATE
+  return {
+    choice: { named },
+    strategy: md.strategy === 'override' ? 'override' : 'enrich',
+    namedBody: typeof md.named_body === 'string' ? md.named_body : '',
+    customText: '',
+  }
+}
+
 /** The console's session metadata convention (replaces wholesale on writes). */
 function metadataFor(
   c: Pick<
     Conversation,
-    'model' | 'mode' | 'titleManual' | 'workingDir' | 'memoryBank'
+    | 'model'
+    | 'mode'
+    | 'titleManual'
+    | 'workingDir'
+    | 'memoryBank'
+    | 'systemPrompt'
   >,
 ): Record<string, unknown> {
+  const systemPrompt = encodeSystemPrompt(c.systemPrompt)
   return {
     surface: 'console',
     ...(c.model ? { model: c.model } : {}),
@@ -118,6 +172,7 @@ function metadataFor(
     ...(c.titleManual ? { title_manual: true } : {}),
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
     ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
+    ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
   }
 }
 
@@ -141,6 +196,7 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
         : null,
+    systemPrompt: decodeSystemPrompt(md.system_prompt),
     parentId:
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
@@ -284,6 +340,11 @@ export interface ConversationsApi {
   setModel: (id: string, model: ModelId) => void
   /** Point this chat at a named memory bank (null = worker default). */
   setMemoryBank: (id: string, memoryBank: string | null) => void
+  /**
+   * This chat's system prompt. Written only from the new-session screen —
+   * the composer shows it read-only once the chat has messages.
+   */
+  setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; only meaningful while the chat is a draft. */
   setWorkingDir: (id: string, dir: string) => void
@@ -488,6 +549,7 @@ export function useConversations(
                 typeof md.memory_bank === 'string' && md.memory_bank.length > 0
                   ? md.memory_bank
                   : null,
+              systemPrompt: decodeSystemPrompt(md.system_prompt),
               parentId:
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id
@@ -816,6 +878,19 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setSystemPrompt = useCallback(
+    (id: string, systemPrompt: SystemPromptState) => {
+      patchConversation(id, (c) => ({
+        ...c,
+        systemPrompt,
+        updatedAt: Date.now(),
+      }))
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta({ ...conv, systemPrompt })
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const setWorkingDir = useCallback(
     (id: string, dir: string) => {
       patchConversation(id, (c) => ({
@@ -992,6 +1067,7 @@ export function useConversations(
     remove,
     setModel,
     setMemoryBank,
+    setSystemPrompt,
     setMode,
     setWorkingDir,
     prefillWorkingDir,

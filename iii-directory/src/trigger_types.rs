@@ -1,13 +1,18 @@
 //! Custom trigger types this worker publishes.
 //!
-//! Two trigger types exist:
+//! Three trigger types exist:
 //!
 //! - `directory::skills::on-change`  — fires after every successful
 //!   `directory::skills::download` that wrote at least one skill
-//!   markdown file.
+//!   markdown file, or a `directory::skills::update`.
 //! - `directory::prompts::on-change` — fires after every successful
-//!   `directory::skills::download` that wrote at least one prompt
-//!   markdown file.
+//!   `directory::skills::download` that wrote at least one command-
+//!   template prompt, a `directory::prompts::update`, or a
+//!   `directory::prompts::create`.
+//! - `directory::system-prompts::on-change` — fires after every
+//!   successful `directory::skills::download` that wrote at least one
+//!   system prompt, a `directory::system-prompts::update`, or a
+//!   `directory::system-prompts::create` / `delete`.
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
@@ -34,6 +39,7 @@ use serde_json::Value;
 
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
 pub const PROMPTS_ON_CHANGE: &str = "directory::prompts::on-change";
+pub const SYSTEM_PROMPTS_ON_CHANGE: &str = "directory::system-prompts::on-change";
 
 /// Thread-safe subscriber registry keyed by trigger-instance id. Cloned
 /// into both the `TriggerHandler` (which mutates on register /
@@ -108,6 +114,7 @@ pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Val
 pub struct RegisteredTriggerTypes {
     pub skills: SubscriberSet,
     pub prompts: SubscriberSet,
+    pub system_prompts: SubscriberSet,
 }
 
 pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
@@ -116,19 +123,34 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
-        "Fires after every successful directory::skills::download that wrote at least one skill markdown file.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one skill markdown file, or a directory::skills::update.".to_string(),
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         PROMPTS_ON_CHANGE.to_string(),
-        "Fires after every successful directory::skills::download that wrote at least one prompt markdown file.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one command-template prompt, a directory::prompts::update, or a directory::prompts::create.".to_string(),
         SkillsTriggerHandler::new(PROMPTS_ON_CHANGE, prompts.clone()),
     ));
     tracing::info!(trigger_type = PROMPTS_ON_CHANGE, "registered trigger type");
 
-    RegisteredTriggerTypes { skills, prompts }
+    let system_prompts = SubscriberSet::new();
+    let _ = iii.register_trigger_type(RegisterTriggerType::new(
+        SYSTEM_PROMPTS_ON_CHANGE.to_string(),
+        "Fires after a directory::skills::download that wrote at least one system prompt, or a directory::system-prompts::update, create, or delete.".to_string(),
+        SkillsTriggerHandler::new(SYSTEM_PROMPTS_ON_CHANGE, system_prompts.clone()),
+    ));
+    tracing::info!(
+        trigger_type = SYSTEM_PROMPTS_ON_CHANGE,
+        "registered trigger type"
+    );
+
+    RegisteredTriggerTypes {
+        skills,
+        prompts,
+        system_prompts,
+    }
 }
 
 struct SkillsTriggerHandler {
