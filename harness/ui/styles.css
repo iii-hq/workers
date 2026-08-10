@@ -13,6 +13,7 @@
   position: relative;
   display: flex;
   align-items: center;
+  align-self: stretch;
   gap: 6px;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
@@ -23,9 +24,12 @@
 [data-iii-ui="harness"] .harness-ui-chip-empty {
   color: var(--color-ink-ghost);
 }
+/* `align-self: stretch` so the hit box is the header group's full height,
+   not the 11px glyph run (WCAG 2.2 SC 2.5.8 asks for 24px). */
 [data-iii-ui="harness"] .harness-ui-chip-btn {
   display: flex;
   align-items: center;
+  align-self: stretch;
   gap: 6px;
   background: transparent;
   border: 0;
@@ -37,13 +41,25 @@
   letter-spacing: inherit;
   color: inherit;
 }
+/* Match the console's focus ring — an injected control that invents its own
+   makes one tab pass across the header look like three different widgets. */
+[data-iii-ui="harness"] .harness-ui-chip-btn:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* The track was `--color-rule-2` with a `--color-rule` border, and BOTH
+   resolve to transparent (the system draws no lines) — so the meter rendered
+   as a 56px void with the fill floating in it. `surface-active` reads against
+   the header group's own `surface` fill; plain `surface` would vanish into
+   it. Dropping the border also gives the fill the full 6px it always claimed
+   (border-box was eating 2 of them). */
 [data-iii-ui="harness"] .harness-ui-chip-bar {
   position: relative;
   display: block;
   width: 56px;
   height: 6px;
-  background: var(--color-rule-2);
-  border: 1px solid var(--color-rule);
+  background: var(--color-surface-active);
   overflow: hidden;
 }
 [data-iii-ui="harness"] .harness-ui-chip-fill {
@@ -51,14 +67,19 @@
   height: 100%;
   transition: width 0.2s, background-color 0.2s;
 }
-[data-iii-ui="harness"] .harness-ui-chip-pct {
-  font-variant-numeric: tabular-nums;
-}
+/* `ink-faint` (5.1:1 on panel-raised), not `ink-ghost` (2.4:1 — under the
+   4.5:1 AA floor). These are the numbers you read before compacting. */
 [data-iii-ui="harness"] .harness-ui-chip-counts {
-  color: var(--color-ink-ghost);
+  color: var(--color-ink-faint);
   text-transform: none;
   letter-spacing: normal;
   font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-chip-caret {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  color: var(--color-ink-ghost);
 }
 
 /* --- context popover -------------------------------------------------- */
@@ -72,8 +93,13 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: var(--color-panel);
-  border: 1px solid var(--color-rule);
+  /* Floating surfaces in this system lift with a shadow, not a stroke — the
+     console's own DropdownMenu is `bg-panel-raised … shadow-floating`, and
+     the `1px solid var(--color-rule)` this had was transparent, so the
+     popover was reading flat against the panel behind it. */
+  background: var(--color-panel-raised);
+  border-radius: 6px;
+  box-shadow: var(--shadow-floating);
   color: var(--color-ink);
   font-size: 12px;
   text-transform: none;
@@ -98,12 +124,13 @@
   color: var(--color-ink-faint);
   font-variant-numeric: tabular-nums;
 }
+/* Was `rule-2` on a `rule` border — both transparent, so the breakdown bar
+   had no track and the segments floated on the popover background. */
 [data-iii-ui="harness"] .harness-ui-stack {
   display: flex;
   width: 100%;
   height: 8px;
-  background: var(--color-rule-2);
-  border: 1px solid var(--color-rule);
+  background: var(--color-surface);
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -274,13 +301,13 @@
   white-space: nowrap;
   vertical-align: bottom;
 }
+/* Same transparent-track bug as the chip and the stack bar. */
 [data-iii-ui="harness"] .harness-ui-mini-bar {
   position: relative;
   display: inline-block;
   width: 48px;
   height: 4px;
-  background: var(--color-rule-2);
-  border: 1px solid var(--color-rule);
+  background: var(--color-surface);
   overflow: hidden;
   vertical-align: middle;
 }

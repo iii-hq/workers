@@ -1,3 +1,5 @@
+import type { SystemPromptState } from '@/components/chat/system-prompt-selection'
+
 export type Mode = 'ask' | 'agent'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
@@ -268,6 +270,15 @@ export interface Conversation {
    * configured default bank.
    */
   memoryBank?: string | null
+  /**
+   * System-prompt choice for this chat (session metadata `system_prompt`).
+   * Picked on the new-session screen before the first send, read-only after
+   * it — which is why it lives on the record rather than in ChatView state:
+   * ChatPanel keys ChatView by conversation id, so a local reset on a tab
+   * switch would be invisible with no interactive control left to show it.
+   * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
+   */
+  systemPrompt?: SystemPromptState
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's

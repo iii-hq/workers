@@ -397,10 +397,7 @@ export function createContextChip(host: Host) {
     if (!snapshot || snapshot.usable <= 0) {
       if (contextWindow && contextWindow > 0) {
         return (
-          <div
-            className="harness-ui-chip"
-            title={`no turn yet — model context window ${contextWindow.toLocaleString()} tokens`}
-          >
+          <div className="harness-ui-chip">
             <span>ctx</span>
             <span
               className="harness-ui-chip-bar"
@@ -412,7 +409,6 @@ export function createContextChip(host: Host) {
             >
               <span className="harness-ui-chip-fill" style={{ width: 0 }} />
             </span>
-            <span className="harness-ui-chip-pct">0%</span>
             <span className="harness-ui-chip-counts">
               0/{formatTokens(contextWindow)}
             </span>
@@ -420,7 +416,7 @@ export function createContextChip(host: Host) {
         )
       }
       return (
-        <div className="harness-ui-chip" title="no context snapshot yet">
+        <div className="harness-ui-chip">
           <span>ctx</span>
           <span className="harness-ui-chip-empty">—</span>
         </div>
@@ -438,7 +434,7 @@ export function createContextChip(host: Host) {
           className="harness-ui-chip-btn"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          title={`${snapshot.total.toLocaleString()} / ${snapshot.usable.toLocaleString()} tokens (${pct}%)`}
+          aria-label={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
         >
           <span>ctx</span>
           <span
@@ -454,17 +450,30 @@ export function createContextChip(host: Host) {
               style={{ width: `${pct}%`, background: TONE_COLOR[tone] }}
             />
           </span>
+          {/* The bar, the percentage and the counts were three encodings of
+              one quantity. The bar carries proportion; the counts carry the
+              number you actually act on. The percentage keeps its job in the
+              tooltip and the popover, and hands its tone to the counts. */}
           <span
-            className="harness-ui-chip-pct"
-            style={{
-              color: tone === 'ok' ? 'var(--color-ink)' : TONE_COLOR[tone],
-            }}
+            className="harness-ui-chip-counts"
+            style={tone === 'ok' ? undefined : { color: TONE_COLOR[tone] }}
           >
-            {pct}%
-          </span>
-          <span className="harness-ui-chip-counts">
             {formatTokens(snapshot.total)}/{formatTokens(snapshot.usable)}
           </span>
+          {/* Says "this opens something": drawn at lucide's `chevron-down`
+              geometry, since an injected bundle has no icon dependency. */}
+          <svg
+            className="harness-ui-chip-caret"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
         </button>
         {open ? <ContextPopover snapshot={snapshot} modelId={modelId} /> : null}
       </div>

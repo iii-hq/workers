@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 
 interface SessionTriggersProps {
@@ -121,8 +122,10 @@ function CopyableId({ value }: { value: string }) {
       <button
         type="button"
         onClick={() => {
-          if (typeof navigator === 'undefined' || !navigator.clipboard) return
-          void navigator.clipboard.writeText(value).then(() => {
+          // Helper, not navigator.clipboard: the API is undefined over
+          // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
+          void copyTextToClipboard(value).then((ok) => {
+            if (!ok) return
             setCopied(true)
             window.setTimeout(() => setCopied(false), 1200)
           })

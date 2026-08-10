@@ -116,7 +116,7 @@ export function TraceHeader({
           )}
         </button>
 
-        <span aria-hidden className="w-px h-3 bg-rule-2" />
+        <span aria-hidden className="w-px h-3 bg-edge" />
 
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
           <Clock className="w-2.5 h-2.5 text-accent" />

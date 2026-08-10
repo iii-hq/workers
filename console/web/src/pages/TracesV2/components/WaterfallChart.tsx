@@ -237,7 +237,7 @@ const WaterfallRow = memo(function WaterfallRow({
       </div>
 
       {/* bar track */}
-      <div className="relative h-6 bg-rule-2">
+      <div className="relative h-6 bg-surface">
         <div
           className={cn(
             'absolute h-4 top-1 min-w-[3px]',
@@ -411,7 +411,7 @@ function Toolbar(props: ToolbarProps) {
             internalGroups.length > 0 ||
             hiddenSpanCount > 0) && (
             <>
-              <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
+              <div aria-hidden className="w-px h-4 bg-edge mx-1" />
               <SpanFilterMenu
                 groups={spanGroups}
                 workerGroups={workerGroups}
@@ -760,7 +760,7 @@ export function WaterfallChart({
             className="absolute right-[-11px] top-0 bottom-0 w-[7px] cursor-col-resize z-10 group"
             title="drag to resize, double-click to reset"
           >
-            <div className="absolute left-[3px] top-0 bottom-0 w-[1px] bg-rule-2 group-hover:bg-accent transition-colors" />
+            <div className="absolute left-[3px] top-0 bottom-0 w-[1px] bg-edge group-hover:bg-accent transition-colors" />
           </div>
         </div>
         <div className="flex justify-between font-mono">
@@ -825,7 +825,7 @@ export function WaterfallChart({
               map
             </div>
             <div
-              className="relative bg-rule-2 overflow-hidden"
+              className="relative bg-surface overflow-hidden"
               style={{ height: MINIMAP_HEIGHT }}
             >
               {visibleData.spans.map((span, i) => {

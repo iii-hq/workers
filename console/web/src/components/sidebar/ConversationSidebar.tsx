@@ -189,7 +189,7 @@ export function ConversationSidebar({
         <div className="px-3 py-3 flex items-center gap-2">
           <Button
             type="button"
-            variant="primary"
+            variant="terminal"
             size="sm"
             className="flex-1 justify-start"
             onClick={onCreate}

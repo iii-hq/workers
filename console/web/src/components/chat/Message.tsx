@@ -157,7 +157,7 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
     <article className="my-2">
       <details className="group">
         <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
-          <span className="flex-1 h-px bg-rule" aria-hidden="true" />
+          <span className="flex-1 h-px bg-edge" aria-hidden="true" />
           <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint flex items-center gap-2 group-hover:text-ink transition-colors">
             <span>compacted</span>
             {tokens > 0 ? (
@@ -172,7 +172,7 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
               show summary
             </span>
           </span>
-          <span className="flex-1 h-px bg-rule" aria-hidden="true" />
+          <span className="flex-1 h-px bg-edge" aria-hidden="true" />
         </summary>
         {summary ? (
           <pre className="mt-3 mx-9 p-3 bg-panel border border-rule-2 font-mono text-[11px] leading-relaxed text-ink-faint whitespace-pre-wrap">

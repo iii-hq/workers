@@ -128,6 +128,13 @@ export interface ChatStreamOptions {
    */
   workingDir?: string | null
   /**
+   * Per-session system-prompt selection. The real backend forwards it as
+   * `harness::send` `options.system_prompt` +
+   * `options.system_prompt_strategy`; omitted/null sends neither field
+   * (provider default identity prompt). Mock backends ignore this.
+   */
+  systemPrompt?: import('./harness-send').SystemPromptSelection | null
+  /**
    * Extra text content blocks appended after the prompt on the outgoing
    * user message — `#file(...)` mention expansions (`<attached-file …>`
    * blocks). When present the real backend sends a structured
