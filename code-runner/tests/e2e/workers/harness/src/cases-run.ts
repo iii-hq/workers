@@ -1,4 +1,4 @@
-import { type TestCase, expect, expectEqual, expectContains, until } from './cases.ts'
+import { expect, expectContains, expectEqual, type TestCase, until } from './cases.ts'
 
 /**
  * One-shot `code-runner::run`, in both languages.

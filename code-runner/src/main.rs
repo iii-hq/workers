@@ -86,7 +86,14 @@ async fn main() -> Result<()> {
     // One `Engine` shared by both halves: node-core registers through it from
     // its ops, and the router registers python handlers through it directly.
     let engine = Arc::new(IIIEngine::new(iii.clone()));
-    let node = RuntimeManager::new(Arc::new(cfg.node()), engine.clone(), functions::STATIC_IDS);
+    // `seeded_ids`, not `STATIC_IDS`: the console UI's content function is
+    // registered after this, and an unseeded worker id is claimable through
+    // `register_function` — which ends in the SDK's duplicate-id abort.
+    let node = RuntimeManager::new(
+        Arc::new(cfg.node()),
+        engine.clone(),
+        &functions::seeded_ids(),
+    );
     // Booting the python engine extracts and compiles the embedded CPython
     // artifact, which can fail on a host with no writable cache. Degrade to
     // node-only and say so loudly rather than refusing to start: a node-only
@@ -110,6 +117,9 @@ async fn main() -> Result<()> {
 
     let manager = Manager::new(cfg.clone(), node, engine, python);
     functions::register_all(&iii, &manager);
+    // After the functions: the UI's renderers key off function ids, so there
+    // is nothing for a console to render until those exist.
+    code_runner::ui::register(&iii);
     functions::setup_harness_hooks(&iii);
 
     // Backstop for callers that never call teardown.

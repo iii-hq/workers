@@ -20,6 +20,9 @@ iii-helpers = "=0.21.6"
 # connection and implements `iii_node_core::engine::Engine` against it.
 iii-node-core = { path = "../crates/node-core" }
 iii-python-core = { path = "../crates/python-core" }
+# The injected console UI: registration machinery for the two assets
+# `src/ui.rs` embeds (see crates/console-ui).
+iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "signal", "time"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

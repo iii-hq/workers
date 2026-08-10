@@ -725,7 +725,11 @@ mod router_tests {
         let node = RuntimeManager::new(
             Arc::new(cfg.node()),
             bus.clone(),
-            crate::functions::STATIC_IDS,
+            // The SAME seed as production (`main.rs`): seeding only
+            // `STATIC_IDS` here would leave the console UI's content function
+            // claimable in tests and make the regression test below pass for
+            // the wrong reason.
+            &crate::functions::seeded_ids(),
         );
         let python = iii_python_core::runner::Runner::boot()
             .ok()
@@ -1432,5 +1436,35 @@ mod router_tests {
             .await
             .unwrap_err();
         assert!(err.contains("handler said no"), "{err}");
+    }
+    /// Every id this worker owns is claimed in the registry, so no caller can
+    /// register one — including the console UI's content function, which is
+    /// published by `ui::register` rather than by `register_all`.
+    ///
+    /// This is not hygiene. `register_function` lets a caller choose ANY
+    /// namespace, `code-runner::` included, and an unseeded worker id is
+    /// claimable — the claim then reaches `iii_sdk`'s `register_function` on an
+    /// already-registered id, and its duplicate-id panic ABORTS THE PROCESS.
+    ///
+    /// Mutation: seed `STATIC_IDS` instead of `seeded_ids()`. The `ui-content`
+    /// case then returns `registered: true` — exactly what it did before this
+    /// was fixed, and a live worker dies on that call.
+    #[tokio::test]
+    async fn no_caller_can_claim_an_id_this_worker_owns() {
+        let (m, _bus) = manager_and_bus();
+        for owned in [
+            "code-runner::run",
+            "code-runner::teardown",
+            "code-runner::register_function",
+            "code-runner::inject-guidance",
+            crate::ui::CONTENT_FUNCTION_ID,
+        ] {
+            let err = m
+                .register(reg(owned, "def handler(payload):\n    return 1"))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{owned} was claimable — a live worker aborts on this"));
+            assert!(err.to_string().contains("already taken"), "{owned}: {err}");
+        }
     }
 }

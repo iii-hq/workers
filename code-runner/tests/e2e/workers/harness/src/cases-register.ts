@@ -1,4 +1,4 @@
-import { type TestCase, expect, expectEqual, expectContains, until } from './cases.ts'
+import { expect, expectContains, expectEqual, type TestCase, until } from './cases.ts'
 
 /**
  * `code-runner::register_function` — a handler published on the real bus and
@@ -165,10 +165,7 @@ export const REGISTER_CASES: TestCase[] = [
           source: `def handler(payload):\n    return ${JSON.stringify(id)}`,
         })
       }
-      await until(
-        () => ctx.call('e2e-down::a', {}).catch(() => undefined),
-        'e2e-down::a to be live on the bus',
-      )
+      await until(() => ctx.call('e2e-down::a', {}).catch(() => undefined), 'e2e-down::a to be live on the bus')
 
       const torn = await ctx.call('code-runner::teardown', { namespace: 'e2e-down' })
       expectEqual(torn.torn_down, true, 'teardown should report success')

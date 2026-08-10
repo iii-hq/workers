@@ -1,4 +1,4 @@
-import { type TestCase, expectEqual, expectContains } from './cases.ts'
+import { expectContains, expectEqual, type TestCase } from './cases.ts'
 
 /**
  * The taxonomy, over the real wire.
@@ -56,11 +56,7 @@ export const ERROR_CASES: TestCase[] = [
       })
       // Either it finished or it hit its budget; what must NOT happen is an
       // unbounded response. 1 MiB is the cap each stream is held to.
-      expectEqual(
-        r.stdout.length <= 2 * 1024 * 1024,
-        true,
-        `stdout should be capped, got ${r.stdout.length} bytes`,
-      )
+      expectEqual(r.stdout.length <= 2 * 1024 * 1024, true, `stdout should be capped, got ${r.stdout.length} bytes`)
     },
   },
 
@@ -113,10 +109,7 @@ export const ERROR_CASES: TestCase[] = [
         () => ctx.call('code-runner::teardown', { runtime_id: 'rt-x', namespace: 'ns' }),
         'code-runner::invalid_request',
       )
-      await ctx.expectError(
-        () => ctx.call('code-runner::teardown', {}),
-        'code-runner::invalid_request',
-      )
+      await ctx.expectError(() => ctx.call('code-runner::teardown', {}), 'code-runner::invalid_request')
     },
   },
 ]

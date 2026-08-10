@@ -1,7 +1,7 @@
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { IIIClient, InvocationError } from 'iii-sdk'
-import { type CaseContext, type CaseGroup, type TestCase } from './cases.ts'
+import type { CaseContext, CaseGroup, TestCase } from './cases.ts'
 import { ALL_GROUPS } from './groups.ts'
 
 interface CaseResult {
@@ -84,7 +84,8 @@ export class Runner {
 
     for (const g of groups) {
       const selected = g.cases.filter(
-        (c) => !this.opts.filter || `${g.name} :: ${c.name}`.includes(this.opts.filter) || g.name.includes(this.opts.filter),
+        (c) =>
+          !this.opts.filter || `${g.name} :: ${c.name}`.includes(this.opts.filter) || g.name.includes(this.opts.filter),
       )
       if (!selected.length) continue
       console.log(`${DIM}--- ${g.name} (${selected.length})${RESET}`)

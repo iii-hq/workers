@@ -1,4 +1,4 @@
-import { type TestCase, expect, expectEqual } from './cases.ts'
+import { expect, expectEqual, type TestCase } from './cases.ts'
 
 /**
  * `keep: true`, `runtime_id`, and `teardown`.
@@ -50,11 +50,7 @@ export const KEEP_CASES: TestCase[] = [
           runtime_id: id,
           code: 'result = [n + 1, open("/work/f.txt").read(), json.dumps([1])]',
         })
-        expectEqual(
-          second.result,
-          [42, 'kept', '[1]'],
-          'globals, files and imported modules should all survive',
-        )
+        expectEqual(second.result, [42, 'kept', '[1]'], 'globals, files and imported modules should all survive')
       } finally {
         await ctx.call('code-runner::teardown', { runtime_id: id })
       }
@@ -109,5 +105,4 @@ export const KEEP_CASES: TestCase[] = [
       }
     },
   },
-
 ]

@@ -65,6 +65,26 @@ pub const STATIC_IDS: &[&str] = &[
     inject_guidance::GUIDANCE_HOOK_ID,
 ];
 
+/// Every id this worker owns, for seeding the runtime manager's id registry.
+///
+/// STRICTLY LARGER than `STATIC_IDS`, which is only what `register_all`
+/// registers: the console UI's content function is published later, by
+/// `crate::ui::register`, and it must be seeded all the same.
+///
+/// Why it matters. The registry is what stops a caller claiming an id the
+/// worker already holds. `register_function` lets a caller pick ANY namespace,
+/// including `code-runner::`, so an unseeded worker id can be claimed — and the
+/// claim then reaches `iii_sdk`'s `register_function` on an id that is already
+/// registered, whose duplicate-id panic ABORTS THE PROCESS. Verified
+/// reachable: before `ui-content` was seeded,
+/// `register_function("code-runner::ui-content", …)` returned
+/// `registered: true`.
+pub fn seeded_ids() -> Vec<&'static str> {
+    let mut ids = STATIC_IDS.to_vec();
+    ids.push(crate::ui::CONTENT_FUNCTION_ID);
+    ids
+}
+
 pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
     let mut registered: Vec<&str> = Vec::new();
 

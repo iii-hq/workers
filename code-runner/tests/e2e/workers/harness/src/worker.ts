@@ -1,5 +1,5 @@
-import { registerWorker } from 'iii-sdk'
 import { resolve } from 'node:path'
+import { registerWorker } from 'iii-sdk'
 import { Runner } from './runner.ts'
 
 // No default. 49134 is the port a developer's own stack usually holds, so a

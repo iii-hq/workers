@@ -1,8 +1,8 @@
 import type { CaseGroup } from './cases.ts'
-import { RUN_CASES } from './cases-run.ts'
+import { ERROR_CASES } from './cases-errors.ts'
 import { KEEP_CASES } from './cases-keep.ts'
 import { REGISTER_CASES } from './cases-register.ts'
-import { ERROR_CASES } from './cases-errors.ts'
+import { RUN_CASES } from './cases-run.ts'
 
 /** Order matters only for readability; cases are independent by construction. */
 export const ALL_GROUPS: CaseGroup[] = [

@@ -119,6 +119,59 @@ Linux hosts. Set `scratch_root` to real disk if that matters.
 | `code-runner::handler_error` | a registered handler threw |
 | `code-runner::engine` | infrastructure failure |
 
+## Console UI
+
+The worker ships an injected console UI (the injectable-UI protocol,
+`iii/tech-specs/2026-07-17-injectable-ui`) — two assets, built from `ui/` by
+esbuild and embedded in the binary, so there is nothing to install and nothing
+to serve separately:
+
+| Asset | Slot | What it does |
+|---|---|---|
+| `code-runner/page.js` | `console:script` | how `run` / `register_function` / `teardown` render in chat and the traces span view |
+| `code-runner/styles.css` | `console:style` | the stylesheet, every rule scoped under `[data-iii-ui="code-runner"]` |
+
+One renderer per op, under `ui/src/function-trigger-message/`, sharing the card
+frame in `ui/src/lib/shared.tsx`. They replace the console's raw-JSON card,
+which turns `code` into one escaped line and buries the verdict.
+
+What the cards are for:
+
+- **`run`** leads with the verdict (`exit`, duration), then the **completion
+  value**, then the source highlighted as the language it runs as, then
+  stdout/stderr as terminal output. A **non-zero exit renders as a warning, not
+  an alert** — errors are for infrastructure, and a script that throws is an
+  ordinary response.
+- A **null `result`** is shown explicitly, with the engine's return convention
+  beside it: node code is a function body (`return 2 + 2`), python code is a
+  module (assign `result`). That mismatch is the usual reason a call "worked"
+  and returned nothing.
+- **`register_function`** puts the namespace the id claims on its own line, and
+  advises when the source defines no `handler` — on python that fails the
+  registration outright, not the first call.
+- **`teardown`** answers the one question the payload does not: which function
+  ids stopped resolving.
+
+**`runtime_id` is never rendered in full.** It is a capability — whoever holds
+one can run into or tear down that runtime — so it appears only as a truncated
+chip whose full value is handed over on an explicit click-to-copy. Every other
+string on a card is filtered first: stdout, stderr, error messages (which quote
+the id by design — see `src/error.rs`), the submitted source, the completion
+value, and the `raw json` tab the console mounts regardless of what a card does.
+
+### Developing it
+
+```sh
+cd ui && pnpm install && pnpm build   # cargo build does this for you
+pnpm test                             # vitest, renders the cards server-side
+```
+
+`build.rs` runs `pnpm install && pnpm build` when `ui/dist/` is missing or
+stale, so a plain `cargo build` is enough. `SKIP_UI_BUILD=1` uses the existing
+`ui/dist/` as-is. For a hot-reload loop, run `pnpm watch` and start the worker
+with `III_CODE_RUNNER_UI_WATCH=1` — every open console tab swaps the changed
+asset.
+
 ## Status
 
 | | node | python |
