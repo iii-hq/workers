@@ -1,0 +1,181 @@
+//! The statically registered `code-runner::*` functions.
+//!
+//! Each `<verb>.rs` holds its typed request/response structs; the handler
+//! bodies are thin wrappers over `Manager`, which is what the tests drive
+//! directly.
+
+pub mod inject_guidance;
+pub mod register;
+pub mod run;
+pub mod teardown;
+
+use std::sync::Arc;
+
+use iii_sdk::{IIIClient, RegisterFunction};
+
+use crate::manager::Manager;
+
+pub const RUN_ID: &str = "code-runner::run";
+pub const RUN_DESC: &str =
+    "Run code in an in-process sandbox. Pass lang (\"node\" or \"python\"). \
+     By default run is ONE-SHOT: it creates a fresh runtime, runs code, returns the result, and \
+     destroys the runtime — nothing persists, and the response carries no runtime_id (there is \
+     nothing left to address). Pass keep: true to leave the runtime running instead: the \
+     response's runtime_id then addresses it, and is the capability code-runner::teardown needs \
+     to stop it later. Pass runtime_id on a later call to reuse that same runtime (same globals, \
+     same private scratch directory) — that runtime is never auto-stopped, you own it until you \
+     tear it down or its idle TTL reaps it, and a reaped reuse fails with code-runner::expired \
+     (retry without runtime_id to get a fresh one). There is NO network and NO host filesystem, \
+     so npm/pip installs do not work — use sandbox-code-runner for those. Code you run gets a \
+     global `iii`: iii.trigger({ function_id, payload }) invokes any bus function (await it in \
+     node; it is synchronous in python). In node it also has iii.registerFunction, which \
+     publishes one for the life of the runtime, and iii.files, a private scratch directory \
+     (write/read/readText/list/remove); python gets a persistent /work directory instead. \
+     stdout, stderr and exit_code come back verbatim — a failing script is a response, not an \
+     error — and `result` carries the value the code returned. NOTE on keep: a node runtime persists \
+     its globals AND its iii.files directory; a python runtime persists only its /work directory, \
+     because CPython-on-wasm cannot outlive a call. register_function is node-only for now.";
+
+pub const TEARDOWN_ID: &str = "code-runner::teardown";
+pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister every bus function it registered, \
+     kill it, and free its slot. Pass exactly one of runtime_id (a kept run's runtime, from \
+     code-runner::run keep=true) or namespace (a register_function namespace, e.g. \"app\" for \
+     ids like app::greet) — never both, never neither.";
+
+pub const REGISTER_ID: &str = "code-runner::register_function";
+pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a sandbox. No \
+     runtime_id needed: code-runner keeps one persistent runtime per namespace (the segment of \
+     function_id before `::`) and language — the first registration in a namespace boots it, \
+     later ones in the same namespace and lang reuse it. `source` must DEFINE handler(payload) \
+     in `lang`. The first registered id in a namespace claims it; later ids must share both the \
+     namespace and its lang. `description` is what engine::functions::info shows a caller — \
+     write one. Functions stop resolving when their namespace is torn down \
+     (code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
+
+/// Every id this worker registers on its own client, in registration order.
+///
+/// The order is `run, teardown, register_function, inject-guidance`, matching
+/// sandbox-code-runner's own — including the odd teardown-before-register
+/// placement. `catalog()` and the golden schema snapshots agree with it, so
+/// do not "fix" the ordering.
+pub const STATIC_IDS: &[&str] = &[
+    RUN_ID,
+    TEARDOWN_ID,
+    REGISTER_ID,
+    inject_guidance::GUIDANCE_HOOK_ID,
+];
+
+pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
+    let mut registered: Vec<&str> = Vec::new();
+
+    let m = manager.clone();
+    registered.push(RUN_ID);
+    iii.register_function(
+        RUN_ID,
+        RegisterFunction::new_async(move |req: run::RunRequest| {
+            let m = m.clone();
+            async move { m.run(req).await.map_err(iii_sdk::errors::Error::from) }
+        })
+        .description(RUN_DESC),
+    );
+
+    let m = manager.clone();
+    registered.push(TEARDOWN_ID);
+    iii.register_function(
+        TEARDOWN_ID,
+        RegisterFunction::new_async(move |req: teardown::TeardownRequest| {
+            let m = m.clone();
+            async move { m.teardown(req).await.map_err(iii_sdk::errors::Error::from) }
+        })
+        .description(TEARDOWN_DESC),
+    );
+
+    let m = manager.clone();
+    registered.push(REGISTER_ID);
+    iii.register_function(
+        REGISTER_ID,
+        RegisterFunction::new_async(move |req: register::RegisterRequest| {
+            let m = m.clone();
+            async move { m.register(req).await.map_err(iii_sdk::errors::Error::from) }
+        })
+        .description(REGISTER_DESC),
+    );
+
+    registered.push(inject_guidance::GUIDANCE_HOOK_ID);
+    iii.register_function(
+        inject_guidance::GUIDANCE_HOOK_ID,
+        RegisterFunction::new_async(move |event: inject_guidance::PreGenerateEvent| async move {
+            inject_guidance::handle(event).await
+        })
+        .description(inject_guidance::GUIDANCE_HOOK_DESC)
+        // The harness calls this, never an agent; it must not show up as a
+        // callable option alongside run/register_function/teardown.
+        .metadata(serde_json::json!({ "internal": true })),
+    );
+
+    assert_eq!(
+        registered, STATIC_IDS,
+        "register_all must register exactly STATIC_IDS, in order: the id registry is seeded \
+         from that list, and an unseeded registration lets a runtime claim a worker id"
+    );
+
+    tracing::info!("code-runner functions registered");
+}
+
+/// Bind the `pre_generate` hook so the guidance reaches the agent's system
+/// prompt while this worker is connected.
+///
+/// `on_error: fail_open` is MANDATORY. `pre_generate` defaults to
+/// fail-CLOSED, so an error or timeout here would abort the agent's turn; a
+/// missing guidance line must never do that.
+pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
+    match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
+        trigger_type: "harness::hook::pre-generate".to_string(),
+        function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+        config: serde_json::json!({ "on_error": "fail_open" }),
+        metadata: None,
+    }) {
+        Ok(_) => tracing::info!("code-runner pre-generate hook bound"),
+        Err(e) => tracing::warn!(error = %e, "guidance hook binding failed; continuing without it"),
+    }
+}
+
+pub struct FunctionSpec {
+    pub function_id: &'static str,
+    pub description: &'static str,
+    pub request_schema: schemars::schema::RootSchema,
+    pub response_schema: schemars::schema::RootSchema,
+}
+
+/// MUST mirror iii-sdk's internal `json_schema_for` (draft07) so a catalog
+/// snapshot pins exactly what registration emits.
+fn schema_of<T: schemars::JsonSchema>() -> schemars::schema::RootSchema {
+    schemars::r#gen::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>()
+}
+
+fn spec<Req, Resp>(function_id: &'static str, description: &'static str) -> FunctionSpec
+where
+    Req: schemars::JsonSchema,
+    Resp: schemars::JsonSchema,
+{
+    FunctionSpec {
+        function_id,
+        description,
+        request_schema: schema_of::<Req>(),
+        response_schema: schema_of::<Resp>(),
+    }
+}
+
+pub fn catalog() -> Vec<FunctionSpec> {
+    vec![
+        spec::<run::RunRequest, run::RunResponse>(RUN_ID, RUN_DESC),
+        spec::<teardown::TeardownRequest, teardown::TeardownResponse>(TEARDOWN_ID, TEARDOWN_DESC),
+        spec::<register::RegisterRequest, register::RegisterResponse>(REGISTER_ID, REGISTER_DESC),
+        spec::<inject_guidance::PreGenerateEvent, inject_guidance::PreGenerateResponse>(
+            inject_guidance::GUIDANCE_HOOK_ID,
+            inject_guidance::GUIDANCE_HOOK_DESC,
+        ),
+    ]
+}

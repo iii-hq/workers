@@ -1,0 +1,35 @@
+[workspace]
+
+[package]
+name = "code-runner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "code-runner"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.21.6"
+iii-helpers = "=0.21.6"
+# The two engines, as libraries. Both are bus-free: this worker owns the only
+# connection and implements `iii_node_core::engine::Engine` against it.
+iii-node-core = { path = "../crates/node-core" }
+iii-python-core = { path = "../crates/python-core" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "signal", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+# Must stay on the same schemars major as iii-sdk so derived schemas match
+# what RegisterFunction emits at registration time.
+schemars = "0.8"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+uuid = { version = "1", features = ["v4"] }

@@ -1,0 +1,106 @@
+{
+  "function_id": "code-runner::run",
+  "description": "Run code in an in-process sandbox. Pass lang (\"node\" or \"python\"). By default run is ONE-SHOT: it creates a fresh runtime, runs code, returns the result, and destroys the runtime — nothing persists, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the runtime running instead: the response's runtime_id then addresses it, and is the capability code-runner::teardown needs to stop it later. Pass runtime_id on a later call to reuse that same runtime (same globals, same private scratch directory) — that runtime is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a reaped reuse fails with code-runner::expired (retry without runtime_id to get a fresh one). There is NO network and NO host filesystem, so npm/pip installs do not work — use sandbox-code-runner for those. Code you run gets a global `iii`: iii.trigger({ function_id, payload }) invokes any bus function (await it in node; it is synchronous in python). In node it also has iii.registerFunction, which publishes one for the life of the runtime, and iii.files, a private scratch directory (write/read/readText/list/remove); python gets a persistent /work directory instead. stdout, stderr and exit_code come back verbatim — a failing script is a response, not an error — and `result` carries the value the code returned. NOTE on keep: a node runtime persists its globals AND its iii.files directory; a python runtime persists only its /work directory, because CPython-on-wasm cannot outlive a call. register_function is node-only for now.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RunRequest",
+    "type": "object",
+    "required": [
+      "code"
+    ],
+    "properties": {
+      "code": {
+        "description": "Source run as a whole file. A global `iii` is in scope — trigger any bus function, register one for the life of this runtime, and read and write this runtime's private scratch directory through `iii.files`.",
+        "type": "string"
+      },
+      "keep": {
+        "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — create a runtime, run `code`, return the result, destroy it. Nothing persists. `true`: leave it running; the response's `runtime_id` addresses it for later runs and is the capability `code-runner::teardown` needs to stop it.",
+        "default": false,
+        "type": "boolean"
+      },
+      "lang": {
+        "description": "Required when `runtime_id` is omitted — picks the engine (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime.",
+        "default": null,
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Lang"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "runtime_id": {
+        "description": "Run in a SPECIFIC runtime, sharing its scratch directory and its globals: the run lands in that runtime and it is NOT destroyed afterwards — you own it. Omit this to run one-shot (see `keep`).",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timeout_ms": {
+        "description": "Wall-clock budget in milliseconds, clamped to the configured maximum.",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0.0
+      }
+    },
+    "definitions": {
+      "Lang": {
+        "description": "Which engine backs a runtime.\n\nOnly `node` and `python` are accepted; anything else fails deserialization before a handler runs, so the schema itself is the validation — the same posture `sandbox-code-runner::run` takes.",
+        "type": "string",
+        "enum": [
+          "node",
+          "python"
+        ]
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RunResponse",
+    "type": "object",
+    "required": [
+      "duration_ms",
+      "exit_code",
+      "result",
+      "stderr",
+      "stdout",
+      "success"
+    ],
+    "properties": {
+      "duration_ms": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "exit_code": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "result": {
+        "description": "The completion value: what the code returned (node) or assigned to `result` (python). Null when it returned nothing, when it returned something JSON cannot represent, or when the run failed.\n\nAlways present, never skipped — unlike `runtime_id`, a null result is information (\"the code returned nothing\") rather than an absence."
+      },
+      "runtime_id": {
+        "description": "Present when this run addresses a runtime that outlives the call — a `keep: true` run that SUCCEEDED, or a `runtime_id` echoed back. Absent, not null, otherwise: there is nothing to address. Treat a present value as a secret.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "success": {
+        "type": "boolean"
+      }
+    }
+  }
+}

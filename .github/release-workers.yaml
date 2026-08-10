@@ -51,6 +51,7 @@ standard_workers:
   - bridge
   - browser
   - claude-code
+  - code-runner
   - codex
   - computer
   - devin

@@ -1,0 +1,50 @@
+[workspace]
+
+[package]
+name = "iii-node-core"
+version = "0.1.0"
+edition = "2021"
+description = "Evaluate untrusted JavaScript in per-namespace V8 isolates — the runtime, ops, guest prelude and manager, with no bus dependency"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished: workers in this repo link it by path, the same way
+# they link crates/console-ui.
+publish = false
+
+# NO iii-sdk, and no feature to add one back.
+#
+# The bus seam is `trait Engine` (engine.rs) — five methods over `BoxFuture`
+# and `serde_json::Value`, nothing else. The production implementation lives
+# in the worker that owns a connection; this crate never sees one.
+#
+# A `default-features = false` feature gate (the llm-router → provider-*
+# pattern) was considered and rejected: it would preserve the OPTION of
+# pulling `iii-sdk = "=0.21.6"` in here, which is exactly the exact-pin
+# collision crates/console-ui/Cargo.toml documents — workers on this repo's
+# SDK line carry their own pins (0.21.6 for most, 0.21.8 for harness/eval)
+# and a crate in the middle must never be what forces one of them. A crate
+# with no SDK dependency has no pin to collide.
+[dependencies]
+deno_core = "=0.409.0"
+deno_error = "0.7"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `LogLine` reaches the wire through the hosting worker's response type, so
+# its `JsonSchema` derive has to live with the struct. Must stay on the same
+# schemars major as iii-sdk so the derived schema matches what
+# `RegisterFunction` emits at registration time.
+schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }
+once_cell = "1"
+tracing = "0.1"
+# Per-runtime scratch directories: `Builder::tempdir_in` gives an
+# independently random suffix (never derived from `runtime_id`, which is a
+# capability), O_EXCL creation, and 0700 on unix, in one call.
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+# `O_NOFOLLOW` for the scratch opens. The flag's value is platform-specific,
+# so it cannot be hardcoded into `custom_flags`.
+libc = "0.2"

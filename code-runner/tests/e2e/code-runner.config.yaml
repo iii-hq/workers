@@ -1,0 +1,14 @@
+# code-runner configuration for the e2e harness.
+#
+# Identical to the crate's own shipped defaults (../../config.yaml) so the
+# suite tests what operators actually run. Both engines are configured from
+# THIS file — `CodeRunnerConfig::python()` maps the shared keys onto the
+# python engine, so a value here that only moved node would be a bug.
+max_runtimes: 8           # live runtimes across both engines
+default_timeout_ms: 5000  # per run when unspecified
+max_timeout_ms: 30000     # ceiling a request's timeout_ms is clamped to
+idle_ttl_secs: 900        # reap a runtime with no activity for this long
+heap_mb: 128              # V8 object-heap cap per node runtime
+external_mb: 64           # off-heap (ArrayBuffer) cap per node runtime
+scratch_mb: 64            # `iii.files` scratch cap per node runtime
+scratch_files: 256        # `iii.files` file-count cap per node runtime
