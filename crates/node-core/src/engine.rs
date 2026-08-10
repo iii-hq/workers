@@ -44,10 +44,18 @@ pub trait Engine: Send + Sync + 'static {
     /// [`DEFAULT_DYNAMIC_DESC`]) — a registration with no description at all
     /// is indistinguishable from a missing function in the catalog, which is
     /// worse than a generic line.
+    ///
+    /// `request_format`/`response_format` are caller-supplied JSON Schemas
+    /// for the catalog: when present they replace the auto-extracted "any"
+    /// schema a dynamic `Value → Value` registration otherwise carries, so
+    /// `engine::functions::info` can show the real shapes. Validated before
+    /// they get here (`wire::register::validate_format`).
     fn register(
         &self,
         fn_id: String,
         description: Option<String>,
+        request_format: Option<Value>,
+        response_format: Option<Value>,
         handler: ProxyHandler,
     ) -> UnregisterFn;
 
@@ -147,6 +155,9 @@ pub fn trigger_callback_payload(config: TriggerCallback, method: &str) -> Value 
 /// What each id was published with: `(id, description, handler)`.
 #[cfg(test)]
 type RegisteredHandlers = Arc<std::sync::Mutex<Vec<(String, Option<String>, ProxyHandler)>>>;
+#[cfg(test)]
+type RegisteredFormats =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, (Option<Value>, Option<Value>)>>>;
 
 #[cfg(test)]
 #[derive(Default)]
@@ -170,6 +181,10 @@ pub struct FakeEngine {
     /// "torn-down functions are uncallable" and pass without teardown ever
     /// removing anything.
     handlers: RegisteredHandlers,
+    /// `(request_format, response_format)` per registered id — a separate
+    /// map rather than widening the `handlers` tuple, for the same reason
+    /// `timeouts` is separate from `calls`.
+    formats: RegisteredFormats,
     unregisters: Arc<std::sync::atomic::AtomicUsize>,
     hang: std::sync::atomic::AtomicBool,
     route_back: std::sync::atomic::AtomicBool,
@@ -186,6 +201,13 @@ pub struct FakeEngine {
 impl FakeEngine {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// The `(request_format, response_format)` pair `register` received for
+    /// `fn_id` — `None` when the id is not currently registered, so an
+    /// unregistered id and a never-registered one read the same.
+    pub fn formats_of(&self, fn_id: &str) -> Option<(Option<Value>, Option<Value>)> {
+        self.formats.lock().unwrap().get(fn_id).cloned()
     }
 
     pub fn with_response(&self, fn_id: &str, result: CallResult) {
@@ -418,17 +440,25 @@ impl Engine for FakeEngine {
         &self,
         fn_id: String,
         description: Option<String>,
+        request_format: Option<Value>,
+        response_format: Option<Value>,
         handler: ProxyHandler,
     ) -> UnregisterFn {
+        self.formats
+            .lock()
+            .unwrap()
+            .insert(fn_id.clone(), (request_format, response_format));
         self.handlers
             .lock()
             .unwrap()
             .push((fn_id.clone(), description, handler));
         let counter = self.unregisters.clone();
         let handlers = self.handlers.clone();
+        let formats = self.formats.clone();
         Box::new(move || {
             // Remove, not just count: the fake must be able to show that an
             // unregistered id is genuinely gone.
+            formats.lock().unwrap().remove(&fn_id);
             handlers.lock().unwrap().retain(|(id, _, _)| *id != fn_id);
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         })
@@ -521,7 +551,7 @@ mod tests {
         let handler: ProxyHandler = Arc::new(|p: serde_json::Value| {
             Box::pin(async move { Ok(json!({ "echo": p })) }) as BoxFuture<'static, CallResult>
         });
-        let un = fake.register("ns::hello".into(), None, handler);
+        let un = fake.register("ns::hello".into(), None, None, None, handler);
         assert_eq!(fake.registered_ids(), vec!["ns::hello".to_string()]);
         assert_eq!(
             fake.invoke("ns::hello", json!({ "a": 1 })).await,

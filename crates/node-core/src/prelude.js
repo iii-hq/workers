@@ -231,7 +231,28 @@
         "registerFunction(functionId, handler, options?): options.description must be a string",
       );
     }
-    op_iii_register(functionId, description === undefined ? "" : description);
+    // `request_format`/`response_format` are JSON Schemas for the catalog —
+    // engine::functions::info shows them to the next caller in place of
+    // "any". Checked here as plain objects for a good error early; the op
+    // re-validates either way (this check runs on tenant-replaceable
+    // builtins, the op's does not).
+    const formats = [];
+    for (const name of ["request_format", "response_format"]) {
+      const value = options === undefined ? undefined : options[name];
+      if (value !== undefined && (value === null || typeof value !== "object" || Array.isArray(value))) {
+        throw new TypeError(
+          `registerFunction(functionId, handler, options?): options.${name} must be a plain object holding a JSON Schema`,
+        );
+      }
+      const encoded = value === undefined ? "" : stringify(value);
+      if (typeof encoded !== "string") {
+        throw new TypeError(
+          `registerFunction(functionId, handler, options?): options.${name} did not survive JSON encoding`,
+        );
+      }
+      formats.push(encoded);
+    }
+    op_iii_register(functionId, description === undefined ? "" : description, formats[0], formats[1]);
     handlers.set(functionId, handler);
     return {
       unregister() {

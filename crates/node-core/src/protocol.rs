@@ -154,7 +154,13 @@ pub fn wrap_invoke(fn_id: &str, payload: &Value, method: Option<&str>) -> String
 ///   by `var handler;`, which broke prologue position in the earlier,
 ///   single-scope version), a tenant that opts into strict mode to catch a
 ///   typo keeps that protection.
-pub fn wrap_register(id: &str, source: &str, description: Option<&str>) -> String {
+pub fn wrap_register(
+    id: &str,
+    source: &str,
+    description: Option<&str>,
+    request_format: Option<&serde_json::Value>,
+    response_format: Option<&serde_json::Value>,
+) -> String {
     let stripped = strip_leading_export(source);
     let handler_expr = format!(
         "(function(){{var handler;\n\
@@ -172,6 +178,18 @@ pub fn wrap_register(id: &str, source: &str, description: Option<&str>) -> Strin
         Some(text) => format!(",desc:{}", js_string(text)),
         None => String::new(),
     };
+    // Formats embed as compact-JSON literals — JSON is a valid JS expression,
+    // and the `__def` literal evaluates before any tenant source runs. An
+    // absent format leaves its key out, so `__def.reqf` reads `undefined` —
+    // "not supplied" — through the same options plumbing as `desc`.
+    let reqf = match request_format {
+        Some(schema) => format!(",reqf:{schema}"),
+        None => String::new(),
+    };
+    let resf = match response_format {
+        Some(schema) => format!(",resf:{schema}"),
+        None => String::new(),
+    };
     // `registerFunction`'s third argument is now an options OBJECT (the SDK
     // shape — see `prelude.js`), not the raw description string: passing
     // `__def.desc` positionally would hand a string where an object is
@@ -180,9 +198,10 @@ pub fn wrap_register(id: &str, source: &str, description: Option<&str>) -> Strin
     // still lands on `options.description === undefined` — "not supplied" —
     // exactly like today.
     format!(
-        "const __def={{id:{},src:{}{desc}}};\
+        "const __def={{id:{},src:{}{desc}{reqf}{resf}}};\
          const __h=__iii.toHandler(__def.id,__def.src);\
-         iii.registerFunction(__def.id,__h.fn,{{description:__def.desc}});\
+         iii.registerFunction(__def.id,__h.fn,{{description:__def.desc,\
+         request_format:__def.reqf,response_format:__def.resf}});\
          return {{id:__def.id,form:__h.form}};",
         js_string(id),
         js_string(&handler_expr)
@@ -293,11 +312,41 @@ mod tests {
         assert!(src.contains(r#""a\"b""#), "method not escaped: {src}");
     }
 
+    /// Formats embed as JSON literals in `__def` and ride the options
+    /// object; absent formats leave the keys out entirely, so the prelude
+    /// reads `undefined` — "not supplied" — exactly like the description.
+    #[test]
+    fn wrap_register_carries_formats_only_when_given() {
+        let schema = serde_json::json!({"type": "object"});
+        let with = wrap_register(
+            "ns::a",
+            "export function handler(p) { return p }",
+            None,
+            Some(&schema),
+            None,
+        );
+        assert!(with.contains(r#"reqf:{"type":"object"}"#), "{with}");
+        assert!(with.contains("request_format:__def.reqf"), "{with}");
+        assert!(with.contains("response_format:__def.resf"), "{with}");
+
+        let without = wrap_register(
+            "ns::a",
+            "export function handler(p) { return p }",
+            None,
+            None,
+            None,
+        );
+        assert!(!without.contains("reqf:"), "{without}");
+        assert!(!without.contains("resf:"), "{without}");
+    }
+
     #[test]
     fn wrap_register_escapes_ids_and_source() {
         let src = wrap_register(
             r#"ns::a"b"#,
             "export function handler(p) {\n  return `x`\n}",
+            None,
+            None,
             None,
         );
         // Both interpolations are JSON string literals, so nothing can break
@@ -319,7 +368,13 @@ mod tests {
     /// reported to the caller as success.
     #[test]
     fn wrap_register_is_a_statement_body_not_an_iife() {
-        let src = wrap_register("ns::a", "export function handler(p) { return p }", None);
+        let src = wrap_register(
+            "ns::a",
+            "export function handler(p) { return p }",
+            None,
+            None,
+            None,
+        );
         assert!(
             !src.trim_start().starts_with("(async"),
             "double-wrapped: {src}"
@@ -341,7 +396,13 @@ mod tests {
     /// must be stripped before the source is embedded.
     #[test]
     fn wrap_register_strips_a_leading_export() {
-        let src = wrap_register("ns::a", "export function handler(p) { return 1 }", None);
+        let src = wrap_register(
+            "ns::a",
+            "export function handler(p) { return 1 }",
+            None,
+            None,
+            None,
+        );
         assert!(
             !src.contains("export"),
             "a literal `export` would be a SyntaxError once embedded: {src}"
@@ -386,9 +447,11 @@ mod tests {
             "ns::a",
             "export function handler() {}",
             Some("does a thing"),
+            None,
+            None,
         );
         assert!(with.contains(r#"desc:"does a thing""#), "{with}");
-        let without = wrap_register("ns::a", "export function handler() {}", None);
+        let without = wrap_register("ns::a", "export function handler() {}", None, None, None);
         assert!(!without.contains("desc:"), "{without}");
     }
 }

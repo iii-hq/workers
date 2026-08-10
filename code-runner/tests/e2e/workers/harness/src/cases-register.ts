@@ -121,6 +121,35 @@ export const REGISTER_CASES: TestCase[] = [
   },
 
   {
+    // `request_format`/`response_format` must land in the engine's catalog —
+    // that is the only reason they exist. Asserted through the same
+    // functions::info a real caller reads, searching the serialized response
+    // for a marker property so the case does not pin info's exact envelope.
+    name: 'register formats show up in functions::info',
+    async run(ctx) {
+      await ctx.call('code-runner::register_function', {
+        function_id: 'e2e-fmt::double',
+        lang: 'node',
+        source: 'export function handler(p) { return p.fmt_marker_n * 2 }',
+        description: 'doubles fmt_marker_n',
+        request_format: {
+          type: 'object',
+          properties: { fmt_marker_n: { type: 'number' } },
+        },
+        response_format: { type: 'number' },
+      })
+      try {
+        const info = await ctx.call('engine::functions::info', { function_id: 'e2e-fmt::double' })
+        const raw = JSON.stringify(info)
+        expectContains(raw, 'fmt_marker_n', 'request_format should reach the catalog')
+        expect(!raw.includes('"any"') || raw.includes('fmt_marker_n'), 'schema should replace any')
+      } finally {
+        await ctx.call('code-runner::teardown', { namespace: 'e2e-fmt' })
+      }
+    },
+  },
+
+  {
     // Ids are claimed in ONE registry across both engines. Two registries
     // would each believe they owned the id, both would reach the SDK's
     // register_function, and the second would abort the process on its

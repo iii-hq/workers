@@ -1,6 +1,6 @@
 {
   "function_id": "code-runner::register_function",
-  "description": "Publish a bus function whose handler runs in a sandbox. No runtime_id needed: code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language — the first registration in a namespace boots it, later ones in the same namespace and lang reuse it. `source` must DEFINE handler(payload) in `lang`. The first registered id in a namespace claims it; later ids must share both the namespace and its lang. `description` is what engine::functions::info shows a caller — write one. Functions stop resolving when their namespace is torn down (code-runner::teardown namespace=...) or its runtime is reaped for idleness.",
+  "description": "Publish a bus function whose handler runs in a sandbox. No runtime_id needed: code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language — the first registration in a namespace boots it, later ones in the same namespace and lang reuse it. `source` must DEFINE handler(payload) in `lang`. The first registered id in a namespace claims it; later ids must share both the namespace and its lang. `description` is what engine::functions::info shows a caller — write one. Optional `request_format` / `response_format` take a JSON Schema (an object using `type`/`properties`/`$ref`/…, max 16 KiB) that engine::functions::info shows in place of \"any\". Functions stop resolving when their namespace is torn down (code-runner::teardown namespace=...) or its runtime is reaped for idleness.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "RegisterRequest",
@@ -30,6 +30,14 @@
             "$ref": "#/definitions/Lang"
           }
         ]
+      },
+      "request_format": {
+        "description": "Optional JSON Schema for the payload the registered function expects — `engine::functions::info` then shows it in place of \"any\". Must be a JSON object that actually constrains something (`type`, `properties`, `$ref`, …); at most 16 KiB serialized.",
+        "default": null
+      },
+      "response_format": {
+        "description": "Optional JSON Schema for the value the handler returns; same rules as `request_format`.",
+        "default": null
       },
       "source": {
         "description": "Source that DEFINES `handler(payload)` in `lang`.\n\nNode publishes itself, by calling `iii.registerFunction`. Python's source just defines the name — the host publishes it — and anything else the source defines stays available to every later invocation, because the namespace runs on one pinned interpreter.",

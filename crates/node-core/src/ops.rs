@@ -376,6 +376,29 @@ pub const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
 /// gives once this runtime's shared `MAX_REGISTRATIONS_PER_RUNTIME` budget is
 /// exhausted. One function so the three call sites cannot drift into three
 /// different wordings for what is, from a tenant's perspective, one cap.
+/// Decode one guest-supplied format argument: "" is "not supplied",
+/// anything else must parse as JSON and pass the shared wire rule
+/// (`wire::register::validate_format`). Raw length is checked BEFORE parsing
+/// so an oversized blob is refused for its size, not after the host paid to
+/// parse it — the raw string IS the serialized form (the prelude sends
+/// `JSON.stringify` output), so the two length checks are the same rule.
+fn parse_format(field: &'static str, raw: &str) -> Result<Option<serde_json::Value>, JsErrorBox> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    if raw.len() > crate::wire::register::MAX_FORMAT_BYTES {
+        return Err(JsErrorBox::type_error(format!(
+            "{field} is {} bytes serialized; the limit is {}",
+            raw.len(),
+            crate::wire::register::MAX_FORMAT_BYTES
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| JsErrorBox::type_error(format!("{field} is not valid JSON: {e}")))?;
+    crate::wire::register::validate_format(field, &value).map_err(JsErrorBox::type_error)?;
+    Ok(Some(value))
+}
+
 fn registration_cap_exceeded() -> JsErrorBox {
     JsErrorBox::generic(format!(
         "this runtime already holds {MAX_REGISTRATIONS_PER_RUNTIME} registrations \
@@ -414,6 +437,8 @@ fn op_iii_register(
     state: &mut OpState,
     #[string] fn_id: String,
     #[string] description: String,
+    #[string] request_format: String,
+    #[string] response_format: String,
 ) -> Result<(), JsErrorBox> {
     let ops = state.borrow_mut::<OpsState>();
 
@@ -433,6 +458,12 @@ fn op_iii_register(
             description.len()
         )));
     }
+
+    let request_format = parse_format("request_format", &request_format)?;
+    let response_format = parse_format("response_format", &response_format)?;
+    // Empty means "not supplied": the prelude sends "" when the caller omits
+    // the argument, and `Engine::register` substitutes its default.
+    let description = (!description.is_empty()).then_some(description);
 
     let fn_id = require_own_namespace(&ops.namespace, fn_id)?;
 
@@ -497,7 +528,7 @@ fn op_iii_register(
         // no bus write. Checked before the cap so a re-registration never
         // trips it.
         //
-        // The exception is a NEW description. It is published metadata —
+        // The exception is a NEW description or format. Both are published metadata —
         // `engine::functions::info` is where the next caller reads what this
         // function does — and the SDK only carries it at registration time, so
         // keeping the existing registration would silently discard it: the
@@ -529,14 +560,22 @@ fn op_iii_register(
             .iter()
             .position(|(k, id, _)| *k == RegistrationKind::Function && *id == fn_id);
         if let Some(index) = held {
-            if description.is_empty() {
+            if description.is_none() && request_format.is_none() && response_format.is_none() {
                 return Ok(());
             }
             let (_, _, unregister) = registrations.swap_remove(index);
             unregister();
-            let fresh = ops
-                .engine
-                .register(fn_id.clone(), Some(description), handler);
+            // Wholesale replacement, never a merge: the SDK only carries
+            // metadata at registration time, so a re-registration supplying
+            // formats but no description falls back to the default
+            // description rather than keeping the previous one.
+            let fresh = ops.engine.register(
+                fn_id.clone(),
+                description,
+                request_format,
+                response_format,
+                handler,
+            );
             registrations.push((RegistrationKind::Function, fn_id, fresh));
             return Ok(());
         }
@@ -557,10 +596,13 @@ fn op_iii_register(
             ));
         }
 
-        // Empty means "not supplied": the prelude sends "" when the caller
-        // omits the argument, and `Engine::register` substitutes its default.
-        let description = (!description.is_empty()).then_some(description);
-        let unregister = ops.engine.register(fn_id.clone(), description, handler);
+        let unregister = ops.engine.register(
+            fn_id.clone(),
+            description,
+            request_format,
+            response_format,
+            handler,
+        );
         registrations.push((RegistrationKind::Function, fn_id.clone(), unregister));
     }
     ops.registered.push((RegistrationKind::Function, fn_id));
@@ -1317,7 +1359,13 @@ mod tests {
         // Stands in for "victim::" having registered it — going straight to
         // `Engine::register` rather than through `op_iii_register`, since
         // only the removal path is under test here.
-        let _ = fake.register("victim::secret".to_string(), None, noop_handler());
+        let _ = fake.register(
+            "victim::secret".to_string(),
+            None,
+            None,
+            None,
+            noop_handler(),
+        );
         assert!(fake
             .registered_ids()
             .contains(&"victim::secret".to_string()));
@@ -1366,7 +1414,7 @@ mod tests {
     fn unregister_checked_removes_a_registration_the_runtime_owns() {
         let fake = FakeEngine::new();
         let mut ops = test_ops("app::", "rt-owner", fake.clone());
-        let unregister = fake.register("app::mine".to_string(), None, noop_handler());
+        let unregister = fake.register("app::mine".to_string(), None, None, None, noop_handler());
         ops.unregisters.lock().unwrap().push((
             RegistrationKind::Function,
             "app::mine".to_string(),
@@ -1415,7 +1463,7 @@ mod tests {
     fn cross_kind_unregister_does_not_release_a_live_registrations_claim() {
         let fake = FakeEngine::new();
         let mut ops = test_ops("app::", "rt-owner", fake.clone());
-        let unregister = fake.register("app::x".to_string(), None, noop_handler());
+        let unregister = fake.register("app::x".to_string(), None, None, None, noop_handler());
         ops.unregisters.lock().unwrap().push((
             RegistrationKind::Function,
             "app::x".to_string(),
@@ -1445,8 +1493,8 @@ mod tests {
     fn unregistering_one_kind_does_not_release_the_claim_while_another_kind_shares_the_id() {
         let fake = FakeEngine::new();
         let mut ops = test_ops("app::", "rt-owner", fake.clone());
-        let unregister_fn = fake.register("app::x".to_string(), None, noop_handler());
-        let unregister_type = fake.register("app::x".to_string(), None, noop_handler());
+        let unregister_fn = fake.register("app::x".to_string(), None, None, None, noop_handler());
+        let unregister_type = fake.register("app::x".to_string(), None, None, None, noop_handler());
         {
             let mut regs = ops.unregisters.lock().unwrap();
             regs.push((

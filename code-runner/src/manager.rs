@@ -235,6 +235,19 @@ impl Manager {
         &self,
         req: RegisterRequest,
     ) -> Result<RegisterResponse, CodeRunnerError> {
+        // One rule for both engines, checked before anything is claimed or
+        // booted: node re-validates in `op_iii_register` either way (that op
+        // is also the guest surface), but failing HERE gives the caller the
+        // error without a runtime having been created for a doomed request.
+        for (field, format) in [
+            ("request_format", &req.request_format),
+            ("response_format", &req.response_format),
+        ] {
+            if let Some(value) = format {
+                iii_node_core::wire::register::validate_format(field, value)
+                    .map_err(CodeRunnerError::InvalidRequest)?;
+            }
+        }
         match req.lang {
             Lang::Python => return self.register_python(req).await,
             Lang::Node => {}
@@ -243,6 +256,8 @@ impl Manager {
             function_id: req.function_id.clone(),
             source: req.source,
             description: req.description,
+            request_format: req.request_format,
+            response_format: req.response_format,
         };
         match self.node.register(core_req).await {
             // node-core reports the namespace it claimed; this wire reports
@@ -392,9 +407,13 @@ impl Manager {
         }
 
         let handler = self.py_handler(&python, &runtime_id);
-        let unregister =
-            self.engine
-                .register(req.function_id.clone(), req.description.clone(), handler);
+        let unregister = self.engine.register(
+            req.function_id.clone(),
+            req.description.clone(),
+            req.request_format.clone(),
+            req.response_format.clone(),
+            handler,
+        );
         self.py_ns
             .lock()
             .unwrap()
@@ -745,13 +764,22 @@ mod router_tests {
     #[derive(Default)]
     struct TestBus {
         published: Arc<Mutex<HashMap<String, ProxyHandler>>>,
+        /// `(request_format, response_format)` per live id, so a test can
+        /// prove the wire fields survived the trip to `Engine::register`.
+        formats: Arc<Mutex<HashMap<String, FormatPair>>>,
         /// Every id whose `UnregisterFn` was actually CALLED. A closure that
         /// is dropped instead of called leaves a registration live on a real
         /// bus, and nothing else here would notice.
         retired: Arc<Mutex<Vec<String>>>,
     }
 
+    /// One registration's `(request_format, response_format)`.
+    type FormatPair = (Option<serde_json::Value>, Option<serde_json::Value>);
+
     impl TestBus {
+        fn formats_of(&self, fn_id: &str) -> Option<FormatPair> {
+            self.formats.lock().unwrap().get(fn_id).cloned()
+        }
         fn ids(&self) -> Vec<String> {
             let mut v: Vec<String> = self.published.lock().unwrap().keys().cloned().collect();
             v.sort();
@@ -786,8 +814,14 @@ mod router_tests {
             &self,
             fn_id: String,
             _: Option<String>,
+            request_format: Option<serde_json::Value>,
+            response_format: Option<serde_json::Value>,
             handler: iii_node_core::engine::ProxyHandler,
         ) -> iii_node_core::engine::UnregisterFn {
+            self.formats
+                .lock()
+                .unwrap()
+                .insert(fn_id.clone(), (request_format, response_format));
             self.published
                 .lock()
                 .unwrap()
@@ -1069,6 +1103,8 @@ mod router_tests {
             function_id: "app::greet".into(),
             source: "def handler(payload): return 'hi'".into(),
             description: None,
+            request_format: None,
+            response_format: None,
             lang: Lang::Python,
         })
         .await
@@ -1122,8 +1158,91 @@ mod router_tests {
             function_id: function_id.into(),
             source: source.into(),
             description: Some("a test handler".into()),
+            request_format: None,
+            response_format: None,
             lang: Lang::Python,
         }
+    }
+
+    /// Both languages must deliver the wire's formats to the bus
+    /// registration — that is what `engine::functions::info` reads in place
+    /// of "any". Node rides the whole guest chain; python is a direct host
+    /// publish. Mutation: either arm dropping the fields (the `core_req`
+    /// literal, `register_python`'s engine call).
+    #[tokio::test]
+    async fn register_formats_reach_the_bus_in_both_languages() {
+        let (m, bus) = manager_and_bus();
+        let request =
+            serde_json::json!({"type": "object", "properties": {"n": {"type": "number"}}});
+        let response = serde_json::json!({"type": "number"});
+        for (id, lang, source) in [
+            (
+                "fmt-node::double",
+                Lang::Node,
+                "export function handler(p) { return p.n * 2 }",
+            ),
+            (
+                "fmt-py::double",
+                Lang::Python,
+                "def handler(payload):\n    return payload[\"n\"] * 2",
+            ),
+        ] {
+            m.register(RegisterRequest {
+                function_id: id.into(),
+                source: source.into(),
+                description: Some("doubles n".into()),
+                request_format: Some(request.clone()),
+                response_format: Some(response.clone()),
+                lang,
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(
+                bus.formats_of(id),
+                Some((Some(request.clone()), Some(response.clone()))),
+                "{id}"
+            );
+        }
+    }
+
+    /// A bad format is refused at the wire — code `invalid_request`, message
+    /// saying what to write — before any claim or runtime exists, for BOTH
+    /// languages (the check sits above the lang dispatch). Mutation: the
+    /// validation loop removed, or moved into one arm.
+    #[tokio::test]
+    async fn register_refuses_bad_formats_before_creating_anything() {
+        let (m, bus) = manager_and_bus();
+        for (lang, source) in [
+            (Lang::Node, "export function handler(p) { return p }"),
+            (Lang::Python, "def handler(payload):\n    return payload"),
+        ] {
+            for (format, expected) in [
+                (serde_json::json!("nope"), "OBJECT"),
+                (serde_json::json!({}), "constrains nothing"),
+            ] {
+                let err = m
+                    .register(RegisterRequest {
+                        function_id: "fmt-bad::fn".into(),
+                        source: source.into(),
+                        description: None,
+                        request_format: Some(format.clone()),
+                        response_format: None,
+                        lang,
+                    })
+                    .await
+                    .expect_err("a bad format must be refused");
+                assert_eq!(
+                    err.code(),
+                    "code-runner::invalid_request",
+                    "{format}: {err}"
+                );
+                assert!(err.to_string().contains(expected), "{format}: {err}");
+            }
+        }
+        assert!(
+            bus.published.lock().unwrap().is_empty(),
+            "a refused registration must not reach the bus"
+        );
     }
 
     /// The end-to-end shape: source defines `handler`, the id reaches the bus,

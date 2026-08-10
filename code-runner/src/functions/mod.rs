@@ -49,7 +49,9 @@ pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a 
      later ones in the same namespace and lang reuse it. `source` must DEFINE handler(payload) \
      in `lang`. The first registered id in a namespace claims it; later ids must share both the \
      namespace and its lang. `description` is what engine::functions::info shows a caller — \
-     write one. Functions stop resolving when their namespace is torn down \
+     write one. Optional `request_format` / `response_format` take a JSON Schema (an object \
+     using `type`/`properties`/`$ref`/…, max 16 KiB) that engine::functions::info shows in \
+     place of \"any\". Functions stop resolving when their namespace is torn down \
      (code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
 
 /// Every id this worker registers on its own client, in registration order.

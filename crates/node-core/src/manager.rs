@@ -584,6 +584,8 @@ impl RuntimeManager {
             &req.function_id,
             &req.source,
             req.description.as_deref(),
+            req.request_format.as_ref(),
+            req.response_format.as_ref(),
         );
         self.run(RunRequest {
             code,
@@ -1295,6 +1297,131 @@ mod tests {
             function_id: function_id.to_string(),
             source: source.to_string(),
             description: description.map(str::to_string),
+            request_format: None,
+            response_format: None,
+        }
+    }
+
+    /// The two formats must survive the whole node chain — wire →
+    /// `wrap_register`'s generated JS → the prelude's options object →
+    /// `op_iii_register` → `Engine::register` — because the bus registration
+    /// is where `engine::functions::info` reads them from. Mutation: any hop
+    /// dropping either field (the generated `__def`, the options literal, the
+    /// op's pass-through).
+    #[tokio::test]
+    async fn register_formats_reach_the_engine() {
+        let (m, fake) = manager(NodeEngineConfig::default());
+        let request = json!({"type": "object", "properties": {"n": {"type": "number"}}});
+        let response = json!({"type": "number"});
+        let mut req = reg(
+            "app::typed",
+            "export function handler(p) { return p.n }",
+            None,
+        );
+        req.request_format = Some(request.clone());
+        req.response_format = Some(response.clone());
+        m.register(req).await.expect("registers");
+        assert_eq!(
+            fake.formats_of("app::typed"),
+            Some((Some(request), Some(response)))
+        );
+    }
+
+    /// No formats supplied → none invented: the pair reaches the engine as
+    /// `(None, None)`, leaving the SDK's own auto-extraction (the any-schema)
+    /// in charge, exactly as before the fields existed.
+    #[tokio::test]
+    async fn register_without_formats_sends_none() {
+        let (m, fake) = manager(NodeEngineConfig::default());
+        m.register(reg(
+            "app::plain",
+            "export function handler(p) { return p }",
+            None,
+        ))
+        .await
+        .expect("registers");
+        assert_eq!(fake.formats_of("app::plain"), Some((None, None)));
+    }
+
+    /// A redeploy that supplies formats but no description must still hit the
+    /// bus: the SDK only carries metadata at registration time, and the old
+    /// early-return skipped the bus write whenever the DESCRIPTION was
+    /// absent — which would silently discard the formats. Mutation: the swap
+    /// branch's early-return condition not extended to the formats.
+    #[tokio::test]
+    async fn a_redeploy_with_new_formats_republishes() {
+        let (m, fake) = manager(NodeEngineConfig::default());
+        m.register(reg(
+            "app::x",
+            "export function handler(p) { return 1 }",
+            None,
+        ))
+        .await
+        .expect("first registration");
+        assert_eq!(fake.formats_of("app::x"), Some((None, None)));
+
+        let mut req = reg("app::x", "export function handler(p) { return 2 }", None);
+        req.request_format = Some(json!({"type": "object"}));
+        m.register(req).await.expect("redeploy");
+        assert_eq!(
+            fake.formats_of("app::x"),
+            Some((Some(json!({"type": "object"})), None))
+        );
+    }
+
+    /// Guest-level `iii.registerFunction` takes the same options — the
+    /// worker path rides through it, so tenant code in a kept runtime gets
+    /// the surface for free.
+    #[tokio::test]
+    async fn guest_register_options_carry_formats() {
+        let (m, fake) = manager(NodeEngineConfig::default());
+        let out = m
+            .run(RunRequest {
+                code: "iii.registerFunction(iii.namespace + 'g', (p) => p, \
+                       {request_format: {type: 'string'}}); return iii.namespace"
+                    .into(),
+                runtime_id: None,
+                namespace: None,
+                keep: true,
+                timeout_ms: None,
+            })
+            .await
+            .expect("evaluates");
+        let ns = out.result.as_str().expect("a string namespace");
+        assert_eq!(
+            fake.formats_of(&format!("{ns}g")),
+            Some((Some(json!({"type": "string"})), None))
+        );
+    }
+
+    /// The host, not the tenant-replaceable prelude check, is the boundary: a
+    /// format that is not an object, one that constrains nothing, and one
+    /// over the size cap are each refused with an error that says what to
+    /// write.
+    #[tokio::test]
+    async fn guest_register_refuses_bad_formats() {
+        let (m, _fake) = manager(NodeEngineConfig::default());
+        for (option, expected) in [
+            ("{request_format: 'nope'}", "plain object"),
+            ("{request_format: {}}", "constrains nothing"),
+            (
+                "{request_format: {type: 'object', description: 'x'.repeat(20000)}}",
+                "the limit is",
+            ),
+        ] {
+            let err = m
+                .run(RunRequest {
+                    code: format!(
+                        "iii.registerFunction(iii.namespace + 'b', (p) => p, {option}); return 1"
+                    ),
+                    runtime_id: None,
+                    namespace: None,
+                    keep: false,
+                    timeout_ms: None,
+                })
+                .await
+                .expect_err("a bad format must fail the eval");
+            assert!(err.to_string().contains(expected), "{option}: {err}");
         }
     }
 
@@ -1309,6 +1436,8 @@ mod tests {
                 function_id: "app::double".into(),
                 source: "export function handler(p) { return p.n * 2 }".into(),
                 description: Some("doubles n".into()),
+                request_format: None,
+                response_format: None,
             })
             .await
             .unwrap();
@@ -1327,6 +1456,8 @@ mod tests {
             function_id: "app::a".into(),
             source: "export function handler() { return 1 }".into(),
             description: None,
+            request_format: None,
+            response_format: None,
         })
         .await
         .unwrap();
@@ -1334,6 +1465,8 @@ mod tests {
             function_id: "app::b".into(),
             source: "export function handler() { return 2 }".into(),
             description: None,
+            request_format: None,
+            response_format: None,
         })
         .await
         .unwrap();
@@ -1358,6 +1491,8 @@ mod tests {
                 function_id: "node-engine::run".into(),
                 source: "export function handler() { return 1 }".into(),
                 description: None,
+                request_format: None,
+                response_format: None,
             })
             .await
             .unwrap_err();
@@ -1801,6 +1936,8 @@ mod tests {
             function_id: "app::hello".into(),
             source: "export function handler() { return 1 }".into(),
             description: None,
+            request_format: None,
+            response_format: None,
         })
         .await
         .unwrap();

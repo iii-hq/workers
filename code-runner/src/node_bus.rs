@@ -119,17 +119,27 @@ impl Engine for IIIEngine {
         &self,
         fn_id: String,
         description: Option<String>,
+        request_format: Option<Value>,
+        response_format: Option<Value>,
         handler: ProxyHandler,
     ) -> UnregisterFn {
         let desc = self.description_or_default(&description).to_string();
-        let function_ref = self.iii.register_function(
-            &fn_id,
-            RegisterFunction::new_async(move |req: Value| {
-                let handler = handler.clone();
-                async move { handler(req).await.map_err(Error::Handler) }
-            })
-            .description(desc),
-        );
+        // Without an explicit format the SDK auto-extracts the schema from
+        // the handler's types — `Value → Value` here, i.e. "any", which is
+        // exactly what `engine::functions::info` showed before these fields
+        // existed. The builder calls below are the whole feature.
+        let mut registration = RegisterFunction::new_async(move |req: Value| {
+            let handler = handler.clone();
+            async move { handler(req).await.map_err(Error::Handler) }
+        })
+        .description(desc);
+        if let Some(schema) = request_format {
+            registration = registration.request_format(schema);
+        }
+        if let Some(schema) = response_format {
+            registration = registration.response_format(schema);
+        }
+        let function_ref = self.iii.register_function(&fn_id, registration);
         Box::new(move || function_ref.unregister())
     }
 

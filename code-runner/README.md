@@ -49,6 +49,8 @@ Code you run gets a global `iii`:
 - `await iii.trigger({ function_id, payload })` — invoke any bus function.
 - `iii.registerFunction(id, handler, opts?)` — publish one for the life of
   this runtime. For one that outlives it, use `code-runner::register_function`.
+  `opts` takes `description`, and `request_format` / `response_format` — JSON
+  Schema objects `engine::functions::info` shows callers in place of "any".
 - `iii.files` — a **private scratch directory** that lives exactly as long as
   the runtime: `write(name, contents)`, `read(name)`, `readText(name)`,
   `list()`, `remove(name)`. Names are one file each — no paths, no
@@ -239,6 +241,10 @@ Four things worth knowing:
 - **The namespace is shared with node.** Function ids are claimed in one
   registry, so `my-app::greet` cannot exist in both languages, and the same
   charset rule applies to the namespace in both.
+- **Schemas are optional but shown.** `request_format` / `response_format`
+  (JSON Schema objects, max 16 KiB, must actually constrain something) ride
+  the registration in either language, and `engine::functions::info` shows
+  them in place of "any".
 
 Unlike node, guest Python cannot register a function *from inside* a run —
 `python.wasm` exports `_start` and nothing else, so there is no
