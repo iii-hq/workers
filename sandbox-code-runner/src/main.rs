@@ -8,7 +8,7 @@ use iii_sdk::{register_worker, InitOptions};
 use sandbox_code_runner::engine::{Engine as _, IIIEngine};
 use sandbox_code_runner::error::{classify_probe_error, ProbeOutcome};
 use sandbox_code_runner::manager::RuntimeManager;
-use sandbox_code_runner::{config, functions, manifest};
+use sandbox_code_runner::{config, events, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -81,6 +81,11 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(IIIEngine::new(iii.clone()));
     let manager = RuntimeManager::new(cfg.clone(), engine.clone(), &cli.url);
+    // Register the `sandbox-code-runner::event` trigger type first so the
+    // emitter is wired before any function can run.
+    let emitter = events::register_event_trigger(&iii);
+    manager.set_events(emitter.clone());
+    sandbox_code_runner::fleet_watch::spawn(engine.clone(), emitter);
     functions::register_all(&iii, &manager);
     functions::setup_harness_hooks(&iii);
     // Injected console UI: the function-trigger cards for the ops above.

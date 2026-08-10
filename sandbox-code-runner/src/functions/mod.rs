@@ -5,6 +5,7 @@
 //! drive directly.
 
 pub mod inject_guidance;
+pub mod list_runtimes;
 pub mod register;
 pub mod run;
 pub mod teardown;
@@ -60,6 +61,17 @@ pub const REGISTER_DESC: &str =
      Functions stop resolving when their namespace is torn down \
      (sandbox-code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
 
+pub const LIST_RUNTIMES_ID: &str = "sandbox-code-runner::list_runtimes";
+pub const LIST_RUNTIMES_DESC: &str =
+    "List every runtime this worker currently holds: kept-run runtimes \
+     (sandbox-code-runner::run keep=true) and register_function namespace \
+     runtimes alike, newest first. Each entry carries runtime_id (treat it \
+     as a secret — it is the capability to run into or tear down that \
+     runtime), lang, the backing sandbox_id, created_at_ms (epoch \
+     milliseconds), and the bus function ids registered onto it. One-shot \
+     runs never appear: their VM is destroyed before the run's response is \
+     sent.";
+
 /// Every id this worker registers on its own client, in registration order.
 /// `register_all` asserts it registered exactly this list, and the schema
 /// test pins `catalog()` to it — the two hand-maintained lists must not
@@ -68,6 +80,7 @@ pub const STATIC_IDS: &[&str] = &[
     RUN_ID,
     TEARDOWN_ID,
     REGISTER_ID,
+    LIST_RUNTIMES_ID,
     inject_guidance::GUIDANCE_HOOK_ID,
 ];
 
@@ -112,6 +125,17 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<RuntimeManager>) {
             async move { m.register(req).await.map_err(Error::from) }
         })
         .description(REGISTER_DESC),
+    );
+
+    let m = manager.clone();
+    registered.push(LIST_RUNTIMES_ID);
+    iii.register_function(
+        LIST_RUNTIMES_ID,
+        RegisterFunction::new_async(move |_req: list_runtimes::ListRuntimesRequest| {
+            let m = m.clone();
+            async move { Ok::<_, Error>(m.list_runtimes().await) }
+        })
+        .description(LIST_RUNTIMES_DESC),
     );
 
     registered.push(inject_guidance::GUIDANCE_HOOK_ID);
@@ -187,6 +211,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<run::RunRequest, run::RunResponse>(RUN_ID, RUN_DESC),
         spec::<teardown::TeardownRequest, teardown::TeardownResponse>(TEARDOWN_ID, TEARDOWN_DESC),
         spec::<register::RegisterRequest, register::RegisterResponse>(REGISTER_ID, REGISTER_DESC),
+        spec::<list_runtimes::ListRuntimesRequest, list_runtimes::ListRuntimesResponse>(
+            LIST_RUNTIMES_ID,
+            LIST_RUNTIMES_DESC,
+        ),
         spec::<inject_guidance::PreGenerateEvent, inject_guidance::PreGenerateResponse>(
             inject_guidance::GUIDANCE_HOOK_ID,
             inject_guidance::GUIDANCE_HOOK_DESC,

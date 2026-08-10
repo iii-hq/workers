@@ -34,6 +34,7 @@ fn catalog_lists_every_function_in_registration_order() {
             "sandbox-code-runner::run",
             "sandbox-code-runner::teardown",
             "sandbox-code-runner::register_function",
+            "sandbox-code-runner::list_runtimes",
             "sandbox-code-runner::inject-guidance"
         ]
     );
