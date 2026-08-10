@@ -96,8 +96,8 @@ export function ActivityFeed({
     return (
       <Note>
         no recorded calls. This feed follows the trace stream, so a call made
-        from anywhere — the agent, another worker, the invoke tab — appears here
-        as it happens.
+        from anywhere — the agent, another worker, the trigger tab — appears
+        here as it happens.
       </Note>
     )
   }

@@ -1,13 +1,17 @@
 /**
- * The Triggers page (`#/ext/triggers`): every trigger type published on the
- * bus, each with its live bindings underneath.
+ * The Triggers page (`#/ext/triggers`): the same sidebar + workspace shell
+ * as the functions page. The sidebar lists every trigger type with its live
+ * bindings indented beneath it, each row led by the family's glyph (globe,
+ * clock, layers…); the workspace is always present — a hero when nothing is
+ * selected, the type or binding document when something is.
  *
  * Two lists make one view. `engine::triggers::list` is the catalogue of
  * TYPES (what can fire); `engine::registered-triggers::list` is the set of
  * live REGISTERED TRIGGERS (what will fire, and into which function). A type
  * with none still lists — knowing a type exists is half of what the page is
  * for — and a binding whose type is not in the catalogue lists under its own
- * heading rather than disappearing.
+ * heading rather than disappearing. The type itself is selected by clicking
+ * its heading; only bindings get rows.
  *
  * A registered trigger is named by its family, not by its raw config (`trigger-kinds`):
  * `GET /users/:id`, `every 5 min`, the queue topic. The detail pane then
@@ -22,12 +26,13 @@ import {
   EmptyState,
   type Host,
   JsonHighlight,
+  PageHeader,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { describeCron, nextCronRun, untilLabel } from './cron'
 import {
   type FunctionSummary,
@@ -35,6 +40,7 @@ import {
   listRegisteredTriggers,
   listTriggerTypes,
   type RegisteredTrigger,
+  type TriggerTypeDetail,
   type TriggerTypeSummary,
   triggerTypeInfo,
   useLiveSignals,
@@ -42,8 +48,8 @@ import {
 } from './engine'
 import { HttpTester } from './HttpTester'
 import { InvokePanel } from './InvokePanel'
-import { LastCallMeta, NowStrip, useLiveActivity } from './live'
 import { QueuePublish } from './QueuePublish'
+import { SchemaTable } from './SchemaTable'
 import { pretty } from './schema'
 import {
   configChips,
@@ -56,16 +62,27 @@ import {
   summarize,
 } from './trigger-kinds'
 import {
-  CatalogHead,
+  CatalogListSkeleton,
   CatalogRow,
   CatalogShell,
+  CatalogWorkspace,
   Chip,
+  ContextItem,
+  ContextPanel,
   CopyButton,
-  DetailHead,
+  Crumb,
   ErrorNote,
+  Facts,
+  FamilyGlyph,
   FilterChips,
+  FnGlyph,
   GroupHeader,
+  Hero,
+  IdentityHead,
+  LiveDot,
   Note,
+  SearchField,
+  SideCount,
   StatTile,
   useGroupToggle,
 } from './widgets'
@@ -77,6 +94,21 @@ type Selection =
 interface TypeGroup {
   type: TriggerTypeSummary
   bindings: RegisteredTrigger[]
+}
+
+function BoltIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8.75 1.5L3.5 9H7l-.75 5.5L11.5 7H8z" />
+    </svg>
+  )
 }
 
 export function TriggersPage({
@@ -119,8 +151,6 @@ export function TriggersPage({
     )
     return (id: string) => byId.get(id)?.description ?? undefined
   }, [catalog.data])
-
-  const activity = useLiveActivity(host)
 
   const partitioned = useMemo(() => {
     if (!catalog.data)
@@ -167,27 +197,11 @@ export function TriggersPage({
   }, [catalog.data])
   const allGroups = partitioned.groups
 
-  // Groups that just fired float to the top: during a harness turn the page
-  // reads as what the agent is doing, not an alphabetical index.
-  const lastFiredOf = useMemo(() => {
-    return (group: TypeGroup): number => {
-      let latest = 0
-      for (const binding of group.bindings) {
-        const span = activity.lastCall.get(binding.function_id)
-        if (span && span.atMs > latest) latest = span.atMs
-      }
-      return latest
-    }
-  }, [activity.lastCall])
-
   const familyCounts = useMemo(() => {
     const counts = new Map<Family, number>()
     for (const group of allGroups) {
       const key = familyOf(group.type.id).family
-      counts.set(
-        key,
-        (counts.get(key) ?? 0) + Math.max(1, group.bindings.length),
-      )
+      counts.set(key, (counts.get(key) ?? 0) + 1)
     }
     return counts
   }, [allGroups])
@@ -214,15 +228,17 @@ export function TriggersPage({
         )
       })
       .sort((a, b) => {
-        const fired = lastFiredOf(b) - lastFiredOf(a)
-        if (fired !== 0) return fired
+        // Bound types stay easy to find without moving around as calls arrive.
+        // Live function spans cannot prove which trigger fired, so activity is
+        // deliberately not used as a sorting signal here.
         const count = b.bindings.length - a.bindings.length
         if (count !== 0) return count
         return a.type.id.localeCompare(b.type.id)
       })
-  }, [allGroups, family, search, lastFiredOf])
+  }, [allGroups, family, search])
 
   const boundCount = groups.reduce((n, g) => n + g.bindings.length, 0)
+  const totalBindings = allGroups.reduce((n, g) => n + g.bindings.length, 0)
 
   // Most of the catalogue is unbound types; expanding all of them buries the
   // ones that actually fire, so a type opens by default only when something
@@ -233,53 +249,116 @@ export function TriggersPage({
   )
   const groupState = useGroupToggle((id) => (bindingCounts.get(id) ?? 0) > 0)
 
+  const selectType = (id: string) =>
+    setSelected((prev) =>
+      prev?.kind === 'type' && prev.id === id ? null : { kind: 'type', id },
+    )
+  const selectBinding = (binding: RegisteredTrigger) =>
+    setSelected((prev) =>
+      prev?.kind === 'binding' && prev.binding.id === binding.id
+        ? null
+        : { kind: 'binding', binding },
+    )
+
+  // Keep an open document tied to the live registry. Bindings may be updated
+  // in place or disappear when their worker disconnects.
+  useEffect(() => {
+    if (!catalog.data || !selected) return
+    if (selected.kind === 'type') {
+      const exists =
+        catalog.data.types.some((type) => type.id === selected.id) ||
+        catalog.data.bindings.some(
+          (binding) => binding.trigger_type === selected.id,
+        )
+      if (!exists) setSelected(null)
+      return
+    }
+    const current = catalog.data.bindings.find(
+      (binding) => binding.id === selected.binding.id,
+    )
+    if (!current) setSelected(null)
+    else if (current !== selected.binding) {
+      setSelected({ kind: 'binding', binding: current })
+    }
+  }, [catalog.data, selected])
+
   return (
     <CatalogShell
       side={side}
-      head={
-        <CatalogHead
+      hasSelection={selected !== null}
+      header={
+        <PageHeader
+          icon={<BoltIcon />}
           title="triggers"
-          count={`${groups.length} types · ${boundCount} registered`}
-          search={search}
-          onSearch={setSearch}
-          searchPlaceholder="search types, functions, paths, topics, schedules…"
-          onRefresh={catalog.reload}
-          loading={catalog.loading}
-          onRequestClose={onRequestClose}
-          below={
+          description={
+            <span className="console-catalog-header-desc">
+              trigger types and registered bindings
+            </span>
+          }
+          onClose={onRequestClose}
+          className="console-catalog-page-header"
+          actions={
             <>
-              <FilterChips
-                counts={familyCounts}
-                selected={family}
-                onSelect={setFamily}
-              />
-              <NowStrip
-                activity={activity}
-                onSelect={(functionId) => {
-                  const hit = allGroups
-                    .flatMap((g) => g.bindings)
-                    .find((b) => b.function_id === functionId)
-                  if (hit) setSelected({ kind: 'binding', binding: hit })
-                }}
-              />
+              <LiveDot />
+              <Button
+                variant="pill"
+                size="sm"
+                type="button"
+                onClick={catalog.reload}
+                disabled={catalog.loading}
+              >
+                {catalog.loading ? 'loading…' : 'refresh'}
+              </Button>
             </>
           }
-        >
-          <Button
-            variant="pill"
-            size="sm"
-            onClick={() => setShowInternal((v) => !v)}
-            aria-pressed={showInternal}
-          >
-            {showInternal ? 'internal shown' : 'internal hidden'}
-          </Button>
-        </CatalogHead>
+        />
+      }
+      sideTop={
+        <>
+          <div className="console-catalog-search-row">
+            <SearchField
+              value={search}
+              onChange={setSearch}
+              placeholder="search triggers…"
+            />
+            <Button
+              variant="pill"
+              size="sm"
+              type="button"
+              className="console-catalog-header-toggle"
+              onClick={() => setShowInternal((v) => !v)}
+              aria-pressed={showInternal}
+              title="include internal trigger registrations"
+            >
+              internal
+            </Button>
+          </div>
+          <FilterChips
+            counts={familyCounts}
+            selected={family}
+            onSelect={setFamily}
+          />
+        </>
+      }
+      sideFooter={
+        <SideCount>
+          {catalog.data === null
+            ? 'loading triggers…'
+            : search.trim() || family
+              ? `showing ${groups.length} of ${allGroups.length} types · ${boundCount} bindings`
+              : `${allGroups.length} types · ${totalBindings} bindings`}
+        </SideCount>
       }
       list={
         catalog.error ? (
-          <ErrorNote call="engine::triggers::list" message={catalog.error} />
+          <ErrorNote
+            title="couldn't load triggers"
+            call="engine::triggers::list"
+            message={catalog.error}
+            onRetry={catalog.reload}
+          />
         ) : catalog.data === null ? (
-          <Note>loading triggers…</Note>
+          <CatalogListSkeleton label="loading triggers" />
         ) : groups.length === 0 ? (
           <EmptyState
             title={
@@ -290,127 +369,139 @@ export function TriggersPage({
                 ? 'no type, bound function, path, topic, or schedule contains that.'
                 : 'workers publish their trigger types on connect — start one and it lists here.'
             }
+            action={
+              search.trim() || family
+                ? {
+                    label: 'clear filters',
+                    onClick: () => {
+                      setSearch('')
+                      setFamily(null)
+                    },
+                  }
+                : undefined
+            }
           />
         ) : (
-          groups.map((group) => {
-            const spec = familyOf(group.type.id)
-            return (
-              <div key={group.type.id} className="console-catalog-section">
+          <>
+            {groups.map((group) => {
+              const spec = familyOf(group.type.id)
+              return (
+                <div key={group.type.id} className="console-catalog-section">
+                  <GroupHeader
+                    label={group.type.id}
+                    meta={group.type.worker_name}
+                    count={group.bindings.length}
+                    countLabel="binding"
+                    tone={spec.tone}
+                    toneLabel={spec.label}
+                    open={groupState.isOpen(group.type.id)}
+                    onToggle={() => groupState.toggle(group.type.id)}
+                    collapsible={group.bindings.length > 0}
+                    onSelect={() => selectType(group.type.id)}
+                    selected={
+                      selected?.kind === 'type' && selected.id === group.type.id
+                    }
+                  />
+                  {groupState.isOpen(group.type.id)
+                    ? group.bindings.map((binding) => (
+                        <CatalogRow
+                          key={binding.id}
+                          icon={
+                            <FamilyGlyph
+                              family={spec.family}
+                              tone={spec.tone}
+                            />
+                          }
+                          primary={summarize(binding)}
+                          secondary={
+                            binding.function_id
+                              ? `${binding.function_id}${
+                                  describeFunction(binding.function_id)
+                                    ? ` — ${describeFunction(binding.function_id)}`
+                                    : ''
+                                }`
+                              : '(no target function)'
+                          }
+                          selected={
+                            selected?.kind === 'binding' &&
+                            selected.binding.id === binding.id
+                          }
+                          onClick={() => selectBinding(binding)}
+                        />
+                      ))
+                    : null}
+                </div>
+              )
+            })}
+            {partitioned.plumbing.length > 0 && !search.trim() && !family ? (
+              <div className="console-catalog-section console-catalog-plumbing">
                 <GroupHeader
-                  label={group.type.id}
-                  meta={
-                    group.bindings.length === 0
-                      ? `${group.type.worker_name} · none registered`
-                      : `${group.type.worker_name} · ${group.bindings.length}`
-                  }
-                  tone={spec.tone}
-                  toneLabel={spec.label}
-                  open={groupState.isOpen(group.type.id)}
-                  onToggle={() => groupState.toggle(group.type.id)}
+                  label="plumbing"
+                  meta="console + configuration internals"
+                  count={partitioned.plumbing.length}
+                  countLabel="binding"
+                  open={groupState.isOpen('__plumbing')}
+                  onToggle={() => groupState.toggle('__plumbing')}
                 />
-                {groupState.isOpen(group.type.id) ? (
-                  <>
-                    <CatalogRow
-                      primary="type detail"
-                      secondary={group.type.description ?? undefined}
-                      selected={
-                        selected?.kind === 'type' &&
-                        selected.id === group.type.id
-                      }
-                      onClick={() =>
-                        setSelected((prev) =>
-                          prev?.kind === 'type' && prev.id === group.type.id
-                            ? null
-                            : { kind: 'type', id: group.type.id },
-                        )
-                      }
-                    />
-                    {group.bindings.map((binding) => (
+                {groupState.isOpen('__plumbing')
+                  ? partitioned.plumbing.map((binding) => (
                       <CatalogRow
                         key={binding.id}
-                        primary={summarize(binding)}
-                        meta={
-                          <LastCallMeta
-                            span={activity.lastCall.get(binding.function_id)}
+                        icon={
+                          <FamilyGlyph
+                            family={familyOf(binding.trigger_type).family}
+                            tone="ink"
                           />
                         }
-                        secondary={
-                          binding.function_id
-                            ? `${binding.function_id}${
-                                describeFunction(binding.function_id)
-                                  ? ` — ${describeFunction(binding.function_id)}`
-                                  : ''
-                              }`
-                            : '(no target function)'
-                        }
+                        primary={summarize(binding)}
+                        secondary={`${binding.trigger_type} → ${binding.function_id}`}
                         selected={
                           selected?.kind === 'binding' &&
                           selected.binding.id === binding.id
                         }
-                        flash={activity.pulsing.has(binding.function_id)}
-                        onClick={() =>
-                          setSelected((prev) =>
-                            prev?.kind === 'binding' &&
-                            prev.binding.id === binding.id
-                              ? null
-                              : { kind: 'binding', binding },
-                          )
-                        }
+                        onClick={() => selectBinding(binding)}
                       />
-                    ))}
-                  </>
-                ) : null}
+                    ))
+                  : null}
               </div>
-            )
-          })
+            ) : null}
+          </>
         )
       }
-      footer={
-        partitioned.plumbing.length > 0 && !search.trim() && !family ? (
-          <div className="console-catalog-section console-catalog-plumbing">
-            <GroupHeader
-              label="plumbing"
-              meta={`${partitioned.plumbing.length} console + config internals`}
-              open={groupState.isOpen('__plumbing')}
-              onToggle={() => groupState.toggle('__plumbing')}
-            />
-            {groupState.isOpen('__plumbing')
-              ? partitioned.plumbing.map((binding) => (
-                  <CatalogRow
-                    key={binding.id}
-                    primary={summarize(binding)}
-                    secondary={`${binding.trigger_type} → ${binding.function_id}`}
-                    selected={
-                      selected?.kind === 'binding' &&
-                      selected.binding.id === binding.id
-                    }
-                    onClick={() =>
-                      setSelected((prev) =>
-                        prev?.kind === 'binding' &&
-                        prev.binding.id === binding.id
-                          ? null
-                          : { kind: 'binding', binding },
-                      )
-                    }
-                  />
-                ))
-              : null}
-          </div>
-        ) : null
-      }
-      detail={
-        selected === null ? null : selected.kind === 'type' ? (
-          <TypeDetailPane
+      main={
+        selected === null ? (
+          <Hero
+            glyph={<FamilyGlyph family="other" size="hero" />}
+            eyebrow="trigger catalog"
+            title="understand what starts work"
+            body="select a type to inspect the contract it defines, or select a binding nested beneath it to see the live route, schedule, or subscription connected to a function."
+            items={[
+              {
+                label: 'type',
+                value: 'the reusable trigger definition and its schemas',
+              },
+              {
+                label: 'binding',
+                value: 'a registered route, schedule, topic, or hook',
+              },
+              {
+                label: 'target',
+                value: 'the function that receives the trigger payload',
+              },
+            ]}
+          />
+        ) : selected.kind === 'type' ? (
+          <TypeDocument
             host={host}
             typeId={selected.id}
-            onClose={() => setSelected(null)}
+            onBack={() => setSelected(null)}
           />
         ) : (
-          <BindingDetailPane
+          <BindingDocument
             host={host}
             binding={selected.binding}
             description={describeFunction(selected.binding.function_id)}
-            onClose={() => setSelected(null)}
+            onBack={() => setSelected(null)}
           />
         )
       }
@@ -418,78 +509,121 @@ export function TriggersPage({
   )
 }
 
-function TypeDetailPane({
+function TypeDocument({
   host,
   typeId,
-  onClose,
+  onBack,
 }: {
   host: Host
   typeId: string
-  onClose: () => void
+  onBack: () => void
 }) {
   const load = useCallback(() => triggerTypeInfo(host, typeId), [host, typeId])
   const detail = useResource(load)
+  const spec = familyOf(typeId)
 
   return (
+    <CatalogWorkspace
+      context={detail.data ? <TypeContext detail={detail.data} /> : undefined}
+    >
+      <div className="console-catalog-doc">
+        <Crumb
+          trail={['triggers', detail.data?.worker_name, typeId]}
+          onBack={onBack}
+        />
+        <IdentityHead
+          glyph={
+            <FamilyGlyph family={spec.family} tone={spec.tone} size="lg" />
+          }
+          title={typeId}
+          status="trigger type"
+          description={
+            detail.data
+              ? detail.data.description || 'no description provided.'
+              : undefined
+          }
+          chips={
+            detail.data ? (
+              <>
+                <Chip k={spec.label} v="trigger type" tone={spec.tone} />
+                <Chip k="worker" v={detail.data.worker_name} />
+                {detail.data.instance_count !== undefined ? (
+                  <Chip k="registered" v={String(detail.data.instance_count)} />
+                ) : null}
+              </>
+            ) : null
+          }
+          actions={<CopyButton value={typeId} label="copy id" />}
+        />
+        {detail.error ? (
+          <ErrorNote
+            title="couldn't load trigger type"
+            call="engine::triggers::info"
+            message={detail.error}
+            onRetry={detail.reload}
+          />
+        ) : detail.data === null ? (
+          <Note>loading detail…</Note>
+        ) : (
+          <Tabs defaultValue="config" className="console-catalog-tabs">
+            <TabsList>
+              <TabsTrigger value="config">configuration</TabsTrigger>
+              <TabsTrigger value="payload">event payload</TabsTrigger>
+            </TabsList>
+            <TabsContent value="config">
+              <SchemaTable
+                schema={detail.data.configuration_schema}
+                empty="this type takes no config — bindings register with an empty object."
+              />
+            </TabsContent>
+            <TabsContent value="payload">
+              <SchemaTable
+                schema={detail.data.request_schema}
+                empty="this type publishes no payload schema."
+              />
+            </TabsContent>
+          </Tabs>
+        )}
+      </div>
+    </CatalogWorkspace>
+  )
+}
+
+function TypeContext({ detail }: { detail: TriggerTypeDetail }) {
+  const spec = familyOf(detail.id)
+  return (
     <>
-      <DetailHead
-        title={typeId}
-        subtitle={
-          detail.data ? (
-            <>
-              <Chip k="worker" v={detail.data.worker_name} />
-              {detail.data.instance_count !== undefined ? (
-                <Chip k="registered" v={String(detail.data.instance_count)} />
-              ) : null}
-              {detail.data.description ? (
-                <span className="console-catalog-desc">
-                  {detail.data.description}
-                </span>
-              ) : null}
-            </>
-          ) : null
-        }
-        onClose={onClose}
+      <ContextPanel title="trigger type details">
+        <Facts
+          items={[
+            { label: 'type id', value: <code>{detail.id}</code> },
+            { label: 'family', value: spec.label },
+            { label: 'worker', value: detail.worker_name },
+            {
+              label: 'registered',
+              value: String(detail.instance_count ?? 0),
+            },
+          ]}
+        />
+      </ContextPanel>
+      <ContextPanel
+        title="contracts"
+        description="Schemas published by this trigger type."
       >
-        <CopyButton value={typeId} label="copy id" />
-      </DetailHead>
-      {detail.error ? (
-        <ErrorNote call="engine::triggers::info" message={detail.error} />
-      ) : detail.data === null ? (
-        <Note>loading detail…</Note>
-      ) : (
-        <Tabs defaultValue="config" className="console-catalog-tabs">
-          <TabsList>
-            <TabsTrigger value="config">config schema</TabsTrigger>
-            <TabsTrigger value="payload">payload schema</TabsTrigger>
-          </TabsList>
-          <TabsContent value="config">
-            {detail.data.configuration_schema === undefined ? (
-              <Note>
-                this type takes no config — bindings register with an empty
-                object.
-              </Note>
-            ) : (
-              <JsonHighlight
-                code={pretty(detail.data.configuration_schema)}
-                className="console-catalog-json"
-                wrap
-              />
-            )}
-          </TabsContent>
-          <TabsContent value="payload">
-            {detail.data.request_schema === undefined ? (
-              <Note>this type publishes no payload schema.</Note>
-            ) : (
-              <JsonHighlight
-                code={pretty(detail.data.request_schema)}
-                className="console-catalog-json"
-                wrap
-              />
-            )}
-          </TabsContent>
-        </Tabs>
-      )}
+        <Facts
+          items={[
+            {
+              label: 'configuration',
+              value:
+                detail.configuration_schema !== undefined ? 'defined' : 'none',
+            },
+            {
+              label: 'event payload',
+              value: detail.request_schema !== undefined ? 'defined' : 'none',
+            },
+          ]}
+        />
+      </ContextPanel>
     </>
   )
 }
@@ -505,16 +639,16 @@ function parsedSummary(raw: string | null | undefined): unknown {
   }
 }
 
-function BindingDetailPane({
+function BindingDocument({
   host,
   binding,
   description,
-  onClose,
+  onBack,
 }: {
   host: Host
   binding: RegisteredTrigger
   description?: string
-  onClose: () => void
+  onBack: () => void
 }) {
   // The payload schema belongs to the TYPE, so a direct call opens on the
   // shape this binding's function actually receives when the trigger fires.
@@ -537,84 +671,154 @@ function BindingDetailPane({
   })()
 
   return (
-    <>
-      <DetailHead
-        title={title}
-        subtitle={
-          <>
-            <Chip k={spec.label} v={binding.trigger_type} tone={spec.tone} />
-            <Chip k="worker" v={binding.worker_name} />
-            {chips.map((chip) => (
-              <Chip key={chip.label} k={chip.label} v={chip.value} />
-            ))}
-          </>
-        }
-        onClose={onClose}
-      >
-        <CopyButton value={binding.id} label="copy id" />
-      </DetailHead>
+    <CatalogWorkspace
+      context={<BindingContext binding={binding} description={description} />}
+    >
+      <div className="console-catalog-doc">
+        <Crumb
+          trail={['triggers', binding.trigger_type, title]}
+          onBack={onBack}
+        />
+        <IdentityHead
+          glyph={
+            <FamilyGlyph family={spec.family} tone={spec.tone} size="lg" />
+          }
+          title={title}
+          status="registered binding"
+          description={
+            binding.function_id
+              ? `Delivers ${spec.label} events to ${binding.function_id}.`
+              : 'This binding has no target function.'
+          }
+          chips={
+            <>
+              <Chip k={spec.label} v={binding.trigger_type} tone={spec.tone} />
+              <Chip k="worker" v={binding.worker_name} />
+              {chips.map((chip) => (
+                <Chip key={chip.label} k={chip.label} v={chip.value} />
+              ))}
+            </>
+          }
+          actions={<CopyButton value={binding.id} label="copy id" />}
+        />
 
-      <div className="console-catalog-tabs">
-        <FamilyFacts binding={binding} />
-
-        <div className="console-catalog-target">
-          <span className="console-catalog-field-label">target function</span>
-          <code>{binding.function_id || '(none)'}</code>
-          {description ? (
-            <span className="console-catalog-desc">{description}</span>
-          ) : null}
-        </div>
-
-        <Tabs defaultValue="fire">
-          <TabsList>
-            <TabsTrigger value="fire">
-              {spec.family === 'http'
-                ? 'send request'
-                : spec.family === 'queue'
-                  ? 'publish'
-                  : spec.family === 'cron'
-                    ? 'run now'
-                    : 'call target'}
-            </TabsTrigger>
-            <TabsTrigger value="config">config</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="fire">
-            {http ? (
-              <HttpTester host={host} binding={http} />
-            ) : topic ? (
-              <QueuePublish host={host} topic={topic} />
-            ) : binding.function_id ? (
-              <InvokePanel
-                host={host}
-                functionId={binding.function_id}
-                requestSchema={type.data?.request_schema}
-                label={spec.family === 'cron' ? 'run now' : 'call'}
-                runningLabel={spec.family === 'cron' ? 'running…' : 'calling…'}
-                hint={
-                  spec.family === 'cron'
-                    ? `calls ${binding.function_id} with a cron-shaped payload. The schedule is untouched, and the next scheduled firing still happens.`
-                    : `calls ${binding.function_id} directly with this payload. The trigger itself is not fired, so its config filters do not apply.`
-                }
-              />
-            ) : (
-              <Note>
-                this binding carries no target function — nothing to call.
-              </Note>
-            )}
-          </TabsContent>
-
-          <TabsContent value="config">
-            <JsonHighlight
-              code={pretty(
-                binding.config ?? parsedSummary(binding.config_summary) ?? {},
-              )}
-              className="console-catalog-json"
-              wrap
+        <div className="console-catalog-tabs">
+          {type.error ? (
+            <ErrorNote
+              title="couldn't load the payload schema"
+              call="engine::triggers::info"
+              message={type.error}
+              onRetry={type.reload}
             />
-          </TabsContent>
-        </Tabs>
+          ) : null}
+
+          <Tabs defaultValue="fire">
+            <TabsList>
+              <TabsTrigger value="fire">
+                {spec.family === 'http'
+                  ? 'send request'
+                  : spec.family === 'queue'
+                    ? 'publish'
+                    : spec.family === 'cron'
+                      ? 'run now'
+                      : 'trigger function'}
+              </TabsTrigger>
+              <TabsTrigger value="config">config</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="fire">
+              {http ? (
+                <HttpTester host={host} binding={http} />
+              ) : topic ? (
+                <QueuePublish host={host} topic={topic} />
+              ) : binding.function_id ? (
+                <InvokePanel
+                  host={host}
+                  functionId={binding.function_id}
+                  requestSchema={type.data?.request_schema}
+                  label={
+                    spec.family === 'cron' ? 'run now' : 'trigger function'
+                  }
+                  runningLabel={
+                    spec.family === 'cron' ? 'running…' : 'triggering…'
+                  }
+                  hint={
+                    spec.family === 'cron'
+                      ? `Triggers ${binding.function_id} with a cron-shaped payload. The schedule is untouched, and the next scheduled firing still happens.`
+                      : `Triggers ${binding.function_id} directly with this payload. The binding itself is bypassed, so its config filters do not apply.`
+                  }
+                />
+              ) : (
+                <Note>
+                  this binding carries no target function — nothing to call.
+                </Note>
+              )}
+            </TabsContent>
+
+            <TabsContent value="config">
+              <JsonHighlight
+                code={pretty(
+                  binding.config ?? parsedSummary(binding.config_summary) ?? {},
+                )}
+                className="console-catalog-json"
+                wrap
+              />
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
+    </CatalogWorkspace>
+  )
+}
+
+function BindingContext({
+  binding,
+  description,
+}: {
+  binding: RegisteredTrigger
+  description?: string
+}) {
+  const spec = familyOf(binding.trigger_type)
+  const hasDeliveryFacts = Boolean(
+    cronExpression(binding) || httpBinding(binding) || queueTopic(binding),
+  )
+  return (
+    <>
+      <ContextPanel
+        title="target function"
+        description="Events from this binding are delivered here."
+        wide
+      >
+        {binding.function_id ? (
+          <ContextItem
+            glyph={<FnGlyph />}
+            title={binding.function_id}
+            description={description || 'No function description provided.'}
+            meta={binding.worker_name}
+          />
+        ) : (
+          <span className="console-catalog-context-empty">
+            No target function is registered.
+          </span>
+        )}
+      </ContextPanel>
+
+      <ContextPanel title="binding details">
+        <Facts
+          items={[
+            { label: 'binding id', value: <code>{binding.id}</code> },
+            { label: 'type', value: <code>{binding.trigger_type}</code> },
+            { label: 'family', value: spec.label },
+            { label: 'worker', value: binding.worker_name },
+          ]}
+        />
+      </ContextPanel>
+
+      {hasDeliveryFacts ? (
+        <ContextPanel title="delivery">
+          <FamilyFacts binding={binding} />
+        </ContextPanel>
+      ) : null}
     </>
   )
 }

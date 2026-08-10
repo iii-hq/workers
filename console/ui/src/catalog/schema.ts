@@ -87,19 +87,3 @@ export function pretty(value: unknown): string {
     return String(value)
   }
 }
-
-/**
- * The namespace a function id belongs to: everything before the first `::`.
- * Ids without a namespace group under `other` so no row goes missing.
- */
-export function namespaceOf(functionId: string): string {
-  const cut = functionId.indexOf('::')
-  return cut > 0 ? functionId.slice(0, cut) : 'other'
-}
-
-/** Group label ordering: alphabetical, with the `other` bucket last. */
-export function compareGroups(a: string, b: string): number {
-  if (a === 'other') return 1
-  if (b === 'other') return -1
-  return a.localeCompare(b)
-}

@@ -109,8 +109,8 @@ export function agoLabel(atMs: number, nowMs: number): string {
 }
 
 /**
- * The strip under the page head: the last few executions, newest on the
- * left, sliding in as they happen. Clicking one jumps to that function.
+ * The strip under the page head: recent function calls, newest on the left.
+ * Clicking one jumps to that function.
  */
 export function NowStrip({
   activity,
@@ -126,11 +126,8 @@ export function NowStrip({
   if (shown.length === 0) {
     return (
       <div className="console-catalog-nowstrip" data-empty="true">
-        <span className="console-catalog-nowstrip-label">now</span>
-        <span className="quiet">
-          waiting for calls — anything the agent or a worker runs appears here
-          live
-        </span>
+        <span className="console-catalog-nowstrip-label">recent calls</span>
+        <span className="quiet">no calls recorded since this page opened</span>
       </div>
     )
   }
@@ -138,7 +135,7 @@ export function NowStrip({
   const now = Date.now()
   return (
     <div className="console-catalog-nowstrip">
-      <span className="console-catalog-nowstrip-label">now</span>
+      <span className="console-catalog-nowstrip-label">recent calls</span>
       <div className="console-catalog-nowstrip-track">
         {shown.map((span) => (
           <button

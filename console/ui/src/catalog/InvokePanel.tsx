@@ -25,10 +25,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
-import { Chip, CopyButton } from './widgets'
+import { CopyButton } from './widgets'
 
 interface Attempt {
   id: number
+  atMs: number
   body: string
   outcome: InvokeOutcome
 }
@@ -74,8 +75,8 @@ export function InvokePanel({
   host,
   functionId,
   requestSchema,
-  label = 'invoke',
-  runningLabel = 'invoking…',
+  label = 'trigger',
+  runningLabel = 'triggering…',
   hint,
   prefill,
 }: {
@@ -117,7 +118,13 @@ export function InvokePanel({
     [requestSchema],
   )
 
-  const outcome = attempts[0]?.outcome ?? null
+  const latest = attempts[0] ?? null
+  const outcome = latest?.outcome ?? null
+
+  const reset = () => {
+    setBody(templateFromSchema(requestSchema))
+    setInvalid(null)
+  }
 
   const run = async () => {
     let payload: unknown
@@ -144,14 +151,32 @@ export function InvokePanel({
     setRunning(false)
     attemptSeq += 1
     setAttempts((prev) => [
-      { id: attemptSeq, body, outcome: result },
+      { id: attemptSeq, atMs: Date.now(), body, outcome: result },
       ...prev.slice(0, 9),
     ])
   }
 
   return (
     <div className="console-catalog-invoke">
+      <div className="console-catalog-invoke-head">
+        <div>
+          <h3>trigger function</h3>
+          <p className="invoke-description">
+            Provide the input payload and trigger this function.
+          </p>
+        </div>
+        <Button
+          variant="pill"
+          size="sm"
+          type="button"
+          onClick={reset}
+          disabled={running}
+        >
+          reset
+        </Button>
+      </div>
       {hint ? <div className="console-catalog-note">{hint}</div> : null}
+      <span className="console-catalog-field-label">input payload (json)</span>
       <CodeEditor
         value={body}
         onChange={setBody}
@@ -161,7 +186,7 @@ export function InvokePanel({
         aria-label={`request body for ${functionId}`}
       />
       <div className="console-catalog-invoke-foot">
-        <Button size="sm" onClick={run} disabled={running}>
+        <Button type="button" size="sm" onClick={run} disabled={running}>
           {running ? runningLabel : label}
         </Button>
         <CopyButton
@@ -172,26 +197,38 @@ export function InvokePanel({
         {invalid ? (
           <span className="console-catalog-invalid">{invalid}</span>
         ) : null}
-        {outcome ? (
-          <span
-            className={
-              outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
-            }
-          >
-            {outcome.ok ? 'ok' : 'error'} · {Math.round(outcome.durationMs)}ms
-          </span>
-        ) : null}
       </div>
 
-      {outcome?.error ? (
-        <div className="console-catalog-error">{outcome.error}</div>
-      ) : null}
-      {outcome?.ok ? (
-        <JsonHighlight
-          code={pretty(outcome.data) || 'null'}
-          className="console-catalog-result"
-          wrap
-        />
+      {outcome ? (
+        <div className="console-catalog-result-shell" data-ok={outcome.ok}>
+          <div className="console-catalog-result-head">
+            <span
+              className={
+                outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
+              }
+            >
+              <span className="dot" />
+              {outcome.ok ? 'success' : 'error'}
+            </span>
+            <span className="result-meta">
+              {latest
+                ? new Date(latest.atMs).toLocaleTimeString(undefined, {
+                    hour12: false,
+                  })
+                : null}
+              <span>{formatMilliseconds(outcome.durationMs)}</span>
+            </span>
+          </div>
+          {outcome.error ? (
+            <div className="console-catalog-error">{outcome.error}</div>
+          ) : (
+            <JsonHighlight
+              code={pretty(outcome.data) || 'null'}
+              className="console-catalog-result"
+              wrap
+            />
+          )}
+        </div>
       ) : null}
 
       {attempts.length > 1 ? (
@@ -214,10 +251,14 @@ export function InvokePanel({
           ))}
         </div>
       ) : null}
-
-      <Chip k="calls" v={functionId} />
     </div>
   )
+}
+
+function formatMilliseconds(ms: number): string {
+  if (ms < 1) return `${Math.round(ms * 1000)}µs`
+  if (ms < 1000) return `${ms.toFixed(1)}ms`
+  return `${(ms / 1000).toFixed(2)}s`
 }
 
 function safeJson(text: string): unknown {

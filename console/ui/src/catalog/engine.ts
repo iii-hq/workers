@@ -102,7 +102,44 @@ function triggerRef(row: unknown): RegisteredTriggerRef | null {
 }
 
 export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+  const seen = new Set<object>()
+  const describe = (value: unknown): string => {
+    if (value === null || value === undefined) return 'unknown error'
+    if (value instanceof Error) return value.message || value.name
+    if (typeof value !== 'object') return String(value)
+    if (seen.has(value)) return 'unknown error'
+    seen.add(value)
+
+    const record = value as Record<string, unknown>
+    const code = typeof record.code === 'string' ? record.code : undefined
+    const candidates = [
+      record.message,
+      record.error,
+      record.reason,
+      record.detail,
+    ]
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return code ? `${code}: ${candidate}` : candidate
+      }
+      if (candidate && typeof candidate === 'object') {
+        const nested = describe(candidate)
+        if (nested !== 'unknown error') {
+          return code ? `${code}: ${nested}` : nested
+        }
+      }
+    }
+
+    try {
+      const serialized = JSON.stringify(value)
+      if (serialized && serialized !== '{}') return serialized
+    } catch {
+      // Cyclic or otherwise non-serializable errors fall through to a stable
+      // message instead of leaking the unhelpful default object coercion.
+    }
+    return code || 'unknown error'
+  }
+  return describe(err)
 }
 
 export async function listFunctions(
@@ -136,6 +173,25 @@ export async function functionInfo(
       .map(triggerRef)
       .filter((t): t is RegisteredTriggerRef => t !== null),
   }
+}
+
+/** The slice of `engine::workers::list` the pages read: name → runtime. */
+export interface WorkerMeta {
+  name: string
+  /** Worker runtime as reported on the handshake (`node`, `python`, `rust`). */
+  runtime?: string
+}
+
+export async function listWorkers(host: Host): Promise<WorkerMeta[]> {
+  const out = await host.iii.trigger('engine::workers::list', {})
+  return rows(out, 'workers')
+    .map((row): WorkerMeta | null => {
+      if (!isRecord(row)) return null
+      const name = str(row.name)
+      if (!name) return null
+      return { name, runtime: str(row.runtime) }
+    })
+    .filter((w): w is WorkerMeta => w !== null)
 }
 
 export async function listTriggerTypes(
