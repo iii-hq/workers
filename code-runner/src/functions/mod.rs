@@ -32,7 +32,9 @@ pub const RUN_DESC: &str =
      publishes one for the life of the runtime, and iii.files, a private scratch directory \
      (write/read/readText/list/remove); python gets a persistent /work directory instead. \
      stdout, stderr and exit_code come back verbatim — a failing script is a response, not an \
-     error — and `result` carries the value the code returned. NOTE on keep: a node runtime persists \
+     error — and `result` carries the value the code returned: node code is a FUNCTION BODY (yield \
+     with `return x`), python code is a MODULE (assign `result = x`; a top-level `return` is a \
+     SyntaxError). NOTE on keep: a node runtime persists \
      its globals AND its iii.files directory; a python runtime persists only its /work directory, \
      because CPython-on-wasm cannot outlive a call.";
 
@@ -51,7 +53,9 @@ pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a 
      namespace and its lang. `description` is what engine::functions::info shows a caller — \
      write one. Optional `request_format` / `response_format` take a JSON Schema (an object \
      using `type`/`properties`/`$ref`/…, max 16 KiB) that engine::functions::info shows in \
-     place of \"any\". Functions stop resolving when their namespace is torn down \
+     place of \"any\" — shown to callers, NOT enforced at call time: the handler still \
+     receives whatever payload is sent, so validate inside your handler. Functions stop \
+     resolving when their namespace is torn down \
      (code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
 
 /// Every id this worker registers on its own client, in registration order.
