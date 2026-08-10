@@ -18,13 +18,28 @@ on:
         required: false
         type: string
         default: ''
+      release_run_attempt:
+        description: 'Expected Release run attempt (empty = current attempt)'
+        required: false
+        type: string
+        default: ''
       candidate_evidence_run_id:
         description: 'Run containing candidate evidence; empty uses the Release run'
         required: false
         type: string
         default: ''
+      candidate_evidence_run_attempt:
+        description: 'Expected candidate-evidence run attempt (empty = current attempt)'
+        required: false
+        type: string
+        default: ''
       e2e_run_id:
         description: 'Promotion-ready deployed E2E run; required for Harness and auto-located when empty'
+        required: false
+        type: string
+        default: ''
+      e2e_run_attempt:
+        description: 'Expected deployed E2E run attempt (empty = current attempt)'
         required: false
         type: string
         default: ''
@@ -91,8 +106,11 @@ jobs:
         env:
           VERSION_INPUT: ${{ inputs.version }}
           RUN_ID_INPUT: ${{ inputs.release_run_id }}
+          RUN_ATTEMPT_INPUT: ${{ inputs.release_run_attempt }}
           EVIDENCE_RUN_ID_INPUT: ${{ inputs.candidate_evidence_run_id }}
+          EVIDENCE_RUN_ATTEMPT_INPUT: ${{ inputs.candidate_evidence_run_attempt }}
           E2E_RUN_ID_INPUT: ${{ inputs.e2e_run_id }}
+          E2E_RUN_ATTEMPT_INPUT: ${{ inputs.e2e_run_attempt }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -125,7 +143,16 @@ jobs:
           if [[ -z "$run_id" ]]; then
             tag="${WORKER}/v${version}"
             run_id=$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs" \
-              -f head_branch="$tag" --jq '.workflow_runs[0].id // empty')
+              -f branch="$tag" -f status=completed -f per_page=100 | \
+              jq -r --arg tag "$tag" '
+                [.workflow_runs[] | select(
+                  .path == ".github/workflows/release.yml" and
+                  .head_branch == $tag and
+                  .event == "push" and
+                  .status == "completed" and
+                  .conclusion == "success"
+                )][0].id // empty
+              ')
             [[ -n "$run_id" ]] || {
               echo "::error::No Release run found for tag ${tag}; pass release_run_id explicitly"
               exit 2
@@ -136,14 +163,28 @@ jobs:
             echo "::error::release_run_id must be numeric"
             exit 2
           }
+          release_attempt="$RUN_ATTEMPT_INPUT"
+          if [[ -n "$release_attempt" && ! "$release_attempt" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::release_run_attempt must be a positive integer"
+            exit 2
+          fi
 
           evidence_run_id="${EVIDENCE_RUN_ID_INPUT:-$run_id}"
           [[ "$evidence_run_id" =~ ^[0-9]+$ ]] || {
             echo "::error::candidate_evidence_run_id must be numeric"
             exit 2
           }
+          evidence_attempt="$EVIDENCE_RUN_ATTEMPT_INPUT"
+          if [[ -z "$evidence_attempt" && "$evidence_run_id" == "$run_id" ]]; then
+            evidence_attempt="$release_attempt"
+          fi
+          if [[ -n "$evidence_attempt" && ! "$evidence_attempt" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::candidate_evidence_run_attempt must be a positive integer"
+            exit 2
+          fi
 
           e2e_run_id="$E2E_RUN_ID_INPUT"
+          e2e_attempt="$E2E_RUN_ATTEMPT_INPUT"
           if [[ "$WORKER" == harness && -z "$e2e_run_id" ]]; then
             title="Harness E2E · ${WORKER}@${version} ·"
             mapfile -t e2e_candidates < <(gh api -X GET \
@@ -180,12 +221,19 @@ jobs:
             echo "::error::e2e_run_id must be numeric"
             exit 2
           fi
+          if [[ -n "$e2e_attempt" && ! "$e2e_attempt" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::e2e_run_attempt must be a positive integer"
+            exit 2
+          fi
 
           {
             echo "VERSION=${version}"
             echo "RELEASE_RUN_ID=${run_id}"
+            echo "EXPECTED_RELEASE_RUN_ATTEMPT=${release_attempt}"
             echo "EVIDENCE_RUN_ID=${evidence_run_id}"
+            echo "EXPECTED_EVIDENCE_RUN_ATTEMPT=${evidence_attempt}"
             echo "E2E_RUN_ID=${e2e_run_id}"
+            echo "EXPECTED_E2E_RUN_ATTEMPT=${e2e_attempt}"
             echo "PROMOTION_OPERATION_ID=${{ inputs.operation_id || format('github:{0}', github.run_id) }}"
             echo "PROMOTION_STEP_ID=${{ inputs.step_id || 'promote' }}"
           } >>"$GITHUB_ENV"
@@ -204,6 +252,11 @@ jobs:
             echo "::error::run $RELEASE_RUN_ID did not execute release.yml"
             exit 1
           }
+          release_attempt=$(jq -r .run_attempt release-run.json)
+          if [[ -n "$EXPECTED_RELEASE_RUN_ATTEMPT" && "$release_attempt" != "$EXPECTED_RELEASE_RUN_ATTEMPT" ]]; then
+            echo "::error::Release run attempt is $release_attempt, expected $EXPECTED_RELEASE_RUN_ATTEMPT"
+            exit 1
+          fi
           event=$(jq -r .event release-run.json)
           [[ "$event" == push || "$event" == workflow_dispatch ]] || {
             echo "::error::Release run event '$event' is not promotable"
@@ -226,6 +279,11 @@ jobs:
               echo "::error::run $EVIDENCE_RUN_ID cannot produce candidate evidence"
               exit 1
             }
+          fi
+          evidence_attempt=$(jq -r .run_attempt evidence-run.json)
+          if [[ -n "$EXPECTED_EVIDENCE_RUN_ATTEMPT" && "$evidence_attempt" != "$EXPECTED_EVIDENCE_RUN_ATTEMPT" ]]; then
+            echo "::error::Evidence run attempt is $evidence_attempt, expected $EXPECTED_EVIDENCE_RUN_ATTEMPT"
+            exit 1
           fi
 
       - name: Download candidate evidence
@@ -306,6 +364,10 @@ jobs:
             --version "$VERSION" \
             --output validated-harness-e2e.json
           run_attempt=$(jq -r .run_attempt e2e-run.json)
+          if [[ -n "$EXPECTED_E2E_RUN_ATTEMPT" && "$run_attempt" != "$EXPECTED_E2E_RUN_ATTEMPT" ]]; then
+            echo "::error::E2E run attempt is $run_attempt, expected $EXPECTED_E2E_RUN_ATTEMPT"
+            exit 1
+          fi
           evidence_attempt=$(jq -r .run_attempt validated-harness-e2e.json)
           [[ "$run_attempt" == "$evidence_attempt" ]] || {
             echo "::error::E2E run attempt is $run_attempt, evidence records $evidence_attempt"

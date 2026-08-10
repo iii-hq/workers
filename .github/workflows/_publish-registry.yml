@@ -352,41 +352,24 @@ jobs:
       - name: POST /publish
         env:
           API_URL: ${{ inputs.api_url }}
-          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
         run: |
           set -euo pipefail
-          if [[ -z "$API_KEY" ]]; then
+          if [[ -z "$WORKERS_REGISTRY_API_KEY" ]]; then
             echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
             exit 1
           fi
-          http=$(curl -sS -o response.json -w '%{http_code}' \
-            -H "X-API-Key: $API_KEY" \
-            -H "Content-Type: application/json" \
-            -X POST "$API_URL/publish" \
-            --data-binary @payload.json)
-          echo "HTTP $http"
+          python3 .github/scripts/registry_publish.py \
+            --api-url "$API_URL" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --registry-tag "$REGISTRY_TAG" \
+            --payload payload.json \
+            --output response.json
           cat response.json
-          if [[ "$http" == "409" ]]; then
-            resolve_http=$(curl -sS -o resolve-response.json -w '%{http_code}' \
-              -H "Content-Type: application/json" \
-              -X POST "$API_URL/resolve" \
-              --data "$(jq -cn --arg worker "$WORKER" --arg version "$REGISTRY_TAG" \
-                '{worker: $worker, version: $version}')")
-            resolved=$(jq -r '.root.version // empty' resolve-response.json)
-            if [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
-              echo "::notice::$WORKER@$VERSION already exists and $REGISTRY_TAG still points to it; continuing idempotently"
-            else
-              echo "::error::duplicate publish is not a safe retry: $WORKER@$REGISTRY_TAG resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
-              cat resolve-response.json
-              exit 1
-            fi
-          elif [[ "$http" != "200" ]]; then
-            echo "::error::publish failed with HTTP $http"
-            exit 1
-          fi
 
       - name: Build skills payload
         id: skills_payload

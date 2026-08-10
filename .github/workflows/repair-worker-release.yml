@@ -16,6 +16,11 @@ on:
         description: Original Release workflow run
         required: true
         type: string
+      release_run_attempt:
+        description: 'Expected Release run attempt (empty = current attempt)'
+        required: false
+        type: string
+        default: ''
       action:
         description: Repair action
         required: true
@@ -97,6 +102,10 @@ jobs:
             echo "::error::release_run_id must be numeric"
             exit 2
           }
+          if [[ -n "${{ inputs.release_run_attempt }}" && ! "${{ inputs.release_run_attempt }}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::release_run_attempt must be a positive integer"
+            exit 2
+          fi
           {
             echo "operation_id=${OPERATION_ID_INPUT:-github:${GITHUB_RUN_ID}}"
             echo "step_id=${STEP_ID_INPUT:-repair}"
@@ -123,6 +132,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          EXPECTED_RELEASE_ATTEMPT: ${{ inputs.release_run_attempt }}
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
           TAG: ${{ steps.meta.outputs.tag }}
@@ -131,18 +141,28 @@ jobs:
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" >release-run.json
           jq -e '
-            .name == "Release" and
-            (.path | startswith(".github/workflows/release.yml@")) and
-            (.event == "push" or .event == "workflow_dispatch")
+            .path == ".github/workflows/release.yml" and
+            (.event == "push" or .event == "workflow_dispatch") and
+            .status == "completed"
           ' release-run.json >/dev/null || {
             echo "::error::run $RELEASE_RUN_ID is not a standard Release run"
             exit 1
           }
+          run_attempt=$(jq -r .run_attempt release-run.json)
+          if [[ -n "$EXPECTED_RELEASE_ATTEMPT" && "$run_attempt" != "$EXPECTED_RELEASE_ATTEMPT" ]]; then
+            echo "::error::Release run attempt is $run_attempt, expected $EXPECTED_RELEASE_ATTEMPT"
+            exit 1
+          fi
           event=$(jq -r .event release-run.json)
           if [[ "$event" == push ]]; then
             jq -e --arg tag "$TAG" --arg sha "$EXPECTED_TAG_SHA" \
               '.head_branch == $tag and .head_sha == $sha' release-run.json >/dev/null || {
               echo "::error::push run $RELEASE_RUN_ID does not match $TAG at $EXPECTED_TAG_SHA"
+              exit 1
+            }
+          else
+            jq -e --arg title "Release · $TAG" '.display_title == $title' release-run.json >/dev/null || {
+              echo "::error::workflow_dispatch run $RELEASE_RUN_ID is not for $TAG"
               exit 1
             }
           fi
@@ -151,6 +171,21 @@ jobs:
             --name "release-candidate-${WORKER}-${VERSION}" --dir source 2>/dev/null || true
           gh run download "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "release-result-${RELEASE_RUN_ID}" --dir source 2>/dev/null || true
+
+          evidence_found=false
+          for evidence_file in source/release-candidate.json source/release-result.json; do
+            [[ -s "$evidence_file" ]] || continue
+            evidence_found=true
+            evidence_attempt=$(jq -r '.run_attempt // empty' "$evidence_file")
+            [[ "$evidence_attempt" == "$run_attempt" ]] || {
+              echo "::error::$evidence_file records attempt ${evidence_attempt:-missing}, current Release attempt is $run_attempt"
+              exit 1
+            }
+          done
+          [[ "$evidence_found" == true ]] || {
+            echo "::error::run $RELEASE_RUN_ID attempt $run_attempt has no attempt-scoped release evidence"
+            exit 1
+          }
 
           evidence_sha=$(jq -r '.tag_sha // empty' source/release-candidate.json 2>/dev/null || true)
           if [[ -z "$evidence_sha" ]]; then
