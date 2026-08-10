@@ -11,6 +11,14 @@
 use anyhow::Result;
 use serde::Deserialize;
 
+fn default_max_result_bytes() -> usize {
+    32_768
+}
+
+fn default_max_stream_bytes() -> usize {
+    16_384
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CodeRunnerConfig {
@@ -33,6 +41,14 @@ pub struct CodeRunnerConfig {
     pub scratch_files: usize,
     /// Where scratch directories live; `None` uses the system temp directory.
     pub scratch_root: Option<String>,
+    /// Byte ceiling for the serialized `result` echoed in a RunResponse;
+    /// larger values are replaced by an omission marker string. 0 disables.
+    #[serde(default = "default_max_result_bytes")]
+    pub max_result_bytes: usize,
+    /// Byte ceiling for each of stdout/stderr; larger streams keep
+    /// head+tail around a truncation marker. 0 disables.
+    #[serde(default = "default_max_stream_bytes")]
+    pub max_stream_bytes: usize,
 }
 
 impl Default for CodeRunnerConfig {
@@ -47,6 +63,8 @@ impl Default for CodeRunnerConfig {
             scratch_mb: 8,
             scratch_files: 64,
             scratch_root: None,
+            max_result_bytes: default_max_result_bytes(),
+            max_stream_bytes: default_max_stream_bytes(),
         }
     }
 }
@@ -120,6 +138,7 @@ mod tests {
             scratch_mb: 66,
             scratch_files: 77,
             scratch_root: Some("/tmp/x".into()),
+            ..Default::default()
         };
         let n = cfg.node();
         assert_eq!(n.max_runtimes, 3);
@@ -137,5 +156,12 @@ mod tests {
     fn committed_config_yaml_matches_struct_defaults() {
         let cfg = load_config("config.yaml").expect("committed config.yaml parses");
         assert_eq!(cfg, CodeRunnerConfig::default());
+    }
+
+    #[test]
+    fn output_caps_default_on() {
+        let c = CodeRunnerConfig::default();
+        assert_eq!(c.max_result_bytes, 32_768);
+        assert_eq!(c.max_stream_bytes, 16_384);
     }
 }
