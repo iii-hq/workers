@@ -86,7 +86,7 @@ import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
-  toSelection,
+  selectionForSend,
 } from './system-prompt-selection'
 import { WorktreeBadge } from './WorktreeBadge'
 
@@ -999,6 +999,19 @@ export function ChatView({
         (isStreaming || serverWorking) &&
         Boolean(backend.queueMessage)
 
+      // Only the session's first send carries the prompt selection; the
+      // harness inherits it afterwards (see selectionForSend). Gate on an
+      // assistant row rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again.
+      const turnEstablished = messagesRef.current.some(
+        (m) => m.role === 'assistant',
+      )
+      const systemPrompt = selectionForSend(
+        effectiveSystemPrompt,
+        turnEstablished,
+      )
+
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
       if (trimmed === '/compact' || trimmed.startsWith('/compact ')) {
@@ -1154,7 +1167,7 @@ export function ChatView({
               sessionId,
               messageId,
               thinkingLevel,
-              systemPrompt: toSelection(effectiveSystemPrompt),
+              systemPrompt,
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1200,7 +1213,7 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
-            systemPrompt: toSelection(effectiveSystemPrompt),
+            systemPrompt,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,

@@ -44,6 +44,9 @@ export type HarnessSendMode = 'ask' | 'agent'
 
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
+  /** Sticky per session: a send that omits BOTH prompt fields inherits the
+   * prior turn's resolved prompt; naming either field resolves fresh (a bare
+   * strategy is the harness's reset-to-default escape hatch). */
   system_prompt?: string
   /** How `system_prompt` combines with the built-in identity prompt:
    * `enrich` (harness default) appends it; `override` replaces it

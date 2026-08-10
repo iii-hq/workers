@@ -174,6 +174,16 @@ the built-in prompt, while `override` uses it verbatim. Assembly is tested in
 [`src/prompt/tests.rs`](src/prompt/tests.rs); provider-specific prompt bodies
 live in each provider worker (`provider-*/prompts/identity.txt`).
 
+The resolved prompt is STICKY per session, like `model`/`provider` and the
+dispatch policy: a send to an existing session that names neither
+`system_prompt` nor `system_prompt_strategy` inherits the prior turn's
+resolved prompt verbatim (a prior `disabled` turn's absent prompt inherits
+too). Naming either field resolves fresh — an explicit bare
+`system_prompt_strategy` (e.g. `"enrich"`) is the reset-to-default escape
+hatch. Because the inherited string is frozen at its original resolution,
+changing `mode` on a later send without prompt fields keeps the old
+operating-mode paragraph — resend the prompt fields to re-resolve.
+
 Trusted console surfaces can preview the built-in, selected, runtime-context,
 registry-notice, and declarative worker-injection layers with
 `harness::system-prompt::get`, without making a model request. Static

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   choiceToValue,
   DEFAULT_SYSTEM_PROMPT_STATE,
+  selectionForSend,
   toSelection,
   valueToChoice,
 } from './system-prompt-selection'
@@ -42,6 +43,26 @@ describe('toSelection', () => {
         customText: 'ignored',
       }),
     ).toEqual({ body: 'Arr.', strategy: 'enrich' })
+  })
+})
+
+describe('selectionForSend', () => {
+  const named = {
+    choice: { named: 'pirate' },
+    strategy: 'enrich',
+    namedBody: 'Arr.',
+    customText: '',
+  } as const
+
+  it('first send (no turn yet) carries the selection', () => {
+    expect(selectionForSend(named, false)).toEqual({
+      body: 'Arr.',
+      strategy: 'enrich',
+    })
+  })
+
+  it('later sends omit the prompt fields — the harness inherits', () => {
+    expect(selectionForSend(named, true)).toBeNull()
   })
 })
 
