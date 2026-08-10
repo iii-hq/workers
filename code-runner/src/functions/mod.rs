@@ -34,7 +34,7 @@ pub const RUN_DESC: &str =
      stdout, stderr and exit_code come back verbatim — a failing script is a response, not an \
      error — and `result` carries the value the code returned. NOTE on keep: a node runtime persists \
      its globals AND its iii.files directory; a python runtime persists only its /work directory, \
-     because CPython-on-wasm cannot outlive a call. register_function is node-only for now.";
+     because CPython-on-wasm cannot outlive a call.";
 
 pub const TEARDOWN_ID: &str = "code-runner::teardown";
 pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister every bus function it registered, \
