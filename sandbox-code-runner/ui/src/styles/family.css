@@ -1,0 +1,579 @@
+/*
+ * Stylesheet for the sandbox::* family cards (src/sandbox-family/).
+ * Shipped alongside the worker's root styles.css — the integrator
+ * concatenates/impports it into the `console:style` asset.
+ *
+ * Every rule is scoped under `[data-iii-ui="sandbox-code-runner"]`,
+ * the wrapper the console mounts around every injected render. Class
+ * prefix `cr-fam-` keeps this family disjoint from the worker's own
+ * `cr-ui-*` cards; sub-part classes (`.k`, `.faint`, …) only ever
+ * appear as descendants of a `cr-fam-` parent, following the root
+ * stylesheet's `.cr-ui-chip .k` precedent. Colors are design tokens
+ * only, so light/dark theming is free. `@keyframes` names are global
+ * even here, so they carry the prefix too.
+ */
+
+/* --- card frame -------------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-card {
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-panel);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* --- terminal header ---------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-term-head {
+  background: var(--color-raised);
+  border-bottom: 1px solid var(--color-edge);
+  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-preview .cr-fam-term-head {
+  border-bottom: none;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-cmd {
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-prompt {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-pulse {
+  animation: cr-fam-pulse 1.6s ease-in-out infinite;
+}
+@keyframes cr-fam-pulse {
+  0%, 100% { opacity: 1 }
+  50% { opacity: 0.35 }
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-running {
+  padding: 12px;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--color-ink-faint);
+}
+
+/* --- chip rows ---------------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chips-end {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chips-row {
+  background: var(--color-raised);
+  border-bottom: 1px solid var(--color-edge);
+  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- chips & pills ------------------------------------------------------ */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-raised);
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--color-ink);
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chip .k {
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chip .v {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-chip.warn {
+  border-color: var(--color-warn);
+  background: var(--color-warn-muted);
+  color: var(--color-warn);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-trunc {
+  align-self: flex-start;
+  margin: 6px 0 2px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-fam-pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-edge);
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-pill.ok {
+  border-color: var(--color-ok);
+  background: var(--color-ok-muted);
+  color: var(--color-ok);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-pill.warn {
+  border-color: var(--color-warn);
+  background: var(--color-warn-muted);
+  color: var(--color-warn);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-pill.alert {
+  border-color: var(--color-alert);
+  background: var(--color-alert-muted);
+  color: var(--color-alert);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-pill.accent {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* --- the sandbox-id chip (copy + jump) ---------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx {
+  display: inline-flex;
+  align-items: stretch;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px dashed var(--color-edge);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy .k {
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy .v {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy:hover {
+  border-color: var(--color-accent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy.copied {
+  border-color: var(--color-ok);
+  color: var(--color-ok);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy.failed {
+  border-color: var(--color-alert);
+  color: var(--color-alert);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-flash {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-open {
+  border: 1px solid var(--color-edge);
+  border-left: none;
+  background: var(--color-raised);
+  color: var(--color-ink-faint);
+  font-family: inherit;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-open:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-copy:focus-visible,
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-open:focus-visible,
+[data-iii-ui="sandbox-code-runner"] .cr-fam-toggle:focus-visible,
+[data-iii-ui="sandbox-code-runner"] .cr-fam-src-toggle:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* --- streams (stdout / stderr) ------------------------------------------ */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-streams {
+  background: var(--color-panel);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-stream {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-stream-pre {
+  margin: 0;
+  align-self: stretch;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-stream.err .cr-fam-stream-pre {
+  color: var(--color-warn);
+}
+
+/* SGR foreground colors, mapped onto tokens. */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-ansi-alert { color: var(--color-alert); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-ansi-ok { color: var(--color-ok); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-ansi-warn { color: var(--color-warn); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-ansi-accent { color: var(--color-accent); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-ansi-bold { font-weight: 600; }
+
+/* --- notes & toggles ---------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-note {
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-note-ghost {
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-toggle {
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-family: inherit;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-toggle:hover {
+  color: var(--color-ink);
+}
+
+/* --- run source pane ---------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-src {
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-src-toggle {
+  width: 100%;
+  background: var(--color-raised);
+  border: none;
+  border-bottom: 1px solid var(--color-edge);
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-src-toggle:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-caret {
+  display: inline-block;
+  transition: transform 120ms ease;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-caret.open {
+  transform: rotate(90deg);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-src-meta {
+  color: var(--color-ink-ghost);
+  text-transform: none;
+  letter-spacing: normal;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-code {
+  overflow-x: auto;
+  font-size: 12.5px;
+}
+
+/* --- footer ------------------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-foot {
+  background: var(--color-raised);
+  border-top: 1px solid var(--color-edge);
+  padding: 6px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- slabs (create / stop / fs one-liners) ------------------------------ */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-slab {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-slab.accent {
+  border-left: 2px solid var(--color-accent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-slab.warn {
+  border-left: 2px solid var(--color-warn);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  word-break: break-word;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-accent { color: var(--color-accent); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-warn { color: var(--color-warn); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-card .faint { color: var(--color-ink-faint); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-card .ghost { color: var(--color-ink-ghost); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-card .num { font-variant-numeric: tabular-nums; }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-card .strong { color: var(--color-ink); }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-env-k {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-env {
+  border: 1px solid var(--color-edge);
+  background: var(--color-raised);
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+
+/* --- tables (list / ls / sed) ------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-scroll-x {
+  overflow-x: auto;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-empty {
+  padding: 12px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  color: var(--color-ink);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table th {
+  background: var(--color-raised);
+  border-bottom: 1px solid var(--color-edge);
+  padding: 5px 8px;
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  text-align: left;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table td {
+  border-bottom: 1px solid var(--color-edge);
+  padding: 5px 8px;
+  vertical-align: baseline;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table tr:last-child td {
+  border-bottom: none;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table td.right { text-align: right; }
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table td.glyph {
+  width: 18px;
+  color: var(--color-ink-faint);
+  padding-right: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table tr.total {
+  background: var(--color-raised);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table tr.total td {
+  border-bottom: none;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-table td.label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-sed-err {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-warn);
+  cursor: help;
+}
+
+/* --- fs::read ------------------------------------------------------------ */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-file-k {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-file {
+  font-size: 12px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-stream-ref {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-code-chip {
+  border: 1px solid var(--color-edge);
+  background: var(--color-raised);
+  padding: 1px 6px;
+  font-size: 12px;
+  color: var(--color-ink);
+}
+
+/* --- grep ----------------------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-grep {
+  font-size: 12px;
+  line-height: 1.55;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-grep-item {
+  border-bottom: 1px solid var(--color-edge);
+  padding: 6px 12px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-grep-item:last-child {
+  border-bottom: none;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-grep-loc {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-grep-path {
+  color: var(--color-accent);
+  word-break: break-all;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-grep-line {
+  margin: 2px 0 0;
+  font-family: inherit;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-hl {
+  color: var(--color-accent);
+  background: var(--color-hover);
+}
+
+/* --- error cards ---------------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err {
+  border-left: 2px solid var(--color-warn);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-type {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-msg {
+  margin: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-fix {
+  font-size: 12px;
+  line-height: 1.6;
+  font-style: italic;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-docs {
+  width: fit-content;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  text-decoration: none;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-docs:hover {
+  text-decoration: underline;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-streams {
+  border: 1px solid var(--color-edge);
+  overflow: hidden;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-fn {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-fn .k {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-fn code {
+  color: var(--color-ink);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-body {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-ink);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-body code {
+  color: var(--color-ink);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-err-detail {
+  margin: 0;
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- the function-id label ----------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-fam-fnid-prefix {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-fam-fnid-tail {
+  color: var(--color-ink);
+  font-weight: 500;
+}
