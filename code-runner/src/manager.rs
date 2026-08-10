@@ -23,6 +23,7 @@ use crate::functions::teardown::{TeardownRequest, TeardownResponse};
 use crate::lang::Lang;
 
 use crate::translate;
+use crate::truncate;
 /// node-core's own caps, reused so the two languages refuse the same inputs.
 use iii_node_core::ops::{MAX_DESCRIPTION_BYTES, MAX_FUNCTION_ID_BYTES};
 
@@ -103,9 +104,29 @@ impl Manager {
     pub async fn run(&self, req: RunRequest) -> Result<RunResponse, CodeRunnerError> {
         let lang = self.resolve_lang(&req)?;
         let held_id = req.runtime_id.clone();
-        match lang {
+        let resp = match lang {
             Lang::Node => self.run_node(req, held_id).await,
             Lang::Python => self.run_python(req, held_id).await,
+        }?;
+        Ok(self.cap_response(resp))
+    }
+
+    /// The one seam every payload-carrying response passes through before
+    /// reaching the bus: both engines' four `translate::{node_ok,node_err,
+    /// python_ok,python_err}` builders return through `run_node`/`run_python`
+    /// into here, so capping once HERE covers all four. A transport error
+    /// (`Err` from either) carries no payload and never reaches this — it
+    /// returns through the `?` above instead.
+    ///
+    /// `exit_code`/`success`/`duration_ms`/`runtime_id` are untouched: a
+    /// capped response is still `success: true` when the run was — only the
+    /// echo is bounded.
+    fn cap_response(&self, resp: RunResponse) -> RunResponse {
+        RunResponse {
+            result: truncate::cap_result(resp.result, self.cfg.max_result_bytes),
+            stdout: truncate::cap_stream("stdout", resp.stdout, self.cfg.max_stream_bytes),
+            stderr: truncate::cap_stream("stderr", resp.stderr, self.cfg.max_stream_bytes),
+            ..resp
         }
     }
 
@@ -880,6 +901,64 @@ mod router_tests {
             r.runtime_id.is_none(),
             "a one-shot run has nothing to address"
         );
+    }
+
+    /// The output caps apply through the real seam, on the crate's actual
+    /// default config — not just in `truncate`'s own unit tests. Mutation:
+    /// drop the `cap_response` call in `run` and this fails on the ~575KB
+    /// array `Array.from({length: 100000}, ...)` produces.
+    #[tokio::test]
+    async fn a_runaway_result_is_capped_at_the_default() {
+        let m = manager();
+        let r = m
+            .run(run("return Array.from({length: 100000}, (_, i) => i)"))
+            .await
+            .unwrap();
+        assert!(r.success);
+        let marker = r
+            .result
+            .as_str()
+            .expect("an oversized result becomes a marker string");
+        assert!(
+            marker.starts_with("<omitted: result was ~"),
+            "got {marker:?}"
+        );
+        assert!(marker.contains("100000 array elements"), "got {marker:?}");
+
+        let serialized = serde_json::to_string(&r).unwrap();
+        assert!(
+            serialized.len() < 64 * 1024,
+            "response is {} bytes, expected under 64KB",
+            serialized.len()
+        );
+    }
+
+    /// The stdout twin: a runaway stream keeps head and tail around the
+    /// marker rather than losing everything, so both the first output and
+    /// the final summary line survive.
+    ///
+    /// Few, large lines rather than many small ones: node-core's OWN log
+    /// capture already caps at 1000 lines / 256KiB (`ops.rs::MAX_LOG_*`),
+    /// well above what 50 lines of 1000 filler chars need but far below what
+    /// thousands of one-line numbers would hit first — this must exercise
+    /// OUR cap, not that pre-existing one.
+    #[tokio::test]
+    async fn a_runaway_stdout_is_capped_with_head_and_tail_intact() {
+        let m = manager();
+        let r = m
+            .run(run(
+                "for (let i = 0; i < 50; i++) { console.log('line' + i + ':' + 'x'.repeat(1000)) }",
+            ))
+            .await
+            .unwrap();
+        assert!(r.success);
+        assert!(
+            r.stdout.contains("[…stdout truncated: was ~"),
+            "stdout was {} bytes and did not carry the marker",
+            r.stdout.len()
+        );
+        assert!(r.stdout.starts_with("line0:"), "head must survive");
+        assert!(r.stdout.contains("line49:"), "tail must survive");
     }
 
     /// The contract this worker exists to reproduce. Mutation: make

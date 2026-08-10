@@ -42,6 +42,53 @@ infrastructure: timeouts, resource kills, unknown runtimes.
 value your code returned, so a caller does not have to print JSON and parse
 `stdout`.
 
+## Output caps
+
+`result`, `stdout` and `stderr` are each capped before the response leaves
+this worker, so one runaway script cannot flood your context window with its
+own output. Both caps are on by default and apply the same way to node and
+python, and to a thrown/raised response exactly as to a successful one —
+`exit_code`, `success`, `duration_ms` and `runtime_id` are never touched: a
+capped response is still `success: true` when the run itself succeeded, only
+the echo is bounded.
+
+**`result`** — capped at `max_result_bytes` (default `32768` bytes, **`0`
+disables it**). An oversized value is not truncated or reshaped, it is
+*replaced whole* by a string marker naming what was dropped:
+
+```
+<omitted: result was ~{KB} KB ({N array elements | N object keys | a N-char
+string}); returning it whole would flood the model context — print a slice,
+aggregate in code, or write it to iii.files and return a summary>
+```
+
+For example, `for (i=0;i<100000;i++) result.push(i); return result` returns
+`result` as `<omitted: result was ~575 KB (100000 array elements); ...>`
+instead of the 100,000-element array. This is deliberate: `result` is often
+consumed by code (an `fp::pipe` step, another `iii.trigger` call), so a step
+that receives a string where it expected an array fails loudly with the
+marker text in the error — the teaching failure you want, not data quietly
+gone missing.
+
+**`stdout` / `stderr`** — each capped independently at `max_stream_bytes`
+(default `16384` bytes, **`0` disables it**). An oversized stream keeps its
+first 60% and its last 40% — so both the first failure and the final summary
+line survive — with a marker spliced into the middle:
+
+```
+[head: ~60% of the budget]
+[…stdout truncated: was ~{KB} KB; middle omitted]
+[tail: ~40% of the budget]
+```
+
+(`stderr`'s marker names itself the same way.)
+
+**If you hit a cap:** the full value is gone at this layer, not stored
+anywhere for a later look — re-running is the only way to get it back. Print
+a slice instead of the whole value, aggregate in code (counts, sums,
+first/last N) instead of returning or logging everything, or write the full
+data to `iii.files` and return a short summary.
+
 ## The `iii` global
 
 Code you run gets a global `iii`:
@@ -103,6 +150,8 @@ slowly, not with a flag. If your code needs a third-party package, use
 | `scratch_mb` | 8 | `iii.files` quota per runtime; **0 disables it entirely** |
 | `scratch_files` | 64 | max files per runtime |
 | `scratch_root` | unset | where scratch directories live |
+| `max_result_bytes` | 32768 | ceiling on the serialized `result`; over it becomes an omission marker (see [Output caps](#output-caps)). **0 disables it** |
+| `max_stream_bytes` | 16384 | ceiling on each of `stdout`/`stderr`; over it keeps head+tail around a truncation marker. **0 disables it** |
 
 **Worst-case host footprint is `max_runtimes * scratch_mb`** — 256 MiB at the
 defaults — and the system temp directory is tmpfs, i.e. host RAM, on most
