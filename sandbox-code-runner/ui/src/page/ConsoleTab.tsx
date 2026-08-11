@@ -1,8 +1,9 @@
 /**
  * The console tab: an exec composer over `sandbox::exec` (command line,
  * workdir, timeout, env rows, `sh -c` and `setsid` toggles — argv shaping
- * lives in exec.ts, where its tests are), quick probes, and the persisted
- * timeline of ExecRecord cards (records.ts).
+ * lives in exec.ts, where its tests are), quick probes, the parsed
+ * process table (ps.ts), and the persisted timeline of ExecRecord cards
+ * (records.ts).
  *
  * ↑/↓ in the command input walk the command history (this timeline's
  * commands, deduped, newest first). The composer disables while the
@@ -12,7 +13,7 @@
  */
 
 import { Button, type Host, Input } from '@iii-dev/console-ui'
-import { type KeyboardEvent, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { AnsiText } from '../sandbox-family/ansi'
 import {
   buildExecPayload,
@@ -23,13 +24,14 @@ import {
   parseExecResult,
 } from './exec'
 import { formatMs } from './format'
+import { ChevronIcon } from './icons'
+import { parsePsOutput, type PsProcess } from './ps'
 import type { ExecRecord, ExecRecords } from './records'
 import type { SandboxSummary } from './store'
 import { EXEC_SLOTS } from './store'
 import { CopyButton, type EnvRow, EnvRowsEditor } from './widgets'
 
 const PROBES: { label: string; line: string }[] = [
-  { label: 'ps', line: 'ps aux' },
   { label: 'env', line: 'env' },
   { label: 'df -h', line: 'df -h' },
 ]
@@ -130,6 +132,197 @@ function RecordCard({
   )
 }
 
+/**
+ * The processes section: `sandbox::exec argv ['ps']` parsed into a table
+ * with per-row TERM kills (two-step confirm, then a re-run of ps). The raw
+ * text stands in when the header parse fails. Every button here costs one
+ * of the sandbox's exec slots and says so.
+ */
+function ProcessesSection({
+  host,
+  sandbox,
+  open,
+  onToggle,
+  actionsDisabled,
+}: {
+  host: Host
+  sandbox: SandboxSummary
+  open: boolean
+  onToggle(next: boolean): void
+  actionsDisabled: boolean
+}) {
+  const [rows, setRows] = useState<PsProcess[] | null>(null)
+  const [raw, setRaw] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [confirmPid, setConfirmPid] = useState<number | null>(null)
+  const fetchedRef = useRef(false)
+
+  const exec = (argv: string[]) =>
+    host.iii.trigger(
+      'sandbox::exec',
+      { sandbox_id: sandbox.sandbox_id, argv },
+      { timeoutMs: 60_000 },
+    )
+
+  const runPs = async () => {
+    const result = parseExecResult(await exec(['ps']))
+    const parsed = parsePsOutput(result.stdout)
+    setRows(parsed)
+    setRaw(parsed === null ? result.stdout || result.stderr : null)
+  }
+
+  const refresh = () => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    setConfirmPid(null)
+    runPs()
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : String(err)),
+      )
+      .finally(() => setBusy(false))
+  }
+
+  const kill = (pid: number) => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    setConfirmPid(null)
+    exec(['kill', '-TERM', String(pid)])
+      .then(runPs)
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : String(err)),
+      )
+      .finally(() => setBusy(false))
+  }
+
+  // First reveal runs ps once; after that the refresh button is manual.
+  useEffect(() => {
+    if (open && !fetchedRef.current && !actionsDisabled) {
+      fetchedRef.current = true
+      refresh()
+    }
+    // biome-ignore lint/correctness/useExhaustiveDependencies: fires on reveal only
+  }, [open, actionsDisabled])
+
+  return (
+    <div className="cr-page-ps">
+      <div className="cr-page-ps-head">
+        <button
+          type="button"
+          className="cr-page-rt-toggle"
+          onClick={() => onToggle(!open)}
+          aria-expanded={open}
+        >
+          <ChevronIcon className={open ? 'cr-page-chev open' : 'cr-page-chev'} aria-hidden />
+          processes
+        </button>
+        {open ? (
+          <button
+            type="button"
+            className="cr-page-linkish"
+            onClick={refresh}
+            disabled={actionsDisabled || busy}
+            title="re-run ps — uses 1 exec slot"
+          >
+            {busy ? 'running…' : 'refresh'}
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <>
+          {error ? (
+            <div className="cr-page-inline-error" role="alert">
+              ps failed: {error}
+            </div>
+          ) : rows !== null ? (
+            rows.length === 0 ? (
+              <div className="cr-page-faint">no processes reported</div>
+            ) : (
+              <table className="cr-page-ps-table">
+                <thead>
+                  <tr>
+                    <th>pid</th>
+                    <th>command</th>
+                    <th aria-label="actions" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((proc) => (
+                    <tr key={proc.pid}>
+                      <td className="cr-page-ps-pid">{proc.pid}</td>
+                      <td className="cr-page-ps-cmd">
+                        <code title={proc.cmd}>{proc.cmd}</code>
+                      </td>
+                      <td className="cr-page-ps-act">
+                        {proc.pid === 1 ? (
+                          // No kill for PID 1: it is the VM's init
+                          // (`sleep infinity` in the preset images) —
+                          // killing it kills the sandbox.
+                          <span
+                            className="cr-page-faint"
+                            title="PID 1 keeps the VM alive — stop the sandbox instead"
+                          >
+                            init
+                          </span>
+                        ) : confirmPid === proc.pid ? (
+                          <span className="cr-page-stop-confirm">
+                            <button
+                              type="button"
+                              className="cr-page-linkish"
+                              onClick={() => setConfirmPid(null)}
+                              disabled={busy}
+                            >
+                              cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="cr-page-danger-link"
+                              onClick={() => kill(proc.pid)}
+                              disabled={busy}
+                              title={`kill -TERM ${proc.pid}, then re-run ps — uses 1 exec slot each`}
+                            >
+                              confirm
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="cr-page-danger-link"
+                            onClick={() => setConfirmPid(proc.pid)}
+                            disabled={actionsDisabled || busy}
+                            title={`kill -TERM ${proc.pid} — uses 1 exec slot`}
+                          >
+                            kill
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : raw !== null ? (
+            // The header did not parse — show what ps actually said.
+            raw ? (
+              <pre className="cr-page-ps-raw">
+                <AnsiText text={raw} />
+              </pre>
+            ) : (
+              <div className="cr-page-faint">ps produced no output</div>
+            )
+          ) : (
+            <div className="cr-page-faint">
+              {busy ? 'running ps…' : 'ps has not run yet'}
+            </div>
+          )}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 export function ConsoleTab({
   host,
   sandbox,
@@ -146,6 +339,7 @@ export function ConsoleTab({
   const [shell, setShell] = useState(true)
   const [detached, setDetached] = useState(false)
   const [running, setRunning] = useState(false)
+  const [psOpen, setPsOpen] = useState(false)
   // History cursor: -1 = composing; 0.. = index into `history` (newest first).
   const cursor = useRef(-1)
   const draft = useRef('')
@@ -311,6 +505,15 @@ export function ConsoleTab({
           </div>
           <EnvRowsEditor rows={env} onChange={setEnv} disabled={disabled} />
           <div className="cr-page-probes">
+            <button
+              type="button"
+              className="cr-page-probe"
+              title="ps — parsed into the processes table below — uses 1 exec slot"
+              disabled={disabled || slotsFull}
+              onClick={() => setPsOpen(true)}
+            >
+              ps
+            </button>
             {PROBES.map((probe) => (
               <button
                 key={probe.label}
@@ -344,6 +547,16 @@ export function ConsoleTab({
             </div>
           ) : null}
         </div>
+      )}
+
+      {sandbox.stopped ? null : (
+        <ProcessesSection
+          host={host}
+          sandbox={sandbox}
+          open={psOpen}
+          onToggle={setPsOpen}
+          actionsDisabled={slotsFull}
+        />
       )}
 
       <div className="cr-page-timeline">
