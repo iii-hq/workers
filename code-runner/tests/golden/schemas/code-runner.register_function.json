@@ -1,6 +1,6 @@
 {
   "function_id": "code-runner::register_function",
-  "description": "Publish a bus function whose handler runs in a sandbox. No runtime_id needed: code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language — the first registration in a namespace boots it, later ones in the same namespace and lang reuse it. `source` must DEFINE handler(payload) in `lang`. The first registered id in a namespace claims it; later ids must share both the namespace and its lang. `description` is what engine::functions::info shows a caller — write one. Optional `request_format` / `response_format` take a JSON Schema (an object using `type`/`properties`/`$ref`/…, max 16 KiB) that engine::functions::info shows in place of \"any\" — shown to callers, NOT enforced at call time: the handler still receives whatever payload is sent, so validate inside your handler. Functions stop resolving when their namespace is torn down (code-runner::teardown namespace=...) or its runtime is reaped for idleness.",
+  "description": "Publish a bus function whose handler runs in a sandbox. `source` must DEFINE handler(payload) in `lang`; one persistent runtime per namespace (function_id before `::`) is booted by the first registration and shared by later ones of the same lang. Write a `description` for callers. Optional `request_format` / `response_format` (JSON Schema objects, max 16 KiB) are shown by engine::functions::info but NOT enforced at call time — validate inside the handler. Registrations stop resolving when the namespace is torn down or its runtime reaped for idleness.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "RegisterRequest",
@@ -46,7 +46,7 @@
     },
     "definitions": {
       "Lang": {
-        "description": "Which engine backs a runtime.\n\nOnly `node` and `python` are accepted; anything else fails deserialization before a handler runs, so the schema itself is the validation — the same posture `sandbox-code-runner::run` takes.",
+        "description": "Which engine backs a runtime.\n\nOnly `node` and `python` are accepted; anything else fails deserialization before a handler runs, so the schema itself is the validation.",
         "type": "string",
         "enum": [
           "node",

@@ -16,27 +16,18 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use crate::manager::Manager;
 
 pub const RUN_ID: &str = "code-runner::run";
+/// Contract essentials only — the injected harness guidance
+/// (`inject_guidance`) teaches the full surface, and every extra byte here
+/// is paid on each catalog read.
 pub const RUN_DESC: &str =
-    "Run code in an in-process sandbox. Pass lang (\"node\" or \"python\"). \
-     By default run is ONE-SHOT: it creates a fresh runtime, runs code, returns the result, and \
-     destroys the runtime — nothing persists, and the response carries no runtime_id (there is \
-     nothing left to address). Pass keep: true to leave the runtime running instead: the \
-     response's runtime_id then addresses it, and is the capability code-runner::teardown needs \
-     to stop it later. Pass runtime_id on a later call to reuse that same runtime (same globals, \
-     same private scratch directory) — that runtime is never auto-stopped, you own it until you \
-     tear it down or its idle TTL reaps it, and a reaped reuse fails with code-runner::expired \
-     (retry without runtime_id to get a fresh one). There is NO network and NO host filesystem, \
-     so npm/pip installs do not work — use sandbox-code-runner for those. Code you run gets a \
-     global `iii`: iii.trigger({ function_id, payload }) invokes any bus function (await it in \
-     node; it is synchronous in python). In node it also has iii.registerFunction, which \
-     publishes one for the life of the runtime, and iii.files, a private scratch directory \
-     (write/read/readText/list/remove); python gets a persistent /work directory instead. \
-     stdout, stderr and exit_code come back verbatim — a failing script is a response, not an \
-     error — and `result` carries the value the code returned: node code is a FUNCTION BODY (yield \
-     with `return x`), python code is a MODULE (assign `result = x`; a top-level `return` is a \
-     SyntaxError). NOTE on keep: a node runtime persists \
-     its globals AND its iii.files directory; a python runtime persists only its /work directory, \
-     because CPython-on-wasm cannot outlive a call.";
+    "Run code in an in-process sandbox — lang \"node\" or \"python\"; no network, no host \
+     filesystem, no package installs. One-shot by default; keep: true returns a runtime_id, \
+     and passing runtime_id later reuses that runtime (same globals and scratch) until \
+     code-runner::teardown or the idle TTL reaps it (then: code-runner::expired — retry \
+     without runtime_id). Code gets an `iii` global for bus calls. stdout/stderr/exit_code \
+     come back verbatim — a failing script is a response, not an error — and `result` \
+     carries the returned value: node code is a FUNCTION BODY (`return x`), python a MODULE \
+     (assign `result = x`).";
 
 pub const TEARDOWN_ID: &str = "code-runner::teardown";
 pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister every bus function it registered, \
@@ -45,18 +36,13 @@ pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister every bus functio
      ids like app::greet) — never both, never neither.";
 
 pub const REGISTER_ID: &str = "code-runner::register_function";
-pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a sandbox. No \
-     runtime_id needed: code-runner keeps one persistent runtime per namespace (the segment of \
-     function_id before `::`) and language — the first registration in a namespace boots it, \
-     later ones in the same namespace and lang reuse it. `source` must DEFINE handler(payload) \
-     in `lang`. The first registered id in a namespace claims it; later ids must share both the \
-     namespace and its lang. `description` is what engine::functions::info shows a caller — \
-     write one. Optional `request_format` / `response_format` take a JSON Schema (an object \
-     using `type`/`properties`/`$ref`/…, max 16 KiB) that engine::functions::info shows in \
-     place of \"any\" — shown to callers, NOT enforced at call time: the handler still \
-     receives whatever payload is sent, so validate inside your handler. Functions stop \
-     resolving when their namespace is torn down \
-     (code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
+pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a sandbox. \
+     `source` must DEFINE handler(payload) in `lang`; one persistent runtime per namespace \
+     (function_id before `::`) is booted by the first registration and shared by later ones \
+     of the same lang. Write a `description` for callers. Optional `request_format` / \
+     `response_format` (JSON Schema objects, max 16 KiB) are shown by engine::functions::info \
+     but NOT enforced at call time — validate inside the handler. Registrations stop \
+     resolving when the namespace is torn down or its runtime reaped for idleness.";
 
 /// Every id this worker registers on its own client, in registration order.
 ///

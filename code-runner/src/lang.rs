@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Which engine backs a runtime.
 ///
 /// Only `node` and `python` are accepted; anything else fails deserialization
-/// before a handler runs, so the schema itself is the validation — the same
-/// posture `sandbox-code-runner::run` takes.
+/// before a handler runs, so the schema itself is the validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Lang {
