@@ -2,6 +2,12 @@
    CodeEditor over `coder::read-file` / `coder::create-file(overwrite)`.
    Never bundles an editor: Monaco ships once, inside the console.
 
+   With a sandbox target selected the pane goes read-only: reads ride
+   `shell::exec` stdout (guestReadFile — the coder surface is host-only
+   and the page cannot consume `shell::fs::read`'s stream channel), and
+   writes have no guest path at all (`shell::fs::write` demands the
+   streamed ContentRef form on sandbox targets).
+
    File content + unsaved drafts live in a page-owned cache keyed by
    path, so switching editor tabs never discards edits: the pane is
    remounted per file (key=path) and rehydrates from the cache instead
@@ -11,6 +17,7 @@ import { CodeEditor, type Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
 import { coderReadFile, coderWriteFile, joinPath } from './coder'
+import { guestReadFile } from './sandbox'
 
 /** File-extension → Monaco language id (unknown ids render plain). */
 export function monacoLangFromPath(path: string): string {
@@ -66,9 +73,10 @@ export function monacoLangFromPath(path: string): string {
   }
 }
 
-/** Read-only reasons: binary content, or a byte-capped read (saving a
-    truncated body would destroy the tail). */
-export type ReadOnlyReason = 'binary' | 'truncated' | null
+/** Read-only reasons: binary content, a byte-capped read (saving a
+    truncated body would destroy the tail), or a sandbox target (no
+    guest write path — see the header comment). */
+export type ReadOnlyReason = 'binary' | 'truncated' | 'sandbox' | null
 
 export interface EditorCacheEntry {
   /** What the worker last gave (or accepted) for this file. */
@@ -92,6 +100,8 @@ interface EditorPaneProps {
   host: Host
   root: string
   relPath: string
+  /** Sandbox target of the browsed tree; null = host. */
+  sandboxId: string | null
   cache: EditorCache
   /** Fired after a successful save (the git tab refreshes on it). */
   onSaved: () => void
@@ -103,6 +113,7 @@ export function EditorPane({
   host,
   root,
   relPath,
+  sandboxId,
   cache,
   onSaved,
   onDirtyChange,
@@ -128,25 +139,40 @@ export function EditorPane({
       return
     }
     setPane({ phase: 'loading' })
-    coderReadFile(host, absPath)
-      .then((out) => {
-        if (seqRef.current !== seq) return
-        const content = out.content ?? ''
-        const fresh: EditorCacheEntry = {
-          savedContent: content,
-          draft: content,
-          readOnly:
-            out.is_utf8 === false
+    const read: Promise<EditorCacheEntry> =
+      sandboxId !== null
+        ? guestReadFile(host, sandboxId, absPath).then((out) => ({
+            savedContent: out.content,
+            draft: out.content,
+            readOnly: out.binary
               ? 'binary'
-              : out.more_lines
+              : out.truncated
                 ? 'truncated'
-                : null,
-          mode: out.mode ?? null,
-          size: out.size ?? null,
-        }
+                : 'sandbox',
+            mode: null,
+            size: out.size,
+          }))
+        : coderReadFile(host, absPath).then((out) => {
+            const content = out.content ?? ''
+            return {
+              savedContent: content,
+              draft: content,
+              readOnly:
+                out.is_utf8 === false
+                  ? 'binary'
+                  : out.more_lines
+                    ? 'truncated'
+                    : null,
+              mode: out.mode ?? null,
+              size: out.size ?? null,
+            }
+          })
+    read
+      .then((fresh) => {
+        if (seqRef.current !== seq) return
         cache.set(relPath, fresh)
-        setDraftState(content)
-        setSavedContent(content)
+        setDraftState(fresh.draft)
+        setSavedContent(fresh.savedContent)
         setPane({ phase: 'ready' })
       })
       .catch((err: unknown) => {
@@ -156,7 +182,7 @@ export function EditorPane({
           message: errorMessage(err),
         })
       })
-  }, [host, absPath, relPath, cache])
+  }, [host, absPath, relPath, sandboxId, cache])
 
   const dirty = pane.phase === 'ready' && draft !== savedContent
   const readOnly = entry?.readOnly ?? null
@@ -218,10 +244,19 @@ export function EditorPane({
         </span>
         {dirty ? <span className="shui-dirty" title="unsaved changes" /> : null}
         {readOnly ? (
-          <span className="shui-ro-note">
+          <span
+            className="shui-ro-note"
+            title={
+              readOnly === 'sandbox'
+                ? 'sandbox writes need the streamed channel form — the page edits host files only'
+                : undefined
+            }
+          >
             {readOnly === 'binary'
               ? 'binary — read-only'
-              : 'truncated read — read-only'}
+              : readOnly === 'truncated'
+                ? 'truncated read — read-only'
+                : 'sandbox target — read-only'}
           </span>
         ) : null}
         {entry?.size != null ? (
@@ -229,15 +264,17 @@ export function EditorPane({
         ) : null}
         <span className="spacer" />
         {saveError ? <span className="shui-ro-note warn">{saveError}</span> : null}
-        <button
-          type="button"
-          className="shui-save-btn"
-          disabled={!canSave}
-          onClick={save}
-          title="save (⌘S)"
-        >
-          {saving ? 'saving…' : 'save'}
-        </button>
+        {sandboxId === null ? (
+          <button
+            type="button"
+            className="shui-save-btn"
+            disabled={!canSave}
+            onClick={save}
+            title="save (⌘S)"
+          >
+            {saving ? 'saving…' : 'save'}
+          </button>
+        ) : null}
       </div>
 
       <div className="shui-editor-body">

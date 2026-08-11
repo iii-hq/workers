@@ -437,6 +437,85 @@
 }
 [data-iii-ui="shell"] .shui-root-select { width: calc(100% - 12px); }
 
+/* target picker — host vs live microVMs, above the root affordance */
+[data-iii-ui="shell"] .shui-target-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 6px 0;
+}
+[data-iii-ui="shell"] .shui-target-select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  border: 1px solid var(--color-edge);
+  background: var(--color-surface);
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-target-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-target-refresh:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-refresh-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* header chip for a sandbox target: dot + truncated id + copy */
+[data-iii-ui="shell"] .shui-target-desc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-target-desc .id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-copy-btn:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-copy-icon {
+  width: 12px;
+  height: 12px;
+}
+
 [data-iii-ui="shell"] .shui-side-body {
   flex: 1;
   min-height: 0;
