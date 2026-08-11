@@ -4,6 +4,730 @@ window.HARNESS_EXECUTIONS = {
       "actor": "ytallo",
       "attempt": 1,
       "availability": "full",
+      "completed_at": "2026-08-11T07:04:27Z",
+      "conclusion": "success",
+      "detail_path": "runs/31464501923-1.json",
+      "event": "schedule",
+      "execution": {
+        "actor": "ytallo",
+        "attempt": 1,
+        "completed_at": "2026-08-11T07:04:27Z",
+        "conclusion": "success",
+        "event": "schedule",
+        "head_branch": "main",
+        "head_sha": "3b2f20401689d2aa70a25c69bc820f35a9e68976",
+        "id": "31464501923-1",
+        "repository": "iii-hq/workers",
+        "run_id": "31464501923",
+        "started_at": "2026-08-11T06:16:47Z",
+        "workflow_name": "Test · harness_registry · schedule",
+        "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31464501923"
+      },
+      "first_failure": {
+        "id": "source_capture",
+        "kind": "hard_gate",
+        "message": "armed_before_fetch=true, source_order=false, article_valid=true, exact_write=false",
+        "scenario_id": "research_pipeline",
+        "subject_id": "deepseek-v4-flash"
+      },
+      "generated_at": "2026-08-11T07:04:23.231851+00:00",
+      "id": "31464501923-1",
+      "lane": "daily",
+      "release": {
+        "registry_tag": "latest",
+        "tag": "daily/2026-08-11",
+        "url": "https://github.com/iii-hq/workers/commit/3b2f20401689d2aa70a25c69bc820f35a9e68976",
+        "version": "1.7.4",
+        "worker": "harness"
+      },
+      "requested_runs": 3,
+      "run_id": "31464501923",
+      "scenario_metrics": [
+        {
+          "averages": {
+            "cost_usd": 0.0018930277333333335,
+            "duration_seconds": 19.44633333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 4.666666666666667,
+            "sessions": 1.0,
+            "tokens": 10539.0,
+            "turns": 7.0
+          },
+          "contract_fingerprint": "fnv1a32:0295802c",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "custom_validator",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0015862992,
+            "duration_seconds": 7.878666666666668,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 2144.6666666666665,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:e66be2c8",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "direct_answer",
+          "scenario_version": 2,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.004179647733333334,
+            "duration_seconds": 55.80666666666667,
+            "function_call_errors": 0.0,
+            "function_calls": 15.666666666666666,
+            "sessions": 1.0,
+            "tokens": 20174.666666666668,
+            "turns": 10.333333333333334
+          },
+          "contract_fingerprint": "fnv1a32:f95ec173",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "mechanical_reaction",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.006648303200000001,
+            "duration_seconds": 73.74866666666667,
+            "function_call_errors": 0.0,
+            "function_calls": 20.0,
+            "sessions": 3.0,
+            "tokens": 31786.5,
+            "turns": 19.333333333333332
+          },
+          "contract_fingerprint": "fnv1a32:4fa46005",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 2,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 2,
+            "turns": 3
+          },
+          "scenario_id": "multi_subagent_validation",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0007100258666666667,
+            "duration_seconds": 8.073333333333332,
+            "function_call_errors": 0.0,
+            "function_calls": 3.0,
+            "sessions": 1.0,
+            "tokens": 3996.0,
+            "turns": 4.0
+          },
+          "contract_fingerprint": "fnv1a32:3346e4ed",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "persistent_state",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.012446418133333336,
+            "duration_seconds": 131.53033333333335,
+            "function_call_errors": 0.0,
+            "function_calls": 63.0,
+            "sessions": 5.0,
+            "tokens": 59283.0,
+            "turns": 36.666666666666664
+          },
+          "contract_fingerprint": "fnv1a32:645b9d93",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "reactive_automation",
+          "scenario_version": 4,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.022234969866666662,
+            "duration_seconds": 323.532,
+            "function_call_errors": 2.3333333333333335,
+            "function_calls": 65.0,
+            "sessions": 4.0,
+            "tokens": 91041.33333333333,
+            "turns": 42.0
+          },
+          "contract_fingerprint": "fnv1a32:ccaa6f74",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "receiving_operation",
+          "scenario_version": 4,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.016642634400000005,
+            "duration_seconds": 193.07633333333334,
+            "function_call_errors": 0.3333333333333333,
+            "function_calls": 28.666666666666668,
+            "sessions": 3.0,
+            "tokens": 80773.0,
+            "turns": 20.0
+          },
+          "contract_fingerprint": "fnv1a32:24d21247",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "research_pipeline",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0125540856,
+            "duration_seconds": 77.324,
+            "function_call_errors": 0.3333333333333333,
+            "function_calls": 24.0,
+            "sessions": 1.0,
+            "tokens": 70567.66666666667,
+            "turns": 19.666666666666668
+          },
+          "contract_fingerprint": "fnv1a32:85829578",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "shell_coder_sandbox",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.004074586133333333,
+            "duration_seconds": 39.312999999999995,
+            "function_call_errors": 0.0,
+            "function_calls": 14.0,
+            "sessions": 2.0,
+            "tokens": 21323.333333333332,
+            "turns": 14.0
+          },
+          "contract_fingerprint": "fnv1a32:6f45dd8a",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "subagent_validation",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.006104268800000001,
+            "duration_seconds": 177.41366666666667,
+            "function_call_errors": 0.0,
+            "function_calls": 18.666666666666668,
+            "sessions": 2.0,
+            "tokens": 30682.666666666668,
+            "turns": 16.333333333333332
+          },
+          "contract_fingerprint": "fnv1a32:69f50761",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "subagent_validation_failure",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0024487624,
+            "duration_seconds": 32.175333333333334,
+            "function_call_errors": 0.0,
+            "function_calls": 8.333333333333334,
+            "sessions": 1.0,
+            "tokens": 12621.333333333334,
+            "turns": 7.666666666666667
+          },
+          "contract_fingerprint": "fnv1a32:6ecbf11f",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "timer_wake",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0039518024,
+            "duration_seconds": 46.50966666666667,
+            "function_call_errors": 0.0,
+            "function_calls": 16.0,
+            "sessions": 1.0,
+            "tokens": 18889.0,
+            "turns": 13.0
+          },
+          "contract_fingerprint": "fnv1a32:deb3403d",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "validation_chain",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.003470743733333334,
+            "duration_seconds": 43.80466666666666,
+            "function_call_errors": 0.0,
+            "function_calls": 11.333333333333334,
+            "sessions": 1.0,
+            "tokens": 16938.0,
+            "turns": 9.333333333333334
+          },
+          "contract_fingerprint": "fnv1a32:addaa57e",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "validation_loop",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0021203578666666666,
+            "duration_seconds": 35.51333333333333,
+            "function_call_errors": 1.0,
+            "function_calls": 5.666666666666667,
+            "sessions": 1.0,
+            "tokens": 9769.0,
+            "turns": 6.333333333333333
+          },
+          "contract_fingerprint": "fnv1a32:8a795841",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "validation_scope_enforcement",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.0032190536000000006,
+            "duration_seconds": 38.89633333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 11.0,
+            "sessions": 1.0,
+            "tokens": 16769.666666666668,
+            "turns": 9.333333333333334
+          },
+          "contract_fingerprint": "fnv1a32:e41c8856",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "validation_self_repair",
+          "scenario_version": 3,
+          "subject_id": "deepseek-v4-flash"
+        }
+      ],
+      "source": {
+        "ref": "daily/2026-08-11",
+        "repository": "iii-hq/workers",
+        "sha": "3b2f20401689d2aa70a25c69bc820f35a9e68976"
+      },
+      "started_at": "2026-08-11T06:16:47Z",
+      "status": "hard_gate_failed",
+      "subjects": [
+        {
+          "engine_revision": "0.22.1",
+          "expected_reports": 16,
+          "hard_gate_failures": 3,
+          "id": "deepseek-v4-flash",
+          "infra_failures": 0,
+          "judge": {
+            "context_window": 1000000,
+            "max_output_tokens": 128000,
+            "model": "glm-5.2",
+            "provider": "zai",
+            "supports_tools": true,
+            "supports_vision": false
+          },
+          "model": "deepseek-v4-flash",
+          "passed": true,
+          "provider": "deepseek",
+          "received_reports": 16,
+          "report_coverage": 1.0,
+          "retry_attempts": 0,
+          "scenario_pass_rate": 1.0,
+          "scenarios": [
+            {
+              "hard_gate_failures": 0,
+              "id": "direct_answer",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.0047588976,
+              "wall_time_seconds": 23.636
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "persistent_state",
+              "infra_failures": 0,
+              "median_score": 90.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.0021300776,
+              "wall_time_seconds": 24.22
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "reactive_automation",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.03733925440000001,
+              "wall_time_seconds": 394.591
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "shell_coder_sandbox",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.0376622568,
+              "wall_time_seconds": 231.972
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "research_pipeline",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "hard_gate_failed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.04992790320000001,
+              "wall_time_seconds": 579.229
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "mechanical_reaction",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.012538943200000003,
+              "wall_time_seconds": 167.42
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "timer_wake",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "hard_gate_failed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.007346287199999999,
+              "wall_time_seconds": 96.526
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "receiving_operation",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "hard_gate_failed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.06670490959999999,
+              "wall_time_seconds": 970.596
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_loop",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.010412231200000002,
+              "wall_time_seconds": 131.414
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "subagent_validation",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.0122237584,
+              "wall_time_seconds": 117.939
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "multi_subagent_validation",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": null,
+              "wall_time_seconds": 221.246
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "subagent_validation_failure",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.018312806400000003,
+              "wall_time_seconds": 532.241
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "custom_validator",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.005679083200000001,
+              "wall_time_seconds": 58.339
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_self_repair",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.009657160800000002,
+              "wall_time_seconds": 116.689
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_scope_enforcement",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.006361073599999999,
+              "wall_time_seconds": 106.54
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_chain",
+              "infra_failures": 0,
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "total_cost_usd": 0.011855407200000001,
+              "wall_time_seconds": 139.529
+            }
+          ],
+          "technical_failures": 0,
+          "total_cost_usd": null,
+          "wall_time_seconds": 3912.127
+        }
+      ],
+      "totals": {
+        "average_score": 99.375,
+        "expected_reports": 16,
+        "function_calls": 927.0,
+        "hard_gate_failures": 3,
+        "missing_reports": 0,
+        "passed_scenarios": 16,
+        "received_reports": 16,
+        "report_coverage": 100.0,
+        "retries": 0,
+        "scenario_pass_rate": 100.0,
+        "technical_failures": 0,
+        "total_cost_usd": null,
+        "total_tokens": null,
+        "wall_time_seconds": 3912.127
+      },
+      "workflow_duration_seconds": 2860.0,
+      "workflow_name": "Test · harness_registry · schedule",
+      "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31464501923"
+    },
+    {
+      "actor": "ytallo",
+      "attempt": 1,
+      "availability": "full",
       "completed_at": "2026-08-10T07:06:13Z",
       "conclusion": "failure",
       "detail_path": "runs/31361902698-1.json",
@@ -6666,7 +7390,7 @@ window.HARNESS_EXECUTIONS = {
       "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30982733353"
     }
   ],
-  "last_update": "2026-08-10T07:06:13Z",
+  "last_update": "2026-08-11T07:04:27Z",
   "mode": "published",
   "repo_url": "https://github.com/iii-hq/workers",
   "retention": {
