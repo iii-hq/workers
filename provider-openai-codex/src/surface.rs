@@ -9,8 +9,8 @@
 //! registration emits.
 
 use llm_router::types::router::{
-    ProviderAbortRequest, ProviderAbortResponse, ProviderReadyAck, ProviderStreamInput,
-    ProviderStreamOutput, RefreshModelsRequest, RefreshModelsResponse, RouterReadyEvent,
+    ProviderAbortRequest, ProviderAbortResponse, ProviderReadyAck, ProviderStreamOutput,
+    RefreshModelsRequest, RefreshModelsResponse, RouterReadyEvent,
 };
 
 pub const STREAM_ID: &str = "provider::openai-codex::stream";
@@ -67,7 +67,7 @@ where
 /// `tests/schemas.rs`; keep in lockstep with `register::register_provider`.
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
-        spec::<ProviderStreamInput, ProviderStreamOutput>(STREAM_ID, STREAM_DESC),
+        spec::<crate::stream_fn::CodexStreamInput, ProviderStreamOutput>(STREAM_ID, STREAM_DESC),
         spec::<ProviderAbortRequest, ProviderAbortResponse>(ABORT_ID, ABORT_DESC),
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),

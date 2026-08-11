@@ -25,6 +25,8 @@ pub struct ChatRequest {
     pub writer_ref: StreamChannelRef, // direction "write"; the caller's channel
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>, // router::abort correlation; generated when omitted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>, // stable conversation identity for provider affinity
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
