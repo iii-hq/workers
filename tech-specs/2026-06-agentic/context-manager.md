@@ -81,6 +81,13 @@ Whatever capping, pruning, or compaction does, the returned context must still b
 - **`custom` messages are app-facing.** `context::assemble` excludes `role: "custom"` messages from
   the model-facing list (and their tokens from the count) — they have no provider wire mapping (see
   [README § Messages](README.md#messages-the-many-message-types)).
+- **Image normalization is model-facing only.** Before token accounting,
+  `context::assemble` normalizes images in its cloned model-facing view. A known
+  text-only model receives placeholders. For a known vision model, tool images
+  age after the next assistant response and user images age when a later user
+  turn begins after a response. Unknown capability keeps images. Live images
+  cost a fixed 4,096-token heuristic budget; base64 bytes are never counted as
+  text. The caller's transcript is unchanged.
 
 ## Functions
 
@@ -138,9 +145,9 @@ in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 
 ### `context::assemble`
 
-Build a model-ready context. Applies, in this order: cap oversized single results (always) ->
-prune aged function outputs (always) -> (if over budget) compact the head -> (if still over)
-emergency-reduce -> return the budgeted list, or a structured overflow if nothing fits. A
+Build a model-ready context. Applies, in this order: media-normalize -> cap oversized single
+results (always) -> prune aged function outputs (always) -> (if over budget) compact the head ->
+(if still over) emergency-reduce -> return the budgeted list, or a structured overflow if nothing fits. A
 successful response has the hard postcondition `token_count <= usable`.
 
 - Invocation: **sync**

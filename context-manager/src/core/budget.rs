@@ -40,6 +40,7 @@ pub struct ResolvedModel {
     /// Declared per-tier reasoning budgets (router-resolved models
     /// only; inline limits carry none).
     pub thinking_budgets: Option<std::collections::BTreeMap<ThinkingLevel, u64>>,
+    pub supports_vision: Option<bool>,
     pub resolved: ModelResolved,
 }
 
@@ -53,6 +54,7 @@ pub fn fallback_model() -> ResolvedModel {
             input_limit: None,
         },
         thinking_budgets: None,
+        supports_vision: None,
         resolved: ModelResolved::Fallback,
     }
 }
@@ -62,6 +64,7 @@ impl ResolvedModel {
         Self {
             limits,
             thinking_budgets: None,
+            supports_vision: None,
             resolved: ModelResolved::Inline,
         }
     }
@@ -74,6 +77,7 @@ impl ResolvedModel {
                 input_limit: model.input_limit,
             },
             thinking_budgets: model.thinking_budgets.clone(),
+            supports_vision: model.supports_vision,
             resolved: ModelResolved::Router,
         }
     }
@@ -195,6 +199,7 @@ mod tests {
             max_output_tokens: 128_000,
             input_limit: None,
             thinking_budgets: None,
+            supports_vision: Some(false),
         };
 
         // The model accepts up to 128k output, but the router's configured
@@ -202,6 +207,7 @@ mod tests {
         // router will actually request, not the catalog ceiling.
         let resolved = ResolvedModel::from_router(&model, 32_000);
         assert_eq!(resolved.limits.max_output_tokens, 32_000);
+        assert_eq!(resolved.supports_vision, Some(false));
         assert_eq!(usable(&resolved.limits, 20_000, 0), 220_000);
     }
 
@@ -215,6 +221,7 @@ mod tests {
         let routed = ResolvedModel {
             limits: limits(100, 10, None),
             thinking_budgets: Some(budgets),
+            supports_vision: None,
             resolved: ModelResolved::Router,
         };
         assert_eq!(routed.thinking_budget(Some(ThinkingLevel::High)), 9_000);

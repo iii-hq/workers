@@ -1,8 +1,8 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
-//! cap results (always) -> age-prune (always) -> (if over) compact ->
-//! (if still over) emergency-reduce function results -> assemble the
-//! final list or return a structured overflow.
+//! media-normalize -> cap results (always) -> age-prune (always) ->
+//! (if over) compact -> (if still over) emergency-reduce function
+//! results -> assemble the final list or return a structured overflow.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
 //! model-facing list (nor the count); `applied.tail_start_index`
@@ -27,8 +27,70 @@ use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeRequest};
 use crate::types::{
-    AgentFunction, AgentMessage, ByRoleTokens, EstimatorName, ModelInput, Role, ThinkingLevel,
+    AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
+    ThinkingLevel,
 };
+
+const TEXT_ONLY_IMAGE_OMITTED: &str = "[image omitted: model does not support vision]";
+const TOOL_IMAGE_OMITTED: &str =
+    "[tool image omitted after use; re-call the function if visual details are needed]";
+const USER_IMAGE_OMITTED: &str =
+    "[user image omitted after use; ask the user to resend it if visual details are needed]";
+
+fn replace_images(
+    blocks: &mut [ContentBlock],
+    direct_marker: Option<&str>,
+    nested_tool_marker: Option<&str>,
+) {
+    for block in blocks {
+        match block {
+            ContentBlock::Image { .. } => {
+                if let Some(marker) = direct_marker {
+                    *block = ContentBlock::Text {
+                        text: marker.into(),
+                    };
+                }
+            }
+            ContentBlock::FunctionResult { content, .. } => {
+                replace_images(content, nested_tool_marker, nested_tool_marker);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>) {
+    let Some(supports_vision) = supports_vision else {
+        return;
+    };
+    let mut later_user = false;
+    let mut later_assistant = false;
+
+    for message in messages.iter_mut().rev() {
+        let direct_marker = if supports_vision {
+            match message.role() {
+                Role::User if later_user && later_assistant => Some(USER_IMAGE_OMITTED),
+                Role::FunctionResult if later_assistant => Some(TOOL_IMAGE_OMITTED),
+                _ => None,
+            }
+        } else {
+            Some(TEXT_ONLY_IMAGE_OMITTED)
+        };
+        let nested_tool_marker = if supports_vision {
+            later_assistant.then_some(TOOL_IMAGE_OMITTED)
+        } else {
+            Some(TEXT_ONLY_IMAGE_OMITTED)
+        };
+
+        replace_images(message.content_mut(), direct_marker, nested_tool_marker);
+
+        match message.role() {
+            Role::User => later_user = true,
+            Role::Assistant => later_assistant = true,
+            _ => {}
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
@@ -217,6 +279,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             view_to_orig.push(idx);
         }
     }
+    normalize_media(&mut working, resolved.supports_vision);
 
     let base_prompt = req.system_prompt.as_deref();
     let mut system_prompt = render_system_prompt(base_prompt, options.previous_summary.as_deref());
@@ -472,6 +535,132 @@ mod tests {
     use super::*;
     use crate::core::estimate::HeuristicEstimator;
     use serde_json::json;
+
+    fn message(value: serde_json::Value) -> AgentMessage {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn tool_images_age_after_a_later_assistant_without_losing_neighbors() {
+        let mut messages = vec![
+            message(json!({
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "browser::screenshot",
+                "content": [
+                    { "type": "text", "text": "caption" },
+                    { "type": "image", "mime": "image/png", "data": "AAAA" }
+                ],
+                "details": {}, "is_error": false, "timestamp": 1
+            })),
+            message(json!({
+                "role": "user", "content": [{
+                    "type": "function_result", "function_call_id": "c2", "content": [{
+                        "type": "image", "mime": "image/png", "data": "BBBB"
+                    }]
+                }], "timestamp": 2
+            })),
+            message(json!({
+                "role": "assistant", "content": [{ "type": "text", "text": "seen" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 3
+            })),
+        ];
+        let original = messages.clone();
+
+        let mut fresh = vec![messages[0].clone()];
+        normalize_media(&mut fresh, Some(true));
+        assert!(matches!(fresh[0].content()[1], ContentBlock::Image { .. }));
+
+        normalize_media(&mut messages, Some(true));
+        let value = serde_json::to_value(&messages).unwrap();
+        assert_eq!(value[0]["content"][0]["text"], "caption");
+        assert_eq!(value[0]["content"][1]["text"], TOOL_IMAGE_OMITTED);
+        assert_eq!(
+            value[1]["content"][0]["content"][0]["text"],
+            TOOL_IMAGE_OMITTED
+        );
+        assert!(matches!(
+            original[0].content()[1],
+            ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn user_images_survive_steering_and_age_on_the_next_turn() {
+        let image = || {
+            message(json!({
+                "role": "user",
+                "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+                "timestamp": 1
+            }))
+        };
+        let user = || {
+            message(json!({
+                "role": "user", "content": [{ "type": "text", "text": "more" }], "timestamp": 4
+            }))
+        };
+        let assistant = || {
+            message(json!({
+                "role": "assistant", "content": [{ "type": "text", "text": "answer" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 3
+            }))
+        };
+
+        let mut steering = vec![image(), user()];
+        normalize_media(&mut steering, Some(true));
+        assert!(matches!(
+            steering[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+
+        let mut answered = vec![image(), assistant()];
+        normalize_media(&mut answered, Some(true));
+        assert!(matches!(
+            answered[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+
+        let mut advanced = vec![image(), assistant(), user()];
+        normalize_media(&mut advanced, Some(true));
+        assert_eq!(
+            advanced[0].content(),
+            &[ContentBlock::Text {
+                text: USER_IMAGE_OMITTED.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn missing_capability_keeps_images_and_text_only_replaces_them() {
+        let original = vec![message(json!({
+            "role": "assistant",
+            "content": [
+                { "type": "image", "mime": "image/png", "data": "AAAA" },
+                { "type": "function_result", "function_call_id": "c1", "content": [{
+                    "type": "image", "mime": "image/png", "data": "BBBB"
+                }] }
+            ],
+            "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 1
+        }))];
+
+        let mut unknown = original.clone();
+        normalize_media(&mut unknown, None);
+        assert_eq!(unknown, original);
+
+        let mut vision = original.clone();
+        normalize_media(&mut vision, Some(true));
+        assert_eq!(vision, original);
+
+        let mut text_only = original;
+        normalize_media(&mut text_only, Some(false));
+        assert_eq!(
+            serde_json::to_value(&text_only).unwrap()[0]["content"][0]["text"],
+            TEXT_ONLY_IMAGE_OMITTED
+        );
+        assert_eq!(
+            serde_json::to_value(&text_only).unwrap()[0]["content"][1]["content"][0]["text"],
+            TEXT_ONLY_IMAGE_OMITTED
+        );
+    }
 
     #[test]
     fn count_includes_tools_and_request_overhead() {

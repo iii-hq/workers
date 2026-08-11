@@ -1,16 +1,44 @@
 @pure
 Feature: context::assemble — the model-ready context pipeline
 
-  Contract (context-manager.md § context::assemble): cap results (always)
-  -> age-prune (always) -> (if over) compact -> (if still over) emergency
-  -> overflow. The response reports what actually happened (`applied`),
+  Contract (context-manager.md § context::assemble): media-normalize -> cap
+  results (always) -> age-prune (always) -> (if over) compact -> (if still
+  over) emergency -> overflow. The response reports what actually happened (`applied`),
   the budget it fit into (`usable`), and how the model was resolved.
   Every successful response fits its reported usable budget. Busy
   leases, failed summarisers, disabled passes, and irreducible inputs
   fail with context/overflow instead of leaking an invalid request.
 
+  # Regression: console-068cb67f-86fe-4951-b56e-3a94686ba441.
+  # A 729,420-character browser screenshot was miscounted as 182,438 text
+  # tokens and compacted twice despite a 107,008-token usable window.
+  Scenario: screenshot base64 length does not trigger compaction
+    Given inline model "evidence" with context window 120000 and max output 8000
+    And a user message "capture the page"
+    And an assistant function call "shot" to "browser::screenshot"
+    And a function result for call "shot" from "browser::screenshot" containing an image of 729420 chars
+    When I assemble the history with model "evidence" and options:
+      """
+      { "reserved_tokens": 4992 }
+      """
+    Then the call succeeds
+    And the response field "usable" is 107008
+    And the response field "token_count" does not exceed 5000
+    And the response field "applied.compacted" is false
+    And the response messages equal the request history
+    And the summariser was never invoked
+
+  Scenario: a known text-only model receives an image placeholder
+    Given the router knows model "text-only" with context window 200000 and max output 8000
+    And the router model "text-only" declares vision support false
+    And a user message containing an image of 400 chars
+    When I assemble the history with model "text-only"
+    Then the call succeeds
+    And response message 0 text is "[image omitted: model does not support vision]"
+
   # Prevents: the happy path being mangled — a context under budget
-  # must pass through byte-identical, with nothing applied and no
+  # must pass through byte-identical when media normalization makes no
+  # replacements, with nothing applied and no
   # summariser cost.
   Scenario: under budget passes through untouched
     Given the router knows model "big" with context window 200000 and max output 8000

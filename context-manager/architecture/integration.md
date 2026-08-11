@@ -49,9 +49,10 @@ Integration is always some subset of four moves:
   only `id`/`provider` to have the worker resolve limits via
   `router::models::budget`. Resolution order: inline → router → conservative
   fallback (`8192`/`1024`); the response's `model_resolved` tells you which ran.
-- **Tokens are estimates.** v1 uses a `chars/4` heuristic for every model
-  (`estimator: "heuristic"`). Treat `token_count`/`tokens` as approximate and
-  rely on the built-in `reserved` cushion rather than counting to the byte.
+- **Tokens are estimates.** v1 uses serialized non-image `chars/4` plus 4,096
+  tokens per image for every model (`estimator: "heuristic"`). Treat
+  `token_count`/`tokens` as approximate and rely on the built-in `reserved`
+  cushion rather than counting to the byte.
 - **Timestamps** inside `AgentMessage` are caller-supplied integer ms since
   epoch. The worker reads them only incidentally — order is array order
   (oldest first), never timestamp.

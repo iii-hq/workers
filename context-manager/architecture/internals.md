@@ -26,7 +26,7 @@ in tests.
 | [src/functions/mod.rs](../src/functions/mod.rs) | Function ids + descriptions, `resolve_model` (the spec's resolution order), the generic typed `register` helper, `register_all`, and the schema `catalog()` (golden-tested). |
 | [src/functions/&lt;verb&gt;.rs](../src/functions) | One file per function: request/response structs (serde + `JsonSchema`, doc comments become schema descriptions) and a `pub async fn handle(deps, req)`. BDD calls these `handle` fns directly, so engine-free tests exercise the exact production path. |
 | [src/core/budget.rs](../src/core/budget.rs) | `ResolvedModel`, the `usable` math, `default_reserved`, `preserve_recent_budget`, `fallback_model`. |
-| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (`chars/4`), `estimator_for_model`, per-role tallies. |
+| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (serialized non-image `chars/4` plus 4,096 tokens per image), `estimator_for_model`, per-role tallies. |
 | [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite) and the unconditional per-result cap pass (`cap_results_with_sizes`: head + marker + tail rewrite). |
 | [src/core/selection.rs](../src/core/selection.rs) | Turn partitioning and token-aware verbatim-tail selection with the safe-cut invariant. |
 | [src/core/summary.rs](../src/core/summary.rs) | Summariser prompt construction (template, previous-summary anchoring), `strip_media`, and the `# Conversation summary` system-prompt rendering. |
@@ -76,48 +76,56 @@ are either steps of it or probes into it. The pipeline, all in
 flowchart TD
   A[resolve model limits] --> B[compute usable budget]
   B --> C["build model-facing view: drop role:custom, record view_to_orig"]
-  C --> D["render system prompt: base + optional previous_summary"]
-  D --> E[count tokens]
-  E --> F{max_result_tokens > 0?}
-  F -->|yes| G[cap oversized single results] --> H[recount]
-  F -->|no| H
-  H --> I{allow_prune?}
-  I -->|yes| J[prune aged function outputs] --> K[recount]
-  I -->|no| K
-  K --> L{still over AND allow_compaction?}
-  L -->|yes| M["try_compact under lease: select tail, summarise head"]
-  L -->|no| P{still over budget?}
-  M -->|summary produced| O["replace system prompt with summary, drop head, recount"] --> P
-  M -->|busy / failed / empty| P
-  P -->|yes| Q[emergency-reduce function results] --> R[recount]
-  P -->|no| S[assemble response]
-  R --> T{still over budget?}
-  T -->|yes| U[return context/overflow]
-  T -->|no| S
+  C --> D[normalize media in cloned view]
+  D --> E["render system prompt: base + optional previous_summary"]
+  E --> F[count tokens]
+  F --> G{max_result_tokens > 0?}
+  G -->|yes| H[cap oversized single results] --> I[recount]
+  G -->|no| I
+  I --> J{allow_prune?}
+  J -->|yes| K[prune aged function outputs] --> L[recount]
+  J -->|no| L
+  L --> M{still over AND allow_compaction?}
+  M -->|yes| N["try_compact under lease: select tail, summarise head"]
+  M -->|no| Q{still over budget?}
+  N -->|summary produced| P["replace system prompt with summary, drop head, recount"] --> Q
+  N -->|busy / failed / empty| Q
+  Q -->|yes| R[emergency-reduce function results] --> S[recount]
+  Q -->|no| T[assemble response]
+  S --> U{still over budget?}
+  U -->|yes| V[return context/overflow]
+  U -->|no| T
 ```
 
 Load-bearing details:
 
-1. **Order is fixed: cap → prune → compact.** Cap and prune are both
-   unconditional: they run on every call, no longer gated on being over
-   `usable`, so even a within-budget request can have a single oversized
-   result capped or an aged output pruned. Compaction and emergency
+1. **Order is fixed: media-normalize → cap → prune → compact.** Media
+   normalization, cap, and prune are all unconditional: they run on every call,
+   no longer gated on being over `usable`, so even a within-budget request can
+   have images replaced, a single oversized result capped, or an aged output
+   pruned. Before accounting, a known text-only model receives image
+   placeholders; a known vision model ages tool images after the next assistant
+   response and user images when a later user turn follows a response. Unknown
+   capability keeps images. Live images cost the fixed 4,096-token heuristic
+   budget, never their base64 payload length. Compaction and emergency
    reduction are both gated on *still being over budget*; compaction is
    additionally gated on `allow_compaction` and is the expensive one of the
    two (an LLM call). Each step re-counts.
-   A request with nothing large enough to cap, nothing aged enough to prune,
-   and nothing to compact passes through byte-identical —
+   A request with no media-normalization replacements, nothing large enough to
+   cap, nothing aged enough to prune, and nothing to compact passes through
+   byte-identical —
    `applied.capped_parts`/`pruned_tokens` at 0, `compacted: false` — with no
    summariser cost (`assemble.feature` "under budget passes through
    untouched").
-2. **The model-facing view excludes `role: "custom"`.** Custom messages have
+2. **The model-facing view excludes `role: "custom"` and is cloned.** Custom messages have
    no provider wire mapping, so they are filtered out of `working` *before*
    counting (a huge custom entry must not trigger a phantom overflow) and never
    appear in the returned `messages`. `view_to_orig: Vec<usize>` records, for
    each surviving message, its index in the original request array — so
    `tail_start_index` can be reported against the **request** array the caller
    holds, customs included (`invariants.feature` "tail_start_index accounts for
-   excluded custom messages").
+   excluded custom messages"). Media normalization changes only this clone; the
+   caller's transcript is unchanged.
 3. **Degradation is best effort, but the hard budget check always runs.**
    A busy lease, a failed/unavailable summariser, or a disabled step
    (`allow_prune`/`allow_compaction: false`) just skips that pass; emergency
@@ -177,11 +185,12 @@ tail is "the last little bit kept raw", not a second copy of the window.
 `Estimator` trait with three methods (`message`, `text`, `function`) and a
 `kind()` the response echoes.
 
-- **v1 ships one implementation: `HeuristicEstimator` = serialized-JSON
-  `chars / 4`.** It counts the *full serialized message*, so structure and
-  metadata weigh in roughly as they do on the wire, and it is deterministic and
-  model-independent. `estimator_for_model` ignores the model id today and always
-  returns the heuristic; `count-tokens` reports `estimator: "heuristic"`.
+- **v1 ships one implementation: `HeuristicEstimator` = serialized non-image
+  `chars / 4` plus 4,096 tokens per image.** It counts the serialized message's
+  structure and metadata, but image payload bytes are replaced with a fixed
+  allowance, and it is deterministic and model-independent.
+  `estimator_for_model` ignores the model id today and always returns the
+  heuristic; `count-tokens` reports `estimator: "heuristic"`.
 - The trait is the seam for a real per-model tokenizer later: slot it into
   `estimator_for_model`, return `EstimatorKind::Tokenizer`, and every count —
   budget math, prune sizing, tail selection — picks it up with no caller
@@ -237,7 +246,8 @@ bytes out of a 90%-of-cap-budget target *before* splitting head/tail, so the
 rewrite is idempotent without a fixpoint loop even at a small cap or a long
 `function_id`. The threshold check itself measures raw text (`estimator.text`,
 chars/4) while the size memo it updates — and every downstream budget check —
-measures the full serialized message, so escape-heavy content (e.g.
+measures the serialized non-image message plus fixed image allowances, so
+escape-heavy content (e.g.
 ANSI-colored shell output, where a raw ESC byte serializes as the
 6-character `\u001b`) can leave a capped result reading above the nominal cap
 in budget terms, though the hard `token_count <= usable` contract still holds
@@ -553,10 +563,11 @@ UPDATE_GOLDENS=1 cargo test --test schemas      # regenerate wire-schema goldens
 
 ## 15. Sharp edges and known limitations
 
-- **The estimator is `chars/4`, not a real tokenizer.** Every budget decision,
-  prune sizing, and tail fit is an *estimate*; `token_count` can differ from
-  what the provider bills. The trait is ready for a per-model tokenizer; until
-  then treat all counts as approximate and keep `reserved` as the cushion.
+- **The estimator is serialized non-image `chars/4` plus 4,096 tokens per image,
+  not a real tokenizer.** Every budget decision, prune sizing, and tail fit is
+  an *estimate*; `token_count` can differ from what the provider bills. The
+  trait is ready for a per-model tokenizer; until then treat all counts as
+  approximate and keep `reserved` as the cushion.
 - **Compaction needs `llm-router`.** Without it, `compact` returns `overflow`
   and `assemble` can prune but not summarise — an over-budget context comes
   back over budget (visibly, via `token_count > usable`). Pure token/prune
