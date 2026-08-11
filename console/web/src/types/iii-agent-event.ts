@@ -71,6 +71,15 @@ export interface MessageQueuedEvent {
   timestamp: number
 }
 
+/**
+ * `harness::triggers-changed` — the session's trigger-binding set or a fire
+ * count changed. A doorbell, not the data: refetch `harness::triggers::list`.
+ */
+export interface TriggersChangedEvent {
+  session_id: string
+  timestamp: number
+}
+
 /** Outcome of a resolved approval (approval-gate `ResolvedOutcome`). */
 export type ResolvedOutcome = 'allow' | 'deny' | 'timeout' | 'aborted'
 

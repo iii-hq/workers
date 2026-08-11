@@ -49,6 +49,7 @@ import {
 } from './triggers'
 import {
   startQueuedEventsSubscription,
+  startTriggersChangedSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 import type {
@@ -516,6 +517,29 @@ function realOnQueuedMessage(
   }
 }
 
+/**
+ * `harness::triggers-changed` subscription: the doorbell to refetch
+ * `listTriggers`. Same sync-return-over-async-bootstrap shape as
+ * `realOnQueuedMessage`.
+ */
+function realOnTriggersChanged(
+  sessionId: string,
+  onEvent: () => void,
+): () => void {
+  let disposed = false
+  let off: (() => void) | null = null
+  getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      off = startTriggersChangedSubscription(client, sessionId, () => onEvent())
+    })
+    .catch(() => {})
+  return () => {
+    disposed = true
+    off?.()
+  }
+}
+
 async function realListTriggers(
   sessionId: string,
 ): Promise<SessionTriggerInfo[]> {
@@ -697,6 +721,7 @@ export const realBackend: ChatBackend = {
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
+  onTriggersChanged: realOnTriggersChanged,
   unregisterTrigger: realUnregisterTrigger,
   stateKeyExists: realStateKeyExists,
   watchApprovals: realWatchApprovals,

@@ -315,13 +315,14 @@ export function ChatView({
 
   // Registered trigger subscriptions (the harness's durable binding rows,
   // owned by this session): shown above the composer, unregisterable, detail
-  // on click. Polled — bindings come and go as the agent registers them.
+  // on click. Pushed — `harness::triggers-changed` rings on every binding
+  // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by subscription id. When a once
-  // binding fires and retires, the poll drops it — this cache lets the fired
-  // ghost keep its full config/conditions after retirement.
+  // Every full row this tab has EVER fetched, by subscription id. When a once
+  // binding fires and retires, the refetch drops it — this cache lets the
+  // fired ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
   const refreshTriggers = useCallback(() => {
     const listTriggers = backend.listTriggers
@@ -338,9 +339,22 @@ export function ChatView({
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
     refreshTriggers()
-    const timer = window.setInterval(refreshTriggers, 5000)
-    return () => window.clearInterval(timer)
-  }, [refreshTriggers, backend.listTriggers])
+    const off = backend.onTriggersChanged?.(conversation.id, refreshTriggers)
+    // Catch-up for doorbells missed while hidden (throttled tab, socket blip).
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshTriggers()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      off?.()
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [
+    refreshTriggers,
+    backend.listTriggers,
+    backend.onTriggersChanged,
+    conversation.id,
+  ])
 
   const handleUnregisterTrigger = useCallback(
     async (subscriptionId: string) => {
@@ -396,7 +410,7 @@ export function ChatView({
 
   // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
   // system messages). Drives the panel's fired/unregistered ghost rows so a
-  // once-trigger stays visible after the engine drops it from the poll.
+  // once-trigger stays visible after the engine drops it from the list.
   const firedTriggers = useMemo<TriggerFiredData[]>(() => {
     const out: TriggerFiredData[] = []
     for (const m of conversation.messages) {
