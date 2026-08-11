@@ -143,20 +143,50 @@ jobs:
           save-if: false
           workspaces: ${{ matrix.worker }} -> target
 
-      # Workers that ship a Vite SPA embedded into the binary (e.g.
-      # `console`) have a `build.rs` that calls `pnpm install + pnpm
-      # build` inside `<worker>/web/`. Pre-build the dist here so the
-      # cargo invocations below see a fresh bundle and short-circuit
-      # the pnpm step. Detection is filesystem-based: workers without
-      # a `web/package.json` skip all three steps cleanly.
-      - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+      # Workers and their direct local Rust dependencies can embed a frontend
+      # through build.rs. For example, approval-gate's tests depend on harness,
+      # whose build script requires harness/ui even though approval-gate has no
+      # frontend of its own. Resolve those bundles before deciding whether this
+      # matrix entry needs Node and pnpm.
+      - name: Detect bundled frontends
+        id: frontends
+        shell: bash
+        run: |
+          set -euo pipefail
+          roots=(.)
+          while IFS= read -r dependency; do
+            roots+=("../$dependency")
+          done < <(
+            grep -oE 'path *= *"\.\./[A-Za-z0-9_-]+"' Cargo.toml \
+              | sed 's|.*"\.\./||; s|"||' \
+              | sort -u
+          )
+
+          bundles=()
+          for root in "${roots[@]}"; do
+            for directory in web ui; do
+              if [[ -f "$root/$directory/package.json" ]]; then
+                bundles+=("$root/$directory")
+              fi
+            done
+          done
+
+          if (( ${#bundles[@]} == 0 )); then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            bundle_csv=$(IFS=,; echo "${bundles[*]}")
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "paths=$bundle_csv" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup pnpm (bundled frontends)
+        if: steps.frontends.outputs.found == 'true'
         uses: pnpm/action-setup@v5
         # version comes from the repo-root package.json `packageManager`
         # field (the UI pnpm workspace root).
 
-      - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+      - name: Setup Node (bundled frontends)
+        if: steps.frontends.outputs.found == 'true'
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -166,16 +196,12 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        # Paths are relative to the job's working-directory (the worker dir),
-        # unlike the interface-smoke job below, which runs this from the
-        # repo root and prefixes the worker.
+        if: steps.frontends.outputs.found == 'true'
         run: |
           set -euo pipefail
-          for d in web ui; do
-            if [[ -f "$d/package.json" ]]; then
-              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
-            fi
+          IFS=',' read -ra bundles <<< "${{ steps.frontends.outputs.paths }}"
+          for directory in "${bundles[@]}"; do
+            (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
       - name: Check formatting
