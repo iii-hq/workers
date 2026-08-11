@@ -1,12 +1,9 @@
 name: Promote exact Registry version
-run-name: RC v3 · registry_promotion · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+run-name: RC · registry_promotion · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      contract_version:
-        required: true
-        type: string
       operation_id:
         required: true
         type: string
@@ -71,7 +68,6 @@ jobs:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
           python3 .github/scripts/release_control_contract.py validate-dispatch
-          --contract-version '${{ inputs.contract_version }}'
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
           --mutating

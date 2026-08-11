@@ -1,14 +1,10 @@
 # Release SOP: docs/sops/release.md
 name: Publish exact worker release
-run-name: RC v3 · release · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+run-name: RC · release · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      contract_version:
-        description: Release Control contract version
-        required: true
-        type: string
       operation_id:
         description: Release Control operation UUID
         required: true
@@ -74,12 +70,11 @@ jobs:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
           python3 .github/scripts/release_control_contract.py validate-dispatch
-          --contract-version '${{ inputs.contract_version }}'
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
           --mutating
 
-      - name: Parse v3 tag and worker manifest
+      - name: Parse tag and worker manifest
         id: meta
         env:
           RAW_TAG: ${{ inputs.tag }}

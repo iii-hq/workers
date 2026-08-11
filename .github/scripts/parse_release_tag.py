@@ -4,7 +4,7 @@
 Writes release identity and manifest metadata to $GITHUB_OUTPUT:
     tag, worker, version, deploy, language, bin, manifest,
     registry_tag, is_prerelease, targets, experimental, tag_sha,
-    release_contract, operation_id, step_id, source_sha, maturity
+    operation_id, step_id, source_sha, maturity
 """
 from __future__ import annotations
 
@@ -41,9 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     worker, version = m.group(1), m.group(2)
 
     annotation = _lib.read_tag_annotation(raw)
-    release_contract = annotation.get("release-contract", "").strip()
-    if release_contract != "3":
-        print(f"::error::release-contract must be 3 (got {release_contract!r})", file=sys.stderr)
+    managed_by = annotation.get("managed-by", "").strip()
+    if managed_by != "release-control":
+        print(f"::error::managed-by must be release-control (got {managed_by!r})", file=sys.stderr)
         return 1
     try:
         maturity = _lib.release_maturity(version)
@@ -101,10 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         if str(UUID(operation_id)) != operation_id.lower() or str(UUID(step_id)) != step_id.lower():
             raise ValueError
     except ValueError:
-        print("::error::v3 tags require canonical UUID operation-id and step-id", file=sys.stderr)
+        print("::error::release tags require canonical UUID operation-id and step-id", file=sys.stderr)
         return 1
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
-        print("::error::v3 tags require a full lowercase source-sha", file=sys.stderr)
+        print("::error::release tags require a full lowercase source-sha", file=sys.stderr)
         return 1
     tag_sha = subprocess.check_output(
         ["git", "rev-list", "-n", "1", raw], text=True
@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     # the deliberate choice, so it takes the exact word.
     experimental_raw = annotation.get("experimental", "").strip().lower()
     if experimental_raw not in {"true", "false"}:
-        print("::error::v3 tags require experimental: true|false", file=sys.stderr)
+        print("::error::release tags require experimental: true|false", file=sys.stderr)
         return 1
     experimental = "true" if experimental_raw == "true" else "false"
 
@@ -143,7 +143,6 @@ def main(argv: list[str] | None = None) -> int:
         ("targets", targets),
         ("experimental", experimental),
         ("tag_sha", tag_sha),
-        ("release_contract", release_contract),
         ("operation_id", operation_id),
         ("step_id", step_id),
         ("source_sha", source_sha),

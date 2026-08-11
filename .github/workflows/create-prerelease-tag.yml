@@ -1,12 +1,9 @@
 name: Create exact prerelease tag
-run-name: RC v3 · create_prerelease_tag · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+run-name: RC · create_prerelease_tag · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      contract_version:
-        required: true
-        type: string
       operation_id:
         required: true
         type: string
@@ -59,7 +56,6 @@ jobs:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
           python3 .github/scripts/release_control_contract.py validate-dispatch
-          --contract-version '${{ inputs.contract_version }}'
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
           --mutating
@@ -106,7 +102,10 @@ jobs:
           STEP_ID: ${{ inputs.step_id }}
         run: |
           set -euo pipefail
-          ! git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            echo "::error::tag already exists: $TAG"
+            exit 1
+          fi
           python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" --kind none --target "$VERSION" >/dev/null
           python3 .github/scripts/manifest_version.py verify "$WORKER/$MANIFEST" --expected "$VERSION"
           python3 .github/scripts/manifest_version.py sync-lock "$WORKER/$MANIFEST"
@@ -118,7 +117,7 @@ jobs:
 
           worker: $WORKER
           version: $VERSION
-          release-contract: 3
+          managed-by: release-control
           operation-id: $OPERATION_ID
           step-id: $STEP_ID
           source-sha: $SOURCE_SHA

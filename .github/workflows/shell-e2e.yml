@@ -1,5 +1,5 @@
 name: shell E2E
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('RC v3 · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · shell_e2e · {0}', github.event_name) }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('RC · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · shell_e2e · {0}', github.event_name) }}
 
 on:
   pull_request:
@@ -8,9 +8,6 @@ on:
       - '.github/workflows/shell-e2e.yml'
   workflow_dispatch:
     inputs:
-      contract_version:
-        required: true
-        type: string
       source_sha:
         required: true
         type: string
@@ -44,7 +41,6 @@ jobs:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
           python3 .github/scripts/release_control_contract.py validate-dispatch
-          --contract-version '${{ inputs.contract_version }}'
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
 

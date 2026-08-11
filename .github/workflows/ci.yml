@@ -51,7 +51,6 @@ jobs:
       changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
-      vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@v5
@@ -76,7 +75,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
-  # Runs once per changed worker (excluding lsp-vscode).
+  # Runs once per changed worker.
   # ──────────────────────────────────────────────────────────────
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
@@ -546,33 +545,3 @@ jobs:
         if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
         run: pytest -q
-
-  # ──────────────────────────────────────────────────────────────
-  # lsp-vscode: special-case (VS Code extension, not a standard worker)
-  # ──────────────────────────────────────────────────────────────
-  lsp-vscode:
-    name: "lsp-vscode: lint + test"
-    needs: discover
-    if: needs.discover.outputs.vscode_changed == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: lsp-vscode
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          # setup-node v5 auto-caches when package.json declares packageManager.
-          # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Package check (dry run)
-        run: npm run package:check

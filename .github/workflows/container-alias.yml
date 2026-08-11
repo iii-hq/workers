@@ -1,12 +1,9 @@
 name: Move exact container alias
-run-name: RC v3 · container_alias · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+run-name: RC · container_alias · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      contract_version:
-        required: true
-        type: string
       operation_id:
         required: true
         type: string
@@ -49,7 +46,6 @@ jobs:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
           python3 .github/scripts/release_control_contract.py validate-dispatch
-          --contract-version '${{ inputs.contract_version }}'
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
           --mutating

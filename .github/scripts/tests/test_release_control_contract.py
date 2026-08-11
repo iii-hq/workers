@@ -16,8 +16,6 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
 def test_strict_dispatch_accepts_release_control_bot():
     result = run(
         "validate-dispatch",
-        "--contract-version",
-        "3",
         "--operation-id",
         OPERATION_ID,
         "--step-id",
@@ -39,8 +37,6 @@ def test_strict_dispatch_rejects_user_and_rerun():
     for actor, attempt in (("human", "1"), ("iii-release-control[bot]", "2")):
         result = run(
             "validate-dispatch",
-            "--contract-version",
-            "3",
             "--operation-id",
             OPERATION_ID,
             "--step-id",

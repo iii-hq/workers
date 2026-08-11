@@ -1,15 +1,15 @@
 # Worker release executors
 
 Release Control is the only supported release interface. GitHub Actions in this
-repository are execution endpoints: they accept an exact v3 command, perform a
+repository are execution endpoints: they accept an exact command, perform a
 single bounded effect, and upload factual evidence. They do not choose versions,
 channels, dependencies, validation profiles, recovery actions, or schedules.
 
 ## Dispatch contract
 
-Every Release Control workflow requires `contract_version=3`, canonical
-`operation_id` and `step_id` UUIDs, and all effect-specific identities. The run
-name is `RC v3 · <kind> · <operation_id> · <step_id>`.
+Every Release Control workflow requires canonical `operation_id` and `step_id`
+UUIDs and all effect-specific identities. The run name is
+`RC · <kind> · <operation_id> · <step_id>`.
 
 The repository variable `RELEASE_CONTROL_BOT_LOGIN` must be set to
 `iii-release-control[bot]`. Dispatches from any other actor are rejected.
@@ -21,7 +21,7 @@ Annotated tags use this shape:
 ```text
 worker: <slug>
 version: <exact version>
-release-contract: 3
+managed-by: release-control
 operation-id: <uuid>
 step-id: <uuid>
 source-sha: <40 character sha>
@@ -50,9 +50,6 @@ workflow.
 - `reconcile-github-release.yml` applies one exact GitHub Release state.
 - `verify-release.yml` reads and verifies the requested release surfaces.
 - `harness-e2e-registry.yml` executes an exact stack/scenario/model selection.
-- `publish-worker-skills.yml` publishes skills for one exact worker version.
-- `create-lsp-vscode-tag.yml` and `release-lsp-vscode.yml` implement the special
-  VS Code extension release path.
 
 ## Evidence
 

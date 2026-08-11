@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict Release Control v3 dispatch and factual evidence contract."""
+"""Strict Release Control dispatch and factual evidence contract."""
 
 from __future__ import annotations
 
@@ -20,8 +20,6 @@ KINDS = {
     "container_alias",
     "github_release",
     "release_verify",
-    "skills_publish",
-    "lsp_publish",
     "harness_validation",
     "test",
 }
@@ -41,8 +39,6 @@ def validate_dispatch(args: argparse.Namespace) -> int:
     expected_bot = args.expected_bot.strip()
     if not expected_bot:
         raise ValueError("RELEASE_CONTROL_BOT_LOGIN is required")
-    if args.contract_version != "3":
-        raise ValueError("contract_version must be 3")
     _uuid(args.operation_id, "operation_id")
     _uuid(args.step_id, "step_id")
     if args.actor != expected_bot or args.triggering_actor != expected_bot:
@@ -102,7 +98,6 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     validate = commands.add_parser("validate-dispatch")
-    validate.add_argument("--contract-version", required=True)
     validate.add_argument("--operation-id", required=True)
     validate.add_argument("--step-id", required=True)
     validate.add_argument("--actor", default=os.environ.get("GITHUB_ACTOR", ""))

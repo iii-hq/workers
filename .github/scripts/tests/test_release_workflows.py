@@ -7,14 +7,12 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 WORKFLOWS = ROOT / "workflows"
-COMMON = {"contract_version", "operation_id", "step_id"}
+COMMON = {"operation_id", "step_id"}
 
 EXPECTED_INPUTS = {
     "create-tag.yml": COMMON | {"worker", "target_version", "registry_tag", "experimental", "expected_current_version", "source_sha"},
     "create-prerelease-tag.yml": COMMON | {"worker", "target_version", "source_sha", "experimental"},
     "release.yml": COMMON | {"source_tag_step_id", "tag", "publish_registry"},
-    "create-lsp-vscode-tag.yml": COMMON | {"source_sha", "target_version"},
-    "release-lsp-vscode.yml": COMMON | {"source_tag_step_id", "tag", "targets"},
     "candidate-smoke.yml": COMMON | {"tag", "worker", "version", "release_run_id", "release_run_attempt"},
     "container-alias.yml": COMMON | {"worker", "version", "channel", "expected_digest"},
     "promote-registry.yml": COMMON
@@ -33,7 +31,6 @@ EXPECTED_INPUTS = {
     "reconcile-github-release.yml": COMMON | {"worker", "version", "tag", "state"},
     "verify-release.yml": COMMON
     | {"worker", "version", "channel", "tag", "deploy", "expected_digest", "verify_registry"},
-    "publish-worker-skills.yml": COMMON | {"worker", "version"},
     "harness-e2e-registry.yml": COMMON
     | {
         "source_sha",
@@ -88,12 +85,9 @@ MUTATING = {
     "create-tag.yml",
     "create-prerelease-tag.yml",
     "release.yml",
-    "create-lsp-vscode-tag.yml",
-    "release-lsp-vscode.yml",
     "container-alias.yml",
     "promote-registry.yml",
     "reconcile-github-release.yml",
-    "publish-worker-skills.yml",
 }
 
 RELEASE_EXECUTORS = {

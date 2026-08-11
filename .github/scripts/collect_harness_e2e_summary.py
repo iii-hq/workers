@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the privacy-safe Harness summary consumed by Release Control v3."""
+"""Build the privacy-safe Harness summary consumed by Release Control."""
 
 from __future__ import annotations
 
@@ -321,7 +321,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     wall_time = sum(sample["duration"]["scenario_ms"] or 0 for sample in samples)
     return {
         "schema_version": 1,
-        "collector_version": "workers-release-v3/1",
+        "collector_version": "harness-e2e-summary/1",
         "generated_at": generated_at,
         "status": status,
         "data_availability": availability,

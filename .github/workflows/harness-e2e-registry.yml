@@ -1,10 +1,9 @@
 name: Validate exact Registry stack
-run-name: RC v3 · harness_validation · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+run-name: RC · harness_validation · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      contract_version: { required: true, type: string }
       operation_id: { required: true, type: string }
       step_id: { required: true, type: string }
       source_sha: { required: true, type: string }
@@ -61,14 +60,15 @@ jobs:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
           python3 .github/scripts/release_control_contract.py validate-dispatch
-          --contract-version '${{ inputs.contract_version }}'
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
       - name: Validate exact context
+        env:
+          RUNS: ${{ inputs.runs }}
         run: |
           set -euo pipefail
           [[ '${{ inputs.source_sha }}' =~ ^[0-9a-f]{40}$ ]]
-          [[ '${{ inputs.runs }}' -ge 1 ]]
+          [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]
           jq -e 'type == "object" and length > 0 and all(to_entries[]; (.key|test("^[a-z0-9][a-z0-9_-]*$")) and (.value|test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$")))' \
             <<<'${{ inputs.stack_versions }}' >/dev/null
           jq -e 'type == "array" and length > 0 and length == (unique|length)' <<<'${{ inputs.scenarios_json }}' >/dev/null
