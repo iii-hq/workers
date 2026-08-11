@@ -111,7 +111,12 @@ async fn work_directory_survives_between_turns() {
 ///
 /// **Mutation: cache the first turn's budget and reuse it** (arm the deadline
 /// from a value captured at spawn rather than from `turn.timeout_ms`). The
-/// second turn is then killed at 600 ms despite asking for ten seconds.
+/// second turn is then killed at 3 s despite asking for ten seconds.
+///
+/// The margins are load-tolerant on purpose: the first turn's budget (3 s)
+/// must comfortably hold a trivial turn on a slow shared CI runner — 600 ms
+/// did not — while staying under the second turn's sleep (4 s), which is what
+/// makes a leaked first-turn budget observable.
 ///
 /// Note on what is NOT claimed here: a turn has two independent kills — the
 /// epoch deadline for executing wasm and the host-side `sleep_until` arm for a
@@ -121,13 +126,13 @@ async fn work_directory_survives_between_turns() {
 #[tokio::test]
 async fn each_turn_is_budgeted_on_its_own_timeout() {
     let live = spawn(128).await;
-    let first = live.rt.run("result = 1".into(), None, 600).await.unwrap();
+    let first = live.rt.run("result = 1".into(), None, 3_000).await.unwrap();
     assert!(!first.timed_out);
 
     let second = live
         .rt
         .run(
-            "import time\ntime.sleep(1.5)\nresult = 2".into(),
+            "import time\ntime.sleep(4)\nresult = 2".into(),
             None,
             10_000,
         )
@@ -135,7 +140,7 @@ async fn each_turn_is_budgeted_on_its_own_timeout() {
         .unwrap();
     assert!(
         !second.timed_out,
-        "a 10s turn was killed on the previous turn's 600ms budget"
+        "a 10s turn was killed on the previous turn's 3s budget"
     );
     assert_eq!(result_of(&second)["result"], 2);
 }
