@@ -5,21 +5,27 @@
  * ./styles.css ships over `console:style` as code-runner/styles.css — the
  * console mounts and link-swaps it, styles-before-scripts on boot.
  *
- * The worker's only console contribution is how its function triggers render:
+ * The worker's console contributions, one module each:
  *
  * - src/function-trigger-message/ — the per-op cards (run, register_function,
  *   teardown)
- * - src/lib/shared.tsx            — the frame those cards share
+ * - src/configuration/           — custom form for the `code-runner`
+ *   configuration entry on the Workers tab
+ * - src/lib/shared.tsx            — the frame the cards share
  *
  * Registrations go through `host` so the loader disposes them on hot reload /
  * worker disconnect.
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { CodeRunnerConfigForm } from './src/configuration'
 import { createCodeRunnerRenderers } from './src/function-trigger-message'
 
 export default function setup(host: Host) {
   const removers = createCodeRunnerRenderers(host).map((renderer) => host.functionTriggers.register(renderer))
+
+  host.configForms.register('code-runner', CodeRunnerConfigForm)
+
   // The loader already disposes every registration; returning the removers
   // makes an early teardown (hot reload mid-session) explicit and ordered.
   return () => {

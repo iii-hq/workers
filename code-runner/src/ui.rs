@@ -89,6 +89,22 @@ mod tests {
         }
     }
 
+    /// The Workers-tab configuration form ships in the same page asset.
+    /// Dropping the `host.configForms.register('code-runner', …)` call
+    /// silently falls the entry back to the console's generic schema form;
+    /// this catches it.
+    #[test]
+    fn the_config_form_is_wired_in() {
+        assert!(
+            PAGE_JS.contains("configForms"),
+            "page.js never registers the configuration form"
+        );
+        assert!(
+            PAGE_JS.contains("cr-cfg-form"),
+            "page.js lost the config form component"
+        );
+    }
+
     /// `inject-guidance` is a harness-internal `pre_generate` hook, not a call
     /// anyone makes; rendering it would put a card in front of a mechanism.
     #[test]

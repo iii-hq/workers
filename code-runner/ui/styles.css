@@ -347,3 +347,78 @@
 [data-iii-ui="code-runner"] .cr-teardown-more {
   padding: 0 12px 10px;
 }
+
+/* --- configuration form (Workers tab, `code-runner` entry) -------------- */
+/* Same field grammar as the state worker's form: mono, token colors only,
+ * host owns the SaveBar below. The section badges carry the reload split —
+ * green-ish accent for hot-applied, faint for restart-applied — because that
+ * split is the one thing an operator must know before saving. */
+[data-iii-ui="code-runner"] .cr-cfg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="code-runner"] .cr-cfg-caption {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="code-runner"] .cr-cfg-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-rule-2);
+  padding-bottom: 6px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-live,
+[data-iii-ui="code-runner"] .cr-cfg-restart {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+[data-iii-ui="code-runner"] .cr-cfg-live { color: var(--color-accent); }
+[data-iii-ui="code-runner"] .cr-cfg-restart { color: var(--color-ink-ghost); }
+[data-iii-ui="code-runner"] .cr-cfg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-field > label {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="code-runner"] .cr-cfg-field .hint,
+[data-iii-ui="code-runner"] .cr-cfg-section > .hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="code-runner"] .cr-cfg-input {
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  max-width: 420px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-input:focus {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-error {
+  border: 1px solid var(--color-alert);
+  color: var(--color-alert);
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
