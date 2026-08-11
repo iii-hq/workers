@@ -15,7 +15,7 @@ use iii_node_core::engine::{CallResult, Engine, ProxyHandler, UnregisterFn};
 use iii_node_core::manager::RuntimeManager;
 use iii_python_core::manager::Manager as PythonManager;
 
-use crate::config::CodeRunnerConfig;
+use crate::config::SharedConfig;
 use crate::error::{redact_unheld, CodeRunnerError};
 use crate::functions::register::{RegisterRequest, RegisterResponse};
 use crate::functions::run::{RunRequest, RunResponse};
@@ -35,7 +35,12 @@ struct PyNamespace {
 }
 
 pub struct Manager {
-    cfg: Arc<CodeRunnerConfig>,
+    /// Live config snapshot, swapped by `configuration::register_config_trigger`
+    /// on `configuration:updated`. Per-call knobs (output caps, timeouts) are
+    /// `load()`ed at each use so they hot-reload; the engine-structural fields
+    /// were captured when the engines were built and a change to them applies
+    /// at the next restart.
+    cfg: SharedConfig,
     node: Arc<RuntimeManager>,
     /// The bus. Node reaches it through `RuntimeManager`, which owns its own
     /// handle; python registrations are published from HERE, because the
@@ -55,7 +60,7 @@ pub struct Manager {
 
 impl Manager {
     pub fn new(
-        cfg: Arc<CodeRunnerConfig>,
+        cfg: SharedConfig,
         node: Arc<RuntimeManager>,
         engine: Arc<dyn Engine>,
         python: Option<Arc<PythonManager>>,
@@ -122,10 +127,11 @@ impl Manager {
     /// capped response is still `success: true` when the run was — only the
     /// echo is bounded.
     fn cap_response(&self, resp: RunResponse) -> RunResponse {
+        let cfg = self.cfg.load();
         RunResponse {
-            result: truncate::cap_result(resp.result, self.cfg.max_result_bytes),
-            stdout: truncate::cap_stream("stdout", resp.stdout, self.cfg.max_stream_bytes),
-            stderr: truncate::cap_stream("stderr", resp.stderr, self.cfg.max_stream_bytes),
+            result: truncate::cap_result(resp.result, cfg.max_result_bytes),
+            stdout: truncate::cap_stream("stdout", resp.stdout, cfg.max_stream_bytes),
+            stderr: truncate::cap_stream("stderr", resp.stderr, cfg.max_stream_bytes),
             ..resp
         }
     }
@@ -501,7 +507,7 @@ impl Manager {
         let req = iii_python_core::manager::RunRequest {
             code,
             payload: None,
-            timeout_ms: Some(self.cfg.default_timeout_ms),
+            timeout_ms: Some(self.cfg.load().default_timeout_ms),
             memory_mb: None,
         };
         python
@@ -540,7 +546,7 @@ impl Manager {
     fn py_handler(&self, python: &Arc<PythonManager>, runtime_id: &str) -> ProxyHandler {
         let python = python.clone();
         let runtime_id = runtime_id.to_string();
-        let timeout_ms = self.cfg.default_timeout_ms;
+        let timeout_ms = self.cfg.load().default_timeout_ms;
         Arc::new(move |payload: serde_json::Value| {
             let python = python.clone();
             let runtime_id = runtime_id.clone();
@@ -709,7 +715,7 @@ impl Manager {
     }
 
     pub fn idle_ttl_secs(&self) -> u64 {
-        self.cfg.idle_ttl_secs
+        self.cfg.load().idle_ttl_secs
     }
 }
 
@@ -744,6 +750,7 @@ mod tests {
 #[cfg(test)]
 mod router_tests {
     use super::*;
+    use crate::config::CodeRunnerConfig;
 
     fn manager() -> Arc<Manager> {
         manager_and_bus().0
@@ -759,8 +766,16 @@ mod router_tests {
     }
 
     fn manager_with(cfg: CodeRunnerConfig) -> (Arc<Manager>, Arc<TestBus>) {
+        let (m, bus, _shared) = manager_with_shared(cfg);
+        (m, bus)
+    }
+
+    /// Also returns the live config handle, for tests that hot-swap it the
+    /// way the configuration trigger does.
+    fn manager_with_shared(
+        cfg: CodeRunnerConfig,
+    ) -> (Arc<Manager>, Arc<TestBus>, crate::config::SharedConfig) {
         iii_node_core::runtime::init_v8_platform();
-        let cfg = Arc::new(cfg);
         let bus = Arc::new(TestBus::default());
         let node = RuntimeManager::new(
             Arc::new(cfg.node()),
@@ -774,7 +789,12 @@ mod router_tests {
         let python = iii_python_core::runner::Runner::boot()
             .ok()
             .map(|r| iii_python_core::manager::Manager::new(Arc::new(cfg.python()), r));
-        (Manager::new(cfg, node, bus.clone(), python), bus)
+        let shared = cfg.into_shared();
+        (
+            Manager::new(shared.clone(), node, bus.clone(), python),
+            bus,
+            shared,
+        )
     }
 
     /// A bus-free `Engine` that REMEMBERS what was published. This crate's
@@ -959,6 +979,36 @@ mod router_tests {
         );
         assert!(r.stdout.starts_with("line0:"), "head must survive");
         assert!(r.stdout.contains("line49:"), "tail must survive");
+    }
+
+    /// The caps are read from the LIVE snapshot, not captured at build: a
+    /// `configuration:updated` swap changes the very next response. Mutation:
+    /// clone the inner config out of the ArcSwap in `cap_response` at
+    /// construction time and this fails.
+    #[tokio::test]
+    async fn a_config_swap_hot_applies_the_caps() {
+        let (m, _bus, shared) = manager_with_shared(CodeRunnerConfig {
+            max_runtimes: 4,
+            ..CodeRunnerConfig::default()
+        });
+        let r = m.run(run("return 'x'.repeat(64)")).await.unwrap();
+        assert!(r.result.is_string(), "64 bytes passes the default cap");
+        assert!(r.result.as_str().unwrap().starts_with("xxx"));
+
+        shared.store(std::sync::Arc::new(CodeRunnerConfig {
+            max_runtimes: 4,
+            max_result_bytes: 16,
+            ..CodeRunnerConfig::default()
+        }));
+        let r = m.run(run("return 'x'.repeat(64)")).await.unwrap();
+        let marker = r
+            .result
+            .as_str()
+            .expect("after the swap the same result is over the cap");
+        assert!(
+            marker.starts_with("<omitted: result was ~"),
+            "got {marker:?}"
+        );
     }
 
     /// The contract this worker exists to reproduce. Mutation: make

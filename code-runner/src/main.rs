@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use code_runner::manager::Manager;
 use code_runner::node_bus::IIIEngine;
-use code_runner::{config, functions, manifest};
+use code_runner::{config, configuration, functions, manifest};
 use iii_helpers::observability::OtelConfig;
 use iii_node_core::manager::RuntimeManager;
 use iii_node_core::runtime;
@@ -18,9 +18,11 @@ use iii_sdk::{register_worker, InitOptions};
     about = "Run untrusted Node.js and Python in-process, no microVM required"
 )]
 struct Cli {
-    /// Operator config file.
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// Optional one-time seed for the `configuration` worker: installed as
+    /// the initial value on first registration, never overwrites a stored
+    /// value. The configuration worker is the authoritative runtime config.
+    #[arg(long)]
+    config: Option<String>,
 
     /// WebSocket URL of the iii engine.
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
@@ -62,18 +64,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let cfg = match config::load_config(&cli.config) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            config::CodeRunnerConfig::default()
-        }
-    };
-    let cfg = Arc::new(cfg);
-
-    // Once per process, before any isolate exists.
-    runtime::init_v8_platform();
-
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
@@ -82,6 +72,32 @@ async fn main() -> Result<()> {
             ..InitOptions::default()
         },
     ));
+
+    // The configuration worker is a REQUIRED boot dependency
+    // (docs/sops/configuration.md): register the schema (+ optional one-time
+    // seed), then read the authoritative value. A seed that fails to parse
+    // warns and falls through — the stored value or built-in default applies.
+    let seed = cli
+        .config
+        .as_deref()
+        .and_then(|p| match config::load_config(p) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %p, "failed to parse --config seed; ignoring it");
+                None
+            }
+        });
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering code-runner configuration schema")?;
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading code-runner configuration")?;
+
+    // Once per process, before any isolate exists.
+    runtime::init_v8_platform();
 
     // One `Engine` shared by both halves: node-core registers through it from
     // its ops, and the router registers python handlers through it directly.
@@ -115,12 +131,25 @@ async fn main() -> Result<()> {
         }
     };
 
-    let manager = Manager::new(cfg.clone(), node, engine, python);
+    tracing::info!(
+        max_runtimes = cfg.max_runtimes,
+        heap_mb = cfg.heap_mb,
+        scratch_mb = cfg.scratch_mb,
+        "code-runner ready"
+    );
+
+    // The engines above captured the structural fields; the shared snapshot
+    // serves the per-call knobs and is what the configuration trigger swaps.
+    let shared = cfg.into_shared();
+    let manager = Manager::new(shared.clone(), node, engine, python);
     functions::register_all(&iii, &manager);
     // After the functions: the UI's renderers key off function ids, so there
     // is nothing for a console to render until those exist.
     code_runner::ui::register(&iii);
     functions::setup_harness_hooks(&iii);
+    // LAST, so the reload handler closes over fully-built state.
+    configuration::register_config_trigger(&iii, shared)
+        .context("registering the configuration change trigger")?;
 
     // Backstop for callers that never call teardown.
     let sweeper = manager.clone();
@@ -145,12 +174,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    tracing::info!(
-        max_runtimes = cfg.max_runtimes,
-        heap_mb = cfg.heap_mb,
-        scratch_mb = cfg.scratch_mb,
-        "code-runner ready"
-    );
     tokio::signal::ctrl_c().await?;
     tracing::info!("code-runner shutting down");
     iii.shutdown_async().await;

@@ -88,6 +88,9 @@ pub const STATIC_IDS: &[&str] = &[
 pub fn seeded_ids() -> Vec<&'static str> {
     let mut ids = STATIC_IDS.to_vec();
     ids.push(crate::ui::CONTENT_FUNCTION_ID);
+    // Registered by `configuration::register_config_trigger`, after this seed
+    // exists — same reasoning as `ui-content` above.
+    ids.push(crate::configuration::CONFIG_FN_ID);
     ids
 }
 

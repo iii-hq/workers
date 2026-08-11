@@ -21,7 +21,7 @@ pub fn build_manifest() -> ModuleManifest {
              microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory."
             .to_string(),
         // Every operator-facing key, so an operator reading the registry
-        // sees the same surface `config.yaml` documents. node-engine's
+        // sees the same surface the configuration entry holds. node-engine's
         // manifest drifted by omitting `external_mb`; this one is checked
         // against the struct field-for-field below.
         default_config: serde_json::json!({

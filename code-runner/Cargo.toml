@@ -24,6 +24,9 @@ iii-python-core = { path = "../crates/python-core" }
 # `src/ui.rs` embeds (see crates/console-ui).
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "signal", "time"] }
+# Lock-free hot-reload snapshot for the configuration-worker integration,
+# same pattern as browser.
+arc-swap = "1"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

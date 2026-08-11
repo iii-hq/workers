@@ -137,7 +137,16 @@ slowly, not with a flag. If your code needs a third-party package, use
 
 ## Configuration
 
-`config.yaml`:
+Served by the **`configuration` worker** (entry id `code-runner`) — edit it in
+the console's Workers tab (the worker ships its own form there) or via
+`configuration::set`; the fs adapter persists it under
+`./data/configuration/code-runner.yaml`. There is no committed config file;
+`--config <path>` seeds the initial value on first boot only. Reload tier 1:
+**`max_result_bytes`, `max_stream_bytes`, `default_timeout_ms`, and
+`max_timeout_ms` hot-apply on save**; the remaining fields are captured when
+the engines boot and cannot be rebound under live guest runtimes — a change to
+them is saved immediately and applies at the next worker restart (the reload
+log says so).
 
 | key | default | meaning |
 |---|---|---|

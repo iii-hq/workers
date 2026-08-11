@@ -7,6 +7,7 @@
 //! network, therefore no npm/pip, and no `/dev/kvm` requirement.
 
 pub mod config;
+pub mod configuration;
 pub mod error;
 pub mod functions;
 pub mod lang;
