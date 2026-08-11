@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -36,7 +35,6 @@ jobs:
             | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -color
-      - run: node --test .github/benchmark-site/*.test.cjs
 
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed workers, read their iii.worker.yaml,
@@ -50,7 +48,7 @@ jobs:
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       crates: ${{ steps.bucket.outputs.crates }}
-      all: ${{ steps.bucket.outputs.all }}
+      changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
       vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
@@ -83,12 +81,12 @@ jobs:
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
     needs: discover
-    if: needs.discover.outputs.all != '[]'
+    if: needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        worker: ${{ fromJSON(needs.discover.outputs.all) }}
+        worker: ${{ fromJSON(needs.discover.outputs.changed_workers) }}
     steps:
       - uses: actions/checkout@v5
         with:

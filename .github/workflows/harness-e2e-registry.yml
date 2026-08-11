@@ -1,0 +1,145 @@
+name: Validate exact Registry stack
+run-name: RC v3 · harness_validation · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract_version: { required: true, type: string }
+      operation_id: { required: true, type: string }
+      step_id: { required: true, type: string }
+      source_sha: { required: true, type: string }
+      lane:
+        required: true
+        type: choice
+        options: [deployed, daily]
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
+      release_worker: { required: true, type: string }
+      release_version: { required: true, type: string }
+      release_tag: { required: true, type: string }
+      release_run_id:
+        description: Exact release run id, or 0 for daily/test
+        required: true
+        type: string
+      release_run_attempt:
+        description: Exact release attempt, or 0 for daily/test
+        required: true
+        type: string
+      stack_versions:
+        description: Exact Registry stack JSON
+        required: true
+        type: string
+      validation_profile: { required: true, type: string }
+      scenarios_json: { required: true, type: string }
+      required_scenarios_json: { required: true, type: string }
+      policy_digest: { required: true, type: string }
+      policy_version: { required: true, type: string }
+      subjects: { required: true, type: string }
+      judge_model: { required: true, type: string }
+      judge_provider: { required: true, type: string }
+      runs: { required: true, type: number }
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: harness-registry-${{ inputs.operation_id }}-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --contract-version '${{ inputs.contract_version }}'
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+      - name: Validate exact context
+        run: |
+          set -euo pipefail
+          [[ '${{ inputs.source_sha }}' =~ ^[0-9a-f]{40}$ ]]
+          [[ '${{ inputs.runs }}' -ge 1 ]]
+          jq -e 'type == "object" and length > 0 and all(to_entries[]; (.key|test("^[a-z0-9][a-z0-9_-]*$")) and (.value|test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$")))' \
+            <<<'${{ inputs.stack_versions }}' >/dev/null
+          jq -e 'type == "array" and length > 0 and length == (unique|length)' <<<'${{ inputs.scenarios_json }}' >/dev/null
+          jq -e --argjson selected '${{ inputs.scenarios_json }}' \
+            'type == "array" and length > 0 and length == (unique|length) and all(.[]; . as $required | $selected | index($required) != null)' \
+            <<<'${{ inputs.required_scenarios_json }}' >/dev/null
+          jq -e 'type == "array" and length > 0' <<<'${{ inputs.subjects }}' >/dev/null
+
+  e2e:
+    needs: guard
+    uses: ./.github/workflows/_harness-e2e.yml
+    with:
+      source_ref: ${{ inputs.source_sha }}
+      stack_mode: registry
+      runs: ${{ inputs.runs }}
+      max_parallel: 2
+      validation_lane: ${{ inputs.lane }}
+      cli_channel: ${{ inputs.channel }}
+      registry_tag: ${{ inputs.channel }}
+      release_tag: ${{ inputs.release_tag }}
+      release_worker: ${{ inputs.release_worker }}
+      release_version: ${{ inputs.release_version }}
+      release_run_id: ${{ inputs.release_run_id }}
+      stack_versions: ${{ inputs.stack_versions }}
+      validation_profile: ${{ inputs.validation_profile }}
+      scenarios_json: ${{ inputs.scenarios_json }}
+      required_scenarios_json: ${{ inputs.required_scenarios_json }}
+      catalog_sha: ${{ inputs.source_sha }}
+      profile_digest: ${{ inputs.policy_digest }}
+      policy_version: ${{ inputs.policy_version }}
+      subjects: ${{ inputs.subjects }}
+      judge_model: ${{ inputs.judge_model }}
+      judge_provider: ${{ inputs.judge_provider }}
+      coverage: false
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      zai_api_key: ${{ secrets.ZAI_API_KEY }}
+      deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
+
+  evidence:
+    needs: [guard, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: Write factual result
+        run: |
+          subject=$(jq -cn --arg worker '${{ inputs.release_worker }}' --arg version '${{ inputs.release_version }}' \
+            --arg source_sha '${{ inputs.source_sha }}' --arg tag '${{ inputs.release_tag }}' \
+            --arg channel '${{ inputs.channel }}' --argjson stack_versions '${{ inputs.stack_versions }}' \
+            '{worker:$worker,version:$version,source_sha:$source_sha,tag:$tag,channel:$channel,stack_versions:$stack_versions}')
+          checks=$(jq -cn --arg status '${{ needs.e2e.result }}' --argjson scenarios '${{ inputs.scenarios_json }}' \
+            '[{name:"harness_suite",status:$status,detail:{requested_scenarios:$scenarios}}]')
+          outputs=$(jq -cn --arg profile '${{ inputs.validation_profile }}' --arg digest '${{ inputs.policy_digest }}' \
+            --arg policy_version '${{ inputs.policy_version }}' --arg runs '${{ inputs.runs }}' \
+            --argjson scenarios '${{ inputs.scenarios_json }}' --argjson subjects '${{ inputs.subjects }}' \
+            --arg judge_model '${{ inputs.judge_model }}' --arg judge_provider '${{ inputs.judge_provider }}' \
+            --arg release_run_id '${{ inputs.release_run_id }}' --arg release_run_attempt '${{ inputs.release_run_attempt }}' \
+            '{profile:$profile,policy_digest:$digest,policy_version:($policy_version|tonumber),requested_runs:($runs|tonumber),selected_scenarios:$scenarios,subjects:$subjects,judge:{model:$judge_model,provider:$judge_provider},release_run:{id:($release_run_id|tonumber),attempt:($release_run_attempt|tonumber)}}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind harness_validation --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow harness-e2e-registry.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output execution-result.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

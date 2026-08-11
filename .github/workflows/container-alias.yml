@@ -1,0 +1,123 @@
+name: Move exact container alias
+run-name: RC v3 · container_alias · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract_version:
+        required: true
+        type: string
+      operation_id:
+        required: true
+        type: string
+      step_id:
+        required: true
+        type: string
+      worker:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
+      expected_digest:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-alias-${{ inputs.worker }}-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  alias:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --contract-version '${{ inputs.contract_version }}'
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --mutating
+
+      - name: Validate immutable source
+        id: refs
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKER" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(experimental|alpha|beta))?$ ]]
+          [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          base="ghcr.io/${owner}/${WORKER}"
+          {
+            echo "version_ref=${base}:${VERSION}"
+            echo "digest_ref=${base}@${EXPECTED_DIGEST}"
+            echo "image_alias=${base}:${CHANNEL}"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move and verify alias
+        env:
+          VERSION_REF: ${{ steps.refs.outputs.version_ref }}
+          DIGEST_REF: ${{ steps.refs.outputs.digest_ref }}
+          IMAGE_ALIAS: ${{ steps.refs.outputs.image_alias }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$VERSION_REF" --raw >version-manifest.json
+          docker buildx imagetools inspect "$DIGEST_REF" --raw >digest-manifest.json
+          cmp version-manifest.json digest-manifest.json
+          docker buildx imagetools create --tag "$IMAGE_ALIAS" "$DIGEST_REF"
+          docker buildx imagetools inspect "$IMAGE_ALIAS" --raw >alias-manifest.json
+          cmp digest-manifest.json alias-manifest.json
+
+      - name: Write factual result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          subject=$(jq -cn --arg worker '${{ inputs.worker }}' --arg version '${{ inputs.version }}' \
+            --arg channel '${{ inputs.channel }}' '{worker:$worker,version:$version,channel:$channel}')
+          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"immutable_digest",status:$status},{name:"alias_verification",status:$status}]')
+          effects=$(jq -cn --arg status "$JOB_STATUS" --arg digest '${{ inputs.expected_digest }}' \
+            '[{surface:"container_alias",status:(if $status == "success" then "changed" else "failed" end),immutable_id:$digest}]')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind container_alias --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow container-alias.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" \
+            --outputs '{"image_digest":"${{ inputs.expected_digest }}"}' --output execution-result.json
+
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

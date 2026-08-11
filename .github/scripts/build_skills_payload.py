@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """Build the POST /w/<slug>/skills payload from a worker directory.
 
-Walks ``<worker>/skills/SKILL.md`` (and legacy top-of-tree paths) plus
+Walks the canonical ``<worker>/skills/SKILL.md`` entrypoint plus
 ``<worker>/skills/**/*.md`` and produces the JSON body expected by the
-workers-registry endpoint.  Skill paths map to keys as:
+workers-registry endpoint. Skill paths map to keys as:
 
     <worker>/skills/SKILL.md      -> "SKILL.md"
-    <worker>/skills/index.md      -> "SKILL.md"   (legacy fallback)
-    <worker>/skill.md             -> "SKILL.md"   (legacy fallback)
-    <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md / index.md)
+    <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md)
 
 If no non-empty markdown is found the script writes ``skip=true`` to
 ``$GITHUB_OUTPUT`` (so the calling workflow can gate the POST step off) and
@@ -34,34 +32,6 @@ def _read_nonempty(path: pathlib.Path) -> str | None:
     return body if body.strip() else None
 
 
-def _resolve_top_skill(
-    worker_root: pathlib.Path,
-) -> tuple[str | None, pathlib.Path | None]:
-    """Return ``(overview body, winning path)`` from the top-of-tree candidates.
-
-    Resolution order: ``skills/SKILL.md``, then legacy ``skills/index.md``, then
-    legacy ``skill.md``.  When multiple candidates exist, a GitHub Actions
-    warning is emitted and the highest-priority file wins.
-    """
-    leaves_dir = worker_root / "skills"
-    candidates: list[tuple[str, pathlib.Path]] = [
-        ("skills/SKILL.md", leaves_dir / "SKILL.md"),
-        ("skills/index.md", leaves_dir / "index.md"),
-        ("skill.md", worker_root / "skill.md"),
-    ]
-    present = [(label, path) for label, path in candidates if path.is_file()]
-    if not present:
-        return None, None
-
-    winner_label, winner_path = present[0]
-    for label, _ in present[1:]:
-        print(
-            f"::warning::{worker_root.name}: both {label} and "
-            f"{winner_label} present; using {winner_label} as the top-of-tree."
-        )
-    return _read_nonempty(winner_path), winner_path
-
-
 def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
     """Return a ``{payload-key: markdown-body}`` map for one worker directory.
 
@@ -73,15 +43,17 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
 
     leaves_dir = worker_root / "skills"
     skills_skill = leaves_dir / "SKILL.md"
-    skills_index = leaves_dir / "index.md"
+    markdown = sorted(leaves_dir.rglob("*.md")) if leaves_dir.is_dir() else []
+    if markdown and not skills_skill.is_file():
+        raise ValueError(f"{worker_root.name}/skills/SKILL.md is required when skill documents are present")
 
-    top_body, _ = _resolve_top_skill(worker_root)
+    top_body = _read_nonempty(skills_skill) if skills_skill.is_file() else None
     if top_body is not None:
         skills[TOP_SKILL_KEY] = top_body
 
-    if leaves_dir.is_dir():
-        for path in sorted(leaves_dir.rglob("*.md")):
-            if path in (skills_skill, skills_index):
+    if markdown:
+        for path in markdown:
+            if path == skills_skill:
                 continue
             rel = path.relative_to(worker_root).as_posix()
             if not KEY_RE.match(rel):

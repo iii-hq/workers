@@ -124,8 +124,8 @@ slug against this catalog, so there is no second tag-pattern list to maintain.
 
 | # | Location | Action |
 |---|---|---|
-| 1 | [`.github/release-workers.yaml`](../../.github/release-workers.yaml) | Add a standard worker slug, or a special-worker route when it does not use `release.yml` |
-| 2 | [`.github/scripts/parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py) | Add to `ALLOWED_WORKERS` **only if** the worker ships `skills/` and you want out-of-band skills publishing via [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) |
+| 1 | Release Control typed release policy | Add the worker capability, manifest exception if any, channel policy, and required validation |
+| 2 | [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) | No allowlist is needed; Release Control dispatches one exact worker/version when skills are present |
 | 3 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
 
 Run the catalog guard locally after editing it:

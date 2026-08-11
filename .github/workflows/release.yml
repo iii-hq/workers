@@ -1,18 +1,34 @@
 # Release SOP: docs/sops/release.md
-name: Release
-run-name: Release · ${{ inputs.tag || github.ref_name }}
+name: Publish exact worker release
+run-name: RC v3 · release · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
-  push:
-    tags:
-      - '**/v*'
-      - '!lsp-vscode/v*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to release (e.g., image-resize/v1.0.0)'
+      contract_version:
+        description: Release Control contract version
         required: true
         type: string
+      operation_id:
+        description: Release Control operation UUID
+        required: true
+        type: string
+      step_id:
+        description: Release Control release step UUID
+        required: true
+        type: string
+      source_tag_step_id:
+        description: Step UUID recorded in the annotated tag
+        required: true
+        type: string
+      tag:
+        description: Exact annotated release tag
+        required: true
+        type: string
+      publish_registry:
+        description: Exact Registry capability selected by Release Control
+        required: true
+        type: boolean
 
 permissions:
   actions: read
@@ -20,15 +36,12 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  # ──────────────────────────────────────────────────────────────
-  # Setup: parse tag, read iii.worker.yaml, extract registry-tag.
-  # ──────────────────────────────────────────────────────────────
   setup:
-    name: Setup
+    name: Validate exact release identity
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -40,222 +53,119 @@ jobs:
       manifest: ${{ steps.meta.outputs.manifest }}
       registry_tag: ${{ steps.meta.outputs.registry_tag }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
-      dry_run: ${{ steps.meta.outputs.dry_run }}
       targets: ${{ steps.meta.outputs.targets }}
       experimental: ${{ steps.meta.outputs.experimental }}
       tag_sha: ${{ steps.meta.outputs.tag_sha }}
-      release_contract: ${{ steps.meta.outputs.release_contract }}
-      operation_id: ${{ steps.meta.outputs.operation_id }}
-      step_id: ${{ steps.meta.outputs.step_id }}
       source_sha: ${{ steps.meta.outputs.source_sha }}
       maturity: ${{ steps.meta.outputs.maturity }}
       web_bundle: ${{ steps.web.outputs.needed }}
-      interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
-      staged: ${{ steps.release_state.outputs.staged }}
-      promotable: ${{ steps.release_state.outputs.promotable }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           fetch-tags: true
 
-      # Contract-v2 tags execute their own pinned tooling. This checkout is a
-      # compatibility fallback for older tags created before that tooling and
-      # the release catalog existed.
-      - uses: actions/checkout@v5
-        with:
-          ref: main
-          path: release-tooling
-          fetch-depth: 0
-          fetch-tags: true
+      - name: Install manifest tooling
+        run: python3 -m pip install --quiet pyyaml
 
-      - name: Refetch annotated tag
+      - name: Validate Release Control dispatch
         env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$RAW_TAG" ]]; then
-            git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
-          fi
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --contract-version '${{ inputs.contract_version }}'
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --mutating
 
-      - name: Parse tag + worker manifest
+      - name: Parse v3 tag and worker manifest
         id: meta
         env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+          RAW_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
-          if [[ -f .github/release-workers.yaml ]]; then
-            python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
-          else
-            echo "::warning::using main release tooling for legacy tag $RAW_TAG"
-            (
-              cd release-tooling
-              python3 .github/scripts/parse_release_tag.py "$RAW_TAG" \
-                --source-dir "$GITHUB_WORKSPACE"
-            )
-          fi
+          git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
+          python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
+          [[ "$(git tag -l --format='%(contents)' "$RAW_TAG" | sed -n 's/^operation-id: //p')" == '${{ inputs.operation_id }}' ]]
+          [[ "$(git tag -l --format='%(contents)' "$RAW_TAG" | sed -n 's/^step-id: //p')" == '${{ inputs.source_tag_step_id }}' ]]
 
-      # Workers like `console` ship a Vite SPA embedded into the binary via
-      # `rust-embed`. Their `build.rs` invokes `pnpm install + pnpm build`
-      # inside `<worker>/web/`, which the rust-binary matrix runners don't
-      # have a Node/pnpm toolchain for. Detection is filesystem-based so any
-      # future worker that adds a `web/package.json` opts in automatically.
       - name: Detect web bundle
         id: web
         env:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
           if [[ -f "$WORKER/web/package.json" || -f "$WORKER/ui/package.json" ]]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$WORKER has a web/ or ui/ frontend; will pre-build its bundle"
+            echo "needed=true" >>"$GITHUB_OUTPUT"
           else
-            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "needed=false" >>"$GITHUB_OUTPUT"
           fi
 
-      # A worker may declare `interface_smoke: false` in iii.worker.yaml when
-      # it can't be booted for interface collection (e.g. iii-lsp is a stdio
-      # language server that exits on stdin EOF and registers no functions).
-      # Such workers still build + ship their binary, but skip the registry
-      # publish job below. Default (key absent) is to publish as usual.
-      - name: Detect interface-smoke opt-out
-        id: smoke
-        env:
-          WORKER: ${{ steps.meta.outputs.worker }}
-        run: |
-          set -euo pipefail
-          val=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("false" if m.raw.get("interface_smoke") is False else "true")')
-          echo "interface_smoke=$val" >> "$GITHUB_OUTPUT"
-          if [[ "$val" == "false" ]]; then
-            echo "::notice::$WORKER opts out of interface collection; registry publish will be skipped"
-          fi
-
-      - name: Classify staged release
-        id: release_state
-        env:
-          REGISTRY_TAG: ${{ steps.meta.outputs.registry_tag }}
-          INTERFACE_SMOKE: ${{ steps.smoke.outputs.interface_smoke }}
-          DRY_RUN: ${{ steps.meta.outputs.dry_run }}
-        run: |
-          set -euo pipefail
-          staged=false
-          promotable=false
-          if [[ "$REGISTRY_TAG" == next && "$INTERFACE_SMOKE" == true && "$DRY_RUN" != true ]]; then
-            staged=true
-            promotable=true
-          fi
-          echo "staged=$staged" >>"$GITHUB_OUTPUT"
-          echo "promotable=$promotable" >>"$GITHUB_OUTPUT"
-          echo "::notice::staged=$staged promotable=$promotable"
-
-  # ──────────────────────────────────────────────────────────────
-  # Create the GitHub Release shell (skipped on dry runs).
-  # ──────────────────────────────────────────────────────────────
-  create-release:
-    name: Create GitHub Release
-    needs: [setup]
-    if: needs.setup.outputs.dry_run != 'true'
+  github-release:
+    name: Create GitHub Release shell
+    needs: setup
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
           name: ${{ needs.setup.outputs.worker }} ${{ needs.setup.outputs.version }}
           draft: false
-          prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' || needs.setup.outputs.staged == 'true' }}
+          prerelease: ${{ needs.setup.outputs.registry_tag == 'next' || needs.setup.outputs.is_prerelease == 'true' }}
           make_latest: false
           generate_release_notes: true
 
-  # ──────────────────────────────────────────────────────────────
-  # Binary path: build multi-arch via the existing reusable.
-  # ──────────────────────────────────────────────────────────────
   binary-build:
     name: Binary build
-    needs: [setup, create-release]
+    needs: [setup, github-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'binary' }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       bin_name: ${{ needs.setup.outputs.bin }}
       manifest_path: ${{ needs.setup.outputs.worker }}/${{ needs.setup.outputs.manifest }}
       tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' || needs.setup.outputs.staged == 'true' }}
-      skip_create_release: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       targets: ${{ needs.setup.outputs.targets }}
       web_bundle: ${{ needs.setup.outputs.web_bundle == 'true' }}
     secrets: inherit
 
-  # ──────────────────────────────────────────────────────────────
-  # Container path: build multi-arch image, push to ghcr.io.
-  # ──────────────────────────────────────────────────────────────
   container-build:
     name: Container build
-    needs: [setup, create-release]
+    needs: [setup, github-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'image' }}
     uses: ./.github/workflows/_container.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      dockerfile: Dockerfile
     secrets: inherit
 
-  container-alias:
-    name: Move container channel alias
-    needs: [setup, container-build, publish]
-    if: >-
-      ${{
-        always() &&
-        needs.setup.result == 'success' &&
-        needs.setup.outputs.deploy == 'image' &&
-        needs.setup.outputs.dry_run != 'true' &&
-        needs.container-build.result == 'success' &&
-        needs.publish.result == 'success'
-      }}
-    uses: ./.github/workflows/_container-alias.yml
-    with:
-      worker: ${{ needs.setup.outputs.worker }}
-      version: ${{ needs.setup.outputs.version }}
-      channel: ${{ needs.setup.outputs.registry_tag }}
-      expected_digest: ${{ needs.container-build.outputs.image_digest }}
-    secrets: inherit
-
-  # ──────────────────────────────────────────────────────────────
-  # Bundle path: build a single-file archive (Node/Python), upload
-  # as a GitHub Release asset for `_publish-registry.yml` to resolve.
-  # ──────────────────────────────────────────────────────────────
   bundle-build:
     name: Bundle build
-    needs: [setup, create-release]
+    needs: [setup, github-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'bundle' }}
     uses: ./.github/workflows/_bundle.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       language: ${{ needs.setup.outputs.language }}
       tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' || needs.setup.outputs.staged == 'true' }}
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
     secrets: inherit
 
-  # ──────────────────────────────────────────────────────────────
-  # Publish to the workers registry API.
-  # ──────────────────────────────────────────────────────────────
-  publish:
-    name: Publish to registry
+  registry-publish:
+    name: Publish immutable version and exact channel
     needs: [setup, binary-build, container-build, bundle-build]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' && needs.setup.outputs.interface_smoke != 'false' }}
+    if: ${{ !failure() && !cancelled() && inputs.publish_registry }}
     uses: ./.github/workflows/_publish-registry.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       deploy: ${{ needs.setup.outputs.deploy }}
@@ -263,166 +173,57 @@ jobs:
       tag: ${{ needs.setup.outputs.tag }}
       bin: ${{ needs.setup.outputs.bin }}
       image_tag: ${{ needs.container-build.outputs.image_tag }}
-      experimental: ${{ needs.setup.outputs.experimental }}
+      experimental: ${{ needs.setup.outputs.experimental == 'true' }}
     secrets: inherit
 
-  candidate-smoke:
-    name: Validate published candidate
-    needs: [setup, publish]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.staged == 'true' && needs.publish.result == 'success' }}
-    uses: ./.github/workflows/_candidate-smoke.yml
-    with:
-      ref: ${{ inputs.tag || github.ref }}
-      worker: ${{ needs.setup.outputs.worker }}
-      version: ${{ needs.setup.outputs.version }}
-
-  candidate-ready:
-    name: Record candidate evidence
-    needs: [setup, container-build, publish, container-alias, candidate-smoke]
-    if: ${{ always() && needs.setup.result == 'success' && needs.setup.outputs.staged == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: main
-
-      - name: Build candidate evidence
-        env:
-          REPOSITORY: ${{ github.repository }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          EVIDENCE_RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          TAG_SHA: ${{ needs.setup.outputs.tag_sha }}
-          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
-          RELEASE_TAG: ${{ needs.setup.outputs.tag }}
-          WORKER: ${{ needs.setup.outputs.worker }}
-          VERSION: ${{ needs.setup.outputs.version }}
-          MATURITY: ${{ needs.setup.outputs.maturity }}
-          DEPLOY: ${{ needs.setup.outputs.deploy }}
-          REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag }}
-          OPERATION_ID: ${{ needs.setup.outputs.operation_id }}
-          STEP_ID: ${{ needs.setup.outputs.step_id }}
-          IMAGE_DIGEST: ${{ needs.container-build.outputs.image_digest }}
-          PROMOTABLE: ${{ needs.setup.outputs.promotable }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-          CANDIDATE_SMOKE_RESULT: ${{ needs.candidate-smoke.result }}
-          CONTAINER_ALIAS_RESULT: ${{ needs.container-alias.result }}
-        run: |
-          python3 .github/scripts/release_candidate.py build \
-            --repository "$REPOSITORY" \
-            --release-run-id "$RELEASE_RUN_ID" \
-            --evidence-run-id "$EVIDENCE_RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --tag-sha "$TAG_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --release-tag "$RELEASE_TAG" \
-            --worker "$WORKER" \
-            --version "$VERSION" \
-            --maturity "$MATURITY" \
-            --deploy "$DEPLOY" \
-            --registry-tag "$REGISTRY_TAG" \
-            --operation-id "$OPERATION_ID" \
-            --step-id "$STEP_ID" \
-            --image-digest "$IMAGE_DIGEST" \
-            --promotable "$PROMOTABLE" \
-            --publish-result "$PUBLISH_RESULT" \
-            --candidate-smoke-result "$CANDIDATE_SMOKE_RESULT" \
-            --container-alias-result "$CONTAINER_ALIAS_RESULT" \
-            --output release-candidate.json
-          cat release-candidate.json
-
-      - name: Upload candidate evidence
-        uses: actions/upload-artifact@v6
-        with:
-          name: release-candidate-${{ needs.setup.outputs.worker }}-${{ needs.setup.outputs.version }}
-          path: release-candidate.json
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Require all candidate gates
-        run: jq -e '.candidate_ready == true' release-candidate.json >/dev/null
-
-  release-result:
-    name: Record terminal release result
-    needs:
-      - setup
-      - create-release
-      - binary-build
-      - container-build
-      - bundle-build
-      - publish
-      - container-alias
-      - candidate-ready
+  evidence:
+    name: Record factual release effects
+    needs: [setup, github-release, binary-build, container-build, bundle-build, registry-publish]
     if: always()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ github.sha }}
 
-      - name: Build release result
+      - name: Write factual result
         env:
-          REPOSITORY: ${{ github.repository }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          OPERATION_ID: ${{ needs.setup.outputs.operation_id || 'unknown' }}
-          STEP_ID: ${{ needs.setup.outputs.step_id || 'unknown' }}
-          WORKER: ${{ needs.setup.outputs.worker || 'unknown' }}
-          VERSION: ${{ needs.setup.outputs.version || 'unknown' }}
-          MATURITY: ${{ needs.setup.outputs.maturity || 'unknown' }}
-          RELEASE_TAG: ${{ needs.setup.outputs.tag || inputs.tag || github.ref_name }}
-          TAG_SHA: ${{ needs.setup.outputs.tag_sha || 'unknown' }}
-          SOURCE_SHA: ${{ needs.setup.outputs.source_sha || 'unknown' }}
-          DEPLOY: ${{ needs.setup.outputs.deploy || 'unknown' }}
-          REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag || 'unknown' }}
+          SETUP: ${{ needs.setup.result }}
+          GITHUB_RELEASE: ${{ needs.github-release.result }}
+          BINARY: ${{ needs.binary-build.result }}
+          CONTAINER: ${{ needs.container-build.result }}
+          BUNDLE: ${{ needs.bundle-build.result }}
+          REGISTRY: ${{ needs.registry-publish.result }}
+          WORKER: ${{ needs.setup.outputs.worker }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          TAG: ${{ needs.setup.outputs.tag || inputs.tag }}
+          TAG_SHA: ${{ needs.setup.outputs.tag_sha }}
+          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
+          CHANNEL: ${{ needs.setup.outputs.registry_tag }}
+          DEPLOY: ${{ needs.setup.outputs.deploy }}
           IMAGE_DIGEST: ${{ needs.container-build.outputs.image_digest }}
-          DRY_RUN: ${{ needs.setup.outputs.dry_run || 'false' }}
-          STAGED: ${{ needs.setup.outputs.staged || 'false' }}
-          INTERFACE_SMOKE: ${{ needs.setup.outputs.interface_smoke || 'false' }}
-          SETUP_RESULT: ${{ needs.setup.result }}
-          GITHUB_RELEASE_RESULT: ${{ needs.create-release.result }}
-          BINARY_BUILD_RESULT: ${{ needs.binary-build.result }}
-          CONTAINER_BUILD_RESULT: ${{ needs.container-build.result }}
-          BUNDLE_BUILD_RESULT: ${{ needs.bundle-build.result }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-          CONTAINER_ALIAS_RESULT: ${{ needs.container-alias.result }}
-          CANDIDATE_RESULT: ${{ needs.candidate-ready.result }}
         run: |
-          python3 .github/scripts/release_result.py \
-            --repository "$REPOSITORY" \
-            --release-run-id "$RELEASE_RUN_ID" \
-            --run-attempt "$RUN_ATTEMPT" \
-            --operation-id "$OPERATION_ID" \
-            --step-id "$STEP_ID" \
-            --worker "$WORKER" \
-            --version "$VERSION" \
-            --maturity "$MATURITY" \
-            --release-tag "$RELEASE_TAG" \
-            --tag-sha "$TAG_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --deploy "$DEPLOY" \
-            --registry-tag "$REGISTRY_TAG" \
-            --image-digest "$IMAGE_DIGEST" \
-            --dry-run "$DRY_RUN" \
-            --staged "$STAGED" \
-            --interface-smoke "$INTERFACE_SMOKE" \
-            --setup-result "$SETUP_RESULT" \
-            --github-release-result "$GITHUB_RELEASE_RESULT" \
-            --binary-build-result "$BINARY_BUILD_RESULT" \
-            --container-build-result "$CONTAINER_BUILD_RESULT" \
-            --bundle-build-result "$BUNDLE_BUILD_RESULT" \
-            --publish-result "$PUBLISH_RESULT" \
-            --container-alias-result "$CONTAINER_ALIAS_RESULT" \
-            --candidate-result "$CANDIDATE_RESULT" \
-            --output release-result.json
+          subject=$(jq -cn --arg worker "$WORKER" --arg version "$VERSION" --arg source_sha "$SOURCE_SHA" \
+            --arg tag "$TAG" --arg tag_sha "$TAG_SHA" --arg channel "$CHANNEL" \
+            '{worker:$worker,version:$version,source_sha:$source_sha,tag:$tag,tag_sha:$tag_sha,channel:$channel}')
+          checks=$(jq -cn --arg setup "$SETUP" --arg binary "$BINARY" --arg container "$CONTAINER" \
+            --arg bundle "$BUNDLE" \
+            '[{name:"setup",status:$setup},{name:"binary_build",status:$binary},{name:"container_build",status:$container},{name:"bundle_build",status:$bundle}]')
+          effects=$(jq -cn --arg release "$GITHUB_RELEASE" --arg registry "$REGISTRY" \
+            '[{surface:"github_release",status:$release},{surface:"registry_publish",status:$registry}]')
+          outputs=$(jq -cn --arg deploy "$DEPLOY" --arg image_digest "$IMAGE_DIGEST" \
+            '{deploy:$deploy,image_digest:(if $image_digest == "" then null else $image_digest end)}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind release --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow release.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" --outputs "$outputs" \
+            --output execution-result.json
 
       - uses: actions/upload-artifact@v6
         with:
-          name: release-result-${{ github.run_id }}
-          path: release-result.json
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
           retention-days: 30
           if-no-files-found: error

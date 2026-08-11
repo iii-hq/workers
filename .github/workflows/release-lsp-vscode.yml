@@ -1,32 +1,34 @@
-name: Release LSP VS Code
-run-name: Release LSP VS Code · ${{ inputs.tag || github.ref_name }}
+name: Publish exact LSP VS Code release
+run-name: RC v3 · lsp_publish · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
-  push:
-    tags:
-      - 'lsp-vscode/v*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to release (e.g., lsp-vscode/v1.0.0)'
+      contract_version:
         required: true
         type: string
-      publish_target:
-        description: 'Publish target to run for an existing tag'
+      operation_id:
         required: true
-        type: choice
-        options:
-          - all
-          - vscode-marketplace
-          - openvsx
-          - github-release
-        default: all
+        type: string
+      step_id:
+        required: true
+        type: string
+      source_tag_step_id:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      targets:
+        description: Exact JSON array of publish targets
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-lsp-vscode-${{ inputs.tag || github.ref_name }}
+  group: release-lsp-vscode-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -37,18 +39,40 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
-      dry_run: ${{ steps.meta.outputs.dry_run }}
-      publish_target: ${{ steps.resolve.outputs.publish_target }}
+      targets: ${{ steps.resolve.outputs.targets }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --contract-version '${{ inputs.contract_version }}'
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --mutating
+
       - name: Resolve tag
         id: resolve
         env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
-          RAW_PUBLISH_TARGET: ${{ inputs.publish_target || 'all' }}
+          RAW_TAG: ${{ inputs.tag }}
+          TARGETS: ${{ inputs.targets }}
         run: |
+          set -euo pipefail
           TAG=$(echo "$RAW_TAG" | xargs)
+          jq -e 'type == "array" and length > 0 and length == (unique | length) and all(.[]; . == "vscode-marketplace" or . == "openvsx" or . == "github-release")' <<<"$TARGETS" >/dev/null
+          git fetch origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          annotation=$(git tag -l --format='%(contents)' "$TAG")
+          grep -Fx 'release-contract: 3' <<<"$annotation" >/dev/null
+          grep -Fx 'operation-id: ${{ inputs.operation_id }}' <<<"$annotation" >/dev/null
+          grep -Fx 'step-id: ${{ inputs.source_tag_step_id }}' <<<"$annotation" >/dev/null
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "publish_target=$RAW_PUBLISH_TARGET" >> "$GITHUB_OUTPUT"
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata from tag
         id: meta
@@ -62,14 +86,9 @@ jobs:
 
           VERSION="${TAG#lsp-vscode/v}"
 
-          if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
-            echo "dry_run=true" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" == *-* ]]; then
-            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else
-            echo "dry_run=false" >> "$GITHUB_OUTPUT"
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -125,7 +144,7 @@ jobs:
   publish-vscode:
     name: Publish VS Code Marketplace
     needs: [setup, package]
-    if: needs.setup.outputs.dry_run != 'true' && (needs.setup.outputs.publish_target == 'all' || needs.setup.outputs.publish_target == 'vscode-marketplace')
+    if: contains(fromJSON(needs.setup.outputs.targets), 'vscode-marketplace')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -159,7 +178,7 @@ jobs:
   publish-openvsx:
     name: Publish OpenVSX
     needs: [setup, package]
-    if: needs.setup.outputs.dry_run != 'true' && (needs.setup.outputs.publish_target == 'all' || needs.setup.outputs.publish_target == 'openvsx')
+    if: contains(fromJSON(needs.setup.outputs.targets), 'openvsx')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -193,7 +212,7 @@ jobs:
   github-release:
     name: Upload GitHub Release
     needs: [setup, package]
-    if: needs.setup.outputs.dry_run != 'true' && (needs.setup.outputs.publish_target == 'all' || needs.setup.outputs.publish_target == 'github-release')
+    if: contains(fromJSON(needs.setup.outputs.targets), 'github-release')
     runs-on: ubuntu-latest
     steps:
       - name: Download VSIX artifact
@@ -211,3 +230,35 @@ jobs:
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
           files: lsp-vscode/dist/iii-lsp-${{ needs.setup.outputs.version }}.vsix
+
+  evidence:
+    name: Record factual LSP publish effects
+    needs: [setup, package, publish-vscode, publish-openvsx, github-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: Write factual result
+        run: |
+          subject=$(jq -cn --arg worker lsp-vscode --arg version '${{ needs.setup.outputs.version }}' --arg tag '${{ inputs.tag }}' \
+            '{worker:$worker,version:$version,tag:$tag}')
+          checks=$(jq -cn --arg package '${{ needs.package.result }}' '[{name:"package",status:$package}]')
+          effects=$(jq -cn --arg vscode '${{ needs.publish-vscode.result }}' --arg openvsx '${{ needs.publish-openvsx.result }}' \
+            --arg github '${{ needs.github-release.result }}' \
+            '[{surface:"vscode_marketplace",status:$vscode},{surface:"openvsx",status:$openvsx},{surface:"github_release",status:$github}]')
+          outputs=$(jq -cn --argjson targets '${{ inputs.targets }}' '{targets:$targets}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind lsp_publish --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow release-lsp-vscode.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" \
+            --outputs "$outputs" --output execution-result.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

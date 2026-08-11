@@ -1,196 +1,140 @@
 # Release SOP: docs/sops/release.md
-name: Create Tag
-run-name: Create tag · ${{ inputs.worker }} · ${{ inputs.target_version || format('{0}/{1}', inputs.bump, inputs.suffix) }} · ${{ inputs.operation_id || 'manual' }}
+name: Create exact release tag
+run-name: RC v3 · create_tag · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      worker:
-        description: 'Worker slug from .github/release-workers.yaml'
+      contract_version:
+        description: Release Control contract version
         required: true
         type: string
-      bump:
-        description: 'Version bump (none = release the manifest version as-is, e.g. when a merged PR already set it)'
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-          - none
-        default: patch
-      target_version:
-        description: 'Exact version; when set it overrides bump and suffix'
-        required: false
-        type: string
-        default: ''
-      suffix:
-        description: 'Maturity suffix used with bump (none = stable)'
-        required: true
-        type: choice
-        options:
-          - none
-          - experimental
-          - alpha
-          - beta
-        default: none
-      registry_tag:
-        description: 'Registry channel (next = validate then promote manually; latest = publish directly)'
-        required: true
-        type: choice
-        options:
-          - next
-          - latest
-        default: next
-      experimental:
-        description: 'Mark the worker experimental in the registry (badge only — it still installs and resolves normally). Leave unchecked once it is stable: releasing without this clears the badge.'
-        required: false
-        type: boolean
-        default: false
       operation_id:
-        description: 'Release Control operation UUID; empty identifies a manual run'
-        required: false
+        description: Release Control operation UUID
+        required: true
         type: string
-        default: ''
       step_id:
-        description: 'Release Control step UUID; empty identifies the create-tag step'
-        required: false
+        description: Release Control step UUID
+        required: true
         type: string
-        default: ''
+      worker:
+        description: Exact worker slug
+        required: true
+        type: string
+      target_version:
+        description: Exact target version
+        required: true
+        type: string
+      registry_tag:
+        description: Exact Registry channel
+        required: true
+        type: choice
+        options: [next, latest]
+      experimental:
+        description: Exact Registry experimental flag
+        required: true
+        type: boolean
       expected_current_version:
-        description: 'CAS guard for the worker manifest version'
-        required: false
+        description: CAS guard for the manifest version
+        required: true
         type: string
-        default: ''
       source_sha:
-        description: 'Main commit used to preview this release'
-        required: false
+        description: Immutable main SHA used by the release plan
+        required: true
         type: string
-        default: ''
 
 permissions:
   contents: write
 
 concurrency:
-  group: create-tag
+  group: create-tag-${{ inputs.worker }}
   cancel-in-progress: false
 
 jobs:
   create-tag:
-    name: Bump version & create tag
+    name: Create ${{ inputs.worker }}/v${{ inputs.target_version }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Generate token
-        id: generate_token
+        id: token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
+          ref: main
           fetch-depth: 0
-          token: ${{ steps.generate_token.outputs.token }}
+          fetch-tags: true
+          token: ${{ steps.token.outputs.token }}
 
-      - name: Install release tooling
-        run: pip install --quiet pyyaml
+      - name: Install manifest tooling
+        run: python3 -m pip install --quiet pyyaml
 
-      - name: Pre-flight checks
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --contract-version '${{ inputs.contract_version }}'
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --mutating
+
+      - name: Validate immutable release intent
         id: intent
         env:
           WORKER: ${{ inputs.worker }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
-          OPERATION_ID_INPUT: ${{ inputs.operation_id }}
-          STEP_ID_INPUT: ${{ inputs.step_id }}
+          VERSION: ${{ inputs.target_version }}
+          EXPECTED_CURRENT: ${{ inputs.expected_current_version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          if [[ "$BRANCH" != "main" ]]; then
-            echo "::error::Must be on main branch (currently on $BRANCH)"
-            exit 1
-          fi
-          python3 .github/scripts/release_catalog.py validate
-          python3 .github/scripts/release_catalog.py get "$WORKER" release_workflow >/dev/null
-          allow_latest=$(python3 .github/scripts/release_catalog.py get "$WORKER" allow_direct_latest)
-          if [[ "$REGISTRY_TAG" == latest && "$allow_latest" != true ]]; then
-            echo "::error::$WORKER cannot publish directly to latest; publish to next, validate, then promote"
-            exit 1
-          fi
-          if [[ -n "$SOURCE_SHA" ]]; then
-            [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-              echo "::error::source_sha must be a full lowercase commit SHA"
-              exit 2
-            }
-            git cat-file -e "${SOURCE_SHA}^{commit}" 2>/dev/null || {
-              echo "::error::source_sha $SOURCE_SHA is not available"
-              exit 2
-            }
-            git merge-base --is-ancestor "$SOURCE_SHA" HEAD || {
-              echo "::error::source_sha $SOURCE_SHA is not an ancestor of current main"
-              exit 2
-            }
-            git diff --quiet "$SOURCE_SHA" HEAD -- "$WORKER" || {
-              echo "::error::$WORKER changed after the release preview at $SOURCE_SHA"
-              exit 2
-            }
-          fi
-          operation_id="${OPERATION_ID_INPUT:-github:${GITHUB_RUN_ID}}"
-          step_id="${STEP_ID_INPUT:-create-tag}"
+          [[ "$WORKER" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(experimental|alpha|beta))?$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${SOURCE_SHA}^{commit}"
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          test -f "$WORKER/iii.worker.yaml"
+          git diff --quiet "$SOURCE_SHA" HEAD -- "$WORKER" || {
+            echo "::error::$WORKER changed after Release Control planned this release"
+            exit 2
+          }
+          manifest=$(WORKER="$WORKER" python3 - <<'PY'
+          import os, pathlib, sys
+          sys.path.insert(0, ".github/scripts")
+          import _lib
+          print(_lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])).manifest or "")
+          PY
+          )
+          test -n "$manifest"
+          current=$(python3 .github/scripts/manifest_version.py read "$WORKER/$manifest")
+          [[ "$current" == "$EXPECTED_CURRENT" ]] || {
+            echo "::error::$WORKER version drifted: expected $EXPECTED_CURRENT, found $current"
+            exit 2
+          }
+          maturity=$(python3 .github/scripts/manifest_version.py maturity "$VERSION")
+          python3 .github/scripts/manifest_version.py check-history "$WORKER" "$VERSION"
           {
-            echo "operation_id=$operation_id"
-            echo "step_id=$step_id"
+            echo "manifest=$manifest"
+            echo "current=$current"
+            echo "maturity=$maturity"
+            echo "tag=${WORKER}/v${VERSION}"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Discover manifest
-        id: meta
-        env:
-          WORKER: ${{ inputs.worker }}
-        run: |
-          set -euo pipefail
-          MANIFEST=$(python3 .github/scripts/release_catalog.py get "$WORKER" manifest)
-          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
-
-      - name: Calculate and write next version
-        id: versions
-        env:
-          WORKER: ${{ inputs.worker }}
-          BUMP: ${{ inputs.bump }}
-          SUFFIX: ${{ inputs.suffix }}
-          TARGET_VERSION: ${{ inputs.target_version }}
-          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
-          MANIFEST: ${{ steps.meta.outputs.manifest }}
-        run: |
-          set -euo pipefail
-          current=$(python3 .github/scripts/manifest_version.py read "$WORKER/$MANIFEST")
-          if [[ -n "$EXPECTED_CURRENT_VERSION" && "$current" != "$EXPECTED_CURRENT_VERSION" ]]; then
-            echo "::error::$WORKER version drifted: expected $EXPECTED_CURRENT_VERSION, found $current"
-            exit 2
-          fi
-          new_ver=$(python3 .github/scripts/manifest_version.py resolve \
-            "$WORKER/$MANIFEST" --kind "$BUMP" --suffix "$SUFFIX" --target "$TARGET_VERSION")
-          maturity=$(python3 .github/scripts/manifest_version.py maturity "$new_ver")
-          python3 .github/scripts/manifest_version.py check-history "$WORKER" "$new_ver"
-          {
-            echo "current=$current"
-            echo "version=$new_ver"
-            echo "tag=${WORKER}/v${new_ver}"
-            echo "maturity=$maturity"
-          } >> "$GITHUB_OUTPUT"
-          echo "::notice::${WORKER}: ${current} -> ${new_ver} (maturity=$maturity, registry-tag=$REGISTRY_TAG)"
-
       - name: Inspect existing tag
-        id: tag_state
+        id: existing
         env:
-          TAG: ${{ steps.versions.outputs.tag }}
+          TAG: ${{ steps.intent.outputs.tag }}
           WORKER: ${{ inputs.worker }}
-          VERSION: ${{ steps.versions.outputs.version }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          VERSION: ${{ inputs.target_version }}
+          CHANNEL: ${{ inputs.registry_tag }}
           EXPERIMENTAL: ${{ inputs.experimental }}
+          OPERATION_ID: ${{ inputs.operation_id }}
+          STEP_ID: ${{ inputs.step_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
           if ! git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
@@ -198,106 +142,99 @@ jobs:
             exit 0
           fi
           annotation=$(git tag -l --format='%(contents)' "$TAG")
-          grep -Fx "worker: $WORKER" <<<"$annotation" >/dev/null
-          grep -Fx "version: $VERSION" <<<"$annotation" >/dev/null
-          grep -Fx "registry-tag: $REGISTRY_TAG" <<<"$annotation" >/dev/null
-          grep -Fx "experimental: $EXPERIMENTAL" <<<"$annotation" >/dev/null
-          git merge-base --is-ancestor "$TAG^{}" main
+          for field in \
+            "worker: $WORKER" "version: $VERSION" "release-contract: 3" \
+            "operation-id: $OPERATION_ID" "step-id: $STEP_ID" "source-sha: $SOURCE_SHA" \
+            "registry-tag: $CHANNEL" "experimental: $EXPERIMENTAL"; do
+            grep -Fx "$field" <<<"$annotation" >/dev/null
+          done
           echo "exists=true" >>"$GITHUB_OUTPUT"
-          echo "::notice::$TAG already exists with matching identity; treating create-tag as idempotent"
 
-      - name: Write release version
-        if: steps.tag_state.outputs.exists != 'true'
+      - name: Write exact version
+        if: steps.existing.outputs.exists != 'true'
         env:
           WORKER: ${{ inputs.worker }}
-          MANIFEST: ${{ steps.meta.outputs.manifest }}
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
+          MANIFEST: ${{ steps.intent.outputs.manifest }}
+          VERSION: ${{ inputs.target_version }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/manifest_version.py bump \
-            "$WORKER/$MANIFEST" --kind none --target "$NEW_VERSION" >/dev/null
-
-      - name: Validate manifest update
-        if: steps.tag_state.outputs.exists != 'true'
-        env:
-          WORKER: ${{ inputs.worker }}
-          MANIFEST: ${{ steps.meta.outputs.manifest }}
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/manifest_version.py verify \
-            "$WORKER/$MANIFEST" --expected "$NEW_VERSION"
-          echo "Validated $WORKER/$MANIFEST = $NEW_VERSION"
-
-      # The bump only rewrites Cargo.toml. Without this, the crate's own entry
-      # in Cargo.lock keeps the old version until someone's local `cargo build`
-      # rewrites it, so every developer pulls a dirty lockfile. Sync it here so
-      # `git add -A` below commits the lockfile alongside the manifest. No-op
-      # for non-Rust workers and crates without a committed Cargo.lock.
-      - name: Sync Cargo.lock to bumped version
-        if: steps.tag_state.outputs.exists != 'true'
-        env:
-          WORKER: ${{ inputs.worker }}
-          MANIFEST: ${{ steps.meta.outputs.manifest }}
-        run: |
-          set -euo pipefail
+          python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" --kind none --target "$VERSION" >/dev/null
+          python3 .github/scripts/manifest_version.py verify "$WORKER/$MANIFEST" --expected "$VERSION"
           python3 .github/scripts/manifest_version.py sync-lock "$WORKER/$MANIFEST"
 
-      - name: Configure git identity
-        if: steps.tag_state.outputs.exists != 'true'
+      - name: Commit exact version
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.target_version }}
         run: |
+          set -euo pipefail
           git config user.name "workers-ci[bot]"
           git config user.email "workers-ci[bot]@users.noreply.github.com"
-
-      - name: Commit and push
-        if: steps.tag_state.outputs.exists != 'true'
-        env:
-          WORKER: ${{ inputs.worker }}
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
-        run: |
-          if git diff --quiet; then
-            echo "::notice::manifest unchanged (bump: none); skipping bump commit"
-          else
+          if ! git diff --quiet; then
             git add -A
-            git commit -m "chore(${WORKER}): bump to v${NEW_VERSION}"
-            if ! git push origin HEAD:main; then
-              git fetch --no-tags origin main
-              git diff --quiet HEAD^ origin/main -- "$WORKER" || {
-                echo "::error::$WORKER changed on main while the release was being prepared"
-                exit 2
-              }
-              git rebase origin/main
-              git push origin HEAD:main
-            fi
+            git commit -m "chore(${WORKER}): bump to v${VERSION}"
+            git push origin HEAD:main
           fi
 
-      - name: Create and push annotated tag
-        if: steps.tag_state.outputs.exists != 'true'
+      - name: Create annotated release tag
+        if: steps.existing.outputs.exists != 'true'
         env:
-          TAG: ${{ steps.versions.outputs.tag }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          TAG: ${{ steps.intent.outputs.tag }}
           WORKER: ${{ inputs.worker }}
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
+          VERSION: ${{ inputs.target_version }}
+          MATURITY: ${{ steps.intent.outputs.maturity }}
+          CHANNEL: ${{ inputs.registry_tag }}
           EXPERIMENTAL: ${{ inputs.experimental }}
-          MATURITY: ${{ steps.versions.outputs.maturity }}
-          OPERATION_ID: ${{ steps.intent.outputs.operation_id }}
-          STEP_ID: ${{ steps.intent.outputs.step_id }}
+          OPERATION_ID: ${{ inputs.operation_id }}
+          STEP_ID: ${{ inputs.step_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
-          # `experimental` rides the annotation like `registry-tag`: the tag is
-          # the only thing the Release workflow receives, so anything the
-          # publish needs has to be written here.
+          set -euo pipefail
           git tag -a "$TAG" -m "Release $TAG
 
           worker: $WORKER
-          version: $NEW_VERSION
-          release-contract: 2
+          version: $VERSION
+          release-contract: 3
           operation-id: $OPERATION_ID
           step-id: $STEP_ID
-          source-sha: ${SOURCE_SHA:-unknown}
+          source-sha: $SOURCE_SHA
           maturity: $MATURITY
-          registry-tag: $REGISTRY_TAG
+          registry-tag: $CHANNEL
           experimental: $EXPERIMENTAL
           "
           git push origin "$TAG"
-          echo "::notice::Created tag: $TAG (registry-tag=$REGISTRY_TAG, experimental=$EXPERIMENTAL)"
+
+      - name: Write factual result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          TAG: ${{ steps.intent.outputs.tag }}
+          MATURITY: ${{ steps.intent.outputs.maturity }}
+          EXISTED: ${{ steps.existing.outputs.exists || 'false' }}
+        run: |
+          subject=$(jq -cn \
+            --arg worker '${{ inputs.worker }}' --arg version '${{ inputs.target_version }}' \
+            --arg source_sha '${{ inputs.source_sha }}' --arg tag "$TAG" \
+            --arg channel '${{ inputs.registry_tag }}' \
+            '{worker:$worker,version:$version,source_sha:$source_sha,tag:$tag,channel:$channel}')
+          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"create_tag",status:$status}]')
+          effects=$(jq -cn --arg status "$JOB_STATUS" --arg existed "$EXISTED" --arg tag "$TAG" \
+            '[{surface:"git_tag",status:(if $status == "success" then (if $existed == "true" then "unchanged" else "changed" end) else "failed" end),immutable_id:$tag}]')
+          outputs=$(jq -cn --arg maturity "$MATURITY" '{maturity:$maturity}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind create_tag --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow create-tag.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" --outputs "$outputs" \
+            --output execution-result.json
+
+      - name: Upload factual result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

@@ -35,7 +35,8 @@ On every successful release (when `interface_smoke != false`):
 
 [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml)
 updates skills without a version bump. Worker must be in `ALLOWED_WORKERS`
-([`parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py)).
+Release Control owns selection and fans out one exact worker/version per
+[`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) run.
 
 **Drift note:** `email` ships skills but is not yet in `ALLOWED_WORKERS`.
 

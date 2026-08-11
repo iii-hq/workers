@@ -1,0 +1,109 @@
+name: Verify exact release surfaces
+run-name: RC v3 · release_verify · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract_version: { required: true, type: string }
+      operation_id: { required: true, type: string }
+      step_id: { required: true, type: string }
+      worker: { required: true, type: string }
+      version: { required: true, type: string }
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
+      tag: { required: true, type: string }
+      deploy:
+        required: true
+        type: choice
+        options: [binary, bundle, image]
+      expected_digest:
+        description: Exact image digest, or "none"
+        required: true
+        type: string
+      verify_registry:
+        description: Whether this worker has a Registry surface
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --contract-version '${{ inputs.contract_version }}'
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+      - if: inputs.deploy == 'image'
+        uses: docker/setup-buildx-action@v4
+      - name: Verify immutable and mutable surfaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          TAG: ${{ inputs.tag }}
+          DEPLOY: ${{ inputs.deploy }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+          VERIFY_REGISTRY: ${{ inputs.verify_registry }}
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          test "$(git tag -l --format='%(contents)' "$TAG" | sed -n 's/^worker: //p')" = "$WORKER"
+          test "$(git tag -l --format='%(contents)' "$TAG" | sed -n 's/^version: //p')" = "$VERSION"
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,url >github-release.json
+          if [[ "$VERIFY_REGISTRY" == true ]]; then
+            python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          from registry_release import resolve_version
+          actual = resolve_version("https://api.workers.iii.dev", os.environ["WORKER"], os.environ["CHANNEL"])
+          if actual != os.environ["VERSION"]:
+              raise SystemExit(f"Registry resolved {actual}, expected {os.environ['VERSION']}")
+          PY
+          fi
+          if [[ "$DEPLOY" == image ]]; then
+            [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${WORKER}@${EXPECTED_DIGEST}" --raw >image-manifest.json
+            docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${WORKER}:${CHANNEL}" --raw >alias-manifest.json
+            cmp image-manifest.json alias-manifest.json
+          else
+            [[ "$EXPECTED_DIGEST" == none ]]
+          fi
+      - name: Write factual result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          subject=$(jq -cn --arg worker '${{ inputs.worker }}' --arg version '${{ inputs.version }}' \
+            --arg tag '${{ inputs.tag }}' --arg channel '${{ inputs.channel }}' \
+            '{worker:$worker,version:$version,tag:$tag,channel:$channel}')
+          checks=$(jq -cn --arg status "$JOB_STATUS" --argjson verify_registry '${{ inputs.verify_registry }}' \
+            '[{name:"tag",status:$status},{name:"registry",status:(if $verify_registry then $status else "skipped" end)},{name:"github_release",status:$status},{name:"container",status:$status}]')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind release_verify --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow verify-release.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output execution-result.json
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

@@ -4,10 +4,9 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
-        required: false
+        description: 'Exact release tag to publish'
+        required: true
         type: string
-        default: ''
       worker:
         description: 'Worker name (folder)'
         required: true
@@ -22,33 +21,24 @@ on:
         type: string
       registry_tag:
         description: 'Registry tag (latest, next, ...)'
-        required: false
+        required: true
         type: string
-        default: latest
       tag:
         description: 'Git tag (e.g., image-resize/v1.0.0)'
         required: true
         type: string
       bin:
         description: 'Cargo binary name (binary deploy only)'
-        required: false
+        required: true
         type: string
-        default: ''
       image_tag:
         description: 'Fully-qualified image reference (image deploy only)'
-        required: false
+        required: true
         type: string
-        default: ''
-      api_url:
-        description: 'Workers registry base URL'
-        required: false
-        type: string
-        default: 'https://api.workers.iii.dev'
       experimental:
-        description: "'true' marks the worker experimental in the registry (badge only)"
-        required: false
-        type: string
-        default: 'false'
+        description: 'Whether the worker is experimental in the Registry'
+        required: true
+        type: boolean
 
 jobs:
   publish:
@@ -351,7 +341,7 @@ jobs:
 
       - name: POST /publish
         env:
-          API_URL: ${{ inputs.api_url }}
+          API_URL: https://api.workers.iii.dev
           API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
@@ -402,7 +392,7 @@ jobs:
       - name: POST /w/<worker>/skills
         if: steps.skills_payload.outputs.skip != 'true'
         env:
-          API_URL: ${{ inputs.api_url }}
+          API_URL: https://api.workers.iii.dev
           API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
           WORKER: ${{ inputs.worker }}
         run: |
