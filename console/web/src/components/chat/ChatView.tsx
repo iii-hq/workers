@@ -26,6 +26,7 @@ import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import { serialRefresh } from '@/lib/backend/serial-refresh'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -324,37 +325,47 @@ export function ChatView({
   // binding fires and retires, the refetch drops it — this cache lets the
   // fired ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
+  // The current conversation's serialized list loader. Doorbells arrive
+  // at-least-once and burst on rapid fires; serialRefresh coalesces them
+  // behind one in-flight read so snapshots never apply out of order.
+  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
   const refreshTriggers = useCallback(() => {
+    triggersLoaderRef.current?.refresh()
+  }, [])
+  useEffect(() => {
     const listTriggers = backend.listTriggers
     if (!listTriggers) return
-    listTriggers(conversation.id)
-      .then((rows) => {
-        for (const row of rows) seenTriggersRef.current.set(row.id, row)
-        setSessionTriggers(rows)
-      })
-      .catch(() => {})
-  }, [backend.listTriggers, conversation.id])
-  useEffect(() => {
-    if (!backend.listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    refreshTriggers()
-    const off = backend.onTriggersChanged?.(conversation.id, refreshTriggers)
-    // Catch-up for doorbells missed while hidden (throttled tab, socket blip).
+    const loader = serialRefresh(
+      () => listTriggers(conversation.id),
+      (rows) => {
+        for (const row of rows) seenTriggersRef.current.set(row.id, row)
+        setSessionTriggers(rows)
+      },
+    )
+    triggersLoaderRef.current = loader
+    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
+    // rings instead of being missed (both ride the same client bootstrap, so
+    // the registration frames are queued ahead of the list read).
+    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
+    loader.refresh()
+    // Catch-up for doorbells missed while hidden (throttled tab). Missed
+    // doorbells across a socket outage are reseeded by the backend's
+    // reconnect listener.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refreshTriggers()
+      if (document.visibilityState === 'visible') loader.refresh()
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       off?.()
       document.removeEventListener('visibilitychange', onVisible)
+      // Discard any in-flight snapshot so the old conversation's rows can't
+      // land in the next conversation's state.
+      loader.reset()
+      if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
     }
-  }, [
-    refreshTriggers,
-    backend.listTriggers,
-    backend.onTriggersChanged,
-    conversation.id,
-  ])
+  }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
 
   const handleUnregisterTrigger = useCallback(
     async (subscriptionId: string) => {
