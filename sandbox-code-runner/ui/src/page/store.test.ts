@@ -17,6 +17,7 @@ import {
   backoffDelayMs,
   CATALOG_FN,
   createFleetStore,
+  deriveReapInSecs,
   isFunctionNotFound,
   LIST_FN,
   MAX_BACKOFF_MS,
@@ -58,8 +59,34 @@ describe('parseSandboxList', () => {
         exec_in_flight: 2,
         exec_slots_free: 2,
         stopped: false,
+        idle_secs: null,
+        idle_timeout_secs: null,
+        reap_in_secs: null,
       },
     ])
+  })
+
+  it('reads the optional idle-reap fields when the daemon grows them', () => {
+    const [full] = parseSandboxList({
+      sandboxes: [
+        {
+          sandbox_id: 'sbx-4',
+          idle_secs: 250,
+          idle_timeout_secs: 300,
+          reap_in_secs: 50,
+        },
+      ],
+    })
+    expect(full.idle_secs).toBe(250)
+    expect(full.idle_timeout_secs).toBe(300)
+    expect(full.reap_in_secs).toBe(50)
+    // Junk values degrade to null, never NaN.
+    const [junk] = parseSandboxList({
+      sandboxes: [{ sandbox_id: 'sbx-5', idle_secs: 'soon', reap_in_secs: null }],
+    })
+    expect(junk.idle_secs).toBeNull()
+    expect(junk.idle_timeout_secs).toBeNull()
+    expect(junk.reap_in_secs).toBeNull()
   })
 
   it('derives the slot fields when an older daemon omits them', () => {
@@ -160,6 +187,36 @@ describe('parseRuntimes', () => {
   })
 })
 
+describe('deriveReapInSecs', () => {
+  const fields = (
+    patch: Partial<{
+      idle_secs: number | null
+      idle_timeout_secs: number | null
+      reap_in_secs: number | null
+    }>,
+  ) => ({ idle_secs: null, idle_timeout_secs: null, reap_in_secs: null, ...patch })
+
+  it('prefers an explicit reap_in_secs', () => {
+    expect(
+      deriveReapInSecs(
+        fields({ reap_in_secs: 40, idle_secs: 10, idle_timeout_secs: 300 }),
+      ),
+    ).toBe(40)
+  })
+
+  it('derives from idle_timeout_secs - idle_secs when both are present', () => {
+    expect(
+      deriveReapInSecs(fields({ idle_secs: 250, idle_timeout_secs: 300 })),
+    ).toBe(50)
+  })
+
+  it('returns null when the daemon reports nothing (today)', () => {
+    expect(deriveReapInSecs(fields({}))).toBeNull()
+    expect(deriveReapInSecs(fields({ idle_secs: 250 }))).toBeNull()
+    expect(deriveReapInSecs(fields({ idle_timeout_secs: 300 }))).toBeNull()
+  })
+})
+
 describe('reconcileTombstones', () => {
   const sb = (id: string) => ({
     sandbox_id: id,
@@ -170,6 +227,9 @@ describe('reconcileTombstones', () => {
     exec_in_flight: 0,
     exec_slots_free: 4,
     stopped: false,
+    idle_secs: null,
+    idle_timeout_secs: null,
+    reap_in_secs: null,
   })
 
   it('tombstones a sandbox that left the fleet and prunes it after the TTL', () => {
@@ -308,6 +368,17 @@ describe('createFleetStore', () => {
     await h.runNext()
     expect(h.calls.length).toBe(callsAfterStart + 1)
     expect(h.calls[h.calls.length - 1]).toBe(RUNTIMES_FN)
+  })
+
+  it('stamps snapshotAt on the bootstrap fetch and on every applied event', async () => {
+    const h = makeHarness()
+    expect(h.store.getState().snapshotAt).toBeNull()
+    h.store.start()
+    await h.flush()
+    expect(h.store.getState().snapshotAt).toBe(12345)
+
+    h.store.applyFleetEvent({ kind: 'fleet', daemon_absent: false, sandboxes: [] })
+    expect(h.store.getState().snapshotAt).toBe(12345)
   })
 
   it('a fleet event tombstones sandboxes that vanished from the snapshot', async () => {

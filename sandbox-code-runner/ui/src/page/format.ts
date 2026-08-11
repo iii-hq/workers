@@ -32,6 +32,33 @@ export function formatAgeSecs(secs: number): string {
   return `${Math.floor(hours / 24)}d`
 }
 
+/** Age to display NOW: the wire's `age_secs` plus the seconds since the
+ *  snapshot carrying it landed — fleet events are change-only, so ages
+ *  must grow client-side between them. */
+export function displayAgeSecs(
+  ageSecs: number,
+  snapshotAt: number | null,
+  nowMs: number,
+): number {
+  if (snapshotAt === null || nowMs <= snapshotAt) return ageSecs
+  return ageSecs + (nowMs - snapshotAt) / 1000
+}
+
+/** Under this many seconds to the reap, the row takes a warn tint. */
+export const REAP_WARN_SECS = 30
+
+/** Seconds left before the reap, aged forward from the snapshot the
+ *  reap figure rode in on. Floors at 0 — the caller renders "reaping…". */
+export function reapCountdownSecs(
+  reapInSecs: number,
+  snapshotAt: number | null,
+  nowMs: number,
+): number {
+  const elapsed =
+    snapshotAt === null || nowMs <= snapshotAt ? 0 : (nowMs - snapshotAt) / 1000
+  return Math.max(0, reapInSecs - elapsed)
+}
+
 /** `300000` → `5m`, `90500` → `1m 30s`, `800` → `800ms`. */
 export function formatMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'

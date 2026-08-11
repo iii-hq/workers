@@ -9,9 +9,16 @@
 import { Badge, Button, type Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import { formatTriggerCommand } from './exec'
-import { formatAgeSecs, sandboxState } from './format'
+import {
+  displayAgeSecs,
+  formatAgeSecs,
+  formatSecs,
+  REAP_WARN_SECS,
+  reapCountdownSecs,
+  sandboxState,
+} from './format'
 import type { CatalogImage, SandboxSummary } from './store'
-import { EXEC_SLOTS } from './store'
+import { deriveReapInSecs, EXEC_SLOTS } from './store'
 import { CopyButton } from './widgets'
 
 function SlotsMeter({ free }: { free: number }) {
@@ -39,6 +46,8 @@ function SlotsMeter({ free }: { free: number }) {
 export function OverviewTab({
   host,
   sandbox,
+  snapshotAt,
+  clock,
   catalogImage,
   onGoConsole,
   onGoFiles,
@@ -46,6 +55,9 @@ export function OverviewTab({
 }: {
   host: Host
   sandbox: SandboxSummary
+  snapshotAt: number | null
+  /** The page's 1s display clock — age and the reap countdown tick on it. */
+  clock: number
   /** The catalog row matching this sandbox's image, when the catalog has it. */
   catalogImage: CatalogImage | null
   onGoConsole(): void
@@ -90,6 +102,9 @@ export function OverviewTab({
   })
 
   const state = sandboxState(sandbox)
+  const reapBase = sandbox.stopped ? null : deriveReapInSecs(sandbox)
+  const reapLeft =
+    reapBase === null ? null : reapCountdownSecs(reapBase, snapshotAt, clock)
 
   return (
     <div className="cr-page-overview">
@@ -121,7 +136,7 @@ export function OverviewTab({
         </dd>
 
         <dt>age</dt>
-        <dd>{formatAgeSecs(sandbox.age_secs)}</dd>
+        <dd>{formatAgeSecs(displayAgeSecs(sandbox.age_secs, snapshotAt, clock))}</dd>
 
         <dt>exec slots</dt>
         <dd>
@@ -133,8 +148,21 @@ export function OverviewTab({
         <dt>network</dt>
         <dd className="cr-page-faint">not reported by sandbox::list</dd>
 
-        <dt>idle timeout</dt>
-        <dd className="cr-page-faint">not reported by sandbox::list</dd>
+        {reapLeft === null ? (
+          <>
+            <dt>idle timeout</dt>
+            <dd className="cr-page-faint">not reported by sandbox::list</dd>
+          </>
+        ) : (
+          <>
+            <dt>idle deadline</dt>
+            <dd className={reapLeft < REAP_WARN_SECS ? 'cr-page-reap-warn' : undefined}>
+              {reapLeft <= 0
+                ? 'reaping…'
+                : `reaped in ${formatSecs(Math.ceil(reapLeft))} unless something execs`}
+            </dd>
+          </>
+        )}
       </dl>
 
       <div className="cr-page-actions">

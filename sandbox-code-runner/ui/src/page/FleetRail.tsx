@@ -11,7 +11,14 @@
 
 import { Badge, EmptyState, type Host, StatusDot } from '@iii-dev/console-ui'
 import { useState } from 'react'
-import { formatAgeSecs, type SandboxState, sandboxState } from './format'
+import {
+  displayAgeSecs,
+  formatAgeSecs,
+  REAP_WARN_SECS,
+  reapCountdownSecs,
+  type SandboxState,
+  sandboxState,
+} from './format'
 import { BoxIcon, ChevronIcon } from './icons'
 import { InvokeDialog } from './InvokeDialog'
 import type {
@@ -20,7 +27,7 @@ import type {
   RuntimeInfo,
   SandboxSummary,
 } from './store'
-import { EXEC_SLOTS } from './store'
+import { deriveReapInSecs, EXEC_SLOTS } from './store'
 
 const STATUS_DOT: Record<
   SandboxState,
@@ -34,20 +41,28 @@ const STATUS_DOT: Record<
 function SandboxRow({
   sandbox,
   selected,
+  snapshotAt,
+  clock,
   onSelect,
 }: {
   sandbox: SandboxSummary
   selected: boolean
+  snapshotAt: number | null
+  clock: number
   onSelect(id: string): void
 }) {
   const state = sandboxState(sandbox)
   const dot = STATUS_DOT[state]
+  const reapBase = sandbox.stopped ? null : deriveReapInSecs(sandbox)
+  const reapSoon =
+    reapBase !== null &&
+    reapCountdownSecs(reapBase, snapshotAt, clock) < REAP_WARN_SECS
   return (
     <button
       type="button"
-      className={`cr-page-fleet-row${selected ? ' selected' : ''}`}
+      className={`cr-page-fleet-row${selected ? ' selected' : ''}${reapSoon ? ' reap-soon' : ''}`}
       onClick={() => onSelect(sandbox.sandbox_id)}
-      title={`${sandbox.sandbox_id} · ${state}`}
+      title={`${sandbox.sandbox_id} · ${state}${reapSoon ? ' · idle reap imminent' : ''}`}
       aria-current={selected ? 'true' : undefined}
     >
       <StatusDot tone={dot.tone} pulse={dot.pulse} />
@@ -56,7 +71,9 @@ function SandboxRow({
         <span className="cr-page-fleet-image" title={sandbox.image}>
           {sandbox.image}
         </span>
-        <span className="cr-page-fleet-age">{formatAgeSecs(sandbox.age_secs)}</span>
+        <span className="cr-page-fleet-age">
+          {formatAgeSecs(displayAgeSecs(sandbox.age_secs, snapshotAt, clock))}
+        </span>
         <span
           className={`cr-page-fleet-slots${sandbox.exec_slots_free === 0 ? ' full' : ''}`}
           title={`${sandbox.exec_slots_free} of ${EXEC_SLOTS} exec slots free`}
@@ -170,6 +187,8 @@ export function FleetRail({
   runtimes,
   tombstones = [],
   images,
+  snapshotAt,
+  clock,
   selected,
   daemonAbsent,
   onSelect,
@@ -181,6 +200,9 @@ export function FleetRail({
   runtimes: RuntimeInfo[]
   tombstones?: FleetTombstone[]
   images: CatalogImage[]
+  snapshotAt: number | null
+  /** The page's 1s display clock — ages tick against it between events. */
+  clock: number
   selected: string | null
   daemonAbsent: boolean
   onSelect(id: string): void
@@ -225,6 +247,8 @@ export function FleetRail({
               key={sandbox.sandbox_id}
               sandbox={sandbox}
               selected={sandbox.sandbox_id === selected}
+              snapshotAt={snapshotAt}
+              clock={clock}
               onSelect={onSelect}
             />
           ))}

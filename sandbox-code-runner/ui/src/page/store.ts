@@ -38,6 +38,24 @@ export interface SandboxSummary {
   exec_in_flight: number
   exec_slots_free: number
   stopped: boolean
+  /** Idle-reap fields the daemon does not report yet — parsed tolerantly
+   *  so the TTL countdown lights up the day it does. */
+  idle_secs: number | null
+  idle_timeout_secs: number | null
+  reap_in_secs: number | null
+}
+
+/** Seconds until the daemon reaps this sandbox, when derivable: an
+ *  explicit `reap_in_secs` wins, else `idle_timeout_secs - idle_secs`. */
+export function deriveReapInSecs(sandbox: {
+  idle_secs: number | null
+  idle_timeout_secs: number | null
+  reap_in_secs: number | null
+}): number | null {
+  if (sandbox.reap_in_secs !== null) return sandbox.reap_in_secs
+  if (sandbox.idle_timeout_secs !== null && sandbox.idle_secs !== null)
+    return sandbox.idle_timeout_secs - sandbox.idle_secs
+  return null
 }
 
 export interface CatalogImage {
@@ -73,6 +91,10 @@ export interface FleetState {
   error: string | null
   daemonAbsent: boolean
   lastUpdatedAt: number | null
+  /** When the current `sandboxes` snapshot landed. Change-only events go
+   *  quiet while ages keep growing, so displayed ages are
+   *  `age_secs + (now - snapshotAt) / 1000`. */
+  snapshotAt: number | null
 }
 
 /** How long a vanished sandbox stays visible as a tombstone row. */
@@ -135,6 +157,9 @@ export function parseSandboxList(value: unknown): SandboxSummary[] {
       exec_slots_free:
         asNumber(rec.exec_slots_free) ?? Math.max(0, EXEC_SLOTS - inFlight),
       stopped: rec.stopped === true,
+      idle_secs: asNumber(rec.idle_secs),
+      idle_timeout_secs: asNumber(rec.idle_timeout_secs),
+      reap_in_secs: asNumber(rec.reap_in_secs),
     })
   }
   return out
@@ -267,6 +292,7 @@ export function createFleetStore(
     error: null,
     daemonAbsent: false,
     lastUpdatedAt: null,
+    snapshotAt: null,
   }
   const listeners = new Set<() => void>()
   let timer: unknown = null
@@ -353,6 +379,7 @@ export function createFleetStore(
         error: null,
         daemonAbsent: false,
         lastUpdatedAt: now(),
+        snapshotAt: now(),
       })
     } catch (err) {
       if (gen !== generation) return
@@ -413,6 +440,7 @@ export function createFleetStore(
       loading: false,
       error: null,
       lastUpdatedAt: now(),
+      snapshotAt: now(),
     })
     refreshRuntimes()
     return true

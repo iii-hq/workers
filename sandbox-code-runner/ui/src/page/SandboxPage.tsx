@@ -150,6 +150,15 @@ export function SandboxPage({
   const [runOpen, setRunOpen] = useState(false)
   const rail = useRailWidth(panelSide)
 
+  // local display clock, not bus polling; the doctrine targets bus traffic
+  // — change-only fleet events leave age_secs frozen, so displayed ages
+  // and the reap countdown tick forward from snapshotAt on this clock.
+  const [clock, setClock] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(Date.now()), 1_000)
+    return () => window.clearInterval(id)
+  }, [])
+
   useEffect(() => onSandboxSelected((id) => setPending(id)), [])
 
   useEffect(() => {
@@ -243,6 +252,8 @@ export function SandboxPage({
             key={sandbox.sandbox_id}
             host={host}
             sandbox={sandbox}
+            snapshotAt={state.snapshotAt}
+            clock={clock}
             catalogImage={catalogImage}
             onGoConsole={() => setTab('console')}
             onGoFiles={() => setTab('files')}
@@ -316,6 +327,8 @@ export function SandboxPage({
             runtimes={state.runtimes}
             tombstones={state.tombstones}
             images={state.images}
+            snapshotAt={state.snapshotAt}
+            clock={clock}
             selected={selected}
             daemonAbsent={state.daemonAbsent}
             onSelect={select}

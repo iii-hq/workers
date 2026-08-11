@@ -1,9 +1,10 @@
 /**
  * The create dialog: `sandbox::create` from a catalog image with the
  * optional knobs (name, cpus, memory, idle timeout, network, env). While
- * the create is in flight an elapsed counter ticks with the cold-pull
- * note; a failure renders the daemon's whole S-code error (code, message,
- * fix_note, retryable) instead of a bare string.
+ * the create is in flight the elapsed counter drives honest stage notes
+ * (requesting → pulling → still pulling); a failure renders the daemon's
+ * whole S-code error (code, message, fix_note, retryable) instead of a
+ * bare string.
  */
 
 import {
@@ -21,6 +22,57 @@ import { asRecord } from '../lib/payload'
 import { parseSandboxError, type SandboxError } from './errors'
 import type { CatalogImage } from './store'
 import { type EnvRow, EnvRowsEditor, SandboxErrorCard } from './widgets'
+
+/** Elapsed-based stage note — honest about what a slow create is doing. */
+function createStageNote(elapsedSecs: number): string {
+  if (elapsedSecs < 2) return 'requesting…'
+  if (elapsedSecs < 45) return 'pulling image — cold pulls take 5–30s'
+  return 'still pulling — large image or slow link'
+}
+
+const CREATE_EVENTS_FN = 'iii::sandbox-code-runner-ui::create-events'
+const CREATE_EVENT_TRIGGER_TYPE = 'sandbox-code-runner::event'
+
+/**
+ * Create-phase stream — DORMANT today: the daemon does not emit
+ * `{ kind: 'create_phase' }` yet (engine ask). The subscription is wired
+ * so the steps list lights up the day it streams `pulling_image` /
+ * `unpacking` / `booting_vm` / `ready`; bound only while a create is
+ * actually pending.
+ */
+function useCreatePhases(host: Host, active: boolean): string[] {
+  const [phases, setPhases] = useState<string[]>([])
+  useEffect(() => {
+    if (!active) {
+      setPhases([])
+      return
+    }
+    let offHandler: (() => void) | null = null
+    let offTrigger: (() => void) | null = null
+    try {
+      offHandler = host.iii.on(CREATE_EVENTS_FN, (payload: unknown) => {
+        const rec = asRecord(payload)
+        if (rec?.kind !== 'create_phase') return
+        const phase =
+          typeof rec.phase === 'string' && rec.phase ? rec.phase : null
+        if (!phase) return
+        setPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]))
+      })
+      offTrigger = host.iii.registerTrigger({
+        type: CREATE_EVENT_TRIGGER_TYPE,
+        function_id: `${CREATE_EVENTS_FN}::${host.iii.browserId}`,
+        config: {},
+      })
+    } catch {
+      /* stream unavailable — the elapsed stages still tell the story */
+    }
+    return () => {
+      offTrigger?.()
+      offHandler?.()
+    }
+  }, [host, active])
+  return phases
+}
 
 export function CreateDialog({
   host,
@@ -46,6 +98,7 @@ export function CreateDialog({
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const [error, setError] = useState<SandboxError | null>(null)
+  const phases = useCreatePhases(host, pending)
 
   // The elapsed counter — a create that is cold-pulling an image sits for
   // many seconds; a visibly ticking timer says "working", not "hung".
@@ -183,7 +236,14 @@ export function CreateDialog({
 
           {pending ? (
             <div className="cr-page-pending" role="status">
-              creating… {elapsed}s — a cold image pull can take 5–30s.
+              creating… {elapsed}s — {createStageNote(elapsed)}
+              {phases.length > 0 ? (
+                <ol className="cr-page-create-steps">
+                  {phases.map((phase) => (
+                    <li key={phase}>{phase.replace(/_/g, ' ')}</li>
+                  ))}
+                </ol>
+              ) : null}
             </div>
           ) : null}
           {error ? <SandboxErrorCard error={error} /> : null}
