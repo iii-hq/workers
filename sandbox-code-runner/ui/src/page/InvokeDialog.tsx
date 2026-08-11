@@ -67,7 +67,9 @@ export function InvokeDialog({
     setBusy(true)
     const gen = generation.current
     host.iii
-      .trigger(functionId, parsed as Record<string, unknown>)
+      // Guest handlers run real code — give them the same transport
+      // headroom as the run dialog instead of the default deadline.
+      .trigger(functionId, parsed as Record<string, unknown>, { timeoutMs: 120_000 })
       .then((value) => {
         if (gen === generation.current)
           setResult(JSON.stringify(value, null, 2) ?? 'null')

@@ -4,10 +4,11 @@
  * (same pattern as memory's useMemoryLive / worktree's useWorktreesLive —
  * an `iii::`-prefixed handler id keeps the per-event invocations
  * span-suppressed; `host.iii.on` namespaces the handler `::<browserId>`,
- * which the trigger's function_id repeats to address it). Any event pokes
- * an immediate store refresh; pushed fleet snapshots apply directly and
- * the page honest when the binding is unavailable. Both the handler and
- * the trigger are unregistered on unmount.
+ * which the trigger's function_id repeats to address it). Pushed fleet
+ * snapshots apply directly; any other event kind costs one debounced
+ * `list_runtimes` re-read. The live/static pill keeps the page honest
+ * when the binding is unavailable. Both the handler and the trigger are
+ * unregistered on unmount.
  */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -26,10 +27,16 @@ export interface Fleet {
 }
 
 export function useFleet(host: Host): Fleet {
+  // The store is created once, so its trigger closure reads the host off
+  // a ref — a re-rendered host prop must not strand it on the first one.
+  const hostRef = useRef(host)
+  useEffect(() => {
+    hostRef.current = host
+  }, [host])
   const storeRef = useRef<FleetStore | null>(null)
   if (!storeRef.current) {
     storeRef.current = createFleetStore((functionId, payload) =>
-      host.iii.trigger(functionId, payload),
+      hostRef.current.iii.trigger(functionId, payload),
     )
   }
   const store = storeRef.current
@@ -52,8 +59,9 @@ export function useFleet(host: Host): Fleet {
     let offTrigger: (() => void) | null = null
     try {
       offHandler = host.iii.on(EVENTS_FN, (payload: unknown) => {
-        // Fleet snapshots apply straight from the wire (zero read-back);
-        // runtime-kind events cost one debounced list_runtimes read.
+        // Fleet snapshots apply straight from the wire; a membership
+        // change (and any runtime-kind event) costs one debounced
+        // list_runtimes read.
         if (!store.applyFleetEvent(payload)) store.refreshRuntimes()
       })
       offTrigger = host.iii.registerTrigger({

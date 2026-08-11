@@ -43,6 +43,17 @@ export interface ExecRecord {
   error?: string
 }
 
+/** String-valued env entries only; `undefined` when empty or invalid, so
+ *  a junk shape never renders a phantom "0 env" chip. */
+function parseEnv(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, v] of Object.entries(value)) {
+    if (typeof v === 'string') out[key] = v
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 /** Tolerant read of a persisted timeline — anything that is not a record
  *  array (older shapes, hand-edited state) degrades to empty. */
 export function parseRecords(value: unknown): ExecRecord[] {
@@ -60,10 +71,7 @@ export function parseRecords(value: unknown): ExecRecord[] {
       detached: rec.detached === true,
       workdir: typeof rec.workdir === 'string' ? rec.workdir : undefined,
       timeout_ms: typeof rec.timeout_ms === 'number' ? rec.timeout_ms : undefined,
-      env:
-        rec.env && typeof rec.env === 'object' && !Array.isArray(rec.env)
-          ? (rec.env as Record<string, string>)
-          : undefined,
+      env: parseEnv(rec.env),
       source:
         rec.source === 'probe' || rec.source === 'run' || rec.source === 'job'
           ? rec.source
@@ -99,7 +107,11 @@ export function useExecRecords(
   const [records, setRecords] = useState<ExecRecord[]>([])
   const [loaded, setLoaded] = useState(false)
   const recordsRef = useRef(records)
-  recordsRef.current = records
+  // Synced post-commit, never during render (concurrent renders may be
+  // thrown away); flush paths all run after commit, so the ref is current.
+  useEffect(() => {
+    recordsRef.current = records
+  }, [records])
   const saveTimer = useRef<number | null>(null)
 
   const flush = useCallback(

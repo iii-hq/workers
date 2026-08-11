@@ -124,7 +124,9 @@ describe('dispatch', () => {
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
     for (const hostile of [cyclic, { content: 0, details: null }, Object.create(null)]) {
-      expect(() => renderer.tryRender(msg({ input: hostile, output: hostile }))).not.toThrow()
+      // html() forces every child component body to execute — tryRender
+      // alone only runs the element factories.
+      expect(() => html(renderer.tryRender(msg({ input: hostile, output: hostile })))).not.toThrow()
     }
   })
 })

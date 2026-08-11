@@ -192,7 +192,6 @@ export function FleetRail({
   selected,
   daemonAbsent,
   onSelect,
-  onCreate,
   onRefresh,
 }: {
   host: Host
@@ -206,7 +205,6 @@ export function FleetRail({
   selected: string | null
   daemonAbsent: boolean
   onSelect(id: string): void
-  onCreate(): void
   onRefresh(): void
 }) {
   const [invokeFn, setInvokeFn] = useState<string | null>(null)

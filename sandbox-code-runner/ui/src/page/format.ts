@@ -59,11 +59,12 @@ export function reapCountdownSecs(
   return Math.max(0, reapInSecs - elapsed)
 }
 
-/** `300000` → `5m`, `90500` → `1m 30s`, `800` → `800ms`. */
+/** `300000` → `5m`, `90500` → `1m 30s`, `800.7` → `800ms` — sub-second
+ *  values floor to whole ms, everything else to whole seconds. */
 export function formatMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
-  if (ms < 1000) return `${ms}ms`
-  const s = Math.round(ms / 1000)
+  if (ms < 1000) return `${Math.floor(ms)}ms`
+  const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
   const rest = s % 60

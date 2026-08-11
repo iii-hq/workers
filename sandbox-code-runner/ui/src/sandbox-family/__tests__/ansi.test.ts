@@ -56,6 +56,14 @@ describe('parseAnsi', () => {
     ])
   })
 
+  it('22 clears bold but keeps the color', () => {
+    expect(spans(`${ESC}[1;31mx${ESC}[22my${ESC}[0mz`)).toEqual([
+      { text: 'x', color: 'alert', bold: true },
+      { text: 'y', color: 'alert' },
+      { text: 'z' },
+    ])
+  })
+
   it('39 resets the color but keeps bold', () => {
     expect(spans(`${ESC}[1;31mx${ESC}[39my${ESC}[0mz`)).toEqual([
       { text: 'x', color: 'alert', bold: true },
@@ -88,6 +96,12 @@ describe('parseAnsi', () => {
     // Cursor-up, erase-line, and an OSC window title must all vanish.
     expect(spans(`${ESC}[2Aabove${ESC}[2K cleared`)).toEqual([{ text: 'above cleared' }])
     expect(spans(`${ESC}]0;title${'\x07'}body`)).toEqual([{ text: 'body' }])
+    // The ESC-backslash (ST) terminator works like BEL.
+    expect(spans(`${ESC}]0;title${ESC}\\body`)).toEqual([{ text: 'body' }])
+  })
+
+  it('an unterminated OSC loses only its introducer, never the rest of the output', () => {
+    expect(spans(`${ESC}]0;title with no terminator — body`)).toEqual([{ text: '0;title with no terminator — body' }])
   })
 
   it('keeps a dangling (malformed) escape as-is rather than eating text', () => {

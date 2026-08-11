@@ -102,8 +102,9 @@ export function SandboxConfigForm(props: ConfigFormProps) {
                 placeholder={String(field.defaultValue)}
                 onChange={(e) => {
                   const next = { ...value }
-                  const n = Number(e.target.value)
-                  if (e.target.value === '' || !Number.isFinite(n)) {
+                  const raw = e.target.value.trim()
+                  const n = Number(raw)
+                  if (raw === '' || !Number.isFinite(n) || n <= 0) {
                     delete next[field.key]
                   } else {
                     next[field.key] = n

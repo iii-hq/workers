@@ -18,7 +18,7 @@
  */
 
 import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
-import type { ReactNode } from 'react'
+import { Component, type ReactNode } from 'react'
 import { CreateView } from './CreateView'
 import { SandboxErrorView } from './ErrorView'
 import { ExecPreview, ExecView } from './ExecView'
@@ -143,11 +143,28 @@ function renderPreview(message: FunctionTriggerMessage): ReactNode | null {
   }
 }
 
+/** The try/catch in `fenced` only guards the element factories — a per-op
+    view's body runs later, inside React's render. This boundary converts a
+    child render throw into an empty card, so a hostile payload still never
+    costs the feed. */
+class RenderFence extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children
+  }
+}
+
 /** Renderers must never throw — a bad payload costs the card, never
     the feed. Anything unexpected falls through to the default view. */
 function fenced(render: () => ReactNode | null): ReactNode | null {
   try {
-    return render()
+    const node = render()
+    return node == null ? null : <RenderFence>{node}</RenderFence>
   } catch {
     return null
   }

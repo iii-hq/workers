@@ -5,8 +5,9 @@
  * `sandbox::list` snapshots, applied here via `applyFleetEvent` — the
  * house doctrine's "one get on mount, push after". The store performs
  * exactly one initial fetch (retried with backoff until it lands) and
- * after that NO timers run: fleet changes arrive as events, runtime-kind
- * events trigger a single debounced `list_runtimes` re-read, and the
+ * after that NO timers run: fleet changes arrive as events, and only
+ * runtime-kind events — plus fleet events whose sandbox MEMBERSHIP
+ * changed — trigger a single debounced `list_runtimes` re-read; the
  * refresh button stays for humans.
  *
  * A `sandbox::list` failure that reads as function-not-found flips
@@ -251,7 +252,6 @@ export type TriggerFn = (
 ) => Promise<unknown>
 
 export interface FleetStoreDeps {
-  isVisible?: () => boolean
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (id: unknown) => void
   now?: () => number
@@ -413,9 +413,13 @@ export function createFleetStore(
     runtimesTimer = setTimer(() => {
       runtimesTimer = null
       if (!running) return
+      const gen = generation
       void (async () => {
         try {
           const runtimes = parseRuntimes(await trigger(RUNTIMES_FN, {}))
+          // A stop() while the read was in flight must not write into
+          // (or past) the stopped store.
+          if (gen !== generation || !running) return
           set({ runtimes })
         } catch {
           /* the strip goes stale until the next event retries */
@@ -428,6 +432,13 @@ export function createFleetStore(
     const rec = asRecord(payload)
     if (!rec || rec.kind !== 'fleet') return false
     const sandboxes = parseSandboxList({ sandboxes: rec.sandboxes })
+    // Only a membership change can invalidate the runtimes strip (a
+    // runtime's VM appearing or leaving); slot/age churn must not cost
+    // a `list_runtimes` read per event.
+    const prevIds = new Set(state.sandboxes.map((s) => s.sandbox_id))
+    const membershipChanged =
+      sandboxes.length !== prevIds.size ||
+      sandboxes.some((s) => !prevIds.has(s.sandbox_id))
     set({
       sandboxes,
       tombstones: reconcileTombstones(
@@ -442,7 +453,7 @@ export function createFleetStore(
       lastUpdatedAt: now(),
       snapshotAt: now(),
     })
-    refreshRuntimes()
+    if (membershipChanged) refreshRuntimes()
     return true
   }
 

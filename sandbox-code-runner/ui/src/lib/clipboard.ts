@@ -4,7 +4,7 @@
  * `CopyButton`.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 export type CopyState = 'idle' | 'copied' | 'failed'
 
@@ -27,10 +27,12 @@ async function copyText(text: string): Promise<boolean> {
     ta.style.position = 'fixed'
     ta.style.opacity = '0'
     document.body.appendChild(ta)
-    ta.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
+    try {
+      ta.select()
+      return document.execCommand('copy')
+    } finally {
+      document.body.removeChild(ta)
+    }
   } catch {
     return false
   }
@@ -43,10 +45,17 @@ export function useCopyFlash(text: string): {
   copy: () => void
 } {
   const [state, setState] = useState<CopyState>('idle')
+  // A rapid second click must extend the flash, not let the first click's
+  // timer cut it short.
+  const timer = useRef<number | null>(null)
   const copy = useCallback(() => {
     void copyText(text).then((ok) => {
       setState(ok ? 'copied' : 'failed')
-      window.setTimeout(() => setState('idle'), FLASH_MS)
+      if (timer.current !== null) window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => {
+        timer.current = null
+        setState('idle')
+      }, FLASH_MS)
     })
   }, [text])
   return { state, copy }

@@ -15,7 +15,9 @@ export function FsWriteView({ input, output }: FsWriteViewProps) {
   const resp = safeParseResponse(fsWriteResponseSchema, output)
   if (!resp) return null
   const streamed = req.data.content ? streamChannelRefSchema.safeParse(req.data.content).success : false
-  const usedB64 = !!req.data.content_b64
+  // Null-check, not truthiness: writing an empty file via content_b64: ""
+  // still travelled as base64.
+  const usedB64 = req.data.content_b64 != null
 
   return (
     <div className="cr-fam-card">

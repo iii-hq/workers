@@ -1,12 +1,14 @@
 /**
- * The fleet store's own checks — the poll/backoff machine driven entirely
+ * The fleet store's own checks — the push-driven machine driven entirely
  * through injected deps (no real timers, no DOM):
  *
  *  - tolerant parsing: canonical rows pass through, missing slot fields
  *    derive from exec_in_progress, junk rows drop, junk envelopes → [];
- *  - visibility gating: a hidden tab schedules but never triggers;
- *  - backoff: consecutive errors walk 3s → 6s → 12s → 24s → 30s (cap) and
- *    one success resets to the 3s cadence;
+ *  - bootstrap retry: consecutive errors walk 3s → 6s → 12s → 24s → 30s
+ *    (cap), and the retry timers stop for good once the first snapshot
+ *    lands — events own the steady state after that;
+ *  - events: fleet snapshots apply off the wire, membership changes cost
+ *    one debounced runtimes re-read;
  *  - daemon-absent: a function-not-found failure flips the flag, any
  *    success clears it;
  *  - catalog: read once on start, again only on refresh(true).
@@ -292,7 +294,7 @@ interface Timer {
   cleared: boolean
 }
 
-function makeHarness(options?: { visible?: () => boolean }) {
+function makeHarness() {
   const timers: Timer[] = []
   const calls: string[] = []
   const responses = new Map<string, () => unknown>()
@@ -368,6 +370,22 @@ describe('createFleetStore', () => {
     await h.runNext()
     expect(h.calls.length).toBe(callsAfterStart + 1)
     expect(h.calls[h.calls.length - 1]).toBe(RUNTIMES_FN)
+  })
+
+  it('a fleet event with unchanged membership skips the runtimes re-read', async () => {
+    const h = makeHarness()
+    h.responses.set(LIST_FN, () => ({
+      sandboxes: [{ sandbox_id: 'sbx-1', image: 'node', age_secs: 1 }],
+    }))
+    h.store.start()
+    await h.flush()
+    // Same sandbox set, only age/slot churn — no debounced timer appears.
+    h.store.applyFleetEvent({
+      kind: 'fleet',
+      daemon_absent: false,
+      sandboxes: [{ sandbox_id: 'sbx-1', image: 'node', age_secs: 9 }],
+    })
+    expect(h.pending()).toHaveLength(0)
   })
 
   it('stamps snapshotAt on the bootstrap fetch and on every applied event', async () => {

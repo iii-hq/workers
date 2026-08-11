@@ -7,9 +7,9 @@
  *
  * ↑/↓ in the command input walk the command history (this timeline's
  * commands, deduped, newest first). The composer disables while the
- * sandbox has zero free exec slots — with a live note, since the poll
- * store keeps `exec_slots_free` current — and entirely once the sandbox
- * stopped.
+ * sandbox has zero free exec slots — with a live note, since pushed
+ * fleet events keep `exec_slots_free` current — and entirely once the
+ * sandbox stopped.
  */
 
 import { Button, type Host, Input } from '@iii-dev/console-ui'
@@ -676,7 +676,7 @@ export function ConsoleTab({
           {slotsFull ? (
             <div className="cr-page-banner warn" role="status">
               all {EXEC_SLOTS} exec slots are busy — the composer re-enables
-              the moment one frees (this page polls live).
+              the moment one frees (fleet events keep this live).
             </div>
           ) : null}
         </div>

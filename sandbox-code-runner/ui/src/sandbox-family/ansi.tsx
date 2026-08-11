@@ -10,7 +10,7 @@
  *   green (32/92)    → var(--color-ok)
  *   yellow (33/93)   → var(--color-warn)
  *   blue/cyan/magenta (34/36/35 + bright) → var(--color-accent)
- *   bold (1)         → font-weight 600
+ *   bold (1)         → font-weight 600, 22 → back to normal weight
  *   0 / 39           → reset / default foreground
  *
  * Everything else (background colors, 256-color/truecolor `38;5;…`,
@@ -57,10 +57,12 @@ const SGR_COLOR: Record<number, AnsiColor | undefined> = {
 
 /* One pass over the string: the first alternative captures SGR parameter
    lists (`ESC [ params m`); the second eats any other CSI sequence; the
-   third eats OSC (`ESC ] … BEL` or `ESC ] … ESC \`). Non-SGR matches
-   are stripped without touching the style state. */
+   third eats a TERMINATED OSC (`ESC ] … BEL` or `ESC ] … ESC \`); the
+   fourth strips a bare unterminated `ESC ]` introducer so a truncated
+   OSC never swallows the rest of the output. Non-SGR matches are
+   stripped without touching the style state. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: parsing ANSI escape sequences.
-const ANSI_RE = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g
+const ANSI_RE = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\]/g
 
 /**
  * Parse `input` into styled spans. Total: never throws, strips what it
@@ -107,6 +109,9 @@ export function parseAnsi(input: string): AnsiSpan[] {
         bold = false
       } else if (code === 1) {
         bold = true
+      } else if (code === 22) {
+        // Normal intensity — bold off, color untouched.
+        bold = false
       } else if (code === 39) {
         color = undefined
       } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {

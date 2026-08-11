@@ -65,7 +65,11 @@ function SedResultsTable({ results, totalReplacements }: SedResultsTableProps) {
               ) : r.error ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <span className="cr-fam-sed-err">⚠ err</span>
+                    {/* A real button so keyboard users can reach the
+                        tooltip; the class carries the reset. */}
+                    <button type="button" className="cr-fam-sed-err" aria-label={`error for ${r.path}: ${r.error}`}>
+                      ⚠ err
+                    </button>
                   </TooltipTrigger>
                   <TooltipContent>{r.error}</TooltipContent>
                 </Tooltip>

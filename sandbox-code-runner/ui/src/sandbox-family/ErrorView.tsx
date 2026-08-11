@@ -37,9 +37,22 @@ function execStreamsFromFix(error: SandboxErrorWire) {
   return { stdout, stderr }
 }
 
+/** Only an http(s) URL earns the docs link — a wire payload must never
+    mint a `javascript:`/`data:` href into the feed. */
+function safeDocsUrl(raw: string | undefined): string | null {
+  if (!raw) return null
+  try {
+    const { protocol } = new URL(raw)
+    return protocol === 'http:' || protocol === 'https:' ? raw : null
+  } catch {
+    return null
+  }
+}
+
 function ErrorView({ error }: { error: SandboxErrorWire }) {
   const retryable = error.retryable === true
   const streams = execStreamsFromFix(error)
+  const docsUrl = safeDocsUrl(error.docs_url)
   return (
     <div className="cr-fam-card">
       <div className="cr-fam-err">
@@ -56,8 +69,8 @@ function ErrorView({ error }: { error: SandboxErrorWire }) {
 
         {error.fix_note ? <div className="cr-fam-err-fix">{error.fix_note}</div> : null}
 
-        {error.docs_url ? (
-          <a href={error.docs_url} target="_blank" rel="noreferrer noopener" className="cr-fam-err-docs">
+        {docsUrl ? (
+          <a href={docsUrl} target="_blank" rel="noreferrer noopener" className="cr-fam-err-docs">
             docs ↗
           </a>
         ) : null}

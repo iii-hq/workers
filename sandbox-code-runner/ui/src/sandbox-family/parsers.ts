@@ -176,7 +176,7 @@ export const stopResponseSchema = z.object({
 })
 export type StopResponse = z.infer<typeof stopResponseSchema>
 
-export const listRequestSchema = z.object({}).passthrough()
+export const listRequestSchema = z.looseObject({})
 export type ListRequest = z.infer<typeof listRequestSchema>
 
 export const sandboxSummarySchema = z.object({
@@ -361,9 +361,9 @@ export type FsSedResponse = z.infer<typeof fsSedResponseSchema>
  * `unwrapEnvelope` peels the wrapper so renderers operate on the flat
  * sandbox response. Idempotent — calling it on an already-flat payload
  * (i.e. one that didn't go through the envelope) returns the input
- * unchanged. The discriminator is `Array.isArray(value.content)` —
- * that's the structural marker harness sets unconditionally for
- * every wrapped result.
+ * unchanged. The discriminator (lib/payload.ts) is an array-valued
+ * `content` AND a present `details` key — the structural pair harness
+ * sets unconditionally for every wrapped result.
  */
 export { unwrapEnvelope }
 
@@ -424,23 +424,40 @@ function contentBlocksText(content: unknown): string | undefined {
   return parts.length > 0 ? parts.join('\n') : undefined
 }
 
-/** Pull the first balanced `{…}` JSON object out of a string. */
+/** Pull the first parseable balanced `{…}` JSON object out of a string.
+    Brace matching is string-aware (a `}` inside a JSON string never
+    closes the candidate), and a balanced candidate that fails to parse
+    does not end the scan — later candidates still get their chance.
+    Null only after the input is exhausted. */
 export function extractFirstJsonObject(text: string): unknown | null {
-  const start = text.indexOf('{')
-  if (start === -1) return null
-  let depth = 0
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]
-    if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        try {
-          return JSON.parse(text.slice(start, i + 1))
-        } catch {
-          return null
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0
+    let inString = false
+    let escaped = false
+    let end = -1
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (ch === '\\') escaped = true
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') inString = true
+      else if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          end = i
+          break
         }
       }
+    }
+    if (end === -1) continue
+    try {
+      return JSON.parse(text.slice(start, end + 1))
+    } catch {
+      /* not JSON — keep scanning from the next `{` */
     }
   }
   return null

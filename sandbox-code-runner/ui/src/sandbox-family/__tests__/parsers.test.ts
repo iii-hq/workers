@@ -282,6 +282,24 @@ describe('extractFirstJsonObject', () => {
     )
     expect(embedded).toMatchObject({ code: 'S210', message: 'bad path' })
   })
+
+  it('skips a balanced non-JSON candidate and finds a later one', () => {
+    expect(extractFirstJsonObject('brace soup {not json} then {"code":"S001"} tail')).toMatchObject({ code: 'S001' })
+  })
+
+  it('is string-aware — a brace inside a JSON string never unbalances', () => {
+    expect(extractFirstJsonObject('x {"message":"brace } inside","code":"S002"}')).toMatchObject({
+      code: 'S002',
+      message: 'brace } inside',
+    })
+    expect(extractFirstJsonObject('{"message":"escaped \\" quote {"}')).toMatchObject({ message: 'escaped " quote {' })
+  })
+
+  it('returns null only after exhausting the input', () => {
+    expect(extractFirstJsonObject('no objects here')).toBeNull()
+    expect(extractFirstJsonObject('{never closes')).toBeNull()
+    expect(extractFirstJsonObject('{not json} {also not}')).toBeNull()
+  })
 })
 
 describe('lifecycle schemas', () => {

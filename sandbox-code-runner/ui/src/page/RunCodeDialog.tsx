@@ -17,7 +17,7 @@ import {
   type Host,
   Select,
 } from '@iii-dev/console-ui'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { parseExecResult } from './exec'
 import type { ExecRecord } from './records'
 import type { RuntimeInfo } from './store'
@@ -70,10 +70,22 @@ export function RunCodeDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // A previous open's failure must not greet the next one.
+  useEffect(() => {
+    if (open) setError(null)
+  }, [open])
+
   const runtimeOptions = runtimes.map((rt) => ({
     value: rt.runtime_id,
     label: `${rt.lang} · ${rt.runtime_id.slice(0, 11)}…`,
   }))
+
+  // The targeted runtime can leave the live list (reaped, torn down)
+  // while the dialog sits open — drop the selection during render so the
+  // Select and the run() payload always agree.
+  if (runtimeId && !runtimes.some((rt) => rt.runtime_id === runtimeId)) {
+    setRuntimeId(undefined)
+  }
 
   const targetLang = runtimeId
     ? runtimes.find((rt) => rt.runtime_id === runtimeId)?.lang

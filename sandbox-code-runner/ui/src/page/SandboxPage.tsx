@@ -100,18 +100,22 @@ function useRailWidth(side: 'left' | 'right') {
   const onPointerUp = useCallback(
     (e: PointerEvent<HTMLElement>) => {
       if (!drag.current) return
+      // The final width derives from the drag state, so persisting stays
+      // outside the setWidth updater (React may re-invoke updaters).
+      const dx = e.clientX - drag.current.startX
+      const final = clampRailWidth(
+        drag.current.startWidth + (side === 'right' ? -dx : dx),
+      )
       drag.current = null
       try {
         e.currentTarget.releasePointerCapture(e.pointerId)
       } catch {
         /* never captured */
       }
-      setWidth((now) => {
-        persist(now)
-        return now
-      })
+      setWidth(final)
+      persist(final)
     },
-    [persist],
+    [side, persist],
   )
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLElement>) => {
@@ -119,13 +123,11 @@ function useRailWidth(side: 'left' | 'right') {
       const shrink = side === 'right' ? 'ArrowRight' : 'ArrowLeft'
       if (e.key !== grow && e.key !== shrink) return
       e.preventDefault()
-      setWidth((now) => {
-        const next = clampRailWidth(now + (e.key === grow ? 16 : -16))
-        persist(next)
-        return next
-      })
+      const next = clampRailWidth(width + (e.key === grow ? 16 : -16))
+      setWidth(next)
+      persist(next)
     },
-    [side, persist],
+    [side, width, persist],
   )
   const reset = useCallback(() => {
     setWidth(RAIL_WIDTH_DEFAULT)
@@ -332,7 +334,6 @@ export function SandboxPage({
             selected={selected}
             daemonAbsent={state.daemonAbsent}
             onSelect={select}
-            onCreate={() => setCreateOpen(true)}
             onRefresh={refresh}
           />
         </PageSidebar>
@@ -342,6 +343,9 @@ export function SandboxPage({
           role="separator"
           aria-orientation="vertical"
           aria-label="resize the fleet rail (arrow keys, double-click resets)"
+          aria-valuenow={rail.width}
+          aria-valuemin={RAIL_WIDTH_MIN}
+          aria-valuemax={RAIL_WIDTH_MAX}
           tabIndex={0}
           onPointerDown={rail.onPointerDown}
           onPointerMove={rail.onPointerMove}

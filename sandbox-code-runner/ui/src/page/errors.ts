@@ -16,6 +16,15 @@ export interface SandboxError {
   docs_url: string | null
 }
 
+/** `JSON.stringify` that survives circular references and BigInt. */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
 function fromRecord(rec: Record<string, unknown>): SandboxError | null {
   const code = typeof rec.code === 'string' ? rec.code : null
   const message = typeof rec.message === 'string' ? rec.message : null
@@ -41,7 +50,7 @@ export function parseSandboxError(err: unknown): SandboxError {
     : err instanceof Error
       ? err.message
       : rec
-        ? JSON.stringify(err)
+        ? safeStringify(err)
         : String(err)
 
   // A message that IS (or embeds) the JSON payload — a structured record

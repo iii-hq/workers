@@ -20,17 +20,31 @@ export function CopyButton({
   title?: string
 }) {
   const { state, copy } = useCopyFlash(text)
+  // The accessible name stays stable across the flash — the outcome is
+  // announced through the persistent live region instead.
   return (
     <button
       type="button"
       className={`cr-page-copy${state === 'idle' ? '' : ` ${state}`}`}
       onClick={copy}
       title={title ?? 'copy'}
+      aria-label={label ?? title ?? 'copy'}
     >
       <CopyIcon aria-hidden />
       {label ? <span>{label}</span> : null}
-      {state === 'copied' ? <span className="flash">copied</span> : null}
-      {state === 'failed' ? <span className="flash">copy failed</span> : null}
+      {state === 'copied' ? (
+        <span className="flash" aria-hidden>
+          copied
+        </span>
+      ) : null}
+      {state === 'failed' ? (
+        <span className="flash" aria-hidden>
+          copy failed
+        </span>
+      ) : null}
+      <span className="cr-page-visually-hidden" role="status" aria-live="polite">
+        {state === 'copied' ? 'copied' : state === 'failed' ? 'copy failed' : ''}
+      </span>
     </button>
   )
 }

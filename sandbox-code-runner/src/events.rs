@@ -208,6 +208,10 @@ pub trait EventDeliverer: Send + Sync {
     fn deliver(&self, function_id: &str, payload: Value);
 }
 
+/// Ceiling on one subscriber delivery: an unresponsive subscriber fails the
+/// trigger here instead of parking its detached task forever.
+const DELIVERY_TIMEOUT_MS: u64 = 10_000;
+
 /// Fire-and-forget bus delivery, detached onto its own task so the handler
 /// that produced the event never waits on a subscriber round trip and a
 /// slow subscriber cannot delay its siblings. Failures are logged and
@@ -232,7 +236,7 @@ impl EventDeliverer for IiiDeliverer {
                     function_id: function_id.clone(),
                     payload,
                     action: Some(TriggerAction::Void),
-                    timeout_ms: None,
+                    timeout_ms: Some(DELIVERY_TIMEOUT_MS),
                 })
                 .await;
             if let Err(e) = res {

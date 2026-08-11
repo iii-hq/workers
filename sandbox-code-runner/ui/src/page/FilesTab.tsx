@@ -94,6 +94,13 @@ function joinPath(dir: string, name: string): string {
   return dir === '/' ? `/${name}` : `${dir}/${name}`
 }
 
+/** Immediate parent directory of an absolute path: `/a/b` → `/a`, `/x` → `/`. */
+function parentDir(path: string): string {
+  const clean = path.replace(/\/+$/, '')
+  const idx = clean.lastIndexOf('/')
+  return idx <= 0 ? '/' : clean.slice(0, idx)
+}
+
 type OpKind = 'mkdir' | 'rm' | 'mv' | 'chmod'
 
 const OP_FIELDS: Record<OpKind, { a: string; b: string | null }> = {
@@ -149,15 +156,16 @@ export function FilesTab({
   }, [loadDir, sandbox.stopped])
 
   const toggleDir = (path: string) => {
+    // The load side effect stays outside the updater — React may invoke
+    // updaters more than once.
+    const opening = !expanded.has(path)
     setExpanded((prev) => {
       const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else {
-        next.add(path)
-        if (!(path in dirs)) loadDir(path)
-      }
+      if (opening) next.add(path)
+      else next.delete(path)
       return next
     })
+    if (opening && !(path in dirs)) loadDir(path)
   }
 
   const openFile = useCallback(
@@ -189,10 +197,14 @@ export function FilesTab({
   )
 
   const refreshAfterOp = (touched: string[]) => {
-    for (const dir of Object.keys(dirs)) {
-      if (touched.some((t) => t.startsWith(dir))) loadDir(dir)
+    // Reload exactly the listings the op changed: each touched path's
+    // parent (when that dir is loaded) plus the root — once, the Set
+    // dedupes a touched parent that IS the root.
+    const parents = new Set(touched.map(parentDir))
+    parents.add('/')
+    for (const dir of parents) {
+      if (dir === '/' || dir in dirs) loadDir(dir)
     }
-    loadDir('/')
   }
 
   const runOp = () => {

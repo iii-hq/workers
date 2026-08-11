@@ -169,6 +169,11 @@ describe('parseExecResult', () => {
     expect(parseExecResult('garbage').stderr).toBe('')
   })
 
+  it('derives success from exit_code when the field is absent', () => {
+    expect(parseExecResult({ stdout: '', exit_code: 0 }).success).toBe(true)
+    expect(parseExecResult({ stdout: '', exit_code: 1 }).success).toBe(false)
+  })
+
   it('peels a harness result envelope', () => {
     expect(
       parseExecResult({
