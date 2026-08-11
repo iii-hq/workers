@@ -76,8 +76,13 @@ export function EmptyState({
     variant === 'ready' || variant === 'no-provider' ? 'new session' : 'setup'
 
   return (
-    <div className={cn('flex-1 flex items-center justify-center', emptyPad)}>
-      <div className="max-w-[520px] w-full flex flex-col gap-6">
+    <div
+      className={cn(
+        'flex-1 min-h-0 overflow-y-auto flex justify-center',
+        emptyPad,
+      )}
+    >
+      <div className="my-auto max-w-[520px] w-full flex flex-col gap-6">
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           <Prompt symbol="$">{eyebrow}</Prompt>
         </div>
