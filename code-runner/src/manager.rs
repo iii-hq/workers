@@ -717,6 +717,12 @@ impl Manager {
     pub fn idle_ttl_secs(&self) -> u64 {
         self.cfg.load().idle_ttl_secs
     }
+
+    /// The live config handle, for handlers registered outside this struct
+    /// (the guidance hook reads `inject_guidance` per call).
+    pub fn shared_config(&self) -> SharedConfig {
+        self.cfg.clone()
+    }
 }
 
 /// `app` and `app::` both mean `app::`, and that canonical form is what a

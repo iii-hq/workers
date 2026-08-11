@@ -29,6 +29,10 @@ use serde::{Deserialize, Serialize};
 /// the configuration trigger `store()`s a whole new value.
 pub type SharedConfig = Arc<ArcSwap<CodeRunnerConfig>>;
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_max_result_bytes() -> usize {
     32_768
 }
@@ -64,6 +68,10 @@ pub struct CodeRunnerConfig {
     /// Where scratch directories live; unset uses the system temp directory.
     /// Applied at worker start.
     pub scratch_root: Option<String>,
+    /// Append the code-runner usage guidance to agent system prompts (the
+    /// `pre_generate` hook). Off silences the hook without unbinding it.
+    #[serde(default = "default_true")]
+    pub inject_guidance: bool,
     /// Byte ceiling for the serialized `result` echoed in a RunResponse;
     /// larger values are replaced by an omission marker string. 0 disables.
     #[serde(default = "default_max_result_bytes")]
@@ -86,6 +94,7 @@ impl Default for CodeRunnerConfig {
             scratch_mb: 8,
             scratch_files: 64,
             scratch_root: None,
+            inject_guidance: true,
             max_result_bytes: default_max_result_bytes(),
             max_stream_bytes: default_max_stream_bytes(),
         }
@@ -120,6 +129,7 @@ impl CodeRunnerConfig {
             max_stream_bytes: 0,
             default_timeout_ms: 0,
             max_timeout_ms: 0,
+            inject_guidance: false,
             ..c.clone()
         };
         per_call(self) != per_call(next)
@@ -240,6 +250,7 @@ mod tests {
             "scratch_mb",
             "scratch_files",
             "scratch_root",
+            "inject_guidance",
             "max_result_bytes",
             "max_stream_bytes",
         ] {
@@ -257,6 +268,7 @@ mod tests {
             max_stream_bytes: 2,
             default_timeout_ms: 3,
             max_timeout_ms: 4,
+            inject_guidance: false,
             ..base.clone()
         };
         assert!(!base.restart_required(&hot));

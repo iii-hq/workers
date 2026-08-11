@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 pub const GUIDANCE_HOOK_ID: &str = "code-runner::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
     "Internal pre_generate hook: appends code-runner usage guidance to the agent system \
-     prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.";
+     prompt. Bound to harness::hook::pre-generate at worker startup; not called directly. \
+     Silenced by inject_guidance: false in the code-runner configuration.";
 
 /// The single canonical copy of the code-runner usage guidance. Pure USAGE
 /// guidance: the hook only fires while this worker is present, so it carries no
@@ -56,12 +57,13 @@ pub struct PreGenerateMutations {
 /// Build the `pre_generate` mutations for a given base prompt. Pure, so it is
 /// unit-testable.
 ///
-/// Returns NO `system_prompt` when `base` is empty. A missing or renamed
+/// Returns NO `system_prompt` when disabled (`inject_guidance: false` in the
+/// live configuration) or when `base` is empty. A missing or renamed
 /// `generate.system_prompt` deserializes to `""` (schema drift), and a fail-open
 /// hook must PRESERVE the harness's assembled prompt, never replace it with the
 /// guidance alone.
-fn mutations_for(base: &str) -> PreGenerateMutations {
-    if base.is_empty() {
+fn mutations_for(base: &str, enabled: bool) -> PreGenerateMutations {
+    if !enabled || base.is_empty() {
         PreGenerateMutations::default()
     } else {
         PreGenerateMutations {
@@ -72,11 +74,18 @@ fn mutations_for(base: &str) -> PreGenerateMutations {
 
 /// `pre_generate` hook entrypoint. Bound `fail_open`, so an error here never
 /// blocks a turn.
+///
+/// `enabled` is the live `inject_guidance` config knob, read per call by the
+/// registration closure so a configuration save applies to the very next
+/// turn.
+// ponytail: the hook stays bound while disabled — one no-op roundtrip per
+// generation; re-bind the trigger on config change if that ever matters.
 pub async fn handle(
     event: PreGenerateEvent,
+    enabled: bool,
 ) -> Result<PreGenerateResponse, iii_sdk::errors::Error> {
     Ok(PreGenerateResponse {
-        mutations: mutations_for(&event.generate.system_prompt),
+        mutations: mutations_for(&event.generate.system_prompt, enabled),
     })
 }
 
@@ -86,7 +95,7 @@ mod tests {
 
     #[test]
     fn appends_guidance_after_a_real_base() {
-        let m = mutations_for("BASE PROMPT");
+        let m = mutations_for("BASE PROMPT", true);
         let sp = m
             .system_prompt
             .expect("a non-empty base yields a system_prompt mutation");
@@ -104,7 +113,18 @@ mod tests {
         // replacing the whole prompt with the guidance alone. The wire shape
         // must stay `{"mutations": {}}`.
         let wire = serde_json::to_value(PreGenerateResponse {
-            mutations: mutations_for(""),
+            mutations: mutations_for("", true),
+        })
+        .expect("response serializes");
+        assert_eq!(wire, serde_json::json!({ "mutations": {} }));
+    }
+
+    #[test]
+    fn disabled_emits_the_no_op_mutation() {
+        // `inject_guidance: false` must be indistinguishable on the wire from
+        // the fail-safe no-op: `{"mutations": {}}`, never a prompt rewrite.
+        let wire = serde_json::to_value(PreGenerateResponse {
+            mutations: mutations_for("BASE PROMPT", false),
         })
         .expect("response serializes");
         assert_eq!(wire, serde_json::json!({ "mutations": {} }));

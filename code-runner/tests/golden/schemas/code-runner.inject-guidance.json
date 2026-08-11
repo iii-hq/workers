@@ -1,6 +1,6 @@
 {
   "function_id": "code-runner::inject-guidance",
-  "description": "Internal pre_generate hook: appends code-runner usage guidance to the agent system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.",
+  "description": "Internal pre_generate hook: appends code-runner usage guidance to the agent system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly. Silenced by inject_guidance: false in the code-runner configuration.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "PreGenerateEvent",

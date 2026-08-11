@@ -142,8 +142,8 @@ the console's Workers tab (the worker ships its own form there) or via
 `configuration::set`; the fs adapter persists it under
 `./data/configuration/code-runner.yaml`. There is no committed config file;
 `--config <path>` seeds the initial value on first boot only. Reload tier 1:
-**`max_result_bytes`, `max_stream_bytes`, `default_timeout_ms`, and
-`max_timeout_ms` hot-apply on save**; the remaining fields are captured when
+**`max_result_bytes`, `max_stream_bytes`, `default_timeout_ms`,
+`max_timeout_ms`, and `inject_guidance` hot-apply on save**; the remaining fields are captured when
 the engines boot and cannot be rebound under live guest runtimes — a change to
 them is saved immediately and applies at the next worker restart (the reload
 log says so).
@@ -159,6 +159,7 @@ log says so).
 | `scratch_mb` | 8 | `iii.files` quota per runtime; **0 disables it entirely** |
 | `scratch_files` | 64 | max files per runtime |
 | `scratch_root` | unset | where scratch directories live |
+| `inject_guidance` | true | append the code-runner usage guidance to agent system prompts (the `pre_generate` hook); off answers the hook with a no-op |
 | `max_result_bytes` | 32768 | ceiling on the serialized `result`; over it becomes an omission marker (see [Output caps](#output-caps)). **0 disables it** |
 | `max_stream_bytes` | 16384 | ceiling on each of `stdout`/`stderr`; over it keeps head+tail around a truncation marker. **0 disables it** |
 

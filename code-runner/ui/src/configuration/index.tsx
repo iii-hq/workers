@@ -125,6 +125,31 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
+          agent guidance <span className="cr-cfg-live">hot-applies on save</span>
+        </span>
+        <span className="cr-cfg-checkrow">
+          <input
+            id="cr-cfg-inject_guidance"
+            data-field="inject_guidance"
+            type="checkbox"
+            checked={value.inject_guidance !== false}
+            onChange={(e) =>
+              props.onChange({ ...value, inject_guidance: e.target.checked })
+            }
+          />
+          <label htmlFor="cr-cfg-inject_guidance">
+            inject code-runner usage guidance into agent system prompts
+          </label>
+        </span>
+        <span className="hint">
+          The pre-generate hook that teaches agents this worker's surface
+          (return conventions, keep/runtime_id, register_function). Off, the
+          hook answers with a no-op and agents see only the function catalog.
+        </span>
+      </div>
+
+      <div className="cr-cfg-section">
+        <span className="cr-cfg-section-title">
           timeouts <span className="cr-cfg-live">hot-applies on save</span>
         </span>
         {numberField('default_timeout_ms', 'default timeout (ms, when a run omits timeout_ms)')}
