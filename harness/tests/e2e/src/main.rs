@@ -11,6 +11,7 @@ use crate::suite::{run_suite, SubjectConfig, SuiteRunConfig};
 mod catalog;
 mod context;
 mod dashboard;
+mod evidence;
 mod judge;
 mod report;
 mod scenarios;

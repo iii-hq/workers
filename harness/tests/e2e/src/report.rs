@@ -7,6 +7,7 @@ use harness::types::model::Model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::evidence::HarnessExecutionEvidence;
 use crate::scenarios::ExecutionPolicy;
 
 mod summary;
@@ -121,6 +122,15 @@ impl From<&E2eRunReport> for RetryAttemptReport {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CleanupEvidence {
+    pub teardown_attempted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teardown_removed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teardown_error: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct E2eRunReport {
     pub run_id: String,
@@ -135,6 +145,10 @@ pub struct E2eRunReport {
     pub transcript: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SessionMetricsResponseV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_evidence: Option<HarnessExecutionEvidence>,
+    #[serde(default)]
+    pub cleanup: CleanupEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub judge_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,6 +173,8 @@ impl E2eRunReport {
             criteria: Vec::new(),
             transcript: None,
             metrics: None,
+            harness_evidence: None,
+            cleanup: CleanupEvidence::default(),
             judge_attempts: None,
             judge_usage: None,
             cost: CostReport::default(),

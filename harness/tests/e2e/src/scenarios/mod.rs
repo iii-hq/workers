@@ -6,10 +6,13 @@ use std::pin::Pin;
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use harness::functions::metrics::SessionMetricsResponseV1;
+use harness::functions::session_tree::SessionTreeResponseV1;
+use harness::functions::status::StatusReport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::context::E2eContext;
+use crate::evidence::{HarnessExecutionEvidence, SessionTranscript};
 use crate::report::HardGateReport;
 
 pub mod common;
@@ -153,6 +156,10 @@ impl ScenarioSpec {
 
 pub struct ScenarioObservation {
     pub metrics: SessionMetricsResponseV1,
+    pub root_terminal_status: StatusReport,
+    pub session_tree: SessionTreeResponseV1,
+    pub session_transcripts: Vec<SessionTranscript>,
+    pub execution_evidence: HarnessExecutionEvidence,
     pub transcript: Value,
     pub response: String,
 }

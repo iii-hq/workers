@@ -10,6 +10,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::context::E2eContext;
+use crate::evidence::{build_evidence, evaluate_structural_gates};
 use crate::judge::{self, JudgeConfig};
 use crate::report::{
     CriterionReport, E2eReport, E2eRunReport, E2eScenarioReport, FailurePhase, ModelArtifact,
@@ -239,12 +240,17 @@ async fn run_once(
         report.push_failure(error.status, error.phase, error.message);
     }
 
-    if let Err(error) = context.teardown(&session_id).await {
-        report.push_failure(
-            RunStatus::InfrastructureError,
-            FailurePhase::Cleanup,
-            format!("harness::teardown: {error}"),
-        );
+    report.cleanup.teardown_attempted = true;
+    match context.teardown(&session_id).await {
+        Ok(removed) => report.cleanup.teardown_removed = Some(removed),
+        Err(error) => {
+            report.cleanup.teardown_error = Some(error.to_string());
+            report.push_failure(
+                RunStatus::InfrastructureError,
+                FailurePhase::Cleanup,
+                format!("harness::teardown: {error}"),
+            );
+        }
     }
     if let Some(cleanup) = spec.cleanup {
         if let Err(error) = cleanup(context, &run_id).await {
@@ -409,7 +415,7 @@ async fn execute(
         ));
     }
 
-    if let Err(error) = context
+    let root_terminal_status = match context
         .wait_for_turn(
             spec.id,
             session_id,
@@ -419,9 +425,12 @@ async fn execute(
         )
         .await
     {
-        capture_partial_observation(context, session_id, report).await;
-        return Err(subject_failure(FailurePhase::Execute, error.to_string()));
-    }
+        Ok(status) => status,
+        Err(error) => {
+            capture_partial_observation(context, session_id, report).await;
+            return Err(subject_failure(FailurePhase::Execute, error.to_string()));
+        }
+    };
     let metrics = match context
         .wait_for_complete_metrics(spec.id, session_id, stuck_timeout, progress_interval)
         .await
@@ -432,22 +441,49 @@ async fn execute(
             return Err(collection_failure(FailurePhase::Collect, error.to_string()));
         }
     };
-    let transcript = context.transcript(session_id).await.map_err(|error| {
-        RunFailure::new(
-            RunStatus::InfrastructureError,
-            FailurePhase::Collect,
-            error.to_string(),
-        )
-    })?;
+    let session_tree = context
+        .session_tree(session_id)
+        .await
+        .map_err(|error| collection_failure(FailurePhase::Collect, error.to_string()))?;
+    let session_transcripts = context
+        .transcripts_for_tree(&session_tree)
+        .await
+        .map_err(|error| collection_failure(FailurePhase::Collect, error.to_string()))?;
+    let statuses = context
+        .statuses_for_tree(&session_tree)
+        .await
+        .map_err(|error| collection_failure(FailurePhase::Collect, error.to_string()))?;
+    let transcript = session_transcripts
+        .iter()
+        .find(|item| item.session_id == session_id)
+        .map(|item| item.messages.clone())
+        .ok_or_else(|| {
+            collection_failure(
+                FailurePhase::Collect,
+                "root transcript is absent from session tree".into(),
+            )
+        })?;
+    let execution_evidence = build_evidence(
+        &root_terminal_status,
+        &session_tree,
+        &session_transcripts,
+        &statuses,
+    );
+    let structural_gates = evaluate_structural_gates(&metrics, &session_tree, &execution_evidence);
     let response = common::final_response(&transcript);
     let observation = ScenarioObservation {
         metrics,
+        root_terminal_status,
+        session_tree,
+        session_transcripts,
+        execution_evidence,
         transcript,
         response,
     };
     report.transcript = Some(observation.transcript.clone());
     report.metrics = Some(observation.metrics.clone());
-    let objective = (spec.evaluate)(context, &observation, run_id)
+    report.harness_evidence = Some(observation.execution_evidence.clone());
+    let mut objective = (spec.evaluate)(context, &observation, run_id)
         .await
         .map_err(|error| {
             RunFailure::new(
@@ -463,6 +499,17 @@ async fn execute(
             error.to_string(),
         )
     })?;
+    let mut gate_ids = HashSet::new();
+    for gate in structural_gates.iter().chain(objective.hard_gates.iter()) {
+        if !gate_ids.insert(gate.id.as_str()) {
+            return Err(RunFailure::new(
+                RunStatus::InfrastructureError,
+                FailurePhase::Evaluate,
+                format!("duplicate hard gate id {}", gate.id),
+            ));
+        }
+    }
+    objective.hard_gates.splice(0..0, structural_gates);
     report.hard_gates = objective.hard_gates;
     let mut awards = objective.awards;
 

@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use harness::functions::metrics::SessionMetricsResponseV1;
+use harness::functions::session_tree::SessionTreeResponseV1;
 use harness::functions::status::StatusReport;
 use harness::types::turn::TurnStatus;
 use iii_sdk::protocol::TriggerRequest;
@@ -10,6 +12,8 @@ use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
+
+use crate::evidence::SessionTranscript;
 
 pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -273,6 +277,51 @@ impl E2eContext {
             }
             tokio::time::sleep(METRICS_POLL_INTERVAL.min(remaining)).await;
         }
+    }
+
+    pub async fn status(&self, session_id: &str) -> Result<Option<StatusReport>> {
+        self.trigger("harness::status", json!({ "session_id": session_id }))
+            .await
+    }
+
+    pub async fn session_tree(&self, root_session_id: &str) -> Result<SessionTreeResponseV1> {
+        self.trigger(
+            "harness::session-tree",
+            json!({ "root_session_id": root_session_id }),
+        )
+        .await
+    }
+
+    pub async fn transcripts_for_tree(
+        &self,
+        tree: &SessionTreeResponseV1,
+    ) -> Result<Vec<SessionTranscript>> {
+        let mut transcripts = Vec::with_capacity(tree.sessions.len());
+        for node in &tree.sessions {
+            transcripts.push(SessionTranscript {
+                session_id: node.session_id.clone(),
+                parent_session_id: node.parent_session_id.clone(),
+                messages: self.transcript(&node.session_id).await?,
+            });
+        }
+        Ok(transcripts)
+    }
+
+    pub async fn statuses_for_tree(
+        &self,
+        tree: &SessionTreeResponseV1,
+    ) -> Result<HashMap<String, StatusReport>> {
+        let mut statuses = HashMap::with_capacity(tree.sessions.len());
+        for node in &tree.sessions {
+            let status = self.status(&node.session_id).await?.ok_or_else(|| {
+                anyhow!(
+                    "harness::status returned no status for tree session {}",
+                    node.session_id
+                )
+            })?;
+            statuses.insert(node.session_id.clone(), status);
+        }
+        Ok(statuses)
     }
 
     pub async fn transcript(&self, session_id: &str) -> Result<Value> {
