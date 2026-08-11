@@ -73,4 +73,11 @@ describe('TerminalCommandLine', () => {
     expect(SRC).toContain("'copied'")
     expect(SRC).toContain("'failed'")
   })
+
+  it('tracks the flash timer so re-copies and unmount clear it', () => {
+    // Rapid clicks must not let a stale timer cut a fresh flash short,
+    // and a pending reset must not fire into an unmounted component.
+    expect(SRC).toContain('window.clearTimeout(flashRef.current)')
+    expect(SRC).toContain('useEffect')
+  })
 })

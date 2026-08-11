@@ -1,6 +1,6 @@
 import { Copy } from 'lucide-react'
 import type * as React from 'react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Prompt } from '@/components/ui/Prompt'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
@@ -34,13 +34,26 @@ export function TerminalCommandLine({
   className,
 }: TerminalCommandLineProps) {
   const [copyState, setCopyState] = useState<CopyState>('idle')
+  const flashRef = useRef<number | null>(null)
+
+  // A pending flash reset must not fire into an unmounted component.
+  useEffect(
+    () => () => {
+      if (flashRef.current != null) window.clearTimeout(flashRef.current)
+    },
+    [],
+  )
 
   // The shared helper, never the raw async clipboard API: that API is
   // undefined over `http://<LAN-IP>` (insecure context) and would no-op.
   const handleCopy = useCallback(() => {
     void copyTextToClipboard(command).then((ok) => {
       setCopyState(ok ? 'copied' : 'failed')
-      window.setTimeout(() => setCopyState('idle'), 1200)
+      if (flashRef.current != null) window.clearTimeout(flashRef.current)
+      flashRef.current = window.setTimeout(() => {
+        flashRef.current = null
+        setCopyState('idle')
+      }, 1200)
     })
   }, [command])
 

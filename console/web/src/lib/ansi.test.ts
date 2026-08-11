@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ANSI_PARSE_LIMIT, parseAnsi } from './ansi'
+import { ANSI_PARSE_LIMIT, ANSI_SEGMENT_LIMIT, parseAnsi } from './ansi'
 
 const ESC = '\u001b'
 
@@ -132,6 +132,23 @@ describe('parseAnsi', () => {
     expect(segments[0].tone).toBeUndefined()
     expect(segments[0].text).not.toContain(ESC)
     expect(segments[0].text.endsWith('red')).toBe(true)
+  })
+
+  it('does not swallow the byte that aborts a malformed CSI', () => {
+    // A fresh ESC aborts the sequence and still gets processed itself.
+    expect(parseAnsi(`${ESC}[31${ESC}[32mgreen`)).toEqual([
+      { text: 'green', tone: 'ok' },
+    ])
+    // A newline aborts and stays visible text.
+    expect(parseAnsi(`${ESC}[31\nplain`)).toEqual([{ text: '\nplain' }])
+  })
+
+  it('bails to one stripped plain segment past the segment cap', () => {
+    // Alternating tones never merge — one span per char without the cap.
+    const text = `${ESC}[31ma${ESC}[32mb`.repeat(ANSI_SEGMENT_LIMIT)
+    expect(text.length).toBeLessThanOrEqual(ANSI_PARSE_LIMIT)
+    const segments = parseAnsi(text)
+    expect(segments).toEqual([{ text: 'ab'.repeat(ANSI_SEGMENT_LIMIT) }])
   })
 
   it('stays linear-ish on pathological escape soup without throwing', () => {

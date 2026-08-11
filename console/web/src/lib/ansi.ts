@@ -8,7 +8,8 @@
  * `5;n` / `2;r;g;b` params so the params are never misread as standalone
  * codes; every other CSI/OSC sequence is stripped so raw `\x1b[` bytes
  * never leak into rendered text. Pathological input bails to stripped
- * plain text past `ANSI_PARSE_LIMIT` instead of building span soup.
+ * plain text past `ANSI_PARSE_LIMIT` chars or `ANSI_SEGMENT_LIMIT`
+ * segments instead of building span soup.
  */
 
 /** Design-token tone a colored segment renders with. */
@@ -23,6 +24,10 @@ export interface AnsiSegment {
 
 /** Past this many chars the parse bails to one stripped plain segment. */
 export const ANSI_PARSE_LIMIT = 200_000
+
+/** Past this many segments the parse bails the same way — alternating
+    styles under the char cap could otherwise mint one span per char. */
+export const ANSI_SEGMENT_LIMIT = 5_000
 
 /* Fallback strip for the bail path — single-pass regexes, no spans.
    0x1B is the ANSI ESC introducer; 0x07 the BEL terminator for OSC. */
@@ -150,6 +155,9 @@ export function parseAnsi(text: string): AnsiSegment[] {
   }
 
   while (i < text.length) {
+    if (segments.length >= ANSI_SEGMENT_LIMIT) {
+      return [{ text: stripAnsi(text) }]
+    }
     const esc = text.indexOf('\u001b', i)
     if (esc === -1) break
     flush(esc)
@@ -168,12 +176,16 @@ export function parseAnsi(text: string): AnsiSegment[] {
         if (c < 0x20 || c > 0x2f) break
         j++
       }
-      if (j < text.length) {
+      if (j >= text.length) {
+        // Unterminated CSI — drop the tail.
+        i = text.length
+      } else if (text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) {
         if (text[j] === 'm') applySgr(text.slice(esc + 2, paramsEnd), state)
         i = j + 1
       } else {
-        // Unterminated CSI — drop the tail.
-        i = text.length
+        // Aborted CSI (stray ESC, newline, …): drop only the malformed
+        // prefix and let the outer loop handle the aborting byte itself.
+        i = j
       }
     } else if (introducer === ']') {
       // OSC: runs to BEL or ST (ESC \); unterminated swallows the tail —
