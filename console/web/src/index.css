@@ -358,6 +358,35 @@
   animation: wiggle 3s ease-in-out infinite;
 }
 
+/* Discoverability nudge on the workspace edge add-panel zones: the `+`
+   panel sliver shakes for ~0.8s once every 10s until the user adds a
+   panel through a zone for the first time (see pane-controls.tsx). */
+@keyframes edge-nudge {
+  0%,
+  8%,
+  100% {
+    transform: translateX(0);
+  }
+  1%,
+  5% {
+    transform: translateX(-2px);
+  }
+  3%,
+  7% {
+    transform: translateX(2px);
+  }
+}
+
+@utility edge-nudge {
+  animation: edge-nudge 10s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-nudge {
+    animation: none;
+  }
+}
+
 /* sanctioned exception to the no-gradients rule: a soft sweep across the */
 /* text mask used to telegraph "thinking" / "streaming" model states. */
 @keyframes thinking-shimmer {
