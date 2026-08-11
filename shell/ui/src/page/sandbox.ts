@@ -66,14 +66,25 @@ export function grepPayload(
   )
 }
 
-export function catPayload(
+/** Byte cap on a guest read — the same 1 MiB the host editor path lives
+    under (`coder::read-file`'s per-entry cap and exec's default output
+    budget), so a giant guest file never rides `shell::exec` whole. */
+export const GUEST_READ_MAX_BYTES = 1_048_576
+
+export function readPayload(
   path: string,
   target: WireTarget | null,
 ): Record<string, unknown> {
-  // argv form — the path is never shell-tokenized. cwd/env/stdin stay
-  // omitted: all three are host-only (S210 on a sandbox target).
+  // argv form — the path is never shell-tokenized. `head -c` caps the
+  // read guest-side (plain `cat` would load the entire file). cwd/env/
+  // stdin stay omitted: all three are host-only (S210 on a sandbox
+  // target).
   return withTarget(
-    { command: 'cat', args: [path], timeout_ms: 15_000 },
+    {
+      command: 'head',
+      args: ['-c', String(GUEST_READ_MAX_BYTES), path],
+      timeout_ms: 15_000,
+    },
     target,
   )
 }
@@ -100,7 +111,7 @@ export async function guestLs(
   return out.entries ?? []
 }
 
-interface ExecResponse {
+export interface ExecResponse {
   exit_code: number | null
   stdout: string
   stderr: string
@@ -114,13 +125,34 @@ export interface GuestReadResult {
   truncated: boolean
 }
 
+/** Shape a capped exec read into the editor's result: truncated whenever
+    the bytes that came back fall short of the stat-reported size (the
+    `head -c` cap bit), or — when stat gave no size to compare — whenever
+    the output filled the cap exactly. Exported for tests. */
+export function guestReadResult(
+  out: ExecResponse,
+  size: number | null,
+): GuestReadResult {
+  const bytes = new TextEncoder().encode(out.stdout).length
+  return {
+    content: out.stdout,
+    size,
+    binary: out.stdout.includes('\u0000'),
+    truncated:
+      out.stdout_truncated === true ||
+      (size !== null && bytes < size) ||
+      (size === null && bytes >= GUEST_READ_MAX_BYTES),
+  }
+}
+
 /** Guest file read. `shell::fs::read` hands back a stream-channel ref the
     console extension client cannot consume (`host.iii` has no channel
     API), and `coder::read-file` is host-only — so guest reads ride
-    `shell::exec` stdout, the same way the git tab already consumes file
-    bodies (`git show`). Truncation is caught by comparing byte counts
-    against `shell::fs::stat`, since the sandbox exec path does not
-    report host-side truncation. */
+    `shell::exec` stdout (capped by `head -c`, see GUEST_READ_MAX_BYTES),
+    the same way the git tab already consumes file bodies (`git show`).
+    Truncation is caught by comparing byte counts against
+    `shell::fs::stat`, since the sandbox exec path does not report
+    host-side truncation. */
 export async function guestReadFile(
   host: Host,
   sandboxId: string,
@@ -133,22 +165,14 @@ export async function guestReadFile(
   )
   const out = await host.iii.trigger<ExecResponse>(
     'shell::exec',
-    catPayload(path, target),
+    readPayload(path, target),
   )
   if (out.exit_code !== 0) {
     throw new Error(
-      out.stderr.trim() || `cat exited ${out.exit_code ?? 'without a code'}`,
+      out.stderr.trim() || `read exited ${out.exit_code ?? 'without a code'}`,
     )
   }
-  const size = typeof stat.size === 'number' ? stat.size : null
-  return {
-    content: out.stdout,
-    size,
-    binary: out.stdout.includes('\u0000'),
-    truncated:
-      out.stdout_truncated === true ||
-      (size !== null && new TextEncoder().encode(out.stdout).length < size),
-  }
+  return guestReadResult(out, typeof stat.size === 'number' ? stat.size : null)
 }
 
 /** `shell::fs::grep` patterns are always regexes — literal queries get
@@ -288,6 +312,28 @@ export function isFunctionNotFound(message: string): boolean {
   return /\bfunction(\s+\S+)?[\s_-]not[ _-]?(found|registered)\b|\bunknown function\b|\bno such function\b/i.test(
     message,
   )
+}
+
+/** Ordering guard for fleet reads vs pushed snapshots: `begin()` stamps
+    a `sandbox::list` request, `isCurrent` gates its response (a later
+    refresh supersedes it), and `invalidate()` — run on every pushed
+    `{ kind: "fleet" }` snapshot — drops ALL in-flight reads, since the
+    push is fresher than any list response still on the wire. */
+export interface FleetSequencer {
+  begin(): number
+  invalidate(): void
+  isCurrent(seq: number): boolean
+}
+
+export function createFleetSequencer(): FleetSequencer {
+  let latest = 0
+  return {
+    begin: () => ++latest,
+    invalidate: () => {
+      latest += 1
+    },
+    isCurrent: (seq) => seq === latest,
+  }
 }
 
 export type FleetStatus = 'loading' | 'ready' | 'absent' | 'error'

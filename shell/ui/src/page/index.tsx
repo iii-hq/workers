@@ -30,6 +30,8 @@ import {
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
 import {
+  Check,
+  CircleAlert,
   Copy,
   FolderTree,
   GitBranch,
@@ -255,16 +257,33 @@ export function ShellExplorerPage({
     setRoot(nextRoot)
   }, [])
 
-  const changeTarget = useCallback((next: string | null) => {
-    cacheRef.current.clear()
-    setDirtyPaths(new Set())
-    setTabs(EMPTY_TABS)
-    setExpanded([])
-    setDiff(null)
-    // The git tab is host-only chrome — land on files when entering a VM.
-    if (next !== null) setSideTab((t) => (t === 'git' ? 'files' : t))
-    setSandboxId(next)
-  }, [])
+  // Host tabs/expanded survive a round-trip through a sandbox: snapshot
+  // on the way in, restore on the way out — in the same commit, so the
+  // persistence effect never sees (and saves) cleared guest state over
+  // the host state it stored.
+  const hostUiRef = useRef<{ tabs: TabsState; expanded: string[] } | null>(null)
+
+  const changeTarget = useCallback(
+    (next: string | null) => {
+      cacheRef.current.clear()
+      setDirtyPaths(new Set())
+      setDiff(null)
+      if (next !== null) {
+        if (sandboxId === null) hostUiRef.current = { tabs, expanded }
+        setTabs(EMPTY_TABS)
+        setExpanded([])
+        // The git tab is host-only chrome — land on files when entering a VM.
+        setSideTab((t) => (t === 'git' ? 'files' : t))
+      } else {
+        const snap = hostUiRef.current
+        hostUiRef.current = null
+        setTabs(snap?.tabs ?? EMPTY_TABS)
+        setExpanded(snap?.expanded ?? [])
+      }
+      setSandboxId(next)
+    },
+    [sandboxId, tabs, expanded],
+  )
 
   // ── follow the chat's working directory ──
   // Picking another folder in chat re-roots the explorer (the split-screen
@@ -278,7 +297,9 @@ export function ShellExplorerPage({
     if (next === null || root === null || next === root) return
     if (sandboxId !== null) {
       // The chat's folder is a host concept — remember it for the return
-      // to host without evicting the sandbox view.
+      // to host without evicting the sandbox view. The snapshotted tabs
+      // belong to the old root, so the return starts clean instead.
+      hostUiRef.current = null
       setRoot(next)
       return
     }
@@ -329,8 +350,35 @@ export function ShellExplorerPage({
       : undefined
   const effectiveRoot = sandboxId !== null ? GUEST_ROOT : root
 
+  // Click-to-copy with a copied/failed flash — the clipboard write can
+  // reject (denied permission) or be missing entirely (insecure context),
+  // and a silent no-op reads as a working copy.
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyTimerRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+    },
+    [],
+  )
   const copySandboxId = useCallback(() => {
-    if (sandboxId !== null) void navigator.clipboard?.writeText(sandboxId)
+    if (sandboxId === null) return
+    const flash = (state: 'copied' | 'failed') => {
+      setCopyState(state)
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null
+        setCopyState('idle')
+      }, 1400)
+    }
+    if (!navigator.clipboard?.writeText) {
+      flash('failed')
+      return
+    }
+    navigator.clipboard.writeText(sandboxId).then(
+      () => flash('copied'),
+      () => flash('failed'),
+    )
   }, [sandboxId])
 
   const sideTabs =
@@ -347,12 +395,24 @@ export function ShellExplorerPage({
             <span className="id">{truncateMiddle(sandboxId, 24)}</span>
             <button
               type="button"
-              className="shui-copy-btn"
+              className={`shui-copy-btn${copyState === 'idle' ? '' : ` ${copyState}`}`}
               onClick={copySandboxId}
               aria-label="copy sandbox id"
-              title="copy sandbox id"
+              title={
+                copyState === 'copied'
+                  ? 'copied'
+                  : copyState === 'failed'
+                    ? 'copy failed'
+                    : 'copy sandbox id'
+              }
             >
-              <Copy aria-hidden className="shui-copy-icon" />
+              {copyState === 'copied' ? (
+                <Check aria-hidden className="shui-copy-icon" />
+              ) : copyState === 'failed' ? (
+                <CircleAlert aria-hidden className="shui-copy-icon" />
+              ) : (
+                <Copy aria-hidden className="shui-copy-icon" />
+              )}
             </button>
           </span>
         ) : root ? (

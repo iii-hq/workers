@@ -476,6 +476,10 @@
   color: var(--color-ink);
   background: var(--color-surface-hover);
 }
+[data-iii-ui="shell"] .shui-target-refresh:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
 [data-iii-ui="shell"] .shui-refresh-icon {
   width: 12px;
   height: 12px;
@@ -511,6 +515,13 @@
   color: var(--color-ink);
   background: var(--color-surface-hover);
 }
+[data-iii-ui="shell"] .shui-copy-btn:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+/* copied/failed flash — the icon swaps (check / alert) and takes the tone */
+[data-iii-ui="shell"] .shui-copy-btn.copied { color: var(--color-ok); }
+[data-iii-ui="shell"] .shui-copy-btn.failed { color: var(--color-alert); }
 [data-iii-ui="shell"] .shui-copy-icon {
   width: 12px;
   height: 12px;

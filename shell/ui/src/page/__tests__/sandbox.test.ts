@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildGuestTree,
-  catPayload,
+  createFleetSequencer,
   escapeRegex,
+  type ExecResponse,
   type FsEntry,
+  GUEST_READ_MAX_BYTES,
   grepPayload,
+  guestReadResult,
   isFunctionNotFound,
   lsPayload,
   parseFleetEvent,
   parseSandboxList,
+  readPayload,
   sandboxGone,
   sandboxTarget,
   statPayload,
@@ -31,7 +35,7 @@ describe('payload builders', () => {
       lsPayload('/x', null),
       statPayload('/x', null),
       grepPayload({ path: '/x', pattern: 'p', ignoreCase: false }, null),
-      catPayload('/x', null),
+      readPayload('/x', null),
     ]) {
       expect('target' in payload).toBe(false)
     }
@@ -42,7 +46,7 @@ describe('payload builders', () => {
       lsPayload('/x', target),
       statPayload('/x', target),
       grepPayload({ path: '/x', pattern: 'p', ignoreCase: true }, target),
-      catPayload('/x', target),
+      readPayload('/x', target),
     ]) {
       expect(payload.target).toEqual({
         kind: 'sandbox',
@@ -51,13 +55,70 @@ describe('payload builders', () => {
     }
   })
 
-  it('cat rides argv form with no cwd/env/stdin (host-only fields, S210 on sandbox)', () => {
-    const payload = catPayload('/etc/os release', target)
-    expect(payload.command).toBe('cat')
-    expect(payload.args).toEqual(['/etc/os release'])
+  it('read rides capped head -c argv with no cwd/env/stdin (host-only fields, S210 on sandbox)', () => {
+    const payload = readPayload('/etc/os release', target)
+    expect(payload.command).toBe('head')
+    // `-c <cap>` — shell::exec never loads an entire guest file.
+    expect(payload.args).toEqual(['-c', String(GUEST_READ_MAX_BYTES), '/etc/os release'])
     for (const key of ['cwd', 'env', 'stdin']) {
       expect(key in payload).toBe(false)
     }
+  })
+})
+
+describe('guestReadResult', () => {
+  const exec = (stdout: string, stdout_truncated?: boolean): ExecResponse => ({
+    exit_code: 0,
+    stdout,
+    stderr: '',
+    ...(stdout_truncated === undefined ? {} : { stdout_truncated }),
+  })
+
+  it('a capped read shorter than the stat size is truncated', () => {
+    expect(guestReadResult(exec('abc'), 10).truncated).toBe(true)
+  })
+
+  it('a whole read matching the stat size is not', () => {
+    expect(guestReadResult(exec('abc'), 3).truncated).toBe(false)
+  })
+
+  it('without a stat size, filling the cap flags truncation', () => {
+    expect(guestReadResult(exec('x'.repeat(GUEST_READ_MAX_BYTES)), null).truncated).toBe(true)
+    expect(guestReadResult(exec('small'), null).truncated).toBe(false)
+  })
+
+  it('honors the exec-side truncation flag and detects NUL binaries', () => {
+    expect(guestReadResult(exec('abc', true), 3).truncated).toBe(true)
+    expect(guestReadResult(exec(`a${String.fromCharCode(0)}b`), 3).binary).toBe(true)
+    expect(guestReadResult(exec('ab'), 2).binary).toBe(false)
+  })
+
+  it('compares in bytes, not UTF-16 units', () => {
+    // é is one UTF-16 unit but two bytes — a 2-byte stat size means whole.
+    expect(guestReadResult(exec('é'), 2).truncated).toBe(false)
+  })
+})
+
+describe('createFleetSequencer', () => {
+  it('only the latest refresh may apply', () => {
+    const seq = createFleetSequencer()
+    const first = seq.begin()
+    const second = seq.begin()
+    expect(seq.isCurrent(first)).toBe(false)
+    expect(seq.isCurrent(second)).toBe(true)
+  })
+
+  it('a pushed snapshot invalidates every in-flight read', () => {
+    const seq = createFleetSequencer()
+    const inFlight = seq.begin()
+    seq.invalidate()
+    expect(seq.isCurrent(inFlight)).toBe(false)
+  })
+
+  it('a refresh begun after a push is current again', () => {
+    const seq = createFleetSequencer()
+    seq.invalidate()
+    expect(seq.isCurrent(seq.begin())).toBe(true)
   })
 })
 

@@ -12,6 +12,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
 import {
+  createFleetSequencer,
   type FleetState,
   isFunctionNotFound,
   parseFleetEvent,
@@ -37,15 +38,20 @@ export function useSandboxFleet(host: Host): {
     }
   }, [])
 
+  // Overlapping reads resolve in any order — only the latest request may
+  // apply, and a pushed snapshot outranks every read still in flight.
+  const seqRef = useRef(createFleetSequencer())
+
   const refreshFleet = useCallback(() => {
+    const seq = seqRef.current.begin()
     host.iii
       .trigger('sandbox::list', {})
       .then((out) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || !seqRef.current.isCurrent(seq)) return
         setFleet({ status: 'ready', sandboxes: parseSandboxList(out) })
       })
       .catch((err: unknown) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || !seqRef.current.isCurrent(seq)) return
         setFleet((prev) => ({
           status: isFunctionNotFound(errorMessage(err)) ? 'absent' : 'error',
           // A transient failure keeps the last-known fleet — the picker
@@ -66,6 +72,8 @@ export function useSandboxFleet(host: Host): {
       offHandler = host.iii.on(FLEET_HANDLER_FN, (payload: unknown) => {
         const snapshot = parseFleetEvent(payload)
         if (!snapshot || !aliveRef.current) return
+        // The snapshot is fresher than any older list read in flight.
+        seqRef.current.invalidate()
         setFleet({
           status: snapshot.daemonAbsent ? 'absent' : 'ready',
           sandboxes: snapshot.sandboxes,
