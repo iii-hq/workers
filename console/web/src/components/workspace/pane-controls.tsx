@@ -2,10 +2,11 @@
  * Pane chrome for the workspace columns: the drag-to-resize divider
  * between adjacent panes, and the screen-edge zones that grow the split.
  *
- * The edge zones live in the panes container's 6px horizontal padding, so
- * they never sit over pane content (or its scrollbars). Resting a mouse
- * there for a beat — or tapping it on touch — reveals the add-column
- * affordance; clicking that adds an empty pane on that side.
+ * The edge zones live in the panes container's responsive horizontal gutter
+ * (12px on narrow screens, 16px from `sm` up), so they never sit over pane
+ * content or its scrollbars. Resting a mouse there for a beat — or tapping
+ * it on touch — reveals the add-column affordance; clicking that adds an
+ * empty pane on that side.
  */
 
 import { Plus } from 'lucide-react'
@@ -13,9 +14,9 @@ import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 /** Mouse dwell on an edge before the add-column affordance reveals. */
-const EDGE_REVEAL_MS = 500
+const EDGE_REVEAL_MS = 200
 /** Revealed affordance auto-hides after the pointer leaves it. */
-const EDGE_HIDE_MS = 400
+const EDGE_HIDE_MS = 150
 /** Keyboard resize step, as a fraction of the container width. */
 const KEY_STEP = 0.02
 
@@ -106,6 +107,9 @@ export function ResizeHandle({
 interface EdgeAddZoneProps {
   side: 'left' | 'right'
   onAdd: () => void
+  /** First-run discoverability: show the periodic `+` shake on the edge
+      and the hover hint, until the user grows a split once (either side). */
+  nudge?: boolean
 }
 
 /**
@@ -115,7 +119,7 @@ interface EdgeAddZoneProps {
  * to dwell on); clicking the ghost makes it real.
  * Render only while the tab is under MAX_COLUMNS.
  */
-export function EdgeAddZone({ side, onAdd }: EdgeAddZoneProps) {
+export function EdgeAddZone({ side, onAdd, nudge = false }: EdgeAddZoneProps) {
   const [revealed, setRevealed] = useState(false)
   const dwellRef = useRef<number | null>(null)
   const hideRef = useRef<number | null>(null)
@@ -139,7 +143,7 @@ export function EdgeAddZone({ side, onAdd }: EdgeAddZoneProps) {
       className={cn(
         'absolute inset-y-0 z-20 flex pb-1.5 transition-[width] duration-150',
         side === 'left' ? 'left-0' : 'right-0',
-        revealed ? 'w-32' : 'w-1.5',
+        revealed ? 'w-32' : 'w-3 sm:w-4',
       )}
       onPointerEnter={(e) => {
         if (hideRef.current != null) {
@@ -189,18 +193,50 @@ export function EdgeAddZone({ side, onAdd }: EdgeAddZoneProps) {
         >
           <Plus className="size-4" />
           new panel
+          {nudge ? (
+            <span className="px-3 text-center text-[10px] leading-relaxed text-ink-ghost">
+              hover either screen edge — left or right — to add a panel
+            </span>
+          ) : null}
         </button>
       ) : (
-        <button
-          type="button"
-          aria-label={`show the add-panel control (${side} edge)`}
-          onClick={() => {
-            // Touch (and impatient mice): first tap reveals, second adds.
-            clearTimers()
-            setRevealed(true)
-          }}
-          className="h-full w-full cursor-default bg-transparent focus-visible:bg-accent-muted focus-visible:outline-none"
-        />
+        <>
+          <button
+            type="button"
+            aria-label={`show the add-panel control (${side} edge)`}
+            onClick={() => {
+              // Touch (and impatient mice): first tap reveals, second adds.
+              clearTimers()
+              setRevealed(true)
+            }}
+            className="h-full w-full cursor-default bg-transparent focus-visible:bg-accent-muted focus-visible:outline-none"
+          />
+          {nudge ? (
+            // First-run nudge: a sliver of the would-be panel peeking from
+            // the edge — pane-shaped, near-opaque — that shakes once every
+            // 10s (sides run 5s out of phase, so left and right take
+            // turns). Decorative — hovers/clicks fall through to the zone.
+            <span
+              aria-hidden
+              className={cn(
+                'pointer-events-none absolute inset-y-0 flex pb-1.5',
+                side === 'left' ? 'left-0' : 'right-0',
+              )}
+            >
+              <span
+                className={cn(
+                  // rounded-[3px]: the system's one-radius 6px reads pill-like
+                  // on a 16px sliver — deliberately tighter here.
+                  'edge-nudge flex w-3 items-center justify-center rounded-[3px] sm:w-4',
+                  'border border-edge bg-panel/85 backdrop-blur-[2px] text-ink-faint',
+                  side === 'right' && '[animation-delay:-5s]',
+                )}
+              >
+                <Plus className="size-3" />
+              </span>
+            </span>
+          ) : null}
+        </>
       )}
     </div>
   )
