@@ -84,6 +84,7 @@ npx skills add iii-hq/iii --all
 | [`sandbox-code-runner`](sandbox-code-runner/) | Rust | Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. |
 | [`openwiki`](openwiki/) | Node | Source-grounded markdown wiki for any git repository — a lead agent plans the index and writer sub-agents store cited pages via `openwiki::write-page`, with router and heuristic fallback tiers, incremental refresh from git diffs on a per-wiki cron schedule, and a browser UI + JSON API under `/openwiki`. |
 | [`pdf`](pdf/) | Rust | Read PDFs locally — `pdf::classify` routes text-based versus scanned in tens of milliseconds and names the pages that still need OCR, `pdf::to-markdown` converts with headings, lists and tables intact, and `pdf::extract-items` / `::extract-regions` expose positions and the text inside a box. Ships a console page. |
+| [`reflex`](reflex/) | Python | Local tool router for the harness loop — a 14MB on-device model indexes the live function catalog, `reflex::route` proposes the next call with a calibrated confidence score (propose-only, normal policy/approval path executes), and a fail-open shadow mode scores proposals against real turns into a per-rig calibration report. |
 
 ## SDK
 

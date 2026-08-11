@@ -92,6 +92,7 @@ standard_workers:
   - pubsub
   - queue
   - rbac-proxy
+  - reflex
   - sandbox-code-runner
   - session-manager
   - slack

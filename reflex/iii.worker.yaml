@@ -1,0 +1,27 @@
+iii: v1
+name: reflex
+language: python
+deploy: bundle
+manifest: pyproject.toml
+license: Apache-2.0
+tags: [router, functions, local-model, agent, calibration]
+description: >-
+  Local tool router for the harness loop. A 14MB on-device model indexes the
+  live engine function catalog, proposes the next function call with a
+  calibrated confidence score, and shadows real harness turns to build the
+  calibration curve. Propose-only: every call still flows through the normal
+  policy, approval, and dispatch path.
+
+env:
+  III_URL: "ws://localhost:49134"
+
+runtime:
+  base_image: docker.io/iiidev/python:latest
+
+resources:
+  memory: 1024
+  cpus: 1
+
+scripts:
+  install: "pip install -e ."
+  start: "python -m src.main"
