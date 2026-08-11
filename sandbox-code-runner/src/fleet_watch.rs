@@ -48,6 +48,28 @@ fn normalize(list_response: &Value) -> Option<Value> {
     Some(Value::Array(sandboxes))
 }
 
+/// The comparison copy: the daemon derives `age_secs` from an Instant, so
+/// it grows on EVERY read — left in, consecutive snapshots always differ
+/// and change-only emission degrades to a 2s firehose. Equality runs on
+/// this age-stripped copy; the emitted payload keeps the full rows so
+/// subscribers still get fresh ages.
+fn strip_ages(fleet: &Value) -> Value {
+    let Some(rows) = fleet.as_array() else {
+        return fleet.clone();
+    };
+    Value::Array(
+        rows.iter()
+            .map(|row| {
+                let mut row = row.clone();
+                if let Some(obj) = row.as_object_mut() {
+                    obj.remove("age_secs");
+                }
+                row
+            })
+            .collect(),
+    )
+}
+
 fn is_function_not_found(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.contains("function_not_found") || m.contains("not found")
@@ -65,7 +87,7 @@ fn step(
             let Some(fleet) = normalize(&response) else {
                 return (previous.clone(), WATCH_INTERVAL);
             };
-            let next = Reported::Fleet(fleet.clone());
+            let next = Reported::Fleet(strip_ages(&fleet));
             if *previous != next {
                 emitter.emit(Event::fleet(false, fleet));
             }
@@ -134,6 +156,20 @@ mod tests {
         })
     }
 
+    fn fleet_rows(rows: &[(&str, u64, u64, bool)]) -> Value {
+        json!({
+            "sandboxes": rows
+                .iter()
+                .map(|(id, age, in_flight, stopped)| json!({
+                    "sandbox_id": id,
+                    "age_secs": age,
+                    "exec_in_flight": in_flight,
+                    "stopped": stopped,
+                }))
+                .collect::<Vec<_>>()
+        })
+    }
+
     #[tokio::test]
     async fn emits_on_first_read_and_then_only_on_change() {
         let (emitter, recorder) = harness();
@@ -153,6 +189,53 @@ mod tests {
         assert_eq!(seen[0]["daemon_absent"], false);
         assert_eq!(seen[0]["sandboxes"].as_array().unwrap().len(), 1);
         assert_eq!(seen[1]["sandboxes"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_age_only_change_does_not_emit() {
+        let (emitter, recorder) = harness();
+        let (state, _) = step(
+            &Reported::Nothing,
+            Ok(fleet_rows(&[("a", 5, 0, false)])),
+            &emitter,
+        );
+        let (_, _) = step(&state, Ok(fleet_rows(&[("a", 7, 0, false)])), &emitter);
+        assert_eq!(recorder.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn real_changes_emit_and_carry_current_ages() {
+        let (emitter, recorder) = harness();
+        let (state, _) = step(
+            &Reported::Nothing,
+            Ok(fleet_rows(&[("a", 5, 0, false)])),
+            &emitter,
+        );
+        // A new id, an exec_in_flight change, and a stopped flip each emit.
+        let (state, _) = step(
+            &state,
+            Ok(fleet_rows(&[("a", 7, 0, false), ("b", 1, 0, false)])),
+            &emitter,
+        );
+        let (state, _) = step(
+            &state,
+            Ok(fleet_rows(&[("a", 9, 1, false), ("b", 3, 0, false)])),
+            &emitter,
+        );
+        let (_, _) = step(
+            &state,
+            Ok(fleet_rows(&[("a", 11, 0, true), ("b", 5, 0, false)])),
+            &emitter,
+        );
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        // The emitted rows keep FRESH ages even though comparison strips them.
+        assert_eq!(seen[1]["sandboxes"][0]["age_secs"], 7);
+        assert_eq!(seen[1]["sandboxes"][1]["age_secs"], 1);
+        assert_eq!(seen[2]["sandboxes"][0]["exec_in_flight"], 1);
+        assert_eq!(seen[2]["sandboxes"][0]["age_secs"], 9);
+        assert_eq!(seen[3]["sandboxes"][0]["stopped"], true);
+        assert_eq!(seen[3]["sandboxes"][0]["age_secs"], 11);
     }
 
     #[tokio::test]
