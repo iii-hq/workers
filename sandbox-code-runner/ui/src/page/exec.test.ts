@@ -14,6 +14,8 @@ import {
   formatTriggerCommand,
   parseExecResult,
   quoteShellArg,
+  buildShellBgPayload,
+  parseJobStatus,
 } from './exec'
 import { parseRecords } from './records'
 
@@ -249,5 +251,73 @@ describe('parseRecords (state::get value — the bare array, house gotcha)', () 
     expect(rec.exit_code).toBeNull()
     expect(rec.source).toBe('exec')
     expect(parseRecords([{ cmd: 'ls' }, { stdout: 'no cmd' }])).toHaveLength(1)
+  })
+})
+
+describe('buildShellBgPayload', () => {
+  const form = (over: Partial<Parameters<typeof buildShellBgPayload>[1]> = {}) => ({
+    line: 'sleep 30; echo done',
+    workdir: '/ignored',
+    timeoutMs: '60000',
+    env: [{ key: 'K', value: 'v' }],
+    shell: true,
+    detached: true,
+    ...over,
+  })
+
+  it('wraps as sh -c with a sandbox target and carries env + timeout', () => {
+    const p = buildShellBgPayload('sb-1', form())
+    expect(p.command).toBe('sh')
+    expect(p.args).toEqual(['-c', 'sleep 30; echo done'])
+    expect(p.target).toEqual({ kind: 'sandbox', sandbox_id: 'sb-1' })
+    expect(p.env).toEqual({ K: 'v' })
+    expect(p.timeout_ms).toBe(60000)
+    expect('workdir' in p).toBe(false)
+    expect('cwd' in p).toBe(false)
+  })
+
+  it('sends the bare command when the shell toggle is off', () => {
+    const p = buildShellBgPayload('sb-1', form({ shell: false, line: 'sleep 30' }))
+    expect(p.command).toBe('sleep 30')
+    expect('args' in p).toBe(false)
+  })
+})
+
+describe('parseJobStatus', () => {
+  it('reads a finished job into record fields', () => {
+    const patch = parseJobStatus({
+      job: {
+        id: 'j1',
+        status: 'exited',
+        exit_code: 0,
+        stdout: 'done',
+        stderr: '',
+        started_at_ms: 1000,
+        finished_at_ms: 4000,
+      },
+    })
+    expect(patch).toEqual({
+      job_state: 'exited',
+      exit_code: 0,
+      stdout: 'done',
+      stderr: '',
+      timed_out: false,
+      duration_ms: 3000,
+    })
+  })
+
+  it('keeps duration null while running and flags timed_out status', () => {
+    expect(
+      parseJobStatus({ job: { status: 'running', stdout: 'tick', stderr: '' } }),
+    ).toMatchObject({ job_state: 'running', duration_ms: null })
+    expect(
+      parseJobStatus({ job: { status: 'timed_out', stdout: '', stderr: '' } }),
+    ).toMatchObject({ timed_out: true })
+  })
+
+  it('returns null for non-job envelopes', () => {
+    expect(parseJobStatus(null)).toBeNull()
+    expect(parseJobStatus({})).toBeNull()
+    expect(parseJobStatus({ job: { no_status: true } })).toBeNull()
   })
 })

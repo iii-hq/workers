@@ -17,17 +17,22 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { AnsiText } from '../sandbox-family/ansi'
 import {
   buildExecPayload,
-  DETACH_TITLE,
+  buildShellBgPayload,
+  BACKGROUND_TITLE,
   type ExecFormValues,
   exitPill,
   formatTriggerCommand,
   parseExecResult,
+  parseJobStatus,
+  SHELL_BG_FN,
+  SHELL_KILL_FN,
+  SHELL_STATUS_FN,
 } from './exec'
 import { formatMs } from './format'
 import { ChevronIcon } from './icons'
 import { parsePsOutput, type PsProcess } from './ps'
 import type { ExecRecord, ExecRecords } from './records'
-import type { SandboxSummary } from './store'
+import { isFunctionNotFound, type SandboxSummary } from './store'
 import { EXEC_SLOTS } from './store'
 import { CopyButton, type EnvRow, EnvRowsEditor } from './widgets'
 
@@ -56,10 +61,15 @@ function payloadFromRecord(
 function RecordCard({
   sandboxId,
   record,
+  onJobStatus,
+  onJobKill,
 }: {
   sandboxId: string
   record: ExecRecord
+  onJobStatus?(record: ExecRecord): void
+  onJobKill?(record: ExecRecord): void
 }) {
+  const jobLive = record.job_id !== undefined && record.job_state === 'running'
   const pill = exitPill(record)
   const copyCommand =
     record.source === 'run'
@@ -88,7 +98,41 @@ function RecordCard({
         {record.shell && !record.detached ? (
           <span className="cr-page-chip">sh -c</span>
         ) : null}
-        {record.detached ? <span className="cr-page-chip">setsid · detached</span> : null}
+        {record.source === 'job' && record.job_id ? (
+          <span className="cr-page-chip" title={record.job_id}>
+            job {record.job_id.slice(0, 8)}…
+          </span>
+        ) : null}
+        {record.job_state ? (
+          <span
+            className={`cr-page-chip${record.job_state === 'running' ? ' cr-page-chip-live' : ''}`}
+          >
+            {record.job_state}
+          </span>
+        ) : null}
+        {record.detached && record.source !== 'job' ? (
+          <span className="cr-page-chip">setsid · detached</span>
+        ) : null}
+        {jobLive ? (
+          <span className="cr-page-job-actions">
+            <button
+              type="button"
+              className="cr-page-linkish"
+              onClick={() => onJobStatus?.(record)}
+              title="shell::status — pull the job's captured output so far"
+            >
+              refresh output
+            </button>
+            <button
+              type="button"
+              className="cr-page-danger-link"
+              onClick={() => onJobKill?.(record)}
+              title="shell::kill — request termination (a sandbox job runs until its timeout if it ignores the signal)"
+            >
+              kill
+            </button>
+          </span>
+        ) : null}
         {record.workdir ? (
           <span className="cr-page-chip" title={record.workdir}>
             wd {record.workdir}
@@ -342,6 +386,7 @@ export function ConsoleTab({
   const [psOpen, setPsOpen] = useState(false)
   // History cursor: -1 = composing; 0.. = index into `history` (newest first).
   const cursor = useRef(-1)
+  const fellBack = useRef(false)
   const draft = useRef('')
 
   const history = useMemo(() => {
@@ -378,6 +423,65 @@ export function ConsoleTab({
           : undefined,
       source,
     }
+    if (form.detached) {
+      // Delegation first: shell::exec_bg gives a real job (id, captured
+      // output, kill, status) where the setsid wrap gives fire-and-forget.
+      // The wrap survives only as the shell-absent fallback.
+      host.iii
+        .trigger(SHELL_BG_FN, buildShellBgPayload(sandbox.sandbox_id, form))
+        .then((value) => {
+          const rec =
+            value && typeof value === 'object'
+              ? (value as Record<string, unknown>)
+              : null
+          const jobId = typeof rec?.job_id === 'string' ? rec.job_id : null
+          timeline.append({
+            ...base,
+            source: 'job',
+            job_id: jobId ?? undefined,
+            job_state: 'running',
+            stdout: '',
+            stderr: '',
+            exit_code: null,
+            timed_out: false,
+            duration_ms: null,
+            error: jobId ? undefined : 'shell::exec_bg returned no job_id',
+          })
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err)
+          if (isFunctionNotFound(message)) {
+            fellBack.current = true
+            runDirectExec(base, payload, requested)
+            return
+          }
+          timeline.append({
+            ...base,
+            stdout: '',
+            stderr: '',
+            exit_code: null,
+            timed_out: false,
+            duration_ms: null,
+            error: message,
+          })
+        })
+        .finally(() => {
+          if (!fellBack.current) setRunning(false)
+          fellBack.current = false
+        })
+      return
+    }
+    runDirectExec(base, payload, requested)
+  }
+
+  function runDirectExec(
+    base: Omit<
+      ExecRecord,
+      'stdout' | 'stderr' | 'exit_code' | 'timed_out' | 'duration_ms'
+    >,
+    payload: Record<string, unknown>,
+    requested: number,
+  ) {
     host.iii
       // Give the transport headroom past the exec's own deadline, so the
       // daemon's timed_out verdict arrives instead of a client-side abort.
@@ -404,6 +508,35 @@ export function ConsoleTab({
     submit({ line, workdir, timeoutMs, env, shell, detached }, 'exec')
     setLine('')
     cursor.current = -1
+  }
+
+  const patchJob = (record: ExecRecord) => {
+    if (!record.job_id) return
+    host.iii
+      .trigger(SHELL_STATUS_FN, { job_id: record.job_id })
+      .then((value) => {
+        const patch = parseJobStatus(value)
+        if (patch) timeline.update(record.id, patch)
+      })
+      .catch((err: unknown) => {
+        timeline.update(record.id, {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+  }
+
+  const refreshJob = (record: ExecRecord) => patchJob(record)
+
+  const killJob = (record: ExecRecord) => {
+    if (!record.job_id) return
+    host.iii
+      .trigger(SHELL_KILL_FN, { job_id: record.job_id })
+      .then(() => patchJob(record))
+      .catch((err: unknown) => {
+        timeline.update(record.id, {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -497,10 +630,10 @@ export function ConsoleTab({
               className={`cr-page-toggle${detached ? ' on' : ''}`}
               onClick={() => setDetached((v) => !v)}
               disabled={disabled}
-              title={DETACH_TITLE}
+              title={BACKGROUND_TITLE}
               aria-pressed={detached}
             >
-              setsid
+              background
             </button>
           </div>
           <EnvRowsEditor rows={env} onChange={setEnv} disabled={disabled} />
@@ -572,6 +705,8 @@ export function ConsoleTab({
               key={record.id}
               sandboxId={sandbox.sandbox_id}
               record={record}
+              onJobStatus={refreshJob}
+              onJobKill={killJob}
             />
           ))
         )}

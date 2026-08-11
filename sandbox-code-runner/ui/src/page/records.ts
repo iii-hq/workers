@@ -28,8 +28,12 @@ export interface ExecRecord {
   workdir?: string
   timeout_ms?: number
   env?: Record<string, string>
-  /** Composer exec, probe button, or a `run code` result. */
-  source: 'exec' | 'probe' | 'run'
+  /** Composer exec, probe button, `run code` result, or a shell background job. */
+  source: 'exec' | 'probe' | 'run' | 'job'
+  /** shell::exec_bg job id — present only for source 'job'. */
+  job_id?: string
+  /** Last observed shell job status (running/exited/killed/timed_out). */
+  job_state?: string
   stdout: string
   stderr: string
   exit_code: number | null
@@ -61,7 +65,11 @@ export function parseRecords(value: unknown): ExecRecord[] {
           ? (rec.env as Record<string, string>)
           : undefined,
       source:
-        rec.source === 'probe' || rec.source === 'run' ? rec.source : 'exec',
+        rec.source === 'probe' || rec.source === 'run' || rec.source === 'job'
+          ? rec.source
+          : 'exec',
+      job_id: typeof rec.job_id === 'string' ? rec.job_id : undefined,
+      job_state: typeof rec.job_state === 'string' ? rec.job_state : undefined,
       stdout: typeof rec.stdout === 'string' ? rec.stdout : '',
       stderr: typeof rec.stderr === 'string' ? rec.stderr : '',
       exit_code: typeof rec.exit_code === 'number' ? rec.exit_code : null,
@@ -79,6 +87,8 @@ export interface ExecRecords {
   /** True once the persisted timeline for the current sandbox resolved. */
   loaded: boolean
   append(record: ExecRecord): void
+  /** Patch one record in place (job status refresh); persists like append. */
+  update(id: string, patch: Partial<ExecRecord>): void
   clear(): void
 }
 
@@ -164,10 +174,20 @@ export function useExecRecords(
     [scheduleSave],
   )
 
+  const update = useCallback(
+    (id: string, patch: Partial<ExecRecord>) => {
+      setRecords((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, ...patch, id: r.id } : r)),
+      )
+      scheduleSave()
+    },
+    [scheduleSave],
+  )
+
   const clear = useCallback(() => {
     setRecords([])
     scheduleSave()
   }, [scheduleSave])
 
-  return { records, loaded, append, clear }
+  return { records, loaded, append, update, clear }
 }

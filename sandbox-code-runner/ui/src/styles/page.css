@@ -1224,6 +1224,16 @@
   color: var(--color-ink-ghost);
 }
 
+[data-iii-ui="sandbox-code-runner"] .cr-page-job-actions {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-live {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
 /* ── rail resizer ─────────────────────────────────────────────────────
    A slim col-resize splitter between the rail and the workspace. The
    visible line only appears on hover/focus/drag so the resting layout

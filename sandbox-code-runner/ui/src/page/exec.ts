@@ -30,6 +30,11 @@ export interface ExecShape {
  * - `setsid` re-parents the child into its own session, so cleanup signals
  *   aimed at the exec's process group cannot reach it after the call ends.
  */
+export const BACKGROUND_TITLE =
+  'run in the background as a shell worker job (shell::exec_bg with a sandbox ' +
+  'target): you get a job id, captured output, refresh, and kill. When no ' +
+  'shell worker is on the bus this falls back to the setsid wrap below.'
+
 export const DETACH_TITLE =
   "run detached: wraps the command as setsid sh -c '{ <cmd> ; } >/dev/null 2>&1 &' — " +
   'the brace group covers every statement of the line, the & backgrounds it ' +
@@ -82,6 +87,68 @@ export function buildExecPayload(
   for (const row of form.env) if (row.key.trim()) env[row.key.trim()] = row.value
   if (Object.keys(env).length > 0) payload.env = env
   return payload
+}
+
+export const SHELL_BG_FN = 'shell::exec_bg'
+export const SHELL_STATUS_FN = 'shell::status'
+export const SHELL_KILL_FN = 'shell::kill'
+
+/**
+ * Background runs delegate to the shell worker's job model instead of the
+ * setsid fire-and-forget wrap: `shell::exec_bg` with a sandbox target gives
+ * a job_id, captured output, kill, and status — everything the wrap loses.
+ * `workdir` is dropped (shell's `cwd` is host-only); the setsid path stays
+ * as the fallback when no shell worker is on the bus.
+ */
+export function buildShellBgPayload(
+  sandboxId: string,
+  form: ExecFormValues,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = form.shell
+    ? { command: 'sh', args: ['-c', form.line] }
+    : { command: form.line }
+  const timeout = Number(form.timeoutMs)
+  if (form.timeoutMs.trim() && Number.isFinite(timeout) && timeout > 0)
+    payload.timeout_ms = timeout
+  const env: Record<string, string> = {}
+  for (const row of form.env) if (row.key.trim()) env[row.key.trim()] = row.value
+  if (Object.keys(env).length > 0) payload.env = env
+  payload.target = { kind: 'sandbox', sandbox_id: sandboxId }
+  return payload
+}
+
+export interface JobStatusPatch {
+  job_state: string
+  exit_code: number | null
+  stdout: string
+  stderr: string
+  timed_out: boolean
+  duration_ms: number | null
+}
+
+/** `shell::status` → the record fields a job card refreshes. Null when the
+ *  response does not look like a job envelope. */
+export function parseJobStatus(value: unknown): JobStatusPatch | null {
+  const rec =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null
+  const job =
+    rec?.job && typeof rec.job === 'object' && !Array.isArray(rec.job)
+      ? (rec.job as Record<string, unknown>)
+      : null
+  if (!job || typeof job.status !== 'string') return null
+  const started = typeof job.started_at_ms === 'number' ? job.started_at_ms : null
+  const finished =
+    typeof job.finished_at_ms === 'number' ? job.finished_at_ms : null
+  return {
+    job_state: job.status,
+    exit_code: typeof job.exit_code === 'number' ? job.exit_code : null,
+    stdout: typeof job.stdout === 'string' ? job.stdout : '',
+    stderr: typeof job.stderr === 'string' ? job.stderr : '',
+    timed_out: job.status === 'timed_out',
+    duration_ms: started !== null && finished !== null ? finished - started : null,
+  }
 }
 
 /** `iii trigger sandbox::exec '{"sandbox_id":"…"}'` — paste-able as-is. */
