@@ -106,7 +106,7 @@ jobs:
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
         run: |
-          python3 .github/scripts/verify_registry_lock.py \
+          python3 pipeline-scripts/.github/scripts/verify_registry_lock.py \
             --lock "$SMOKE_DIR/project/iii.lock" \
             --required "$WORKER" \
             --worker "$WORKER" \
