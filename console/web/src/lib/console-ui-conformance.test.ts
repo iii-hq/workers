@@ -19,6 +19,7 @@
 import type * as ConsoleUi from '@iii-dev/console-ui'
 import componentNames from '@iii-dev/console-ui/component-names'
 import { describe, expect, it } from 'vitest'
+import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { CodeEditor } from '@/components/ui/CodeEditor'
@@ -55,6 +56,8 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
+import { TerminalStream } from '@/components/ui/TerminalStream'
 import {
   Tooltip,
   TooltipContent,
@@ -71,6 +74,7 @@ import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConf
  * check's data — its keys must equal the manifest.
  */
 const conformance: {
+  AnsiText: typeof ConsoleUi.AnsiText
   Badge: typeof ConsoleUi.Badge
   Button: typeof ConsoleUi.Button
   CodeEditor: typeof ConsoleUi.CodeEditor
@@ -107,11 +111,14 @@ const conformance: {
   TabsContent: typeof ConsoleUi.TabsContent
   TabsList: typeof ConsoleUi.TabsList
   TabsTrigger: typeof ConsoleUi.TabsTrigger
+  TerminalCommandLine: typeof ConsoleUi.TerminalCommandLine
+  TerminalStream: typeof ConsoleUi.TerminalStream
   Tooltip: typeof ConsoleUi.Tooltip
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
   WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
 } = {
+  AnsiText,
   Badge,
   Button,
   CodeEditor,
@@ -148,6 +155,8 @@ const conformance: {
   TabsContent,
   TabsList,
   TabsTrigger,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
