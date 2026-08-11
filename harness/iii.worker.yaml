@@ -9,17 +9,17 @@ tags: [agent, harness, loop, autonomous]
 description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop; spawns sub-agents as child sessions.
 
 dependencies:
-  state: "^0.21.3"
+  state: "^0.22.0"
   queue: "^0.21.2"
   cron: "^0.21.0"
   configuration: "^0.21.6"
   iii-observability: "^0.21.6"
   iii-stream: "^0.21.6"
-  iii-directory: "^1.0.0"
+  iii-directory: "^1.2.0"
   llm-router: "^1.0.0"
   session-manager: "^1.0.0"
   context-manager: "^1.0.0"
   provider-anthropic: "^1.0.0"
   provider-openai: "^1.0.0"
-  shell: "^0.10.3"
-  scrapling: "^0.2.4"
+  shell: "^0.11.0"
+  scrapling: "^0.2.7"
