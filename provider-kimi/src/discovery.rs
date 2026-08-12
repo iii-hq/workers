@@ -2,13 +2,14 @@
 //! catalog's id list — filtered to Kimi/Moonshot chat families, enriched with
 //! the local metadata table (Moonshot's API carries no capability data), and
 //! reconciled through the router's single write path.
-use crate::config::DEFAULT_API_URL;
+use crate::config::{config_from_resolve, ConfigError};
 use crate::curated::{base_id, enrich};
 use crate::errors::upstream_unavailable;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use llm_router::provider_scaffold::sse_transport::error_chain;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
@@ -68,6 +69,7 @@ pub fn parse_live_models(json: &Value) -> Vec<Model> {
 enum FetchOutcome {
     Ok(Vec<Model>),
     AuthFailed,
+    Permanent(String),
     Transient(String),
 }
 
@@ -81,7 +83,14 @@ async fn fetch_live_models(
         .header("authorization", format!("Bearer {credential_value}"));
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {e}")),
+        Err(e) => {
+            let message = format!("models fetch failed: {}", error_chain(&e));
+            return if e.is_builder() {
+                FetchOutcome::Permanent(message)
+            } else {
+                FetchOutcome::Transient(message)
+            };
+        }
     };
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
@@ -101,16 +110,19 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
     let token = state::load_token(iii).await;
     let resolved = router_client::resolve(iii, token.as_deref()).await?;
 
-    let Some(credential) = resolved.credential else {
-        // Key removed: prune the slice so the picker reflects removal
-        // instead of showing stale, unusable rows.
-        router_client::reconcile(iii, vec![], token.as_deref()).await?;
-        return Ok(0);
+    let cfg = match config_from_resolve("", None, &resolved) {
+        Ok(config) => config,
+        Err(ConfigError::NotConfigured) => {
+            // Key removed: prune the slice so the picker reflects removal
+            // instead of showing stale, unusable rows.
+            router_client::reconcile(iii, vec![], token.as_deref()).await?;
+            return Ok(0);
+        }
+        Err(error) => return Err(Error::Handler(format!("provider/config_error: {error}"))),
     };
-    let credential_value = crate::config::credential_parts(&credential);
 
-    let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
-    match fetch_live_models(http, &url, credential_value).await {
+    let url = models_url(&cfg.api_url);
+    match fetch_live_models(http, &url, &cfg.credential_value).await {
         FetchOutcome::Ok(models) => {
             let count = models.len();
             router_client::reconcile(iii, models, token.as_deref()).await?;
@@ -121,6 +133,7 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
             router_client::reconcile(iii, vec![], token.as_deref()).await?;
             Ok(0)
         }
+        FetchOutcome::Permanent(msg) => Err(Error::Handler(msg)),
         // Blip: keep the previous slice (spec § reconcile-to-empty guidance).
         FetchOutcome::Transient(msg) => Err(upstream_unavailable(msg)),
     }

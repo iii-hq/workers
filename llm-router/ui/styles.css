@@ -23,6 +23,48 @@
   color: var(--color-ink);
 }
 
+[data-iii-ui='llm-router'] .llmr-cfg-section-head,
+[data-iii-ui='llm-router'] .llmr-cfg-card-head,
+[data-iii-ui='llm-router'] .llmr-cfg-status-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-section-head {
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-section-head .llmr-cfg-heading {
+  margin: 0;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-refresh,
+[data-iii-ui='llm-router'] .llmr-cfg-status-action {
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid var(--color-rule);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-status-note {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  border-left: 2px solid var(--color-rule-2);
+}
+
 [data-iii-ui='llm-router'] .llmr-cfg-label {
   display: block;
   margin-top: 6px;
@@ -62,9 +104,43 @@
 }
 
 [data-iii-ui='llm-router'] .llmr-cfg-card-head {
+  justify-content: space-between;
   font-size: 13px;
   font-weight: 600;
   color: var(--color-ink);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-badge {
+  padding: 2px 5px;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-faint);
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-badge-ready {
+  color: var(--color-ok);
+  border-color: var(--color-ok);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-badge-warning {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-badge-danger {
+  color: var(--color-alert);
+  border-color: var(--color-alert);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-status-detail {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--color-ink-ghost);
 }
 
 [data-iii-ui='llm-router'] .llmr-cfg-warning {

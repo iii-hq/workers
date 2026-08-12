@@ -89,7 +89,7 @@ pub async fn handle(
         .await
         .map_err(|e| Error::Handler(format!("router::provider::resolve failed: {e}")))?;
     let cfg = config_from_resolve(&req.model, None, &resolved)
-        .map_err(|_| Error::Handler("provider/not_configured: no usable credential".into()))?;
+        .map_err(|error| Error::Handler(format!("provider/config_error: {error}")))?;
 
     let body = build_count_body(
         &cfg.model,

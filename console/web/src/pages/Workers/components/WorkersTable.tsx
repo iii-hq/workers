@@ -40,11 +40,10 @@ const MANAGEMENT_VARIANT: Record<
   internal: 'default',
 }
 
-function statusTone(
-  status: WorkerRow['status'],
-): 'accent' | 'alert' | 'warn' | 'ink' {
-  if (status === 'connected') return 'accent'
-  if (status === 'stopped') return 'ink'
+function statusTone(row: WorkerRow): 'accent' | 'alert' | 'warn' | 'ink' {
+  if (row.quarantined) return 'alert'
+  if (row.status === 'connected') return 'accent'
+  if (row.status === 'stopped') return 'ink'
   return 'warn'
 }
 
@@ -136,9 +135,9 @@ function WorkersTableBody({
                 key={row.id}
                 row={row}
                 stopping={stoppingName === row.name}
-                expanded={expanded === row.name}
+                expanded={expanded === row.id}
                 onToggle={() =>
-                  setExpanded((prev) => (prev === row.name ? null : row.name))
+                  setExpanded((prev) => (prev === row.id ? null : row.id))
                 }
                 onStop={onStop}
                 onConfigure={onConfigure}
@@ -168,7 +167,7 @@ function WorkerTableRow({
   onStop,
   onConfigure,
 }: WorkerTableRowProps) {
-  const expandable = row.status === 'connected'
+  const expandable = row.status === 'connected' && !row.quarantined
   const configureButton = row.configurationId ? (
     <Button
       variant="icon"
@@ -200,13 +199,25 @@ function WorkerTableRow({
   // A span, not a div: this nests inside the expand <button>, which only
   // allows phrasing content.
   const nameCell = (
-    <span className="flex items-center gap-2">
+    <span className="flex items-start gap-2">
       <StatusDot
-        tone={statusTone(row.status)}
-        pulse={row.status === 'connected'}
+        tone={statusTone(row)}
+        pulse={row.status === 'connected' && !row.quarantined}
       />
-      <span className="font-mono text-[13px] text-ink lowercase">
-        {row.name}
+      <span className="flex flex-col gap-0.5 font-mono lowercase">
+        <span className="flex items-center gap-2 text-[13px] text-ink">
+          {row.name}
+          {row.quarantined ? <Badge variant="warn">conflict</Badge> : null}
+        </span>
+        {row.quarantined ? (
+          <span className="max-w-[42rem] whitespace-normal text-[11px] leading-4 text-alert">
+            duplicate pid {row.pid ?? 'unknown'} is quarantined after claiming{' '}
+            {row.identityConflict?.functionId ?? 'a managed function'}. stop
+            that process manually; current pid{' '}
+            {row.identityConflict?.currentWorkerPid ?? 'unknown'} remains
+            active. restart iii only if the conflict remains.
+          </span>
+        ) : null}
       </span>
     </span>
   )
@@ -251,9 +262,18 @@ function WorkerTableRow({
           {formatCell(row.pid)}
         </td>
         <td className="py-2.5 pr-4">
-          <Badge variant={MANAGEMENT_VARIANT[row.managementKind]}>
-            {MANAGEMENT_LABEL[row.managementKind]}
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            <Badge variant={MANAGEMENT_VARIANT[row.managementKind]}>
+              {MANAGEMENT_LABEL[row.managementKind]}
+            </Badge>
+            <Badge
+              variant={
+                row.authority === 'current_managed' ? 'accent' : 'default'
+              }
+            >
+              {row.authority.replace('_', ' ')}
+            </Badge>
+          </div>
         </td>
         <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
           {formatCell(row.tag)}

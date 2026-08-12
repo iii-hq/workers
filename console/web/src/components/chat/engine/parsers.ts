@@ -216,6 +216,17 @@ export const workerSummarySchema = z.object({
   active_invocations: z.number(),
   isolation: z.string().nullable().optional(),
   ip_address: z.string().nullable().optional(),
+  pid: z.number().optional(),
+  authority: z.enum(['current_managed', 'unscoped', 'quarantined']).optional(),
+  quarantined: z.boolean().optional(),
+  identity_conflict: z
+    .object({
+      function_id: z.string(),
+      current_worker_id: z.string(),
+      current_worker_name: z.string().optional(),
+      current_worker_pid: z.number().optional(),
+    })
+    .optional(),
   tag: z.string().nullable().optional(),
 })
 export type WorkerSummary = z.infer<typeof workerSummarySchema>
@@ -248,7 +259,6 @@ export const workerMetricsSchema = z.object({
 export type WorkerMetrics = z.infer<typeof workerMetricsSchema>
 
 export const workerDetailEnvelopeSchema = workerSummarySchema.extend({
-  pid: z.number().optional(),
   internal: z.boolean(),
   latest_metrics: workerMetricsSchema.nullable().optional(),
 })

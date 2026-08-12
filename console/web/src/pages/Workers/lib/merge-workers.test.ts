@@ -289,4 +289,59 @@ describe('mergeWorkers', () => {
 
     expect(rows[0]?.tag).toBe('agent')
   })
+
+  it('keeps duplicate worker pids distinct and exposes quarantine recovery', () => {
+    const rows = mergeWorkers(
+      snapshot({
+        engineWorkers: [
+          {
+            id: 'current',
+            name: 'provider-kimi',
+            status: 'connected',
+            function_count: 4,
+            connected_at_ms: 2,
+            active_invocations: 0,
+            pid: 200,
+            authority: 'current_managed',
+            quarantined: false,
+          },
+          {
+            id: 'orphan',
+            name: 'provider-kimi',
+            status: 'connected',
+            function_count: 0,
+            connected_at_ms: 1,
+            active_invocations: 0,
+            pid: 100,
+            authority: 'quarantined',
+            quarantined: true,
+            identity_conflict: {
+              function_id: 'provider::kimi::stream',
+              current_worker_id: 'current',
+              current_worker_name: 'provider-kimi',
+              current_worker_pid: 200,
+            },
+          },
+        ],
+      }),
+    )
+
+    expect(new Map(rows.map(({ id, pid }) => [id, pid]))).toEqual(
+      new Map([
+        ['orphan', 100],
+        ['current', 200],
+      ]),
+    )
+    const orphan = rows.find((row) => row.id === 'orphan')
+    expect(orphan).toMatchObject({
+      authority: 'quarantined',
+      quarantined: true,
+      stopEnabled: false,
+      identityConflict: {
+        functionId: 'provider::kimi::stream',
+        currentWorkerPid: 200,
+      },
+    })
+    expect(orphan?.stopDisabledReason).toContain('PID')
+  })
 })

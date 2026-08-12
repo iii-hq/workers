@@ -134,6 +134,9 @@ export function useModelPickerSource(
           {
             id: provider,
             display_name: provider,
+            status: available ? 'ready' : 'unavailable',
+            configured: true,
+            conflicted: false,
             supports_model_listing: true,
             available,
           },

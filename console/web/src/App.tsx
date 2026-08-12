@@ -13,6 +13,7 @@ import { EmptyPane } from '@/components/workspace/EmptyPane'
 import { EdgeAddZone, ResizeHandle } from '@/components/workspace/pane-controls'
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
+import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import {
   hashForExtPage,
   useExtPageRoute,
@@ -35,6 +36,7 @@ import {
   extPageIdForScreen,
   MAX_COLUMNS,
   MIN_COLUMN_FRACTION,
+  resolveMobilePane,
   screenForView,
   type TabScreen,
   tabColumns,
@@ -189,6 +191,33 @@ interface WorkspacePanesProps {
   onExtMissing: () => void
 }
 
+const MOBILE_PANE_KEY_PREFIX = 'iii-mobile-active-pane:'
+
+function loadMobilePane(tabId: string): number | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const stored = window.localStorage.getItem(
+      `${MOBILE_PANE_KEY_PREFIX}${tabId}`,
+    )
+    if (stored === null) return null
+    const value = Number(stored)
+    return Number.isInteger(value) && value >= 0 ? value : null
+  } catch {
+    return null
+  }
+}
+
+function saveMobilePane(tabId: string, column: number): void {
+  try {
+    window.localStorage.setItem(
+      `${MOBILE_PANE_KEY_PREFIX}${tabId}`,
+      String(column),
+    )
+  } catch {
+    // Mobile pane selection is best-effort browser state.
+  }
+}
+
 /**
  * The active tab's columns, each a floating panel over the canvas. An
  * unattached column renders the attach affordance instead of a page.
@@ -204,6 +233,31 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
   const { activeTab } = workspace
   const columns = tabColumns(activeTab)
   const containerRef = useRef<HTMLDivElement>(null)
+  const [narrowRef, narrow] = useContainerNarrow(768)
+  const setContainerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node
+      narrowRef(node)
+    },
+    [narrowRef],
+  )
+  const [mobileColumn, setMobileColumn] = useState(0)
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
+  const screensKey = `${activeTab.id}:${columns}:${activeTab.screens.join('|')}`
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: screensKey encodes the tab id, column count, and index-aligned screens without depending on store object identity
+  useEffect(() => {
+    const tab = activeTabRef.current
+    const next = resolveMobilePane(tab, loadMobilePane(tab.id))
+    setMobileColumn(next)
+    saveMobilePane(tab.id, next)
+  }, [screensKey])
+
+  const selectMobileColumn = (column: number) => {
+    setMobileColumn(column)
+    saveMobilePane(activeTab.id, column)
+  }
 
   // First-run discoverability for the edge add zones: nudge until the user
   // adds a panel THROUGH a zone (either side), then remember in localStorage
@@ -278,72 +332,122 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
 
   return (
     <div
-      ref={containerRef}
-      className="relative flex-1 flex min-h-0 px-3 pb-1.5 sm:px-4"
+      ref={setContainerRef}
+      className={cn(
+        'relative flex-1 flex min-h-0 px-3 pb-1.5 sm:px-4',
+        narrow && 'flex-col gap-1.5',
+      )}
     >
-      {Array.from({ length: columns }, (_, column) => {
-        const screen = activeTab.screens[column] ?? null
-        // 'right' only for the rightmost column of a multi-column tab —
-        // a full-width single column keeps the default 'left' orientation.
-        const panelSide: PanelSide =
-          columns > 1 && column === columns - 1 ? 'right' : 'left'
-        // The header ✕ on every screen: in a split the column goes; the
-        // last column detaches its screen instead (back to the attach
-        // affordance) — a tab never loses its final pane.
-        const closePane = () =>
-          columns > 1
-            ? workspace.removeColumn(activeTab.id, column)
-            : workspace.detachScreen(activeTab.id, column)
-        const pane = (
-          <div
-            // biome-ignore lint/suspicious/noArrayIndexKey: the column POSITION is the identity — the composite key deliberately remounts a pane when its tab or attached screen changes
-            key={`${activeTab.id}:${column}:${screen ?? 'empty'}`}
-            // ×1000: flex-grow sums below 1 only distribute that fraction
-            // of the free space — scaling keeps the ratios AND fills the row.
-            style={{ flexGrow: sizes[column] * 1000 }}
-            className="basis-0 flex flex-col min-w-0 min-h-0 rounded-sm border border-edge bg-panel overflow-hidden"
-          >
-            {screen === null ? (
-              <EmptyPane
-                screenOptions={screenOptions}
-                onAttach={(next) =>
-                  workspace.attachScreen(activeTab.id, column, next)
-                }
-                onRemove={
-                  columns > 1
-                    ? () => workspace.removeColumn(activeTab.id, column)
-                    : undefined
-                }
-              />
-            ) : (
-              <ScreenBody
-                screen={screen}
-                panelSide={panelSide}
-                tabId={activeTab.id}
-                onClose={closePane}
-                onExtMissing={onExtMissing}
-              />
-            )}
-          </div>
-        )
-        if (column === 0) return pane
-        return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: handles are positional by nature
-          <Fragment key={`divider:${activeTab.id}:${column}`}>
-            <ResizeHandle
-              value={sizes[column - 1] * 100}
-              onResize={(delta) => resizePair(column - 1, delta)}
-              onCommit={commitResize}
-              containerWidth={() =>
-                containerRef.current?.getBoundingClientRect().width ?? 0
-              }
-            />
-            {pane}
-          </Fragment>
-        )
-      })}
+      {narrow ? (
+        <fieldset
+          className="m-0 flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto border-0 p-0 pb-0.5 font-mono text-[11px]"
+          aria-label="workspace panes"
+        >
+          {Array.from({ length: columns }, (_, column) => {
+            const screen = activeTab.screens[column] ?? null
+            const label =
+              screenOptions.find((option) => option.value === screen)?.label ??
+              'empty'
+            return (
+              <button
+                // biome-ignore lint/suspicious/noArrayIndexKey: pane selectors are index-aligned with persisted columns
+                key={column}
+                type="button"
+                aria-pressed={mobileColumn === column}
+                onClick={() => selectMobileColumn(column)}
+                className={cn(
+                  'shrink-0 rounded-sm border px-2.5 py-1.5 lowercase transition-colors',
+                  mobileColumn === column
+                    ? 'border-ink bg-ink text-bg'
+                    : 'border-rule bg-panel text-ink-faint hover:text-ink',
+                )}
+              >
+                {label}
+              </button>
+            )
+          })}
+          {columns < MAX_COLUMNS ? (
+            <button
+              type="button"
+              aria-label="add workspace pane"
+              className="shrink-0 rounded-sm border border-rule bg-panel px-2.5 py-1.5 text-ink-faint hover:text-ink"
+              onClick={() => {
+                workspace.addColumn(activeTab.id, 'right')
+                selectMobileColumn(columns)
+              }}
+            >
+              + pane
+            </button>
+          ) : null}
+        </fieldset>
+      ) : null}
 
-      {columns < MAX_COLUMNS ? (
+      {Array.from({ length: columns }, (_, column) => column)
+        .filter((column) => !narrow || column === mobileColumn)
+        .map((column) => {
+          const screen = activeTab.screens[column] ?? null
+          // 'right' only for the rightmost column of a multi-column tab —
+          // a full-width single column keeps the default 'left' orientation.
+          const panelSide: PanelSide =
+            !narrow && columns > 1 && column === columns - 1 ? 'right' : 'left'
+          // The header ✕ on every screen: in a split the column goes; the
+          // last column detaches its screen instead (back to the attach
+          // affordance) — a tab never loses its final pane.
+          const closePane = () =>
+            columns > 1
+              ? workspace.removeColumn(activeTab.id, column)
+              : workspace.detachScreen(activeTab.id, column)
+          const pane = (
+            <div
+              key={`${activeTab.id}:${column}:${screen ?? 'empty'}`}
+              // ×1000: flex-grow sums below 1 only distribute that fraction
+              // of the free space — scaling keeps the ratios AND fills the row.
+              style={{ flexGrow: narrow ? 1 : sizes[column] * 1000 }}
+              className={cn(
+                'basis-0 flex flex-col min-w-0 min-h-0 rounded-sm border border-edge bg-panel overflow-hidden',
+                narrow && 'w-full',
+              )}
+            >
+              {screen === null ? (
+                <EmptyPane
+                  screenOptions={screenOptions}
+                  onAttach={(next) =>
+                    workspace.attachScreen(activeTab.id, column, next)
+                  }
+                  onRemove={
+                    columns > 1
+                      ? () => workspace.removeColumn(activeTab.id, column)
+                      : undefined
+                  }
+                />
+              ) : (
+                <ScreenBody
+                  screen={screen}
+                  panelSide={panelSide}
+                  tabId={activeTab.id}
+                  onClose={closePane}
+                  onExtMissing={onExtMissing}
+                />
+              )}
+            </div>
+          )
+          if (narrow || column === 0) return pane
+          return (
+            <Fragment key={`divider:${activeTab.id}:${column}`}>
+              <ResizeHandle
+                value={sizes[column - 1] * 100}
+                onResize={(delta) => resizePair(column - 1, delta)}
+                onCommit={commitResize}
+                containerWidth={() =>
+                  containerRef.current?.getBoundingClientRect().width ?? 0
+                }
+              />
+              {pane}
+            </Fragment>
+          )
+        })}
+
+      {!narrow && columns < MAX_COLUMNS ? (
         <>
           <EdgeAddZone
             side="left"

@@ -4,6 +4,7 @@
 use crate::errors::classify;
 use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
 use futures::StreamExt;
+use llm_router::provider_scaffold::sse_transport::error_chain;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -57,11 +58,16 @@ async fn run_upstream(
     let resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
+            let kind = if e.is_builder() {
+                ErrorKind::Permanent
+            } else {
+                ErrorKind::Transient
+            };
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("kimi fetch failed: {e}"),
+                    &format!("kimi fetch failed: {}", error_chain(&e)),
                     &args.model,
-                    ErrorKind::Transient,
+                    kind,
                 ))
                 .await;
             return;
@@ -253,6 +259,27 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+            }
+            other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn builder_error_is_permanent_and_surfaces_source_chain() {
+        let mut request = args("http://127.0.0.1:1/v1/chat/completions".into());
+        request.headers = vec![("authorization", "Bearer sk-bad\ninjected".into())];
+        let events = drain(spawn_upstream(reqwest::Client::new(), request)).await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+                let message = error.error_message.as_deref().unwrap_or_default();
+                assert!(
+                    message.starts_with("kimi fetch failed: "),
+                    "got {message:?}"
+                );
+                assert_ne!(message, "kimi fetch failed: builder error");
+                assert!(message.matches(':').count() >= 2, "got {message:?}");
             }
             other => panic!("want error, got {other:?}"),
         }

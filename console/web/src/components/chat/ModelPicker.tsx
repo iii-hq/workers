@@ -111,8 +111,16 @@ export function ModelPicker({
   // catalog models would only fail with `provider_unavailable` at dispatch.
   const unavailableSet = new Set(
     (ctx?.presentProviders ?? [])
-      .filter((p) => p.available === false)
+      .filter((p) => p.status === 'unavailable' || p.available === false)
       .map((p) => p.id),
+  )
+  const needsConfigurationSet = new Set(
+    (ctx?.presentProviders ?? [])
+      .filter((p) => p.status === 'needs_configuration')
+      .map((p) => p.id),
+  )
+  const conflictSet = new Set(
+    (ctx?.presentProviders ?? []).filter((p) => p.conflicted).map((p) => p.id),
   )
 
   const optionsById = useMemo(
@@ -258,8 +266,18 @@ export function ModelPicker({
               className="max-h-[50vh] overflow-y-auto p-1"
             >
               {groups.map((group) => {
-                const unavailable = unavailableSet.has(group.label)
-                const unconfigured = !unavailable && group.options.length === 0
+                const conflicted = conflictSet.has(group.label)
+                const unavailable =
+                  !conflicted && unavailableSet.has(group.label)
+                const unconfigured =
+                  !conflicted &&
+                  !unavailable &&
+                  needsConfigurationSet.has(group.label)
+                const empty =
+                  !conflicted &&
+                  !unavailable &&
+                  !unconfigured &&
+                  group.options.length === 0
                 const expanded = expandedProvider === group.label
                 return (
                   <DropdownMenuPrimitive.Group key={group.label}>
@@ -288,13 +306,21 @@ export function ModelPicker({
                         <span className="truncate text-[11px] uppercase tracking-[0.12em]">
                           {group.label}
                         </span>
-                        {unavailable ? (
+                        {conflicted ? (
+                          <span className="text-[10px] lowercase tracking-normal text-danger">
+                            worker conflict
+                          </span>
+                        ) : unavailable ? (
                           <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
                             not loaded
                           </span>
                         ) : unconfigured ? (
                           <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
                             not configured
+                          </span>
+                        ) : empty ? (
+                          <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
+                            no models
                           </span>
                         ) : null}
                       </DropdownMenuPrimitive.Item>
@@ -327,7 +353,7 @@ export function ModelPicker({
                               }
                             }}
                             value={option.id}
-                            disabled={unavailable}
+                            disabled={unavailable || conflicted}
                             onSelect={(event) => {
                               event.preventDefault()
                               const { nextEfforts, nextEffort } =

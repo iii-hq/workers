@@ -9,5 +9,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { LlmRouterConfigForm } from './src/configuration'
 
 export default function setup(host: Host) {
-  host.configForms.register('llm-router', LlmRouterConfigForm)
+  host.configForms.register('llm-router', (props) => (
+    <LlmRouterConfigForm {...props} host={host} />
+  ))
 }

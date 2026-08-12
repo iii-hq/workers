@@ -82,14 +82,10 @@ async fn run_stream_call(
     };
     let cfg = match config_from_resolve(&model, input.max_output_tokens, &resolved) {
         Ok(c) => c,
-        Err(_) => {
+        Err(error) => {
             let _ = send_event(
                 sink,
-                &synthetic_error_event(
-                    "provider kimi not configured (no api_key in the llm-router entry and MOONSHOT_API_KEY unset)",
-                    &model,
-                    ErrorKind::Permanent,
-                ),
+                &synthetic_error_event(&error.to_string(), &model, ErrorKind::Permanent),
             );
             return;
         }

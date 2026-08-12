@@ -16,9 +16,25 @@ pub struct KimiConfig {
     pub api_url: String,
 }
 
-/// No usable credential — the caller turns this into a permanent error frame.
 #[derive(Debug, PartialEq, Eq)]
-pub struct NotConfigured;
+pub enum ConfigError {
+    NotConfigured,
+    InvalidApiUrl(String),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::NotConfigured => f.write_str(
+                "provider kimi not configured (no api_key in the llm-router entry and MOONSHOT_API_KEY unset)",
+            ),
+            ConfigError::InvalidApiUrl(url) => write!(
+                f,
+                "provider kimi has an invalid endpoint url: {url:?} (must be an absolute http(s) URL)"
+            ),
+        }
+    }
+}
 
 /// The single Credential → bearer secret mapping; streaming and discovery
 /// must agree on it. Moonshot takes `Authorization: Bearer` for both shapes.
@@ -33,21 +49,29 @@ pub fn config_from_resolve(
     model: &str,
     effective_max_tokens: Option<u64>,
     resolved: &ProviderResolveResponse,
-) -> Result<KimiConfig, NotConfigured> {
+) -> Result<KimiConfig, ConfigError> {
     let credential_value = match &resolved.credential {
-        Some(credential) => credential_parts(credential).to_string(),
-        None => return Err(NotConfigured),
+        Some(credential) => credential_parts(credential).trim().to_string(),
+        None => return Err(ConfigError::NotConfigured),
     };
+    if credential_value.is_empty() {
+        return Err(ConfigError::NotConfigured);
+    }
+    let api_url = match resolved.api_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => url.to_string(),
+        _ => DEFAULT_API_URL.to_string(),
+    };
+    match reqwest::Url::parse(&api_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+        _ => return Err(ConfigError::InvalidApiUrl(api_url)),
+    }
     Ok(KimiConfig {
         credential_value,
         model: model.to_string(),
         max_tokens: effective_max_tokens
             .or(resolved.max_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS),
-        api_url: resolved
-            .api_url
-            .clone()
-            .unwrap_or_else(|| DEFAULT_API_URL.to_string()),
+        api_url,
     })
 }
 
@@ -73,7 +97,47 @@ mod tests {
     fn missing_credential_is_not_configured() {
         assert_eq!(
             config_from_resolve("m", None, &resolved(None, None)).unwrap_err(),
-            NotConfigured
+            ConfigError::NotConfigured
+        );
+    }
+
+    #[test]
+    fn trims_credentials_and_rejects_blank_values() {
+        let cfg = config_from_resolve(
+            "m",
+            None,
+            &resolved(
+                Some(Credential::ApiKey {
+                    key: " sk\n".into(),
+                }),
+                None,
+            ),
+        )
+        .unwrap();
+        assert_eq!(cfg.credential_value, "sk");
+
+        let err = config_from_resolve(
+            "m",
+            None,
+            &resolved(Some(Credential::ApiKey { key: " \n".into() }), None),
+        )
+        .unwrap_err();
+        assert_eq!(err, ConfigError::NotConfigured);
+    }
+
+    #[test]
+    fn trims_and_validates_api_url() {
+        let mut response = resolved(Some(Credential::ApiKey { key: "sk".into() }), None);
+        response.api_url = Some(" https://proxy.example/v1/chat/completions ".into());
+        assert_eq!(
+            config_from_resolve("m", None, &response).unwrap().api_url,
+            "https://proxy.example/v1/chat/completions"
+        );
+
+        response.api_url = Some("localhost:1234".into());
+        assert_eq!(
+            config_from_resolve("m", None, &response).unwrap_err(),
+            ConfigError::InvalidApiUrl("localhost:1234".into())
         );
     }
 

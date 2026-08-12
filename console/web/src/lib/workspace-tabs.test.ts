@@ -4,6 +4,7 @@ import {
   parseActiveTabId,
   parseWorkspaceTabs,
   resolveActiveTab,
+  resolveMobilePane,
   screenForView,
   screenLabel,
   tabColumns,
@@ -260,5 +261,31 @@ describe('withScreenDetached', () => {
     const parsed = parseWorkspaceTabs({ workspace: { tabs: [detached] } })
     expect(parsed).toHaveLength(1)
     expect(parsed[0].screens).toEqual([null])
+  })
+})
+
+describe('resolveMobilePane', () => {
+  const split: WorkspaceTab = {
+    id: 'mobile',
+    columns: 3,
+    screens: ['traces', 'chat', 'workers'],
+  }
+
+  it('keeps a valid per-tab selection', () => {
+    expect(resolveMobilePane(split, 2)).toBe(2)
+  })
+
+  it('prefers chat when the stored index is missing or stale', () => {
+    expect(resolveMobilePane(split, null)).toBe(1)
+    expect(resolveMobilePane(split, 9)).toBe(1)
+  })
+
+  it('falls back to the first pane when chat is absent', () => {
+    expect(
+      resolveMobilePane(
+        { id: 'no-chat', columns: 2, screens: ['traces', 'workers'] },
+        null,
+      ),
+    ).toBe(0)
   })
 })

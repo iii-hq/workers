@@ -7,6 +7,7 @@ import {
 import { ArrowUp, Loader2, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
+import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
@@ -181,6 +182,7 @@ export function Composer({
   onEditQueued,
   onBrowseChange,
 }: ComposerProps) {
+  const [containerRef, narrow] = useContainerNarrow(520)
   const [attachments, setAttachments] = useState<Attachment[]>(
     initialAttachments ?? [],
   )
@@ -298,7 +300,10 @@ export function Composer({
   }, [])
 
   return (
-    <div className="rounded-xl bg-panel-raised shadow-raised">
+    <div
+      ref={containerRef}
+      className="rounded-xl bg-panel-raised shadow-raised"
+    >
       {attachments.length > 0 ? (
         <div className="flex flex-wrap gap-2 p-3 border-b border-rule-2">
           {attachments.map((a) => (
@@ -337,7 +342,12 @@ export function Composer({
         />
       </div>
 
-      <div className="flex min-w-0 items-center gap-2 px-3 py-2">
+      <div
+        className={cn(
+          'flex min-w-0 gap-2 px-3 py-2',
+          narrow ? 'flex-col items-stretch' : 'items-center',
+        )}
+      >
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <ModePicker
             value={mode}
@@ -378,11 +388,19 @@ export function Composer({
             onThinkingLevelChange={onThinkingLevelChange}
             disabled={optionsDisabled}
             loading={catalogLoading}
-            className="min-w-0 flex-1"
+            className={cn(
+              'min-w-0 flex-1',
+              narrow && 'order-first basis-full w-full',
+            )}
           />
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div
+          className={cn(
+            'flex shrink-0 items-center gap-1',
+            narrow && 'w-full justify-end',
+          )}
+        >
           <AttachmentButton
             onAttach={handleAttach}
             disabled={inputDisabled}

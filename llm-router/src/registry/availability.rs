@@ -1,7 +1,9 @@
 //! `router::provider::list` — registered providers with configured/available status.
 use std::sync::Arc;
 
-use crate::types::router::{ProviderInfo, ProviderListRequest, ProviderListResponse};
+use crate::types::router::{
+    ProviderInfo, ProviderListRequest, ProviderListResponse, ProviderStatus,
+};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 
@@ -23,6 +25,13 @@ pub fn make_provider_list(
             let mut providers = Vec::new();
             for rec in registry.list().await {
                 let resolved = resolve_provider_config(&config, &rec.declaration);
+                let status = if !rec.available {
+                    ProviderStatus::Unavailable
+                } else if resolved.configured {
+                    ProviderStatus::Ready
+                } else {
+                    ProviderStatus::NeedsConfiguration
+                };
                 providers.push(ProviderInfo {
                     id: rec.declaration.id.clone(),
                     display_name: rec
@@ -30,6 +39,8 @@ pub fn make_provider_list(
                         .display_name
                         .clone()
                         .unwrap_or_else(|| rec.declaration.id.clone()),
+                    worker_name: rec.declaration.worker_id.clone(),
+                    status,
                     configured: resolved.configured,
                     available: rec.available,
                     supports_model_listing: rec.declaration.supports_model_listing.unwrap_or(false),

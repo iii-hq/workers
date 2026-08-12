@@ -24,8 +24,17 @@
           "id": {
             "type": "string"
           },
+          "status": {
+            "$ref": "#/definitions/ProviderStatus"
+          },
           "supports_model_listing": {
             "type": "boolean"
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -33,9 +42,18 @@
           "configured",
           "display_name",
           "id",
+          "status",
           "supports_model_listing"
         ],
         "type": "object"
+      },
+      "ProviderStatus": {
+        "enum": [
+          "ready",
+          "needs_configuration",
+          "unavailable"
+        ],
+        "type": "string"
       }
     },
     "properties": {

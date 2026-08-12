@@ -195,6 +195,10 @@ export async function subscribeProviderChanges(
 export interface ProviderListEntry {
   id: string
   display_name: string
+  worker_name?: string
+  status: 'ready' | 'needs_configuration' | 'unavailable'
+  configured: boolean
+  conflicted: boolean
   supports_model_listing: boolean
   /**
    * The provider WORKER is loaded/connected. `false` = the router knows the
@@ -205,6 +209,63 @@ export interface ProviderListEntry {
   available: boolean
 }
 
+export function parseProviderList(
+  rows: unknown,
+  workers: unknown,
+): ProviderListEntry[] {
+  const conflictedWorkerNames = new Set<string>()
+  if (Array.isArray(workers)) {
+    for (const raw of workers) {
+      if (!raw || typeof raw !== 'object') continue
+      const worker = raw as Record<string, unknown>
+      if (
+        worker.quarantined === true &&
+        typeof worker.name === 'string' &&
+        worker.name
+      ) {
+        conflictedWorkerNames.add(worker.name)
+      }
+    }
+  }
+  if (!Array.isArray(rows)) return []
+  const out: ProviderListEntry[] = []
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue
+    const provider = raw as Record<string, unknown>
+    const id = typeof provider.id === 'string' ? provider.id : ''
+    if (!id) continue
+    const workerName =
+      typeof provider.worker_name === 'string'
+        ? provider.worker_name
+        : undefined
+    const available = provider.available !== false
+    const configured = provider.configured !== false
+    out.push({
+      id,
+      display_name:
+        typeof provider.display_name === 'string' ? provider.display_name : id,
+      worker_name: workerName,
+      status:
+        provider.status === 'ready' ||
+        provider.status === 'needs_configuration' ||
+        provider.status === 'unavailable'
+          ? provider.status
+          : !available
+            ? 'unavailable'
+            : !configured
+              ? 'needs_configuration'
+              : 'ready',
+      configured,
+      conflicted: workerName
+        ? conflictedWorkerNames.has(workerName)
+        : conflictedWorkerNames.has(`provider-${id}`),
+      supports_model_listing: provider.supports_model_listing === true,
+      available,
+    })
+  }
+  return out
+}
+
 /**
  * List providers present as worker processes (regardless of whether they have
  * a credential). Used so the picker can surface a present-but-unconfigured
@@ -212,25 +273,11 @@ export interface ProviderListEntry {
  */
 export async function fetchProviderList(): Promise<ProviderListEntry[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<{ providers?: unknown }>(
-    'router::provider::list',
-    {},
-  )
-  const rows = res?.providers
-  if (!Array.isArray(rows)) return []
-  const out: ProviderListEntry[] = []
-  for (const raw of rows) {
-    if (!raw || typeof raw !== 'object') continue
-    const o = raw as Record<string, unknown>
-    const id = typeof o.id === 'string' ? o.id : ''
-    if (!id) continue
-    out.push({
-      id,
-      display_name: typeof o.display_name === 'string' ? o.display_name : id,
-      supports_model_listing: o.supports_model_listing === true,
-      // Absent on older routers — treat as available (previous behavior).
-      available: o.available !== false,
-    })
-  }
-  return out
+  const [res, workerRes] = await Promise.all([
+    client.trigger<{ providers?: unknown }>('router::provider::list', {}),
+    client
+      .trigger<{ workers?: unknown }>('engine::workers::list', {})
+      .catch(() => ({ workers: [] })),
+  ])
+  return parseProviderList(res?.providers, workerRes?.workers)
 }

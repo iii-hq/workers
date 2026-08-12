@@ -147,6 +147,26 @@ export function withColumnRemoved(
 export const EXT_SCREEN_PREFIX = 'ext:'
 export const CHAT_SCREEN: TabScreen = 'chat'
 
+/** Browser-local narrow-layout selection. Keep a valid remembered column;
+ * otherwise prefer the chat pane, then the first pane. Desktop sizes/screens
+ * remain untouched because this resolves only a visible index. */
+export function resolveMobilePane(
+  tab: WorkspaceTab,
+  remembered: number | null,
+): number {
+  const columns = tabColumns(tab)
+  if (
+    remembered !== null &&
+    Number.isInteger(remembered) &&
+    remembered >= 0 &&
+    remembered < columns
+  ) {
+    return remembered
+  }
+  const chat = tab.screens.indexOf(CHAT_SCREEN)
+  return chat >= 0 && chat < columns ? chat : 0
+}
+
 /**
  * First-party screens whose page migrated to injected UI, mapped to the
  * worker's page id (mirrors MIGRATED_ROUTES in `use-hash-route.ts`).

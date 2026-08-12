@@ -5,11 +5,14 @@ use crate::types::errors::{RouterCode, RouterError};
 use serde_json::{json, Value};
 
 pub fn default_provider_schema(defaults: &Value) -> Value {
-    let mut api_url = json!({ "type": "string" });
+    let mut api_url = json!({
+        "type": "string",
+        "pattern": r"^https?://[^\s]+$"
+    });
     if let Some(u) = defaults.get("api_url").and_then(Value::as_str) {
         api_url["default"] = json!(u);
     }
-    let mut max_tokens = json!({ "type": "number" });
+    let mut max_tokens = json!({ "type": "integer", "minimum": 1 });
     if let Some(m) = defaults.get("max_tokens").and_then(Value::as_u64) {
         max_tokens["default"] = json!(m);
     }
@@ -140,7 +143,10 @@ mod tests {
         assert_eq!(s["properties"]["api_key"]["writeOnly"], true);
         assert_eq!(s["properties"]["api_key"]["format"], "password");
         assert_eq!(s["properties"]["api_url"]["default"], "https://x");
+        assert_eq!(s["properties"]["api_url"]["pattern"], r"^https?://[^\s]+$");
         assert_eq!(s["properties"]["max_tokens"]["default"], 8192);
+        assert_eq!(s["properties"]["max_tokens"]["type"], "integer");
+        assert_eq!(s["properties"]["max_tokens"]["minimum"], 1);
     }
 
     #[test]

@@ -87,9 +87,20 @@ pub struct AbortResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStatus {
+    Ready,
+    NeedsConfiguration,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
+    pub status: ProviderStatus,
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,

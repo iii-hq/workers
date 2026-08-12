@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   type CatalogModelRow,
   catalogRowsToModelOptions,
+  parseProviderList,
 } from './models-catalog'
 
 describe('catalogRowsToModelOptions', () => {
@@ -28,5 +29,50 @@ describe('catalogRowsToModelOptions', () => {
         { effort: 'ultra', description: 'delegated reasoning' },
       ],
     })
+  })
+})
+
+describe('parseProviderList', () => {
+  it('uses explicit provider status and exposes quarantined worker conflicts', () => {
+    expect(
+      parseProviderList(
+        [
+          {
+            id: 'kimi',
+            display_name: 'Kimi',
+            worker_name: 'provider-kimi',
+            status: 'needs_configuration',
+            configured: false,
+            available: true,
+          },
+        ],
+        [{ name: 'provider-kimi', quarantined: true }],
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: 'kimi',
+        status: 'needs_configuration',
+        configured: false,
+        available: true,
+        conflicted: true,
+      }),
+    ])
+  })
+
+  it('derives status for older routers without the explicit field', () => {
+    expect(
+      parseProviderList(
+        [
+          { id: 'down', available: false },
+          { id: 'keyless', configured: false },
+          { id: 'ready' },
+        ],
+        [],
+      ).map(({ id, status }) => ({ id, status })),
+    ).toEqual([
+      { id: 'down', status: 'unavailable' },
+      { id: 'keyless', status: 'needs_configuration' },
+      { id: 'ready', status: 'ready' },
+    ])
   })
 })

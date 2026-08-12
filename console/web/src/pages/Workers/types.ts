@@ -7,6 +7,14 @@ export type WorkerManagementKind =
 
 /** Connection / liveness status shown in the table. */
 export type WorkerConnectionStatus = 'connected' | 'disconnected' | 'stopped'
+export type WorkerAuthority = 'current_managed' | 'unscoped' | 'quarantined'
+
+export interface WorkerIdentityConflict {
+  functionId: string
+  currentWorkerId: string
+  currentWorkerName: string | null
+  currentWorkerPid: number | null
+}
 
 /** View-model row for the runtime workers table (no transport types). */
 export interface WorkerRow {
@@ -17,6 +25,9 @@ export interface WorkerRow {
   ipAddress: string | null
   version: string | null
   pid: number | null
+  authority: WorkerAuthority
+  quarantined: boolean
+  identityConflict: WorkerIdentityConflict | null
   tag: string | null
   managementKind: WorkerManagementKind
   status: WorkerConnectionStatus

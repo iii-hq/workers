@@ -109,7 +109,14 @@ function engineRowToWorkerRow(
     supervisor,
   )
   const status = deriveConnectionStatus(summary.status, supervisor)
-  const stop = deriveStopState(managementKind, status, supervisor)
+  const quarantined = summary.quarantined === true
+  const stop = quarantined
+    ? {
+        stopEnabled: false,
+        stopDisabledReason:
+          'this duplicate connection is quarantined; stop it from the process or PID shown in this row',
+      }
+    : deriveStopState(managementKind, status, supervisor)
 
   return {
     id: summary.id,
@@ -117,7 +124,19 @@ function engineRowToWorkerRow(
     runtime: summary.runtime ?? null,
     ipAddress: summary.ip_address ?? null,
     version: summary.version ?? null,
-    pid: info?.pid ?? supervisor?.pid ?? null,
+    pid: summary.pid ?? info?.pid ?? supervisor?.pid ?? null,
+    authority: summary.authority ?? 'unscoped',
+    quarantined,
+    identityConflict: summary.identity_conflict
+      ? {
+          functionId: summary.identity_conflict.function_id,
+          currentWorkerId: summary.identity_conflict.current_worker_id,
+          currentWorkerName:
+            summary.identity_conflict.current_worker_name ?? null,
+          currentWorkerPid:
+            summary.identity_conflict.current_worker_pid ?? null,
+        }
+      : null,
     tag: info?.tag ?? summary.tag ?? null,
     managementKind,
     status,
@@ -142,6 +161,9 @@ function syntheticSupervisorRow(
     ipAddress: null,
     version: entry.version ?? null,
     pid: entry.pid ?? null,
+    authority: 'unscoped',
+    quarantined: false,
+    identityConflict: null,
     tag: null,
     managementKind,
     status,

@@ -17,9 +17,10 @@
  * secret itself.
  */
 
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type ConfigFormProps,
+  type Host,
   type JsonValue,
   Select,
   type SelectOption,
@@ -27,12 +28,189 @@ import {
 
 type JsonObject = { [key: string]: JsonValue }
 
+type ProviderStatus = 'ready' | 'needs_configuration' | 'unavailable'
+
+interface ProviderOperationalInfo {
+  id: string
+  workerName?: string
+  status: ProviderStatus
+  configured: boolean
+  available: boolean
+}
+
+interface EngineWorkerInfo {
+  id: string
+  name?: string
+  pid?: number
+  quarantined: boolean
+  identityConflict?: {
+    function_id?: string
+    current_worker_id?: string
+    current_worker_name?: string
+    current_worker_pid?: number
+  }
+}
+
+interface ProviderOperationalState {
+  loading: boolean
+  offline: boolean
+  providers: Map<string, ProviderOperationalInfo>
+  workers: EngineWorkerInfo[]
+  refresh(): void
+}
+
 function asObject(v: JsonValue | undefined): JsonObject {
   return v && typeof v === 'object' && !Array.isArray(v) ? { ...v } : {}
 }
 
 function asString(v: JsonValue | undefined): string {
   return typeof v === 'string' ? v : ''
+}
+
+function schemaProviderIds(schema: Record<string, unknown> | null): string[] {
+  const properties = schema?.properties
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return []
+  }
+  const providers = (properties as Record<string, unknown>).providers
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    return []
+  }
+  const providerProperties = (providers as Record<string, unknown>).properties
+  if (
+    !providerProperties ||
+    typeof providerProperties !== 'object' ||
+    Array.isArray(providerProperties)
+  ) {
+    return []
+  }
+  return Object.keys(providerProperties as Record<string, unknown>)
+}
+
+function parseProviders(value: unknown): Map<string, ProviderOperationalInfo> {
+  const parsed = new Map<string, ProviderOperationalInfo>()
+  if (!value || typeof value !== 'object') return parsed
+  const rows = (value as { providers?: unknown }).providers
+  if (!Array.isArray(rows)) return parsed
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue
+    const row = raw as Record<string, unknown>
+    const id = typeof row.id === 'string' ? row.id : ''
+    if (!id) continue
+    const available = row.available !== false
+    const configured = row.configured === true
+    const status: ProviderStatus =
+      row.status === 'ready' ||
+      row.status === 'needs_configuration' ||
+      row.status === 'unavailable'
+        ? row.status
+        : !available
+          ? 'unavailable'
+          : configured
+            ? 'ready'
+            : 'needs_configuration'
+    parsed.set(id, {
+      id,
+      workerName:
+        typeof row.worker_name === 'string' ? row.worker_name : undefined,
+      status,
+      configured,
+      available,
+    })
+  }
+  return parsed
+}
+
+function parseWorkers(value: unknown): EngineWorkerInfo[] {
+  if (!value || typeof value !== 'object') return []
+  const rows = (value as { workers?: unknown }).workers
+  if (!Array.isArray(rows)) return []
+  return rows.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object') return []
+    const row = raw as Record<string, unknown>
+    const id = typeof row.id === 'string' ? row.id : ''
+    if (!id) return []
+    const conflict =
+      row.identity_conflict &&
+      typeof row.identity_conflict === 'object' &&
+      !Array.isArray(row.identity_conflict)
+        ? (row.identity_conflict as EngineWorkerInfo['identityConflict'])
+        : undefined
+    return [
+      {
+        id,
+        name: typeof row.name === 'string' ? row.name : undefined,
+        pid: typeof row.pid === 'number' ? row.pid : undefined,
+        quarantined: row.quarantined === true,
+        identityConflict: conflict,
+      },
+    ]
+  })
+}
+
+function useProviderOperationalState(host: Host): ProviderOperationalState {
+  const [providers, setProviders] = useState(
+    () => new Map<string, ProviderOperationalInfo>(),
+  )
+  const [workers, setWorkers] = useState<EngineWorkerInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [offline, setOffline] = useState(false)
+
+  const refresh = useCallback(() => {
+    setLoading(true)
+    void Promise.allSettled([
+      host.iii.trigger<unknown>('router::provider::list', {}),
+      host.iii.trigger<unknown>('engine::workers::list', {}),
+    ]).then(([providerResult, workerResult]) => {
+      if (providerResult.status === 'fulfilled') {
+        setProviders(parseProviders(providerResult.value))
+        setOffline(false)
+      } else {
+        setOffline(true)
+      }
+      if (workerResult.status === 'fulfilled') {
+        setWorkers(parseWorkers(workerResult.value))
+      }
+      setLoading(false)
+    })
+  }, [host])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    const offs: Array<() => void> = []
+    const bindings = [
+      ['router::provider::changed', 'providers'],
+      ['engine::workers-available', 'workers'],
+    ] as const
+    for (const [triggerType, slug] of bindings) {
+      const functionId = `iii::llm-router-config::${slug}::${host.iii.browserId}`
+      try {
+        offs.push(host.iii.on(functionId, refresh))
+        offs.push(
+          host.iii.registerTrigger({
+            type: triggerType,
+            function_id: functionId,
+            config: {},
+          }),
+        )
+      } catch {
+        // The periodic refresh below covers version skew and restart races.
+      }
+    }
+    offs.push(host.iii.addConnectionStateListener(refresh))
+    const poll = window.setInterval(() => {
+      if (!document.hidden) refresh()
+    }, 15_000)
+    return () => {
+      window.clearInterval(poll)
+      for (const off of offs) off()
+    }
+  }, [host, refresh])
+
+  return { loading, offline, providers, workers, refresh }
 }
 
 /** `${VAR}` (exactly one reference, nothing else) — the recommended shape. */
@@ -133,10 +311,17 @@ const SETTINGS_FIELDS = [
   },
 ] as const
 
-export function LlmRouterConfigForm(props: ConfigFormProps) {
+export function LlmRouterConfigForm(props: ConfigFormProps & { host: Host }) {
   const value = asObject(props.value)
   const providers = asObject(value.providers)
-  const providerIds = Object.keys(providers)
+  const operational = useProviderOperationalState(props.host)
+  const providerIds = [
+    ...new Set([
+      ...schemaProviderIds(props.schema),
+      ...Object.keys(providers),
+      ...operational.providers.keys(),
+    ]),
+  ].sort((a, b) => a.localeCompare(b))
   const settings = asObject(value.settings)
   const heuristics = Array.isArray(value.routing_heuristics)
     ? (value.routing_heuristics as JsonValue[])
@@ -182,7 +367,23 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
         />
       </div>
 
-      <h3 className="llmr-cfg-heading">providers</h3>
+      <div className="llmr-cfg-section-head">
+        <h3 className="llmr-cfg-heading">providers</h3>
+        <button
+          type="button"
+          className="llmr-cfg-refresh"
+          disabled={operational.loading}
+          onClick={operational.refresh}
+        >
+          {operational.loading ? 'checking…' : 'refresh status'}
+        </button>
+      </div>
+      {operational.offline ? (
+        <div className="llmr-cfg-status-note" role="status">
+          router offline — saved configuration remains editable; live provider
+          status will reconnect automatically
+        </div>
+      ) : null}
       {providerIds.length === 0 ? (
         <div className="llmr-cfg-empty">
           No providers connected yet — provider workers register themselves
@@ -195,6 +396,10 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
             id={id}
             slice={asObject(providers[id])}
             promptDefault={providerPromptDefault(props.schema, id)}
+            operational={operational.providers.get(id)}
+            workers={operational.workers}
+            loading={operational.loading}
+            offline={operational.offline}
             onChange={(next) =>
               commit({ providers: { ...providers, [id]: next } })
             }
@@ -311,19 +516,111 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
   )
 }
 
+function ProviderStatusBadge({
+  id,
+  operational,
+  workers,
+  loading,
+  offline,
+}: {
+  id: string
+  operational?: ProviderOperationalInfo
+  workers: EngineWorkerInfo[]
+  loading: boolean
+  offline: boolean
+}) {
+  const workerNames = new Set(
+    [operational?.workerName, `provider-${id}`, id].filter(
+      (name): name is string => Boolean(name),
+    ),
+  )
+  const matches = workers.filter(
+    (worker) => worker.name && workerNames.has(worker.name),
+  )
+  const conflict = matches.find((worker) => worker.quarantined)
+
+  if (conflict) {
+    const current =
+      conflict.identityConflict?.current_worker_name ??
+      conflict.identityConflict?.current_worker_id ??
+      'current managed worker'
+    return (
+      <span className="llmr-cfg-status-wrap">
+        <span className="llmr-cfg-badge llmr-cfg-badge-danger">conflict</span>
+        <span className="llmr-cfg-status-detail">
+          duplicate pid {conflict.pid ?? 'unknown'} quarantined; {current} owns{' '}
+          {conflict.identityConflict?.function_id ?? 'the provider functions'}
+        </span>
+        <button
+          type="button"
+          className="llmr-cfg-status-action"
+          onClick={() => {
+            window.location.hash = '#/workers'
+          }}
+        >
+          inspect workers
+        </button>
+      </span>
+    )
+  }
+  if (offline) {
+    return <span className="llmr-cfg-badge">offline</span>
+  }
+  if (loading && !operational) {
+    return <span className="llmr-cfg-badge">loading</span>
+  }
+  if (!operational || operational.status === 'unavailable') {
+    return (
+      <span className="llmr-cfg-status-wrap">
+        <span className="llmr-cfg-badge llmr-cfg-badge-warning">
+          unavailable
+        </span>
+        <span className="llmr-cfg-status-detail">
+          provider worker is not loaded
+        </span>
+      </span>
+    )
+  }
+  if (operational.status === 'needs_configuration') {
+    return (
+      <span className="llmr-cfg-status-wrap">
+        <span className="llmr-cfg-badge llmr-cfg-badge-warning">
+          api key required
+        </span>
+      </span>
+    )
+  }
+  return (
+    <span className="llmr-cfg-status-wrap">
+      <span className="llmr-cfg-badge llmr-cfg-badge-ready">configured</span>
+    </span>
+  )
+}
+
 function ProviderCard({
   id,
   slice,
   promptDefault,
+  operational,
+  workers,
+  loading,
+  offline,
   onChange,
 }: {
   id: string
   slice: JsonObject
   /** The provider-declared identity prompt (schema default), if any. */
   promptDefault: string | null
+  operational?: ProviderOperationalInfo
+  workers: EngineWorkerInfo[]
+  loading: boolean
+  offline: boolean
   onChange(next: JsonObject): void
 }) {
   const apiKey = asString(slice.api_key)
+  const apiUrl = asString(slice.api_url)
+  const credentialHasWhitespace = apiKey !== apiKey.trim()
+  const urlHasWhitespace = apiUrl !== apiUrl.trim()
   // Plain text = something typed that is not an env reference. A partial
   // reference (`sk-${SUFFIX}`) still embeds secret material, so only the
   // pure `${VAR}` shape counts as safe.
@@ -339,7 +636,16 @@ function ProviderCard({
 
   return (
     <section className="llmr-cfg-card" data-field={`providers-${id}`}>
-      <header className="llmr-cfg-card-head">{id}</header>
+      <header className="llmr-cfg-card-head">
+        <span>{id}</span>
+        <ProviderStatusBadge
+          id={id}
+          operational={operational}
+          workers={workers}
+          loading={loading}
+          offline={offline}
+        />
+      </header>
 
       <label className="llmr-cfg-label" htmlFor={`llmr-${id}-api-key`}>
         api key
@@ -356,6 +662,12 @@ function ProviderCard({
         placeholder={`\${${suggestedEnvVar(id)}}`}
         onChange={(e) => set('api_key', e.target.value || undefined)}
       />
+      {credentialHasWhitespace ? (
+        <div className="llmr-cfg-warning" role="alert">
+          credential contains leading or trailing whitespace and will be
+          rejected; remove it before saving
+        </div>
+      ) : null}
       {plainTextKey ? (
         <div className="llmr-cfg-warning" role="alert">
           <strong>plain-text secret</strong> — this key is stored verbatim in
@@ -391,11 +703,17 @@ function ProviderCard({
       <input
         id={`llmr-${id}-api-url`}
         className="llmr-cfg-input"
-        value={asString(slice.api_url)}
+        type="url"
+        value={apiUrl}
         placeholder="provider default"
         spellCheck={false}
         onChange={(e) => set('api_url', e.target.value || undefined)}
       />
+      {urlHasWhitespace ? (
+        <div className="llmr-cfg-warning" role="alert">
+          api url contains leading or trailing whitespace
+        </div>
+      ) : null}
 
       <label className="llmr-cfg-label" htmlFor={`llmr-${id}-max-tokens`}>
         max tokens
@@ -404,6 +722,8 @@ function ProviderCard({
         id={`llmr-${id}-max-tokens`}
         className="llmr-cfg-input"
         inputMode="numeric"
+        min={1}
+        step={1}
         value={typeof slice.max_tokens === 'number' ? String(slice.max_tokens) : ''}
         placeholder="provider default"
         onChange={(e) => {

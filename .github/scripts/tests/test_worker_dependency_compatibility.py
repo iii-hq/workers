@@ -36,3 +36,7 @@ def test_harness_llm_stack_uses_shared_state_range() -> None:
 
     for worker in ("llm-router", *providers):
         assert dependencies(worker)["state"] == expected
+
+
+def test_harness_requires_router_with_provider_recovery_contract() -> None:
+    assert dependencies("harness")["llm-router"] == "^1.4.4"
