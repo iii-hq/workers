@@ -1,5 +1,7 @@
 /* The search tab — content + path search over the browsed root via the
-   worker's `coder::search`. Rows open the file in the editor pane. */
+   worker's `coder::search`; with a sandbox target selected, content-only
+   search via `shell::fs::grep` (the coder surface is host-only). Rows
+   open the file in the editor pane. */
 
 import { Input } from '@iii-dev/console-ui'
 import { useCallback, useRef, useState } from 'react'
@@ -7,10 +9,13 @@ import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '../lib/format'
 import { renderWithHighlight } from '../lib/highlight'
 import { coderSearch, relativeTo, type SearchResponse } from './coder'
+import { guestGrep } from './sandbox'
 
 interface SearchTabProps {
   host: Host
   root: string
+  /** Sandbox target of the browsed tree; null = host. */
+  sandboxId: string | null
   /** Single click — open as the preview tab. */
   onPreviewFile: (relPath: string) => void
   /** Double click — open pinned. */
@@ -20,6 +25,7 @@ interface SearchTabProps {
 export function SearchTab({
   host,
   root,
+  sandboxId,
   onPreviewFile,
   onPinFile,
 }: SearchTabProps) {
@@ -39,7 +45,12 @@ export function SearchTab({
     const seq = ++seqRef.current
     setSearching(true)
     setError(null)
-    coderSearch(host, { query: q, regex, ignoreCase, path: root })
+    const params = { query: q, regex, ignoreCase, path: root }
+    const search =
+      sandboxId !== null
+        ? guestGrep(host, sandboxId, params)
+        : coderSearch(host, params)
+    search
       .then((out) => {
         if (seqRef.current !== seq) return
         setResult(out)
@@ -52,7 +63,7 @@ export function SearchTab({
       .finally(() => {
         if (seqRef.current === seq) setSearching(false)
       })
-  }, [host, query, regex, ignoreCase, root])
+  }, [host, query, regex, ignoreCase, root, sandboxId])
 
   return (
     <div className="shui-search">

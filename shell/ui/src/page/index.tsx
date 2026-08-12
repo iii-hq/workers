@@ -5,12 +5,20 @@
  * (single click previews, double click pins) and a FileDiff pane for
  * git selections.
  *
+ * A target picker beside the root affordance retargets the same surface
+ * at a live sandbox microVM: fs calls then carry
+ * `target: { kind: "sandbox", sandbox_id }` (host mode omits the field —
+ * the wire default), the tree roots at `/`, and the host-coupled
+ * affordances (git tab, workspace roots, editor writes) drop out.
+ *
  * The sidebar hugs the pane's OUTER edge (`panelSide`), and the whole
  * UI state — browsed root, open tabs, expanded folders — persists per
- * workspace tab (`tabId`) in the `shell-ui` configuration entry.
+ * workspace tab (`tabId`) in the `shell-ui` configuration entry (host
+ * mode only; guest state is per-VM and ephemeral).
  */
 
 import {
+  EmptyState,
   type Host,
   PageBody,
   PageHeader,
@@ -18,11 +26,22 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  StatusDot,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
-import { FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
+import {
+  Check,
+  CircleAlert,
+  Copy,
+  FolderTree,
+  GitBranch,
+  RefreshCw,
+  Search,
+  SquareTerminal,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage, truncateMiddle } from '../lib/format'
 import { type CoderInfo, coderInfo, coderTree, type FlatTree, flattenTree } from './coder'
 import { DiffPane } from './DiffPane'
 import { type EditorCache, EditorPane } from './EditorPane'
@@ -30,6 +49,7 @@ import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
 import { type GitChange, type GitState, gitChanges } from './git'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
+import { GUEST_ROOT, sandboxGone } from './sandbox'
 import { SearchTab } from './SearchTab'
 import {
   activateTab,
@@ -43,6 +63,8 @@ import {
   restoreTabs,
   type TabsState,
 } from './tabs'
+import { useGuestTree } from './useGuestTree'
+import { useSandboxFleet } from './useSandboxFleet'
 
 type SideTab = 'files' | 'git' | 'search'
 
@@ -64,6 +86,7 @@ export function ShellExplorerPage({
   const [infoError, setInfoError] = useState<string | null>(null)
   const [restored, setRestored] = useState<TabUiState | null | 'loading'>('loading')
   const [root, setRoot] = useState<string | null>(null)
+  const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [sideTab, setSideTab] = useState<SideTab>('files')
   const [collapsed, setCollapsed] = useState(false)
   const [tree, setTree] = useState<FlatTree | null>(null)
@@ -73,6 +96,10 @@ export function ShellExplorerPage({
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
   const [diff, setDiff] = useState<GitChange | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
+
+  const { fleet, refreshFleet } = useSandboxFleet(host)
+  const guestTree = useGuestTree(host, sandboxId, expanded)
+  const gone = sandboxGone(sandboxId, fleet)
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -118,10 +145,11 @@ export function ShellExplorerPage({
     }
   }, [info, restored, root, workingDir])
 
-  // ── data loads (gated on the resolved root) ──
+  // ── data loads (gated on the resolved root; host mode only — the
+  // guest tree loads through useGuestTree) ──
   const gitSeqRef = useRef(0)
   const refreshGit = useCallback(() => {
-    if (!root) return
+    if (!root || sandboxId !== null) return
     const seq = ++gitSeqRef.current
     gitChanges(host, root)
       .then((state) => {
@@ -135,11 +163,11 @@ export function ShellExplorerPage({
           })
         }
       })
-  }, [host, root])
+  }, [host, root, sandboxId])
 
   const treeSeqRef = useRef(0)
   const refreshTree = useCallback(() => {
-    if (!root) return
+    if (!root || sandboxId !== null) return
     const seq = ++treeSeqRef.current
     coderTree(host, root)
       .then((out) => {
@@ -150,7 +178,7 @@ export function ShellExplorerPage({
           setTree({ paths: [], kinds: new Map(), truncations: [] })
         }
       })
-  }, [host, root])
+  }, [host, root, sandboxId])
 
   useEffect(() => {
     setTree(null)
@@ -170,13 +198,15 @@ export function ShellExplorerPage({
       bootedRef.current = true
       return
     }
+    // Guest state is per-VM and ephemeral — only host state persists.
+    if (sandboxId !== null) return
     saver.save({
       root,
       open: tabs.tabs,
       active: tabs.active,
       expanded,
     })
-  }, [saver, root, tabs, expanded])
+  }, [saver, root, tabs, expanded, sandboxId])
 
   // ── open/close/pin actions ──
   const previewFile = useCallback((relPath: string) => {
@@ -227,6 +257,34 @@ export function ShellExplorerPage({
     setRoot(nextRoot)
   }, [])
 
+  // Host tabs/expanded survive a round-trip through a sandbox: snapshot
+  // on the way in, restore on the way out — in the same commit, so the
+  // persistence effect never sees (and saves) cleared guest state over
+  // the host state it stored.
+  const hostUiRef = useRef<{ tabs: TabsState; expanded: string[] } | null>(null)
+
+  const changeTarget = useCallback(
+    (next: string | null) => {
+      cacheRef.current.clear()
+      setDirtyPaths(new Set())
+      setDiff(null)
+      if (next !== null) {
+        if (sandboxId === null) hostUiRef.current = { tabs, expanded }
+        setTabs(EMPTY_TABS)
+        setExpanded([])
+        // The git tab is host-only chrome — land on files when entering a VM.
+        setSideTab((t) => (t === 'git' ? 'files' : t))
+      } else {
+        const snap = hostUiRef.current
+        hostUiRef.current = null
+        setTabs(snap?.tabs ?? EMPTY_TABS)
+        setExpanded(snap?.expanded ?? [])
+      }
+      setSandboxId(next)
+    },
+    [sandboxId, tabs, expanded],
+  )
+
   // ── follow the chat's working directory ──
   // Picking another folder in chat re-roots the explorer (the split-screen
   // sync). Only CHANGES sync: the boot-resolved root wins on mount, and a
@@ -236,8 +294,17 @@ export function ShellExplorerPage({
     const next = workingDir ?? null
     if (next === lastWorkingDirRef.current) return
     lastWorkingDirRef.current = next
-    if (next !== null && root !== null && next !== root) changeRoot(next)
-  }, [workingDir, root, changeRoot])
+    if (next === null || root === null || next === root) return
+    if (sandboxId !== null) {
+      // The chat's folder is a host concept — remember it for the return
+      // to host without evicting the sandbox view. The snapshotted tabs
+      // belong to the old root, so the return starts clean instead.
+      hostUiRef.current = null
+      setRoot(next)
+      return
+    }
+    changeRoot(next)
+  }, [workingDir, root, sandboxId, changeRoot])
 
   const onSaved = useCallback(() => {
     refreshGit()
@@ -256,11 +323,102 @@ export function ShellExplorerPage({
     return info.base_paths.includes(root) ? info.base_paths : [root, ...info.base_paths]
   }, [info, root])
 
+  // Same rule for the target select: a selected sandbox that left the
+  // fleet stays present as a labeled option until the user moves off it.
+  const targetOptions = useMemo(() => {
+    const options = fleet.sandboxes.map((s) => ({
+      value: s.sandbox_id,
+      label: `${s.name ?? truncateMiddle(s.sandbox_id, 16)}${s.stopped ? ' · stopped' : ''}`,
+      title: s.sandbox_id,
+    }))
+    if (sandboxId !== null && !fleet.sandboxes.some((s) => s.sandbox_id === sandboxId)) {
+      options.push({
+        value: sandboxId,
+        label: `${truncateMiddle(sandboxId, 16)} · gone`,
+        title: sandboxId,
+      })
+    }
+    return options
+  }, [fleet.sandboxes, sandboxId])
+
+  // Function-not-found on sandbox::list = no sandbox daemon on this
+  // engine — the picker hides entirely and the page stays pure host.
+  const showTargetPicker = fleet.status === 'ready' || fleet.status === 'error'
+  const selected =
+    sandboxId !== null
+      ? fleet.sandboxes.find((s) => s.sandbox_id === sandboxId)
+      : undefined
+  const effectiveRoot = sandboxId !== null ? GUEST_ROOT : root
+
+  // Click-to-copy with a copied/failed flash — the clipboard write can
+  // reject (denied permission) or be missing entirely (insecure context),
+  // and a silent no-op reads as a working copy.
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyTimerRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+    },
+    [],
+  )
+  const copySandboxId = useCallback(() => {
+    if (sandboxId === null) return
+    const flash = (state: 'copied' | 'failed') => {
+      setCopyState(state)
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null
+        setCopyState('idle')
+      }, 1400)
+    }
+    if (!navigator.clipboard?.writeText) {
+      flash('failed')
+      return
+    }
+    navigator.clipboard.writeText(sandboxId).then(
+      () => flash('copied'),
+      () => flash('failed'),
+    )
+  }, [sandboxId])
+
+  const sideTabs =
+    sandboxId === null ? SIDE_TABS : SIDE_TABS.filter((t) => t.id !== 'git')
+
   const header = (
     <PageHeader
       icon={<SquareTerminal />}
       title="shell"
-      description={root ? <span title={root}>{root}</span> : undefined}
+      description={
+        sandboxId !== null ? (
+          <span className="shui-target-desc" title={sandboxId}>
+            <StatusDot tone={gone ? 'warn' : selected?.stopped ? 'ink' : 'accent'} />
+            <span className="id">{truncateMiddle(sandboxId, 24)}</span>
+            <button
+              type="button"
+              className={`shui-copy-btn${copyState === 'idle' ? '' : ` ${copyState}`}`}
+              onClick={copySandboxId}
+              aria-label="copy sandbox id"
+              title={
+                copyState === 'copied'
+                  ? 'copied'
+                  : copyState === 'failed'
+                    ? 'copy failed'
+                    : 'copy sandbox id'
+              }
+            >
+              {copyState === 'copied' ? (
+                <Check aria-hidden className="shui-copy-icon" />
+              ) : copyState === 'failed' ? (
+                <CircleAlert aria-hidden className="shui-copy-icon" />
+              ) : (
+                <Copy aria-hidden className="shui-copy-icon" />
+              )}
+            </button>
+          </span>
+        ) : root ? (
+          <span title={root}>{root}</span>
+        ) : undefined
+      }
       onClose={onRequestClose}
     />
   )
@@ -275,7 +433,7 @@ export function ShellExplorerPage({
       </PageShell>
     )
   }
-  if (!info || !root) {
+  if (!info || !root || !effectiveRoot) {
     return (
       <PageShell>
         {header}
@@ -302,7 +460,7 @@ export function ShellExplorerPage({
           ) : (
             <>
               <div className="shui-side-tabs">
-                {SIDE_TABS.map(({ id, label, Icon }) => (
+                {sideTabs.map(({ id, label, Icon }) => (
                   <button
                     key={id}
                     type="button"
@@ -326,30 +484,69 @@ export function ShellExplorerPage({
                 </button>
               </div>
 
-              {rootOptions.length > 1 ? (
-                <select
-                  className="shui-root-select"
-                  value={root}
-                  onChange={(e) => changeRoot(e.target.value)}
-                  aria-label="browsed root"
-                  title={root}
-                >
-                  {rootOptions.map((p) => (
-                    <option key={p} value={p}>
-                      {lastSegments(p)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div className="shui-root-label" title={root}>
-                  {lastSegments(root)}
+              {showTargetPicker ? (
+                <div className="shui-target-row">
+                  <select
+                    className="shui-target-select"
+                    value={sandboxId ?? 'host'}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      changeTarget(value === 'host' ? null : value)
+                    }}
+                    aria-label="target"
+                    title={sandboxId ?? 'host'}
+                  >
+                    <option value="host">host</option>
+                    {targetOptions.map((o) => (
+                      <option key={o.value} value={o.value} title={o.title}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="shui-target-refresh"
+                    onClick={refreshFleet}
+                    aria-label="refresh sandbox list"
+                    title="refresh sandbox list"
+                  >
+                    <RefreshCw aria-hidden className="shui-refresh-icon" />
+                  </button>
                 </div>
-              )}
+              ) : null}
+
+              {sandboxId === null ? (
+                rootOptions.length > 1 ? (
+                  <select
+                    className="shui-root-select"
+                    value={root}
+                    onChange={(e) => changeRoot(e.target.value)}
+                    aria-label="browsed root"
+                    title={root}
+                  >
+                    {rootOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {lastSegments(p)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="shui-root-label" title={root}>
+                    {lastSegments(root)}
+                  </div>
+                )
+              ) : null}
 
               <div className="shui-side-body">
-                {sideTab === 'files' ? (
+                {gone ? (
+                  <EmptyState
+                    title="sandbox gone"
+                    description="reaped or stopped — the microVM left the fleet"
+                    action={{ label: 'back to host', onClick: () => changeTarget(null) }}
+                  />
+                ) : sideTab === 'files' ? (
                   <FilesTab
-                    tree={tree}
+                    tree={sandboxId !== null ? guestTree : tree}
                     gitStatus={treeGitStatus}
                     theme={theme}
                     expanded={expanded}
@@ -360,7 +557,13 @@ export function ShellExplorerPage({
                 ) : sideTab === 'git' ? (
                   <GitTab state={git} theme={theme} onSelect={(change) => setDiff(change)} onRefresh={refreshGit} />
                 ) : (
-                  <SearchTab host={host} root={root} onPreviewFile={previewFile} onPinFile={pinFile} />
+                  <SearchTab
+                    host={host}
+                    root={effectiveRoot}
+                    sandboxId={sandboxId}
+                    onPreviewFile={previewFile}
+                    onPinFile={pinFile}
+                  />
                 )}
               </div>
             </>
@@ -410,15 +613,20 @@ export function ShellExplorerPage({
             <EditorPane
               key={tabs.active}
               host={host}
-              root={root}
+              root={effectiveRoot}
               relPath={tabs.active}
+              sandboxId={sandboxId}
               cache={cacheRef.current}
               onSaved={onSaved}
               onDirtyChange={onDirtyChange}
             />
           ) : (
             <div className="shui-main-empty">
-              <span className="t-ghost">select a file to edit — or a git change to diff</span>
+              <span className="t-ghost">
+                {sandboxId !== null
+                  ? 'select a file to view — sandbox target is read-only'
+                  : 'select a file to edit — or a git change to diff'}
+              </span>
             </div>
           )}
         </PageMain>
