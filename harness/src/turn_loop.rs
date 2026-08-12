@@ -639,6 +639,7 @@ pub async fn run_step(
     };
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
+        session_id: record.session_id.clone(),
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
         // Cloned into the request so the originals stay available for the

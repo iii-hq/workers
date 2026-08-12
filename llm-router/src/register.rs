@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
@@ -286,27 +286,61 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // The ready fan-out only reaches providers whose `router::ready` binding
     // still exists — and the engine drops those bindings when THIS worker
     // (the trigger type's owner) disconnects, so providers that outlived a
-    // router restart never hear it. Nudge every restored provider directly:
+    // router restart never hear it. Nudge every provider directly:
     // `provider::<id>::on_router_ready` is the deterministic per-provider
     // handler (same one the fan-out targets), a live provider re-declares —
     // flipping the boot-reset availability back up — and a dead one is
     // function_not_found, which is exactly the right answer. Detached: boot
     // must not block on provider round-trips.
+    //
+    // The provider set comes from the ENGINE, not `registry.ids()`: the
+    // persisted registry is empty on any stack whose state worker runs
+    // in-memory, and then this repair reached nobody. See
+    // `registry::rediscover`.
     {
         let iii = iii.clone();
-        let ids = registry.ids().await;
         tokio::spawn(async move {
-            for id in ids {
-                let _ = iii
-                    .trigger(TriggerRequest {
-                        function_id: format!("provider::{id}::on_router_ready"),
-                        payload: json!({}),
-                        action: None,
-                        timeout_ms: Some(10_000),
-                    })
-                    .await;
-            }
+            let count = crate::registry::rediscover::nudge_live_providers(&iii).await;
+            tracing::debug!(
+                providers = count,
+                "boot: nudged live providers to re-declare"
+            );
         });
+    }
+
+    // A provider that reconnects to the engine while the router stays up gets
+    // its FUNCTIONS replayed by the SDK, but not its catalog — that is
+    // application state this worker holds, and nothing re-pushes it until the
+    // provider's own periodic timer (three minutes for openai-codex). Watch
+    // the engine's registration stream and re-run the same nudge, so a
+    // returning provider is resolvable in seconds instead of minutes.
+    {
+        let iii_handler = iii.clone();
+        let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
+        iii.register_function(
+            surface::ON_FUNCTIONS_CHANGED_ID,
+            RegisterFunction::new_async(move |_event: Value| {
+                let sweep = sweep.clone();
+                async move {
+                    // Coalesce the boot burst: the handler only marks work
+                    // pending, the sweep task fires once it goes quiet.
+                    sweep.request();
+                    Ok::<Value, Error>(json!({ "ok": true }))
+                }
+            })
+            .description(surface::ON_FUNCTIONS_CHANGED_DESC)
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+        );
+        if let Err(e) = iii.register_trigger(RegisterTriggerInput {
+            trigger_type: "engine::functions-available".into(),
+            function_id: surface::ON_FUNCTIONS_CHANGED_ID.into(),
+            config: json!({}),
+            metadata: None,
+        }) {
+            // Best-effort: without it providers still recover on their own
+            // timer, exactly as before this binding existed.
+            tracing::warn!(error = %e, "binding engine::functions-available failed; provider re-discovery falls back to each provider's periodic refresh");
+        }
     }
 
     Ok(RouterRefs {
