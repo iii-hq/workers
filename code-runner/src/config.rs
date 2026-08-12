@@ -57,16 +57,19 @@ pub struct CodeRunnerConfig {
     /// Off-heap cap per node runtime (ArrayBuffer/TypedArray, MiB); `heap_mb`
     /// does not cover it. Applied at worker start.
     pub external_mb: usize,
-    /// Per-runtime scratch directory (`iii.files`), MiB. 0 disables it
-    /// and removes the guest surface. Applied at worker start.
+    /// Per-runtime scratch directory (`iii.files`), MiB — NODE runtimes
+    /// only; python's `/work` budget is fixed by its engine (256 MiB,
+    /// 20k files). 0 disables it and removes the guest surface. Applied at
+    /// worker start.
     ///
     /// WORST-CASE HOST FOOTPRINT IS `max_runtimes * scratch_mb`, and the
     /// system temp directory is tmpfs — host RAM — on most Linux hosts.
     pub scratch_mb: usize,
-    /// Maximum files per scratch directory. Applied at worker start.
+    /// Maximum files per scratch directory (node runtimes only). Applied at
+    /// worker start.
     pub scratch_files: usize,
-    /// Where scratch directories live; unset uses the system temp directory.
-    /// Applied at worker start.
+    /// Where scratch directories live (node runtimes only); unset uses the
+    /// system temp directory. Applied at worker start.
     pub scratch_root: Option<String>,
     /// Append the code-runner usage guidance to agent system prompts (the
     /// `pre_generate` hook). Off silences the hook without unbinding it.
@@ -157,11 +160,13 @@ impl CodeRunnerConfig {
     /// defaults — an operator lowering `idle_ttl_secs` or `max_timeout_ms`
     /// changed node's behaviour and nothing else, with no error to say so.
     ///
-    /// Two keys are NOT taken from the shared config, on purpose:
+    /// Three key groups are NOT taken from the shared config, on purpose:
     /// `max_concurrent_runs` bounds how many CPython instances execute at
     /// once and is a memory ceiling of a different shape to node's isolate
-    /// count, and the memory knobs are python's own — `heap_mb`/`external_mb`
-    /// are V8 concepts with no wasm equivalent.
+    /// count; the memory knobs are python's own — `heap_mb`/`external_mb`
+    /// are V8 concepts with no wasm equivalent; and the scratch knobs are
+    /// node's — python's `/work` is a fixed engine budget
+    /// (`MAX_WORK_DIR_BYTES`), not configurable here.
     pub fn python(&self) -> iii_python_core::config::PythonEngineConfig {
         let d = iii_python_core::config::PythonEngineConfig::default();
         iii_python_core::config::PythonEngineConfig {

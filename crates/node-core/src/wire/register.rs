@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct RegisterRequest {
     /// e.g. `my-app::greet`. The segment before the first `::` is the
     /// namespace; the first registration claims it and later ids must share
-    /// it. node-engine keeps one runtime per namespace as an implementation
-    /// detail you never see or manage.
+    /// it. code-runner keeps one node runtime per namespace as an
+    /// implementation detail you never see or manage.
     pub function_id: String,
     /// JavaScript defining `handler(payload)`:
     /// `export function handler(p) { return p.n * 2 }`. The runtime loads

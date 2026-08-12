@@ -161,6 +161,21 @@ mod tests {
     fn stream_truncation_respects_utf8_boundaries() {
         let s: String = "é".repeat(20_000); // 2-byte chars
         let capped = cap_stream("stdout", s, 16_384);
-        assert!(capped.is_char_boundary(0) && std::str::from_utf8(capped.as_bytes()).is_ok());
+        // The observable contract, not a tautology on a `String`: the split
+        // points landed ON character boundaries, so the kept head and tail
+        // are whole `é`s with no replacement or partial character at either
+        // edge of the marker.
+        let (head, rest) = capped
+            .split_once("\n[…stdout truncated")
+            .expect("marker present");
+        let tail = rest.split_once("]\n").expect("marker closed").1;
+        assert!(
+            !head.is_empty() && head.chars().all(|c| c == 'é'),
+            "head lost a character"
+        );
+        assert!(
+            !tail.is_empty() && tail.chars().all(|c| c == 'é'),
+            "tail lost a character"
+        );
     }
 }

@@ -154,18 +154,20 @@ async function copyText(text: string): Promise<boolean> {
   } catch {
     /* fall through to the textarea path */
   }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
   try {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
     ta.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
+    return document.execCommand('copy')
   } catch {
     return false
+  } finally {
+    // finally, not the success path: a throwing select/execCommand must not
+    // leave one orphaned textarea in <body> per failed copy.
+    document.body.removeChild(ta)
   }
 }
 
@@ -443,8 +445,15 @@ export function errorInfo(output: unknown): { message: string } | undefined {
   if (!rec) return undefined
   const err = rec.error
   const errObj = asRecord(err)
+  // JSON.stringify(undefined) is undefined, not a string — and `{ error:
+  // undefined }` passes isErrorOutput's `'error' in rec` check. The fallback
+  // keeps `message` total so ErrorCard renders an error instead of throwing.
   const message =
-    typeof err === 'string' ? err : typeof errObj?.message === 'string' ? errObj.message : JSON.stringify(err)
+    typeof err === 'string'
+      ? err
+      : typeof errObj?.message === 'string'
+        ? errObj.message
+        : (JSON.stringify(err) ?? 'unknown error')
   return { message }
 }
 

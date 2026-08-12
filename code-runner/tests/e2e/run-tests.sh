@@ -26,7 +26,13 @@ FILTER=""
 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --filter) FILTER="${2:-}"; shift 2 ;;
+    --filter)
+      # Guarded: `shift 2` past the end of $@ shifts NOTHING, and with no
+      # value consumed this loop would spin on `--filter` forever.
+      [ $# -ge 2 ] || { echo "missing value for --filter" >&2; exit 2; }
+      FILTER="$2"
+      shift 2
+      ;;
     --filter=*) FILTER="${1#*=}"; shift ;;
     --keep) KEEP=1; shift ;;
     -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -118,7 +124,10 @@ set +e
 ( cd "$HARNESS" && III_URL="$URL" HARNESS_FILTER="$FILTER" \
     HARNESS_REPORT_PATH="$LOGS/report.json" npm run --silent dev ) 2>&1 | tee "$LOGS/harness.log"
 set -e
-SUITE_LINE="$(grep -a 'HARNESS_DONE' "$LOGS/harness.log" | tail -1)"
+# `|| true`: grep exits 1 when the harness died before printing HARNESS_DONE,
+# and set -e (restored just above) would kill the script HERE — before the
+# "no result line" diagnostic below ever prints.
+SUITE_LINE="$(grep -a 'HARNESS_DONE' "$LOGS/harness.log" | tail -1 || true)"
 
 echo
 echo "================ code-runner e2e ================"

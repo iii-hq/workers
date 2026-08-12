@@ -10,7 +10,7 @@
     ],
     "properties": {
       "code": {
-        "description": "Source run as a whole file. A global `iii` is in scope — trigger any bus function, register one for the life of this runtime, and read and write this runtime's private scratch directory through `iii.files`.",
+        "description": "Node: the body of an async function — `return x` yields the result, top-level `await` works. Python: a module — assign `result = x`. Both get a global `iii` that can trigger any bus function; node's can also register functions for the life of the runtime and reach its private scratch directory via `iii.files`, python's is synchronous and gets `/work` instead.",
         "type": "string"
       },
       "keep": {

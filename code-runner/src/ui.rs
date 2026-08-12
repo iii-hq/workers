@@ -127,9 +127,11 @@ mod tests {
             );
         }
         // Every card uses hooks, so react must be in there — as a bare import
-        // the console's import map resolves, never as bundled source.
+        // the console's import map resolves, never as bundled source. The
+        // closing quote matters: without it `from "react-dom/client"` and
+        // friends satisfy the check with react itself bundled.
         assert!(
-            PAGE_JS.contains(r#"from "react"#),
+            PAGE_JS.contains(r#"from "react""#),
             "react should be imported, not bundled"
         );
     }

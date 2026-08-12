@@ -148,8 +148,12 @@ async fn main() -> Result<()> {
     code_runner::ui::register(&iii);
     functions::setup_harness_hooks(&iii);
     // LAST, so the reload handler closes over fully-built state.
-    configuration::register_config_trigger(&iii, shared)
+    configuration::register_config_trigger(&iii, shared.clone())
         .context("registering the configuration change trigger")?;
+    // An update between the boot fetch and the trigger registration above
+    // fired into nothing; one refresh now closes that window (serialized
+    // with trigger-driven refreshes inside `refresh` itself).
+    configuration::refresh(&iii, &shared).await;
 
     // Backstop for callers that never call teardown.
     let sweeper = manager.clone();

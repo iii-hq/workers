@@ -69,10 +69,20 @@ fn missing_payload_is_none_and_unassigned_result_is_null() {
 
 #[test]
 fn unrepresentable_result_becomes_null() {
-    let r = run_wrapper("result = object()", None);
-    let env = r.envelope.unwrap();
-    assert_eq!(env["ok"], true);
-    assert_eq!(env["result"], serde_json::Value::Null);
+    // `object()` has no JSON form at all; NaN and Infinity have a json.dumps
+    // form (`NaN`, `Infinity`) that is NOT valid JSON — without
+    // allow_nan=False they poison the envelope and the host reports a bare
+    // exit instead of a result.
+    for code in [
+        "result = object()",
+        "result = float(\"nan\")",
+        "result = float(\"inf\")",
+    ] {
+        let r = run_wrapper(code, None);
+        let env = r.envelope.unwrap();
+        assert_eq!(env["ok"], true, "{code}");
+        assert_eq!(env["result"], serde_json::Value::Null, "{code}");
+    }
 }
 
 #[test]

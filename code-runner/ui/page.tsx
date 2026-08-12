@@ -24,7 +24,7 @@ import { createCodeRunnerRenderers } from './src/function-trigger-message'
 export default function setup(host: Host) {
   const removers = createCodeRunnerRenderers(host).map((renderer) => host.functionTriggers.register(renderer))
 
-  host.configForms.register('code-runner', CodeRunnerConfigForm)
+  removers.push(host.configForms.register('code-runner', CodeRunnerConfigForm))
 
   // The loader already disposes every registration; returning the removers
   // makes an early teardown (hot reload mid-session) explicit and ordered.

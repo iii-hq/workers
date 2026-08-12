@@ -1,9 +1,11 @@
-# code-runner configuration for the e2e harness.
-#
-# Identical to the crate's own shipped defaults (../../config.yaml) so the
-# suite tests what operators actually run. Both engines are configured from
-# THIS file — `CodeRunnerConfig::python()` maps the shared keys onto the
-# python engine, so a value here that only moved node would be a bug.
+# code-runner configuration for the e2e harness, fed to the worker as its
+# one-time `--config` seed for the configuration worker (there is no shipped
+# config.yaml anymore — `CodeRunnerConfig::default()` in src/config.rs is the
+# reference). Keys left unset (the output caps, inject_guidance) run at those
+# struct defaults, and the caps case asserts against them. Both engines are
+# configured from this one entry — `CodeRunnerConfig::python()` maps the
+# shared keys onto the python engine, so a value here that only moved node
+# would be a bug.
 max_runtimes: 8           # live runtimes across both engines
 default_timeout_ms: 5000  # per run when unspecified
 max_timeout_ms: 30000     # ceiling a request's timeout_ms is clamped to

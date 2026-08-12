@@ -95,7 +95,7 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
             let cfg = cfg.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cfg).await;
+                refresh(&engine, &cfg).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -116,11 +116,22 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
     Ok(())
 }
 
+/// Serializes every refresh's fetch→store. The fetch happens INSIDE the
+/// lock, so whichever refresh stores later also fetched later — a slow, older
+/// `configuration::get` response can never overwrite a newer snapshot.
+static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Re-fetch the AUTHORITATIVE value and swap the snapshot. The trigger
 /// payload is deliberately ignored: `on-config-change` is a discoverable bus
 /// function, and trusting a caller-supplied value would let anyone inject
 /// config without updating persisted state.
-async fn on_config_change(iii: &IIIClient, config: &SharedConfig) {
+///
+/// Called by the `configuration` trigger, and once more at the end of boot:
+/// an update landing between the boot fetch and the trigger registration
+/// fires into nothing, and without the boot refresh it would stay invisible
+/// until the NEXT update or a restart.
+pub async fn refresh(iii: &IIIClient, config: &SharedConfig) {
+    let _serialized = REFRESH_LOCK.lock().await;
     match fetch_config(iii).await {
         Ok(next) => {
             if config.load().restart_required(&next) {

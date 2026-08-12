@@ -31,6 +31,11 @@ use iii_node_core::ops::{MAX_DESCRIPTION_BYTES, MAX_FUNCTION_ID_BYTES};
 /// closure that removes each of its functions from the bus.
 struct PyNamespace {
     runtime_id: String,
+    /// Registrations past `py_namespace_runtime` but not yet inserted into
+    /// `functions` (their define is still executing). A failing sibling's
+    /// cleanup must not read `functions.is_empty()` as "namespace unused"
+    /// and destroy the interpreter these are defining on.
+    in_flight: usize,
     functions: HashMap<String, UnregisterFn>,
 }
 
@@ -406,13 +411,22 @@ impl Manager {
             // interpreter with it. A pinned runtime is exempt from the idle
             // sweep, so an orphan left here is one nothing will ever reclaim,
             // and it counts against `max_runtimes` forever. Only when the
-            // namespace has no OTHER registrations: an existing namespace owns
-            // its interpreter and a failed addition must not kill it.
+            // namespace has no OTHER registrations — inserted (`functions`)
+            // or still defining (`in_flight`): an existing namespace owns its
+            // interpreter and a failed addition must not kill it. The
+            // incarnation check covers a concurrent teardown+recreate: a
+            // fresh entry under the same name is not ours to decrement.
             let mut map = self.py_ns.lock().unwrap();
-            if map.get(&namespace).is_some_and(|e| e.functions.is_empty()) {
-                map.remove(&namespace);
-                drop(map);
-                let _ = python.destroy_runtime(&runtime_id);
+            if let Some(entry) = map
+                .get_mut(&namespace)
+                .filter(|e| e.runtime_id == runtime_id)
+            {
+                entry.in_flight -= 1;
+                if entry.functions.is_empty() && entry.in_flight == 0 {
+                    map.remove(&namespace);
+                    drop(map);
+                    let _ = python.destroy_runtime(&runtime_id);
+                }
             }
             return Err(e);
         }
@@ -441,13 +455,31 @@ impl Manager {
             req.response_format.clone(),
             handler,
         );
-        self.py_ns
-            .lock()
-            .unwrap()
-            .get_mut(&namespace)
-            .expect("py_namespace_runtime inserted it")
-            .functions
-            .insert(req.function_id.clone(), unregister);
+        let stale = {
+            let mut map = self.py_ns.lock().unwrap();
+            match map
+                .get_mut(&namespace)
+                .filter(|e| e.runtime_id == runtime_id)
+            {
+                Some(entry) => {
+                    entry.in_flight -= 1;
+                    entry.functions.insert(req.function_id.clone(), unregister);
+                    None
+                }
+                // A concurrent teardown removed the namespace (and destroyed
+                // its interpreter) while our define was executing. The handler
+                // just published points at a dead runtime: retract it and
+                // report the collision instead of panicking on the map.
+                None => Some(unregister),
+            }
+        };
+        if let Some(unregister) = stale {
+            unregister();
+            self.node.ids().release_ids(one_id, &owner);
+            return Err(CodeRunnerError::Engine(format!(
+                "namespace {namespace:?} was torn down while this registration was in flight"
+            )));
+        }
 
         Ok(RegisterResponse {
             function_id: req.function_id,
@@ -462,9 +494,12 @@ impl Manager {
         namespace: &str,
     ) -> Result<String, CodeRunnerError> {
         // Held across the create so two first-registrations on one namespace
-        // cannot each mint an interpreter and leave one orphaned.
+        // cannot each mint an interpreter and leave one orphaned. Every
+        // return also counts this registration in `in_flight`, matched by
+        // the decrement on both exits of `register_python`.
         let mut map = self.py_ns.lock().unwrap();
-        if let Some(ns) = map.get(namespace) {
+        if let Some(ns) = map.get_mut(namespace) {
+            ns.in_flight += 1;
             return Ok(ns.runtime_id.clone());
         }
         let to_err = |e| {
@@ -485,6 +520,7 @@ impl Manager {
             namespace.to_string(),
             PyNamespace {
                 runtime_id: runtime_id.clone(),
+                in_flight: 1,
                 functions: HashMap::new(),
             },
         );
@@ -546,10 +582,14 @@ impl Manager {
     fn py_handler(&self, python: &Arc<PythonManager>, runtime_id: &str) -> ProxyHandler {
         let python = python.clone();
         let runtime_id = runtime_id.to_string();
-        let timeout_ms = self.cfg.load().default_timeout_ms;
+        // The snapshot handle, not a value: `default_timeout_ms` is a
+        // per-call knob (struct doc above), so a registered handler must see
+        // a configuration save on its next invocation, not its next redeploy.
+        let cfg = self.cfg.clone();
         Arc::new(move |payload: serde_json::Value| {
             let python = python.clone();
             let runtime_id = runtime_id.clone();
+            let timeout_ms = cfg.load().default_timeout_ms;
             Box::pin(async move {
                 let req = iii_python_core::manager::RunRequest {
                     code: "result = handler(payload)".into(),
@@ -1224,6 +1264,33 @@ mod router_tests {
             m.python.as_ref().unwrap().live_runtime_count(),
             before,
             "a failed keep must not strand a runtime"
+        );
+    }
+
+    /// Two concurrent registrations share one interpreter. If one fails while
+    /// the other is still inside its define (looked the runtime up, inserted
+    /// nothing yet), the failure's cleanup used to see `functions` empty,
+    /// remove the namespace, and destroy the interpreter under the survivor.
+    /// The sibling is simulated deterministically: a bare
+    /// `py_namespace_runtime` call IS a registration parked mid-define.
+    /// Mutation: drop the `in_flight` guard from the failure arm.
+    #[tokio::test]
+    async fn a_failed_registration_spares_a_sibling_still_defining() {
+        let m = manager();
+        let python = m.python.clone().unwrap();
+        let sibling_runtime = m.py_namespace_runtime(&python, "app::").unwrap();
+
+        m.register(reg("app::boom", "this is not python"))
+            .await
+            .expect_err("a bad source must fail");
+
+        // The namespace entry — and the interpreter it pins — must survive:
+        // rejoining the namespace lands on the SAME runtime, not a fresh one
+        // minted over the sibling's grave.
+        let rejoined = m.py_namespace_runtime(&python, "app::").unwrap();
+        assert_eq!(
+            sibling_runtime, rejoined,
+            "the failing registration destroyed the interpreter a sibling was defining on"
         );
     }
 

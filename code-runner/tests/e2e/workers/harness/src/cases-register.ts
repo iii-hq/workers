@@ -142,7 +142,10 @@ export const REGISTER_CASES: TestCase[] = [
         const info = await ctx.call('engine::functions::info', { function_id: 'e2e-fmt::double' })
         const raw = JSON.stringify(info)
         expectContains(raw, 'fmt_marker_n', 'request_format should reach the catalog')
-        expect(!raw.includes('"any"') || raw.includes('fmt_marker_n'), 'schema should replace any')
+        // Not OR-ed with fmt_marker_n: the line above already proved that,
+        // which made the disjunction always-true. This entry carries BOTH
+        // formats, so no "any" fallback schema may survive anywhere in it.
+        expect(!raw.includes('"any"'), 'schema should replace any')
       } finally {
         await ctx.call('code-runner::teardown', { namespace: 'e2e-fmt' })
       }

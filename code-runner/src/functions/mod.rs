@@ -38,8 +38,8 @@ pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister every bus functio
 pub const REGISTER_ID: &str = "code-runner::register_function";
 pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a sandbox. \
      `source` must DEFINE handler(payload) in `lang`; one persistent runtime per namespace \
-     (function_id before `::`) is booted by the first registration and shared by later ones \
-     of the same lang. Write a `description` for callers. Optional `request_format` / \
+     (function_id before `::`) AND lang is booted by the first registration and shared by \
+     later ones. Write a `description` for callers. Optional `request_format` / \
      `response_format` (JSON Schema objects, max 16 KiB) are shown by engine::functions::info \
      but NOT enforced at call time — validate inside the handler. Registrations stop \
      resolving when the namespace is torn down or its runtime reaped for idleness.";

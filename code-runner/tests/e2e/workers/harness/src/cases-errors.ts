@@ -55,8 +55,16 @@ export const ERROR_CASES: TestCase[] = [
         timeout_ms: 25000,
       })
       // Either it finished or it hit its budget; what must NOT happen is an
-      // unbounded response. 1 MiB is the cap each stream is held to.
-      expectEqual(r.stdout.length <= 2 * 1024 * 1024, true, `stdout should be capped, got ${r.stdout.length} bytes`)
+      // unbounded response. The binding cap is the worker's max_stream_bytes
+      // (16 KiB default, unset in code-runner.config.yaml so this suite runs
+      // the shipped default), head+tail around a truncation marker — the
+      // small allowance covers the marker. The old 2 MiB bound let a doubled
+      // (or hundredfold) cap regression sail through.
+      expectEqual(
+        r.stdout.length <= 16 * 1024 + 200,
+        true,
+        `stdout should be capped at max_stream_bytes, got ${r.stdout.length} bytes`,
+      )
     },
   },
 

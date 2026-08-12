@@ -5,9 +5,12 @@ use crate::lang::Lang;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RunRequest {
-    /// Source run as a whole file. A global `iii` is in scope — trigger any
-    /// bus function, register one for the life of this runtime, and read and
-    /// write this runtime's private scratch directory through `iii.files`.
+    /// Node: the body of an async function — `return x` yields the result,
+    /// top-level `await` works. Python: a module — assign `result = x`. Both
+    /// get a global `iii` that can trigger any bus function; node's can also
+    /// register functions for the life of the runtime and reach its private
+    /// scratch directory via `iii.files`, python's is synchronous and gets
+    /// `/work` instead.
     pub code: String,
     /// Run in a SPECIFIC runtime, sharing its scratch directory and its
     /// globals: the run lands in that runtime and it is NOT destroyed

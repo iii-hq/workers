@@ -29,12 +29,13 @@ pub fn sandbox_engine() -> Result<Engine> {
 }
 
 fn cache_root() -> PathBuf {
+    // Containers routinely run with neither XDG_CACHE_HOME nor HOME set;
+    // this sits on the worker boot path, so that case must degrade to the
+    // temp dir (losing cache reuse across restarts), not panic the process.
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").expect("HOME must be set");
-            PathBuf::from(home).join(".cache")
-        });
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
     base.join("iii").join("python-engine").join(ZIP_SHA256)
 }
 

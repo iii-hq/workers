@@ -18,7 +18,7 @@ pub struct RunRequest {
     /// worker name: lowercase letters, digits, `.`, `_` or `-`, at most 64
     /// bytes, and no inner `::`; ids may still nest below it, so
     /// `myapp::v2::save` is fine under `myapp::`. Accepted only when creating
-    /// a runtime; defaults to `node-engine::<runtime_id>::`, where
+    /// a runtime; defaults to `code-runner::<runtime_id>::`, where
     /// `runtime_id` is itself `rt-<uuid>`.
     #[serde(default)]
     pub namespace: Option<String>,
@@ -27,7 +27,7 @@ pub struct RunRequest {
     /// runtime; nothing persists, and the response carries no `runtime_id`.
     /// `true`: create a runtime and leave it running; the response's
     /// `runtime_id` addresses it for later calls and is the capability
-    /// `node-engine::teardown` needs to stop it.
+    /// `code-runner::teardown` needs to stop it.
     #[serde(default)]
     pub keep: bool,
     /// Wall-clock budget in milliseconds, clamped to the configured maximum.

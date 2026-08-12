@@ -6,8 +6,9 @@ use crate::lang::Lang;
 #[derive(Deserialize, JsonSchema)]
 pub struct RegisterRequest {
     /// e.g. `my-app::greet`. The segment before the first `::` is the
-    /// namespace; the first registration claims it for a language and later
-    /// ids must share both.
+    /// namespace. Each language keeps its own persistent runtime per
+    /// namespace, created by its first registration — a namespace can hold
+    /// node and python ids side by side.
     pub function_id: String,
     /// Source that DEFINES `handler(payload)` in `lang`.
     ///

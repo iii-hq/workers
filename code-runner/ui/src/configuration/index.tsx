@@ -90,8 +90,11 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
   useEffect(() => {
     const field = props.focusField?.[0]
     if (!field || !rootRef.current) return
+    // CSS.escape: the field name rides in on the URL fragment, and an
+    // unescaped `"` or `]` makes querySelector throw during commit —
+    // unmounting the whole form instead of skipping the focus.
     const target = rootRef.current.querySelector<HTMLElement>(
-      `[data-field="${field}"]`,
+      `[data-field="${CSS.escape(field)}"]`,
     )
     target?.focus()
     target?.scrollIntoView({ block: 'center' })
@@ -169,12 +172,12 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
-          scratch (iii.files){' '}
+          scratch (node iii.files — python&apos;s /work budget is fixed by its engine){' '}
           <span className="cr-cfg-restart">applies at next worker restart</span>
         </span>
         {numberField(
           'scratch_mb',
-          'scratch quota per runtime (MiB, 0 removes the surface)',
+          'scratch quota per node runtime (MiB, 0 removes the surface)',
           `worst-case host footprint: ${footprintMb} MiB — tmpfs (host RAM) on most Linux hosts unless scratch root points at real disk`,
         )}
         {numberField('scratch_files', 'max files per scratch directory')}

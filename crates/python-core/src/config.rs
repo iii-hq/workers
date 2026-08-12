@@ -49,15 +49,19 @@ impl Default for PythonEngineConfig {
 }
 
 impl PythonEngineConfig {
+    // Ceilings are floored to 1: `u64::clamp` PANICS when min > max, and a
+    // configured `max_timeout_ms: 0` / `max_memory_mb: 0` reaches here
+    // unvalidated — that must degrade to the tightest real ceiling, not
+    // abort every run.
     pub fn clamp_timeout(&self, requested: Option<u64>) -> u64 {
         requested
             .unwrap_or(self.default_timeout_ms)
-            .clamp(1, self.max_timeout_ms)
+            .clamp(1, self.max_timeout_ms.max(1))
     }
     pub fn clamp_memory(&self, requested: Option<u64>) -> u64 {
         requested
             .unwrap_or(self.default_memory_mb)
-            .clamp(1, self.max_memory_mb)
+            .clamp(1, self.max_memory_mb.max(1))
     }
 }
 
@@ -73,5 +77,18 @@ mod tests {
         assert_eq!(cfg.clamp_timeout(Some(0)), 1);
         assert_eq!(cfg.clamp_memory(None), 128);
         assert_eq!(cfg.clamp_memory(Some(4_096)), 512);
+    }
+
+    /// A zero ceiling is an operator mistake, not a licence to panic:
+    /// `clamp(1, 0)` aborts every run. Mutation: drop either `.max(1)`.
+    #[test]
+    fn a_zero_ceiling_degrades_instead_of_panicking() {
+        let cfg = PythonEngineConfig {
+            max_timeout_ms: 0,
+            max_memory_mb: 0,
+            ..PythonEngineConfig::default()
+        };
+        assert_eq!(cfg.clamp_timeout(Some(5_000)), 1);
+        assert_eq!(cfg.clamp_memory(Some(256)), 1);
     }
 }

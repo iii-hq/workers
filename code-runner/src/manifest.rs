@@ -21,19 +21,11 @@ pub fn build_manifest() -> ModuleManifest {
              microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory."
             .to_string(),
         // Every operator-facing key, so an operator reading the registry
-        // sees the same surface the configuration entry holds. node-engine's
-        // manifest drifted by omitting `external_mb`; this one is checked
-        // against the struct field-for-field below.
-        default_config: serde_json::json!({
-            "max_runtimes": d.max_runtimes,
-            "default_timeout_ms": d.default_timeout_ms,
-            "max_timeout_ms": d.max_timeout_ms,
-            "idle_ttl_secs": d.idle_ttl_secs,
-            "heap_mb": d.heap_mb,
-            "external_mb": d.external_mb,
-            "scratch_mb": d.scratch_mb,
-            "scratch_files": d.scratch_files,
-        }),
+        // sees the same surface the configuration entry holds. Serialized
+        // from the struct rather than hand-listed: node-engine's manifest
+        // drifted by omitting `external_mb`, and the hand-listed version of
+        // THIS one drifted by four keys within one branch.
+        default_config: serde_json::to_value(&d).expect("CodeRunnerConfig serializes"),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -53,31 +45,28 @@ mod tests {
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
     }
 
-    /// Every operator-facing key must be advertised. Mutation: drop any line
-    /// from `default_config` — node-engine's manifest silently omitted
-    /// `external_mb` for exactly as long as nobody checked.
+    /// Every operator-facing key must be advertised: the manifest's keys and
+    /// the configuration schema's properties are the same surface. Compared
+    /// as key SETS so neither side can drift — the hand-listed predecessor
+    /// of this test blessed a four-key omission.
     #[test]
     fn default_config_advertises_every_operator_key() {
         let m = build_manifest();
-        let d = CodeRunnerConfig::default();
-        for (k, v) in [
-            ("max_runtimes", serde_json::json!(d.max_runtimes)),
-            (
-                "default_timeout_ms",
-                serde_json::json!(d.default_timeout_ms),
-            ),
-            ("max_timeout_ms", serde_json::json!(d.max_timeout_ms)),
-            ("idle_ttl_secs", serde_json::json!(d.idle_ttl_secs)),
-            ("heap_mb", serde_json::json!(d.heap_mb)),
-            ("external_mb", serde_json::json!(d.external_mb)),
-            ("scratch_mb", serde_json::json!(d.scratch_mb)),
-            ("scratch_files", serde_json::json!(d.scratch_files)),
-        ] {
-            assert_eq!(
-                m.default_config[k], v,
-                "manifest is missing or wrong for {k}"
-            );
-        }
+        let advertised: std::collections::BTreeSet<String> = m
+            .default_config
+            .as_object()
+            .expect("default_config is an object")
+            .keys()
+            .cloned()
+            .collect();
+        let schema = CodeRunnerConfig::json_schema();
+        let configurable: std::collections::BTreeSet<String> = schema["properties"]
+            .as_object()
+            .expect("schema has properties")
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(advertised, configurable);
     }
 
     /// A registry entry that describes the wrong worker is worse than none.

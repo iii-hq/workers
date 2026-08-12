@@ -21,6 +21,8 @@ TENANT_FILENAME = "<code>"
 def write_error(out_dir, kind, message, tb_text=None):
     if len(message) > MAX_MESSAGE_CHARS:
         message = message[:MAX_MESSAGE_CHARS] + "... message truncated"
+    if tb_text is not None and len(tb_text) > MAX_TRACEBACK_CHARS:
+        tb_text = tb_text[:MAX_TRACEBACK_CHARS] + "\n... traceback truncated"
     with open(out_dir + "/result.json", "w") as f:
         json.dump({"ok": False, "kind": kind, "message": message, "traceback": tb_text}, f)
 
@@ -46,10 +48,14 @@ def _install_iii(run_dir):
     try:
         with open(run_dir + "/iii.json", "rb") as f:
             cfg = json.load(f)
-    except OSError:
+        sentinel = cfg["sentinel"]
+    except (OSError, ValueError, KeyError):
+        # The file is host-written, so truncation/garbage here is corruption
+        # (a partial write during a crash), not tenant reach. A malformed
+        # bridge config means NO bridge — not an exception that escapes main
+        # before any envelope exists.
         return (False, None)
 
-    sentinel = cfg["sentinel"]
     namespace = cfg.get("namespace", "")
     stdout = sys.stdout
 
@@ -59,12 +65,17 @@ def _install_iii(run_dir):
         fn = request.get("function_id")
         if not isinstance(fn, str) or not fn:
             raise TypeError("iii.trigger: function_id must be a non-empty string")
+        # allow_nan=False: the bare `NaN`/`Infinity` tokens the default emits
+        # are not JSON, and the host's strict parser would fail the FRAME —
+        # a broken bridge — instead of this call. The ValueError this raises
+        # is an ordinary tenant exception at the trigger call site.
         frame = json.dumps(
             {
                 "function_id": fn,
                 "payload": request.get("payload"),
                 "timeout_ms": request.get("timeout_ms"),
-            }
+            },
+            allow_nan=False,
         )
         # The host scans stdout for "\n<sentinel>\n<json>\n". Flushed
         # immediately: the answer cannot come back until the whole frame has.
@@ -133,14 +144,16 @@ def run_once(source, payload, out_dir, ns):
         while tb is not None and tb.tb_frame.f_code.co_filename != TENANT_FILENAME:
             tb = tb.tb_next
         text = "".join(traceback.format_exception(type(e), e, tb))
-        if len(text) > MAX_TRACEBACK_CHARS:
-            text = text[:MAX_TRACEBACK_CHARS] + "\n... traceback truncated"
         write_error(out_dir, "python_exception", "%s: %s" % (type(e).__name__, e), text)
         return
 
     value = ns.get("result")
     try:
-        serialized = json.dumps(value)
+        # allow_nan=False so float("nan")/float("inf") raise ValueError and
+        # take the unrepresentable path below; the default emits bare `NaN` /
+        # `Infinity` tokens that are not JSON, and the host's envelope parse
+        # would report the whole run as a bare exit.
+        serialized = json.dumps(value, allow_nan=False)
     except (TypeError, ValueError):
         serialized = "null"  # unrepresentable results come back as null (node-engine parity)
     # Build the envelope FIRST, then measure it. Checking `serialized` alone

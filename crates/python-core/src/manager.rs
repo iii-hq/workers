@@ -126,7 +126,9 @@ pub struct Manager {
 
 impl Manager {
     pub fn new(cfg: Arc<PythonEngineConfig>, runner: Arc<Runner>) -> Arc<Self> {
-        let permits = Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_runs));
+        // `.max(1)`: zero permits is not "no concurrency", it is every run
+        // parked forever on a semaphore nothing ever releases.
+        let permits = Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_runs.max(1)));
         Arc::new(Self {
             cfg,
             runner,
@@ -146,7 +148,7 @@ impl Manager {
         runner: Arc<Runner>,
         bridge: Arc<dyn crate::runner::GuestBridge>,
     ) -> Arc<Self> {
-        let permits = Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_runs));
+        let permits = Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_runs.max(1)));
         Arc::new(Self {
             cfg,
             runner,
@@ -159,7 +161,40 @@ impl Manager {
     /// A one-shot run: nothing persists, and nothing is addressable
     /// afterwards.
     pub async fn run(&self, req: RunRequest) -> Result<RunOutput, PythonEngineError> {
-        self.run_with(req, None).await
+        let (code, payload_json, timeout_ms) = self.validate(&req)?;
+        let memory_mb = self.cfg.clamp_memory(req.memory_mb);
+
+        // Permits are taken only after validation: a request that fails its
+        // caps must never queue behind runs that are actually going to
+        // execute.
+        let _permit =
+            self.permits.clone().acquire_owned().await.map_err(|_| {
+                PythonEngineError::new(ErrorKind::Internal, "worker is shutting down")
+            })?;
+
+        let spec = RunSpec {
+            code: code.into_bytes(),
+            payload_json,
+            timeout_ms,
+            memory_mb,
+            work_dir: None,
+            bridge: self.bridge.clone(),
+            namespace: None,
+        };
+        // Awaited directly — NOT `spawn_blocking`. `Runner::run` drives the
+        // guest on a fiber under `call_async`; its internal awaits (the
+        // epoch-slice yield, the wall-clock backstop timeout) need a real
+        // reactor. Moving it to a blocking thread would starve that reactor
+        // and disarm the very backstop that kills a guest parked in a host
+        // call (`time.sleep(86400)`), which would then hold the thread and
+        // this permit forever.
+        let outcome = self
+            .runner
+            .run(&spec)
+            .await
+            .map_err(|e| PythonEngineError::new(ErrorKind::Internal, format!("{e:#}")))?;
+
+        classify(outcome, timeout_ms)
     }
 
     /// Run in an existing runtime: same `/work`, and the same interpreter.
@@ -395,47 +430,6 @@ impl Manager {
             self.cfg.clamp_timeout(req.timeout_ms),
         ))
     }
-
-    async fn run_with(
-        &self,
-        req: RunRequest,
-        work_dir: Option<std::path::PathBuf>,
-    ) -> Result<RunOutput, PythonEngineError> {
-        let (code, payload_json, timeout_ms) = self.validate(&req)?;
-        let memory_mb = self.cfg.clamp_memory(req.memory_mb);
-
-        // Permits are taken only after validation: a request that fails its
-        // caps must never queue behind runs that are actually going to
-        // execute.
-        let _permit =
-            self.permits.clone().acquire_owned().await.map_err(|_| {
-                PythonEngineError::new(ErrorKind::Internal, "worker is shutting down")
-            })?;
-
-        let spec = RunSpec {
-            code: code.into_bytes(),
-            payload_json,
-            timeout_ms,
-            memory_mb,
-            work_dir,
-            bridge: self.bridge.clone(),
-            namespace: None,
-        };
-        // Awaited directly — NOT `spawn_blocking`. `Runner::run` drives the
-        // guest on a fiber under `call_async`; its internal awaits (the
-        // epoch-slice yield, the wall-clock backstop timeout) need a real
-        // reactor. Moving it to a blocking thread would starve that reactor
-        // and disarm the very backstop that kills a guest parked in a host
-        // call (`time.sleep(86400)`), which would then hold the thread and
-        // this permit forever.
-        let outcome = self
-            .runner
-            .run(&spec)
-            .await
-            .map_err(|e| PythonEngineError::new(ErrorKind::Internal, format!("{e:#}")))?;
-
-        classify(outcome, timeout_ms)
-    }
 }
 
 /// Host-side signals first; guest-writable bytes only after.
@@ -551,7 +545,9 @@ fn capture_streams(out: &RunOutcome) -> (String, String, bool) {
         let text = String::from_utf8_lossy(&stream.bytes);
         let mut kept = String::new();
         for (n, line) in text.lines().enumerate() {
-            if n >= MAX_LOG_LINES || kept.len() + line.len() > MAX_LOG_BYTES {
+            // `+ 1` counts the newline appended below; without it a stream
+            // of short lines overruns MAX_LOG_BYTES by up to MAX_LOG_LINES.
+            if n >= MAX_LOG_LINES || kept.len() + line.len() + 1 > MAX_LOG_BYTES {
                 truncated = true;
                 break;
             }

@@ -56,7 +56,7 @@ the echo is bounded.
 disables it**). An oversized value is not truncated or reshaped, it is
 *replaced whole* by a string marker naming what was dropped:
 
-```
+```text
 <omitted: result was ~{KB} KB ({N array elements | N object keys | a N-char
 string}); returning it whole would flood the model context — print a slice,
 aggregate in code, or write it to iii.files and return a summary>
@@ -75,7 +75,7 @@ gone missing.
 first 60% and its last 40% — so both the first failure and the final summary
 line survive — with a marker spliced into the middle:
 
-```
+```text
 [head: ~60% of the budget]
 […stdout truncated: was ~{KB} KB; middle omitted]
 [tail: ~40% of the budget]
@@ -156,9 +156,9 @@ log says so).
 | `idle_ttl_secs` | 900 | reap runtimes idle this long |
 | `heap_mb` | 128 | V8 object-heap cap per node runtime |
 | `external_mb` | 64 | off-heap cap per node runtime; `heap_mb` does not cover it |
-| `scratch_mb` | 8 | `iii.files` quota per runtime; **0 disables it entirely** |
-| `scratch_files` | 64 | max files per runtime |
-| `scratch_root` | unset | where scratch directories live |
+| `scratch_mb` | 8 | `iii.files` quota per **node** runtime; **0 disables it entirely**. Python's `/work` budget is fixed by its engine (256 MiB, 20k files) |
+| `scratch_files` | 64 | max files per node runtime |
+| `scratch_root` | unset | where node scratch directories live |
 | `inject_guidance` | true | append the code-runner usage guidance to agent system prompts (the `pre_generate` hook); off answers the hook with a no-op |
 | `max_result_bytes` | 32768 | ceiling on the serialized `result`; over it becomes an omission marker (see [Output caps](#output-caps)). **0 disables it** |
 | `max_stream_bytes` | 16384 | ceiling on each of `stdout`/`stderr`; over it keeps head+tail around a truncation marker. **0 disables it** |

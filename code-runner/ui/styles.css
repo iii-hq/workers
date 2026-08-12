@@ -68,6 +68,11 @@
   0%, 100% { opacity: 1 }
   50% { opacity: 0.35 }
 }
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="code-runner"] .cr-ui-msg-note.pulse {
+    animation: none;
+  }
+}
 
 /* --- chips ------------------------------------------------------------- */
 [data-iii-ui="code-runner"] .cr-ui-chip {

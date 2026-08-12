@@ -26,8 +26,10 @@ fn main() {
     println!("cargo:rerun-if-changed=ui/build.mjs");
     println!("cargo:rerun-if-changed=ui/package.json");
     // The lockfile lives at the workers-repo root (pnpm workspace: the ui
-    // project links @iii-dev/console-ui from packages/console-ui).
+    // project links @iii-dev/console-ui from packages/console-ui — watched
+    // too, or an edit there leaves a stale page.js embedded in the worker).
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
+    println!("cargo:rerun-if-changed=../packages/console-ui");
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -124,7 +126,7 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
         }
     }
 
-    for dir in [ui_dir.join("src")] {
+    for dir in [ui_dir.join("src"), ui_dir.join("../../packages/console-ui")] {
         if dir.exists() && !subtree_older_than(&dir, dist_mtime) {
             return false;
         }
