@@ -70,6 +70,54 @@ export interface FreeformExportOptions {
   background: boolean
 }
 
+/** A serialized element excalidraw itself produced (vs an agent skeleton). */
+function isFullElement(el: unknown): boolean {
+  return (
+    typeof el === 'object' &&
+    el !== null &&
+    ('versionNonce' in el || 'seed' in el)
+  )
+}
+
+/**
+ * Make any stored element list renderable: full elements pass through,
+ * agent skeletons run through excalidraw's converter. Converted one batch
+ * per skeleton RUN (arrows may bind to ids created in the same add), and
+ * a batch the converter rejects is dropped rather than sinking the whole
+ * scene — rendering most of a board beats rendering none of it.
+ */
+function normalizeElements(
+  bundle: FreeformBundle,
+  elements: unknown[],
+): unknown[] {
+  type Convertible = Parameters<typeof bundle.convertToExcalidrawElements>[0]
+  const out: unknown[] = []
+  let batch: unknown[] = []
+  const flushBatch = () => {
+    if (batch.length === 0) return
+    try {
+      out.push(
+        ...bundle.convertToExcalidrawElements(batch as Convertible, {
+          regenerateIds: false,
+        }),
+      )
+    } catch {
+      // Skip only the unconvertible batch.
+    }
+    batch = []
+  }
+  for (const el of elements) {
+    if (isFullElement(el)) {
+      flushBatch()
+      out.push(el)
+    } else {
+      batch.push(el)
+    }
+  }
+  flushBatch()
+  return out
+}
+
 export interface FreeformPaneProps {
   host: Host
   /** The freeform canvas being edited; `source` is excalidraw scene JSON. */
@@ -156,7 +204,16 @@ function FreeformEditor({
 }: FreeformEditorProps) {
   // Parsed once per mount (the record.id key above remounts on record change);
   // later parent refreshes of the same record must not reset the live scene.
-  const [initialData] = useState(() => parseSceneSource(record.source))
+  // Elements run through the skeleton converter FIRST: canvas::element::add
+  // stores skeleton shapes verbatim, and excalidraw's restore hangs on a
+  // bare {type, label} skeleton handed to it as initialData.
+  const [initialData] = useState(() => {
+    const parsed = parseSceneSource(record.source)
+    return {
+      ...parsed,
+      elements: normalizeElements(bundle, parsed.elements),
+    }
+  })
 
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   /** The serialized scene as of the last onSave (or the mount baseline). */
@@ -218,14 +275,13 @@ function FreeformEditor({
     lastAppliedRef.current = record.source
     try {
       const scene = parseSceneSource(record.source)
-      const elements = bundle.convertToExcalidrawElements(
-        scene.elements as Parameters<
-          typeof bundle.convertToExcalidrawElements
-        >[0],
-        { regenerateIds: false },
-      )
+      const elements = normalizeElements(bundle, scene.elements)
       api.updateScene({
-        elements,
+        elements: elements as Parameters<
+          typeof api.updateScene
+        >[0] extends { elements?: infer E }
+          ? E
+          : never,
         captureUpdate: bundle.CaptureUpdateAction.NEVER,
       })
       // The applied scene is now the save baseline — without this, the
@@ -237,7 +293,15 @@ function FreeformEditor({
     }
   }, [record.source, bundle, serializeScene])
 
+  // HARD SAFETY RULE: nothing persists until the person actually touched
+  // the board this mount. Excalidraw's restore fires onChange on its own
+  // (and a scene it failed to restore serializes EMPTY) — without this
+  // gate, merely opening a canvas the renderer choked on auto-saved the
+  // choke back and destroyed the stored elements.
+  const userInteractedRef = useRef(false)
+
   const saveIfChanged = useCallback((): boolean => {
+    if (!userInteractedRef.current) return false
     const json = serializeScene()
     if (json === null) return false
     if (json === lastSavedRef.current) {
@@ -257,6 +321,7 @@ function FreeformEditor({
       lastSavedRef.current = serializeScene()
       return
     }
+    if (!userInteractedRef.current) return
     setDirty(true)
     if (timerRef.current !== null) window.clearTimeout(timerRef.current)
     timerRef.current = window.setTimeout(() => {
@@ -388,7 +453,16 @@ function FreeformEditor({
         ) : null}
         <ExportMenu theme={theme} disabled={false} onExport={runExport} />
       </div>
-      <div className="canvas-freeform-board">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: capture-phase interaction latch, not a control */}
+      <div
+        className="canvas-freeform-board"
+        onPointerDownCapture={() => {
+          userInteractedRef.current = true
+        }}
+        onKeyDownCapture={() => {
+          userInteractedRef.current = true
+        }}
+      >
         <Excalidraw
           excalidrawAPI={acceptApi}
           initialData={excalidrawInitialData}
