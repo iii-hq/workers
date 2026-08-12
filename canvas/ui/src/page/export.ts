@@ -23,6 +23,28 @@ export function downloadSvg(svg: string, filename: string): void {
   downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename)
 }
 
+/** Read the diagram's natural size off the svg viewBox. */
+export function svgDimensions(svg: string): { w: number; h: number } | null {
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml')
+  if (doc.querySelector('parsererror')) return null
+  const viewBox = doc.documentElement.getAttribute('viewBox')
+  if (!viewBox) return null
+  const parts = viewBox.trim().split(/[\s,]+/).map(Number)
+  if (parts.length !== 4 || !parts.every(Number.isFinite)) return null
+  const [, , w, h] = parts
+  return w > 0 && h > 0 ? { w, h } : null
+}
+
+/** Paint a background on the svg root itself (viewers honor root style). */
+export function svgWithBackground(svg: string, background: string): string {
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml')
+  if (doc.querySelector('parsererror')) return svg
+  const root = doc.documentElement
+  const style = root.getAttribute('style') ?? ''
+  root.setAttribute('style', `${style};background:${background};`)
+  return new XMLSerializer().serializeToString(root)
+}
+
 /**
  * Mermaid emits `width="100%"` plus an inline `max-width` style; an <img>
  * rasterizing that has no layout to resolve the percentage against. Pin the

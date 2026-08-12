@@ -19,7 +19,7 @@
  * chat-card section of ../../styles.css.
  */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type {
   FunctionTriggerMessage,
@@ -27,6 +27,7 @@ import type {
   Host,
 } from '@iii-dev/console-ui'
 
+import { animateSvgDrawIn } from '../lib/draw'
 import { loadMermaid, mermaidInitConfig } from '../lib/loaders'
 import { CANVAS_FUNCTION_IDS, unwrapEnvelope } from '../lib/types'
 import {
@@ -346,6 +347,17 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
     }
   }, [host, source, theme])
 
+  // Draw-on: every fresh render sketches itself in, so a diagram landing
+  // in the transcript looks drawn, not pasted.
+  const diagramRef = useRef<HTMLAnchorElement | null>(null)
+  const lastAnimatedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (state.status !== 'done') return
+    if (lastAnimatedRef.current === state.svg) return
+    lastAnimatedRef.current = state.svg
+    if (diagramRef.current) animateSvgDrawIn(diagramRef.current)
+  }, [state])
+
   if (state.status === 'loading') {
     return (
       <div className="canvas-trigger__diagram canvas-trigger__diagram--loading canvas-trigger__pulse">
@@ -363,6 +375,7 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
   }
   return (
     <a
+      ref={diagramRef}
       className="canvas-trigger__diagram"
       href={CANVAS_PAGE_HASH}
       title="open in canvas"

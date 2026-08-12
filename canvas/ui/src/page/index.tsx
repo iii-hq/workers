@@ -212,7 +212,12 @@ export function CanvasPage({
   // (one list on mount, pushes after — never polling). Events burst (a
   // create writes record + index), so a short window coalesces them.
   const liveTimerRef = useRef<number | null>(null)
-  const livePendingRef = useRef({ list: false, record: false, gone: false })
+  const livePendingRef = useRef({
+    list: false,
+    record: false,
+    gone: false,
+    created: null as string | null,
+  })
   useCanvasStateEvents(host, (event) => {
     const pending = livePendingRef.current
     pending.list = true
@@ -221,6 +226,14 @@ export function CanvasPage({
       if (event.event_type === 'state:deleted') pending.gone = true
       else pending.record = true
     }
+    // An agent explaining something with a fresh diagram should surface it
+    // without a click — but never by stealing focus from an OPEN canvas.
+    if (
+      event.event_type === 'state:created' &&
+      event.key.startsWith('record/')
+    ) {
+      pending.created = event.key.slice('record/'.length)
+    }
     if (liveTimerRef.current !== null) return
     liveTimerRef.current = window.setTimeout(() => {
       liveTimerRef.current = null
@@ -228,6 +241,7 @@ export function CanvasPage({
       pending.list = false
       pending.record = false
       pending.gone = false
+      pending.created = null
       if (todo.gone) {
         ++loadSeqRef.current
         setSelectedId(null)
@@ -239,6 +253,9 @@ export function CanvasPage({
         refreshOpenRecord()
       }
       if (todo.list) refreshList()
+      if (todo.created && selectedIdRef.current === null) {
+        select(todo.created)
+      }
     }, 200)
   })
   useEffect(

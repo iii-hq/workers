@@ -54,9 +54,19 @@ export function mermaidInitConfig(theme: 'light' | 'dark') {
     look: 'handDrawn',
     handDrawnSeed: 7,
     theme: theme === 'dark' ? 'redux-dark-color' : 'redux-color',
-    flowchart: { curve: 'basis' },
+    // htmlLabels would render labels as <foreignObject>, which blanks out
+    // when the SVG is rasterized through an <img> (the PNG export path)
+    // and breaks the SVG in most non-browser viewers. Pure SVG text
+    // everywhere.
+    htmlLabels: false,
+    flowchart: { curve: 'basis', htmlLabels: false },
+    class: { htmlLabels: false },
   } as Parameters<MermaidBundle['mermaid']['initialize']>[0]
 }
+
+/** Export backgrounds per theme — fixed values, not live tokens: exporting
+    a dark png from a light console must not sample light-theme vars. */
+export const EXPORT_BG = { light: '#ffffff', dark: '#101014' } as const
 
 /** Resolve a sibling asset URL the way the console's own loader does. */
 function assetUrl(path: string): string {

@@ -28,15 +28,23 @@ import type {
 } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  EXPORT_BG,
   loadMermaid,
   type MermaidBundle,
   mermaidInitConfig,
 } from '../lib/loaders'
+import { animateSvgDrawIn } from '../lib/draw'
 import type { CanvasRecord } from '../lib/types'
 import { updateCanvas } from './data'
-import { downloadSvg, downloadSvgAsPng } from './export'
+import {
+  downloadSvg,
+  downloadSvgAsPng,
+  svgDimensions,
+  svgWithBackground,
+} from './export'
+import { ExportMenu, type ExportOptions } from './ExportMenu'
 import { errorMessage, exportFilename } from './helpers'
-import { AlertCircle, Download, Maximize } from './icons'
+import { AlertCircle, Maximize } from './icons'
 import {
   INITIAL_PREVIEW,
   beginRender,
@@ -256,6 +264,7 @@ export function MermaidPane({
       return
     }
     el.innerHTML = preview.svg
+    animateSvgDrawIn(el)
     const svg = el.querySelector('svg')
     if (!svg) return
     const box = svg.viewBox.baseVal
@@ -397,29 +406,52 @@ export function MermaidPane({
   }
 
   // ── export ──
+  // Re-renders the CURRENT DRAFT under the requested export theme (the
+  // preview's global init is restored after), so light/dark come out
+  // right regardless of the console theme.
   const [exportError, setExportError] = useState<string | null>(null)
   const canExport = preview.svg !== null && contentSize !== null
 
-  const exportSvg = useCallback(() => {
-    if (preview.svg === null) return
-    setExportError(null)
-    downloadSvg(preview.svg, exportFilename(record.name, 'svg'))
-  }, [preview.svg, record.name])
-
-  const exportPng = useCallback(() => {
-    if (preview.svg === null || !contentSize) return
-    setExportError(null)
-    const background = frameRef.current
-      ? getComputedStyle(frameRef.current).backgroundColor
-      : undefined
-    downloadSvgAsPng(
-      preview.svg,
-      contentSize.w,
-      contentSize.h,
-      exportFilename(record.name, 'png'),
-      background,
-    ).catch((err: unknown) => setExportError(errorMessage(err)))
-  }, [preview.svg, contentSize, record.name])
+  const exportDiagram = useCallback(
+    async ({ format, dark, background }: ExportOptions) => {
+      setExportError(null)
+      try {
+        const { mermaid } = await loadMermaid(host)
+        const exportTheme = dark ? 'dark' : 'light'
+        let svg: string
+        try {
+          mermaid.initialize(mermaidInitConfig(exportTheme))
+          initializedTheme = exportTheme
+          ;({ svg } = await mermaid.render(
+            `cv-export-${record.id}-${++seqRef.current}`,
+            cache.get(record.id)?.draft ?? record.source,
+          ))
+        } finally {
+          initMermaid(mermaid, theme)
+        }
+        const dims = svgDimensions(svg) ?? contentSize
+        if (!dims) throw new Error('the diagram has no measurable size')
+        const bg = background ? EXPORT_BG[exportTheme] : undefined
+        if (format === 'svg') {
+          downloadSvg(
+            bg ? svgWithBackground(svg, bg) : svg,
+            exportFilename(record.name, 'svg'),
+          )
+        } else {
+          await downloadSvgAsPng(
+            svg,
+            dims.w,
+            dims.h,
+            exportFilename(record.name, 'png'),
+            bg,
+          )
+        }
+      } catch (err) {
+        setExportError(errorMessage(err))
+      }
+    },
+    [host, theme, cache, record.id, record.name, record.source, contentSize],
+  )
 
   return (
     <div className="cv-pane" onKeyDown={onKeyDown}>
@@ -459,26 +491,13 @@ export function MermaidPane({
         >
           100%
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={exportSvg}
+        <ExportMenu
+          theme={theme}
           disabled={!canExport}
-          title="download the rendered diagram as svg"
-        >
-          <Download size={13} aria-hidden />
-          svg
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={exportPng}
-          disabled={!canExport}
-          title="download the rendered diagram as png"
-        >
-          <Download size={13} aria-hidden />
-          png
-        </Button>
+          onExport={(opts) => {
+            void exportDiagram(opts)
+          }}
+        />
         <Button
           variant="primary"
           size="sm"

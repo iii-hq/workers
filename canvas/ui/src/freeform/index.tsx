@@ -35,8 +35,10 @@ import type {
   ExcalidrawInitialDataState,
 } from '@excalidraw/excalidraw/types'
 
-import { loadFreeform, type FreeformBundle } from '../lib/loaders'
+import { EXPORT_BG, loadFreeform, type FreeformBundle } from '../lib/loaders'
 import type { CanvasRecord } from '../lib/types'
+import { downloadBlob, downloadSvg } from '../page/export'
+import { ExportMenu, type ExportOptions } from '../page/ExportMenu'
 import { exportFilename, parseSceneSource } from './scene'
 
 /** How long the whiteboard must stay quiet before a change is saved. */
@@ -56,9 +58,16 @@ export interface FreeformPaneHandle {
   isDirty(): boolean
   /** PNG export with the scene embedded (`appState.exportEmbedScene`), so the
       file re-imports into any excalidraw as an editable scene. */
-  exportPng(): Promise<{ blob: Blob; filename: string }>
+  exportPng(opts?: FreeformExportOptions): Promise<{ blob: Blob; filename: string }>
   /** Plain standalone SVG markup (no embedded scene). */
-  exportSvg(): Promise<{ svg: string; filename: string }>
+  exportSvg(opts?: FreeformExportOptions): Promise<{ svg: string; filename: string }>
+}
+
+/** Export look, independent of the console theme. */
+export interface FreeformExportOptions {
+  dark: boolean
+  /** Paint the theme background; off = transparent. */
+  background: boolean
 }
 
 export interface FreeformPaneProps {
@@ -229,31 +238,76 @@ function FreeformEditor({
     return saveIfChanged()
   }, [saveIfChanged])
 
-  const exportPng = useCallback(async () => {
-    const api = apiRef.current
-    if (api === null) throw new Error('freeform pane is not mounted yet')
-    const blob = await bundle.exportToBlob({
-      elements: api.getSceneElements(),
-      // exportEmbedScene stamps the scene JSON into the PNG metadata: the
-      // exported image re-imports as an editable scene.
-      appState: { ...api.getAppState(), exportEmbedScene: true },
-      files: api.getFiles(),
-      mimeType: 'image/png',
-    })
-    return { blob, filename: exportFilename(record.name, 'png') }
-  }, [bundle, record.name])
+  /** Export appState for the requested look — background on/off, forced
+      light/dark independent of the console theme. */
+  const exportAppState = useCallback(
+    (opts: FreeformExportOptions, embedScene: boolean) => {
+      const api = apiRef.current
+      if (api === null) throw new Error('freeform pane is not mounted yet')
+      return {
+        ...api.getAppState(),
+        exportEmbedScene: embedScene,
+        exportBackground: opts.background,
+        exportWithDarkMode: opts.dark,
+        viewBackgroundColor: opts.background
+          ? EXPORT_BG[opts.dark ? 'dark' : 'light']
+          : 'transparent',
+      }
+    },
+    [],
+  )
 
-  const exportSvg = useCallback(async () => {
-    const api = apiRef.current
-    if (api === null) throw new Error('freeform pane is not mounted yet')
-    const svgElement = await bundle.exportToSvg({
-      elements: api.getSceneElements(),
-      appState: { ...api.getAppState(), exportEmbedScene: false },
-      files: api.getFiles(),
-    })
-    const svg = new XMLSerializer().serializeToString(svgElement)
-    return { svg, filename: exportFilename(record.name, 'svg') }
-  }, [bundle, record.name])
+  const exportPng = useCallback(
+    async (opts: FreeformExportOptions = { dark: false, background: true }) => {
+      const api = apiRef.current
+      if (api === null) throw new Error('freeform pane is not mounted yet')
+      const blob = await bundle.exportToBlob({
+        elements: api.getSceneElements(),
+        // exportEmbedScene stamps the scene JSON into the PNG metadata: the
+        // exported image re-imports as an editable scene.
+        appState: exportAppState(opts, true),
+        files: api.getFiles(),
+        mimeType: 'image/png',
+      })
+      return { blob, filename: exportFilename(record.name, 'png') }
+    },
+    [bundle, record.name, exportAppState],
+  )
+
+  const exportSvg = useCallback(
+    async (opts: FreeformExportOptions = { dark: false, background: true }) => {
+      const api = apiRef.current
+      if (api === null) throw new Error('freeform pane is not mounted yet')
+      const svgElement = await bundle.exportToSvg({
+        elements: api.getSceneElements(),
+        appState: exportAppState(opts, false),
+        files: api.getFiles(),
+      })
+      const svg = new XMLSerializer().serializeToString(svgElement)
+      return { svg, filename: exportFilename(record.name, 'svg') }
+    },
+    [bundle, record.name, exportAppState],
+  )
+
+  const [exportError, setExportError] = useState<string | null>(null)
+  const runExport = useCallback(
+    (opts: ExportOptions) => {
+      setExportError(null)
+      const freeformOpts = { dark: opts.dark, background: opts.background }
+      const job =
+        opts.format === 'png'
+          ? exportPng(freeformOpts).then(({ blob, filename }) =>
+              downloadBlob(blob, filename),
+            )
+          : exportSvg(freeformOpts).then(({ svg, filename }) =>
+              downloadSvg(svg, filename),
+            )
+      job.catch((err: unknown) =>
+        setExportError(err instanceof Error ? err.message : String(err)),
+      )
+    },
+    [exportPng, exportSvg],
+  )
 
   useEffect(() => {
     if (!handleRef) return
@@ -287,12 +341,26 @@ function FreeformEditor({
 
   return (
     <div className="canvas-freeform">
-      <Excalidraw
-        excalidrawAPI={acceptApi}
-        initialData={excalidrawInitialData}
-        theme={theme}
-        onChange={handleChange}
-      />
+      <div className="cv-toolbar">
+        <span className="cv-title" title={`${record.name} · ${record.id}`}>
+          {record.name}
+        </span>
+        <span className="cv-spacer" />
+        {exportError ? (
+          <span className="cv-note-inline warn" title={exportError}>
+            export failed: {exportError}
+          </span>
+        ) : null}
+        <ExportMenu theme={theme} disabled={false} onExport={runExport} />
+      </div>
+      <div className="canvas-freeform-board">
+        <Excalidraw
+          excalidrawAPI={acceptApi}
+          initialData={excalidrawInitialData}
+          theme={theme}
+          onChange={handleChange}
+        />
+      </div>
     </div>
   )
 }
