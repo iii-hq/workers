@@ -9,5 +9,5 @@ tags: [llm, github, copilot, subscription, chat-completions, provider]
 description: GitHub Copilot subscription provider worker; sign in with GitHub once and the models the plan grants appear in the picker. Implements provider::github-copilot::stream, refresh_models, and a device-flow login surface behind llm-router.
 
 dependencies:
-  state: "^0.21.6"
+  state: "^0.22.0"
   llm-router: "^1.0.0"
