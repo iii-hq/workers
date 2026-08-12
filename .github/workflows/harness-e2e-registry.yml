@@ -83,8 +83,8 @@ jobs:
     with:
       source_ref: ${{ inputs.source_sha }}
       stack_mode: registry
-      runs: ${{ inputs.runs }}
-      max_parallel: 2
+      runs: ${{ fromJSON(format('{0}', inputs.runs)) }}
+      max_parallel: 1
       validation_lane: ${{ inputs.lane }}
       cli_channel: ${{ inputs.channel }}
       registry_tag: ${{ inputs.channel }}
