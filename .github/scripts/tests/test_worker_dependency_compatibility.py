@@ -25,3 +25,10 @@ def test_approval_gate_uses_shared_runtime_dependency_ranges() -> None:
 
     for dependency, expected in expected_ranges.items():
         assert approval_gate[dependency] == expected
+
+
+def test_harness_llm_stack_uses_shared_state_range() -> None:
+    expected = dependencies("harness")["state"]
+
+    for worker in ("llm-router", "provider-anthropic", "provider-openai"):
+        assert dependencies(worker)["state"] == expected
