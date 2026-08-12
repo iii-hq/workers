@@ -128,6 +128,14 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
+def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
+    steps = workflow(WORKFLOWS / "candidate-smoke.yml")["jobs"]["smoke"]["steps"]
+    prepare = next(step for step in steps if step.get("name") == "Prepare KVM for Scrapling sandbox")
+    assert prepare["if"] == "inputs.worker == 'scrapling'"
+    assert "test -c /dev/kvm" in prepare["run"]
+    assert "sudo chmod 0666 /dev/kvm" in prepare["run"]
+
+
 def test_reusable_harness_executor_has_no_implicit_inputs() -> None:
     inputs = workflow(WORKFLOWS / "_harness-e2e.yml")["on"]["workflow_call"]["inputs"]
     assert inputs
