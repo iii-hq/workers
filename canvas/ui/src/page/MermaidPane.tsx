@@ -27,7 +27,11 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { loadMermaid, type MermaidBundle } from '../lib/loaders'
+import {
+  loadMermaid,
+  type MermaidBundle,
+  mermaidInitConfig,
+} from '../lib/loaders'
 import type { CanvasRecord } from '../lib/types'
 import { updateCanvas } from './data'
 import { downloadSvg, downloadSvgAsPng } from './export'
@@ -41,6 +45,12 @@ import {
 } from './preview'
 
 const RENDER_DEBOUNCE_MS = 300
+
+const SPLIT_PCT_KEY = 'canvas-ui:split-pct'
+
+function clampSplit(pct: number): number {
+  return Math.min(72, Math.max(24, Math.round(pct * 10) / 10))
+}
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 4
 const PAD = 48
@@ -72,13 +82,7 @@ function initMermaid(
   theme: 'light' | 'dark',
 ): void {
   if (initializedTheme === theme) return
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: 'strict',
-    suppressErrorRendering: true,
-    deterministicIds: true,
-    theme: theme === 'dark' ? 'dark' : 'default',
-  })
+  mermaid.initialize(mermaidInitConfig(theme))
   initializedTheme = theme
 }
 
@@ -148,6 +152,51 @@ export function MermaidPane({
       })
       .finally(() => setSaving(false))
   }, [host, cache, record.id, saving, onSaved, onDirtyChange])
+
+  // ── editor|preview split ratio (drag handle between the halves) ──
+  const [splitPct, setSplitPct] = useState(() => {
+    const stored = Number(window.localStorage.getItem(SPLIT_PCT_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampSplit(stored) : 44
+  })
+  const splitRef = useRef<HTMLDivElement | null>(null)
+  const splitDragRef = useRef(false)
+  const onSplitPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      splitDragRef.current = true
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId)
+      } catch {
+        // capture is best-effort
+      }
+    },
+    [],
+  )
+  const onSplitPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (!splitDragRef.current) return
+      const rect = splitRef.current?.getBoundingClientRect()
+      if (!rect || rect.width === 0) return
+      setSplitPct(clampSplit(((e.clientX - rect.left) / rect.width) * 100))
+    },
+    [],
+  )
+  const onSplitPointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (splitDragRef.current) {
+        setSplitPct((pct) => {
+          window.localStorage.setItem(SPLIT_PCT_KEY, String(pct))
+          return pct
+        })
+      }
+      splitDragRef.current = false
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        // never captured
+      }
+    },
+    [],
+  )
 
   // One handler at the pane root: keydown bubbles out of Monaco, so ⌘S /
   // ctrl-S saves from either half of the split.
@@ -441,7 +490,11 @@ export function MermaidPane({
         </Button>
       </div>
 
-      <div className="cv-split">
+      <div
+        className="cv-split"
+        ref={splitRef}
+        style={{ '--cv-split': `${splitPct}%` } as React.CSSProperties}
+      >
         <div className="cv-editor">
           <CodeEditor
             value={draft}
@@ -451,6 +504,17 @@ export function MermaidPane({
             className="cv-code"
           />
         </div>
+
+        <div
+          className="cv-split-handle"
+          onPointerDown={onSplitPointerDown}
+          onPointerMove={onSplitPointerMove}
+          onPointerUp={onSplitPointerUp}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="resize editor and preview"
+          title="drag to resize"
+        />
 
         <div
           className="cv-preview"

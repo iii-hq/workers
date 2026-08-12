@@ -25,6 +25,7 @@ import {
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FreeformPane, type FreeformPaneHandle } from '../freeform'
+import { useCanvasStateEvents } from '../lib/live'
 import type { CanvasRecord } from '../lib/types'
 import {
   createCanvas,
@@ -47,6 +48,22 @@ type ListState =
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
   | { phase: 'ready' }
+
+const SIDEBAR_WIDTH_KEY = 'canvas-ui:sidebar-width'
+const SIDEBAR_DEFAULT_WIDTH = 248
+const SIDEBAR_MIN_WIDTH = 190
+const SIDEBAR_MAX_WIDTH = 440
+
+function clampSidebarWidth(w: number): number {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
+}
+
+function initialSidebarWidth(): number {
+  const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY))
+  return Number.isFinite(stored) && stored > 0
+    ? clampSidebarWidth(stored)
+    : SIDEBAR_DEFAULT_WIDTH
+}
 
 /** Most recently touched first; name breaks timestamp ties stably. */
 function byRecency(a: CanvasRecord, b: CanvasRecord): number {
@@ -79,6 +96,63 @@ export function CanvasPage({
   // The freeform surface's imperative handle: flush() before switching away
   // so a settling whiteboard edit is persisted, never silently dropped.
   const freeformHandleRef = useRef<FreeformPaneHandle | null>(null)
+  // Bumped when the OPEN record changes under us (an agent edit streaming
+  // in) — the pane keys include it, so a remount rehydrates from the
+  // refreshed cache. Own saves must NOT bump it: a remount mid-typing
+  // would reset the editor's cursor for no reason.
+  const [externalBump, setExternalBump] = useState(0)
+  const selectedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
+
+  // ── sidebar width (drag handle on the boundary toward the main pane) ──
+  const [sideWidth, setSideWidth] = useState(initialSidebarWidth)
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const onHandlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      dragRef.current = { startX: e.clientX, startWidth: sideWidth }
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId)
+      } catch {
+        // capture is best-effort; the drag still tracks over the handle
+      }
+    },
+    [sideWidth],
+  )
+  const onHandlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current
+      if (!drag) return
+      const delta = e.clientX - drag.startX
+      // A right-hugging sidebar widens as the handle moves left.
+      setSideWidth(
+        clampSidebarWidth(
+          panelSide === 'right'
+            ? drag.startWidth - delta
+            : drag.startWidth + delta,
+        ),
+      )
+    },
+    [panelSide],
+  )
+  const onHandlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (dragRef.current) {
+        window.localStorage.setItem(
+          SIDEBAR_WIDTH_KEY,
+          String(clampSidebarWidth(sideWidth)),
+        )
+      }
+      dragRef.current = null
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        // never captured
+      }
+    },
+    [sideWidth],
+  )
 
   const refreshList = useCallback(() => {
     listCanvases(host)
@@ -94,6 +168,87 @@ export function CanvasPage({
   useEffect(() => {
     refreshList()
   }, [refreshList])
+
+  /**
+   * An agent edit streamed in for the OPEN record: re-fetch, refresh the
+   * draft cache (a clean buffer follows the worker, a dirty one keeps the
+   * user's edits), and remount the pane via the bump key. Own saves are
+   * already applied by mergeSaved — the identity check makes their echo
+   * event a no-op, so saving never resets the editor.
+   */
+  const refreshOpenRecord = useCallback(() => {
+    const id = selectedIdRef.current
+    if (!id) return
+    getCanvas(host, id)
+      .then((rec) => {
+        if (selectedIdRef.current !== rec.id) return
+        const cache = cacheRef.current
+        const entry = cache.get(rec.id)
+        const cur = recordRef.current
+        const alreadyCurrent =
+          cur !== null &&
+          cur.id === rec.id &&
+          cur.updated_at === rec.updated_at &&
+          entry !== undefined &&
+          entry.savedSource === rec.source
+        if (alreadyCurrent) return
+        if (!entry) {
+          cache.set(rec.id, { savedSource: rec.source, draft: rec.source })
+        } else {
+          const wasClean = entry.draft === entry.savedSource
+          entry.savedSource = rec.source
+          if (wasClean) entry.draft = rec.source
+        }
+        setRecord(rec)
+        setExternalBump((n) => n + 1)
+      })
+      .catch(() => {
+        // A racing delete lands as its own state event; nothing to do here.
+      })
+  }, [host])
+
+  // Live updates: canvas records live in state scope "canvas", so every
+  // agent-side create/update/delete emits a state event this tab streams
+  // (one list on mount, pushes after — never polling). Events burst (a
+  // create writes record + index), so a short window coalesces them.
+  const liveTimerRef = useRef<number | null>(null)
+  const livePendingRef = useRef({ list: false, record: false, gone: false })
+  useCanvasStateEvents(host, (event) => {
+    const pending = livePendingRef.current
+    pending.list = true
+    const openId = selectedIdRef.current
+    if (openId && event.key === `record/${openId}`) {
+      if (event.event_type === 'state:deleted') pending.gone = true
+      else pending.record = true
+    }
+    if (liveTimerRef.current !== null) return
+    liveTimerRef.current = window.setTimeout(() => {
+      liveTimerRef.current = null
+      const todo = { ...pending }
+      pending.list = false
+      pending.record = false
+      pending.gone = false
+      if (todo.gone) {
+        ++loadSeqRef.current
+        setSelectedId(null)
+        setRecord(null)
+        setRecordError(null)
+        recordRef.current = null
+        setSideError('the open canvas was deleted elsewhere')
+      } else if (todo.record) {
+        refreshOpenRecord()
+      }
+      if (todo.list) refreshList()
+    }, 200)
+  })
+  useEffect(
+    () => () => {
+      if (liveTimerRef.current !== null) {
+        window.clearTimeout(liveTimerRef.current)
+      }
+    },
+    [],
+  )
 
   const select = useCallback(
     (id: string) => {
@@ -224,7 +379,17 @@ export function CanvasPage({
         onClose={onRequestClose}
       />
       <PageBody side={panelSide}>
-        <PageSidebar width={248} className="cv-sidebar">
+        <PageSidebar width={sideWidth} className="cv-sidebar">
+          <div
+            className={`cv-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
+            onPointerDown={onHandlePointerDown}
+            onPointerMove={onHandlePointerMove}
+            onPointerUp={onHandlePointerUp}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="resize sidebar"
+            title="drag to resize"
+          />
           <div className="cv-side-head">
             <span className="cv-side-count">
               {listState.phase === 'ready'
@@ -325,7 +490,7 @@ export function CanvasPage({
             <div className="cv-note pad">loading canvas…</div>
           ) : record.format === 'mermaid' ? (
             <MermaidPane
-              key={record.id}
+              key={`${record.id}:${externalBump}`}
               host={host}
               record={record}
               cache={cacheRef.current}
@@ -334,7 +499,7 @@ export function CanvasPage({
             />
           ) : (
             <FreeformPane
-              key={record.id}
+              key={`${record.id}:${externalBump}`}
               host={host}
               record={record}
               onSave={saveFreeform}

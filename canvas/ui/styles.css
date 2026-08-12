@@ -234,7 +234,37 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 44%) minmax(0, 1fr);
+  grid-template-columns: minmax(200px, var(--cv-split, 44%)) 6px minmax(0, 1fr);
+}
+
+/* Drag handles — sidebar boundary and the editor|preview divider. */
+[data-iii-ui='canvas'] .cv-sidebar {
+  position: relative;
+}
+[data-iii-ui='canvas'] .cv-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+[data-iii-ui='canvas'] .cv-resize-handle.left {
+  left: 0;
+}
+[data-iii-ui='canvas'] .cv-resize-handle.right {
+  right: 0;
+}
+[data-iii-ui='canvas'] .cv-resize-handle:hover,
+[data-iii-ui='canvas'] .cv-resize-handle:active,
+[data-iii-ui='canvas'] .cv-split-handle:hover,
+[data-iii-ui='canvas'] .cv-split-handle:active {
+  background: var(--color-panel-raised, var(--color-panel));
+}
+[data-iii-ui='canvas'] .cv-split-handle {
+  cursor: col-resize;
+  touch-action: none;
 }
 
 [data-iii-ui='canvas'] .cv-editor {
@@ -343,11 +373,16 @@
   color: var(--color-ink);
 }
 
-/* Narrow pane: editor stacks above the preview. */
+/* Narrow pane: editor stacks above the preview; the divider hides (the
+   drag ratio is a horizontal concern). */
 @container cv-pane (max-width: 700px) {
   [data-iii-ui='canvas'] .cv-split {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(140px, 40%) minmax(0, 1fr);
+  }
+
+  [data-iii-ui='canvas'] .cv-split-handle {
+    display: none;
   }
 
   [data-iii-ui='canvas'] .cv-editor {

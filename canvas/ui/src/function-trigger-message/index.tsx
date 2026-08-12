@@ -27,7 +27,7 @@ import type {
   Host,
 } from '@iii-dev/console-ui'
 
-import { loadMermaid } from '../lib/loaders'
+import { loadMermaid, mermaidInitConfig } from '../lib/loaders'
 import { CANVAS_FUNCTION_IDS, unwrapEnvelope } from '../lib/types'
 import {
   CANVAS_PREFIX,
@@ -326,12 +326,7 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
     setState({ status: 'loading' })
     loadMermaid(host)
       .then(async ({ mermaid }) => {
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          suppressErrorRendering: true,
-          theme: theme === 'dark' ? 'dark' : 'neutral',
-        })
+        mermaid.initialize(mermaidInitConfig(theme))
         const { svg } = await mermaid.render(
           `canvas-trigger-${++renderSeq}`,
           source,

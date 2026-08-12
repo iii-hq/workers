@@ -38,6 +38,26 @@ export interface FreeformBundle {
   excalidrawCss: string
 }
 
+/**
+ * Shared mermaid look for every canvas surface — the page preview and the
+ * chat cards must render a diagram identically. Hand-drawn sketch look
+ * with a fixed seed (re-renders never wobble) over the colorful redux
+ * theme pair, curves smoothed. Security stays strict; parse errors are
+ * ours to surface, not mermaid's bomb SVG.
+ */
+export function mermaidInitConfig(theme: 'light' | 'dark') {
+  return {
+    startOnLoad: false,
+    securityLevel: 'strict',
+    suppressErrorRendering: true,
+    deterministicIds: true,
+    look: 'handDrawn',
+    handDrawnSeed: 7,
+    theme: theme === 'dark' ? 'redux-dark-color' : 'redux-color',
+    flowchart: { curve: 'basis' },
+  } as Parameters<MermaidBundle['mermaid']['initialize']>[0]
+}
+
 /** Resolve a sibling asset URL the way the console's own loader does. */
 function assetUrl(path: string): string {
   return new URL(`ui/${path}`, new URL('.', document.baseURI)).href
