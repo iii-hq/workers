@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-directory"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 publish = false
 
@@ -34,6 +34,9 @@ glob = "0.3"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 dirs = "5"
+# Filesystem watch for external skill/prompt edits (inotify wake-up; reads
+# stay scan-on-demand — the watch only fires on-change doorbells).
+notify = "8"
 # Injectable console UI registration (content function + console:script /
 # console:style triggers + dev watcher). Path-linked, never published —
 # versions with the console worker in this repo.

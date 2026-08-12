@@ -44,7 +44,14 @@ export type HarnessSendMode = 'ask' | 'agent'
 
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
+  /** Sticky per session: a send that omits BOTH prompt fields inherits the
+   * prior turn's resolved prompt; naming either field resolves fresh (a bare
+   * strategy is the harness's reset-to-default escape hatch). */
   system_prompt?: string
+  /** How `system_prompt` combines with the built-in identity prompt:
+   * `enrich` (harness default) appends it; `override` replaces it
+   * verbatim. Snake_case values travel on the wire as-is. */
+  system_prompt_strategy?: 'enrich' | 'override'
   mode?: HarnessSendMode
   max_turns?: number
   thinking_level?: HarnessThinkingLevel
@@ -180,6 +187,23 @@ export function isTurnActive(status: HarnessTurnStatus): boolean {
 export function predictedUserEntryId(idempotencyKey: string): string {
   const safe = idempotencyKey.replace(/[^A-Za-z0-9_-]/g, '_')
   return `e_idem_${safe}`
+}
+
+/** Chat-side system-prompt selection: a resolved body + combine strategy. */
+export interface SystemPromptSelection {
+  body: string
+  strategy: 'enrich' | 'override'
+}
+
+/**
+ * Map a selection to `harness::send` option fields. Default (null) or a
+ * blank body yields NO fields — the send looks exactly like today's.
+ */
+export function toSystemPromptOptions(
+  sel: SystemPromptSelection | null | undefined,
+): Pick<HarnessSendOptions, 'system_prompt' | 'system_prompt_strategy'> {
+  if (!sel || !sel.body.trim()) return {}
+  return { system_prompt: sel.body, system_prompt_strategy: sel.strategy }
 }
 
 /**

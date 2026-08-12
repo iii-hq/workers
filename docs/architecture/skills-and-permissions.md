@@ -31,14 +31,6 @@ On every successful release (when `interface_smoke != false`):
 1. `build_skills_payload.py` collects `skills/SKILL.md` and `skills/<rel>.md`
 2. `POST /w/<worker>/skills` — skipped cleanly when no markdown found
 
-### Out-of-band republish
-
-[`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml)
-updates skills without a version bump. Worker must be in `ALLOWED_WORKERS`
-([`parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py)).
-
-**Drift note:** `email` ships skills but is not yet in `ALLOWED_WORKERS`.
-
 ## iii-permissions.yaml
 
 Repo-root [`iii-permissions.yaml`](../../iii-permissions.yaml) defines default

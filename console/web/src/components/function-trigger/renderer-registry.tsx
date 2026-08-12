@@ -19,10 +19,6 @@ import {
 } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
-  SandboxFunctionIdLabel,
-  SandboxToolView,
-} from '@/components/chat/sandbox'
-import {
   ScraplingFunctionIdLabel,
   ScraplingToolView,
 } from '@/components/chat/scrapling'
@@ -39,20 +35,14 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 
 /**
- * The first-party families (11 since directory, browser, and shell moved
- * into their workers' injected UI), in the exact order of the old `??`
+ * The first-party families (10 since directory, browser, shell, and sandbox
+ * moved into their workers' injected UI), in the exact order of the old `??`
  * chains. Each family's `tryRender*` already gates on its own function ids,
  * so an entry returning `null` falls through to the next.
  */
 export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
-  {
-    id: 'first-party/sandbox',
-    isMatch: SandboxToolView.isSandboxFunction,
-    tryRender: SandboxToolView.tryRender,
-    tryRenderRunning: SandboxToolView.tryRenderRunning,
-    tryRenderPreview: SandboxToolView.tryRenderPreview,
-    FunctionIdLabel: SandboxFunctionIdLabel,
-  },
+  // sandbox::* rendering is no longer first-party: the sandbox-code-runner
+  // worker ships it as injected UI (sandbox-code-runner/ui/src/sandbox-family).
   {
     id: 'first-party/engine',
     isMatch: EngineToolView.isEngineListFunction,

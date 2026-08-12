@@ -639,6 +639,7 @@ pub async fn run_step(
     };
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
+        session_id: record.session_id.clone(),
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
         // Cloned into the request so the originals stay available for the
@@ -2278,18 +2279,32 @@ fn build_context_snapshot(
 /// call (`filesystem_scope::inject`) and the policy stays fail-closed at
 /// dispatch.
 fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let mut lines = vec![format!("Your session id is {}.", record.session_id)];
-    if let Some(dir) = record.options.filesystem_root() {
-        lines.push(format!("Your working directory is {dir}."));
-    }
-    if let Some(aid) = policy_aid(record.options.functions.as_ref()) {
-        lines.push(aid);
-    }
-    let aid = lines.join("\n");
+    let aid = runtime_context_aid(
+        &record.session_id,
+        record.options.filesystem_root(),
+        record.options.functions.as_ref(),
+    );
     Some(match system_prompt {
         Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{aid}"),
         _ => aid,
     })
+}
+
+/// The deterministic session context appended to every model-facing prompt.
+/// Kept separate so read-only previews use the same construction as a turn.
+pub(crate) fn runtime_context_aid(
+    session_id: &str,
+    filesystem_root: Option<&str>,
+    functions: Option<&FunctionPolicy>,
+) -> String {
+    let mut lines = vec![format!("Your session id is {session_id}.")];
+    if let Some(dir) = filesystem_root {
+        lines.push(format!("Your working directory is {dir}."));
+    }
+    if let Some(aid) = policy_aid(functions) {
+        lines.push(aid);
+    }
+    lines.join("\n")
 }
 
 /// The dispatch-policy aid line for a narrowed turn, `None` when the surface
@@ -2499,7 +2514,7 @@ const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed durin
 /// matches the live generation, or is being stamped for the first time; `Some`
 /// only when the registry changed under a session that acknowledged an earlier
 /// generation. The caller stamps `functions_generation = current` regardless.
-fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
     match record_gen {
         Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
         _ => None,

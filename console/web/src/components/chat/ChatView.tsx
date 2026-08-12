@@ -6,6 +6,11 @@ import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsB
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/Tooltip'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
@@ -21,10 +26,12 @@ import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import { serialRefresh } from '@/lib/backend/serial-refresh'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
 } from '@/lib/backend/triggers'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import type {
   ApprovalStreamEvent,
   CompactResult,
@@ -78,6 +85,10 @@ import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  selectionForSend,
+} from './system-prompt-selection'
 import { WorktreeBadge } from './WorktreeBadge'
 
 /**
@@ -85,6 +96,19 @@ import { WorktreeBadge } from './WorktreeBadge'
  * one live check per activation, not one per render or per send.
  */
 const validatedWorkingDirs = new Set<string>()
+
+/**
+ * Order the header's injected chips deterministically. The registry appends
+ * in registration order, which is worker-CONNECT order — so without this the
+ * bar reshuffles itself between restarts. `context` leads (it is the widest
+ * and the most-read), the rest sort by id.
+ */
+function compareChips(a: { id: string }, b: { id: string }): number {
+  if (a.id === b.id) return 0
+  if (a.id === 'context') return -1
+  if (b.id === 'context') return 1
+  return a.id < b.id ? -1 : 1
+}
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -170,6 +194,12 @@ export function ChatView({
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
     DEFAULT_THINKING_LEVEL,
   )
+  /* Lives on the conversation record, not in local state: the interactive
+     picker is on the new-session screen, so a reset on a tab switch (ChatPanel
+     keys this view by conversation id) would be invisible — no control is left
+     in the composer to show or restore it. */
+  const effectiveSystemPrompt =
+    conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
@@ -286,32 +316,56 @@ export function ChatView({
 
   // Registered trigger subscriptions (the harness's durable binding rows,
   // owned by this session): shown above the composer, unregisterable, detail
-  // on click. Polled — bindings come and go as the agent registers them.
+  // on click. Pushed — `harness::triggers-changed` rings on every binding
+  // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by subscription id. When a once
-  // binding fires and retires, the poll drops it — this cache lets the fired
-  // ghost keep its full config/conditions after retirement.
+  // Every full row this tab has EVER fetched, by subscription id. When a once
+  // binding fires and retires, the refetch drops it — this cache lets the
+  // fired ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
+  // The current conversation's serialized list loader. Doorbells arrive
+  // at-least-once and burst on rapid fires; serialRefresh coalesces them
+  // behind one in-flight read so snapshots never apply out of order.
+  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
   const refreshTriggers = useCallback(() => {
+    triggersLoaderRef.current?.refresh()
+  }, [])
+  useEffect(() => {
     const listTriggers = backend.listTriggers
     if (!listTriggers) return
-    listTriggers(conversation.id)
-      .then((rows) => {
-        for (const row of rows) seenTriggersRef.current.set(row.id, row)
-        setSessionTriggers(rows)
-      })
-      .catch(() => {})
-  }, [backend.listTriggers, conversation.id])
-  useEffect(() => {
-    if (!backend.listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    refreshTriggers()
-    const timer = window.setInterval(refreshTriggers, 5000)
-    return () => window.clearInterval(timer)
-  }, [refreshTriggers, backend.listTriggers])
+    const loader = serialRefresh(
+      () => listTriggers(conversation.id),
+      (rows) => {
+        for (const row of rows) seenTriggersRef.current.set(row.id, row)
+        setSessionTriggers(rows)
+      },
+    )
+    triggersLoaderRef.current = loader
+    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
+    // rings instead of being missed (both ride the same client bootstrap, so
+    // the registration frames are queued ahead of the list read).
+    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
+    loader.refresh()
+    // Catch-up for doorbells missed while hidden (throttled tab). Missed
+    // doorbells across a socket outage are reseeded by the backend's
+    // reconnect listener.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loader.refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      off?.()
+      document.removeEventListener('visibilitychange', onVisible)
+      // Discard any in-flight snapshot so the old conversation's rows can't
+      // land in the next conversation's state.
+      loader.reset()
+      if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
+    }
+  }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
 
   const handleUnregisterTrigger = useCallback(
     async (subscriptionId: string) => {
@@ -367,7 +421,7 @@ export function ChatView({
 
   // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
   // system messages). Drives the panel's fired/unregistered ghost rows so a
-  // once-trigger stays visible after the engine drops it from the poll.
+  // once-trigger stays visible after the engine drops it from the list.
   const firedTriggers = useMemo<TriggerFiredData[]>(() => {
     const out: TriggerFiredData[] = []
     for (const m of conversation.messages) {
@@ -601,7 +655,7 @@ export function ChatView({
   const extSessionChips = useExtSessionChips()
   const sessionChips = useMemo(() => {
     if (extSessionChips.length === 0) return null
-    return extSessionChips.map((chip) => {
+    return [...extSessionChips].sort(compareChips).map((chip) => {
       const Chip = chip.render
       return (
         <Chip
@@ -882,8 +936,12 @@ export function ChatView({
   }, [backend, announcer, filesystemGrants])
 
   const handleCopySessionId = useCallback(() => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    void navigator.clipboard.writeText(sessionId).then(() => {
+    // Through the helper, not navigator.clipboard directly: over
+    // `http://<LAN-IP>` the page is not a secure context and the async
+    // clipboard API is undefined — the raw call made this button a no-op
+    // exactly where trace-correlation happens.
+    void copyTextToClipboard(sessionId).then((ok) => {
+      if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })
@@ -965,6 +1023,19 @@ export function ChatView({
         !isCompact &&
         (isStreaming || serverWorking) &&
         Boolean(backend.queueMessage)
+
+      // Only the session's first send carries the prompt selection; the
+      // harness inherits it afterwards (see selectionForSend). Gate on an
+      // assistant row rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again.
+      const turnEstablished = messagesRef.current.some(
+        (m) => m.role === 'assistant',
+      )
+      const systemPrompt = selectionForSend(
+        effectiveSystemPrompt,
+        turnEstablished,
+      )
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1121,6 +1192,7 @@ export function ChatView({
               sessionId,
               messageId,
               thinkingLevel,
+              systemPrompt,
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1166,6 +1238,7 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
+            systemPrompt,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
@@ -1445,6 +1518,7 @@ export function ChatView({
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      effectiveSystemPrompt,
       sessionId,
       contextWindow,
       backend,
@@ -1654,46 +1728,91 @@ export function ChatView({
         className={headerPad}
         onClose={onRequestClose}
         actions={
-          <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em]">
-            {sessionChips}
-            {hasInjectedContextChip ? null : (
-              <ContextUsage
-                messages={conversation.messages}
-                contextWindow={contextWindow}
-              />
-            )}
-            <ExportSessionButton
-              conversation={conversation}
-              onExported={(filename) =>
-                announcer.announce(`session exported as ${filename}`)
-              }
-            />
-            <div className="flex items-center gap-2">
-              <StatusDot
-                tone={
-                  conversation.status === 'error'
-                    ? 'alert'
-                    : streamingIndicator
-                      ? 'accent'
-                      : 'ink'
+          <div className="flex items-center gap-2.5 font-mono text-[11px] uppercase tracking-[0.06em]">
+            {/* Read-outs and actions share ONE surface. This system draws no
+                lines (index.css:44-52 — rule/rule-2 are transparent in both
+                themes), so a group is a fill, not a run of dividers. It also
+                gives every control inside it a full-height hit box, which
+                bare 11px text runs did not have. */}
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+              {sessionChips}
+              {hasInjectedContextChip ? null : (
+                <ContextUsage
+                  messages={conversation.messages}
+                  contextWindow={contextWindow}
+                />
+              )}
+              {/* Session-id copy. The full id used to sit in the header's
+                  left run, where `truncate min-w-0` let it collapse to
+                  nothing in narrow panes and `isDock` hid it outright — the
+                  exact layouts where you're correlating traces. A copy
+                  control doesn't need the whole 40-char id on screen: show
+                  the distinguishing first group, copy the full thing. The
+                  copy glyph carries the affordance, so no tooltip — only the
+                  system-prompt and status read-outs have one. */}
+              <button
+                type="button"
+                onClick={handleCopySessionId}
+                aria-label={
+                  copied ? `copied ${sessionId}` : `copy session id ${sessionId}`
                 }
-                pulse={streamingIndicator}
-              />
-              <span
-                className="text-ink-faint"
-                title={
-                  conversation.status === 'error'
-                    ? conversation.statusReason
-                    : undefined
-                }
+                className="flex self-stretch items-center gap-1 text-ink-faint hover:text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                {streamingIndicator
-                  ? 'working'
-                  : conversation.status === 'error'
-                    ? 'error'
-                    : 'ready'}
-              </span>
+                <Copy className="size-3 flex-shrink-0" aria-hidden />
+                <span
+                  className={cn(
+                    'normal-case tracking-normal tabular-nums',
+                    copied && 'text-accent',
+                  )}
+                >
+                  {copied
+                    ? 'copied'
+                    : sessionId.replace(/^console-/, '').slice(0, 8)}
+                </span>
+              </button>
+              <ExportSessionButton
+                conversation={conversation}
+                onExported={(filename) =>
+                  announcer.announce(`session exported as ${filename}`)
+                }
+              />
             </div>
+            {/* Status sits OUTSIDE the group — it is state, not a control.
+                The dot alone carries it (green ready, pulsing accent
+                working, red error); the word lives in the tooltip and in an
+                sr-only role="status" span so transitions still announce.
+                `self-stretch px-1` turns a 6px dot into a full-height hover
+                target without letting an error widen the header. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex self-stretch items-center px-1">
+                  <StatusDot
+                    tone={
+                      conversation.status === 'error'
+                        ? 'alert'
+                        : streamingIndicator
+                          ? 'accent'
+                          : 'ok'
+                    }
+                    pulse={streamingIndicator}
+                  />
+                  <span role="status" className="sr-only">
+                    {streamingIndicator
+                      ? 'working'
+                      : conversation.status === 'error'
+                        ? 'error'
+                        : 'ready'}
+                  </span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {conversation.status === 'error'
+                  ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
+                  : streamingIndicator
+                    ? 'working'
+                    : 'ready'}
+              </TooltipContent>
+            </Tooltip>
           </div>
         }
       >
@@ -1717,32 +1836,6 @@ export function ChatView({
           <span className="text-ink-faint flex-shrink-0">
             {conversation.mode}
           </span>
-          {isDock ? null : (
-            <>
-              <span className="text-ink-ghost flex-shrink-0">·</span>
-              <button
-                type="button"
-                onClick={handleCopySessionId}
-                title={
-                  copied
-                    ? `copied ${sessionId}`
-                    : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
-                }
-                className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
-              >
-                <span className="truncate font-mono text-[11px] tabular-nums">
-                  {sessionId}
-                </span>
-                {copied ? (
-                  <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-                    copied
-                  </span>
-                ) : (
-                  <Copy className="size-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-                )}
-              </button>
-            </>
-          )}
         </div>
       </PageHeader>
 

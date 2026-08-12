@@ -28,6 +28,7 @@ import {
   ConversationsProvider,
   useConversationsCtx,
 } from '@/lib/conversations-context'
+import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
   CHAT_SCREEN,
@@ -204,6 +205,19 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
   const columns = tabColumns(activeTab)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // First-run discoverability for the edge add zones: nudge until the user
+  // adds a panel THROUGH a zone (either side), then remember in localStorage
+  // so it never plays again. Deliberately not inferred from existing splits —
+  // the default workspace already ships a 2-column tab.
+  const [edgeNudge, setEdgeNudge] = useState(() => !loadEdgeAddDiscovered())
+  const addEdgeColumn = (side: 'left' | 'right') => {
+    if (edgeNudge) {
+      saveEdgeAddDiscovered()
+      setEdgeNudge(false)
+    }
+    workspace.addColumn(activeTab.id, side)
+  }
+
   // Fractions while a divider drag is live. Committing does NOT clear
   // them: the store notifies through useSyncExternalStore, which doesn't
   // batch with our setState — clearing here would render one frame of
@@ -265,7 +279,7 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 flex min-h-0 px-1.5 pb-1.5"
+      className="relative flex-1 flex min-h-0 px-3 pb-1.5 sm:px-4"
     >
       {Array.from({ length: columns }, (_, column) => {
         const screen = activeTab.screens[column] ?? null
@@ -333,11 +347,13 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
         <>
           <EdgeAddZone
             side="left"
-            onAdd={() => workspace.addColumn(activeTab.id, 'left')}
+            nudge={edgeNudge}
+            onAdd={() => addEdgeColumn('left')}
           />
           <EdgeAddZone
             side="right"
-            onAdd={() => workspace.addColumn(activeTab.id, 'right')}
+            nudge={edgeNudge}
+            onAdd={() => addEdgeColumn('right')}
           />
         </>
       ) : null}

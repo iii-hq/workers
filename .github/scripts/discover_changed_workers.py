@@ -2,14 +2,12 @@
 """Discover worker folders that changed between two git refs.
 
 Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
-    changed_workers (alias `all`) : all workers with any change
+    changed_workers               : all workers with any change
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
-    e2e_changed                  : bool, did a real-model E2E input change
     crates                        : shared crates/<name> dirs with source changes
-    vscode_changed                : bool, did lsp-vscode/ change
-    any                           : bool, any worker, crate, or vscode change
+    any                           : bool, any worker or crate change
 """
 from __future__ import annotations
 
@@ -36,9 +34,6 @@ METADATA_GLOBS = (
 # Top-level dirs we never treat as workers, regardless of contents.
 IGNORE_DIRS = {".git", ".github", "registry", "target", "node_modules"}
 
-# Special non-worker dir tracked separately for the vscode-changed gate.
-VSCODE_DIR = "lsp-vscode"
-
 # The integration suite boots this stack directly. Its path gate is separate
 # from the per-worker matrices, which only contain directly changed workers.
 INTEGRATION_WORKERS = {
@@ -49,25 +44,6 @@ INTEGRATION_WORKERS = {
     "iii-directory",
     "state",
     "console",
-}
-E2E_WORKERS = {
-    "database",
-    "harness",
-    "queue",
-    "session-manager",
-    "context-manager",
-    "iii-directory",
-    "state",
-    "cron",
-    "llm-router",
-    "provider-anthropic",
-    "provider-claude-code",
-    "provider-kimi",
-    "provider-llamacpp",
-    "provider-openai",
-    "provider-openai-codex",
-    "provider-xai",
-    "provider-zai",
 }
 INTEGRATION_DOC_GLOBS = (
     "README.md",
@@ -81,23 +57,10 @@ INTEGRATION_INFRA_PATHS = {
     ".github/scripts/discover_changed_workers.py",
     ".github/workflows/ci.yml",
     ".github/workflows/_harness-integration.yml",
-    ".github/workflows/cache-warm.yml",
-}
-E2E_INFRA_PATHS = {
-    ".github/scripts/discover_changed_workers.py",
-    ".github/scripts/collect_harness_e2e_benchmarks.py",
-    ".github/workflows/_harness-e2e.yml",
-    ".github/workflows/harness-e2e-benchmark.yml",
-    ".github/workflows/harness-e2e-daily.yml",
-    ".github/workflows/harness-e2e-main.yml",
-    "harness/tests/integration/engine.lock",
+    ".github/workflows/cache-cleanup.yml",
 }
 INTEGRATION_EXCLUDED_PREFIXES = (
     "harness/tests/e2e/",
-    "harness/tests/quickstart/",
-)
-E2E_EXCLUDED_PREFIXES = (
-    "harness/tests/integration/",
     "harness/tests/quickstart/",
 )
 
@@ -224,15 +187,11 @@ def main(argv: list[str] | None = None) -> int:
 
     touched: dict[str, list[str]] = {}
     touched_crates: dict[str, list[str]] = {}
-    vscode_changed = False
     for f in files:
         parts = f.split("/", 1)
         if len(parts) < 2:
             continue
         top, rel = parts[0], parts[1]
-        if top == VSCODE_DIR:
-            vscode_changed = True
-            continue
         if top == CRATES_DIR:
             crate_parts = rel.split("/", 1)
             if len(crate_parts) == 2:
@@ -269,13 +228,6 @@ def main(argv: list[str] | None = None) -> int:
         INTEGRATION_INFRA_PATHS,
         INTEGRATION_EXCLUDED_PREFIXES,
     )
-    e2e_changed = suite_changed(
-        files,
-        forced,
-        E2E_WORKERS,
-        E2E_INFRA_PATHS,
-        E2E_EXCLUDED_PREFIXES,
-    )
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(repo_root / w)
@@ -289,28 +241,22 @@ def main(argv: list[str] | None = None) -> int:
         "source_changed": source_changed,
         "by_language": by_language,
         "integration_changed": integration_changed,
-        "e2e_changed": e2e_changed,
         "crates": changed_crates,
-        "vscode_changed": vscode_changed,
     }
     print(json.dumps(payload))
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:
-        any_change = bool(changed) or bool(changed_crates) or vscode_changed
+        any_change = bool(changed) or bool(changed_crates)
         with open(gh_out, "a") as f:
             f.write(f"changed_workers={json.dumps(changed)}\n")
-            # Back-compat alias used by ci.yml downstream matrix jobs.
-            f.write(f"all={json.dumps(changed)}\n")
             f.write(f"source_changed={json.dumps(source_changed)}\n")
             for lang in ("rust", "node", "python"):
                 f.write(f"{lang}={json.dumps(by_language[lang])}\n")
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
             )
-            f.write(f"e2e_changed={'true' if e2e_changed else 'false'}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
-            f.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 
     return 0

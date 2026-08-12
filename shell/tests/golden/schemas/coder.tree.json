@@ -1,5 +1,5 @@
 {
-  "description": "Recursive directory snapshot bounded by `max_depth` and a `per_folder_limit`. Slim wire shape: nodes carry only `name` — the root node's path IS the response's top-level `path`; derive any child's path as parent path + '/' + name. Folders that hit the limit are flagged `truncated` and the caller is pointed at coder::list-folder for pagination. Noise directories matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) appear as childless `truncated` stubs; pass use_default_excludes: false to descend into them. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Recursive directory snapshot bounded by `max_depth` and a `per_folder_limit`. Slim wire shape: nodes carry only `name` — the root node's path IS the response's top-level `path`; derive any child's path as parent path + '/' + name. Folders that hit the limit are flagged `truncated` and the caller is pointed at coder::list-folder for pagination. Noise directories matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) appear as childless `truncated` stubs; pass use_default_excludes: false to descend into them. Pass include_hidden: false to omit dot-prefixed entries (they then don't count toward per_folder_limit). A total node budget bounds every snapshot; folders past it are stubs with reason max_nodes — re-root there or paginate with coder::list-folder. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
   "function_id": "coder::tree",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10,6 +10,11 @@
       }
     ],
     "properties": {
+      "include_hidden": {
+        "default": true,
+        "description": "List hidden (dot-prefixed) entries. Pass `false` to omit them — files and folders alike — at every level; omitted entries do not count toward `per_folder_limit`, so the cap serves visible names. The requested root itself is exempt: explicitly naming a hidden folder still lists its contents.",
+        "type": "boolean"
+      },
       "max_depth": {
         "default": null,
         "description": "Maximum depth to descend; the root node is depth 0.",
@@ -95,7 +100,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set on directories whose `children` was capped at `per_folder_limit`, whose subtree was cut off by `max_depth`, or which matched `default_exclude_globs` (reason \"default_exclude\")."
+            "description": "Set on directories whose `children` was capped at `per_folder_limit`, whose subtree was cut off by `max_depth`, which matched `default_exclude_globs` (reason \"default_exclude\"), or where the snapshot's node budget ran out (reason \"max_nodes\")."
           }
         },
         "required": [
@@ -113,7 +118,7 @@
             "type": "string"
           },
           "reason": {
-            "description": "Reason this folder was truncated: hit `per_folder_limit`, cut off by `max_depth`, or matched `default_exclude_globs` (`default_exclude`).",
+            "description": "Reason this folder was truncated: hit `per_folder_limit`, cut off by `max_depth`, matched `default_exclude_globs` (`default_exclude`), or the snapshot's total node budget ran out (`max_nodes`).",
             "type": "string"
           },
           "shown": {
@@ -123,7 +128,7 @@
             "type": "integer"
           },
           "total": {
-            "description": "Total number of children eligible for listing in the folder, counted after default-exclude filtering (only populated when `reason == \"per_folder_limit\"`; for depth truncation we don't peek into the folder).",
+            "description": "Total number of children eligible for listing in the folder, counted after hidden and default-exclude filtering (only populated when `reason == \"per_folder_limit\"`; for depth truncation we don't peek into the folder).",
             "format": "uint32",
             "minimum": 0.0,
             "type": [

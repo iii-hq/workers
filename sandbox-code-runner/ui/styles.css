@@ -18,6 +18,9 @@
  * `@keyframes` names are global even here, so they carry the prefix too.
  */
 
+@import "./src/styles/family.css";
+@import "./src/styles/page.css";
+
 /* --- card frame -------------------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-ui-msg {
   border-top: 1px solid var(--color-rule-2);
@@ -324,4 +327,33 @@
 /* The "expand · N ids" toggle sits below the chips, on the list's padding. */
 [data-iii-ui="sandbox-code-runner"] .cr-teardown-more {
   padding: 0 12px 10px;
+}
+
+/* --- list_runtimes ----------------------------------------------------- */
+[data-iii-ui="sandbox-code-runner"] .cr-lsrt-rows {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-lsrt-row {
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-lsrt-row:first-child {
+  border-top: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-lsrt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-lsrt-count {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-lsrt-gone {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
 }

@@ -128,6 +128,13 @@ export interface ChatStreamOptions {
    */
   workingDir?: string | null
   /**
+   * Per-session system-prompt selection. The real backend forwards it as
+   * `harness::send` `options.system_prompt` +
+   * `options.system_prompt_strategy`; omitted/null sends neither field
+   * (provider default identity prompt). Mock backends ignore this.
+   */
+  systemPrompt?: import('./harness-send').SystemPromptSelection | null
+  /**
    * Extra text content blocks appended after the prompt on the outgoing
    * user message — `#file(...)` mention expansions (`<attached-file …>`
    * blocks). When present the real backend sends a structured
@@ -307,6 +314,13 @@ export interface ChatBackend {
    * type + config, delivery = notify-this-chat or call-a-function.
    */
   listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
+  /**
+   * Subscribe to `harness::triggers-changed` for a session: fires when the
+   * binding set or a fire count changes (registration, unregistration from
+   * any tab, a fire, expiry, GC) — the signal to refetch `listTriggers`.
+   * Returns an unsubscribe.
+   */
+  onTriggersChanged?(sessionId: string, onEvent: () => void): () => void
   /**
    * Tear one subscription down via `harness::triggers::unregister` (engine
    * trigger AND durable record; a raw engine unregister would orphan the

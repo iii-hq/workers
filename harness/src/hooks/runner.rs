@@ -112,6 +112,10 @@ impl HookRegistry {
         let mut appended: Vec<Value> = Vec::new();
         let mut annotations = Map::new();
         for binding in self.pre_generate.ordered() {
+            if let Some(injected) = binding.inject_prompt.as_deref() {
+                system_prompt = append_prompt(system_prompt, injected);
+                continue;
+            }
             let mut messages = base_messages.to_vec();
             messages.extend(appended.iter().cloned());
             let mut input = self.envelope(HookPoint::PreGenerate, record, step);
@@ -431,6 +435,13 @@ fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
     }
 }
 
+fn append_prompt(base: Option<String>, injected: &str) -> Option<String> {
+    Some(match base {
+        Some(base) if !base.is_empty() => format!("{base}\n\n{injected}"),
+        _ => injected.to_string(),
+    })
+}
+
 /// The bindings a `pre_trigger` run consults for this target: the glob-matched
 /// chain, cut down to everything AFTER `resume_after` when resuming a released
 /// hold — hooks up to and including the holder already ran and mutated the
@@ -558,6 +569,15 @@ mod tests {
     }
 
     #[test]
+    fn static_prompt_injection_appends_without_a_leading_separator() {
+        assert_eq!(
+            append_prompt(Some("base".into()), "guidance").as_deref(),
+            Some("base\n\nguidance")
+        );
+        assert_eq!(append_prompt(None, "guidance").as_deref(), Some("guidance"));
+    }
+
+    #[test]
     fn deny_and_hold_parse() {
         match parse_output(json!({ "decision": "deny", "reason": "nope" })) {
             HookOutcome::Deny(r) => assert_eq!(r, "nope"),
@@ -615,6 +635,7 @@ mod tests {
     fn binding(function_id: &str, priority: i64) -> HookBinding {
         HookBinding {
             function_id: function_id.into(),
+            inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
             payload: None,
@@ -722,6 +743,7 @@ mod tests {
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
             function_id: "gate".into(),
+            inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
             payload: None,

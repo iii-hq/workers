@@ -22,6 +22,10 @@ import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import { Message } from './Message'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  type SystemPromptState,
+} from './system-prompt-selection'
 
 interface MessageListProps {
   messages: MessageType[]
@@ -355,7 +359,7 @@ function resolveEmptyState(
 ): EmptyStateProps {
   if (!ctx) return { variant: 'ready', density }
 
-  const { harnessStatus, modelOptions, catalogLoading } = ctx
+  const { harnessStatus, modelOptions, catalogLoading, active } = ctx
   const base: EmptyStateProps = {
     variant: 'ready',
     density,
@@ -366,6 +370,13 @@ function resolveEmptyState(
     onConfigureProvider: () => {
       window.location.hash = '#/workers/configuration/llm-router'
     },
+    /* The system prompt is chosen here and nowhere else. It persists on the
+       conversation record, so it survives this view being keyed away and
+       back on a chat-tab switch. */
+    systemPrompt: active?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
+    onSystemPromptChange: active
+      ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
+      : undefined,
   }
 
   if (harnessStatus.error) return { ...base, variant: 'install-failed' }

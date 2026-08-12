@@ -121,7 +121,6 @@ class TestDiscoverChangedWorkers:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == []
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is False
 
 
 def make_repo_with_harness(tmp_path: Path) -> Path:
@@ -196,7 +195,6 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["harness"]
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is True
 
     def test_harness_source_change_is_the_only_source_change(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -220,7 +218,6 @@ class TestHarnessSelection:
         assert data["changed_workers"] == ["harness"]
         assert data["source_changed"] == []
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is False
 
     def test_harness_change_is_the_only_rust_worker(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -245,7 +242,6 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["source_changed"] == []
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is True
 
     def test_unrelated_worker_change_skips_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -256,7 +252,6 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is False
 
     def test_force_harness_selects_only_harness_and_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -266,7 +261,6 @@ class TestHarnessSelection:
         assert data["changed_workers"] == ["harness"]
         assert data["source_changed"] == []
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is True
 
     def test_console_change_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -278,9 +272,8 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["console"]
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is False
 
-    def test_provider_change_runs_only_e2e(self, tmp_path):
+    def test_provider_change_stays_out_of_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         (repo / "provider-anthropic" / "lib.rs").write_text("// change\n")
         subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
@@ -290,9 +283,8 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["provider-anthropic"]
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is True
 
-    def test_database_change_runs_only_e2e(self, tmp_path):
+    def test_database_change_stays_out_of_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         (repo / "database" / "lib.rs").write_text("// change\n")
         subprocess.run(
@@ -309,9 +301,8 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["database"]
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is True
 
-    def test_subscription_provider_change_runs_only_e2e(self, tmp_path):
+    def test_subscription_provider_change_stays_out_of_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         (repo / "provider-openai-codex" / "lib.rs").write_text("// change\n")
         subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
@@ -321,7 +312,6 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["provider-openai-codex"]
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is True
 
     def test_e2e_suite_change_does_not_run_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -334,9 +324,8 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is True
 
-    def test_integration_suite_change_does_not_run_e2e(self, tmp_path):
+    def test_integration_suite_change_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         path = repo / "harness" / "tests" / "integration" / "scenario.rs"
         path.parent.mkdir(parents=True)
@@ -347,9 +336,8 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is False
 
-    def test_engine_lock_change_runs_both_real_stack_suites(self, tmp_path):
+    def test_engine_lock_change_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         path = repo / "harness" / "tests" / "integration" / "engine.lock"
         path.parent.mkdir(parents=True)
@@ -365,9 +353,8 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is True
 
-    def test_quickstart_change_does_not_run_e2e(self, tmp_path):
+    def test_quickstart_change_does_not_run_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         path = repo / "harness" / "tests" / "quickstart" / "run-ci.sh"
         path.parent.mkdir(parents=True)
@@ -383,7 +370,6 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["integration_changed"] is False
-        assert data["e2e_changed"] is False
 
     def test_integration_workflow_change_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -396,33 +382,6 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == []
         assert data["integration_changed"] is True
-        assert data["e2e_changed"] is False
-
-    def test_e2e_main_workflow_change_runs_only_e2e(self, tmp_path):
-        repo = make_repo_with_harness(tmp_path)
-        workflow = repo / ".github" / "workflows" / "harness-e2e-main.yml"
-        workflow.write_text("name: main\n")
-        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
-        subprocess.run(["git", "commit", "-q", "-m", "main workflow"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
-        r = run_script(repo, "main~1")
-        assert r.returncode == 0, r.stderr
-        data = json.loads(r.stdout)
-        assert data["changed_workers"] == []
-        assert data["integration_changed"] is False
-        assert data["e2e_changed"] is True
-
-    def test_e2e_daily_workflow_change_runs_only_e2e(self, tmp_path):
-        repo = make_repo_with_harness(tmp_path)
-        workflow = repo / ".github" / "workflows" / "harness-e2e-daily.yml"
-        workflow.write_text("name: daily\n")
-        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
-        subprocess.run(["git", "commit", "-q", "-m", "daily"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
-        r = run_script(repo, "main~1")
-        assert r.returncode == 0, r.stderr
-        data = json.loads(r.stdout)
-        assert data["changed_workers"] == []
-        assert data["integration_changed"] is False
-        assert data["e2e_changed"] is True
 
     def test_unknown_forced_worker_is_rejected(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)

@@ -69,6 +69,14 @@
       "response_format": {
         "default": null
       },
+      "session_id": {
+        "default": null,
+        "description": "Stable conversation identity, forwarded separately from the per-turn request id.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "system_prompt": {
         "default": null,
         "type": [

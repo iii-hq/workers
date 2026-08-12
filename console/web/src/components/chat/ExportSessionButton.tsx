@@ -65,17 +65,10 @@ export function ExportSessionButton({
         <button
           type="button"
           disabled={disabled || busy}
-          title={
-            disabled
-              ? 'no messages yet — nothing to export'
-              : busy
-                ? 'exporting…'
-                : exported
-                  ? 'session downloaded'
-                  : 'download session as markdown — paste into another AI for analysis'
-          }
           className={cn(
-            'flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group',
+            // `self-stretch`: the hit box is the full height of the header
+            // group, not the 11px glyph box (WCAG 2.2 SC 2.5.8).
+            'flex self-stretch items-center gap-1 text-ink-faint hover:text-ink transition-colors group',
             'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
             disabled && 'opacity-50 cursor-not-allowed hover:text-ink-faint',
             className,

@@ -25,10 +25,17 @@ interface FilesTabProps {
   tree: FlatTree | null
   gitStatus: readonly GitStatusEntry[]
   theme: 'light' | 'dark'
+  /** True while dot entries are filtered out of the listing — an empty
+      tree then reads as filtered, not as an empty folder. */
+  hiddenFiltered: boolean
   /** Slash-less dir paths to expand when (re)setting the tree. */
   expanded: readonly string[]
   /** Debounced snapshot of the currently expanded dirs (slash-less). */
   onExpandedChange: (paths: string[]) => void
+  /** Slash-less dir path to expand + scroll to (a search "folders"
+      result); acknowledged through onRevealed. */
+  reveal: string | null
+  onRevealed: () => void
   /** Single click on a file — open as the preview tab. */
   onPreviewFile: (relPath: string) => void
   /** Double click on a file — open pinned. */
@@ -39,8 +46,11 @@ export function FilesTab({
   tree,
   gitStatus,
   theme,
+  hiddenFiltered,
   expanded,
   onExpandedChange,
+  reveal,
+  onRevealed,
   onPreviewFile,
   onPinFile,
 }: FilesTabProps) {
@@ -134,11 +144,33 @@ export function FilesTab({
     model.setGitStatus(gitStatus.length > 0 ? gitStatus : undefined)
   }, [model, gitStatus])
 
+  // Reveal a folder from a search result: expand every ancestor handle,
+  // scroll it into view, then acknowledge. Expansion only ever OPENS
+  // dirs, so this can't fight the debounced expansion snapshot.
+  useEffect(() => {
+    if (!reveal || !kinds) return
+    const segs = reveal.split('/')
+    for (let i = 1; i <= segs.length; i++) {
+      const p = segs.slice(0, i).join('/')
+      const handle = model.getItem(p) ?? model.getItem(`${p}/`)
+      if (handle?.isDirectory()) {
+        ;(handle as FileTreeDirectoryHandle).expand()
+      }
+    }
+    const target = model.getItem(reveal) ? reveal : `${reveal}/`
+    model.scrollToPath(target, { offset: 'center' })
+    onRevealed()
+  }, [reveal, kinds, model, onRevealed])
+
   if (!tree) {
     return <div className="shui-side-note">loading tree…</div>
   }
   if (tree.paths.length === 0) {
-    return <div className="shui-side-note">· empty folder</div>
+    return (
+      <div className="shui-side-note">
+        {hiddenFiltered ? '· nothing visible — hidden entries are filtered' : '· empty folder'}
+      </div>
+    )
   }
 
   return (

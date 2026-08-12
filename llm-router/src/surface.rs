@@ -94,6 +94,12 @@ pub const MODELS_RECONCILE_ID: &str = "router::models::reconcile";
 pub const MODELS_RECONCILE_DESC: &str =
     "Replace a provider's catalog slice — the only catalog write path (token-gated).";
 
+pub const ON_FUNCTIONS_CHANGED_ID: &str = "router::on_functions_changed";
+pub const ON_FUNCTIONS_CHANGED_DESC: &str =
+    "Internal: a worker's function registrations changed — re-discover live \
+     providers and nudge them to re-declare, so a provider that reconnected \
+     is resolvable again without waiting for its own catalog timer.";
+
 pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
     "Internal: reactively reload the in-memory configuration snapshot and \
