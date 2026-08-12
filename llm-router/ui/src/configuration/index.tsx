@@ -24,6 +24,7 @@ import {
   Select,
   type SelectOption,
 } from '@iii-dev/console-ui'
+import { providerCardIds } from './provider-cards'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -136,7 +137,7 @@ const SETTINGS_FIELDS = [
 export function LlmRouterConfigForm(props: ConfigFormProps) {
   const value = asObject(props.value)
   const providers = asObject(value.providers)
-  const providerIds = Object.keys(providers)
+  const providerIds = providerCardIds(props.schema, props.value)
   const settings = asObject(value.settings)
   const heuristics = Array.isArray(value.routing_heuristics)
     ? (value.routing_heuristics as JsonValue[])
