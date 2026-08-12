@@ -20,6 +20,10 @@ export interface TabUiState {
   open: OpenTab[]
   active: string | null
   expanded: string[]
+  /** Files-tab dot-entries toggle; absent in legacy saves = hidden. */
+  showHidden?: boolean
+  /** Sidebar width in px from the drag handle; absent = default. */
+  sideWidth?: number
 }
 
 function isUnavailable(err: unknown): boolean {

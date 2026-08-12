@@ -361,6 +361,42 @@
 
 [data-iii-ui="shell"] .shui-sidebar {
   font-family: var(--font-mono, ui-monospace, monospace);
+  position: relative;
+}
+
+/* Resize handle on the sidebar's boundary toward the main pane. */
+[data-iii-ui="shell"] .shui-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+[data-iii-ui="shell"] .shui-resize-handle.left { left: 0; }
+[data-iii-ui="shell"] .shui-resize-handle.right { right: 0; }
+[data-iii-ui="shell"] .shui-resize-handle:hover,
+[data-iii-ui="shell"] .shui-resize-handle:active {
+  background: var(--color-surface-active);
+}
+
+/* Image preview — centered, contained, own scroll for oversized zooms. */
+[data-iii-ui="shell"] .shui-image-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+[data-iii-ui="shell"] .shui-image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--color-edge);
+  background: var(--color-surface);
 }
 [data-iii-ui="shell"] .shui-sidebar.collapsed {
   align-items: center;

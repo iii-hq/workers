@@ -13,7 +13,7 @@ export interface CoderInfo {
 }
 
 export interface TreeTruncation {
-  /** "per_folder_limit" | "max_depth" | "default_exclude". */
+  /** "per_folder_limit" | "max_depth" | "default_exclude" | "max_nodes". */
   reason: string
   shown: number
   total?: number | null
@@ -66,7 +66,8 @@ export interface ContentMatch {
 
 export interface SearchResponse {
   content_matches: ContentMatch[]
-  path_matches: { path: string }[]
+  /** `kind` distinguishes folder name-matches from file ones. */
+  path_matches: { path: string; kind?: 'file' | 'dir' }[]
   truncated: boolean
 }
 
@@ -74,14 +75,23 @@ export function coderInfo(host: Host): Promise<CoderInfo> {
   return host.iii.trigger<CoderInfo>('coder::info', {})
 }
 
-export function coderTree(host: Host, path: string): Promise<TreeResponse> {
+export function coderTree(
+  host: Host,
+  path: string,
+  includeHidden: boolean,
+): Promise<TreeResponse> {
   return host.iii.trigger<TreeResponse>('coder::tree', {
     path,
     // Deep enough for real repos; the worker's per-folder limit and
     // output budget still bound the response (truncated stubs carry
     // hints the Files tab surfaces).
     max_depth: 25,
+    // The worker default (50) fills with dot entries in home-shaped
+    // folders — byte order sorts them first. 500 matches the editor
+    // worker's browse call.
+    per_folder_limit: 500,
     use_default_excludes: true,
+    include_hidden: includeHidden,
   })
 }
 
@@ -90,6 +100,20 @@ export function coderReadFile(
   path: string,
 ): Promise<ReadFileResponse> {
   return host.iii.trigger<ReadFileResponse>('coder::read-file', { path })
+}
+
+/** Exact bytes, base64-encoded — the image-preview read. The override
+    lifts the 128 KiB text budget; the worker clamps it to its
+    max_read_bytes cap, so oversized files still fail loud (C218). */
+export function coderReadFileBase64(
+  host: Host,
+  path: string,
+): Promise<ReadFileResponse> {
+  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+    path,
+    encoding: 'base64',
+    max_output_bytes: 100_000_000,
+  })
 }
 
 /** Whole-file save. `mode` (from a prior read) keeps permission bits —
