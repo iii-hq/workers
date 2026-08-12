@@ -1,5 +1,5 @@
 name: shell E2E
-run-name: Test · shell_e2e · ${{ inputs.operation_id || github.event_name }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('RC · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · shell_e2e · {0}', github.event_name) }}
 
 on:
   pull_request:
@@ -9,17 +9,14 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Optional full source commit SHA
+        required: true
         type: string
-        default: ''
       operation_id:
-        description: Release Control operation UUID
+        required: true
         type: string
-        default: ''
       step_id:
-        description: Release Control operation step UUID
+        required: true
         type: string
-        default: ''
 
 concurrency:
   group: shell-e2e-${{ inputs.operation_id || inputs.source_sha || github.ref }}
@@ -37,6 +34,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Validate Release Control dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -87,3 +93,23 @@ jobs:
           path: |
             shell/tests/e2e/reports/
           retention-days: 7
+
+  evidence:
+    needs: e2e
+    if: github.event_name == 'workflow_dispatch' && always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.sha }}" }
+      - run: |
+          subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
+          checks=$(jq -cn --arg status '${{ needs.e2e.result }}' '[{name:"shell_e2e",status:$status}]')
+          python3 .github/scripts/release_control_contract.py write-result --kind test --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' --workflow shell-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output execution-result.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30

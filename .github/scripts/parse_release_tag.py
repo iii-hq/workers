@@ -3,8 +3,8 @@
 
 Writes release identity and manifest metadata to $GITHUB_OUTPUT:
     tag, worker, version, deploy, language, bin, manifest,
-    registry_tag, is_prerelease, dry_run, targets, experimental, tag_sha,
-    release_contract, operation_id, step_id, source_sha, maturity
+    registry_tag, is_prerelease, targets, experimental, tag_sha,
+    operation_id, step_id, source_sha, maturity
 """
 from __future__ import annotations
 
@@ -17,12 +17,9 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
-from release_catalog import load_catalog  # noqa: E402
 
 
 TAG_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)/v(.+)$")
-DRY_RUN_RE = re.compile(r"-dry-run\.\d+$")
-STABLE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,36 +41,16 @@ def main(argv: list[str] | None = None) -> int:
     worker, version = m.group(1), m.group(2)
 
     annotation = _lib.read_tag_annotation(raw)
-    release_contract = annotation.get("release-contract", "1").strip() or "1"
-    if release_contract not in {"1", "2"}:
-        print(f"::error::Unsupported release-contract: {release_contract}", file=sys.stderr)
+    managed_by = annotation.get("managed-by", "").strip()
+    if managed_by != "release-control":
+        print(f"::error::managed-by must be release-control (got {managed_by!r})", file=sys.stderr)
         return 1
-
     try:
-        catalog = load_catalog()
-    except (FileNotFoundError, ValueError) as error:
+        maturity = _lib.release_maturity(version)
+    except ValueError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1
-    worker_config = catalog.get(worker)
-    if not worker_config or worker_config.get("release_workflow") != "release.yml":
-        print(f"::error::{worker} is not a standard releasable worker", file=sys.stderr)
-        return 1
-
-    if DRY_RUN_RE.search(version) and release_contract == "1":
-        dry_run, is_pre = "true", "true"
-    else:
-        try:
-            maturity = _lib.release_maturity(version)
-        except ValueError as error:
-            if release_contract == "2":
-                print(f"::error::{error}", file=sys.stderr)
-                return 1
-            maturity = "stable" if STABLE_VERSION_RE.fullmatch(version) else "legacy-prerelease"
-        dry_run = "false"
-        is_pre = "false" if maturity == "stable" else "true"
-
-    if DRY_RUN_RE.search(version) and release_contract == "1":
-        maturity = "legacy-dry-run"
+    is_pre = "false" if maturity == "stable" else "true"
 
     worker_dir = args.source_dir / worker
     try:
@@ -103,36 +80,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    registry_tag = annotation.get("registry-tag", "next").strip() or "next"
+    registry_tag = annotation.get("registry-tag", "").strip()
     if registry_tag not in {"next", "latest"}:
         print(f"::error::registry-tag must be next|latest (got {registry_tag!r})", file=sys.stderr)
         return 1
-    if registry_tag == "latest" and not worker_config["allow_direct_latest"]:
-        print(f"::error::{worker} cannot publish directly to latest", file=sys.stderr)
-        return 1
+    operation_id = annotation.get("operation-id", "").strip()
+    step_id = annotation.get("step-id", "").strip()
+    source_sha = annotation.get("source-sha", "").strip()
+    expected = {"worker": worker, "version": version, "maturity": maturity}
+    for key, value in expected.items():
+        if annotation.get(key) != value:
+            print(
+                f"::error::tag annotation {key} must be {value!r} (got {annotation.get(key)!r})",
+                file=sys.stderr,
+            )
+            return 1
+    try:
+        from uuid import UUID
 
-    operation_id = annotation.get("operation-id", "legacy") or "legacy"
-    step_id = annotation.get("step-id", "legacy") or "legacy"
-    source_sha = annotation.get("source-sha", "unknown") or "unknown"
-    if release_contract == "2":
-        expected = {
-            "worker": worker,
-            "version": version,
-            "maturity": maturity,
-        }
-        for key, value in expected.items():
-            if annotation.get(key) != value:
-                print(
-                    f"::error::tag annotation {key} must be {value!r} (got {annotation.get(key)!r})",
-                    file=sys.stderr,
-                )
-                return 1
-        if not operation_id.strip() or not step_id.strip():
-            print("::error::v2 tags require operation-id and step-id", file=sys.stderr)
-            return 1
-        if source_sha != "unknown" and not re.fullmatch(r"[0-9a-f]{40}", source_sha):
-            print("::error::source-sha must be unknown or a full lowercase commit SHA", file=sys.stderr)
-            return 1
+        if str(UUID(operation_id)) != operation_id.lower() or str(UUID(step_id)) != step_id.lower():
+            raise ValueError
+    except ValueError:
+        print("::error::release tags require canonical UUID operation-id and step-id", file=sys.stderr)
+        return 1
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        print("::error::release tags require a full lowercase source-sha", file=sys.stderr)
+        return 1
     tag_sha = subprocess.check_output(
         ["git", "rev-list", "-n", "1", raw], text=True
     ).strip()
@@ -141,8 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     # line, or a typo publishes as stable. Marking a worker experimental is
     # the deliberate choice, so it takes the exact word.
     experimental_raw = annotation.get("experimental", "").strip().lower()
-    if release_contract == "2" and experimental_raw not in {"true", "false"}:
-        print("::error::v2 tags require experimental: true|false", file=sys.stderr)
+    if experimental_raw not in {"true", "false"}:
+        print("::error::release tags require experimental: true|false", file=sys.stderr)
         return 1
     experimental = "true" if experimental_raw == "true" else "false"
 
@@ -167,11 +140,9 @@ def main(argv: list[str] | None = None) -> int:
         ("manifest", wm.manifest or ""),
         ("registry_tag", registry_tag),
         ("is_prerelease", is_pre),
-        ("dry_run", dry_run),
         ("targets", targets),
         ("experimental", experimental),
         ("tag_sha", tag_sha),
-        ("release_contract", release_contract),
         ("operation_id", operation_id),
         ("step_id", step_id),
         ("source_sha", source_sha),

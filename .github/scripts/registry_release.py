@@ -70,14 +70,32 @@ def promotion_payload(version: str, current_latest: str | None) -> dict[str, str
     return payload
 
 
-def promote(api_url: str, api_key: str, worker: str, version: str) -> dict[str, Any]:
+def promote(
+    api_url: str,
+    api_key: str,
+    worker: str,
+    version: str,
+    expected_next: str,
+    expected_latest: str | None,
+) -> dict[str, Any]:
     current_latest = resolve_version(api_url, worker, "latest", allow_missing=True)
     current_next = resolve_version(api_url, worker, "next", allow_missing=True)
-    # A first promotion must still own `next`. Once Registry latest already
-    # points at the requested immutable version, allow an idempotent retry to
-    # repair GitHub/GHCR/Slack even if a newer candidate has moved `next`.
-    if current_latest != version and current_next != version:
-        raise RegistryError(f"next points to {current_next}, expected {version}")
+    if current_next != expected_next:
+        raise RegistryError(f"next points to {current_next}, expected {expected_next}")
+    if expected_next != version:
+        raise RegistryError(f"promotion target {version} does not match expected next {expected_next}")
+    if current_latest == version:
+        return {
+            "worker": worker,
+            "version": version,
+            "previous_latest": current_latest,
+            "next": current_next,
+            "latest": current_latest,
+            "changed": False,
+            "registry_response": {"changed": False, "idempotent": True},
+        }
+    if current_latest != expected_latest:
+        raise RegistryError(f"latest points to {current_latest}, expected {expected_latest}")
     encoded_worker = urllib.parse.quote(worker, safe="")
     status, response = request_json(
         "PUT",
@@ -105,9 +123,11 @@ def promote(api_url: str, api_key: str, worker: str, version: str) -> dict[str, 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-url", default="https://api.workers.iii.dev")
+    parser.add_argument("--api-url", required=True)
     parser.add_argument("--worker", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--expected-next-version", required=True)
+    parser.add_argument("--expected-latest-version", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -115,7 +135,15 @@ def main() -> None:
     if not api_key:
         raise SystemExit("WORKERS_REGISTRY_API_KEY is required")
     try:
-        result = promote(args.api_url, api_key, args.worker, args.version)
+        expected_latest = None if args.expected_latest_version == "none" else args.expected_latest_version
+        result = promote(
+            args.api_url,
+            api_key,
+            args.worker,
+            args.version,
+            args.expected_next_version,
+            expected_latest,
+        )
     except RegistryError as error:
         raise SystemExit(str(error)) from error
     args.output.parent.mkdir(parents=True, exist_ok=True)

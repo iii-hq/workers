@@ -19,7 +19,6 @@ Outputs:
 | `all` | Every changed worker folder |
 | `source_changed` | Workers with non-metadata file changes |
 | `rust` / `node` / `python` | Language buckets from `iii.worker.yaml` |
-| `vscode_changed` | `iii-lsp-vscode/` changed (special-case job) |
 
 **Harness fan-out:** when `harness/` changes, in-repo deps listed in
 `harness/iii.worker.yaml` `dependencies` join the rust matrix (version-bump

@@ -14,10 +14,9 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
-        required: false
+        description: 'Exact release tag to build'
+        required: true
         type: string
-        default: ''
       worker:
         description: 'Worker name (folder), e.g. harness'
         required: true
@@ -34,48 +33,9 @@ on:
         description: "Runtime language: 'node' or 'python'"
         required: true
         type: string
-      is_prerelease:
-        description: 'Mark as pre-release'
-        required: false
-        type: boolean
-        default: false
-      skip_create_release:
-        description: 'Skip GH release creation (assumes release already exists for the tag)'
-        required: false
-        type: boolean
-        default: true
-      dry_run:
-        description: 'Build the archive but skip uploading to the release'
-        required: false
-        type: boolean
-        default: false
-
 jobs:
-  pre-build:
-    name: Pre-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Create GitHub Release
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.tag_name }}
-          name: ${{ inputs.worker }} ${{ inputs.tag_name }}
-          draft: false
-          prerelease: ${{ inputs.is_prerelease }}
-          generate_release_notes: true
-
   build:
     name: Bundle ${{ inputs.worker }}
-    needs: [pre-build]
-    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -194,7 +154,6 @@ jobs:
           echo "::notice::Built $archive ($(stat -c%s "$archive") bytes, sha256=$digest)"
 
       - name: Upload to GitHub Release
-        if: inputs.dry_run != true
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
