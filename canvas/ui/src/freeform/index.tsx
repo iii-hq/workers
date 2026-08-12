@@ -267,31 +267,47 @@ function FreeformEditor({
   // undo stack. Local dirty edits win: while the user is mid-drawing,
   // remote applies wait for the next clean refresh.
   const lastAppliedRef = useRef(record.source)
+  /** A remote source that arrived while the user was mid-edit; applied on
+      the next clean transition instead of being dropped. */
+  const pendingRemoteRef = useRef<string | null>(null)
+
+  const applyRemote = useCallback(
+    (source: string) => {
+      const api = apiRef.current
+      if (api === null) return
+      lastAppliedRef.current = source
+      try {
+        const scene = parseSceneSource(source)
+        const elements = normalizeElements(bundle, scene.elements)
+        api.updateScene({
+          elements: elements as Parameters<
+            typeof api.updateScene
+          >[0] extends { elements?: infer E }
+            ? E
+            : never,
+          captureUpdate: bundle.CaptureUpdateAction.NEVER,
+        })
+        // The applied scene is now the save baseline — without this, the
+        // next local edit would diff against the pre-stream scene and
+        // re-save what the agent just drew.
+        lastSavedRef.current = serializeScene()
+      } catch {
+        // A malformed streamed scene falls back to the next full remount.
+      }
+    },
+    [bundle, serializeScene],
+  )
+
   useEffect(() => {
     if (record.source === lastAppliedRef.current) return
-    const api = apiRef.current
-    if (api === null) return
-    if (dirtyRef.current) return
-    lastAppliedRef.current = record.source
-    try {
-      const scene = parseSceneSource(record.source)
-      const elements = normalizeElements(bundle, scene.elements)
-      api.updateScene({
-        elements: elements as Parameters<
-          typeof api.updateScene
-        >[0] extends { elements?: infer E }
-          ? E
-          : never,
-        captureUpdate: bundle.CaptureUpdateAction.NEVER,
-      })
-      // The applied scene is now the save baseline — without this, the
-      // next local edit would diff against the pre-stream scene and
-      // re-save what the agent just drew.
-      lastSavedRef.current = serializeScene()
-    } catch {
-      // A malformed streamed scene falls back to the next full remount.
+    if (apiRef.current === null) return
+    if (dirtyRef.current) {
+      pendingRemoteRef.current = record.source
+      return
     }
-  }, [record.source, bundle, serializeScene])
+    pendingRemoteRef.current = null
+    applyRemote(record.source)
+  }, [record.source, applyRemote])
 
   // HARD SAFETY RULE: nothing persists until the person actually touched
   // the board this mount. Excalidraw's restore fires onChange on its own
@@ -306,13 +322,23 @@ function FreeformEditor({
     if (json === null) return false
     if (json === lastSavedRef.current) {
       setDirty(false)
+      // Clean without writing (e.g. drew and undid): a remote update that
+      // was parked during the edit lands now instead of being lost.
+      const parked = pendingRemoteRef.current
+      if (parked !== null) {
+        pendingRemoteRef.current = null
+        applyRemote(parked)
+      }
       return false
     }
     lastSavedRef.current = json
     setDirty(false)
+    // Our save supersedes any parked remote: the parent refreshes the
+    // record from the save response, which carries the newer source.
+    pendingRemoteRef.current = null
     onSaveRef.current(json)
     return true
-  }, [serializeScene, setDirty])
+  }, [serializeScene, setDirty, applyRemote])
 
   const handleChange = useCallback(() => {
     if (lastSavedRef.current === null) {

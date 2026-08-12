@@ -72,9 +72,12 @@ broken diagram never lands in the store or renders as an error card.
   derived family, and per-issue messages with line numbers where known.
 - `canvas::element::add` — append shapes to a freeform canvas one drawing
   step at a time; the open console whiteboard shows each call as it lands.
-- `canvas::element::update` — merge properties into one element by element
-  id: move, recolor, or relabel a shape in place.
-- `canvas::element::delete` — remove elements by element id; unknown ids
-  are ignored and the response reports how many went.
-- `canvas::element::list` — the board map: id, type, position, size, and
-  text per element, read before updating or connecting shapes.
+- `canvas::element::update` — merge properties into one element of a
+  freeform canvas by element id: move, recolor, or relabel a shape.
+- `canvas::element::delete` — remove elements of a freeform canvas by
+  element id; unknown ids are ignored and the response reports the count.
+- `canvas::element::list` — the freeform board map: id, type, position,
+  size, and text per element, read before updating or connecting shapes.
+
+The `element` family works only on `format: freeform` canvases (excalidraw
+scene source). Mermaid canvases are edited as text through `canvas::update`.

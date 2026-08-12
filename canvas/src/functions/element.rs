@@ -228,6 +228,13 @@ pub async fn handle_add(
             req.id
         ));
     }
+    // Element ids must be unique across the scene: a caller-supplied id
+    // colliding with an existing element (or repeated within the request)
+    // is replaced with a generated one, same as a missing id.
+    let mut taken: std::collections::HashSet<String> = elements
+        .iter()
+        .filter_map(|el| element_id(el).map(str::to_string))
+        .collect();
     let mut assigned = Vec::with_capacity(req.elements.len());
     for (i, el) in req.elements.into_iter().enumerate() {
         let Value::Object(mut obj) = el else {
@@ -236,23 +243,33 @@ pub async fn handle_add(
         if !obj.get("type").map(Value::is_string).unwrap_or(false) {
             return Err(format!("element {i} has no `type` string"));
         }
-        let id = match obj.get("id").and_then(Value::as_str) {
-            Some(existing) if !existing.trim().is_empty() => existing.to_string(),
-            _ => {
-                let generated = create::random_id();
+        let supplied = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !taken.contains(*s))
+            .map(str::to_string);
+        let id = match supplied {
+            Some(unique) => unique,
+            None => {
+                let mut generated = create::random_id();
+                while taken.contains(&generated) {
+                    generated = create::random_id();
+                }
                 obj.insert("id".into(), Value::String(generated.clone()));
                 generated
             }
         };
+        taken.insert(id.clone());
         assigned.push(id);
         elements.push(Value::Object(obj));
     }
-    let record = save_scene(store, record, scene, elements, cfg).await?;
-    let (_, saved) = scene_of(&record)?;
+    let element_count = elements.len();
+    save_scene(store, record, scene, elements, cfg).await?;
     Ok(AddResponse {
         id: req.id,
         element_ids: assigned,
-        element_count: saved.len(),
+        element_count,
     })
 }
 
@@ -338,12 +355,30 @@ pub async fn handle_list(
 ) -> Result<ListResponse, String> {
     let record = load_freeform(store, &req.id).await?;
     let (_, elements) = scene_of(&record)?;
+    // One summary PER stored element — an element with a missing or
+    // non-string id gets a placeholder instead of vanishing, so this
+    // list stays comparable with element_count from add and delete.
     let summaries = elements
         .iter()
-        .filter_map(|el| {
-            let obj = el.as_object()?;
-            Some(ElementSummary {
-                id: obj.get("id")?.as_str()?.to_string(),
+        .enumerate()
+        .map(|(i, el)| {
+            let Some(obj) = el.as_object() else {
+                return ElementSummary {
+                    id: format!("(malformed #{i})"),
+                    r#type: "unknown".to_string(),
+                    x: None,
+                    y: None,
+                    width: None,
+                    height: None,
+                    text: None,
+                };
+            };
+            ElementSummary {
+                id: obj
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("(no id #{i})")),
                 r#type: obj
                     .get("type")
                     .and_then(Value::as_str)
@@ -362,7 +397,7 @@ pub async fn handle_list(
                             .and_then(Value::as_str)
                     })
                     .map(str::to_string),
-            })
+            }
         })
         .collect();
     Ok(ListResponse {
@@ -519,6 +554,83 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("freeform"), "got: {err}");
+    }
+
+    /// Filling the board to exactly [`MAX_ELEMENTS`] succeeds; one past it
+    /// is refused with the split-across-canvases error.
+    #[tokio::test]
+    async fn add_enforces_the_element_cap_at_the_boundary() {
+        let (store, id) = freeform_store().await;
+        let cfg = WorkerConfig::default();
+        let fill: Vec<Value> = (0..MAX_ELEMENTS)
+            .map(|_| json!({"type": "rectangle"}))
+            .collect();
+        let out = handle_add(
+            &store,
+            AddRequest {
+                id: id.clone(),
+                elements: fill,
+            },
+            &cfg,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.element_count, MAX_ELEMENTS);
+        let err = handle_add(
+            &store,
+            AddRequest {
+                id,
+                elements: vec![json!({"type": "rectangle"})],
+            },
+            &cfg,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("split across canvases"), "got: {err}");
+    }
+
+    /// Caller-supplied ids never collide: an id already on the scene (or
+    /// repeated within one request) is regenerated like a missing one.
+    #[tokio::test]
+    async fn add_regenerates_colliding_ids() {
+        let (store, id) = freeform_store().await;
+        let cfg = WorkerConfig::default();
+        let first = handle_add(
+            &store,
+            AddRequest {
+                id: id.clone(),
+                elements: vec![json!({"type": "rectangle", "id": "dupe0001"})],
+            },
+            &cfg,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.element_ids, vec!["dupe0001"]);
+        let second = handle_add(
+            &store,
+            AddRequest {
+                id: id.clone(),
+                elements: vec![
+                    json!({"type": "ellipse", "id": "dupe0001"}),
+                    json!({"type": "text", "id": "fresh001", "text": "a"}),
+                    json!({"type": "text", "id": "fresh001", "text": "b"}),
+                ],
+            },
+            &cfg,
+        )
+        .await
+        .unwrap();
+        assert_ne!(second.element_ids[0], "dupe0001");
+        assert_eq!(second.element_ids[1], "fresh001");
+        assert_ne!(second.element_ids[2], "fresh001");
+        let listed = handle_list(&store, ListRequest { id }, &cfg).await.unwrap();
+        let ids: Vec<&str> = listed.elements.iter().map(|e| e.id.as_str()).collect();
+        let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "scene ids must stay unique: {ids:?}"
+        );
     }
 
     /// A record whose source lost its elements key (or is blank) still
