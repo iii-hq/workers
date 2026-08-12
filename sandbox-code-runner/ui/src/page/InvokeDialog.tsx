@@ -87,10 +87,10 @@ export function InvokeDialog({
     <Dialog open={functionId !== null} onOpenChange={(open) => !open && onClose()}>
       {functionId === null ? null : (
         <DialogContent className="cr-page-dialog">
-          <DialogTitle>invoke {functionId}</DialogTitle>
+          <DialogTitle>trigger {functionId}</DialogTitle>
           <DialogDescription>
-            calls the guest-registered function over the bus with the payload
-            below — this runs real code in its runtime.
+            triggers the guest-registered function over the bus with the input
+            payload below — this runs real code in its runtime.
           </DialogDescription>
           <div className="cr-page-editor-pane">
             <CodeEditor
@@ -98,7 +98,7 @@ export function InvokeDialog({
               onChange={setPayload}
               language="json"
               className="cr-page-payload-editor"
-              aria-label="invoke payload (json)"
+              aria-label="input payload (json)"
               autoFocus
             />
           </div>
@@ -112,7 +112,7 @@ export function InvokeDialog({
               close
             </Button>
             <Button variant="primary" size="sm" onClick={invoke} disabled={busy}>
-              {busy ? 'invoking…' : 'invoke'}
+              {busy ? 'triggering…' : 'trigger'}
             </Button>
           </div>
           {callError ? (

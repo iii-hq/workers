@@ -1,7 +1,7 @@
 /**
  * The navigation rail: the FLEET list (one row per sandbox — status dot,
  * id, image, age, free exec slots), the RUNTIMES strip (code-runner
- * runtimes with their guest-registered functions: expand, invoke, tear
+ * runtimes with their guest-registered functions: expand, trigger, tear
  * down), and the CATALOG (daemon images with their preset/custom badge).
  *
  * Status reads: running (accent), busy (warn, pulsing — execs in flight),
@@ -170,8 +170,9 @@ function RuntimeRow({
                 type="button"
                 className="cr-page-linkish"
                 onClick={() => onInvoke(fn)}
+                title={`trigger ${fn} over the bus with a JSON payload`}
               >
-                invoke
+                trigger
               </button>
             </li>
           ))}
