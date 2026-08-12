@@ -36,7 +36,7 @@ use crate::registry::store::RegistryStore;
 use crate::surface;
 use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
-use crate::types::router::ConfigChangedEvent;
+use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};
 
 /// `metadata.internal = true` keeps a registration out of the default
 /// `engine::functions::list`: orchestrator/provider plumbing, invoked by id.
@@ -319,13 +319,13 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
         iii.register_function(
             surface::ON_FUNCTIONS_CHANGED_ID,
-            RegisterFunction::new_async(move |_event: Value| {
+            RegisterFunction::new_async(move |_event: FunctionsChangedEvent| {
                 let sweep = sweep.clone();
                 async move {
                     // Coalesce the boot burst: the handler only marks work
                     // pending, the sweep task fires once it goes quiet.
                     sweep.request();
-                    Ok::<Value, Error>(json!({ "ok": true }))
+                    Ok::<RouterAck, Error>(RouterAck { ok: true })
                 }
             })
             .description(surface::ON_FUNCTIONS_CHANGED_DESC)
