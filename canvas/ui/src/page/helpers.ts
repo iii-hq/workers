@@ -73,10 +73,10 @@ export function exportFilename(name: string, ext: 'svg' | 'png'): string {
 /** Compact "how long ago" for the sidebar rows; absolute date past 30 days. */
 export function relativeTime(unixSecs: number, nowSecs: number): string {
   const delta = Math.max(0, nowSecs - unixSecs)
-  if (delta < 45) return 'just now'
-  if (delta < 3600) return `${Math.round(delta / 60)}m ago`
-  if (delta < 86400) return `${Math.round(delta / 3600)}h ago`
-  if (delta < 86400 * 30) return `${Math.round(delta / 86400)}d ago`
+  if (delta < 60) return 'just now'
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`
+  if (delta < 86400 * 30) return `${Math.floor(delta / 86400)}d ago`
   return new Date(unixSecs * 1000).toISOString().slice(0, 10)
 }
 

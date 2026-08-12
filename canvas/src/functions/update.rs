@@ -38,6 +38,9 @@ pub async fn handle(store: &Store, req: Request, cfg: &WorkerConfig) -> Result<R
     if req.name.is_none() && req.source.is_none() {
         return Err("nothing to update — pass name and/or source".to_string());
     }
+    // Concurrent updates to the same record must not interleave their
+    // load→save cycles (the state worker has no compare-and-set).
+    let _guard = store.mutation_guard().await;
     let mut record = store.load(&req.id).await?.ok_or_else(|| {
         format!(
             "canvas '{}' not found — canvas::list shows the stored ids",

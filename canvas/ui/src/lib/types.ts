@@ -71,6 +71,10 @@ export const CANVAS_FUNCTION_IDS = [
   'canvas::delete',
   'canvas::syntax',
   'canvas::validate',
+  'canvas::element::add',
+  'canvas::element::update',
+  'canvas::element::delete',
+  'canvas::element::list',
 ] as const
 
 export type CanvasFunctionId = (typeof CANVAS_FUNCTION_IDS)[number]

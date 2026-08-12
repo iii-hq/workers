@@ -1,0 +1,53 @@
+{
+  "description": "Add elements to a freeform canvas, one call per drawing step. Each element is an excalidraw-style object ({type, x, y, width?, height?, text?, label?, start?, end?, ...}); skeleton shorthand is accepted and converted at render time. Elements without an id get a stable generated one. The open console canvas streams every call, so shapes appear as they are added. Returns the assigned ids and the new element count.",
+  "function_id": "canvas::element::add",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "elements": {
+        "description": "Elements to append, in z-order. Objects with at least a `type` string; unknown fields pass through to the scene untouched.",
+        "items": true,
+        "type": "array"
+      },
+      "id": {
+        "description": "Stable 8-character canvas id (format must be freeform).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "elements",
+      "id"
+    ],
+    "title": "AddRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "element_count": {
+        "description": "Total elements in the scene after the add.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "element_ids": {
+        "description": "Assigned element ids, in the order the elements were given.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "id": {
+        "description": "The canvas the elements were added to.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "element_count",
+      "element_ids",
+      "id"
+    ],
+    "title": "AddResponse",
+    "type": "object"
+  }
+}

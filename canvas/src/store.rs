@@ -133,6 +133,11 @@ pub struct Store {
     backend: Backend,
     /// Serializes read-modify-write of the index across concurrent handlers.
     index_lock: Mutex<()>,
+    /// Serializes whole record read-modify-write cycles (update and the
+    /// element operations). The state worker has no compare-and-set, but
+    /// every mutation flows through this one worker process — holding
+    /// this across load→save closes the lost-update window.
+    mutation_lock: Mutex<()>,
 }
 
 impl Store {
@@ -140,6 +145,7 @@ impl Store {
         Self {
             backend: Backend::Bus(iii),
             index_lock: Mutex::new(()),
+            mutation_lock: Mutex::new(()),
         }
     }
 
@@ -149,7 +155,13 @@ impl Store {
         Self {
             backend: Backend::Memory(std::sync::Mutex::new(HashMap::new())),
             index_lock: Mutex::new(()),
+            mutation_lock: Mutex::new(()),
         }
+    }
+
+    /// Hold for the duration of a record read-modify-write.
+    pub async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutation_lock.lock().await
     }
 
     async fn bus_call(

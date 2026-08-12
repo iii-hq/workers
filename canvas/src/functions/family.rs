@@ -96,6 +96,8 @@ pub fn normalize(input: &str) -> Option<&'static str> {
     }
     let lower = trimmed.to_ascii_lowercase();
     let alias = match lower.as_str() {
+        "graph" => "flowchart",
+        "packet-beta" => "packet",
         "sequence" => "sequenceDiagram",
         "class" => "classDiagram",
         "state" | "statediagram-v2" => "stateDiagram",

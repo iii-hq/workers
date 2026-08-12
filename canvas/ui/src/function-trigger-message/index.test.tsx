@@ -46,7 +46,7 @@ const createDone = message('canvas::create', {
 })
 
 describe('HANDLED matching', () => {
-  it('claims exactly the seven public canvas functions', () => {
+  it('claims exactly the public canvas functions', () => {
     const renderer = createCanvasTriggerRenderer(host)
     expect([...HANDLED].sort()).toEqual([...CANVAS_FUNCTION_IDS].sort())
     for (const id of CANVAS_FUNCTION_IDS) {

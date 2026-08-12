@@ -369,7 +369,7 @@
   font-size: 0.6875rem;
   line-height: 1.45;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   color: var(--color-ink);
 }
 

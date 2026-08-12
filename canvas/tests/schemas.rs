@@ -34,7 +34,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
 /// The catalog must cover exactly the registered functions, in registration
 /// order (kept in lockstep with `register_all`).
 #[test]
-fn catalog_lists_all_seven_functions_in_registration_order() {
+fn catalog_lists_every_function_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
@@ -46,6 +46,10 @@ fn catalog_lists_all_seven_functions_in_registration_order() {
             "canvas::delete",
             "canvas::syntax",
             "canvas::validate",
+            "canvas::element::add",
+            "canvas::element::update",
+            "canvas::element::delete",
+            "canvas::element::list",
         ]
     );
 }
@@ -54,6 +58,10 @@ fn catalog_lists_all_seven_functions_in_registration_order() {
 /// across ALL functions before failing, so one run shows the full drift.
 #[test]
 fn wire_schema_snapshots_match_goldens() {
+    assert!(
+        !(std::env::var_os("CI").is_some() && std::env::var_os("UPDATE_GOLDENS").is_some()),
+        "UPDATE_GOLDENS must not be set in CI — goldens are committed, never regenerated there"
+    );
     let mut failures = Vec::new();
     for spec in catalog() {
         let rel = golden_file_name(spec.function_id);

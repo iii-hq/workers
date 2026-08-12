@@ -185,13 +185,18 @@ export function CanvasPage({
         const cache = cacheRef.current
         const entry = cache.get(rec.id)
         const cur = recordRef.current
+        // id + updated_at matching = this is our own save echoing back —
+        // freeform saves have no cache entry, so the entry must not gate
+        // the check (a gated echo would remount the whiteboard mid-edit).
         const alreadyCurrent =
-          cur !== null &&
-          cur.id === rec.id &&
-          cur.updated_at === rec.updated_at &&
-          entry !== undefined &&
-          entry.savedSource === rec.source
-        if (alreadyCurrent) return
+          cur !== null && cur.id === rec.id && cur.updated_at === rec.updated_at
+        if (alreadyCurrent) {
+          if (entry && entry.draft === entry.savedSource) {
+            entry.savedSource = rec.source
+            entry.draft = rec.source
+          }
+          return
+        }
         if (!entry) {
           cache.set(rec.id, { savedSource: rec.source, draft: rec.source })
         } else {
@@ -516,7 +521,10 @@ export function CanvasPage({
             />
           ) : (
             <FreeformPane
-              key={`${record.id}:${externalBump}`}
+              // No bump: external updates apply IN PLACE via updateScene
+              // (the pane's live-apply effect) — remounting would flash
+              // the whiteboard on every streamed agent stroke.
+              key={record.id}
               host={host}
               record={record}
               onSave={saveFreeform}

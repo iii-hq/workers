@@ -180,8 +180,15 @@ export function errorDisplay(output: unknown): string | null {
   }
 }
 
-/** Unix seconds → `YYYY-MM-DD`, deterministic for tests. */
+/** Unix seconds → `YYYY-MM-DD`, deterministic for tests. Null for values
+    outside the representable Date range (toISOString throws there). */
 export function formatDay(secs: number | undefined): string | null {
   if (secs === undefined) return null
-  return new Date(secs * 1000).toISOString().slice(0, 10)
+  const date = new Date(secs * 1000)
+  if (Number.isNaN(date.getTime())) return null
+  try {
+    return date.toISOString().slice(0, 10)
+  } catch {
+    return null
+  }
 }

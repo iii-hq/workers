@@ -137,7 +137,8 @@ fn header(family: &str) -> &'static str {
         "sankey-beta" => "sankey-beta",
         "xychart-beta" => "xychart-beta",
         "radar-beta" => "radar-beta",
-        _ => "treemap-beta",
+        "treemap-beta" => "treemap-beta",
+        _ => "%% unknown family",
     }
 }
 
@@ -164,7 +165,8 @@ fn summary(family: &str) -> &'static str {
         "sankey-beta" => "flow quantities between nodes as ribbons — energy, traffic, funnels",
         "xychart-beta" => "bar and/or line series on labelled x/y axes",
         "radar-beta" => "one or more value curves over shared axes — skill/feature comparison",
-        _ => "nested proportional rectangles from a value tree — storage, budgets",
+        "treemap-beta" => "nested proportional rectangles from a value tree — storage, budgets",
+        _ => "not a mermaid family this worker knows",
     }
 }
 
@@ -225,7 +227,10 @@ fn example(family: &str) -> &'static str {
         "radar-beta" => {
             "radar-beta\n  title Skills\n  axis r[\"Rust\"], t[\"TypeScript\"], s[\"SQL\"]\n  curve me[\"Me\"]{80, 70, 60}"
         }
-        _ => "treemap-beta\n\"Storage\"\n    \"Images\": 60\n    \"Video\": 30\n    \"Docs\": 10",
+        "treemap-beta" => {
+            "treemap-beta\n\"Storage\"\n    \"Images\": 60\n    \"Video\": 30\n    \"Docs\": 10"
+        }
+        _ => "%% unknown family — canvas::syntax with no family lists the catalog",
     }
 }
 

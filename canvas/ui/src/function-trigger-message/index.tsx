@@ -19,7 +19,7 @@
  * chat-card section of ../../styles.css.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type {
   FunctionTriggerMessage,
@@ -137,9 +137,82 @@ function renderDone(
       if (result == null) return null
       return <ValidateCard result={result} />
     }
+    case 'canvas::element::add':
+    case 'canvas::element::update':
+    case 'canvas::element::delete':
+    case 'canvas::element::list': {
+      const card = elementCardData(message.functionId, output)
+      if (card == null) return null
+      return <ElementCard {...card} />
+    }
     default:
       return null
   }
+}
+
+/** Parse one element-op response into a one-line card, or null to fall
+    through (empty/unrecognizable payloads never make an empty card). */
+function elementCardData(
+  functionId: string,
+  output: unknown,
+): { op: string; note: string; canvasId: string } | null {
+  if (output == null || typeof output !== 'object') return null
+  const data = output as Record<string, unknown>
+  const canvasId = typeof data.id === 'string' ? data.id : null
+  if (!canvasId) return null
+  let note: string
+  switch (functionId) {
+    case 'canvas::element::add': {
+      const ids = Array.isArray(data.element_ids) ? data.element_ids.length : 0
+      if (ids === 0) return null
+      const count =
+        typeof data.element_count === 'number' ? data.element_count : null
+      note = `drew ${ids} element${ids === 1 ? '' : 's'}${
+        count != null ? ` · ${count} on the board` : ''
+      }`
+      break
+    }
+    case 'canvas::element::update':
+      if (typeof data.element_id !== 'string') return null
+      note = `updated ${data.element_id}`
+      break
+    case 'canvas::element::delete': {
+      if (typeof data.removed !== 'number') return null
+      const left =
+        typeof data.element_count === 'number' ? data.element_count : null
+      note = `erased ${data.removed}${left != null ? ` · ${left} left` : ''}`
+      break
+    }
+    default: {
+      if (!Array.isArray(data.elements)) return null
+      const n = data.elements.length
+      note = `${n} element${n === 1 ? '' : 's'} on the board`
+    }
+  }
+  return { op: functionId.slice(CANVAS_PREFIX.length), note, canvasId }
+}
+
+/** Element-level drawing steps stay one-line: the diagram itself is live
+    on the canvas page (the call streams onto the open whiteboard). */
+function ElementCard({
+  op: opLabel,
+  note,
+  canvasId,
+}: {
+  op: string
+  note: string
+  canvasId: string
+}) {
+  return (
+    <CardShell op={opLabel}>
+      <div className="canvas-trigger__note">
+        {note} ·{' '}
+        <a href={CANVAS_PAGE_HASH} title="open in canvas">
+          <span className="canvas-trigger__id">{canvasId}</span>
+        </a>
+      </div>
+    </CardShell>
+  )
 }
 
 function renderRunning(
@@ -395,7 +468,7 @@ function FreeformCard({
   view: CanvasRecordView
   running?: boolean
 }) {
-  const count = sceneElementCount(view.source)
+  const count = useMemo(() => sceneElementCount(view.source), [view.source])
   return (
     <CardShell
       op={opLabel}

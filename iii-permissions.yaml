@@ -358,3 +358,7 @@ rules:
   - canvas::delete
   - canvas::syntax
   - canvas::validate
+  - canvas::element::add
+  - canvas::element::update
+  - canvas::element::delete
+  - canvas::element::list

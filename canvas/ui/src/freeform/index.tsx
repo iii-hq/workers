@@ -202,6 +202,41 @@ function FreeformEditor({
     [initialData, serializeScene],
   )
 
+  // ── live-apply: agent element calls stream onto the OPEN whiteboard ──
+  // The parent refreshes `record` when a state event lands. A source we
+  // did not draw is applied in place through updateScene (skeletons from
+  // canvas::element::add run through excalidraw's converter), with
+  // CaptureUpdateAction.NEVER so remote strokes never enter the user's
+  // undo stack. Local dirty edits win: while the user is mid-drawing,
+  // remote applies wait for the next clean refresh.
+  const lastAppliedRef = useRef(record.source)
+  useEffect(() => {
+    if (record.source === lastAppliedRef.current) return
+    const api = apiRef.current
+    if (api === null) return
+    if (dirtyRef.current) return
+    lastAppliedRef.current = record.source
+    try {
+      const scene = parseSceneSource(record.source)
+      const elements = bundle.convertToExcalidrawElements(
+        scene.elements as Parameters<
+          typeof bundle.convertToExcalidrawElements
+        >[0],
+        { regenerateIds: false },
+      )
+      api.updateScene({
+        elements,
+        captureUpdate: bundle.CaptureUpdateAction.NEVER,
+      })
+      // The applied scene is now the save baseline — without this, the
+      // next local edit would diff against the pre-stream scene and
+      // re-save what the agent just drew.
+      lastSavedRef.current = serializeScene()
+    } catch {
+      // A malformed streamed scene falls back to the next full remount.
+    }
+  }, [record.source, bundle, serializeScene])
+
   const saveIfChanged = useCallback((): boolean => {
     const json = serializeScene()
     if (json === null) return false

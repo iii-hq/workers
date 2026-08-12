@@ -28,6 +28,7 @@ export interface MermaidBundle {
 
 /** The named surface of the freeform vendor bundle (see ../../freeform-entry.ts). */
 export interface FreeformBundle {
+  CaptureUpdateAction: typeof import('@excalidraw/excalidraw').CaptureUpdateAction
   Excalidraw: typeof import('@excalidraw/excalidraw').Excalidraw
   convertMermaidToScene: typeof import('../freeform/convert').convertMermaidToScene
   convertToExcalidrawElements: typeof import('@excalidraw/excalidraw').convertToExcalidrawElements
@@ -67,6 +68,27 @@ export function mermaidInitConfig(theme: 'light' | 'dark') {
 /** Export backgrounds per theme — fixed values, not live tokens: exporting
     a dark png from a light console must not sample light-theme vars. */
 export const EXPORT_BG = { light: '#ffffff', dark: '#101014' } as const
+
+/**
+ * Mermaid takes its theme through one global initialize. Every canvas
+ * surface (page pane, chat cards) shares this guard so a theme flip
+ * re-initializes exactly once, wherever the next render happens.
+ */
+let initializedMermaidTheme: 'light' | 'dark' | null = null
+
+export function initMermaidOnce(
+  mermaid: MermaidBundle['mermaid'],
+  theme: 'light' | 'dark',
+): void {
+  if (initializedMermaidTheme === theme) return
+  mermaid.initialize(mermaidInitConfig(theme))
+  initializedMermaidTheme = theme
+}
+
+/** Call after initializing mermaid off-theme (the export path). */
+export function invalidateMermaidInit(): void {
+  initializedMermaidTheme = null
+}
 
 /** Resolve a sibling asset URL the way the console's own loader does. */
 function assetUrl(path: string): string {

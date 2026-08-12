@@ -29,8 +29,9 @@ import type {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   EXPORT_BG,
+  initMermaidOnce,
+  invalidateMermaidInit,
   loadMermaid,
-  type MermaidBundle,
   mermaidInitConfig,
 } from '../lib/loaders'
 import { animateSvgDrawIn } from '../lib/draw'
@@ -79,20 +80,6 @@ interface View {
   z: number
 }
 
-/**
- * Mermaid takes its theme via a global initialize; track what the module
- * last initialized so per-render calls are no-ops until the theme flips.
- */
-let initializedTheme: 'light' | 'dark' | null = null
-
-function initMermaid(
-  mermaid: MermaidBundle['mermaid'],
-  theme: 'light' | 'dark',
-): void {
-  if (initializedTheme === theme) return
-  mermaid.initialize(mermaidInitConfig(theme))
-  initializedTheme = theme
-}
 
 interface MermaidPaneProps {
   host: Host
@@ -188,13 +175,12 @@ export function MermaidPane({
     },
     [],
   )
+  const splitPctRef = useRef(splitPct)
+  splitPctRef.current = splitPct
   const onSplitPointerUp = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       if (splitDragRef.current) {
-        setSplitPct((pct) => {
-          window.localStorage.setItem(SPLIT_PCT_KEY, String(pct))
-          return pct
-        })
+        window.localStorage.setItem(SPLIT_PCT_KEY, String(splitPctRef.current))
       }
       splitDragRef.current = false
       try {
@@ -228,7 +214,7 @@ export function MermaidPane({
       setPreview((s) => beginRender(s, seq))
       try {
         const { mermaid } = await loadMermaid(host)
-        initMermaid(mermaid, theme)
+        initMermaidOnce(mermaid, theme)
         await mermaid.parse(source)
         if (seqRef.current !== seq) return
         const { svg } = await mermaid.render(`cv-mmd-${record.id}-${seq}`, source)
@@ -421,13 +407,13 @@ export function MermaidPane({
         let svg: string
         try {
           mermaid.initialize(mermaidInitConfig(exportTheme))
-          initializedTheme = exportTheme
+          invalidateMermaidInit()
           ;({ svg } = await mermaid.render(
             `cv-export-${record.id}-${++seqRef.current}`,
             cache.get(record.id)?.draft ?? record.source,
           ))
         } finally {
-          initMermaid(mermaid, theme)
+          initMermaidOnce(mermaid, theme)
         }
         const dims = svgDimensions(svg) ?? contentSize
         if (!dims) throw new Error('the diagram has no measurable size')

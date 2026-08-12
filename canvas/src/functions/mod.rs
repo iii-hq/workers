@@ -6,6 +6,7 @@
 
 pub mod create;
 pub mod delete;
+pub mod element;
 pub mod family;
 pub mod get;
 pub mod list;
@@ -61,6 +62,16 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<delete::Request, delete::Response>(delete::ID, delete::DESC),
         spec::<syntax::Request, syntax::Response>(syntax::ID, syntax::DESC),
         spec::<validate::Request, validate::Response>(validate::ID, validate::DESC),
+        spec::<element::AddRequest, element::AddResponse>(element::ADD_ID, element::ADD_DESC),
+        spec::<element::UpdateRequest, element::UpdateResponse>(
+            element::UPDATE_ID,
+            element::UPDATE_DESC,
+        ),
+        spec::<element::DeleteRequest, element::DeleteResponse>(
+            element::DELETE_ID,
+            element::DELETE_DESC,
+        ),
+        spec::<element::ListRequest, element::ListResponse>(element::LIST_ID, element::LIST_DESC),
     ]
 }
 
@@ -87,6 +98,29 @@ macro_rules! register_canvas {
     }};
 }
 
+/// Same as [`register_canvas!`], for the element module's four handlers
+/// (one module, four functions — the ids and handlers are per-call).
+macro_rules! register_element {
+    ($iii:expr, $cell:expr, $store:expr, $id:ident, $desc:ident, $req:ident, $handler:ident) => {{
+        let cell = $cell.clone();
+        let store = $store.clone();
+        $iii.register_function(
+            element::$id,
+            RegisterFunction::new_async(move |req: element::$req| {
+                let cell = cell.clone();
+                let store = store.clone();
+                async move {
+                    let cfg = cell.read().await.clone();
+                    element::$handler(&store, req, &cfg)
+                        .await
+                        .map_err(Error::Handler)
+                }
+            })
+            .description(element::$desc),
+        );
+    }};
+}
+
 pub fn register_all(iii: &Arc<IIIClient>, cell: &ConfigCell, store: &Arc<Store>) {
     register_canvas!(iii, cell, store, create);
     register_canvas!(iii, cell, store, get);
@@ -95,6 +129,34 @@ pub fn register_all(iii: &Arc<IIIClient>, cell: &ConfigCell, store: &Arc<Store>)
     register_canvas!(iii, cell, store, delete);
     register_canvas!(iii, cell, store, syntax);
     register_canvas!(iii, cell, store, validate);
+    register_element!(iii, cell, store, ADD_ID, ADD_DESC, AddRequest, handle_add);
+    register_element!(
+        iii,
+        cell,
+        store,
+        UPDATE_ID,
+        UPDATE_DESC,
+        UpdateRequest,
+        handle_update
+    );
+    register_element!(
+        iii,
+        cell,
+        store,
+        DELETE_ID,
+        DELETE_DESC,
+        DeleteRequest,
+        handle_delete
+    );
+    register_element!(
+        iii,
+        cell,
+        store,
+        LIST_ID,
+        LIST_DESC,
+        ListRequest,
+        handle_list
+    );
 }
 
 #[cfg(test)]
@@ -114,6 +176,10 @@ mod tests {
                 "canvas::delete",
                 "canvas::syntax",
                 "canvas::validate",
+                "canvas::element::add",
+                "canvas::element::update",
+                "canvas::element::delete",
+                "canvas::element::list",
             ]
         );
     }

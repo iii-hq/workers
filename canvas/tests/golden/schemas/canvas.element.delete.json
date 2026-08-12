@@ -1,0 +1,53 @@
+{
+  "description": "Remove elements from a freeform canvas by element id. Unknown ids are ignored; the response reports how many were actually removed. The open console canvas streams the change live.",
+  "function_id": "canvas::element::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "element_ids": {
+        "description": "Element ids to remove.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "id": {
+        "description": "Stable 8-character canvas id (format must be freeform).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "element_ids",
+      "id"
+    ],
+    "title": "DeleteRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "element_count": {
+        "description": "Total elements left in the scene.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "id": {
+        "type": "string"
+      },
+      "removed": {
+        "description": "How many of the given ids existed and were removed.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "element_count",
+      "id",
+      "removed"
+    ],
+    "title": "DeleteResponse",
+    "type": "object"
+  }
+}

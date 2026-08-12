@@ -122,6 +122,10 @@ const freeformOptions = {
 }
 
 if (process.argv.includes('--watch')) {
+  // The vendor bundles change only when dependencies do — build them once
+  // so a fresh dist serves complete assets, then watch the page entries.
+  await esbuild.build(mermaidOptions)
+  await esbuild.build(freeformOptions)
   const ctx = await esbuild.context(pageOptions)
   await ctx.watch()
 } else {

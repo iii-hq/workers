@@ -22,6 +22,7 @@
 import './src/freeform/asset-path'
 
 import {
+  CaptureUpdateAction,
   Excalidraw,
   convertToExcalidrawElements,
   exportToBlob,
@@ -36,6 +37,7 @@ import { convertMermaidToScene } from './src/freeform/convert'
 export type { ConvertedScene } from './src/freeform/convert'
 
 export {
+  CaptureUpdateAction,
   Excalidraw,
   convertMermaidToScene,
   convertToExcalidrawElements,
