@@ -36,7 +36,7 @@ const bootConfig: Config = { ...seed, engine_url: url };
 // passed here for visibility). Absent, the engine's default namespace is used.
 const iii = registerWorker(url, {
   workerName: 'pi',
-  namespace: process.env.III_NAMESPACE,
+  namespace: process.env.III_NAMESPACE || undefined,
 });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker

@@ -67,7 +67,7 @@ def main() -> None:
         address=url,
         options=InitOptions(
             worker_name="scrapling",
-            namespace=os.environ.get("III_NAMESPACE"),
+            namespace=os.environ.get("III_NAMESPACE") or None,
         ),
     )
     handlers = create_handlers(load_config, iii=iii)

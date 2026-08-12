@@ -17,7 +17,7 @@ name = "github"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.3"
+iii-sdk = "=0.22.1-alpha.8"
 iii-console-ui = { path = "../crates/console-ui" }
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
 schemars = "0.8"

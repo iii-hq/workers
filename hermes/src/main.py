@@ -135,7 +135,7 @@ def main() -> None:
         address=url,
         options=InitOptions(
             worker_name="hermes",
-            namespace=os.environ.get("III_NAMESPACE"),
+            namespace=os.environ.get("III_NAMESPACE") or None,
             otel={"enabled": True, "service_name": "hermes"},
         ),
     )

@@ -19,12 +19,12 @@ path = "src/lib.rs"
 [dependencies]
 # 0.21.8 adds the reconnect reattach handshake. Older SDKs can lose this
 # worker's registrations when the engine reloads another worker.
-iii-sdk = "=0.22.0-alpha.2"
+iii-sdk = "=0.22.1-alpha.8"
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
 # 0.21.5 adds the live span-start push (`LiveSpanStartProcessor`), so the
 # console renders `harness::turn step` while it runs instead of on close.
-iii-helpers = "=0.22.0-alpha.2"
+iii-helpers = "=0.22.1-alpha.8"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }

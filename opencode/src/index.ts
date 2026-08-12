@@ -41,7 +41,7 @@ const bootConfig: Config = {
 // passed here for visibility). Absent, the engine's default namespace is used.
 const iii = registerWorker(url, {
   workerName: 'opencode',
-  namespace: process.env.III_NAMESPACE,
+  namespace: process.env.III_NAMESPACE || undefined,
 });
 
 try {

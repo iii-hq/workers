@@ -11,8 +11,8 @@ name = "shell"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.3"
-iii-helpers = "=0.22.0-alpha.3"
+iii-sdk = "=0.22.1-alpha.8"
+iii-helpers = "=0.22.1-alpha.8"
 iii-console-ui = { path = "../crates/console-ui" }
 schemars = { version = "0.8", features = ["uuid1"] }
 libc = "0.2"

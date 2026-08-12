@@ -44,7 +44,7 @@ const bootConfig: Config = {
 // the engine applies its default namespace.
 const iii = registerWorker(url, {
   workerName: 'claude-code',
-  namespace: process.env.III_NAMESPACE,
+  namespace: process.env.III_NAMESPACE || undefined,
 });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
