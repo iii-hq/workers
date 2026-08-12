@@ -1,9 +1,11 @@
 # eval
 
-`eval` compares two prompt or system-prompt variants under the same model and
-execution settings. It runs control and treatment through the iii harness,
-evaluates each result with an iii function, and reports correctness together
-with tokens, cost, latency, function-call, trace, and span metrics.
+`eval` primarily compares 2–5 existing root sessions live. It reads the
+current session lifecycle and `harness::metrics` values, then displays
+objective deltas against a user-selected reference. The user decides whether
+the sessions are comparable; `eval` does not score, rank, validate equivalence,
+or persist a comparison. Prompt and system-prompt experiments remain available
+as an advanced surface.
 
 ## Start an evaluation
 
@@ -39,13 +41,15 @@ immediately. Use `eval::status` for occasional progress checks and
 `eval::result` for the terminal report, or bind to the `eval::completed`
 trigger type.
 
-Three runs per variant are scheduled by default. Their order alternates by
+One run per variant is scheduled by default. Their order alternates by
 pair to reduce order bias. A candidate is eligible only when every treatment
 run passes and its pass count does not regress against control. Efficiency
 metrics are descriptive and never select a winner automatically.
 
 ## Public functions
 
+- `eval::compare-sessions` — read 2–5 root sessions concurrently and return
+  objective metrics plus arithmetic deltas against the selected reference.
 - `eval::start` — validate, persist, and enqueue an evaluation.
 - `eval::list` — list recent evaluations as lightweight summaries.
 - `eval::status` — inspect progress without loading the full report.
@@ -62,9 +66,10 @@ at-least-once.
 ## Console UI
 
 When the console worker is running, `eval` injects an **eval** page at
-`#/ext/eval-benchmarks`. The page creates prompt or system-prompt comparisons,
-tracks durable progress, restores recent reports after reload, and compares
-correctness, token, cost, latency, function-call, trace, and span metrics.
+`#/ext/eval-benchmarks`. The default **Sessions** tab lists visible root
+sessions, accepts active sessions, and renders a live matrix grouped by
+efficiency, reliability, orchestration, and context. **Prompt experiments**
+keeps the durable prompt/system-prompt workflow for advanced use.
 
 The model picker reads the live `router::models::list` catalog and falls back
 to manual model/provider entry when the catalog is unavailable. Exact-value

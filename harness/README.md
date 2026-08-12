@@ -174,6 +174,27 @@ the built-in prompt, while `override` uses it verbatim. Assembly is tested in
 [`src/prompt/tests.rs`](src/prompt/tests.rs); provider-specific prompt bodies
 live in each provider worker (`provider-*/prompts/identity.txt`).
 
+The resolved prompt is STICKY per session, like `model`/`provider` and the
+dispatch policy: a send to an existing session that names neither
+`system_prompt` nor `system_prompt_strategy` inherits the prior turn's
+resolved prompt verbatim (a prior `disabled` turn's absent prompt inherits
+too). Naming either field resolves fresh — an explicit bare
+`system_prompt_strategy` (e.g. `"enrich"`) is the reset-to-default escape
+hatch. Because the inherited string is frozen at its original resolution,
+changing `mode` on a later send without prompt fields keeps the old
+operating-mode paragraph — resend the prompt fields to re-resolve.
+
+Trusted console surfaces can preview the built-in, selected, runtime-context,
+registry-notice, and declarative worker-injection layers with
+`harness::system-prompt::get`, without making a model request. When the caller
+passes no `selected_prompt` and the session has a turn record, the preview
+reports the record's RESOLVED prompt (labeled `session (frozen at send)`) —
+the truth for what ran and what the next send inherits — instead of
+rebuilding the built-in. Static
+`pre_generate` hooks publish their exact contribution as trigger metadata
+`inject_prompt`; request-dependent hook functions and compaction are not run
+by the read-only preview and may change content when the prompt is sent.
+
 ## Custom trigger types
 
 The harness emits two async orchestration trigger types siblings and consumers
@@ -185,7 +206,7 @@ plug into in-path. Bind with the standard two-step pattern.
 | `harness::turn-started` | async event | A turn began executing (first loop step). Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
-| `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. |
+| `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it directly and skips the compatibility handler. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |
 | `harness::hook::pre-trigger` | sync hook | After the allow/deny policy passes, before the target runs. May deny, hold, or rewrite arguments. |
 | `harness::hook::post-trigger` | sync hook | After the target returns, before the result is persisted. May rewrite the result. |

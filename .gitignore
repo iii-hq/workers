@@ -64,3 +64,4 @@ docs/superpowers/
 harness-node/
 test-session-manager/
 .pnpm-store/
+workers-dev.yaml

@@ -3,6 +3,7 @@ name: codex
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: codex
 tags: [coding-agent, openai, codex-cli, headless, agent]
 description: OpenAI Codex as an iii worker; codex::run/start/stop/status/sessions::list spawn the codex CLI for headless turns, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.

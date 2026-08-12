@@ -1,14 +1,16 @@
+/**
+ * The navigation rail's session list: every live session in the order the
+ * worker lists them (oldest first, by start time). Each row carries what
+ * decides which desktop you are looking at — where it runs, the guest OS, the
+ * coordinate space, and whether the live view is streaming — plus its stop
+ * control. Selection follows the redesign's nav-row pattern: wash + accent
+ * bar + stronger id, never color alone.
+ */
+
 import { Badge, Button, StatusDot } from '@iii-dev/console-ui'
 import { cn } from '../lib/cn'
 import type { ComputerSessionInfo } from '../lib/computer'
 import { formatAge, shortEndpoint } from '../lib/format'
-
-/**
- * The left rail: every live session in the order the worker lists them
- * (oldest first, by start time). Each row carries what
- * decides which desktop you are looking at — where it runs, the guest OS, the
- * coordinate space, and whether the live view is streaming.
- */
 
 interface SessionRailProps {
   sessions: ComputerSessionInfo[]
@@ -28,24 +30,39 @@ export function SessionRail({
   onStop,
 }: SessionRailProps) {
   if (sessions.length === 0) {
+    if (loading) {
+      return (
+        <div className="cp-ui-rail-skel" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="cp-ui-skel-row">
+              <span className={`bar w${[60, 75, 40][i]}`} />
+              <span className={`bar w${[90, 85, 70][i]}`} />
+            </div>
+          ))}
+        </div>
+      )
+    }
     return (
-      <p className="cp-ui-rail-empty">
-        {loading ? 'loading sessions...' : 'no sessions yet'}
-      </p>
+      <div className="cp-ui-rail-empty">
+        <p>No sessions yet.</p>
+        <p className="dim">
+          Desktops started here or from chat appear in this list live.
+        </p>
+      </div>
     )
   }
 
   return (
-    <ul className="cp-ui-rail-list">
+    <ul className="cp-ui-nav-list">
       {sessions.map((session) => {
         const selected = session.session_id === selectedId
         return (
           <li key={session.session_id}>
-            <div className={cn('cp-ui-rail-row', selected && 'is-selected')}>
+            <div className={cn('cp-ui-rail-row', selected && 'active')}>
               <button
                 type="button"
                 className="cp-ui-rail-pick"
-                aria-current={selected}
+                aria-current={selected ? 'true' : undefined}
                 onClick={() => onSelect(session.session_id)}
               >
                 <span className="cp-ui-rail-head">

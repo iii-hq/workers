@@ -8,4 +8,5 @@ rules:
   - '!provider::llamacpp::stream'
   - '!provider::llamacpp::refresh_models'
   - '!provider::llamacpp::on_router_ready'
+  - '!provider::llamacpp::count_tokens'
   - '!provider::llamacpp::embed'

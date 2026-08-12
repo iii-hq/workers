@@ -3,6 +3,16 @@ import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import type { VisualizationSpan } from '../lib/traceTransform'
 
+/**
+ * No `redact` prop, deliberately: this tab renders `link.trace_id`/
+ * `link.span_id` (truncated OTel identifiers, not secrets) and an
+ * attribute COUNT badge — never a link attribute's actual value. There is
+ * no code path here that could print a payload-derived string, so there is
+ * nothing for a redactor to intercept. If a future change starts rendering
+ * `link.attributes` values, add `redact` then — see
+ * `SpanPanel.redaction-coverage.test.ts`, which enforces that every tab has
+ * either a `redact` wiring or a written reason like this one.
+ */
 interface SpanLinksTabProps {
   span: VisualizationSpan
   onNavigateToTrace?: (traceId: string) => void
@@ -61,7 +71,7 @@ export function SpanLinksTab({
             key={id}
             type="button"
             onClick={handleClick}
-            className="w-full flex items-center gap-2 px-3 py-2 bg-bg border border-rule hover:bg-panel transition-colors text-left group"
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-sm bg-surface hover:bg-surface-hover transition-colors text-left group"
           >
             <ExternalLink className="w-3 h-3 text-ink-faint group-hover:text-accent flex-shrink-0" />
             <div className="flex-1 min-w-0">
@@ -73,7 +83,7 @@ export function SpanLinksTab({
               </div>
             </div>
             {attrCount > 0 && (
-              <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint border border-rule bg-panel px-1.5 py-0.5 flex-shrink-0 tabular-nums">
+              <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint rounded-xs bg-paper-2 px-1.5 py-0.5 flex-shrink-0 tabular-nums">
                 +{attrCount} attrs
               </span>
             )}

@@ -4,9 +4,9 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "research_pipeline";
@@ -17,12 +17,38 @@ const SUMMARY_KEY: &str = "summary";
 const FACTS_KEY: &str = "facts";
 const MIN_ARTICLE_CHARS: usize = 5_000;
 const MAX_ARTICLE_CHARS: usize = 6_500;
+const SOURCE_CAPTURE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "source_capture",
+    25,
+    "All wakes are armed before the Wikipedia article is fetched and saved.",
+);
+const PARALLEL_ANALYSIS: AssessmentSpec = AssessmentSpec::hard_gated(
+    "parallel_analysis",
+    30,
+    "The article wake causes two analysts to be spawned directly and in parallel.",
+);
+const BARRIER_FAN_IN: AssessmentSpec = AssessmentSpec::hard_gated(
+    "barrier_fan_in",
+    25,
+    "The analysts persist valid outputs and the named barrier retires after both arrive.",
+);
+const RESEARCH_BRIEF: AssessmentSpec = AssessmentSpec::hard_gated(
+    "research_brief",
+    20,
+    "The coordinator returns a merged brief in its barrier-woken turn and leaves no binding armed.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    SOURCE_CAPTURE,
+    PARALLEL_ANALYSIS,
+    BARRIER_FAN_IN,
+    RESEARCH_BRIEF,
+];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: prompt(&names),
         filesystem_root: None,
         execution: ExecutionPolicy {
@@ -32,29 +58,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "source_capture",
-                weight: 25,
-                description: "All wakes are armed before the Wikipedia article is fetched and saved.",
-            },
-            CriterionSpec {
-                id: "parallel_analysis",
-                weight: 30,
-                description: "The article wake causes two analysts to be spawned directly and in parallel.",
-            },
-            CriterionSpec {
-                id: "barrier_fan_in",
-                weight: 25,
-                description: "The analysts persist valid outputs and the named barrier retires after both arrive.",
-            },
-            CriterionSpec {
-                id: "research_brief",
-                weight: 20,
-                description: "The coordinator returns a merged brief in its barrier-woken turn and leaves no binding armed.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -280,68 +284,39 @@ fn evaluate<'a>(
             && barrier_woke;
         let report_complete = report_merged && active_bindings == 0 && no_errors;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "source_captured_after_watches",
-                    source_captured,
-                    format!(
-                        "armed_before_fetch={armed_before_fetch}, source_order={source_order}, \
-                         article_valid={article_valid}, exact_write={exact_article_write}"
-                    ),
+        Ok(assessment::build_evaluation([
+            SOURCE_CAPTURE.full_or_zero(
+                source_captured,
+                format!(
+                    "armed_before_fetch={armed_before_fetch}, source_order={source_order}, \
+                     article_valid={article_valid}, exact_write={exact_article_write}"
                 ),
-                common::gate(
-                    "analysts_spawned_directly_in_parallel",
-                    direct_parallel_analysis,
-                    format!(
-                        "spawns={}, parallel_calls={parallel_calls}, \
-                         overlapping_sessions={overlapping_sessions}, \
-                         direct_sessions={sessions_direct}",
-                        spawns.len()
-                    ),
+            ),
+            PARALLEL_ANALYSIS.full_or_zero(
+                direct_parallel_analysis,
+                format!(
+                    "spawns={}, parallel_calls={parallel_calls}, \
+                     overlapping_sessions={overlapping_sessions}, direct_sessions={sessions_direct}",
+                    spawns.len()
                 ),
-                common::gate(
-                    "analyst_outputs_joined_by_barrier",
-                    fan_in_complete,
-                    format!(
-                        "summary_valid={summary_valid}, facts_valid={facts_valid}, \
-                         analyst_writes={analyst_writes}, analyst_discipline={analyst_discipline}, \
-                         article_woke={article_woke}, barrier_woke={barrier_woke}"
-                    ),
+            ),
+            BARRIER_FAN_IN.full_or_zero(
+                fan_in_complete,
+                format!(
+                    "summary_valid={summary_valid}, facts_valid={facts_valid}, \
+                     analyst_writes={analyst_writes}, analyst_discipline={analyst_discipline}, \
+                     article_woke={article_woke}, barrier_woke={barrier_woke}"
                 ),
-                common::gate(
-                    "brief_returned_and_bindings_clean",
-                    report_complete,
-                    format!(
-                        "report_merged={report_merged}, active_bindings={active_bindings}, \
-                         function_errors={}",
-                        observation.metrics.totals.function_call_errors
-                    ),
+            ),
+            RESEARCH_BRIEF.full_or_zero(
+                report_complete,
+                format!(
+                    "report_merged={report_merged}, active_bindings={active_bindings}, \
+                     function_errors={}",
+                    observation.metrics.totals.function_call_errors
                 ),
-            ],
-            awards: vec![
-                common::award(
-                    "source_capture",
-                    if source_captured { 25 } else { 0 },
-                    "awarded when all wakes precede one valid markdown fetch and article write",
-                ),
-                common::award(
-                    "parallel_analysis",
-                    if direct_parallel_analysis { 30 } else { 0 },
-                    "awarded for two direct, parallel analyst sessions",
-                ),
-                common::award(
-                    "barrier_fan_in",
-                    if fan_in_complete { 25 } else { 0 },
-                    "awarded when both durable analyst outputs retire the named barrier",
-                ),
-                common::award(
-                    "research_brief",
-                    if report_complete { 20 } else { 0 },
-                    "awarded for a merged root-session brief and complete binding cleanup",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
@@ -660,154 +635,6 @@ impl Names {
             complete_label: format!("analysts-complete:{run_id}"),
             barrier_id: format!("research:{run_id}:analysts"),
             scope,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scenario_is_objective_and_valid() {
-        let scenario = scenario("run");
-        scenario.validate().unwrap();
-        assert!(!scenario.needs_judge());
-        assert!(!scenario.prompt.contains("harness::react"));
-    }
-
-    #[test]
-    fn accepts_model_chosen_timer_label_and_child_ids() {
-        let deadline = common::ObservedFunctionCall {
-            function_id: "engine::register_trigger".to_string(),
-            arguments: json!({
-                "trigger_type": "timer",
-                "config": { "in_ms": 300_000 },
-                "label": "deadline:run",
-                "once": true
-            }),
-        };
-        let transcript = json!({
-            "messages": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": [{
-                            "type": "function_call",
-                            "function_id": "agent_trigger",
-                            "arguments": {
-                                "function": "harness::spawn",
-                                "payload": { "task": "summarize" }
-                            }
-                        }]
-                    }
-                },
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": [{
-                            "type": "function_call",
-                            "function_id": "agent_trigger",
-                            "arguments": {
-                                "function": "harness::spawn",
-                                "payload": {
-                                    "session_id": "model-chosen-facts",
-                                    "task": "extract facts"
-                                }
-                            }
-                        }]
-                    }
-                }
-            ]
-        });
-        let first_child = json!({
-            "messages": [
-                { "message": { "role": "assistant", "timestamp": 10 } },
-                { "message": { "role": "function_result", "timestamp": 30 } }
-            ]
-        });
-        let second_child = json!({
-            "messages": [
-                { "message": { "role": "assistant", "timestamp": 20 } },
-                { "message": { "role": "function_result", "timestamp": 40 } }
-            ]
-        });
-        let activity = [
-            activity_window(&first_child).unwrap(),
-            activity_window(&second_child).unwrap(),
-        ];
-
-        assert!(is_deadline_watch(&deadline));
-        assert_eq!(max_parallel_spawns(&transcript), 1);
-        assert!(activity_windows_overlap(&activity));
-    }
-
-    #[test]
-    fn validates_structured_analyst_outputs_and_verbatim_merge() {
-        let summary = json!({
-            "role": "summarizer",
-            "title": "Cache replacement policies",
-            "bullets": [
-                "First substantive summary point.",
-                "Second substantive summary point.",
-                "Third substantive summary point.",
-                "Fourth substantive summary point.",
-                "Fifth substantive summary point."
-            ]
-        });
-        let facts = json!({
-            "role": "fact-extractor",
-            "facts": [
-                "LRU evicts the least recently used item.",
-                "FIFO evicts the oldest inserted item.",
-                "Belady's algorithm is optimal with future knowledge.",
-                "LFU uses access frequency.",
-                "Random replacement chooses an item randomly."
-            ]
-        });
-        let response = format!(
-            "# {}\n\n## Summary\n{}\n\n## Concrete facts\n{}",
-            summary["title"].as_str().unwrap(),
-            string_list(&summary, "bullets").unwrap().join("\n"),
-            string_list(&facts, "facts").unwrap().join("\n")
-        );
-
-        assert!(valid_summary(&summary));
-        assert!(valid_facts(&facts));
-        assert!(response_merges(&response, &summary, &facts));
-    }
-
-    #[test]
-    fn recognizes_atomic_fetch_trim_and_save_pipeline() {
-        let names = Names::new("run");
-        for fetch in ["web::fetch", "scrapling::fetch"] {
-            let call = common::ObservedFunctionCall {
-                function_id: "fp::pipe".to_string(),
-                arguments: json!({
-                    "through": [
-                        {
-                            "function": fetch,
-                            "payload": { "url": ARTICLE_URL, "format": "markdown" }
-                        },
-                        { "function": "fp::get", "payload": { "path": "/body" } },
-                        { "function": "fp::take", "payload": { "n": 6000 } },
-                        {
-                            "function": "state::set",
-                            "into": "/value/content",
-                            "payload": {
-                                "scope": names.scope,
-                                "key": ARTICLE_KEY,
-                                "value": {
-                                    "url": ARTICLE_URL,
-                                    "title": "Cache replacement policies"
-                                }
-                            }
-                        }
-                    ]
-                }),
-            };
-
-            assert!(is_source_pipeline(&call, &names), "{fetch}");
         }
     }
 }

@@ -361,6 +361,7 @@ impl TurnEvents {
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
         terminal: bool,
+        context: Option<&crate::context_snapshot::ContextSnapshotV1>,
     ) {
         tracing::info!(
             session_id,
@@ -396,6 +397,11 @@ impl TurnEvents {
         }
         if let Some(dp) = display_parent {
             payload["parent_session_id"] = Value::String(dp.to_string());
+        }
+        // The latest generation's context accounting (categories, budget,
+        // usage) so live consumers never re-walk the transcript for it.
+        if let Some(snapshot) = context {
+            payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
         self.fan_out(
             &self.completed,

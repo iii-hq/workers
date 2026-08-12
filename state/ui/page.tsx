@@ -8,7 +8,9 @@
  * `setup(host)` composes the worker's three console contributions, one
  * module each:
  *
- * - src/page/                    — the state-manager page (#/ext/state-manager)
+ * - src/page/                    — the state-manager page (#/ext/state-manager):
+ *                                  scopes × keys columns over a Monaco JSON
+ *                                  value editor, drill-in flow when narrow
  * - src/configuration/           — custom form for the `state` configuration entry
  * - src/function-trigger-message/ — how state::set / state::get triggers render
  *
@@ -25,7 +27,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'state-manager',
     title: 'state',
-    render: () => <StateManagerPage host={host} />,
+    render: (props) => <StateManagerPage host={host} {...props} />,
   })
 
   host.functionTriggers.register(createStateTriggerRenderer(host))

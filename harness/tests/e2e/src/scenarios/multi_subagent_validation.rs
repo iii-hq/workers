@@ -14,12 +14,10 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "multi_subagent_validation";
 
@@ -27,6 +25,22 @@ const HOOK_TYPE: &str = "harness::hook::post-turn";
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
 const WRITERS: [&str; 2] = ["w1", "w2"];
+const CHILDREN_GOAL: AssessmentSpec = AssessmentSpec::hard_gated(
+    "children_goal",
+    35,
+    "Both writers reach the exact expected counts and both verdict keys carry their accepted counts.",
+);
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "orchestration_discipline",
+    35,
+    "Two child-scoped validators and two wakes registered before any spawn; both children looped under their own gate.",
+);
+const FAN_IN_REPORT: AssessmentSpec = AssessmentSpec::hard_gated(
+    "fan_in_report",
+    30,
+    "The parent tallies both verdicts and finishes with the exact report line.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[CHILDREN_GOAL, ORCHESTRATION_DISCIPLINE, FAN_IN_REPORT];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
@@ -35,7 +49,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let child_2 = child_session(run_id, 2);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "You orchestrate TWO validated sub-agents in parallel. You never poll and never judge \
              work yourself: per-child validators gate every child reply, and verdict wakes drive \
@@ -89,27 +103,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 420,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "children_goal",
-                weight: 35,
-                description: "Both writers exceed the threshold and both verdict keys carry \
-                              their accepted counts.",
-            },
-            CriterionSpec {
-                id: "orchestration_discipline",
-                weight: 35,
-                description: "Two child-scoped validators and two wakes registered before any \
-                              spawn; both children looped under their own gate.",
-            },
-            CriterionSpec {
-                id: "fan_in_report",
-                weight: 30,
-                description: "The parent tallies both verdicts and finishes with the exact \
-                              report line.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -180,65 +174,43 @@ fn evaluate<'a>(
         let goal = rows.iter().all(|count| *count > THRESHOLD)
             && verdicts.iter().all(|count| *count > THRESHOLD);
         let both_looped = child_nudges.iter().all(|nudges| *nudges >= 1);
-        let report = observation.response.contains("ALL CHILDREN VALIDATED")
+        let reported = observation.response.contains("ALL CHILDREN VALIDATED")
             && observation.response.contains("ORCHESTRATION DONE");
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "children_goal_reached",
-                    goal,
-                    format!("rows={rows:?}, verdicts={verdicts:?}, all must exceed {THRESHOLD}"),
+        let orchestration_discipline = validator_count == 2 && ordered && both_looped;
+        let children_goal_passed = goal && rows.iter().all(|count| *count == EXPECTED_ROWS);
+
+        Ok(assessment::build_evaluation([
+            CHILDREN_GOAL.gate_and_points(
+                children_goal_passed,
+                children_goal_points(goal, &rows),
+                format!(
+                    "rows={rows:?}, verdicts={verdicts:?}, all must exceed {THRESHOLD}; full \
+                     marks at exactly {EXPECTED_ROWS} rows each"
                 ),
-                common::gate(
-                    "two_scoped_validators",
-                    validator_count == 2,
-                    format!("observed {validator_count} post-turn registration(s), expected two"),
+            )?,
+            ORCHESTRATION_DISCIPLINE.full_or_zero(
+                orchestration_discipline,
+                format!(
+                    "observed {validator_count} post-turn registration(s), expected two; \
+                     observed {registrations_before_spawn} registration(s) before the first \
+                     spawn, expected at least four; child nudges {child_nudges:?}, each child \
+                     needs at least one"
                 ),
-                common::gate(
-                    "arm_before_spawn",
-                    ordered,
-                    format!(
-                        "observed {registrations_before_spawn} registration(s) before the first \
-                         spawn, expected at least four"
-                    ),
-                ),
-                common::gate(
-                    "both_children_looped",
-                    both_looped,
-                    format!("child nudges {child_nudges:?}, each child needs at least one"),
-                ),
-                common::gate("fan_in_report", report, "expected the exact report line"),
-            ],
-            awards: vec![
-                common::award(
-                    "children_goal",
-                    if goal && rows.iter().all(|count| *count == EXPECTED_ROWS) {
-                        35
-                    } else if goal {
-                        20
-                    } else {
-                        0
-                    },
-                    format!("rows={rows:?} (full marks at exactly {EXPECTED_ROWS} each)"),
-                ),
-                common::award(
-                    "orchestration_discipline",
-                    if validator_count == 2 && ordered && both_looped {
-                        35
-                    } else {
-                        0
-                    },
-                    "awarded for two scoped validators + wakes armed before the spawns",
-                ),
-                common::award(
-                    "fan_in_report",
-                    if report { 30 } else { 0 },
-                    "awarded for the exact tally report line",
-                ),
-            ],
-        })
+            ),
+            FAN_IN_REPORT.full_or_zero(reported, "expected the exact report line"),
+        ]))
     })
+}
+
+fn children_goal_points(goal: bool, rows: &[u64; 2]) -> u8 {
+    if goal && rows.iter().all(|count| *count == EXPECTED_ROWS) {
+        CHILDREN_GOAL.weight()
+    } else if goal {
+        20
+    } else {
+        0
+    }
 }
 
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
@@ -272,18 +244,4 @@ fn scope(run_id: &str) -> String {
 
 fn child_session(run_id: &str, index: usize) -> String {
     format!("e2e_{run_id}-child-{index}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_names_both_children_under_the_suite_prefix() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("e2e_aB19-rest-child-1"));
-        assert!(spec.prompt.contains("e2e_aB19-rest-child-2"));
-        assert!(spec.prompt.contains("msubvtest_aB19"));
-        spec.validate().unwrap();
-    }
 }

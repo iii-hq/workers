@@ -8,8 +8,11 @@ backend.
 
 Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`:
 `provider::openai-codex::stream` (Responses SSE → `AssistantMessageEvent` frames
-into a router-owned channel) and `provider::openai-codex::refresh_models`
-(fetches and reconciles the authenticated Codex model catalog).
+into a router-owned channel), `provider::openai-codex::refresh_models`
+(fetches and reconciles the authenticated Codex model catalog), and
+`provider::openai-codex::count_tokens` (local prompt token estimation with
+the tiktoken tokenizers behind `router::count_tokens`; never runs the model,
+costs nothing, and needs no network).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
 > personal ChatGPT subscription through the undocumented

@@ -1,0 +1,13 @@
+iii: v1
+name: provider-deepseek
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: provider-deepseek
+tags: [llm, deepseek, chat-completions, provider]
+description: DeepSeek Chat Completions provider worker; implements provider::deepseek::stream and provider::deepseek::refresh_models behind llm-router.
+
+dependencies:
+  state: "^0.22.0"
+  llm-router: "^1.0.0"

@@ -13,8 +13,10 @@ import type { LiveFrame } from './useLiveFrames'
  * surface. Mouse and keyboard map from the rendered image rect to
  * page-viewport space, so the mapping survives any pane size: clicks, double
  * clicks, right clicks, wheel scroll, and (while the surface is focused)
- * typing and special keys all forward as `browser::act`. Events in the
- * letterbox margin outside the image do nothing. In pick mode the page is in
+ * typing and special keys all forward as `browser::act` — keyboard
+ * forwarding wins over page shortcuts, and Shift+Escape is the one reserved
+ * way out of the surface. Events in the letterbox margin outside the image
+ * do nothing. In pick mode the page is in
  * inspect mode: the forwarded click resolves the pick, and a throttled
  * `browser::pick::hint` drives the client-drawn hover highlight over the
  * image.
@@ -197,6 +199,15 @@ export function Viewport({
     // Pick mode owns the keyboard: Escape bubbles to the page-level
     // listener that exits pick mode; nothing forwards to the page.
     if (picking) return
+    // The page wants Tab and Escape, which is exactly what a keyboard user
+    // needs to leave with. Shift+Escape is reserved as the way out and
+    // never reaches the page.
+    if (e.key === 'Escape' && e.shiftKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      surfaceRef.current?.blur()
+      return
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return
     if (PRESS_KEYS.has(e.key)) {
       e.preventDefault()
@@ -296,9 +307,10 @@ export function Viewport({
       tabIndex={0}
       aria-label={
         picking
-          ? 'browser viewport, pick mode: click an element to send it to chat'
+          ? 'browser viewport, pick mode: click an element to copy it to the clipboard'
           : 'browser viewport: clicks, scrolling, and typing forward to the page'
       }
+      onPointerDown={() => surfaceRef.current?.focus()}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}

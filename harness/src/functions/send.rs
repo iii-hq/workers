@@ -44,8 +44,11 @@ pub struct SendOptions {
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
     /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
-    #[serde(default)]
-    pub system_prompt_strategy: SystemPromptStrategy,
+    /// When BOTH prompt fields are omitted on an existing session, the prior
+    /// turn's resolved prompt is inherited; naming a strategy (even bare)
+    /// resolves fresh — the reset-to-default escape hatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_strategy: Option<SystemPromptStrategy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,7 +205,10 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     // The provider identity prompt is fetched once here and frozen with them.
     // `provider_identity_prompt: false` skips the fetch entirely — `None` is
     // what makes `resolve_system_prompt` fall back to the embedded default.
-    let identity = if cfg.provider_identity_prompt {
+    // A send that will inherit the prior turn's prompt also skips it: the
+    // fetched identity would be resolved into a prompt we then overwrite.
+    let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
+    let identity = if cfg.provider_identity_prompt && !inherits_prompt {
         deps.router()
             .await
             .system_prompt_get(provider.as_deref())
@@ -216,6 +222,9 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         &mut options,
         prev.as_ref().and_then(|p| p.options.functions.as_ref()),
     );
+    if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
+        inherit_prior_system_prompt(&mut options, &prev.options);
+    }
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
@@ -576,7 +585,7 @@ fn build_options(
         provider,
         system_prompt: prompt::resolve_system_prompt(
             opts.system_prompt,
-            opts.system_prompt_strategy,
+            opts.system_prompt_strategy.unwrap_or_default(),
             opts.mode,
             identity,
         ),
@@ -629,6 +638,22 @@ fn inherit_prior_functions(
         return;
     }
     options.functions = clamp_for_mode(cfg, options.mode, prev_functions.cloned());
+}
+
+/// True when the send names neither `system_prompt` nor
+/// `system_prompt_strategy` — the condition under which an existing session
+/// inherits the prior turn's prompt instead of resolving fresh.
+fn prompt_fields_omitted(opts: Option<&SendOptions>) -> bool {
+    opts.is_none_or(|o| o.system_prompt.is_none() && o.system_prompt_strategy.is_none())
+}
+
+/// A send that names no prompt fields inherits the prior turn's RESOLVED
+/// system prompt, the same way model/provider/functions are inherited. A
+/// prior `disabled` turn's `None` inherits too — disabled stays disabled.
+/// Any explicit prompt field resolves fresh; a bare `system_prompt_strategy`
+/// is the reset-to-default escape hatch.
+fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
+    options.system_prompt = prev.system_prompt.clone();
 }
 
 /// Default a BRAND-NEW session's working directory (MOT-3897): when the very
@@ -748,6 +773,7 @@ pub(crate) async fn seed_new(
         parent: lineage.parent.clone(),
         display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
+        context_snapshot: None,
         result: None,
         result_error: None,
         validation_retries: 0,
@@ -910,7 +936,7 @@ mod tests {
             session: None,
             options: Some(SendOptions {
                 system_prompt: Some("custom".into()),
-                system_prompt_strategy: SystemPromptStrategy::Override,
+                system_prompt_strategy: Some(SystemPromptStrategy::Override),
                 mode: Some(Mode::Ask),
                 ..Default::default()
             }),
@@ -977,6 +1003,49 @@ mod tests {
         let mut options = options_with(Some(Mode::Ask), Some(strip));
         inherit_prior_functions(&cfg, &mut options, Some(&broad));
         assert!(!policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::get"));
+    }
+
+    #[test]
+    fn send_without_prompt_fields_inherits_prior_resolved_prompt() {
+        // Omitting both prompt fields is the inherit condition…
+        assert!(prompt_fields_omitted(None));
+        assert!(prompt_fields_omitted(Some(&SendOptions::default())));
+
+        // …and inheritance copies the prior turn's RESOLVED prompt verbatim,
+        // replacing the built-in prompt build_options resolved.
+        let mut options = bare_options();
+        let mut prev = options_with(None, None);
+        prev.system_prompt = Some("frozen custom prompt".into());
+        inherit_prior_system_prompt(&mut options, &prev);
+        assert_eq!(
+            options.system_prompt.as_deref(),
+            Some("frozen custom prompt")
+        );
+
+        // A prior `disabled` turn's None inherits too — disabled stays disabled.
+        let mut options = bare_options();
+        assert!(options.system_prompt.is_some());
+        inherit_prior_system_prompt(&mut options, &options_with(None, None));
+        assert_eq!(options.system_prompt, None);
+    }
+
+    #[test]
+    fn explicit_prompt_fields_block_inheritance() {
+        // A named prompt on a later send wins over the prior turn's.
+        let with_prompt = SendOptions {
+            system_prompt: Some("p".into()),
+            ..Default::default()
+        };
+        assert!(!prompt_fields_omitted(Some(&with_prompt)));
+
+        // A bare strategy is the reset-to-default escape hatch: it blocks
+        // inheritance, so build_options' fresh resolve (built-in prompt for
+        // `enrich`, none for `disabled`) stands.
+        let bare_strategy = SendOptions {
+            system_prompt_strategy: Some(SystemPromptStrategy::Enrich),
+            ..Default::default()
+        };
+        assert!(!prompt_fields_omitted(Some(&bare_strategy)));
     }
 
     #[test]
@@ -1052,7 +1121,7 @@ mod tests {
             session: None,
             options: Some(SendOptions {
                 system_prompt: Some("Speak only in haiku.".into()),
-                system_prompt_strategy: SystemPromptStrategy::Enrich,
+                system_prompt_strategy: Some(SystemPromptStrategy::Enrich),
                 ..Default::default()
             }),
         };

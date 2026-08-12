@@ -311,6 +311,15 @@ export const registerTriggerRequestSchema = z.object({
   metadata: z.unknown().optional(),
   label: z.string().optional(),
   once: z.boolean().optional(),
+  /** Gating predicates: each fire runs these before delivery. */
+  conditions: z
+    .array(
+      z.object({
+        function_id: z.string().optional(),
+        config: z.unknown().optional(),
+      }),
+    )
+    .optional(),
   target: z
     .object({
       function_id: z.string(),

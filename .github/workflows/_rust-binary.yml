@@ -4,10 +4,9 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
-        required: false
+        description: 'Exact release tag to build'
+        required: true
         type: string
-        default: ''
       bin_name:
         description: 'Binary name (e.g., image-resize)'
         required: true
@@ -20,36 +19,14 @@ on:
         description: 'Git tag for the GitHub Release (e.g., image-resize/v1.0.0)'
         required: true
         type: string
-      is_prerelease:
-        description: 'Mark as pre-release'
-        required: false
-        type: boolean
-        default: false
-      skip_create_release:
-        description: 'Skip GH release creation (assumes release already exists for the tag)'
-        required: false
-        type: boolean
-        default: false
-      dry_run:
-        description: 'Build binaries without uploading or creating releases'
-        required: false
-        type: boolean
-        default: false
       targets:
-        description: 'Optional comma-separated subset of build targets (default: all). Use to mark a worker as unix-only, host-only, etc.'
-        required: false
+        description: 'Exact comma-separated target subset; empty means all supported targets'
+        required: true
         type: string
-        default: ''
-      version_override:
-        description: 'When set, rewrite [package].version in manifest_path to this value before building. Used by the harness bundle to force coordinated versions across deps.'
-        required: false
-        type: string
-        default: ''
       web_bundle:
         description: "Pre-build the SPA in <worker>/web/ (Node + pnpm) and ship the dist artifact to every matrix shard before `cargo build`. Required when the worker's build.rs embeds a Vite-built bundle (e.g. console)."
-        required: false
+        required: true
         type: boolean
-        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,27 +34,6 @@ env:
   CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
 
 jobs:
-  pre-build:
-    name: Pre-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Create GitHub Release
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.tag_name }}
-          name: ${{ inputs.bin_name }} ${{ inputs.tag_name }}
-          draft: false
-          prerelease: ${{ inputs.is_prerelease }}
-          generate_release_notes: true
-
   matrix:
     name: Compute build matrix
     runs-on: ubuntu-latest
@@ -151,21 +107,31 @@ jobs:
           # A worker can have a web/ embedded SPA, a ui/ injected bundle, or
           # both. Keep the relative paths so the download step can restore
           # them exactly where each build.rs expects them.
-          frontends=()
+          bundles=()
           if [[ -f "$worker/web/package.json" ]]; then
-            frontends+=(web)
+            bundles+=("$worker/web")
           fi
           if [[ -f "$worker/ui/package.json" ]]; then
-            frontends+=(ui)
+            bundles+=("$worker/ui")
           fi
-          if [[ ${#frontends[@]} -eq 0 ]]; then
+          # Path dependencies compile inside this release too, and any of them
+          # with its own injected UI runs the same build.rs contract: under
+          # SKIP_UI_BUILD the dist/ must already exist. Missing this is exactly
+          # how eval/v0.2.0-experimental died — eval depends on the harness
+          # crate, whose ui/dist nobody had pre-built.
+          while IFS= read -r dep; do
+            if [[ -f "$dep/ui/package.json" ]]; then
+              bundles+=("$dep/ui")
+            fi
+          done < <(grep -oE 'path *= *"\.\./[A-Za-z0-9_-]+"' "$worker/Cargo.toml" | sed 's|.*"\.\./||; s|"||' | sort -u)
+          if [[ ${#bundles[@]} -eq 0 ]]; then
             echo "::error::$worker has neither web/package.json nor ui/package.json; web_bundle=true requires one"
             exit 1
           fi
-          frontend_csv=$(IFS=,; echo "${frontends[*]}")
+          bundle_csv=$(IFS=,; echo "${bundles[*]}")
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "frontends=$frontend_csv" >> "$GITHUB_OUTPUT"
-          echo "::notice::pre-building frontend bundle(s) in $worker/$frontend_csv"
+          echo "frontends=$bundle_csv" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building frontend bundle(s): $bundle_csv"
 
       # `pnpm/action-setup` must run before `setup-node` so that
       # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
@@ -184,14 +150,13 @@ jobs:
 
       - name: Build frontend bundles
         env:
-          WORKER: ${{ steps.dirs.outputs.worker }}
           FRONTENDS: ${{ steps.dirs.outputs.frontends }}
         run: |
           set -euo pipefail
-          IFS=, read -ra frontends <<< "$FRONTENDS"
-          for frontend in "${frontends[@]}"; do
+          IFS=, read -ra bundles <<< "$FRONTENDS"
+          for bundle in "${bundles[@]}"; do
             (
-              cd "$WORKER/$frontend"
+              cd "$bundle"
               pnpm install --frozen-lockfile
               pnpm build
             )
@@ -199,29 +164,31 @@ jobs:
 
       - name: Stage frontend bundles
         env:
-          WORKER: ${{ steps.dirs.outputs.worker }}
           FRONTENDS: ${{ steps.dirs.outputs.frontends }}
         run: |
           set -euo pipefail
-          IFS=, read -ra frontends <<< "$FRONTENDS"
-          stage=".release-frontend-bundle/$WORKER"
-          for frontend in "${frontends[@]}"; do
-            test -d "$WORKER/$frontend/dist"
-            mkdir -p "$stage/$frontend"
-            cp -a "$WORKER/$frontend/dist" "$stage/$frontend/"
+          IFS=, read -ra bundles <<< "$FRONTENDS"
+          # Repo-relative staging so the restore lands every dist/ exactly
+          # where its crate's build.rs expects it — including dependency crates
+          # outside the released worker's directory.
+          stage="release-frontend-bundle"
+          for bundle in "${bundles[@]}"; do
+            test -d "$bundle/dist"
+            mkdir -p "$stage/$bundle"
+            cp -a "$bundle/dist" "$stage/$bundle/"
           done
 
       - name: Upload frontend bundles
         uses: actions/upload-artifact@v6
         with:
           name: frontend-bundles
-          path: .release-frontend-bundle/${{ steps.dirs.outputs.worker }}/
+          path: release-frontend-bundle/
           if-no-files-found: error
           retention-days: 1
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [pre-build, matrix, web-build]
+    needs: [matrix, web-build]
     # `web-build` is gated on `inputs.web_bundle`, so it is skipped for any
     # worker without a `web/package.json` (database, shell, mcp, …). GitHub
     # Actions' default `success()` gate treats a skipped need as "not
@@ -284,42 +251,6 @@ jobs:
           # found or saved, so every build of every target ships cold.
           workspaces: ${{ steps.cache_workdir.outputs.dir }}
 
-      - name: Rewrite [package].version (bundle coordinated release)
-        if: inputs.version_override != ''
-        shell: bash
-        env:
-          MANIFEST: ${{ inputs.manifest_path }}
-          VERSION: ${{ inputs.version_override }}
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, re, sys
-          path = pathlib.Path(os.environ["MANIFEST"])
-          version = os.environ["VERSION"]
-          if not path.is_file():
-              print(f"::error::manifest not found: {path}")
-              sys.exit(1)
-          lines = path.read_text().splitlines(keepends=True)
-          out, in_package, rewrote = [], False, False
-          for line in lines:
-              stripped = line.strip()
-              if stripped.startswith("["):
-                  in_package = stripped == "[package]"
-                  out.append(line)
-                  continue
-              if in_package and not rewrote:
-                  m = re.match(r'(\s*version\s*=\s*)"[^"]*"(.*)', line)
-                  if m:
-                      out.append(f'{m.group(1)}"{version}"{m.group(2)}\n')
-                      rewrote = True
-                      continue
-              out.append(line)
-          if not rewrote:
-              print(f"::error::[package].version not found in {path}")
-              sys.exit(1)
-          path.write_text("".join(out))
-          print(f"::notice::set [package].version to {version} in {path}")
-          PY
-
       # When `web_bundle: true`, every frontend bundle was built by the
       # `web-build` job. Restore their original web/dist and ui/dist paths,
       # then signal build.rs to skip its own pnpm invocation.
@@ -339,7 +270,9 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: frontend-bundles
-          path: ${{ steps.dirs.outputs.worker }}/
+          # Repo-rooted: the artifact carries repo-relative paths (worker and
+          # any path-dependency crates with their own ui/dist).
+          path: ./
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
@@ -361,4 +294,4 @@ jobs:
           checksum: sha256
           manifest-path: ${{ inputs.manifest_path }}
           token: ${{ github.token }}
-          dry-run: ${{ inputs.dry_run }}
+          dry-run: false

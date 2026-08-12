@@ -50,13 +50,46 @@ export interface ExtensionIii {
 
 /* ── slot contracts ─────────────────────────────────────────────────── */
 
+/**
+ * Where the workspace pane hosting the page sits. `'right'` only for the
+ * rightmost column of a multi-column tab — a single-column tab is `'left'`,
+ * so pages can treat `'left'` as the default orientation.
+ */
+export type PanelSide = 'left' | 'right'
+
+/** Props the host passes to every registered page render component. */
+export interface PageRenderProps {
+  panelSide: PanelSide
+  /**
+   * Stable id of the workspace tab whose pane hosts this render — the key
+   * for per-tab UI state (workspace tabs persist across reloads). Empty
+   * string when the page renders outside a workspace tab.
+   */
+  tabId: string
+  /**
+   * Close the pane hosting this page (a split drops the column; a
+   * single-column tab detaches back to the attach affordance). Pass it to
+   * `PageHeader`'s `onClose` — every page header carries the standard ✕.
+   * Absent when the page renders outside a closable pane.
+   */
+  onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory, live: the page
+   * re-renders with the new value when the user picks another folder in
+   * chat, so filesystem-shaped pages can follow along. `null`/absent when
+   * no conversation is active or none is set.
+   */
+  workingDir?: string | null
+}
+
 export interface PageRegistration {
   /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
   id: string
   /** Nav label. */
   title: string
-  /** The page body (right pane). */
-  render: React.ComponentType
+  /** The page body (right pane). Receives `PageRenderProps` — a plain
+      `() => <Page />` render stays valid and simply ignores them. */
+  render: React.ComponentType<PageRenderProps>
 }
 
 /**
@@ -88,6 +121,26 @@ export interface FunctionTriggerRenderer {
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
+  /**
+   * Redact the raw request/response before the console DISPLAYS OR COPIES
+   * it. The card's `raw json` tab renders `message.input` / `message.output`
+   * verbatim and its copy button puts the same value on the clipboard, so a
+   * card that hides a secret in its own rendering has not contained it —
+   * declare the secret here and the host applies it at both exits.
+   *
+   * Consulted only for messages this renderer's `isMatch` claims (the first
+   * claiming renderer that declares it wins), once for the request and once
+   * for the response.
+   *
+   * Receives an arbitrary JSON-ish value (object, array, string, number,
+   * boolean, `null`, or `undefined` — whatever rode on the wire) and returns
+   * the redacted copy. Must be PURE and TOTAL: never mutate the input, never
+   * do I/O, never throw for any shape (cycles included). It runs inside the
+   * host card's render; a throw is fenced and fails CLOSED — the pane shows
+   * a "redaction failed" placeholder rather than the raw value, so a bug
+   * here costs you the view, never the secret.
+   */
+  redactRaw?(value: unknown): unknown
 }
 
 export type JsonValue =
@@ -117,6 +170,31 @@ export interface ConfigFormProps {
 }
 
 /**
+ * Props a session chip receives from the chat host. Chips fetch their own
+ * data through `host.iii`; the host only identifies the session and what
+ * it already knows about the resolved model.
+ */
+export interface SessionChipProps {
+  sessionId: string
+  /** Resolved model id for the session, when known. */
+  modelId?: string
+  /** Context window (tokens) of the resolved model, from the catalog. */
+  contextWindow?: number
+}
+
+/**
+ * A per-session status chip rendered in the chat header's right cluster
+ * (the `chat` slot). Duplicate `id`: last registration wins — and some
+ * ids also supersede a built-in affordance (`context` replaces the
+ * host's estimate-based context meter).
+ */
+export interface SessionChipRegistration {
+  /** kebab-case, e.g. `context`; convention `<worker>-<name>` otherwise. */
+  id: string
+  render: React.ComponentType<SessionChipProps>
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -137,6 +215,14 @@ export interface Host {
       component: React.ComponentType<ConfigFormProps>,
     ): () => void
   }
+  /**
+   * Optional: absent on consoles that predate session chips. Feature-detect
+   * with `host.chat?.registerSessionChip` — newer slot namespaces are always
+   * declared optional so worker scripts degrade without casts.
+   */
+  chat?: {
+    registerSessionChip(chip: SessionChipRegistration): () => void
+  }
 }
 
 /** The ONLY required export of a script asset. */
@@ -153,6 +239,21 @@ export declare function useTheme(): 'light' | 'dark'
 export declare const tokens: readonly string[]
 
 /* ── the shared component library ───────────────────────────────────── */
+
+export interface AnsiTextProps {
+  /** Raw terminal output, ANSI escapes included. */
+  text: string
+  className?: string
+}
+/** Terminal text with its ANSI SGR colors mapped onto the design tokens
+    (red→alert, green→ok, yellow→warn, blue/cyan/magenta→accent,
+    bold→semibold). Extended-color params are consumed, every other
+    CSI/OSC sequence is stripped, and pathological input falls back to
+    stripped plain text. The console's one ANSI renderer — like
+    `CodeEditor`, never bundle an ANSI parser into a worker asset; import
+    this instead. Inherits the parent's font, so put it inside a
+    whitespace-preserving mono pane (`TerminalStream` does). */
+export declare const AnsiText: React.ComponentType<AnsiTextProps>
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: 'default' | 'warn' | 'alert' | 'accent'
@@ -243,6 +344,27 @@ export interface ErrorBoundaryProps {
 }
 export declare const ErrorBoundary: React.ComponentType<ErrorBoundaryProps>
 
+/** One side of a `FileDiff` — a whole file's text, not a patch. */
+export interface FileDiffSide {
+  /** Display name; also infers the syntax-highlight language. */
+  name: string
+  contents: string
+}
+export interface FileDiffProps {
+  /** Pass empty `contents` for a created (old) / deleted (new) file. */
+  oldFile: FileDiffSide
+  newFile: FileDiffSide
+  diffStyle?: 'unified' | 'split'
+  /** Long lines wrap by default; `'scroll'` preserves strict columns. */
+  overflow?: 'scroll' | 'wrap'
+  className?: string
+}
+/** The console's one file-diff surface — the diff is computed from the two
+    full file bodies and rendered by the console's bundled diff engine,
+    following the active theme. Like `CodeEditor`, never bundle a diff
+    renderer into a worker asset; import this instead. */
+export declare const FileDiff: React.ComponentType<FileDiffProps>
+
 /** Controlled string input (`onChange` receives the value, not the event). */
 export interface InputProps
   extends Omit<
@@ -256,6 +378,65 @@ export interface InputProps
 }
 export declare const Input: React.ComponentType<
   InputProps & React.RefAttributes<HTMLInputElement>
+>
+
+/* ── page chrome: THE layout design system for injected pages ─────────
+   Every worker page composes the same five pieces so panes stay visually
+   identical across workers (and console-native screens):
+
+     <PageShell>
+       <PageHeader icon? title description? actions? onClose={onRequestClose} />
+       <PageBody side={panelSide}>
+         <PageSidebar>…navigation…</PageSidebar>
+         <PageMain>…workspace…</PageMain>
+       </PageBody>
+     </PageShell>
+
+   PageHeader renders the standard ✕ when `onClose` is present — wire it
+   to `PageRenderProps.onRequestClose`. */
+
+export interface PageShellProps
+  extends React.HTMLAttributes<HTMLDivElement> {}
+/** The pane's root column — fills the pane, `--color-panel` background. */
+export declare const PageShell: React.ComponentType<PageShellProps>
+
+export interface PageHeaderProps {
+  /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
+  icon?: React.ReactNode
+  /** The page's name — console chrome vocabulary: mono, lowercase. */
+  title?: React.ReactNode
+  /** One short descriptor; truncates before anything else gives. */
+  description?: React.ReactNode
+  /** Free-form middle content (fills the flexible gap before actions). */
+  children?: React.ReactNode
+  /** Right-side controls, rendered before the close affordance. */
+  actions?: React.ReactNode
+  /** Close the hosting pane — renders the standard ✕ when present.
+      Wire to `PageRenderProps.onRequestClose`. */
+  onClose?: () => void
+  className?: string
+}
+/** The standard pane top bar: slightly raised, hairline bottom edge. */
+export declare const PageHeader: React.ComponentType<PageHeaderProps>
+
+export interface PageBodyProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** The pane's side of the tab (`PageRenderProps.panelSide`) — `right`
+      mirrors the row so the sidebar hugs the pane's outer edge. */
+  side?: 'left' | 'right'
+}
+/** The row under the header; separates children with a hairline gap. */
+export declare const PageBody: React.ComponentType<PageBodyProps>
+
+export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
+  /** Column width in px (fixed — navigation stays put while main flexes). */
+  width?: number
+}
+/** The navigation column: slightly gray, fixed width, own scroll. */
+export declare const PageSidebar: React.ComponentType<PageSidebarProps>
+
+/** The primary workspace column: `--color-panel`, takes what's left. */
+export declare const PageMain: React.ComponentType<
+  React.HTMLAttributes<HTMLElement>
 >
 
 export interface SelectOption<T extends string = string> {
@@ -329,6 +510,49 @@ export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
 }
 export declare const TabsContent: React.ComponentType<TabsContentProps>
+
+export interface TerminalCommandLineProps {
+  /** The command, verbatim — also the hover title and the copy payload. */
+  command: string
+  /** Prompt glyph, accent ink. Default `'$'`. */
+  prompt?: string
+  /** Trailing slot for header chips / pills. */
+  chips?: React.ReactNode
+  /** Render the copy affordance (standard copied/failed flash; the
+      clipboard write survives insecure origins). */
+  copy?: boolean
+  className?: string
+}
+/** One-line command header — the `$ command` row a terminal-shaped card
+    opens with: accent prompt glyph, mono command that ellipsizes with the
+    full text riding on `title`, optional trailing chips and copy button.
+    Like `CodeEditor`, never carry a private command-line header in a
+    worker asset; import this instead. */
+export declare const TerminalCommandLine: React.ComponentType<TerminalCommandLineProps>
+
+export interface TerminalStreamProps {
+  /** Pane label (`stdout`, `stderr`, `build`), rendered uppercase. */
+  label: string
+  /** The stream body; renders nothing when empty — the caller decides
+      what "no output" should say, if anything. */
+  text: string
+  /** `'err'` tints the body warn, and nothing more: stderr is the user's
+      program failing, not the console failing. Default `'out'`. */
+  tone?: 'out' | 'err'
+  /** Parse ANSI SGR colors in the body (`AnsiText`); plain otherwise. */
+  ansi?: boolean
+  /** Collapse behind the expand toggle past this many lines (default 12)… */
+  clampLines?: number
+  /** …or this many characters (default 2000). */
+  clampChars?: number
+  className?: string
+}
+/** Labeled monospace stream pane — the shared rendering for stdout /
+    stderr / log bodies in terminal-shaped cards: whitespace preserved,
+    long output clamped behind an `expand · N lines / collapse` toggle,
+    scrolls within itself, never page-wide. Like `CodeEditor`, never carry
+    a private stream pane in a worker asset; import this instead. */
+export declare const TerminalStream: React.ComponentType<TerminalStreamProps>
 
 /** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content only. */
 export interface TooltipProps {
@@ -417,3 +641,18 @@ export interface MarkdownPreviewProps {
 /** `Markdown` inside the standard `bg-bg` pane chrome — the preview
     counterpart to `CodeEditor` for markdown-editing UIs. */
 export declare const MarkdownPreview: React.ComponentType<MarkdownPreviewProps>
+
+export interface WorkerConfigurationDialogProps {
+  /** Which worker's configuration to edit; `null` renders the dialog closed. */
+  configurationId: string | null
+  onClose: () => void
+}
+/**
+ * The console's worker-configuration editor in a dialog — schema fetch,
+ * custom `configForms` resolution, dirty guard, save/reset and error
+ * mapping all host-owned. Lets a worker page offer "configure" without
+ * navigating to the workers tab. Prefer reading it off `host.components`
+ * at runtime rather than importing the name: a console predating this
+ * export then degrades to navigation instead of failing the module load.
+ */
+export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>

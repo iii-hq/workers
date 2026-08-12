@@ -15,6 +15,7 @@ pub mod status;
 pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
+pub mod system_prompt;
 pub mod teardown;
 pub mod trigger_deliver;
 pub mod triggers_list;
@@ -68,6 +69,10 @@ pub const STOP_DESC: &str =
 
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
+
+pub const SYSTEM_PROMPT_ID: &str = "harness::system-prompt::get";
+pub const SYSTEM_PROMPT_DESC: &str =
+    "Preview the system prompt layers a session will use without making a model request.";
 
 pub const SESSION_TREE_ID: &str = "harness::session-tree";
 pub const SESSION_TREE_DESC: &str =
@@ -293,6 +298,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
     });
+    register_internal(
+        iii,
+        deps,
+        SYSTEM_PROMPT_ID,
+        SYSTEM_PROMPT_DESC,
+        |d, r| async move { system_prompt::handle(&d, r).await },
+    );
     register(
         iii,
         deps,

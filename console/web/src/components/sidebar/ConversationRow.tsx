@@ -76,10 +76,8 @@ export function ConversationRow({
       aria-current={active ? 'page' : undefined}
       aria-label={`open ${conversation.title}`}
       className={cn(
-        'group relative flex items-center gap-2 pl-3 pr-2 py-2 cursor-pointer transition-colors',
-        active
-          ? 'bg-panel border-l-2 border-l-accent pl-[10px]'
-          : 'border-l-2 border-l-transparent hover:bg-paper-2',
+        'group relative flex items-center gap-2 pl-3 pr-2 py-2 rounded-sm cursor-pointer transition-colors',
+        active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
       )}
       onClick={() => !editing && onSelect()}
       onDoubleClick={() => setEditing(true)}
@@ -157,7 +155,7 @@ export function ConversationRow({
                 setDraft(conversation.title)
               }
             }}
-            className="w-full bg-bg border border-ink px-1 py-0.5 font-mono text-[13px] text-ink outline-none lowercase"
+            className="w-full rounded-xs bg-surface px-1 py-0.5 font-mono text-[13px] text-ink outline-none lowercase"
           />
         ) : (
           <div
@@ -189,7 +187,7 @@ export function ConversationRow({
           onRemove()
         }}
         aria-label={`delete ${conversation.title}`}
-        className="opacity-0 group-hover:opacity-100 text-ink-faint hover:text-accent transition-opacity transition-colors font-mono text-[14px] leading-none px-1"
+        className="opacity-0 group-hover:opacity-100 text-ink-faint hover:text-alert transition-opacity transition-colors font-mono text-[14px] leading-none px-1"
       >
         ×
       </button>

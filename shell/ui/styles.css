@@ -1,0 +1,730 @@
+/*
+ * The shell worker's console stylesheet, shipped as its own
+ * `console:style` asset (shell/styles.css). Every rule is scoped under
+ * `[data-iii-ui="shell"]`, the wrapper the console mounts around every
+ * injected render — page and function-trigger message alike. Styling
+ * uses the console's design tokens, so light/dark theming is free.
+ */
+
+/* ── shared text tones ──────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .t-ink { color: var(--color-ink); }
+[data-iii-ui="shell"] .t-faint { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .t-ghost { color: var(--color-ink-ghost); }
+[data-iii-ui="shell"] .t-accent { color: var(--color-accent); }
+[data-iii-ui="shell"] .t-warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .t-alert { color: var(--color-alert); }
+[data-iii-ui="shell"] .num { font-variant-numeric: tabular-nums; }
+
+/* ── card chrome (function-trigger views) ───────────────────────────── */
+
+[data-iii-ui="shell"] .shui-card {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-card.pad { padding: 12px; }
+[data-iii-ui="shell"] .shui-card.scroll-x { overflow-x: auto; }
+
+[data-iii-ui="shell"] .shui-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-head.preview { border-bottom: 0; }
+
+[data-iii-ui="shell"] .shui-cmd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+[data-iii-ui="shell"] .shui-cmd .cmd-text { margin-left: 8px; }
+
+[data-iii-ui="shell"] .shui-prompt {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-prompt.pulse {
+  animation: shui-pulse 1.2s ease-in-out infinite;
+}
+@keyframes shui-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+[data-iii-ui="shell"] .shui-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-chips.end { margin-left: auto; }
+
+[data-iii-ui="shell"] .shui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+  padding: 2px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-chip .k {
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="shell"] .shui-chip .v { font-variant-numeric: tabular-nums; }
+[data-iii-ui="shell"] .shui-chip.warn {
+  border-color: var(--color-warn);
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-chip.warn .k { color: var(--color-warn); }
+
+/* Badge add-on: numerals without the badge's uppercase tracking. */
+[data-iii-ui="shell"] .shui-pill-flat {
+  text-transform: none;
+  letter-spacing: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="shell"] .shui-body {
+  background: var(--color-bg);
+  padding: 8px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+[data-iii-ui="shell"] .shui-body.stream-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+}
+[data-iii-ui="shell"] .shui-stream-gap { height: 4px; }
+
+[data-iii-ui="shell"] .shui-running {
+  background: var(--color-bg);
+  padding: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+  font-style: italic;
+}
+
+[data-iii-ui="shell"] .shui-empty {
+  padding: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="shell"] .shui-foot {
+  background: var(--color-paper-2);
+  border-top: 1px solid var(--color-rule-2);
+  padding: 6px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="shell"] .shui-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+[data-iii-ui="shell"] .shui-pre.out { color: var(--color-ink); }
+[data-iii-ui="shell"] .shui-pre.err { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-pre.detail {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+[data-iii-ui="shell"] .shui-slab {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+[data-iii-ui="shell"] .shui-slab.warn { border-left: 2px solid var(--color-warn); }
+[data-iii-ui="shell"] .shui-slab.accent { border-left: 2px solid var(--color-accent); }
+[data-iii-ui="shell"] .shui-slab.alert { border-left: 2px solid var(--color-alert); }
+
+[data-iii-ui="shell"] .shui-line {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-row.gap8 { gap: 8px; }
+[data-iii-ui="shell"] .shui-baseline-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+
+[data-iii-ui="shell"] .shui-inline-code {
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule-2);
+  padding: 2px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+[data-iii-ui="shell"] .shui-note {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+  font-style: italic;
+}
+[data-iii-ui="shell"] .shui-note.plain { font-style: normal; }
+
+[data-iii-ui="shell"] .shui-resolved-argv {
+  color: var(--color-ink-faint);
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+[data-iii-ui="shell"] .shui-action-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-action-line .sym { font-weight: 600; flex-shrink: 0; }
+[data-iii-ui="shell"] .shui-action-line .sym.tone-accent { color: var(--color-accent); }
+[data-iii-ui="shell"] .shui-action-line .sym.tone-warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-action-line .sym.tone-ink { color: var(--color-ink); }
+[data-iii-ui="shell"] .shui-action-line .body {
+  min-width: 0;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+/* ── tables ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-table thead tr.head-paper { background: var(--color-paper-2); }
+[data-iii-ui="shell"] .shui-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-table tbody tr:last-child td { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-table .r { text-align: right; }
+[data-iii-ui="shell"] .shui-table .pad-l { padding-left: 12px; }
+[data-iii-ui="shell"] .shui-table .pad-r { padding-right: 12px; }
+[data-iii-ui="shell"] .shui-table td.icon { width: 20px; }
+[data-iii-ui="shell"] .shui-table tr.total { background: var(--color-paper-2); }
+[data-iii-ui="shell"] .shui-table tr.total td { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-table tr.total .label {
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-table-footnote {
+  padding: 6px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  border-top: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-fs-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--color-ink-faint);
+  vertical-align: text-bottom;
+}
+[data-iii-ui="shell"] .shui-err-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-warn);
+  cursor: help;
+}
+
+/* ── grep/search match lists ────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-match-list {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+}
+[data-iii-ui="shell"] .shui-match {
+  border-bottom: 1px solid var(--color-rule-2);
+  padding: 6px 12px;
+}
+[data-iii-ui="shell"] .shui-match:last-child { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-match .loc { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .shui-match .shui-pre { margin-top: 2px; }
+[data-iii-ui="shell"] .shui-hl {
+  background: color-mix(in oklab, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
+}
+
+/* ── error cards ────────────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-err-label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-doclink {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  text-decoration: none;
+  width: fit-content;
+}
+[data-iii-ui="shell"] .shui-doclink:hover { text-decoration: underline; }
+[data-iii-ui="shell"] .shui-streams {
+  margin-top: 4px;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-denial-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+/* ── the explorer page ────────────────────────────────────────────────
+   Layout + surfaces come from the shared page chrome (PageShell /
+   PageHeader / PageBody / PageSidebar / PageMain out of
+   @iii-dev/console-ui): gray navigation sidebar, white main workspace,
+   raised bordered header. The rules here style only the shell-specific
+   content INSIDE those regions. */
+
+[data-iii-ui="shell"] .shui-sidebar {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  position: relative;
+}
+
+/* Resize handle on the sidebar's boundary toward the main pane. */
+[data-iii-ui="shell"] .shui-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+[data-iii-ui="shell"] .shui-resize-handle.left { left: 0; }
+[data-iii-ui="shell"] .shui-resize-handle.right { right: 0; }
+[data-iii-ui="shell"] .shui-resize-handle:hover,
+[data-iii-ui="shell"] .shui-resize-handle:active {
+  background: var(--color-surface-active);
+}
+
+/* Image preview — centered, contained, own scroll for oversized zooms. */
+[data-iii-ui="shell"] .shui-image-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+[data-iii-ui="shell"] .shui-image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--color-edge);
+  background: var(--color-surface);
+}
+[data-iii-ui="shell"] .shui-sidebar.collapsed {
+  align-items: center;
+  padding-top: 6px;
+}
+
+[data-iii-ui="shell"] .shui-side-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-side-tabs .spacer,
+[data-iii-ui="shell"] .shui-editor-head .spacer { flex: 1; }
+
+[data-iii-ui="shell"] .shui-side-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-side-tab:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-side-tab.active {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+[data-iii-ui="shell"] .shui-side-tab-icon {
+  width: 14px;
+  height: 14px;
+}
+
+[data-iii-ui="shell"] .shui-collapse-btn {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-collapse-btn:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+
+/* Labels show only the last two segments of the root (title carries the
+   full absolute path), so no scroll/ellipsis tricks are needed. */
+[data-iii-ui="shell"] .shui-root-select,
+[data-iii-ui="shell"] .shui-root-label {
+  margin: 6px;
+  padding: 3px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  border: 1px solid var(--color-edge);
+  background: var(--color-surface);
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-root-select { width: calc(100% - 12px); }
+
+[data-iii-ui="shell"] .shui-side-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-iii-ui="shell"] .shui-tree-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-tree { flex: 1; min-height: 0; }
+
+[data-iii-ui="shell"] .shui-side-note {
+  padding: 10px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="shell"] .shui-side-note.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-side-note.ghost { color: var(--color-ink-ghost); }
+[data-iii-ui="shell"] .shui-side-note.head {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  padding-bottom: 4px;
+}
+[data-iii-ui="shell"] .shui-side-note.pad { padding: 24px; }
+
+[data-iii-ui="shell"] .shui-linkish {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-linkish:disabled {
+  color: var(--color-ink-ghost);
+  cursor: default;
+}
+
+/* git changes tree */
+[data-iii-ui="shell"] .shui-git-tree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* search */
+[data-iii-ui="shell"] .shui-search {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-search-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-search-opts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+[data-iii-ui="shell"] .shui-search-opts .opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-search-opts .shui-linkish { margin-left: auto; }
+[data-iii-ui="shell"] .shui-search-results {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 8px;
+  overflow: auto;
+}
+[data-iii-ui="shell"] .shui-search-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-search-row:hover { background: var(--color-surface-hover); }
+[data-iii-ui="shell"] .shui-search-row .loc {
+  color: var(--color-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-search-row .loc .line { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .shui-search-row .text {
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* editor file tabs — preview tabs render italic (VS Code semantics) */
+[data-iii-ui="shell"] .shui-editor-tabs {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-etab {
+  display: inline-flex;
+  align-items: center;
+  border-right: 1px solid var(--color-edge);
+  max-width: 200px;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-etab.active {
+  background: var(--color-panel);
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-etab .open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 2px 5px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-etab.active .open { color: var(--color-ink); }
+[data-iii-ui="shell"] .shui-etab.preview .open { font-style: italic; }
+[data-iii-ui="shell"] .shui-etab .close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: 0 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-etab .close:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-x-icon {
+  width: 12px;
+  height: 12px;
+}
+[data-iii-ui="shell"] .shui-main-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+[data-iii-ui="shell"] .shui-main-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-editor-head .path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-editor-head .meta {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-ro-note {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-ro-note.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-save-btn {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+  border: 0;
+  border-radius: 2px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-save-btn:disabled {
+  color: var(--color-ink-ghost);
+  background: var(--color-surface);
+  cursor: default;
+}
+[data-iii-ui="shell"] .shui-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}

@@ -43,6 +43,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::openai-codex::abort",
             "provider::openai-codex::refresh_models",
             "provider::openai-codex::on_router_ready",
+            "provider::openai-codex::count_tokens",
         ]
     );
 }

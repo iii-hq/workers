@@ -69,7 +69,6 @@ pub struct CostReport {
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Passed,
-    QualityFailed,
     HardGateFailed,
     SubjectError,
     JudgeError,
@@ -88,7 +87,6 @@ impl RunStatus {
     fn label(self) -> &'static str {
         match self {
             Self::Passed => "PASS",
-            Self::QualityFailed => "QUALITY FAIL",
             Self::HardGateFailed => "HARD GATE FAIL",
             Self::SubjectError => "SUBJECT ERROR",
             Self::JudgeError => "JUDGE ERROR",
@@ -260,7 +258,6 @@ pub struct E2eScenarioReport {
     pub scenario_id: String,
     #[serde(default = "default_scenario_version")]
     pub scenario_version: u32,
-    pub threshold: u8,
     pub execution_policy: ExecutionPolicy,
     pub aggregate: ScenarioAggregate,
     pub passed: bool,
@@ -271,7 +268,6 @@ impl E2eScenarioReport {
     pub fn aggregate(
         scenario_id: impl Into<String>,
         scenario_version: u32,
-        threshold: u8,
         execution_policy: ExecutionPolicy,
         runs: Vec<E2eRunReport>,
     ) -> Self {
@@ -296,14 +292,10 @@ impl E2eScenarioReport {
             judge_usd: sum_cost(runs.iter().map(|run| run.cost.judge_usd)),
             total_usd: sum_cost(runs.iter().map(|run| run.cost.total_usd)),
         };
-        let passed = run_count > 0
-            && technical_failures == 0
-            && passed_runs >= required_passes
-            && median_score.is_some_and(|score| score >= f64::from(threshold));
+        let passed = run_count > 0 && technical_failures == 0 && passed_runs >= required_passes;
         Self {
             scenario_id: scenario_id.into(),
             scenario_version,
-            threshold,
             execution_policy,
             aggregate: ScenarioAggregate {
                 runs: run_count,
@@ -403,17 +395,6 @@ impl E2eReport {
             .with_context(|| format!("decode E2E report {}", path.display()))?;
         Ok((report, path))
     }
-
-    pub fn fails_ci_gate(&self, score_floor: u8) -> bool {
-        self.scenarios.is_empty()
-            || self.scenarios.iter().any(|scenario| {
-                scenario.aggregate.technical_failures > 0
-                    || scenario
-                        .aggregate
-                        .median_score
-                        .is_none_or(|score| score < f64::from(score_floor))
-            })
-    }
 }
 
 fn required_passes(runs: u32) -> u32 {
@@ -450,7 +431,7 @@ mod tests {
         report.status = if passed {
             RunStatus::Passed
         } else {
-            RunStatus::QualityFailed
+            RunStatus::HardGateFailed
         };
         report
     }
@@ -459,7 +440,6 @@ mod tests {
         E2eScenarioReport::aggregate(
             "case",
             1,
-            80,
             ExecutionPolicy {
                 max_turns: 1,
                 max_output_tokens: Some(1),
@@ -477,15 +457,12 @@ mod tests {
     }
 
     #[test]
-    fn three_runs_require_two_passes_and_threshold_median() {
+    fn three_runs_require_two_passes() {
         let report = aggregate(vec![run(79, false), run(80, true), run(90, true)]);
         assert!(report.passed);
         assert_eq!(report.aggregate.required_passes, 2);
         assert_eq!(report.aggregate.pass_rate, 2.0 / 3.0);
         assert_eq!(report.aggregate.median_score, Some(80.0));
-
-        let low = aggregate(vec![run(70, true), run(79, true), run(100, false)]);
-        assert!(!low.passed);
     }
 
     #[test]
@@ -575,6 +552,7 @@ mod tests {
         );
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(value["scenarios"][0]["aggregate"]["median_score"], 90.0);
+        assert!(value["scenarios"][0].get("threshold").is_none());
         assert_eq!(value["scenarios"][0]["runs"][0]["status"], "passed");
         assert!(value["scenarios"][0]["aggregate"]["cost"].is_object());
     }
@@ -632,37 +610,9 @@ mod tests {
     }
 
     #[test]
-    fn advisory_ci_gate_uses_the_score_floor_for_quality_and_hard_gate_failures() {
-        let quality = E2eReport::new(
-            model(),
-            None,
-            None,
-            None,
-            vec![aggregate(vec![run(70, false)])],
-        );
-        assert!(!quality.fails_ci_gate(50));
-
-        let below_floor = E2eReport::new(
-            model(),
-            None,
-            None,
-            None,
-            vec![aggregate(vec![run(49, false)])],
-        );
-        assert!(below_floor.fails_ci_gate(50));
-
-        let mut hard_gate = run(80, true);
-        hard_gate.status = RunStatus::HardGateFailed;
-        let hard_gate = E2eReport::new(model(), None, None, None, vec![aggregate(vec![hard_gate])]);
-        assert!(!hard_gate.fails_ci_gate(50));
-    }
-
-    #[test]
-    fn advisory_ci_gate_keeps_technical_failures_blocking() {
-        let mut technical = run(80, true);
-        technical.status = RunStatus::InfrastructureError;
-        let report = E2eReport::new(model(), None, None, None, vec![aggregate(vec![technical])]);
-        assert!(report.fails_ci_gate(50));
+    fn an_empty_report_does_not_pass() {
+        let report = E2eReport::new(model(), None, None, None, vec![]);
+        assert!(!report.passed);
     }
 
     fn model() -> ModelArtifact {

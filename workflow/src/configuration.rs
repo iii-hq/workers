@@ -90,12 +90,18 @@ pub struct TriggerHandles {
 
 /// Best-effort binding: the cron trigger type always exists (engine built-in),
 /// but a transient failure must not brick boot — it surfaces as a `None` handle.
-fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
+fn bind(
+    iii: &IIIClient,
+    trigger_type: &str,
+    function_id: &str,
+    config: Value,
+    metadata: Option<Value>,
+) -> Option<Trigger> {
     match iii.register_trigger(RegisterTriggerInput {
         trigger_type: trigger_type.to_string(),
         function_id: function_id.to_string(),
         config,
-        metadata: None,
+        metadata,
     }) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
@@ -130,6 +136,7 @@ pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
         "cron",
         SWEEP_ID,
         json!({ "expression": cfg.sweep_expression }),
+        None,
     )
 }
 
@@ -143,6 +150,7 @@ fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
         "harness::turn-completed",
         crate::functions::wake::WAKE_ID,
         json!({}),
+        None,
     )
 }
 
@@ -161,6 +169,7 @@ fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
         "harness::hook::pre-trigger",
         crate::functions::stamp_reply::STAMP_REPLY_ID,
         json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
+        None,
     )
 }
 
@@ -177,6 +186,9 @@ fn bind_pre_generate_hook(iii: &IIIClient) -> Option<Trigger> {
         "harness::hook::pre-generate",
         crate::functions::inject_guidance::GUIDANCE_HOOK_ID,
         json!({ "on_error": "fail_open" }),
+        Some(json!({
+            "inject_prompt": crate::functions::inject_guidance::WORKFLOW_GUIDANCE
+        })),
     )
 }
 

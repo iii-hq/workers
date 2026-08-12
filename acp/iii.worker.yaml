@@ -3,6 +3,7 @@ name: acp
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: iii-acp
 description: Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions
 # Opt out of the interface boot smoke: acp is a stdio JSON-RPC worker that exits

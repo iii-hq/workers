@@ -19,6 +19,7 @@
 import type * as ConsoleUi from '@iii-dev/console-ui'
 import componentNames from '@iii-dev/console-ui/component-names'
 import { describe, expect, it } from 'vitest'
+import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { CodeEditor } from '@/components/ui/CodeEditor'
@@ -40,13 +41,23 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { FileDiff } from '@/components/ui/FileDiff'
 import { Input } from '@/components/ui/Input'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import {
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+} from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
+import { TerminalStream } from '@/components/ui/TerminalStream'
 import {
   Tooltip,
   TooltipContent,
@@ -55,6 +66,7 @@ import {
 import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 
 /**
  * The type-level check: assigning each real component to the package's
@@ -62,6 +74,7 @@ import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
  * check's data — its keys must equal the manifest.
  */
 const conformance: {
+  AnsiText: typeof ConsoleUi.AnsiText
   Badge: typeof ConsoleUi.Badge
   Button: typeof ConsoleUi.Button
   CodeEditor: typeof ConsoleUi.CodeEditor
@@ -80,10 +93,16 @@ const conformance: {
   DropdownMenuTrigger: typeof ConsoleUi.DropdownMenuTrigger
   EmptyState: typeof ConsoleUi.EmptyState
   ErrorBoundary: typeof ConsoleUi.ErrorBoundary
+  FileDiff: typeof ConsoleUi.FileDiff
   Input: typeof ConsoleUi.Input
   JsonHighlight: typeof ConsoleUi.JsonHighlight
   Markdown: typeof ConsoleUi.Markdown
   MarkdownPreview: typeof ConsoleUi.MarkdownPreview
+  PageBody: typeof ConsoleUi.PageBody
+  PageHeader: typeof ConsoleUi.PageHeader
+  PageMain: typeof ConsoleUi.PageMain
+  PageShell: typeof ConsoleUi.PageShell
+  PageSidebar: typeof ConsoleUi.PageSidebar
   Select: typeof ConsoleUi.Select
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
@@ -92,10 +111,14 @@ const conformance: {
   TabsContent: typeof ConsoleUi.TabsContent
   TabsList: typeof ConsoleUi.TabsList
   TabsTrigger: typeof ConsoleUi.TabsTrigger
+  TerminalCommandLine: typeof ConsoleUi.TerminalCommandLine
+  TerminalStream: typeof ConsoleUi.TerminalStream
   Tooltip: typeof ConsoleUi.Tooltip
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
+  WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
 } = {
+  AnsiText,
   Badge,
   Button,
   CodeEditor,
@@ -114,10 +137,16 @@ const conformance: {
   DropdownMenuTrigger,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
   Select,
   Skeleton,
   StatusDot,
@@ -126,9 +155,12 @@ const conformance: {
   TabsContent,
   TabsList,
   TabsTrigger,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  WorkerConfigurationDialog,
 }
 
 describe('@iii-dev/console-ui surface', () => {

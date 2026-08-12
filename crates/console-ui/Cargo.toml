@@ -13,9 +13,11 @@ repository = "https://github.com/iii-hq/workers"
 publish = false
 
 [dependencies]
-# Same exact pin the workers carry — path-linking this crate must never be
-# what drags a worker onto a different SDK build.
-iii-sdk = "=0.21.6"
+# Range, not an exact pin: workers on this repo's SDK line carry their own
+# exact pins (0.21.6 for state, 0.21.8 for the harness) and cargo must be able
+# to unify them with this crate. Path-linking this crate must never be what
+# drags a worker onto a different SDK build, nor what blocks one.
+iii-sdk = ">=0.21.6, <0.22"
 tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

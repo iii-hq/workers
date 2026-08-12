@@ -6,13 +6,15 @@
 //! falls back to the generic heuristic, reported in `estimator`), so
 //! cost-sensitive callers can run this with no `llm-router` installed.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::core::estimate::{estimate_by_role, estimate_messages, estimator_for_model};
 use crate::error::ContextError;
 use crate::ports::Deps;
-use crate::types::{AgentFunction, AgentMessage, ModelInput};
+use crate::types::{AgentFunction, AgentMessage, ByRoleTokens, EstimatorName, ModelInput};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
@@ -25,25 +27,13 @@ pub struct CountTokensRequest {
     /// single `agent_trigger` entry).
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
+    /// Named auxiliary texts to count individually with the same
+    /// estimator (for example the segments a system prompt is built
+    /// from). Counted in `by_part` only; never added to `tokens`.
+    #[serde(default)]
+    pub parts: Option<BTreeMap<String, String>>,
     /// Tokenizer selection; falls back to a generic estimator.
     pub model: ModelInput,
-}
-
-/// Per-role token breakdown of the `messages` array.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ByRoleTokens {
-    pub user: u64,
-    pub assistant: u64,
-    pub function_result: u64,
-    pub custom: u64,
-}
-
-/// Which estimator produced the count.
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EstimatorName {
-    Tokenizer,
-    Heuristic,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -53,6 +43,14 @@ pub struct CountTokensResponse {
     /// Breakdown of the message tokens by role (system prompt and
     /// tools are not part of any role bucket).
     pub by_role: Option<ByRoleTokens>,
+    /// The `tools` share of `tokens`; present when the request carried
+    /// `tools`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools_tokens: Option<u64>,
+    /// Per-part estimates for the request's `parts`, keyed by the
+    /// caller's names; present when the request carried `parts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by_part: Option<BTreeMap<String, u64>>,
     pub estimator: EstimatorName,
 }
 
@@ -70,24 +68,29 @@ pub async fn handle(
     if let Some(system_prompt) = &req.system_prompt {
         tokens += estimator.text(system_prompt);
     }
-    for tool in req.tools.iter().flatten() {
-        tokens += estimator.function(tool);
-    }
+    let tools_tokens = req.tools.as_ref().map(|tools| {
+        tools
+            .iter()
+            .map(|tool| estimator.function(tool))
+            .sum::<u64>()
+    });
+    tokens += tools_tokens.unwrap_or(0);
+
+    let by_part = req.parts.as_ref().map(|parts| {
+        parts
+            .iter()
+            .map(|(name, text)| (name.clone(), estimator.text(text)))
+            .collect::<BTreeMap<String, u64>>()
+    });
 
     let by_role = estimate_by_role(estimator, &messages);
 
     Ok(CountTokensResponse {
         tokens,
-        by_role: Some(ByRoleTokens {
-            user: by_role.user,
-            assistant: by_role.assistant,
-            function_result: by_role.function_result,
-            custom: by_role.custom,
-        }),
-        estimator: match estimator.kind() {
-            crate::core::estimate::EstimatorKind::Tokenizer => EstimatorName::Tokenizer,
-            crate::core::estimate::EstimatorKind::Heuristic => EstimatorName::Heuristic,
-        },
+        by_role: Some(by_role.into()),
+        tools_tokens,
+        by_part,
+        estimator: estimator.kind().into(),
     })
 }
 

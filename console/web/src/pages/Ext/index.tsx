@@ -19,15 +19,52 @@
 
 import { useEffect, useRef } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
 import { useExtPages } from '@/lib/ui-slots'
+import type { PanelSide } from '@/types/injectable-ui'
 
 interface ExtPageProps {
   onMissing: () => void
+  /**
+   * Render this specific page instead of the hash-derived one. Workspace
+   * tabs pin a screen to a page id, so a two-column tab can show an
+   * injected page regardless of what the hash currently names.
+   */
+  pageId?: string
+  /**
+   * Which side of the workspace tab this pane occupies — forwarded to the
+   * page render so extensions can mirror their layout (e.g. put a sidebar
+   * against the outer edge). Defaults to `'left'`, the single-column case.
+   */
+  panelSide?: PanelSide
+  /**
+   * Stable id of the hosting workspace tab — forwarded so extensions can
+   * key per-tab UI state. Empty when rendered outside a workspace tab.
+   */
+  tabId?: string
+  /**
+   * Close the hosting pane — forwarded so the page's `PageHeader` ✕ works.
+   * Absent when rendered outside a closable pane.
+   */
+  onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory — forwarded live so
+   * filesystem-shaped pages can follow the chat's folder.
+   */
+  workingDir?: string | null
 }
 
-export function ExtPage({ onMissing }: ExtPageProps) {
-  const pageId = useExtPageRoute()
+export function ExtPage({
+  onMissing,
+  pageId: pageIdProp,
+  panelSide = 'left',
+  tabId = '',
+  onRequestClose,
+  workingDir,
+}: ExtPageProps) {
+  const routePageId = useExtPageRoute()
+  const pageId = pageIdProp ?? routePageId
   const pages = useExtPages()
   const page = pageId
     ? [...pages].reverse().find((p) => p.id === pageId)
@@ -57,23 +94,35 @@ export function ExtPage({ onMissing }: ExtPageProps) {
 
   if (!page) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <EmptyState
-          title="extension page not loaded"
-          description={
-            pageId
-              ? `no worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
-              : 'missing extension page id.'
-          }
+      <PageShell aria-label={pageId ?? 'extension page'}>
+        <PageHeader
+          title={pageId ?? 'extension'}
+          description="waiting for worker"
+          onClose={onRequestClose}
         />
-      </div>
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState
+            title="extension page not loaded"
+            description={
+              pageId
+                ? `no worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
+                : 'missing extension page id.'
+            }
+          />
+        </div>
+      </PageShell>
     )
   }
 
   const Body = page.render
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <Body />
+      <Body
+        panelSide={panelSide}
+        tabId={tabId}
+        onRequestClose={onRequestClose}
+        workingDir={workingDir}
+      />
     </div>
   )
 }

@@ -210,7 +210,6 @@ def wait_for_worker(
             target_names = _resolve_target_worker_names(
                 workers=workers,
                 worker_name=worker_name,
-                functions=functions,
                 baseline_workers_json=workers_baseline_json,
             )
         except ValueError:
@@ -331,7 +330,6 @@ def main() -> int:
             target_worker_names = _resolve_target_worker_names(
                 workers=workers_json.get("workers") or [],
                 worker_name=args.worker,
-                functions=all_functions,
                 baseline_workers_json=workers_baseline_json,
             )
             target_function_ids = _function_ids_for_workers(

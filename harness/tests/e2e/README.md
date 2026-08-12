@@ -19,8 +19,9 @@ Each scenario:
 6. Optionally asks a fixed judge model to score qualitative criteria.
 7. Calls `harness::teardown` and removes scenario-owned state.
 
-Hard gates and a score threshold both apply. A persuasive response cannot pass
-when the requested durable result was not produced.
+Hard gates determine pass or fail. Weighted scores remain quality signals, so a
+persuasive response cannot override a missing durable result and a low score
+does not hide a mechanically correct execution.
 
 Before execution, the runner resolves the exact subject and judge records with
 `router::models::get`. Each scenario declares its own turn, token, and timeout
@@ -40,8 +41,6 @@ scenario through one global `allow: ["*"]` policy:
   correctness, clarity, and instruction adherence.
 - `persistent_state`: discovers and performs one exact durable state write,
   evaluated entirely in code.
-- `security_review`: reviews three vulnerable snippets; a judge scores coverage,
-  accuracy, remediation, and clarity.
 - `reactive_automation`: orchestrates three parallel database writers,
   trigger-spawned aggregate reactors, and a single finalizer. The CI stack uses
   SQLite, so the scenario proves bounded `database::row-changed` discovery and
@@ -55,13 +54,6 @@ scenario through one global `allow: ["*"]` policy:
   evaluator verifies every effect, exact stdout from both environments,
   operation ordering, shutdown, and scenario-owned cleanup. Recovered function
   errors reduce its quality score without overriding those validated effects.
-- `design_tradeoff`: recommends one side of a contested database-scaling
-  decision with facts that pull in opposite directions; a judge scores
-  commitment to a single pick, constraint-grounded reasoning, honest costs of
-  the chosen option, and concrete reversal conditions.
-- `security_triage`: classifies four snippets where two are subtly exploitable
-  and two only look vulnerable; a judge scores true positives, false-positive
-  control, remediation, and clarity.
 - `research_pipeline`: arms article and fan-in wakes before fetching a
   Wikipedia page, directly spawns two least-privilege analysts, and returns
   their barrier-gated research brief in the coordinator session.
@@ -114,7 +106,7 @@ Select one scenario and repeat it three times:
 cargo run -p harness-e2e -- run \
   --model claude-sonnet-4-6 \
   --provider anthropic \
-  --scenario security_review \
+  --scenario direct_answer \
   --runs 3
 ```
 
@@ -123,21 +115,17 @@ cargo run -p harness-e2e -- run \
 `HARNESS_E2E_OUTPUT` are accepted as environment variables. `--runs` accepts
 values from 1 through 20.
 
-`--quality-advisory` or `HARNESS_E2E_QUALITY_ADVISORY=true` keeps degraded
-quality and hard-gate results visible without failing CI when the median score
-is at least 50. Scores below that floor and technical failures remain blocking.
-Override the floor with `--ci-score-floor` or
-`HARNESS_E2E_CI_SCORE_FLOOR`.
+Scores are quality data and never determine the CI exit status. Empty reports,
+hard-gate failures, and technical failures remain blocking.
 
 The runner emits a progress heartbeat every 15 seconds with the active turn,
 step, pending function count, child-session count, and descendant-tree size.
 Set `--progress-interval-seconds 0` to disable it.
 
 Transient provider and transport failures receive one retry by default.
-Quality failures, hard-gate failures, cleanup failures, and resource limits are
-never retried. `--technical-retries` accepts values from 0 through 3. Retried
-attempts, their failure reasons, elapsed time, and cost remain visible in the
-report.
+Hard-gate failures, cleanup failures, and resource limits are never retried.
+`--technical-retries` accepts values from 0 through 3. Retried attempts, their
+failure reasons, elapsed time, and cost remain visible in the report.
 
 The judge protocol deliberately uses plain text JSON, which works across
 providers without native structured-output support. The response is parsed and
@@ -147,29 +135,22 @@ attempts; a third invalid response is a `judge_error`, not a zero quality score.
 ## Scores and reports
 
 Criterion weights total 100. A run passes when every hard gate passes and its
-score reaches the scenario threshold. For repeated runs, the aggregate requires
-at least two thirds of the runs to pass and the median score to reach the
-threshold. Technical failures stop further repetitions for that
-subject/scenario pair and always fail the aggregate. A hard-gate failure is a
-quality result, not an execution error: the run keeps its objective partial
-credit (zero when every criterion is judge-delegated), enters the aggregate as
-a poor score, and shares the two-of-three tolerance used by score-only
-failures.
+evaluation produces a complete score. For repeated runs, the aggregate requires
+at least two thirds of the runs to pass and no technical failures. A hard-gate
+failure is an evaluated result, not an execution error: the run keeps its
+objective partial credit (zero when every criterion is judge-delegated) and
+enters the aggregate as a failed run.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
 Scenarios without one award every criterion objectively in code. Mechanical
-effects remain hard gates in both cases. Judge-backed scenarios use a 50-point
-pass floor so a mediocre but usable answer remains a passing execution while
-its full score still exposes the quality gap in reports and historical trends.
-Scores below 50 continue to fail as semantically inadequate. The
-`shell_coder_sandbox` scenario also uses a 50-point floor because its required
-effects remain hard gates; an error-free execution earns 45 additional quality
-points, while a recovered function error stays visible without failing an
-otherwise verified result.
+effects remain hard gates in both cases. Scores expose quality gaps in reports
+and historical trends but never decide pass or fail. In `shell_coder_sandbox`,
+for example, recovered function errors reduce the quality score without
+overriding independently verified effects.
 
 Every run has one explicit status:
 
-- `passed`, `quality_failed`, or `hard_gate_failed` for evaluated quality;
+- `passed` or `hard_gate_failed` for completed evaluations;
 - `subject_error`, `judge_error`, `resource_limit`, or `infrastructure_error`
   for failures that must not be interpreted as a score.
 
@@ -177,24 +158,27 @@ Scores and criterion awards are `null` when evaluation did not complete. A
 technical failure is never converted into a zero score.
 
 Every execution also prints a compact terminal summary with scenario status,
-median score, threshold, elapsed time, cost, failed gates, partial criteria, and
-technical failure reasons. Inspect a saved artifact without a running stack:
+median score, elapsed time, cost, failed gates, partial criteria, and technical
+failure reasons. Inspect a saved artifact without a running stack:
 
 ```bash
 cargo run -p harness-e2e -- report target/e2e
 cargo run -p harness-e2e -- report target/e2e/results.json --verbose
 ```
 
-From the repository root, import that report into the benchmark dashboard and
-serve it locally:
+Build the runner once and start its local execution dashboard:
 
 ```bash
-python3 .github/scripts/serve_harness_e2e_dashboard.py
+cargo build --locked --manifest-path harness/Cargo.toml -p harness-e2e
+harness/target/debug/harness-e2e dashboard
 ```
 
-The page is available at <http://127.0.0.1:4173/index.html>. Pass additional
-`results.json` files or directories to build a local execution history. The
-generated site stays under `target/` and is not committed.
+The page is available at <http://127.0.0.1:4173/index.html>. The dashboard uses
+the same executable to run scenarios against `III_URL`; it never invokes Cargo.
+Every execution keeps its metadata, log, and raw `results.json` under
+`target/harness-e2e-local-runs/`. Use `serve` as an alias for `dashboard`,
+`--listen` to select another loopback listener, and `--runs-dir` to move the
+local history. Remote access must use SSH port forwarding.
 
 The runner writes `results.json` with:
 
@@ -219,34 +203,26 @@ zero.
 | Workflow | Trigger | Live-model runs | Gate |
 | --- | --- | ---: | --- |
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
-| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; technical failures blocking |
-| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Median score and reliability gates are evaluated; history is published on failure |
-| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Exact registry artifact, hard gates, and technical failures blocking |
+| Harness source validation | Release Control operation with an immutable SHA | Policy-defined | Empty reports, hard-gate and technical failures are blocking |
+| Harness Registry validation | Release Control operation with an exact `latest` or `next` stack | Policy-defined | Empty reports, hard-gate and technical failures are blocking; promotion requires exact evidence |
 
-The reusable workflow supports source and registry stack modes. Source runs
-install the latest stable `iii` release with its companion binaries, then build
-the runtime workers from the selected commit. Registry runs build only the E2E
-runner and install every runtime worker through `iii worker add`. Scenario ids
-come directly from `harness-e2e list`. Each subject/scenario pair receives a
-fresh stack, and repetitions run sequentially inside that job with unique table,
-session, and state namespaces. At most two matrix jobs make live-model calls
-concurrently.
+Release Control owns the schedule, source/Registry choice, exact stack,
+profiles, selected and required scenarios, repetitions, subjects, judge and
+promotion decision. It dispatches one of two strict entrypoints:
 
-The deployed lane is a separate workflow run dispatched by the release smoke
-workflow. The release publishes first, the smoke validates the published
-installation and exact released version, and only a successful smoke dispatches
-the deployed E2E workflow. The release workflow does not wait for either child
-run. Deployed E2E jobs install `harness`, its mandatory dependencies, the
-scenario database worker, and the configured providers through `iii worker add`;
-they do not build runtime workers from the checkout. The expected release
-worker and version are checked against `iii.lock` before any model call.
+- `harness-e2e-source.yml` builds an immutable source SHA;
+- `harness-e2e-registry.yml` installs the exact `latest` or `next` stack.
 
-The scheduled benchmark runs even when `main` has not changed. This preserves
-one comparable observation per day and exposes model or infrastructure drift.
-A manual dispatch may pin another full commit SHA but must run from `main`.
+Both entrypoints validate every required input and call `_harness-e2e.yml`,
+which only builds, executes and uploads canonical schema-v3 evidence. The
+Workers repository has no release-policy catalog, autonomous schedule, run
+discovery, promotion decision or public dashboard. Each subject/scenario pair
+receives a fresh stack, and repetitions run sequentially inside that job with
+unique table, session and state namespaces. At most two matrix jobs make
+live-model calls concurrently.
 
-The subject matrix comes from the `HARNESS_E2E_SUBJECTS` repository variable.
-Daily dispatch inputs may override the matrix and judge:
+The subject matrix and judge are exact dispatch inputs. A representative
+subject matrix is:
 
 ```json
 [
@@ -278,65 +254,13 @@ and `ZAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
 providers require their credential files to be provisioned securely on the
 runner; the current workflow does not inject those files.
 
-### Daily benchmark dashboard
-
-The scheduled workflow evaluates the default branch once per day with three
-runs for every subject/scenario pair. A manual dispatch can pin a full commit
-SHA. The stable cadence makes missing days visible and keeps the time series
-independent of release frequency.
-
-The dashboard is published at
-<https://iii-hq.github.io/workers/dev/harness-e2e/>. Its execution overview and
-detail pages support workflow debugging, while **Trends** preserves the daily
-metric review:
-
-- the overview surfaces the latest KPIs, a workflow-by-scenario health matrix,
-  and a filterable table of workflow attempts;
-- each workflow attempt has a shareable detail page with configuration,
-  scenarios, individual runs, gates, criteria, failures, retries, usage, cost,
-  prompts, transcripts, sessions, traces, and the complete JSON record;
-- the primary chart uses calendar time, switches between score, pass rate, cost,
-  and runtime, and filters by scenario;
-- hovering a line shows the nearest daily value, and selecting its point opens
-  the retained execution detail;
-- the scenario breakdown makes regressions and missing reports visible;
-- the execution table keeps failed, incomplete, and cancelled workflows visible
-  even when they did not produce metrics.
-
-The public `gh-pages` history retains 100 aggregate workflow summaries and the
-complete structured reports for the latest 30 attempts. Those complete reports
-include prompts, transcripts, session ids, judge attempts, gates, criteria,
-failure messages, usage, cost, and traces. Diagnostic logs, stack files, and
-credentials remain in access-controlled workflow artifacts. Missing reports are
-stored as reliability events; unknown cost is omitted instead of recorded as
-zero.
-
-The daily lane evaluates repository binaries built from the resolved default
-branch commit. It does not install registry artifacts; registry installation
-remains the responsibility of the quickstart validator.
-
-Repository administration has one manual prerequisite: under **Settings →
-Pages**, select **GitHub Actions** as the Pages source. The benchmark workflow
-maintains the `gh-pages` data history and deploys that history through the
-official Pages artifact flow.
-
-Each matrix job publishes its result for 14 days; failed jobs also publish
-diagnostics for 14 days. The workflow summary shows subject, judge, and total
-cost per scenario and consolidated by subject. The daily dashboard retains the
-latest 100 comparable points and summaries, plus complete reports for the latest
-30 workflow attempts. Fixed code-defined thresholds remain the CI gate;
-historical deltas are a team-facing signal and do not add a second implicit
-threshold.
-
 The source launcher performs a clean first boot with isolated configuration,
-session, queue, state, and log directories. It starts the provider workers
-named by the subject and judge configuration and executes repository binaries
-directly. The deployed launcher uses the same isolated layout but installs the
-runtime workers from the selected registry channel and records the resolved
-`iii.lock`, worker list, and bootstrap logs. The `shell_coder_sandbox` scenario
-tests engine-side registry installation through `worker::add`; the
-`iii worker add` CLI path remains covered by the nightly/manual [Harness
-quickstart validator](../quickstart/README.md).
+session, queue, state and log directories. The Registry launcher uses the same
+isolated layout, installs the exact dispatched versions and records the
+resolved `iii.lock`, worker list and bootstrap logs. The
+`shell_coder_sandbox` scenario tests engine-side Registry installation through
+`worker::add`; the `iii worker add` CLI path remains covered by the explicit
+[Harness quickstart validator](../quickstart/README.md).
 
 ## Adding a scenario
 
@@ -344,8 +268,18 @@ Add a module returning `ScenarioSpec` and register its `ScenarioId`. Keep these
 rules:
 
 - start `ScenarioSpec::version` at `1`; increment it when prompts, hard gates,
-  criteria, thresholds, execution policy, setup, or evaluation behavior changes,
+  criteria, execution policy, setup, or evaluation behavior changes,
   while structural refactors that preserve the behavioral contract keep it;
+- for new code-defined objective evaluators, declare each check once as a static
+  `AssessmentSpec`: use `hard_gated` for conditions that must emit a hard gate
+  and `full_or_zero` when that condition controls a full-or-zero award,
+  `gate_and_points` when the gate outcome and quality award are evaluated
+  independently, and `score_only` for quality awards that do not emit a hard
+  gate and never affect pass or fail; when an explicit prerequisite gate
+  prevents a check from running, use
+  `assessment::prerequisite_failure(...)` to emit the failed gate and retain
+  each assessment's zero-point award atomically; existing evaluators can migrate
+  to this pattern incrementally;
 - prompts describe user intent and never prescribe function ids;
 - declare a scenario-sized execution policy;
 - objective effects are hard gates, not judge opinions;
@@ -356,4 +290,4 @@ rules:
 
 Unit tests validate the registry, rubric weights, objective awards, judge
 responses and usage, transcript call normalization, blocking-gate behavior,
-cost aggregation, advisory mode, and report schema.
+cost aggregation, score reporting, and report schema.

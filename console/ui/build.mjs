@@ -1,8 +1,9 @@
 /**
- * Build the console worker's own two console assets:
+ * Build the console worker's own console assets:
  *
- *   config-form.tsx → dist/config-form.js (injected over `console:script`)
- *   styles.css      → dist/styles.css     (injected over `console:style`)
+ *   config-form.tsx  → dist/config-form.js  (injected over `console:script`)
+ *   catalog-page.tsx → dist/catalog-page.js (injected over `console:script`)
+ *   styles.css       → dist/styles.css      (injected over `console:style`)
  *
  * The five shared specifiers stay EXTERNAL — they resolve at runtime
  * through the console's import map (a bundled React copy would surface as
@@ -14,7 +15,7 @@
 import esbuild from 'esbuild'
 
 const options = {
-  entryPoints: ['config-form.tsx', 'styles.css'],
+  entryPoints: ['config-form.tsx', 'catalog-page.tsx', 'styles.css'],
   bundle: true,
   format: 'esm',
   jsx: 'automatic',

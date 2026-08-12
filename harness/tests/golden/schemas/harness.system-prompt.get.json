@@ -1,0 +1,156 @@
+{
+  "function_id": "harness::system-prompt::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Mode": {
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
+        "enum": [
+          "ask",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "SelectedSystemPrompt": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "strategy": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SystemPromptStrategy"
+              }
+            ],
+            "default": "enrich"
+          }
+        },
+        "required": [
+          "body",
+          "name"
+        ],
+        "type": "object"
+      },
+      "SystemPromptStrategy": {
+        "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
+        "oneOf": [
+          {
+            "description": "Caller prompt replaces the built-in prompt verbatim.",
+            "enum": [
+              "override"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Caller prompt is appended to the built-in identity prompt.",
+            "enum": [
+              "enrich"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No system prompt is sent to the model.",
+            "enum": [
+              "disabled"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "filesystem_root": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mode": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Mode"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "provider": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "selected_prompt": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SelectedSystemPrompt"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SystemPromptRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SystemPromptPart": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/SystemPromptPartKind"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "SystemPromptPartKind": {
+        "enum": [
+          "built_in",
+          "selected",
+          "runtime",
+          "registry_notice",
+          "injected"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "parts": {
+        "items": {
+          "$ref": "#/definitions/SystemPromptPart"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "parts"
+    ],
+    "title": "SystemPromptPreview",
+    "type": "object"
+  }
+}

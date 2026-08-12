@@ -58,6 +58,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::models::get` | Fetch one model record (`null` when unknown). |
 | `router::models::supports` | Check one capability flag for one model. |
 | `router::embed` | Batch text embeddings through the first embed-capable provider in the registry (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
+| `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
 | `router::provider::list` | Registered providers with `configured` / `available` status. |
 | `router::system_prompt::get` | Effective identity prompt for `{provider?}` (the configured `default_provider` when omitted): operator override when set → provider-declared → `null`. `null` also when the provider is unknown — callers fall back to their own default prompt. |
 
@@ -77,8 +78,9 @@ registration token, and every later protocol call must present it.
 | `router::provider::update_credential` | Persist a refreshed credential (OAuth write-back). |
 | `router::models::reconcile` | Replace the provider's catalog slice in one write. |
 
-The provider worker itself exposes `provider::<id>::stream` and, when it
-supports model discovery, `provider::<id>::refresh_models`.
+The provider worker itself exposes `provider::<id>::stream` and, when
+capable, `provider::<id>::refresh_models` (model discovery) and
+`provider::<id>::count_tokens` (prompt token counting).
 
 ## Configuration
 
@@ -207,6 +209,13 @@ Optionally, the declaration may carry a `system_prompt` — the identity prompt
 tailored to the provider's model family. The router stores it in the registry
 and serves it (unless the config slice sets an override) via
 `router::system_prompt::get`; the harness fetches it at turn creation.
+
+A provider may also register `provider::<id>::count_tokens` (`{model,
+system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
+`router::count_tokens`: an exact count from a provider metering API
+(`estimator: "provider"`) or a local tokenizer estimate (`estimator:
+"tiktoken"`). Providers without it simply make `router::count_tokens` return
+a typed `router/no_token_counter` error for that provider.
 
 The first real provider implementing this protocol is
 [`provider-anthropic/`](https://github.com/iii-hq/workers/tree/main/provider-anthropic) — useful as a reference

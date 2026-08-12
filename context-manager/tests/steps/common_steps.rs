@@ -249,6 +249,22 @@ async fn field_equals_object_sum(world: &mut ContextWorld, total: String, parts:
     );
 }
 
+#[then(regex = r#"^the response field "([^"]+)" equals the response field "([^"]+)"$"#)]
+async fn field_equals_field(world: &mut ContextWorld, left: String, right: String) {
+    if skipped(world) {
+        return;
+    }
+    let response = response_or_panic(world);
+    let left_value = lookup_path(response, &left)
+        .unwrap_or_else(|| panic!("path `{left}` not found in {response}"));
+    let right_value = lookup_path(response, &right)
+        .unwrap_or_else(|| panic!("path `{right}` not found in {response}"));
+    assert_eq!(
+        left_value, right_value,
+        "`{left}` ({left_value}) did not match `{right}` ({right_value})"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Bookkeeping
 // ---------------------------------------------------------------------------

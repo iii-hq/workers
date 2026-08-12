@@ -92,6 +92,10 @@ Anthropic ships new models; discovery only supplies bare ids.
 
 ## Notes
 
+- **Token counting:** `provider::anthropic::count_tokens` (behind
+  `router::count_tokens`) posts the assembled prompt to the messages
+  endpoint's `count_tokens` sibling for an exact provider-metered count;
+  it never runs the model and costs nothing.
 - **Structured output:** the Messages API has no native JSON mode; every
   catalog record declares `supports_structured_output: false`, and a
   forwarded `response_format` is reported in `warnings` and ignored.

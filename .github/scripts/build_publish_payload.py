@@ -124,11 +124,27 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
     }
 
 
+# Workers the engine itself hosts (enabled via the engine config, not
+# installed from the registry). A candidate install can flip one on mid-boot
+# (e.g. harness enables `iii-stream` for console streaming), which lands it in
+# the workers-baseline diff even though its interface is not part of the
+# released worker's surface — and its schemas are not this repo's to fix.
+ENGINE_BUILTIN_WORKERS = frozenset(
+    {
+        "configuration",
+        "iii-observability",
+        "iii-state",
+        "iii-stream",
+        "iii-worker-manager",
+        "iii-worker-ops",
+    }
+)
+
+
 def _resolve_target_worker_names(
     *,
     workers: list[dict[str, Any]],
     worker_name: str,
-    functions: list[dict[str, Any]],
     baseline_workers_json: dict[str, Any] | None,
 ) -> set[str]:
     """Return engine worker names whose bus functions belong in the publish payload."""
@@ -137,32 +153,18 @@ def _resolve_target_worker_names(
         new_names = {
             identity
             for worker in workers
-            if (identity := _worker_identity(worker)) and identity not in baseline
+            if (identity := _worker_identity(worker))
+            and identity not in baseline
+            and identity not in ENGINE_BUILTIN_WORKERS
         }
         if new_names:
             return new_names
 
     worker = _match_worker(workers, worker_name)
     matched = _worker_identity(worker)
-
-    legacy_ids = worker.get("functions") or []
-    if isinstance(legacy_ids, list) and legacy_ids:
-        if matched:
-            return {matched}
+    if not matched:
         raise ValueError(f"matched worker for {worker_name!r} has no identity")
-
-    names_with_functions = {
-        name.strip()
-        for fn in functions
-        if isinstance((name := fn.get("worker_name")), str) and name.strip()
-    }
-    if matched and matched in names_with_functions:
-        return {matched}
-
-    raise ValueError(
-        f"no functions found for worker {worker_name!r} "
-        f"(matched identity={matched!r}, workers_with_functions={sorted(names_with_functions)!r})"
-    )
+    return {matched}
 
 
 def _function_ids_for_workers(
@@ -189,30 +191,13 @@ def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, 
     if len(by_name) == 1:
         return by_name[0]
 
-    namespaces = {worker_name, worker_name.replace("-", "_"), worker_name.replace("_", "-")}
-    by_namespace = [
-        w
-        for w in workers
-        if any(
-            isinstance(fid, str) and any(fid.startswith(f"{ns}::") for ns in namespaces)
-            for fid in (w.get("functions") or [])
-        )
-    ]
-    if len(by_namespace) == 1:
-        return by_namespace[0]
-
-    external = [w for w in workers if w.get("internal") is not True]
-    if len(external) == 1:
-        return external[0]
-
     summary = [
         {"id": w.get("id"), "name": w.get("name"), "internal": w.get("internal")}
         for w in workers
     ]
     raise ValueError(
-        f"could not match worker {worker_name!r}: "
-        f"{len(by_name)} by name/id, {len(by_namespace)} by namespaces {sorted(namespaces)!r}, "
-        f"{len(external)} non-internal workers, workers={summary}"
+        f"could not match worker {worker_name!r} exactly: "
+        f"{len(by_name)} by name/id, workers={summary}"
     )
 
 
@@ -224,16 +209,11 @@ def _normalize_registry_trigger_type(trigger_type: dict[str, Any]) -> dict[str, 
     # rows carry neither — they must be enriched from `::info` first (see
     # collect_worker_interface.enrich_trigger_types_with_schemas) or these
     # collapse to the empty `{}` that renders as 'unknown' in the registry.
-    # Fall back to the pre-rename engine keys for any older caller shape.
     return {
         "name": _string_or_empty(trigger_type.get("id")),
         "description": _string_or_empty(trigger_type.get("description")),
-        "invocation_schema": _schema_or_empty(
-            trigger_type.get("configuration_schema", trigger_type.get("trigger_request_format"))
-        ),
-        "return_schema": _schema_or_empty(
-            trigger_type.get("request_schema", trigger_type.get("call_request_format"))
-        ),
+        "invocation_schema": _schema_or_empty(trigger_type.get("configuration_schema")),
+        "return_schema": _schema_or_empty(trigger_type.get("request_schema")),
         "metadata": {},
     }
 
@@ -249,20 +229,13 @@ def normalize_worker_interface(
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
     all_functions = _extract_array(functions_json, "functions")
-
     target_worker_names = _resolve_target_worker_names(
         workers=workers,
         worker_name=worker_name,
-        functions=all_functions,
         baseline_workers_json=baseline_workers_json,
     )
 
     worker_function_ids = _function_ids_for_workers(all_functions, target_worker_names)
-    if not worker_function_ids:
-        legacy_worker = _match_worker(workers, worker_name)
-        legacy_ids = legacy_worker.get("functions") or []
-        if isinstance(legacy_ids, list) and legacy_ids:
-            worker_function_ids = [str(fid) for fid in legacy_ids if fid]
 
     functions_by_id = {
         f.get("function_id"): f for f in all_functions if f.get("function_id")
@@ -283,17 +256,8 @@ def normalize_worker_interface(
             {
                 "name": derive_registry_function_name(function_id, metadata),
                 "description": _string_or_empty(details.get("description")),
-                # `engine::functions::info` surfaces the typed schemas under
-                # `request_schema`/`response_schema`; `engine::functions::list`
-                # rows carry neither (and the legacy `request_format` key never
-                # existed on the engine output). Prefer the info-API names and
-                # fall back to `request_format` for any older caller shape.
-                "request_schema": _schema_or_empty(
-                    details.get("request_schema", details.get("request_format"))
-                ),
-                "response_schema": _schema_or_empty(
-                    details.get("response_schema", details.get("response_format"))
-                ),
+                "request_schema": _schema_or_empty(details.get("request_schema")),
+                "response_schema": _schema_or_empty(details.get("response_schema")),
                 "metadata": _metadata_or_empty(metadata),
             }
         )
@@ -355,6 +319,7 @@ def build_payload(
         "readme": readme,
         "repo": repo_url,
         "description": meta.get("description", ""),
+        "license": meta.get("license", ""),
         "dependencies": normalize_dependencies(meta.get("dependencies")),
         "config": config,
         "functions": [

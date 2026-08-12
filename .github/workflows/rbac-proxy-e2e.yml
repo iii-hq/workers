@@ -1,4 +1,5 @@
 name: rbac-proxy E2E
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('RC · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · rbac_proxy_e2e · {0}', github.event_name) }}
 
 on:
   pull_request:
@@ -6,9 +7,19 @@ on:
       - 'rbac-proxy/**'
       - '.github/workflows/rbac-proxy-e2e.yml'
   workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      operation_id:
+        required: true
+        type: string
+      step_id:
+        required: true
+        type: string
 
 concurrency:
-  group: rbac-proxy-e2e-${{ github.ref }}
+  group: rbac-proxy-e2e-${{ inputs.operation_id || inputs.source_sha || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,6 +32,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Validate Release Control dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -61,3 +83,23 @@ jobs:
           path: |
             rbac-proxy/tests/e2e/reports/
           retention-days: 7
+
+  evidence:
+    needs: e2e
+    if: github.event_name == 'workflow_dispatch' && always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.sha }}" }
+      - run: |
+          subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
+          checks=$(jq -cn --arg status '${{ needs.e2e.result }}' '[{name:"rbac_proxy_e2e",status:$status}]')
+          python3 .github/scripts/release_control_contract.py write-result --kind test --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' --workflow rbac-proxy-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output execution-result.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30

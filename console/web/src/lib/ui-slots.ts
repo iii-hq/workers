@@ -6,11 +6,12 @@
  * hooks.
  */
 
-import { useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import type {
   ConfigFormProps,
   FunctionTriggerRenderer,
   PageRegistration,
+  SessionChipRegistration,
 } from '@/types/injectable-ui'
 
 export interface RegisteredPage extends PageRegistration {
@@ -31,6 +32,11 @@ export interface RegisteredConfigForm {
   configurationId: string
   /** Pre-wrapped by the loader (scope element + ErrorBoundary). */
   component: React.ComponentType<ConfigFormProps>
+  scope: string
+  path: string
+}
+
+export interface RegisteredSessionChip extends SessionChipRegistration {
   scope: string
   path: string
 }
@@ -73,6 +79,7 @@ function createStore<T>(): Store<T> {
 const pagesStore = createStore<RegisteredPage>()
 const renderersStore = createStore<RegisteredRenderer>()
 const configFormsStore = createStore<RegisteredConfigForm>()
+const sessionChipsStore = createStore<RegisteredSessionChip>()
 
 /**
  * Register an extension page. Duplicate `id`: last registration wins in
@@ -108,6 +115,20 @@ export function registerExtConfigForm(entry: RegisteredConfigForm): () => void {
   return configFormsStore.add(entry)
 }
 
+/** Duplicate chip id: last registration wins in `useExtSessionChips`. */
+export function registerExtSessionChip(
+  entry: RegisteredSessionChip,
+): () => void {
+  const duplicate = sessionChipsStore.get().find((c) => c.id === entry.id)
+  if (duplicate) {
+    console.warn(
+      `[iii-ui] duplicate session chip id '${entry.id}' — ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return sessionChipsStore.add(entry)
+}
+
 export function getExtPages(): readonly RegisteredPage[] {
   return pagesStore.get()
 }
@@ -133,6 +154,34 @@ export function useExtRenderers(): readonly RegisteredRenderer[] {
     renderersStore.get,
     () => EMPTY,
   )
+}
+
+function dedupeSessionChips(
+  chips: readonly RegisteredSessionChip[],
+): readonly RegisteredSessionChip[] {
+  const byId = new Map<string, RegisteredSessionChip>()
+  for (const chip of chips) byId.set(chip.id, chip)
+  return [...byId.values()]
+}
+
+/** Session chips deduplicated by id — last registration wins. */
+export function getExtSessionChips(): readonly RegisteredSessionChip[] {
+  return dedupeSessionChips(sessionChipsStore.get())
+}
+
+/**
+ * Session chips in registration order, deduplicated by id (last
+ * registration wins, matching the pages slot). Memoized on the store
+ * snapshot so consumers get a stable array between registrations —
+ * ChatView renders per streamed token, and its chip memo must hold.
+ */
+export function useExtSessionChips(): readonly RegisteredSessionChip[] {
+  const chips = useSyncExternalStore(
+    sessionChipsStore.subscribe,
+    sessionChipsStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => dedupeSessionChips(chips), [chips])
 }
 
 /** The injected form override for one configuration id (last wins). */

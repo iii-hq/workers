@@ -1,0 +1,82 @@
+{
+  "description": "Complete the device-flow sign-in: exchanges the device_code once the operator has entered the user_code; on success the GitHub credential is stored and discovery runs. Returns ok | pending | expired | denied.",
+  "function_id": "provider::github-copilot::login::poll",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "device_code": {
+        "description": "The `device_code` from `login::start`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "device_code"
+    ],
+    "title": "LoginPollRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LoginStatus": {
+        "description": "Outcome of one poll. `SlowDown` is kept distinct from `Pending` because GitHub asks callers to lengthen their interval when it appears; the requested wait rides along in `retry_after_seconds`.",
+        "oneOf": [
+          {
+            "description": "Signed in; the credential is stored and discovery has been kicked.",
+            "enum": [
+              "ok"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The operator has not finished at the verification URL yet.",
+            "enum": [
+              "pending"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Polling too fast — wait `retry_after_seconds` longer before retrying.",
+            "enum": [
+              "slow_down"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The device code expired; start again.",
+            "enum": [
+              "expired"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The operator rejected the request.",
+            "enum": [
+              "denied"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "retry_after_seconds": {
+        "description": "Seconds to add to the poll interval; set when `status` is `slow_down`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/LoginStatus"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "title": "LoginPollResponse",
+    "type": "object"
+  }
+}

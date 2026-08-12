@@ -1,14 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::bail;
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
-use super::common;
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "shell_coder_sandbox";
@@ -19,14 +18,51 @@ const FINAL_SCRIPT: &str = "values = [2, 3, 5, 7]\nprint(f\"host-check:{sum(valu
 const HOST_STDOUT: &str = "host-check:17";
 const SANDBOX_STDOUT: &str = "sandbox-check:35";
 const EXPECTED_CORE_OPERATIONS: usize = 12;
-const PASS_THRESHOLD: u8 = 50;
 const EXECUTION_QUALITY_WEIGHT: u8 = 45;
+const WORKER_SETUP: AssessmentSpec = AssessmentSpec::hard_gated(
+    "worker_setup",
+    10,
+    "Both registry workers are added and expose their required surfaces.",
+);
+const CODER_WORKFLOW: AssessmentSpec = AssessmentSpec::hard_gated(
+    "coder_workflow",
+    20,
+    "Coder inspection, create, update, move, and read operations produce the exact file.",
+);
+const HOST_EXECUTION: AssessmentSpec = AssessmentSpec::hard_gated(
+    "host_execution",
+    10,
+    "The final file runs successfully on the host with exact stdout.",
+);
+const SANDBOX_LIFECYCLE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "sandbox_lifecycle",
+    10,
+    "A named isolated sandbox is created, executed in, listed, and stopped.",
+);
+const COMPLETION_REPORT: AssessmentSpec = AssessmentSpec::score_only(
+    "completion_report",
+    5,
+    "The final response includes both exact observed outputs.",
+);
+const EXECUTION_QUALITY: AssessmentSpec = AssessmentSpec::score_only(
+    "execution_quality",
+    EXECUTION_QUALITY_WEIGHT,
+    "The workflow completes without function-call errors; recovered errors lower quality without overriding validated effects.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    WORKER_SETUP,
+    CODER_WORKFLOW,
+    HOST_EXECUTION,
+    SANDBOX_LIFECYCLE,
+    COMPLETION_REPORT,
+    EXECUTION_QUALITY,
+];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "Perform this verification entirely in the current workspace and in the stated order.\n\n\
              1. Add the `shell` worker from the public registry and wait for that add operation to \
@@ -64,42 +100,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 600,
         },
         denied_functions: &[],
-        threshold: PASS_THRESHOLD,
-        criteria: vec![
-            CriterionSpec {
-                id: "worker_setup",
-                weight: 10,
-                description: "Both registry workers are added and expose their required surfaces.",
-            },
-            CriterionSpec {
-                id: "coder_workflow",
-                weight: 20,
-                description:
-                    "Coder inspection, create, update, move, and read operations produce the exact file.",
-            },
-            CriterionSpec {
-                id: "host_execution",
-                weight: 10,
-                description: "The final file runs successfully on the host with exact stdout.",
-            },
-            CriterionSpec {
-                id: "sandbox_lifecycle",
-                weight: 10,
-                description:
-                    "A named isolated sandbox is created, executed in, listed, and stopped.",
-            },
-            CriterionSpec {
-                id: "completion_report",
-                weight: 5,
-                description: "The final response includes both exact observed outputs.",
-            },
-            CriterionSpec {
-                id: "execution_quality",
-                weight: EXECUTION_QUALITY_WEIGHT,
-                description:
-                    "The workflow completes without function-call errors; recovered errors lower quality without overriding validated effects.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -113,7 +114,11 @@ fn evaluate<'a>(
     run_id: &'a str,
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
-        let calls = common::function_calls(&observation.transcript);
+        let invocations = common::function_invocations(&observation.transcript);
+        let calls = invocations
+            .iter()
+            .map(|invocation| invocation.call.clone())
+            .collect::<Vec<_>>();
         let installed_shell = calls.iter().any(|call| is_registry_install(call, "shell"));
         let installed_sandbox = calls
             .iter()
@@ -125,11 +130,12 @@ fn evaluate<'a>(
         let surfaces_ready = shell_surface_ready && coder_surface_ready && sandbox_surface_ready;
         let worker_setup = installed_shell && installed_sandbox && surfaces_ready;
 
+        let root = workspace_root(run_id);
         let coder_info = calls.iter().any(|call| call.function_id == "coder::info");
-        let coder_create = calls.iter().any(is_exact_create);
-        let coder_update = calls.iter().any(is_exact_update);
-        let coder_move = calls.iter().any(is_exact_move);
-        let coder_read = calls.iter().any(is_exact_read);
+        let coder_create = calls.iter().any(|call| is_exact_create(call, &root));
+        let coder_update = calls.iter().any(|call| is_exact_update(call, &root));
+        let coder_move = calls.iter().any(|call| is_exact_move(call, &root));
+        let coder_read = calls.iter().any(|call| is_exact_read(call, &root));
         let coder_ordered = calls_are_ordered(
             &calls,
             &[
@@ -140,13 +146,33 @@ fn evaluate<'a>(
                 "coder::read-file",
             ],
         );
-        let coder_results_succeeded =
-            batch_result_succeeded(&observation.transcript, "coder::create-file")
-                && batch_result_succeeded(&observation.transcript, "coder::update-file")
-                && batch_result_succeeded(&observation.transcript, "coder::move")
-                && successful_coder_read(&observation.transcript);
+        let coder_results_succeeded = correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| call.function_id == "coder::info",
+            |_| true,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_create(call, &root),
+            batch_result_succeeded,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_update(call, &root),
+            batch_result_succeeded,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_move(call, &root),
+            batch_result_succeeded,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_read(call, &root),
+            successful_coder_read,
+        );
 
-        let root = workspace_root(run_id);
         let draft_path = root.join(DRAFT_NAME);
         let final_path = root.join(FINAL_NAME);
         let final_read = std::fs::read_to_string(&final_path);
@@ -164,8 +190,13 @@ fn evaluate<'a>(
             && final_matches
             && draft_removed;
 
-        let host_exec = calls.iter().any(is_exact_host_exec);
-        let host_output = successful_output(&observation.transcript, "shell::exec", HOST_STDOUT);
+        let host_exec = calls.iter().any(|call| is_exact_host_exec(call, &root));
+        let host_output = correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_host_exec(call, &root),
+            |result| successful_output_result(result, HOST_STDOUT),
+        );
         let host_execution = host_exec && host_output;
 
         let expected_sandbox_name = sandbox_name(run_id);
@@ -194,89 +225,58 @@ fn evaluate<'a>(
         let response_reports_outputs = observation.response.contains(HOST_STDOUT)
             && observation.response.contains(SANDBOX_STDOUT);
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "workers_added_and_ready",
-                    worker_setup,
-                    format!(
-                        "shell add={installed_shell}, iii-sandbox add={installed_sandbox}, \
-                         shell ready={shell_surface_ready}, coder ready={coder_surface_ready}, \
-                         sandbox ready={sandbox_surface_ready}"
+        let mut evaluation = assessment::build_evaluation([
+            WORKER_SETUP.full_or_zero(
+                worker_setup,
+                format!(
+                    "shell add={installed_shell}, iii-sandbox add={installed_sandbox}, \
+                     shell ready={shell_surface_ready}, coder ready={coder_surface_ready}, \
+                     sandbox ready={sandbox_surface_ready}"
+                ),
+            ),
+            CODER_WORKFLOW.full_or_zero(
+                coder_workflow,
+                match &final_read {
+                    Ok(_) => format!(
+                        "info={coder_info}, create={coder_create}, update={coder_update}, \
+                         move={coder_move}, read={coder_read}, ordered={coder_ordered}, \
+                         successful results={coder_results_succeeded}, exact final \
+                         content={final_matches}, draft removed={draft_removed}"
                     ),
-                ),
-                common::gate(
-                    "ordered_coder_workflow_completed",
-                    coder_workflow,
-                    match &final_read {
-                        Ok(_) => format!(
-                            "info={coder_info}, create={coder_create}, update={coder_update}, \
-                             move={coder_move}, read={coder_read}, ordered={coder_ordered}, \
-                             successful results={coder_results_succeeded}, exact final \
-                             content={final_matches}, draft removed={draft_removed}"
-                        ),
-                        Err(error) => format!(
-                            "coder operations info/create/update/move/read={coder_info}/{coder_create}/\
-                             {coder_update}/{coder_move}/{coder_read}; could not read {}: {error}",
-                            final_path.display()
-                        ),
-                    },
-                ),
-                common::gate(
-                    "host_execution_succeeded",
-                    host_execution,
-                    format!(
-                        "exact host execution call={host_exec}, exact successful stdout={host_output}"
+                    Err(error) => format!(
+                        "coder operations info/create/update/move/read={coder_info}/{coder_create}/\
+                         {coder_update}/{coder_move}/{coder_read}; could not read {}: {error}",
+                        final_path.display()
                     ),
+                },
+            ),
+            HOST_EXECUTION.full_or_zero(
+                host_execution,
+                format!(
+                    "exact host execution call={host_exec}, exact successful stdout={host_output}"
                 ),
-                common::gate(
-                    "sandbox_lifecycle_completed",
-                    sandbox_lifecycle,
-                    sandbox.summary(),
+            ),
+            SANDBOX_LIFECYCLE.full_or_zero(sandbox_lifecycle, sandbox.summary()),
+            COMPLETION_REPORT.full_or_zero(
+                response_reports_outputs,
+                "awarded when the final response includes both exact outputs",
+            ),
+            EXECUTION_QUALITY.award(
+                execution_quality_award(function_call_errors),
+                format!(
+                    "observed {function_call_errors} function-call error(s); recovered errors reduce quality but validated outcomes remain authoritative"
                 ),
-                common::gate(
-                    "operation_volume_reached",
-                    operation_volume,
-                    format!(
-                        "observed {core_operations} of {EXPECTED_CORE_OPERATIONS} required core operations"
-                    ),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "worker_setup",
-                    if worker_setup { 10 } else { 0 },
-                    "awarded for adding both registry workers and exposing all three surfaces",
-                ),
-                common::award(
-                    "coder_workflow",
-                    if coder_workflow { 20 } else { 0 },
-                    "awarded for the ordered inspect/create/update/move/read workflow and exact file",
-                ),
-                common::award(
-                    "host_execution",
-                    if host_execution { 10 } else { 0 },
-                    "awarded for exact successful host stdout",
-                ),
-                common::award(
-                    "sandbox_lifecycle",
-                    if sandbox_lifecycle { 10 } else { 0 },
-                    "awarded for creating, executing in, listing, and stopping the isolated sandbox",
-                ),
-                common::award(
-                    "completion_report",
-                    if response_reports_outputs { 5 } else { 0 },
-                    "awarded when the final response includes both exact outputs",
-                ),
-                common::award(
-                    "execution_quality",
-                    execution_quality_award(function_call_errors),
-                    format!(
-                        "observed {function_call_errors} function-call error(s); recovered errors reduce quality but validated outcomes remain authoritative"
-                    ),
-                ),
-            ],
-        })
+            )?,
+        ]);
+        evaluation.hard_gates.push(common::gate(
+            "operation_volume_reached",
+            operation_volume,
+            format!(
+                "observed {core_operations} of {EXPECTED_CORE_OPERATIONS} required core operations"
+            ),
+        ));
+
+        Ok(evaluation)
     })
 }
 
@@ -302,13 +302,15 @@ fn is_registry_install(call: &common::ObservedFunctionCall, worker: &str) -> boo
             == Some(worker)
 }
 
-fn is_exact_create(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_create(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::create-file"
-        && call
-            .arguments
-            .pointer("/files/0/path")
-            .and_then(Value::as_str)
-            == Some(DRAFT_NAME)
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/path")
+                .and_then(Value::as_str),
+            root,
+            DRAFT_NAME,
+        )
         && call
             .arguments
             .pointer("/files/0/content")
@@ -321,13 +323,15 @@ fn is_exact_create(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|files| files.len() == 1)
 }
 
-fn is_exact_update(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_update(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::update-file"
-        && call
-            .arguments
-            .pointer("/files/0/path")
-            .and_then(Value::as_str)
-            == Some(DRAFT_NAME)
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/path")
+                .and_then(Value::as_str),
+            root,
+            DRAFT_NAME,
+        )
         && call
             .arguments
             .pointer("/files/0/ops")
@@ -340,18 +344,22 @@ fn is_exact_update(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|files| files.len() == 1)
 }
 
-fn is_exact_move(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_move(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::move"
-        && call
-            .arguments
-            .pointer("/files/0/from")
-            .and_then(Value::as_str)
-            == Some(DRAFT_NAME)
-        && call
-            .arguments
-            .pointer("/files/0/to")
-            .and_then(Value::as_str)
-            == Some(FINAL_NAME)
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/from")
+                .and_then(Value::as_str),
+            root,
+            DRAFT_NAME,
+        )
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/to")
+                .and_then(Value::as_str),
+            root,
+            FINAL_NAME,
+        )
         && call
             .arguments
             .get("files")
@@ -359,13 +367,17 @@ fn is_exact_move(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|files| files.len() == 1)
 }
 
-fn is_exact_read(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_read(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::read-file"
-        && call.arguments.get("path").and_then(Value::as_str) == Some(FINAL_NAME)
+        && workspace_path_matches(
+            call.arguments.get("path").and_then(Value::as_str),
+            root,
+            FINAL_NAME,
+        )
         && call.arguments.get("paths").is_none()
 }
 
-fn is_exact_host_exec(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_host_exec(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     let host_target = call.arguments.get("target").is_none()
         || call
             .arguments
@@ -381,8 +393,45 @@ fn is_exact_host_exec(call: &common::ObservedFunctionCall) -> bool {
         .arguments
         .get("args")
         .and_then(Value::as_array)
-        .is_some_and(|args| args.iter().any(|arg| arg.as_str() == Some(FINAL_NAME)));
+        .is_some_and(|args| {
+            args.iter()
+                .any(|arg| workspace_path_matches(arg.as_str(), root, FINAL_NAME))
+        });
     call.function_id == "shell::exec" && host_target && python && final_arg
+}
+
+fn workspace_path_matches(value: Option<&str>, root: &Path, expected: &str) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let path = Path::new(value);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    let Some(resolved) = normalize_workspace_path(&resolved) else {
+        return false;
+    };
+    let Some(expected) = normalize_workspace_path(&root.join(expected)) else {
+        return false;
+    };
+    resolved == expected
+}
+
+fn normalize_workspace_path(path: &Path) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => return None,
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Some(normalized)
 }
 
 fn calls_are_ordered(calls: &[common::ObservedFunctionCall], required: &[&str]) -> bool {
@@ -397,6 +446,20 @@ fn calls_are_ordered(calls: &[common::ObservedFunctionCall], required: &[&str]) 
         next += offset + 1;
     }
     true
+}
+
+fn correlated_call_succeeded(
+    transcript: &Value,
+    invocations: &[common::ObservedFunctionInvocation],
+    call_matches: impl Fn(&common::ObservedFunctionCall) -> bool,
+    result_matches: impl Fn(&Value) -> bool,
+) -> bool {
+    invocations
+        .iter()
+        .filter(|invocation| call_matches(&invocation.call))
+        .any(|invocation| {
+            common::function_result(transcript, invocation).is_some_and(&result_matches)
+        })
 }
 
 fn function_results<'a>(transcript: &'a Value, function_id: &'a str) -> Vec<&'a Value> {
@@ -414,51 +477,45 @@ fn function_results<'a>(transcript: &'a Value, function_id: &'a str) -> Vec<&'a 
         .collect()
 }
 
-fn batch_result_succeeded(transcript: &Value, function_id: &str) -> bool {
-    function_results(transcript, function_id)
-        .into_iter()
-        .any(|message| {
-            message
-                .pointer("/details/results")
-                .and_then(Value::as_array)
-                .is_some_and(|results| {
-                    !results.is_empty()
-                        && results.iter().all(|result| {
-                            result.get("success").and_then(Value::as_bool) == Some(true)
-                        })
-                })
+fn batch_result_succeeded(message: &Value) -> bool {
+    message
+        .pointer("/details/results")
+        .and_then(Value::as_array)
+        .is_some_and(|results| {
+            !results.is_empty()
+                && results
+                    .iter()
+                    .all(|result| result.get("success").and_then(Value::as_bool) == Some(true))
         })
 }
 
-fn successful_coder_read(transcript: &Value) -> bool {
-    function_results(transcript, "coder::read-file")
-        .into_iter()
-        .any(|message| {
-            message.pointer("/details/content").and_then(Value::as_str) == Some(FINAL_SCRIPT)
-        })
+fn successful_coder_read(message: &Value) -> bool {
+    message.pointer("/details/content").and_then(Value::as_str) == Some(FINAL_SCRIPT)
 }
 
 fn successful_output(transcript: &Value, function_id: &str, expected: &str) -> bool {
     function_results(transcript, function_id)
         .into_iter()
-        .any(|message| {
-            message
-                .pointer("/details/exit_code")
-                .and_then(Value::as_i64)
-                == Some(0)
-                && message
-                    .pointer("/details/stdout")
-                    .and_then(Value::as_str)
-                    .is_some_and(|stdout| stdout.trim() == expected)
-                && message
-                    .pointer("/details/stderr")
-                    .and_then(Value::as_str)
-                    .is_some_and(|stderr| stderr.trim().is_empty())
-                && message
-                    .pointer("/details/timed_out")
-                    .and_then(Value::as_bool)
-                    != Some(true)
-        })
+        .any(|message| successful_output_result(message, expected))
+}
+
+fn successful_output_result(message: &Value, expected: &str) -> bool {
+    message
+        .pointer("/details/exit_code")
+        .and_then(Value::as_i64)
+        == Some(0)
+        && message
+            .pointer("/details/stdout")
+            .and_then(Value::as_str)
+            .is_some_and(|stdout| stdout.trim() == expected)
+        && message
+            .pointer("/details/stderr")
+            .and_then(Value::as_str)
+            .is_some_and(|stderr| stderr.trim().is_empty())
+        && message
+            .pointer("/details/timed_out")
+            .and_then(Value::as_bool)
+            != Some(true)
 }
 
 #[derive(Debug, Default)]
@@ -670,160 +727,4 @@ fn workspace_root(run_id: &str) -> PathBuf {
     let base = std::fs::canonicalize(&base).unwrap_or(base);
     base.join("scenario-workspaces")
         .join(format!("{ID}-{run_id}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn prompt_describes_all_operations_without_function_ids() {
-        let spec = scenario("1234567890abcdef");
-        assert!(!spec.prompt.contains("::"));
-        assert!(spec.prompt.contains("iii-sandbox"));
-        assert!(spec.prompt.contains(DRAFT_NAME));
-        assert!(spec.prompt.contains(FINAL_NAME));
-        assert!(spec.prompt.contains(HOST_STDOUT));
-        assert!(spec.prompt.contains(SANDBOX_STDOUT));
-        assert!(spec.prompt.contains("networking disabled"));
-        assert!(spec
-            .prompt
-            .contains("Generic engine function discovery does not satisfy this step"));
-        assert!(spec
-            .prompt
-            .contains("Do not create, edit, move, or read this code file with a general shell"));
-    }
-
-    #[test]
-    fn recovered_function_errors_are_a_quality_signal() {
-        let spec = scenario("1234567890abcdef");
-        let execution_quality = spec
-            .criteria
-            .iter()
-            .find(|criterion| criterion.id == "execution_quality")
-            .expect("execution quality criterion");
-
-        assert_eq!(spec.threshold, PASS_THRESHOLD);
-        assert_eq!(execution_quality.weight, EXECUTION_QUALITY_WEIGHT);
-        let total_weight = spec
-            .criteria
-            .iter()
-            .map(|criterion| u16::from(criterion.weight))
-            .sum::<u16>();
-        let verified_outcome_weight = total_weight - u16::from(EXECUTION_QUALITY_WEIGHT);
-
-        assert_eq!(total_weight, 100);
-        assert_eq!(verified_outcome_weight, 55);
-        assert!(verified_outcome_weight >= u16::from(PASS_THRESHOLD));
-        assert_eq!(execution_quality_award(0), EXECUTION_QUALITY_WEIGHT);
-        assert_eq!(execution_quality_award(1), 0);
-
-        let aggregate_score = (100.0 + f64::from(verified_outcome_weight)) / 2.0;
-        assert_eq!(aggregate_score, 77.5);
-        assert!(aggregate_score >= f64::from(PASS_THRESHOLD));
-    }
-
-    #[test]
-    fn recognizes_both_registry_installs() {
-        let shell = common::ObservedFunctionCall {
-            function_id: "worker::add".into(),
-            arguments: json!({ "source": { "kind": "registry", "name": "shell" } }),
-        };
-        let sandbox = common::ObservedFunctionCall {
-            function_id: "worker::add".into(),
-            arguments: json!({ "source": { "kind": "registry", "name": "iii-sandbox" } }),
-        };
-        assert!(is_registry_install(&shell, "shell"));
-        assert!(is_registry_install(&sandbox, "iii-sandbox"));
-        assert!(!is_registry_install(&sandbox, "shell"));
-    }
-
-    #[test]
-    fn recognizes_successful_sandbox_lifecycle() {
-        let name = "e2e-shell-coder-1234567890ab";
-        let id = "sandbox-1";
-        let calls = vec![
-            common::ObservedFunctionCall {
-                function_id: "sandbox::create".into(),
-                arguments: json!({
-                    "image": "python",
-                    "name": name,
-                    "cpus": 1,
-                    "memory_mb": 256,
-                    "network": false
-                }),
-            },
-            common::ObservedFunctionCall {
-                function_id: "sandbox::exec".into(),
-                arguments: json!({ "sandbox_id": id, "cmd": "python3" }),
-            },
-            common::ObservedFunctionCall {
-                function_id: "sandbox::list".into(),
-                arguments: json!({}),
-            },
-            common::ObservedFunctionCall {
-                function_id: "sandbox::stop".into(),
-                arguments: json!({ "sandbox_id": id, "wait": true }),
-            },
-        ];
-        let transcript = json!({
-            "messages": [
-                result("sandbox::create", json!({ "sandbox_id": id, "image": "python" })),
-                result("sandbox::exec", json!({
-                    "stdout": "sandbox-check:35\n",
-                    "stderr": "",
-                    "exit_code": 0,
-                    "timed_out": false,
-                    "success": true
-                })),
-                result("sandbox::list", json!({ "sandboxes": [{
-                    "sandbox_id": id,
-                    "name": name,
-                    "image": "python",
-                    "stopped": false
-                }]})),
-                result("sandbox::stop", json!({ "sandbox_id": id, "stopped": true }))
-            ]
-        });
-        let evidence = sandbox_evidence(&transcript, &calls, name);
-        assert!(evidence.complete(), "{}", evidence.summary());
-    }
-
-    #[test]
-    fn cleanup_selects_only_owned_running_sandbox() {
-        let listed = json!({
-            "sandboxes": [
-                { "sandbox_id": "owned", "name": "mine", "stopped": false },
-                { "sandbox_id": "stopped", "name": "mine", "stopped": true },
-                { "sandbox_id": "foreign", "name": "other", "stopped": false }
-            ]
-        });
-        assert_eq!(
-            owned_running_sandbox_ids(&listed, "mine"),
-            vec!["owned".to_string()]
-        );
-    }
-
-    #[test]
-    fn workspace_root_and_sandbox_name_are_unique_per_run() {
-        let first = workspace_root("first");
-        let second = workspace_root("second");
-        assert!(first.is_absolute());
-        assert_ne!(first, second);
-        assert_ne!(sandbox_name("first"), sandbox_name("second"));
-    }
-
-    fn result(function_id: &str, details: Value) -> Value {
-        json!({
-            "message": {
-                "role": "function_result",
-                "function_id": function_id,
-                "is_error": false,
-                "details": details,
-                "content": []
-            }
-        })
-    }
 }

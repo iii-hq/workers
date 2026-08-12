@@ -1,165 +1,130 @@
-name: Harness quickstart
+name: Validate exact quickstart channel
+run-name: RC · test · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
-  schedule:
-    - cron: "17 5 * * *"
   workflow_dispatch:
     inputs:
-      channel:
-        description: Installer channel to validate
+      operation_id: { required: true, type: string }
+      step_id: { required: true, type: string }
+      source_sha: { required: true, type: string }
+      cli_channel:
+        required: true
         type: choice
         options: [latest, next]
-        default: latest
+      registry_tag:
+        required: true
+        type: choice
+        options: [latest, next]
       release_worker:
-        description: Worker published by the release that triggered this smoke
+        description: Exact worker, or "none"
+        required: true
         type: string
-        default: ''
       release_version:
-        description: Published worker version that must be resolved
+        description: Exact version, or "none"
+        required: true
         type: string
-        default: ''
       release_tag:
-        description: Git tag associated with the published release
+        description: Exact tag, or "none"
+        required: true
         type: string
-        default: ''
       release_run_id:
-        description: GitHub Actions run id of the publishing release
+        description: Exact run id, or 0
+        required: true
         type: string
-        default: ''
-      cascade_e2e:
-        description: Dispatch the deployed E2E workflow after a successful smoke
-        type: boolean
-        default: false
+      release_run_attempt:
+        description: Exact run attempt, or 0
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: harness-quickstart-${{ inputs.channel || github.event_name }}-${{ inputs.release_version || 'rolling' }}
-  cancel-in-progress: ${{ inputs.release_version == '' }}
+  group: harness-quickstart-${{ inputs.operation_id }}-${{ inputs.cli_channel }}-${{ inputs.registry_tag }}
+  cancel-in-progress: false
 
 jobs:
   validate:
-    name: harness quickstart / published registry (${{ matrix.channel }})
-    strategy:
-      fail-fast: false
-      matrix:
-        channel: >-
-          ${{
-            github.event_name == 'schedule'
-            && fromJSON('["latest","next"]')
-            || fromJSON(format('["{0}"]', inputs.channel))
-          }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
 
       - name: Run quickstart validator
-        id: quickstart
         env:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
-          HARNESS_QUICKSTART_TRACE: "1"
-          III_CHANNEL: ${{ matrix.channel }}
+          HARNESS_QUICKSTART_TRACE: '1'
+          III_CLI_CHANNEL: ${{ inputs.cli_channel }}
+          III_WORKER_TAG: ${{ inputs.registry_tag }}
+          HARNESS_QUICKSTART_RELEASE_WORKER: ${{ inputs.release_worker != 'none' && inputs.release_worker || '' }}
+          HARNESS_QUICKSTART_RELEASE_VERSION: ${{ inputs.release_version != 'none' && inputs.release_version || '' }}
         run: harness/tests/quickstart/run-ci.sh
 
-      - name: Verify the released artifact was resolved
-        if: ${{ success() && inputs.release_version != '' }}
-        env:
-          RELEASE_WORKER: ${{ inputs.release_worker }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          CHANNEL: ${{ matrix.channel }}
-        run: |
-          set -euo pipefail
-          python3 -m pip install --quiet pyyaml
-          python3 .github/scripts/verify_registry_lock.py \
-            --lock target/harness-quickstart/iii.lock \
-            --manifest harness/iii.worker.yaml \
-            --required harness \
-            --required console \
-            --worker "$RELEASE_WORKER" \
-            --version "$RELEASE_VERSION" \
-            --output target/harness-quickstart/lock-verification.json
-          jq -n \
-            --arg worker "$RELEASE_WORKER" \
-            --arg version "$RELEASE_VERSION" \
-            --arg tag "$RELEASE_TAG" \
-            --arg run_id "$RELEASE_RUN_ID" \
-            --arg channel "$CHANNEL" \
-            '{worker: $worker, version: $version, tag: $tag, release_run_id: $run_id, channel: $channel}' \
-            >target/harness-quickstart/release-context.json
+      - name: Verify exact release in lock
+        if: inputs.release_version != 'none'
+        run: >-
+          python3 .github/scripts/verify_registry_lock.py
+          --lock target/harness-quickstart/iii.lock
+          --manifest harness/iii.worker.yaml
+          --required harness
+          --required console
+          --worker '${{ inputs.release_worker }}'
+          --version '${{ inputs.release_version }}'
+          --output target/harness-quickstart/lock-verification.json
 
       - name: Show quickstart logs
         if: always()
         run: |
           shopt -s nullglob
-          logs=(target/harness-quickstart/logs/*.log)
-          for log in "${logs[@]}"; do
+          for log in target/harness-quickstart/logs/*.log; do
             echo "::group::$(basename "$log")"
             cat "$log"
             echo "::endgroup::"
           done
 
-      - name: Write quickstart summary
-        if: always()
-        run: |
-          {
-            echo "### Harness quickstart"
-            echo
-            if [[ -f target/harness-quickstart/result.json ]]; then
-              jq -r '
-                "| Status | Channel | CLI | Duration |",
-                "| --- | --- | --- | ---: |",
-                "| \(.status) | \(.channel) | \(.cli_version) | \(.elapsed_ms) ms |",
-                (if .failure_reason != "" then "", "**Failure:** \(.failure_reason)" else empty end)
-              ' target/harness-quickstart/result.json
-            else
-              echo "No quickstart result was produced."
-            fi
-          } >>"$GITHUB_STEP_SUMMARY"
-
-      - name: Upload quickstart artifacts
+      - name: Upload raw quickstart facts
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-quickstart-${{ matrix.channel }}
+          name: quickstart-${{ inputs.operation_id }}-${{ inputs.step_id }}
           path: target/harness-quickstart/
           retention-days: 7
           if-no-files-found: ignore
 
-  dispatch-e2e:
-    name: Dispatch deployed Harness E2E CI
-    needs: validate
-    if: ${{ needs.validate.result == 'success' && inputs.cascade_e2e == true }}
-    permissions:
-      actions: write
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch deployed E2E CI
+      - name: Write factual result
+        if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ inputs.channel }}
-          WORKER: ${{ inputs.release_worker }}
-          VERSION: ${{ inputs.release_version }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          SMOKE_RUN_ID: ${{ github.run_id }}
-          WORKFLOW_REF: ${{ github.ref_name }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          set -euo pipefail
-          [[ -n "$WORKER" && -n "$VERSION" ]] || {
-            echo "::error::release_worker and release_version are required for the E2E cascade"
-            exit 2
-          }
-          gh workflow run harness-e2e-deployed.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$WORKFLOW_REF" \
-            --field "channel=$CHANNEL" \
-            --field "release_worker=$WORKER" \
-            --field "release_version=$VERSION" \
-            --field "release_tag=$RELEASE_TAG" \
-            --field "release_run_id=$RELEASE_RUN_ID" \
-            --field "smoke_run_id=$SMOKE_RUN_ID"
+          subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' --arg channel '${{ inputs.registry_tag }}' \
+            --arg worker '${{ inputs.release_worker }}' --arg version '${{ inputs.release_version }}' \
+            '{source_sha:$source_sha,channel:$channel,worker:(if $worker == "none" then null else $worker end),version:(if $version == "none" then null else $version end)}')
+          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"quickstart",status:$status}]')
+          outputs=$(jq -cn --arg cli '${{ inputs.cli_channel }}' --arg registry '${{ inputs.registry_tag }}' \
+            --arg release_run_id '${{ inputs.release_run_id }}' --arg release_run_attempt '${{ inputs.release_run_attempt }}' \
+            '{cli_channel:$cli,registry_tag:$registry,release_run:{id:($release_run_id|tonumber),attempt:($release_run_attempt|tonumber)}}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind test --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow harness-quickstart.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output execution-result.json
+
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

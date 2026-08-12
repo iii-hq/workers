@@ -1,0 +1,25 @@
+{
+  "name": "@iii-workers/sandbox-code-runner-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@iii-dev/console-ui": "workspace:*",
+    "iii-sdk": "0.22.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.25.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.6"
+  }
+}

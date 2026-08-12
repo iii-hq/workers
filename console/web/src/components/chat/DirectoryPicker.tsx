@@ -437,7 +437,7 @@ export function DirectoryPicker({
         title={value ?? 'choose a working directory'}
         onClick={() => (open ? setOpen(false) : openPanel())}
         className={cn(
-          'inline-flex h-9 min-w-0 items-center gap-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+          'inline-flex h-9 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-mono text-[13px] lowercase text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
           externalError ? 'text-warn' : value ? 'text-ink' : 'text-ink-faint',
           'hover:border-ink hover:text-ink disabled:opacity-50',
         )}
@@ -450,7 +450,7 @@ export function DirectoryPicker({
         <div
           role="dialog"
           aria-label="select working directory"
-          className="absolute bottom-full left-0 z-30 mb-1 w-[360px] border border-rule bg-bg shadow-lg"
+          className="absolute bottom-full left-0 z-30 mb-1 w-[360px] rounded-md border border-rule-2 bg-panel-raised shadow-floating"
         >
           {/* section tabs (only with the worktree worker present) */}
           {worktrees?.enabled ? (

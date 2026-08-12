@@ -150,14 +150,14 @@ const WaterfallRow = memo(function WaterfallRow({
       ? getWorkerColor(getWorkerName(span))
       : 'var(--color-ink-ghost)'
 
-  // Hover is pure CSS (`hover:bg-panel`). Selected/error chrome
+  // Hover is pure CSS (`hover:bg-surface-hover`). Selected/error chrome
   // takes priority over hover via CSS specificity (more-specific
   // bg classes).
   const rowChrome = isSelected
-    ? 'bg-panel border-l-2 border-l-accent'
+    ? 'bg-surface-selected'
     : isError
-      ? 'bg-alert/5 border-l-2 border-l-alert'
-      : 'hover:bg-panel'
+      ? 'bg-alert-muted'
+      : 'hover:bg-surface-hover'
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: this clickable row contains a nested expand/collapse <button>, so it can't be a native <button> (nested interactive content is invalid HTML); div + role="button" + key handlers is the accessible fallback
@@ -237,7 +237,7 @@ const WaterfallRow = memo(function WaterfallRow({
       </div>
 
       {/* bar track */}
-      <div className="relative h-6 bg-rule-2">
+      <div className="relative h-6 bg-surface">
         <div
           className={cn(
             'absolute h-4 top-1 min-w-[3px]',
@@ -273,7 +273,7 @@ const initialDisplayState: DisplayState = {
 // over the chart fired one dispatch per row entered/exited — each one a
 // full re-render of every visible row. For a 2000+-span trace that froze
 // the page on mouse-move. Row-background styling stays pure CSS
-// (`hover:bg-panel`); the hover DETAIL card (SpanHoverCard, shared with
+// (`hover:bg-surface-hover`); the hover DETAIL card (SpanHoverCard, shared with
 // the timelines) is plain `useState` on the chart component instead:
 // rows are memo'd with stable callbacks, so a per-mousemove state update
 // re-renders only the shallow wrapper map and the card — never the rows.
@@ -373,7 +373,7 @@ function Toolbar(props: ToolbarProps) {
     totalCount,
   } = props
   return (
-    <div className="flex items-center justify-between px-3 py-2 border-b border-rule bg-panel">
+    <div className="flex items-center justify-between px-3 py-2 border-b border-rule-2">
       <div className="flex items-center gap-1.5">
         {showExpandControls ? (
           <>
@@ -383,7 +383,7 @@ function Toolbar(props: ToolbarProps) {
                   type="button"
                   onClick={expandAll}
                   aria-label="expand all spans"
-                  className="inline-flex items-center justify-center w-7 h-7 border bg-bg text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
                 >
                   <ChevronsDown className="w-3.5 h-3.5" />
                 </button>
@@ -396,7 +396,7 @@ function Toolbar(props: ToolbarProps) {
                   type="button"
                   onClick={collapseAll}
                   aria-label="collapse all spans"
-                  className="inline-flex items-center justify-center w-7 h-7 border bg-bg text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
                 >
                   <ChevronsUp className="w-3.5 h-3.5" />
                 </button>
@@ -411,7 +411,7 @@ function Toolbar(props: ToolbarProps) {
             internalGroups.length > 0 ||
             hiddenSpanCount > 0) && (
             <>
-              <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
+              <div aria-hidden className="w-px h-4 bg-edge mx-1" />
               <SpanFilterMenu
                 groups={spanGroups}
                 workerGroups={workerGroups}
@@ -744,7 +744,7 @@ export function WaterfallChart({
         style={
           { '--span-col-width': `${spanColWidth}px` } as React.CSSProperties
         }
-        className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule bg-bg"
+        className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule-2 bg-panel-raised"
       >
         <div className="flex items-center relative">
           <span>span</span>
@@ -760,7 +760,7 @@ export function WaterfallChart({
             className="absolute right-[-11px] top-0 bottom-0 w-[7px] cursor-col-resize z-10 group"
             title="drag to resize, double-click to reset"
           >
-            <div className="absolute left-[3px] top-0 bottom-0 w-[1px] bg-rule-2 group-hover:bg-accent transition-colors" />
+            <div className="absolute left-[3px] top-0 bottom-0 w-[1px] bg-edge group-hover:bg-accent transition-colors" />
           </div>
         </div>
         <div className="flex justify-between font-mono">
@@ -820,12 +820,12 @@ export function WaterfallChart({
 
         {/* minimap */}
         {contentHeight > containerHeight && (
-          <div className="w-16 border-l border-rule bg-panel flex-shrink-0 relative p-2">
+          <div className="w-16 border-l border-rule-2 flex-shrink-0 relative p-2">
             <div className="text-[9px] text-ink-ghost uppercase tracking-[0.06em] mb-2">
               map
             </div>
             <div
-              className="relative bg-rule-2 overflow-hidden"
+              className="relative bg-surface overflow-hidden"
               style={{ height: MINIMAP_HEIGHT }}
             >
               {visibleData.spans.map((span, i) => {

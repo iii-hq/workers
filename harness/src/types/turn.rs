@@ -248,6 +248,10 @@ pub struct TurnRecord {
     /// contracts get re-fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions_generation: Option<u64>,
+    /// Latest generation's context accounting (also stored under
+    /// `harness_context/<session_id>` once the generation completes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_snapshot: Option<crate::context_snapshot::ContextSnapshotV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -335,6 +339,7 @@ mod tests {
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
+            context_snapshot: None,
             result: None,
             result_error: None,
             validation_retries: 0,

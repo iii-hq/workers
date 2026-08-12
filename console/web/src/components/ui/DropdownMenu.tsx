@@ -28,7 +28,7 @@ export function DropdownMenuContent({
       <DropdownMenuPrimitive.Content
         sideOffset={sideOffset}
         className={cn(
-          'z-50 min-w-[10rem] overflow-hidden border border-rule bg-bg p-1 text-ink font-mono text-[12px] lowercase shadow-lg',
+          'z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 text-ink font-mono text-[12px] lowercase shadow-floating',
           'data-[state=open]:animate-in data-[state=closed]:animate-out',
           'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           className,
@@ -61,8 +61,8 @@ export function DropdownMenuItem({
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
-        'relative flex cursor-pointer items-center gap-2 px-2 py-1.5 outline-none select-none',
-        'data-[highlighted]:bg-rule data-[highlighted]:text-ink',
+        'relative flex cursor-pointer items-center gap-2 rounded-xs px-2 py-1.5 outline-none select-none',
+        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
         'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
         className,
       )}
@@ -83,8 +83,8 @@ export function DropdownMenuCheckboxItem({
   return (
     <DropdownMenuPrimitive.CheckboxItem
       className={cn(
-        'relative flex cursor-pointer items-center py-1.5 pr-2 pl-7 outline-none select-none',
-        'data-[highlighted]:bg-rule data-[highlighted]:text-ink',
+        'relative flex cursor-pointer items-center rounded-xs py-1.5 pr-2 pl-7 outline-none select-none',
+        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
         'data-[state=checked]:text-ink',
         'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
         className,
@@ -107,7 +107,7 @@ export function DropdownMenuSeparator({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
   return (
     <DropdownMenuPrimitive.Separator
-      className={cn('-mx-1 my-1 h-px bg-rule', className)}
+      className={cn('-mx-1 my-1 h-px bg-edge', className)}
       {...props}
     />
   )

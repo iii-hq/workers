@@ -1,0 +1,13 @@
+iii: v1
+name: provider-openrouter
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: provider-openrouter
+tags: [llm, openrouter, aggregator, chat-completions, provider]
+description: OpenRouter Chat Completions provider worker; one API key in front of every major vendor. Implements provider::openrouter::stream and provider::openrouter::refresh_models behind llm-router.
+
+dependencies:
+  state: "^0.22.0"
+  llm-router: "^1.0.0"

@@ -33,10 +33,13 @@
 //! defaults to `tag=latest`) or from a GitHub repo (`repo=URL
 //! skill=NAME branch?=main`) and writes the contents into
 //! `<skills_folder>/<namespace>/...`; `directory::skills::update` /
-//! `directory::prompts::update` overwrite one existing file with edited
-//! full-file content. After every successful write the worker fires
-//! `directory::skills::on-change` and/or `directory::prompts::on-change`
-//! so subscribers can forward change notifications to their clients.
+//! `directory::prompts::update` / `directory::system-prompts::update`
+//! overwrite one existing file with edited full-file content;
+//! `directory::system-prompts::{create,delete}` manage system-prompt files. After
+//! every successful write the worker fires `directory::skills::on-change`
+//! and/or `directory::prompts::on-change` and/or
+//! `directory::system-prompts::on-change` so subscribers can forward
+//! change notifications to their clients.
 //!
 //! The worker also ships an injectable console UI (see [`ui`]): a
 //! skills & prompts browser/editor page, a `directory::*`
@@ -50,3 +53,4 @@ pub mod manifest;
 pub mod sources;
 pub mod trigger_types;
 pub mod ui;
+pub mod watch;

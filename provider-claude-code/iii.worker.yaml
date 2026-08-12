@@ -3,10 +3,11 @@ name: provider-claude-code
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: provider-claude-code
 tags: [llm, anthropic, claude, claude-code, subscription, provider]
 description: Claude Code (Pro/Max subscription) Messages API provider worker; implements provider::claude-code::stream and provider::claude-code::refresh_models behind llm-router, using OAuth credentials from the auth-credentials vault or ~/.claude/.credentials.json.
 
 dependencies:
-  state: "^0.21.2"
+  state: "^0.22.0"
   llm-router: "^1.0.0"

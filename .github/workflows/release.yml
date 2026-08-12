@@ -1,83 +1,43 @@
 # Release SOP: docs/sops/release.md
-name: Release
+name: Publish exact worker release
+run-name: RC · release · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
 
 on:
-  push:
-    tags:
-      - 'acp/v*'
-      - 'approval-gate/v*'
-      - 'bridge/v*'
-      - 'browser/v*'
-      - 'claude-code/v*'
-      - 'codex/v*'
-      - 'computer/v*'
-      - 'devin/v*'
-      - 'console/v*'
-      - 'grok/v*'
-      - 'context-manager/v*'
-      - 'cron/v*'
-      - 'database/v*'
-      - 'editor/v*'
-      - 'email/v*'
-      - 'eval/v*'
-      - 'harness/v*'
-      - 'hermes/v*'
-      - 'http/v*'
-      - 'iii-directory/v*'
-      - 'lsp/v*'
-      - 'image-resize/v*'
-      - 'llm-router/v*'
-      - 'fp/v*'
-      - 'github/v*'
-      - 'mcp/v*'
-      - 'memory/v*'
-      - 'memory-consolidate/v*'
-      - 'opencode/v*'
-      - 'openwiki/v*'
-      - 'pdf/v*'
-      - 'pi/v*'
-      - 'provider-anthropic/v*'
-      - 'provider-claude-code/v*'
-      - 'provider-kimi/v*'
-      - 'provider-llamacpp/v*'
-      - 'provider-openai/v*'
-      - 'provider-openai-codex/v*'
-      - 'provider-opencode-go/v*'
-      - 'provider-xai/v*'
-      - 'provider-zai/v*'
-      - 'pubsub/v*'
-      - 'queue/v*'
-      - 'rbac-proxy/v*'
-      - 'session-manager/v*'
-      - 'slack/v*'
-      - 'telegram-bot/v*'
-      - 'shell/v*'
-      - 'state/v*'
-      - 'storage/v*'
-      - 'scrapling/v*'
-      - 'web/v*'
-      - 'worktree/v*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to release (e.g., image-resize/v1.0.0)'
+      operation_id:
+        description: Release Control operation UUID
         required: true
         type: string
+      step_id:
+        description: Release Control release step UUID
+        required: true
+        type: string
+      source_tag_step_id:
+        description: Step UUID recorded in the annotated tag
+        required: true
+        type: string
+      tag:
+        description: Exact annotated release tag
+        required: true
+        type: string
+      publish_registry:
+        description: Exact Registry capability selected by Release Control
+        required: true
+        type: boolean
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  # ──────────────────────────────────────────────────────────────
-  # Setup: parse tag, read iii.worker.yaml, extract registry-tag.
-  # ──────────────────────────────────────────────────────────────
   setup:
-    name: Setup
+    name: Validate exact release identity
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -89,181 +49,118 @@ jobs:
       manifest: ${{ steps.meta.outputs.manifest }}
       registry_tag: ${{ steps.meta.outputs.registry_tag }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
-      dry_run: ${{ steps.meta.outputs.dry_run }}
       targets: ${{ steps.meta.outputs.targets }}
       experimental: ${{ steps.meta.outputs.experimental }}
+      tag_sha: ${{ steps.meta.outputs.tag_sha }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+      maturity: ${{ steps.meta.outputs.maturity }}
       web_bundle: ${{ steps.web.outputs.needed }}
-      interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
-      harness_smoke: ${{ steps.harness_smoke.outputs.enabled }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Refetch annotated tag
-        env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$RAW_TAG" ]]; then
-            git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
-          fi
+      - name: Install manifest tooling
+        run: python3 -m pip install --quiet pyyaml
 
-      - name: Parse tag + worker manifest
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --mutating
+
+      - name: Parse tag and worker manifest
         id: meta
         env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+          RAW_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
+          git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
           python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
+          [[ "$(git tag -l --format='%(contents)' "$RAW_TAG" | sed -n 's/^operation-id: //p')" == '${{ inputs.operation_id }}' ]]
+          [[ "$(git tag -l --format='%(contents)' "$RAW_TAG" | sed -n 's/^step-id: //p')" == '${{ inputs.source_tag_step_id }}' ]]
 
-      # Workers like `console` ship a Vite SPA embedded into the binary via
-      # `rust-embed`. Their `build.rs` invokes `pnpm install + pnpm build`
-      # inside `<worker>/web/`, which the rust-binary matrix runners don't
-      # have a Node/pnpm toolchain for. Detection is filesystem-based so any
-      # future worker that adds a `web/package.json` opts in automatically.
       - name: Detect web bundle
         id: web
         env:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
           if [[ -f "$WORKER/web/package.json" || -f "$WORKER/ui/package.json" ]]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$WORKER has a web/ or ui/ frontend; will pre-build its bundle"
+            echo "needed=true" >>"$GITHUB_OUTPUT"
           else
-            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "needed=false" >>"$GITHUB_OUTPUT"
           fi
 
-      # A worker may declare `interface_smoke: false` in iii.worker.yaml when
-      # it can't be booted for interface collection (e.g. iii-lsp is a stdio
-      # language server that exits on stdin EOF and registers no functions).
-      # Such workers still build + ship their binary, but skip the registry
-      # publish job below. Default (key absent) is to publish as usual.
-      - name: Detect interface-smoke opt-out
-        id: smoke
-        env:
-          WORKER: ${{ steps.meta.outputs.worker }}
-        run: |
-          set -euo pipefail
-          val=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("false" if m.raw.get("interface_smoke") is False else "true")')
-          echo "interface_smoke=$val" >> "$GITHUB_OUTPUT"
-          if [[ "$val" == "false" ]]; then
-            echo "::notice::$WORKER opts out of interface collection; registry publish will be skipped"
-          fi
-
-      # The published Harness quickstart also covers every worker declared as
-      # a mandatory Harness dependency. Keep this derived from the manifest so
-      # the post-deploy smoke follows dependency changes automatically.
-      - name: Detect Harness quickstart smoke target
-        id: harness_smoke
-        env:
-          WORKER: ${{ steps.meta.outputs.worker }}
-        run: |
-          set -euo pipefail
-          enabled=$(WORKER="$WORKER" python3 - <<'PY'
-          import os
-          from pathlib import Path
-          import yaml
-
-          worker = os.environ["WORKER"]
-          manifest = yaml.safe_load(Path("harness/iii.worker.yaml").read_text())
-          dependencies = manifest.get("dependencies", {}) or {}
-          print("true" if worker == "harness" or worker in dependencies else "false")
-          PY
-          )
-          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
-          echo "::notice::Harness quickstart smoke target=$enabled worker=$WORKER"
-
-  # ──────────────────────────────────────────────────────────────
-  # Create the GitHub Release shell (skipped on dry runs).
-  # ──────────────────────────────────────────────────────────────
-  create-release:
-    name: Create GitHub Release
-    needs: [setup]
-    if: needs.setup.outputs.dry_run != 'true'
+  github-release:
+    name: Create GitHub Release shell
+    needs: setup
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
           name: ${{ needs.setup.outputs.worker }} ${{ needs.setup.outputs.version }}
           draft: false
-          prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+          prerelease: ${{ needs.setup.outputs.registry_tag == 'next' || needs.setup.outputs.is_prerelease == 'true' }}
+          make_latest: false
           generate_release_notes: true
 
-  # ──────────────────────────────────────────────────────────────
-  # Binary path: build multi-arch via the existing reusable.
-  # ──────────────────────────────────────────────────────────────
   binary-build:
     name: Binary build
-    needs: [setup, create-release]
+    needs: [setup, github-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'binary' }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       bin_name: ${{ needs.setup.outputs.bin }}
       manifest_path: ${{ needs.setup.outputs.worker }}/${{ needs.setup.outputs.manifest }}
       tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
-      skip_create_release: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       targets: ${{ needs.setup.outputs.targets }}
       web_bundle: ${{ needs.setup.outputs.web_bundle == 'true' }}
     secrets: inherit
 
-  # ──────────────────────────────────────────────────────────────
-  # Container path: build multi-arch image, push to ghcr.io.
-  # ──────────────────────────────────────────────────────────────
   container-build:
     name: Container build
-    needs: [setup, create-release]
+    needs: [setup, github-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'image' }}
     uses: ./.github/workflows/_container.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
-      registry_tag: ${{ needs.setup.outputs.registry_tag }}
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      dockerfile: Dockerfile
     secrets: inherit
 
-  # ──────────────────────────────────────────────────────────────
-  # Bundle path: build a single-file archive (Node/Python), upload
-  # as a GitHub Release asset for `_publish-registry.yml` to resolve.
-  # ──────────────────────────────────────────────────────────────
   bundle-build:
     name: Bundle build
-    needs: [setup, create-release]
+    needs: [setup, github-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'bundle' }}
     uses: ./.github/workflows/_bundle.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       language: ${{ needs.setup.outputs.language }}
       tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
     secrets: inherit
 
-  # ──────────────────────────────────────────────────────────────
-  # Publish to the workers registry API.
-  # ──────────────────────────────────────────────────────────────
-  publish:
-    name: Publish to registry
+  registry-publish:
+    name: Publish immutable version and exact channel
     needs: [setup, binary-build, container-build, bundle-build]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' && needs.setup.outputs.interface_smoke != 'false' }}
+    if: ${{ !failure() && !cancelled() && inputs.publish_registry }}
     uses: ./.github/workflows/_publish-registry.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       deploy: ${{ needs.setup.outputs.deploy }}
@@ -271,110 +168,57 @@ jobs:
       tag: ${{ needs.setup.outputs.tag }}
       bin: ${{ needs.setup.outputs.bin }}
       image_tag: ${{ needs.container-build.outputs.image_tag }}
-      experimental: ${{ needs.setup.outputs.experimental }}
+      experimental: ${{ needs.setup.outputs.experimental == 'true' }}
     secrets: inherit
 
-  # Dispatch the independent published-artifact smoke CI immediately after
-  # the registry deployment of Harness or one of its mandatory dependencies.
-  # The smoke CI dispatches the deployed E2E CI after it passes. The release
-  # itself intentionally does not wait for either child workflow.
-  dispatch-smoke:
-    name: Dispatch Harness smoke CI
-    needs: [setup, publish]
-    if: >-
-      ${{
-        !failure() &&
-        !cancelled() &&
-        needs.setup.outputs.harness_smoke == 'true' &&
-        needs.setup.outputs.dry_run != 'true' &&
-        needs.publish.result == 'success' &&
-        (needs.setup.outputs.registry_tag == 'latest' || needs.setup.outputs.registry_tag == 'next')
-      }}
-    permissions:
-      actions: write
-      contents: read
+  evidence:
+    name: Record factual release effects
+    needs: [setup, github-release, binary-build, container-build, bundle-build, registry-publish]
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch published-artifact smoke CI
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Write factual result
         env:
-          GH_TOKEN: ${{ github.token }}
+          SETUP: ${{ needs.setup.result }}
+          GITHUB_RELEASE: ${{ needs.github-release.result }}
+          BINARY: ${{ needs.binary-build.result }}
+          CONTAINER: ${{ needs.container-build.result }}
+          BUNDLE: ${{ needs.bundle-build.result }}
+          REGISTRY: ${{ needs.registry-publish.result }}
+          WORKER: ${{ needs.setup.outputs.worker }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          TAG: ${{ needs.setup.outputs.tag || inputs.tag }}
+          TAG_SHA: ${{ needs.setup.outputs.tag_sha }}
+          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
           CHANNEL: ${{ needs.setup.outputs.registry_tag }}
-          WORKER: ${{ needs.setup.outputs.worker }}
-          VERSION: ${{ needs.setup.outputs.version }}
-          RELEASE_TAG: ${{ needs.setup.outputs.tag }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          WORKFLOW_REF: ${{ github.ref_name }}
+          DEPLOY: ${{ needs.setup.outputs.deploy }}
+          IMAGE_DIGEST: ${{ needs.container-build.outputs.image_digest }}
         run: |
-          set -euo pipefail
-          gh workflow run harness-quickstart.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$WORKFLOW_REF" \
-            --field "channel=$CHANNEL" \
-            --field "release_worker=$WORKER" \
-            --field "release_version=$VERSION" \
-            --field "release_tag=$RELEASE_TAG" \
-            --field "release_run_id=$RELEASE_RUN_ID" \
-            --field cascade_e2e=true
-          echo "Dispatched Harness smoke CI for $WORKER v$VERSION ($CHANNEL)."
+          subject=$(jq -cn --arg worker "$WORKER" --arg version "$VERSION" --arg source_sha "$SOURCE_SHA" \
+            --arg tag "$TAG" --arg tag_sha "$TAG_SHA" --arg channel "$CHANNEL" \
+            '{worker:$worker,version:$version,source_sha:$source_sha,tag:$tag,tag_sha:$tag_sha,channel:$channel}')
+          checks=$(jq -cn --arg setup "$SETUP" --arg binary "$BINARY" --arg container "$CONTAINER" \
+            --arg bundle "$BUNDLE" \
+            '[{name:"setup",status:$setup},{name:"binary_build",status:$binary},{name:"container_build",status:$container},{name:"bundle_build",status:$bundle}]')
+          effects=$(jq -cn --arg release "$GITHUB_RELEASE" --arg registry "$REGISTRY" \
+            '[{surface:"github_release",status:$release},{surface:"registry_publish",status:$registry}]')
+          outputs=$(jq -cn --arg deploy "$DEPLOY" --arg image_digest "$IMAGE_DIGEST" \
+            '{deploy:$deploy,image_digest:(if $image_digest == "" then null else $image_digest end)}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind release --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow release.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" --outputs "$outputs" \
+            --output execution-result.json
 
-  # ──────────────────────────────────────────────────────────────
-  # Announce the release in Slack (#worker-releases). Terminal job:
-  # nothing depends on it, but a bad token or channel fails red
-  # instead of rotting silently.
-  # ──────────────────────────────────────────────────────────────
-  announce:
-    name: Announce on Slack
-    needs: [setup, binary-build, container-build, bundle-build, publish]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Post to Slack
-        id: post
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL: worker-releases
-          WORKER: ${{ needs.setup.outputs.worker }}
-          VERSION: ${{ needs.setup.outputs.version }}
-          IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
-          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
-        run: |
-          set -euo pipefail
-          suffix=""
-          if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
-          text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
-          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
-          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          if ! echo "$resp" | jq -e .ok > /dev/null; then
-            echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
-            exit 1
-          fi
-          echo "ts=$(echo "$resp" | jq -r .ts)" >> "$GITHUB_OUTPUT"
-
-      - name: Post release notes in thread
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL: worker-releases
-          TAG: ${{ needs.setup.outputs.tag }}
-          THREAD_TS: ${{ steps.post.outputs.ts }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          notes=$(gh release view "$TAG" -R "${{ github.repository }}" --json body --jq .body 2>/dev/null || true)
-          if [[ -z "$notes" ]]; then
-            echo "::notice::no release notes body; skipping thread reply"
-            exit 0
-          fi
-          notes=$(printf '%s' "$notes" | head -c 2900)
-          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$notes" --arg ts "$THREAD_TS" \
-            '{channel: $channel, text: $text, thread_ts: $ts}')
-          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          if ! echo "$resp" | jq -e .ok > /dev/null; then
-            echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
-            exit 1
-          fi
+      - uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

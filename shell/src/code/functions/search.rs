@@ -49,8 +49,9 @@ pub struct SearchInput {
     #[serde(default)]
     pub ignore_case: bool,
     /// Glob patterns (matched against the path relative to its containing
-    /// root) that paths must match to be considered. Empty = include
-    /// everything.
+    /// root — or, for a walk root outside every configured root, relative
+    /// to the session directory `coder::info` reports as `session_root`)
+    /// that paths must match to be considered. Empty = include everything.
     #[serde(default)]
     pub include_globs: Vec<String>,
     /// Glob patterns (same relative-to-root matching) that exclude paths.
@@ -146,6 +147,16 @@ pub struct PathMatch {
     /// itself are not resolved. Operations on it re-validate through the
     /// jail.
     pub path: String,
+    /// What matched: `file` or `dir`. Directories match by NAME only —
+    /// content search never reads them.
+    pub kind: PathMatchKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PathMatchKind {
+    File,
+    Dir,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -206,6 +217,18 @@ fn inner(
         )));
     }
 
+    // Glob/path matching runs on the form relative to the CONTAINING root.
+    // In unjailed mode the walk root can sit outside every configured root
+    // (the harness stamps a session scope anywhere on the host), where no
+    // root-relative form exists — every entry would be dropped and the
+    // search would return a false empty. Fall back to the same anchor that
+    // resolved the wire path: the session scope when it contains the walk
+    // root, else the walk root itself.
+    let match_anchor = crate::fs::scope_anchor(req.fs_scope.as_ref())
+        .and_then(|root| resolver.session_root(root))
+        .filter(|scope| walk_root.starts_with(scope))
+        .unwrap_or_else(|| walk_root.clone());
+
     let include = build_globset(&req.include_globs)?;
     let exclude = build_globset(&req.exclude_globs)?;
 
@@ -250,11 +273,18 @@ fn inner(
             && resolver.is_default_excluded_dir(e.path()))
     });
     for entry in entries.filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
+        // Directories participate in PATH matching (a folder is findable
+        // by name); only files go on to content matching. Symlinks and
+        // special files stay out of both lists, as before.
+        let is_dir = entry.file_type().is_dir();
+        if !entry.file_type().is_file() && !is_dir {
             continue;
         }
         let abs = entry.path();
-        let Some(rel) = resolver.relative(abs) else {
+        let Some(rel) = resolver
+            .relative(abs)
+            .or_else(|| relative_to(&match_anchor, abs))
+        else {
             continue;
         };
         if rel.is_empty() {
@@ -293,6 +323,11 @@ fn inner(
                 } else if charge(&mut budget_remaining, abs_wire.len()) {
                     path_matches.push(PathMatch {
                         path: abs_wire.clone(),
+                        kind: if is_dir {
+                            PathMatchKind::Dir
+                        } else {
+                            PathMatchKind::File
+                        },
                     });
                 } else {
                     truncated = true;
@@ -302,6 +337,9 @@ fn inner(
         }
         if budget_exhausted {
             break;
+        }
+        if is_dir {
+            continue;
         }
 
         if let Some(matcher) = &content_matcher {
@@ -415,6 +453,17 @@ fn clip_line(line: &str, max_line_bytes: usize) -> &str {
         end -= 1;
     }
     &line[..end]
+}
+
+/// `abs` relative to `anchor` as a forward-slash string — the fallback
+/// matching form for entries that live outside every configured root, where
+/// `PathResolver::relative` has no root to strip. `None` when `abs` isn't
+/// under `anchor` (the entry has no expressible relative form and is
+/// skipped, as before).
+fn relative_to(anchor: &std::path::Path, abs: &std::path::Path) -> Option<String> {
+    abs.strip_prefix(anchor)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
 /// Charge `cost` wire bytes against the remaining response budget.
@@ -532,6 +581,56 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(p, body).unwrap();
+    }
+
+    /// Path search finds FOLDERS by name, not just files — and flags
+    /// each match's kind so a UI can render and act on them differently.
+    /// Content search must never list a directory.
+    #[tokio::test]
+    async fn path_search_matches_directories_with_kind() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join("needle-dir/sub")).unwrap();
+        write(&tmp, "needle.txt", "no content hit");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let dir_abs = abs(&tmp, "needle-dir");
+        let file_abs = abs(&tmp, "needle.txt");
+        let dir_match = out
+            .path_matches
+            .iter()
+            .find(|m| m.path == dir_abs)
+            .expect("directory must appear in path matches");
+        assert!(matches!(dir_match.kind, PathMatchKind::Dir));
+        let file_match = out
+            .path_matches
+            .iter()
+            .find(|m| m.path == file_abs)
+            .expect("file must appear in path matches");
+        assert!(matches!(file_match.kind, PathMatchKind::File));
+        assert!(
+            out.content_matches.iter().all(|m| m.path != dir_abs),
+            "a directory must never produce a content match"
+        );
     }
 
     #[tokio::test]
@@ -1423,5 +1522,122 @@ mod tests {
         assert_eq!(out.content_matches.len(), 1);
         assert_eq!(out.content_matches[0].text, "ab");
         assert!(!out.truncated);
+    }
+
+    /// Unjailed jail whose configured root is a SIBLING of the session
+    /// scope — the shape a console session gets when the harness stamps a
+    /// working directory outside the worker's own configured roots.
+    fn setup_scoped() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Arc<PathResolver>,
+        Arc<CoderConfig>,
+    ) {
+        let roots = tempdir().unwrap();
+        let scope = tempdir().unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![roots.path().to_path_buf()],
+            non_accessible_globs: vec!["**/.env".to_string()],
+            unjailed: true,
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        });
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        (roots, scope, resolver, cfg)
+    }
+
+    fn scoped_input(query: &str, scope: &tempfile::TempDir) -> SearchInput {
+        SearchInput {
+            fs_scope: Some(crate::fs::FsScope {
+                root: scope.path().display().to_string(),
+                grants: vec![],
+                boundary: crate::fs::FsBoundary::ConfiguredRoots,
+            }),
+            ..base_input(query)
+        }
+    }
+
+    /// REGRESSION: a session scoped outside every configured root walked
+    /// the right tree but had no root-relative form for any entry, so every
+    /// file was dropped — the search returned a FALSE EMPTY instead of
+    /// matches (and never an error, so the caller could not tell).
+    #[tokio::test]
+    async fn scope_outside_configured_roots_still_matches() {
+        let (_roots, scope, r, c) = setup_scoped();
+        std::fs::create_dir_all(scope.path().join("prompts")).unwrap();
+        std::fs::write(scope.path().join("prompts/subagent.txt"), "spawn agents\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                include_globs: vec!["**/*.txt".into()],
+                search_paths: true,
+                ..scoped_input("spawn", &scope)
+            },
+        )
+        .await
+        .unwrap();
+        let expected = std::fs::canonicalize(scope.path())
+            .unwrap()
+            .join("prompts/subagent.txt")
+            .display()
+            .to_string();
+        assert_eq!(out.content_matches.len(), 1, "content match dropped");
+        assert_eq!(out.content_matches[0].path, expected);
+        assert_eq!(out.path_matches.len(), 0);
+    }
+
+    /// The fallback anchor is the SESSION ROOT, not the walk root: an
+    /// include glob written relative to the session directory keeps working
+    /// when `path` narrows the walk to a subfolder — same semantics as a
+    /// root-relative glob inside a configured root (see the outline recipe).
+    #[tokio::test]
+    async fn scoped_include_globs_anchor_at_the_session_root() {
+        let (_roots, scope, r, c) = setup_scoped();
+        std::fs::create_dir_all(scope.path().join("src")).unwrap();
+        std::fs::write(scope.path().join("src/lib.rs"), "fn needle() {}\n").unwrap();
+        std::fs::write(scope.path().join("src/other.rs"), "fn needle() {}\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "src".into(),
+                include_globs: vec!["src/lib.rs".into()],
+                ..scoped_input("needle", &scope)
+            },
+        )
+        .await
+        .unwrap();
+        let expected = std::fs::canonicalize(scope.path())
+            .unwrap()
+            .join("src/lib.rs")
+            .display()
+            .to_string();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].path, expected);
+    }
+
+    /// Non-accessible protection is unchanged by the fallback anchor:
+    /// secrets outside every configured root stay absent from both lists.
+    #[tokio::test]
+    async fn scoped_search_still_hides_non_accessible_files() {
+        let (_roots, scope, r, c) = setup_scoped();
+        std::fs::write(scope.path().join(".env"), "TOKEN=needle\n").unwrap();
+        std::fs::write(scope.path().join("ok.txt"), "needle\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                search_paths: true,
+                ..scoped_input("needle", &scope)
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert!(out.content_matches[0].path.ends_with("ok.txt"));
+        assert!(out.path_matches.is_empty());
     }
 }

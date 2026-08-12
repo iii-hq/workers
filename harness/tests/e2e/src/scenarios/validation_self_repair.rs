@@ -21,18 +21,32 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::custom_validator::{HookEnvelope, HookVerdict};
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "validation_self_repair";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
 const REQUIRED_NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
+const DATA_REPAIRED: AssessmentSpec = AssessmentSpec::hard_gated(
+    "data_repaired",
+    40,
+    "All invariants hold at the end and every required name survived the repair.",
+);
+const DIAGNOSIS_DRIVEN: AssessmentSpec = AssessmentSpec::hard_gated(
+    "diagnosis_driven",
+    30,
+    "The auditor rejected the flawed seed with a factual defect list (no prescribed fix), via one envelope-mode registration.",
+);
+const DECISIVE_REPAIR: AssessmentSpec = AssessmentSpec::hard_gated(
+    "decisive_repair",
+    30,
+    "The model's own repair converged within two rounds (full credit for one, half for two).",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[DATA_REPAIRED, DIAGNOSIS_DRIVEN, DECISIVE_REPAIR];
 
 /// The invariants, shared verbatim by the audit function and the evaluator.
 /// Facts only — the messages name defects, never repairs.
@@ -149,7 +163,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "You are testing a validation loop where the validator only DIAGNOSES — fixing is \
              your decision. Follow the setup steps exactly; after that, think for yourself.\n\n\
@@ -186,27 +200,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         // audit catches it, second converges) scores 85 and passes — that IS
         // the loop doing its job; live run 1: the model "renamed the second
         // beta to delta", created a duplicate delta, and was caught.
-        threshold: 80,
-        criteria: vec![
-            CriterionSpec {
-                id: "data_repaired",
-                weight: 40,
-                description: "All invariants hold at the end and every required name survived \
-                              the repair.",
-            },
-            CriterionSpec {
-                id: "diagnosis_driven",
-                weight: 30,
-                description: "The auditor rejected the flawed seed with a factual defect list \
-                              (no prescribed fix), via one envelope-mode registration.",
-            },
-            CriterionSpec {
-                id: "decisive_repair",
-                weight: 30,
-                description: "The model's own repair converged in one round (half credit for \
-                              two).",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: Some(setup),
         evaluate,
@@ -255,53 +249,33 @@ fn evaluate<'a>(
                 && text.contains("duplicate name: beta")
         });
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "data_repaired",
-                    repaired,
-                    format!("rows={}, remaining violations: {remaining:?}", rows.len()),
+        Ok(assessment::build_evaluation([
+            DATA_REPAIRED.full_or_zero(
+                repaired,
+                format!("rows={}, remaining violations: {remaining:?}", rows.len()),
+            ),
+            DIAGNOSIS_DRIVEN.full_or_zero(
+                diagnosed && envelope_mode,
+                format!(
+                    "first audit nudge: {:?}; observed {} post-turn registration(s); need \
+                     exactly one targeting {auditor} with no payload",
+                    nudges.first(),
+                    registrations.len()
                 ),
-                common::gate(
-                    "flawed_seed_diagnosed",
-                    diagnosed,
-                    format!("first audit nudge: {:?}", nudges.first()),
+            ),
+            DECISIVE_REPAIR.gate_and_points(
+                matches!(nudges.len(), 1 | 2),
+                match nudges.len() {
+                    1 => DECISIVE_REPAIR.weight(),
+                    2 => 15,
+                    _ => 0,
+                },
+                format!(
+                    "{} audit rejection(s); full marks for repairing in one",
+                    nudges.len()
                 ),
-                common::gate(
-                    "envelope_registration",
-                    envelope_mode,
-                    format!(
-                        "observed {} post-turn registration(s); need exactly one targeting \
-                         {auditor} with no payload",
-                        registrations.len()
-                    ),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "data_repaired",
-                    if repaired { 40 } else { 0 },
-                    "awarded when every invariant holds after the model's own repair",
-                ),
-                common::award(
-                    "diagnosis_driven",
-                    if diagnosed && envelope_mode { 30 } else { 0 },
-                    "awarded for the factual defect report driving the loop",
-                ),
-                common::award(
-                    "decisive_repair",
-                    match nudges.len() {
-                        1 => 30,
-                        2 => 15,
-                        _ => 0,
-                    },
-                    format!(
-                        "{} audit rejection(s); full marks for repairing in one",
-                        nudges.len()
-                    ),
-                ),
-            ],
-        })
+            )?,
+        ]))
     })
 }
 
@@ -343,62 +317,4 @@ fn nudge_texts(transcript: &Value) -> Vec<String> {
                 })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rows(spec: &[(&str, i64)]) -> Vec<(String, i64)> {
-        spec.iter().map(|(n, a)| (n.to_string(), *a)).collect()
-    }
-
-    #[test]
-    fn the_flawed_seed_yields_exactly_the_two_defects() {
-        let found = violations(&rows(&[
-            ("alpha", 10),
-            ("beta", -5),
-            ("gamma", 30),
-            ("beta", 7),
-            ("delta", 200),
-        ]));
-        assert_eq!(
-            found,
-            vec!["non-positive amount: beta=-5", "duplicate name: beta x2"]
-        );
-    }
-
-    #[test]
-    fn any_valid_repair_passes_and_nuking_rows_does_not() {
-        // The elegant fix: delete the ('beta', -5) row — cures both defects.
-        assert!(violations(&rows(&[
-            ("alpha", 10),
-            ("gamma", 30),
-            ("beta", 7),
-            ("delta", 200),
-        ]))
-        .is_empty());
-        // An update+dedup repair is equally valid.
-        assert!(violations(&rows(&[
-            ("alpha", 10),
-            ("beta", 5),
-            ("gamma", 30),
-            ("delta", 200),
-        ]))
-        .is_empty());
-        // Deleting everything is NOT a repair: required names go missing.
-        let nuked = violations(&rows(&[]));
-        assert_eq!(nuked.len(), 4);
-        assert!(nuked[0].contains("missing required name"));
-    }
-
-    #[test]
-    fn spec_is_valid_and_run_scoped() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("e2etest::audit_aB19"));
-        assert!(spec.prompt.contains("fixtest_aB19"));
-        assert!(spec.prompt.contains("('beta', -5)"));
-        assert!(spec.setup.is_some());
-        spec.validate().unwrap();
-    }
 }

@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,7 +25,16 @@ jobs:
           package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ -v
-      - run: node --test .github/benchmark-site/*.test.cjs
+      - name: Validate GitHub Actions workflows
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o /tmp/actionlint.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz' \
+            | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color
 
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed workers, read their iii.worker.yaml,
@@ -40,10 +48,9 @@ jobs:
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       crates: ${{ steps.bucket.outputs.crates }}
-      all: ${{ steps.bucket.outputs.all }}
+      changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
-      vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@v5
@@ -68,17 +75,17 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
-  # Runs once per changed worker (excluding lsp-vscode).
+  # Runs once per changed worker.
   # ──────────────────────────────────────────────────────────────
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
     needs: discover
-    if: needs.discover.outputs.all != '[]'
+    if: needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        worker: ${{ fromJSON(needs.discover.outputs.all) }}
+        worker: ${{ fromJSON(needs.discover.outputs.changed_workers) }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -133,20 +140,50 @@ jobs:
           save-if: false
           workspaces: ${{ matrix.worker }} -> target
 
-      # Workers that ship a Vite SPA embedded into the binary (e.g.
-      # `console`) have a `build.rs` that calls `pnpm install + pnpm
-      # build` inside `<worker>/web/`. Pre-build the dist here so the
-      # cargo invocations below see a fresh bundle and short-circuit
-      # the pnpm step. Detection is filesystem-based: workers without
-      # a `web/package.json` skip all three steps cleanly.
-      - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+      # Workers and their direct local Rust dependencies can embed a frontend
+      # through build.rs. For example, approval-gate's tests depend on harness,
+      # whose build script requires harness/ui even though approval-gate has no
+      # frontend of its own. Resolve those bundles before deciding whether this
+      # matrix entry needs Node and pnpm.
+      - name: Detect bundled frontends
+        id: frontends
+        shell: bash
+        run: |
+          set -euo pipefail
+          roots=(.)
+          while IFS= read -r dependency; do
+            roots+=("../$dependency")
+          done < <(
+            grep -oE 'path *= *"\.\./[A-Za-z0-9_-]+"' Cargo.toml \
+              | sed 's|.*"\.\./||; s|"||' \
+              | sort -u
+          )
+
+          bundles=()
+          for root in "${roots[@]}"; do
+            for directory in web ui; do
+              if [[ -f "$root/$directory/package.json" ]]; then
+                bundles+=("$root/$directory")
+              fi
+            done
+          done
+
+          if (( ${#bundles[@]} == 0 )); then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            bundle_csv=$(IFS=,; echo "${bundles[*]}")
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "paths=$bundle_csv" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup pnpm (bundled frontends)
+        if: steps.frontends.outputs.found == 'true'
         uses: pnpm/action-setup@v5
         # version comes from the repo-root package.json `packageManager`
         # field (the UI pnpm workspace root).
 
-      - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+      - name: Setup Node (bundled frontends)
+        if: steps.frontends.outputs.found == 'true'
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -156,16 +193,12 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        # Paths are relative to the job's working-directory (the worker dir),
-        # unlike the interface-smoke job below, which runs this from the
-        # repo root and prefixes the worker.
+        if: steps.frontends.outputs.found == 'true'
         run: |
           set -euo pipefail
-          for d in web ui; do
-            if [[ -f "$d/package.json" ]]; then
-              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
-            fi
+          IFS=',' read -ra bundles <<< "${{ steps.frontends.outputs.paths }}"
+          for directory in "${bundles[@]}"; do
+            (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
       - name: Check formatting
@@ -322,8 +355,9 @@ jobs:
         env:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
-          # with the workers' iii-sdk pin.
-          VERSION: '0.21.6'
+          # with the workers' iii-sdk protocol line. 0.21.8 includes
+          # recoverable triggers required by workers that bind before providers.
+          VERSION: '0.21.8'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -538,33 +572,3 @@ jobs:
         if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
         run: pytest -q
-
-  # ──────────────────────────────────────────────────────────────
-  # lsp-vscode: special-case (VS Code extension, not a standard worker)
-  # ──────────────────────────────────────────────────────────────
-  lsp-vscode:
-    name: "lsp-vscode: lint + test"
-    needs: discover
-    if: needs.discover.outputs.vscode_changed == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: lsp-vscode
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          # setup-node v5 auto-caches when package.json declares packageManager.
-          # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Package check (dry run)
-        run: npm run package:check

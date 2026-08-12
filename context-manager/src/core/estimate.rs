@@ -11,15 +11,6 @@ pub enum EstimatorKind {
     Heuristic,
 }
 
-impl EstimatorKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EstimatorKind::Tokenizer => "tokenizer",
-            EstimatorKind::Heuristic => "heuristic",
-        }
-    }
-}
-
 pub trait Estimator: Send + Sync {
     fn kind(&self) -> EstimatorKind;
 
@@ -114,6 +105,21 @@ pub fn estimate_by_role(est: &dyn Estimator, messages: &[AgentMessage]) -> ByRol
     by_role
 }
 
+/// Per-role breakdown from already-computed message sizes (`assemble`'s
+/// memoized `sizes`), so callers with a size memo don't re-estimate.
+pub fn by_role_from_sizes(messages: &[AgentMessage], sizes: &[u64]) -> ByRole {
+    let mut by_role = ByRole::default();
+    for (message, size) in messages.iter().zip(sizes) {
+        match message.role() {
+            Role::User => by_role.user += size,
+            Role::Assistant => by_role.assistant += size,
+            Role::FunctionResult => by_role.function_result += size,
+            Role::Custom => by_role.custom += size,
+        }
+    }
+    by_role
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +208,33 @@ mod tests {
         assert_eq!(
             by_role.user + by_role.assistant + by_role.function_result + by_role.custom,
             estimate_messages(&est, &messages)
+        );
+    }
+
+    #[test]
+    fn by_role_from_sizes_partitions_every_role() {
+        let messages = vec![
+            msg(
+                json!({ "role": "user", "content": [{ "type": "text", "text": "q" }], "timestamp": 1 }),
+            ),
+            msg(
+                json!({ "role": "assistant", "content": [], "stop_reason": "end",
+                        "model": "m", "provider": "p", "timestamp": 2 }),
+            ),
+            msg(
+                json!({ "role": "function_result", "function_call_id": "c", "function_id": "f",
+                        "content": [], "timestamp": 3 }),
+            ),
+            msg(json!({ "role": "custom", "custom_type": "t", "content": [], "timestamp": 4 })),
+        ];
+        let est = HeuristicEstimator;
+        let sizes: Vec<u64> = messages.iter().map(|m| est.message(m)).collect();
+        let by_role = by_role_from_sizes(&messages, &sizes);
+        assert!(by_role.user > 0 && by_role.assistant > 0);
+        assert!(by_role.function_result > 0 && by_role.custom > 0);
+        assert_eq!(
+            by_role.user + by_role.assistant + by_role.function_result + by_role.custom,
+            sizes.iter().sum::<u64>()
         );
     }
 }

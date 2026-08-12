@@ -1,0 +1,35 @@
+[workspace]
+
+[package]
+name = "provider-deepseek"
+version = "0.1.1"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "DeepSeek Chat Completions provider worker behind llm-router."
+
+[[bin]]
+name = "provider-deepseek"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+llm-router = { path = "../llm-router", default-features = false }
+# Must match llm-router's pin (one iii-sdk per graph).
+iii-sdk = "=0.21.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Must stay on the same schemars major as iii-sdk so the derived
+# request/response schemas match what the SDK emits at registration.
+schemars = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }

@@ -15,6 +15,11 @@ the plan's models (`glm-5.2`, `glm-5.1`, `glm-5`, `glm-5-turbo`, `glm-4.7`,
 to `https://api.z.ai/api/paas/v4/chat/completions` (pay-as-you-go) for the
 full GLM lineup.
 
+`provider::zai::count_tokens` counts a prompt behind `router::count_tokens`
+with GLM's own published vocabulary rather than a borrowed one, which matters
+most for the Chinese text these models are used for. The vocabulary is fetched
+once and cached; counting never runs the model and costs nothing.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with

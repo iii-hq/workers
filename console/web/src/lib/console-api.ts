@@ -10,6 +10,7 @@
  * observe a null `api`.
  */
 
+import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { CodeEditor } from '@/components/ui/CodeEditor'
@@ -31,13 +32,23 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { FileDiff } from '@/components/ui/FileDiff'
 import { Input } from '@/components/ui/Input'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import {
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+} from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
+import { TerminalStream } from '@/components/ui/TerminalStream'
 import {
   Tooltip,
   TooltipContent,
@@ -47,6 +58,7 @@ import { useTheme } from '@/hooks/use-theme'
 import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
 
 /**
@@ -56,6 +68,7 @@ import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
  * component-names manifest (the shim's export list).
  */
 export const components: ConsoleApi['components'] = {
+  AnsiText,
   Badge,
   Button,
   Dialog,
@@ -72,7 +85,13 @@ export const components: ConsoleApi['components'] = {
   DropdownMenuSeparator,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
+  PageShell,
+  PageHeader,
+  PageBody,
+  PageSidebar,
+  PageMain,
   Select,
   Skeleton,
   StatusDot,
@@ -81,6 +100,8 @@ export const components: ConsoleApi['components'] = {
   TabsList,
   TabsTrigger,
   TabsContent,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipTrigger,
   TooltipContent,
@@ -89,6 +110,10 @@ export const components: ConsoleApi['components'] = {
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  // The one page-level composite in the kit: worker pages offer "configure"
+  // in place instead of navigating to the workers tab and stranding the
+  // operator there when the editor closes.
+  WorkerConfigurationDialog,
 }
 
 /** Token names mirroring `index.css`'s `@theme` block (documentation aid). */

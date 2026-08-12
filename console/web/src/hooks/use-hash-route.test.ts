@@ -23,8 +23,26 @@ describe('workers configuration hash helpers', () => {
         '#/workers/configuration/shell/fs/host_roots',
       ),
     ).toEqual({
+      open: true,
       configurationId: 'shell',
       fieldPath: ['fs', 'host_roots'],
+    })
+  })
+
+  it('parses the bare configuration root as open with no selection', () => {
+    expect(
+      workersConfigurationRouteFromHash('#/workers/configuration'),
+    ).toEqual({
+      open: true,
+      configurationId: null,
+      fieldPath: [],
+    })
+    expect(
+      workersConfigurationRouteFromHash('#/workers/configuration/'),
+    ).toEqual({
+      open: true,
+      configurationId: null,
+      fieldPath: [],
     })
   })
 
@@ -34,6 +52,7 @@ describe('workers configuration hash helpers', () => {
         '#/configuration/workers/llm-router/providers/openai',
       ),
     ).toEqual({
+      open: true,
       configurationId: 'llm-router',
       fieldPath: ['providers', 'openai'],
     })
@@ -53,8 +72,9 @@ describe('workers configuration hash helpers', () => {
     ).toBeNull()
   })
 
-  it('returns an empty route for non-configuration hashes', () => {
+  it('returns a closed route for non-configuration hashes', () => {
     expect(workersConfigurationRouteFromHash('#/workers')).toEqual({
+      open: false,
       configurationId: null,
       fieldPath: [],
     })

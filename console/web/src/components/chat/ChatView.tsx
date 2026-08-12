@@ -1,10 +1,16 @@
-import { Copy, Folder } from 'lucide-react'
+import { ArrowLeft, Copy, Folder } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/Tooltip'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
@@ -24,6 +30,7 @@ import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
 } from '@/lib/backend/triggers'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import type {
   ApprovalStreamEvent,
   CompactResult,
@@ -39,6 +46,7 @@ import {
   summaryLabel,
 } from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
+import { useExtSessionChips } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -76,6 +84,10 @@ import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  selectionForSend,
+} from './system-prompt-selection'
 import { WorktreeBadge } from './WorktreeBadge'
 
 /**
@@ -83,6 +95,19 @@ import { WorktreeBadge } from './WorktreeBadge'
  * one live check per activation, not one per render or per send.
  */
 const validatedWorkingDirs = new Set<string>()
+
+/**
+ * Order the header's injected chips deterministically. The registry appends
+ * in registration order, which is worker-CONNECT order — so without this the
+ * bar reshuffles itself between restarts. `context` leads (it is the widest
+ * and the most-read), the rest sort by id.
+ */
+function compareChips(a: { id: string }, b: { id: string }): number {
+  if (a.id === b.id) return 0
+  if (a.id === 'context') return -1
+  if (b.id === 'context') return 1
+  return a.id < b.id ? -1 : 1
+}
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -127,6 +152,14 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
+  /**
+   * Drill-out affordance for narrow (one-pane-at-a-time) hosts: when
+   * set, the header renders a ← back button returning to the session
+   * list and the chrome tightens to the compact (dock) padding.
+   */
+  onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string) => void
@@ -141,6 +174,8 @@ export function ChatView({
   modelOptions,
   catalogLoading,
   density = 'route',
+  onRequestClose,
+  onBack,
   onUpdateModel,
   onUpdateMode,
   onUpdateWorkingDir,
@@ -158,6 +193,12 @@ export function ChatView({
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
     DEFAULT_THINKING_LEVEL,
   )
+  /* Lives on the conversation record, not in local state: the interactive
+     picker is on the new-session screen, so a reset on a tab switch (ChatPanel
+     keys this view by conversation id) would be invisible — no control is left
+     in the composer to show or restore it. */
+  const effectiveSystemPrompt =
+    conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
@@ -374,6 +415,12 @@ export function ChatView({
       ),
     [sessionTriggers, firedTriggers],
   )
+  // Registration lookup for trigger-fired cards: a fire record carries only
+  // the subscription id — the binding's config/conditions live in these rows.
+  const triggersById = useMemo(
+    () => new Map(mergedTriggers.map((t) => [t.id, t])),
+    [mergedTriggers],
+  )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
@@ -575,6 +622,29 @@ export function ChatView({
     const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.contextWindow
   }, [modelOptions, effectiveModel])
+
+  /* Injected session chips (the `chat` extension slot), rendered in the
+   * header's right cluster where the built-in context meter sits. A chip
+   * with id `context` supersedes the estimate-based ContextUsage meter —
+   * workers with real per-turn numbers own the surface. */
+  const extSessionChips = useExtSessionChips()
+  const sessionChips = useMemo(() => {
+    if (extSessionChips.length === 0) return null
+    return [...extSessionChips].sort(compareChips).map((chip) => {
+      const Chip = chip.render
+      return (
+        <Chip
+          key={chip.id}
+          sessionId={conversation.id}
+          modelId={effectiveModel ?? undefined}
+          contextWindow={contextWindow}
+        />
+      )
+    })
+  }, [extSessionChips, conversation.id, effectiveModel, contextWindow])
+  const hasInjectedContextChip = extSessionChips.some(
+    (chip) => chip.id === 'context',
+  )
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -841,8 +911,12 @@ export function ChatView({
   }, [backend, announcer, filesystemGrants])
 
   const handleCopySessionId = useCallback(() => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    void navigator.clipboard.writeText(sessionId).then(() => {
+    // Through the helper, not navigator.clipboard directly: over
+    // `http://<LAN-IP>` the page is not a secure context and the async
+    // clipboard API is undefined — the raw call made this button a no-op
+    // exactly where trace-correlation happens.
+    void copyTextToClipboard(sessionId).then((ok) => {
+      if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })
@@ -924,6 +998,19 @@ export function ChatView({
         !isCompact &&
         (isStreaming || serverWorking) &&
         Boolean(backend.queueMessage)
+
+      // Only the session's first send carries the prompt selection; the
+      // harness inherits it afterwards (see selectionForSend). Gate on an
+      // assistant row rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again.
+      const turnEstablished = messagesRef.current.some(
+        (m) => m.role === 'assistant',
+      )
+      const systemPrompt = selectionForSend(
+        effectiveSystemPrompt,
+        turnEstablished,
+      )
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1080,6 +1167,7 @@ export function ChatView({
               sessionId,
               messageId,
               thinkingLevel,
+              systemPrompt,
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1125,6 +1213,7 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
+            systemPrompt,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
@@ -1404,6 +1493,7 @@ export function ChatView({
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      effectiveSystemPrompt,
       sessionId,
       contextWindow,
       backend,
@@ -1485,8 +1575,9 @@ export function ChatView({
   })()
 
   const isDock = density === 'dock'
-  const headerPad = isDock ? 'px-4' : 'px-9'
-  const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+  const compact = isDock || onBack !== undefined
+  const headerPad = compact ? 'px-4' : 'px-9'
+  const footerPad = compact ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
 
   // Resolve the working directory to its managed worktree (badge), and keep
   // it fresh across landed / land-blocked events.
@@ -1608,13 +1699,110 @@ export function ChatView({
       data-chat-session-hydrated={conversation.hydrated}
       className="flex-1 flex flex-col min-w-0 min-h-0"
     >
-      <header
-        className={cn(
-          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
-          headerPad,
-        )}
+      <PageHeader
+        className={headerPad}
+        onClose={onRequestClose}
+        actions={
+          <div className="flex items-center gap-2.5 font-mono text-[11px] uppercase tracking-[0.06em]">
+            {/* Read-outs and actions share ONE surface. This system draws no
+                lines (index.css:44-52 — rule/rule-2 are transparent in both
+                themes), so a group is a fill, not a run of dividers. It also
+                gives every control inside it a full-height hit box, which
+                bare 11px text runs did not have. */}
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+              {sessionChips}
+              {hasInjectedContextChip ? null : (
+                <ContextUsage
+                  messages={conversation.messages}
+                  contextWindow={contextWindow}
+                />
+              )}
+              {/* Session-id copy. The full id used to sit in the header's
+                  left run, where `truncate min-w-0` let it collapse to
+                  nothing in narrow panes and `isDock` hid it outright — the
+                  exact layouts where you're correlating traces. A copy
+                  control doesn't need the whole 40-char id on screen: show
+                  the distinguishing first group, copy the full thing. The
+                  copy glyph carries the affordance, so no tooltip — only the
+                  system-prompt and status read-outs have one. */}
+              <button
+                type="button"
+                onClick={handleCopySessionId}
+                aria-label={
+                  copied ? `copied ${sessionId}` : `copy session id ${sessionId}`
+                }
+                className="flex self-stretch items-center gap-1 text-ink-faint hover:text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <Copy className="size-3 flex-shrink-0" aria-hidden />
+                <span
+                  className={cn(
+                    'normal-case tracking-normal tabular-nums',
+                    copied && 'text-accent',
+                  )}
+                >
+                  {copied
+                    ? 'copied'
+                    : sessionId.replace(/^console-/, '').slice(0, 8)}
+                </span>
+              </button>
+              <ExportSessionButton
+                conversation={conversation}
+                onExported={(filename) =>
+                  announcer.announce(`session exported as ${filename}`)
+                }
+              />
+            </div>
+            {/* Status sits OUTSIDE the group — it is state, not a control.
+                The dot alone carries it (green ready, pulsing accent
+                working, red error); the word lives in the tooltip and in an
+                sr-only role="status" span so transitions still announce.
+                `self-stretch px-1` turns a 6px dot into a full-height hover
+                target without letting an error widen the header. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex self-stretch items-center px-1">
+                  <StatusDot
+                    tone={
+                      conversation.status === 'error'
+                        ? 'alert'
+                        : streamingIndicator
+                          ? 'accent'
+                          : 'ok'
+                    }
+                    pulse={streamingIndicator}
+                  />
+                  <span role="status" className="sr-only">
+                    {streamingIndicator
+                      ? 'working'
+                      : conversation.status === 'error'
+                        ? 'error'
+                        : 'ready'}
+                  </span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {conversation.status === 'error'
+                  ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
+                  : streamingIndicator
+                    ? 'working'
+                    : 'ready'}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        }
       >
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="back to conversations"
+              title="back to conversations"
+              className="flex items-center justify-center size-7 -ml-1.5 flex-shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            >
+              <ArrowLeft aria-hidden className="size-4" />
+            </button>
+          ) : null}
           <span className="text-accent flex-shrink-0" aria-hidden>
             $
           </span>
@@ -1623,72 +1811,8 @@ export function ChatView({
           <span className="text-ink-faint flex-shrink-0">
             {conversation.mode}
           </span>
-          {isDock ? null : (
-            <>
-              <span className="text-ink-ghost flex-shrink-0">·</span>
-              <button
-                type="button"
-                onClick={handleCopySessionId}
-                title={
-                  copied
-                    ? `copied ${sessionId}`
-                    : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
-                }
-                className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
-              >
-                <span className="truncate font-mono text-[11px] tabular-nums">
-                  {sessionId}
-                </span>
-                {copied ? (
-                  <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-                    copied
-                  </span>
-                ) : (
-                  <Copy className="size-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-                )}
-              </button>
-            </>
-          )}
         </div>
-        <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
-          <ContextUsage
-            messages={conversation.messages}
-            contextWindow={contextWindow}
-          />
-          <ExportSessionButton
-            conversation={conversation}
-            onExported={(filename) =>
-              announcer.announce(`session exported as ${filename}`)
-            }
-          />
-          <div className="flex items-center gap-2">
-            <StatusDot
-              tone={
-                conversation.status === 'error'
-                  ? 'alert'
-                  : streamingIndicator
-                    ? 'accent'
-                    : 'ink'
-              }
-              pulse={streamingIndicator}
-            />
-            <span
-              className="text-ink-faint"
-              title={
-                conversation.status === 'error'
-                  ? conversation.statusReason
-                  : undefined
-              }
-            >
-              {streamingIndicator
-                ? 'working'
-                : conversation.status === 'error'
-                  ? 'error'
-                  : 'ready'}
-            </span>
-          </div>
-        </div>
-      </header>
+      </PageHeader>
 
       {approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
@@ -1711,6 +1835,7 @@ export function ChatView({
         onResolveFilesystemAccess={handleFilesystemResolve}
         onManageFilesystemAccess={handleManageFilesystemAccess}
         workingDir={conversation.workingDir ?? null}
+        triggersById={triggersById}
       />
       <LiveRegion announcement={announcer.announcement} />
 
@@ -1772,7 +1897,7 @@ export function ChatView({
           />
           {queuedStrip.length > 0 ? (
             <section
-              className="mb-1 border border-rule bg-bg"
+              className="mb-1 rounded-md bg-surface"
               aria-label="queued messages"
             >
               {/* The message being edited is pulled out of the queue and lives

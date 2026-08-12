@@ -5,18 +5,22 @@
 //!   2. Connect to the iii engine over WebSocket.
 //!   3. Register the custom trigger types
 //!      `directory::skills::on-change` /
-//!      `directory::prompts::on-change` (fan-out targets for
+//!      `directory::prompts::on-change` /
+//!      `directory::system-prompts::on-change` (fan-out targets for
 //!      `directory::skills::download`).
 //!   4. Register every public function against the engine — every
 //!      registration sits under `directory::*` (skills, prompts,
 //!      registry HTTP proxy).
 //!   5. (Optional) Subscribe to `worker` trigger for auto-download on
 //!      worker add events and run a boot reconcile for missing skills.
-//!   6. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!   6. Start the filesystem watch so external edits under the skills
+//!      roots fire the matching `on-change` (best-effort, never fatal).
+//!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! Write paths are `directory::skills::download*` (bulk materialization)
-//! and `directory::skills::update` / `directory::prompts::update`
-//! (single-file edits). Read-side surfaces (`directory::skills::list`,
+//! and `directory::skills::update` / `directory::prompts::update` /
+//! `directory::system-prompts::{update,create,delete}` (single-file edits). Read-side
+//! surfaces (`directory::skills::list`,
 //! `directory::skills::get`, `directory::prompts::*`,
 //! `directory::registry::*`) source from the configured `skills_folder`
 //! on disk or proxy to the public registry over HTTP. Engine introspection is handled by the engine natively —
@@ -190,9 +194,54 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;
 
-    let fn_count = if auto_download { 14 } else { 13 };
+    // Filesystem watch: external edits under the skills roots fire the
+    // matching on-change with { op: "external" }. Failure to start is a
+    // degradation (tabs refresh on interaction only), never fatal.
+    let cfg_now = cfg_handle.load_full();
+    let mut watch_roots = vec![cfg_now.resolved_skills_folder()];
+    let local_root = cfg_now.local_skills_folder();
+    if local_root != watch_roots[0] {
+        watch_roots.push(local_root);
+    }
+    let watch_iii = iii.clone();
+    // Named fields, not a tuple: transposing two positional subscriber sets
+    // would compile, pass every test, and route pasted system prompts to
+    // command-prompt subscribers.
+    let watch_sets = trigger_types::RegisteredTriggerTypes {
+        skills: registered.skills.clone(),
+        prompts: registered.prompts.clone(),
+        system_prompts: registered.system_prompts.clone(),
+    };
+    let rt = tokio::runtime::Handle::current();
+    let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {
+        let set = match kind {
+            iii_directory::fs_source::SourceKind::Skill => watch_sets.skills.clone(),
+            iii_directory::fs_source::SourceKind::Prompt => watch_sets.prompts.clone(),
+            iii_directory::fs_source::SourceKind::SystemPrompt => watch_sets.system_prompts.clone(),
+        };
+        let iii = watch_iii.clone();
+        rt.spawn(async move {
+            trigger_types::dispatch(&iii, &set, serde_json::json!({ "op": "external" })).await;
+        });
+    }) {
+        Ok(h) => {
+            tracing::info!("fs watch active on skills roots");
+            Some(h)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "fs watch disabled");
+            None
+        }
+    };
+
+    // 19 unconditional: 3 skills reads + 4 prompts reads (2 kinds) + 3 downloads +
+    // 5 updates/creates (skill update, prompt/system-prompt update, prompt/system-prompt
+    // create) + 2 registry proxy + 1 engine-functions-info + 1 configuration-change
+    // handler (registered above, outside functions::register_all_with_cache).
+    // +1 when auto_download also registers directory::__on_worker_added.
+    let fn_count = if auto_download { 20 } else { 19 };
     tracing::info!(
-        "iii-directory ready: {} directory::* functions + 2 custom trigger types + \
+        "iii-directory ready: {} directory::* functions + 3 custom trigger types + \
          configuration hot-reload",
         fn_count
     );

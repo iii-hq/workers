@@ -27,6 +27,10 @@ pub const REFRESH_MODELS_DESC: &str = "Discover the resolved llama.cpp server's 
      catalog (GET /v1/models + /props) and reconcile it through the router; returns the model \
      count written.";
 
+pub const COUNT_TOKENS_ID: &str = "provider::llamacpp::count_tokens";
+pub const COUNT_TOKENS_DESC: &str =
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.";
+
 pub const ON_ROUTER_READY_ID: &str = "provider::llamacpp::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
     "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
@@ -74,5 +78,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
         spec::<crate::embed::EmbedRequest, crate::embed::EmbedResponse>(EMBED_ID, EMBED_DESC),
+        spec::<crate::count_tokens::CountTokensRequest, crate::count_tokens::CountTokensResponse>(
+            COUNT_TOKENS_ID,
+            COUNT_TOKENS_DESC,
+        ),
     ]
 }

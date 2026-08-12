@@ -57,13 +57,46 @@ export interface ConsoleApi {
   tokens: readonly string[]
 }
 
+/**
+ * Where the workspace pane hosting the page sits. `'right'` only for the
+ * rightmost column of a multi-column tab — a single-column tab is `'left'`,
+ * so pages can treat `'left'` as the default orientation.
+ */
+export type PanelSide = 'left' | 'right'
+
+/** Props the host passes to every registered page render component. */
+export interface PageRenderProps {
+  panelSide: PanelSide
+  /**
+   * Stable id of the workspace tab whose pane hosts this render — the key
+   * for per-tab UI state (workspace tabs persist across reloads). Empty
+   * string when the page renders outside a workspace tab.
+   */
+  tabId: string
+  /**
+   * Close the pane hosting this page (a split drops the column; a
+   * single-column tab detaches back to the attach affordance). Pass it to
+   * `PageHeader`'s `onClose` — every page header carries the standard ✕.
+   * Absent when the page renders outside a closable pane.
+   */
+  onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory, live: the page
+   * re-renders with the new value when the user picks another folder in
+   * chat, so filesystem-shaped pages can follow along. `null`/absent when
+   * no conversation is active or none is set.
+   */
+  workingDir?: string | null
+}
+
 export interface PageRegistration {
   /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
   id: string
   /** Nav label. */
   title: string
-  /** The page body (right pane). */
-  render: React.ComponentType
+  /** The page body (right pane). Receives `PageRenderProps` — a plain
+      `() => <Page />` render stays valid and simply ignores them. */
+  render: React.ComponentType<PageRenderProps>
 }
 
 /**
@@ -83,6 +116,24 @@ export interface FunctionTriggerRenderer {
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
+  /**
+   * Redact the raw request/response before the card DISPLAYS OR COPIES it —
+   * the `raw json` tab renders `message.input` / `message.output` verbatim
+   * and its copy button copies the same value, which a renderer's own card
+   * cannot contain. The console applies this to both exits (see
+   * `rawRedactor` in components/function-trigger/renderer-registry.tsx);
+   * what counts as secret stays the worker's to declare, never the host's.
+   *
+   * Consulted only for messages this renderer's `isMatch` claims (first
+   * claiming renderer that declares it wins), once for the request and once
+   * for the response.
+   *
+   * Receives an arbitrary JSON-ish value and returns the redacted copy. Must
+   * be pure and total: no mutation, no I/O, no throw for any shape (cycles
+   * included). Called during the card's render and fenced — a throw fails
+   * CLOSED to a placeholder, never back to the raw value.
+   */
+  redactRaw?(value: unknown): unknown
 }
 
 export type JsonValue =
@@ -122,6 +173,31 @@ export interface ConfigFormProps {
 }
 
 /**
+ * Props a session chip receives from the chat host. Chips fetch their own
+ * data through `host.iii`; the host only identifies the session and what
+ * it already knows about the resolved model.
+ */
+export interface SessionChipProps {
+  sessionId: string
+  /** Resolved model id for the session, when known. */
+  modelId?: string
+  /** Context window (tokens) of the resolved model, from the catalog. */
+  contextWindow?: number
+}
+
+/**
+ * A per-session status chip rendered in the chat header's right cluster
+ * (the `chat` slot). Duplicate `id`: last registration wins — and some
+ * ids also supersede a built-in affordance (`context` replaces the
+ * host's estimate-based context meter).
+ */
+export interface SessionChipRegistration {
+  /** kebab-case, e.g. `context`; convention `<worker>-<name>` otherwise. */
+  id: string
+  render: React.ComponentType<SessionChipProps>
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -142,6 +218,9 @@ export interface Host {
       configurationId: string,
       component: React.ComponentType<ConfigFormProps>,
     ): () => void
+  }
+  chat: {
+    registerSessionChip(chip: SessionChipRegistration): () => void
   }
 }
 

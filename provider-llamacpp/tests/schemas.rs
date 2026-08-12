@@ -44,6 +44,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::llamacpp::refresh_models",
             "provider::llamacpp::on_router_ready",
             "provider::llamacpp::embed",
+            "provider::llamacpp::count_tokens",
         ]
     );
 }

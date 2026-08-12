@@ -118,5 +118,12 @@ def setup(iii: Any) -> None:
 
     # on_error fail_open is MANDATORY: pre_generate defaults fail-CLOSED, and a
     # missing guidance line must never abort a turn.
-    iii.register_trigger({"type": HOOK_TRIGGER_TYPE, "function_id": HOOK_ID, "config": {"on_error": "fail_open"}})
+    iii.register_trigger(
+        {
+            "type": HOOK_TRIGGER_TYPE,
+            "function_id": HOOK_ID,
+            "config": {"on_error": "fail_open"},
+            "metadata": {"inject_prompt": GUIDANCE},
+        }
+    )
     log.info("scrapling pre-generate hook bound (guidance injection active)")

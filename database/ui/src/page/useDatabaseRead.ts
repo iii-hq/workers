@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { errText } from '../lib/errors'
 
 /**
  * One in-flight database read: run `fetcher` while `enabled`, re-run when
@@ -45,7 +46,7 @@ export function useDatabaseRead<T>(
         setError(null)
       } catch (err) {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errText(err))
       } finally {
         if (!cancelled) setLoading(false)
       }

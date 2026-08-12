@@ -10,6 +10,7 @@ use crate::suite::{run_suite, SubjectConfig, SuiteRunConfig};
 
 mod catalog;
 mod context;
+mod dashboard;
 mod judge;
 mod report;
 mod scenarios;
@@ -33,6 +34,9 @@ enum Command {
     /// Print a human-readable summary from a saved results.json.
     #[command(alias = "inspect")]
     Report(ReportArgs),
+    /// Run E2E scenarios and compare local executions in a browser.
+    #[command(alias = "serve")]
+    Dashboard(dashboard::DashboardArgs),
 }
 
 #[derive(Debug, Args)]
@@ -68,7 +72,7 @@ struct RunArgs {
     #[arg(long, default_value_t = 1)]
     runs: u32,
 
-    /// Retry transient provider and transport failures, never quality or resource failures.
+    /// Retry transient provider and transport failures, never hard-gate or resource failures.
     #[arg(long, env = "HARNESS_E2E_TECHNICAL_RETRIES", default_value_t = 1)]
     technical_retries: u8,
 
@@ -79,19 +83,6 @@ struct RunArgs {
         default_value_t = 15
     )]
     progress_interval_seconds: u64,
-
-    /// Keep degraded results above the CI score floor advisory; technical errors still fail.
-    #[arg(long, env = "HARNESS_E2E_QUALITY_ADVISORY", default_value_t = false)]
-    quality_advisory: bool,
-
-    /// Minimum median score allowed when the CI quality policy is advisory.
-    #[arg(
-        long,
-        env = "HARNESS_E2E_CI_SCORE_FLOOR",
-        default_value_t = 50,
-        value_parser = clap::value_parser!(u8).range(1..=100)
-    )]
-    ci_score_floor: u8,
 
     /// Run only the selected scenario. Repeat to select more than one.
     #[arg(long, value_enum)]
@@ -128,6 +119,7 @@ async fn main() -> Result<()> {
         Command::Models(args) => models(args).await,
         Command::Run(args) => run(args).await,
         Command::Report(args) => report(args),
+        Command::Dashboard(args) => dashboard::serve(args).await,
     }
 }
 
@@ -135,6 +127,16 @@ async fn models(args: ModelsArgs) -> Result<()> {
     let context = context::E2eContext::connect(&args.url)
         .await
         .context("connect to the iii stack")?;
+    if !context.function_exists("harness::send").await? {
+        bail!(
+            "connected iii stack does not expose harness::send; verify --url points to the Harness stack"
+        );
+    }
+    if !context.function_exists("router::models::list").await? {
+        bail!(
+            "connected Harness stack does not expose router::models::list; start its llm-router before loading models"
+        );
+    }
     let result = catalog::list(&context, args.provider.as_deref()).await;
     context.shutdown().await;
     let models = result?;
@@ -150,8 +152,6 @@ fn report(args: ReportArgs) -> Result<()> {
 }
 
 async fn run(args: RunArgs) -> Result<()> {
-    let quality_advisory = args.quality_advisory;
-    let ci_score_floor = args.ci_score_floor;
     let selected_scenarios = scenarios::selected(&args.scenario);
     let subject = SubjectConfig {
         model: args.model,
@@ -181,18 +181,8 @@ async fn run(args: RunArgs) -> Result<()> {
 
     print!("{}", outcome.report.summary(false));
     println!("report: {}", outcome.report_path.display());
-    if !outcome.report.passed
-        && !(quality_advisory && !outcome.report.fails_ci_gate(ci_score_floor))
-    {
-        bail!("E2E suite failed");
-    }
     if !outcome.report.passed {
-        tracing::warn!(
-            path = %outcome.report_path.display(),
-            ci_score_floor,
-            "E2E result is degraded but remains above the advisory CI score floor"
-        );
-        return Ok(());
+        bail!("E2E suite failed");
     }
     tracing::info!(path = %outcome.report_path.display(), "E2E quality suite passed");
     Ok(())
@@ -258,6 +248,18 @@ mod tests {
         assert_eq!(args.output, PathBuf::from("target/e2e"));
         assert_eq!(args.technical_retries, 1);
         assert_eq!(args.progress_interval_seconds, 15);
+    }
+
+    #[test]
+    fn dashboard_is_available_as_serve_alias() {
+        for name in ["dashboard", "serve"] {
+            let cli = Cli::try_parse_from(["harness-e2e", name]).unwrap();
+            let Command::Dashboard(args) = cli.command else {
+                panic!("expected dashboard command");
+            };
+            assert_eq!(args.listen.to_string(), "127.0.0.1:4173");
+            assert_eq!(args.url, "ws://127.0.0.1:49134");
+        }
     }
 
     #[test]

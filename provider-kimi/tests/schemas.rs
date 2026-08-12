@@ -43,6 +43,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::kimi::abort",
             "provider::kimi::refresh_models",
             "provider::kimi::on_router_ready",
+            "provider::kimi::count_tokens",
         ]
     );
 }

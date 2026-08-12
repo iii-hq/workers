@@ -5,25 +5,25 @@ export type StatusVariant = 'info' | 'success' | 'warn' | 'alert'
 
 const variantTone: Record<
   StatusVariant,
-  { border: string; icon: string; headline: string }
+  { fill: string; icon: string; headline: string }
 > = {
   info: {
-    border: 'border-rule',
+    fill: 'bg-surface',
     icon: 'text-ink',
     headline: 'text-ink',
   },
   success: {
-    border: 'border-accent',
-    icon: 'text-accent',
-    headline: 'text-accent',
+    fill: 'bg-ok-muted',
+    icon: 'text-ok',
+    headline: 'text-ok',
   },
   warn: {
-    border: 'border-warn',
+    fill: 'bg-warn-muted',
     icon: 'text-warn',
     headline: 'text-warn',
   },
   alert: {
-    border: 'border-alert',
+    fill: 'bg-alert-muted',
     icon: 'text-alert',
     headline: 'text-alert',
   },
@@ -48,8 +48,8 @@ export function StatusPanel({
   return (
     <div
       className={cn(
-        'flex items-start gap-x-3 border bg-bg px-3.5 py-3',
-        tone.border,
+        'flex items-start gap-x-3 rounded-md px-3.5 py-3',
+        tone.fill,
         className,
       )}
     >

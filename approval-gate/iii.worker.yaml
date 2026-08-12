@@ -3,12 +3,13 @@ name: approval-gate
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: approval-gate
 tags: [approval, human-in-the-loop, permissions, policy, security]
 description: Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session permission settings, and two notification trigger types.
 
 dependencies:
-  state: "^0.21.3"
+  state: "^0.22.0"
   configuration: "^0.21.6"
   iii-directory: "^1.0.0"
   session-manager: "^1.0.0"

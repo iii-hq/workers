@@ -7,6 +7,7 @@ export const components = api.components
 export const useTheme = api.useTheme
 export const tokens = api.tokens
 export const {
+  AnsiText,
   Badge,
   Button,
   CodeEditor,
@@ -25,10 +26,16 @@ export const {
   DropdownMenuTrigger,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
   Select,
   Skeleton,
   StatusDot,
@@ -37,8 +44,11 @@ export const {
   TabsContent,
   TabsList,
   TabsTrigger,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  WorkerConfigurationDialog,
 } = api.components
 export default api

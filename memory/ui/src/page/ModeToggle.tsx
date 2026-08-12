@@ -28,7 +28,7 @@ export function ModeToggle<T extends string>({
   'aria-label': ariaLabel,
 }: ModeToggleProps<T>) {
   return (
-    <div className="mem-modes" role="tablist" aria-label={ariaLabel}>
+    <div className="mem-ui-seg" role="tablist" aria-label={ariaLabel}>
       {options.map((opt) => {
         const active = opt.value === value
         return (
@@ -38,7 +38,7 @@ export function ModeToggle<T extends string>({
             role="tab"
             aria-selected={active}
             title={opt.title}
-            className={`mem-mode${active ? ' active' : ''}`}
+            className={`mem-ui-seg-btn${active ? ' active' : ''}`}
             onClick={() => onChange(opt.value)}
           >
             {opt.label}

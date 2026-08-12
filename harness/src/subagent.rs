@@ -501,6 +501,7 @@ mod tests {
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
+            context_snapshot: None,
             result: None,
             result_error: None,
             validation_retries: 0,

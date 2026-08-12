@@ -483,7 +483,9 @@ where
     }
 }
 
-async fn trigger_with_retry(
+/// Shared by the config bootstrap here and `ui.rs`'s `shell-ui`
+/// UI-state entry registration.
+pub(crate) async fn trigger_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

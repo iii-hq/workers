@@ -72,7 +72,11 @@ databases:
   analytics:
     url: ${ANALYTICS_URL:postgres://localhost/analytics}
     pool: { max: 5 }
+history_max_entries: 200 # console query history caps, defaults shown
+history_max_bytes: 262144 # 0 disables recording
 ```
+
+`history_max_entries` / `history_max_bytes` cap the per-database console query history stored on the [`state`](../state) worker — whichever cap hits first, oldest entries are dropped. Applied live.
 
 Set or replace the whole value:
 
@@ -225,7 +229,7 @@ Stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worke
 | `database::saveQuery` | Save a named query. Saving under an existing name replaces it. |
 | `database::listSavedQueries` | Saved queries for a database, sorted by name. |
 | `database::deleteSavedQuery` | Delete by id or by name. |
-| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail bind `database::row-changed`. |
+| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail bind `database::row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, defaults 200 entries / 256KB — oldest dropped first, `0` disables) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
 
 ## Triggers
 

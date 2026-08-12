@@ -78,9 +78,9 @@ export function TraceHeader({
   const rootWorker = rootSpan ? getWorkerName(rootSpan) : 'trace'
 
   return (
-    <div className="bg-panel border-b border-rule-2 flex-shrink-0">
-      <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.06em] flex-shrink-0 border border-rule bg-bg text-ink-faint lowercase">
+    <div className="border-b border-rule-2 flex-shrink-0">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
+        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.06em] flex-shrink-0 rounded-xs bg-surface text-ink-faint lowercase">
           {rootWorker}
         </span>
         <h2
@@ -100,7 +100,7 @@ export function TraceHeader({
         </Button>
       </div>
 
-      <div className="flex items-center gap-2 px-4 pb-2.5 flex-wrap">
+      <div className="flex items-center gap-2 px-3 pb-2.5 flex-wrap">
         <button
           type="button"
           onClick={() => copy('traceId', traceId)}
@@ -116,30 +116,30 @@ export function TraceHeader({
           )}
         </button>
 
-        <span aria-hidden className="w-px h-3 bg-rule-2" />
+        <span aria-hidden className="w-px h-3 bg-edge" />
 
-        <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
           <Clock className="w-2.5 h-2.5 text-accent" />
           <span className="text-[11px] font-mono font-semibold text-accent tabular-nums">
             {formatDuration(data.total_duration_ms)}
           </span>
         </span>
 
-        <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
           <Layers className="w-2.5 h-2.5 text-ink-faint" />
           <span className="text-[11px] font-mono text-ink-faint tabular-nums">
             {data.span_count} spans
           </span>
         </span>
 
-        <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
           <span className="text-[11px] font-mono text-ink-faint tabular-nums">
             {workerCount} worker{workerCount === 1 ? '' : 's'}
           </span>
         </span>
 
         {hasErrors && (
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-alert">
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-alert-muted">
             <AlertCircle className="w-2.5 h-2.5 text-alert" />
             <span className="text-[11px] font-mono font-semibold text-alert tabular-nums">
               {errorCount} err
@@ -149,8 +149,8 @@ export function TraceHeader({
       </div>
 
       {workerList.length > 1 && (
-        <div className="px-4 pb-2.5">
-          <div className="flex h-1.5 bg-bg border border-rule overflow-hidden">
+        <div className="px-3 pb-2.5">
+          <div className="flex h-1.5 rounded-full bg-surface overflow-hidden">
             {workerList.map((worker, i) => {
               const workerDuration = workerDurations.get(worker) || 0
               const pct = (workerDuration / data.total_duration_ms) * 100
@@ -189,7 +189,7 @@ export function TraceHeader({
       )}
 
       {criticalPath.length > 1 && (
-        <div className="flex items-center gap-1 px-4 pb-2.5 overflow-x-auto">
+        <div className="flex items-center gap-1 px-3 pb-2.5 overflow-x-auto">
           {criticalPath.map((span, i) => (
             <Fragment key={span.span_id}>
               {i > 0 && (
@@ -198,7 +198,7 @@ export function TraceHeader({
               <button
                 type="button"
                 onClick={() => onSpanClick?.(span)}
-                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-bg truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors lowercase"
+                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors lowercase"
                 title={span.name}
               >
                 {span.name}

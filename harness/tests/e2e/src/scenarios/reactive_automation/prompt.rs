@@ -116,20 +116,3 @@ Report progress briefly and keep the final response factual."#,
         finalizer = names.finalizer_session,
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_uses_parent_owned_bindings_without_removed_reactions() {
-        let prompt = build(&ScenarioNames::new("abcd-rest"), 600);
-
-        assert!(prompt.contains("A trigger binding never starts an agent"));
-        assert!(prompt.contains("target must be\n   `database::execute`"));
-        assert!(prompt.contains("function_id: \"state::barrier\""));
-        assert!(prompt.contains("directly spawn exactly one finalizer"));
-        assert!(!prompt.contains("harness::react"));
-        assert!(!prompt.contains("trigger-spawned"));
-    }
-}

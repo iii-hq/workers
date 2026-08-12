@@ -3,6 +3,7 @@ name: email
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: email
 tags: [email, smtp, imap, inbox, messaging]
 description: Email worker — SMTP send and real-time IMAP read with IDLE push (email::*).

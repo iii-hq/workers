@@ -11,6 +11,7 @@
  * the conformance test and the shim validator catch a miss on either side.
  */
 export const componentNames = [
+  'AnsiText',
   'Badge',
   'Button',
   'CodeEditor',
@@ -29,10 +30,16 @@ export const componentNames = [
   'DropdownMenuTrigger',
   'EmptyState',
   'ErrorBoundary',
+  'FileDiff',
   'Input',
   'JsonHighlight',
   'Markdown',
   'MarkdownPreview',
+  'PageBody',
+  'PageHeader',
+  'PageMain',
+  'PageShell',
+  'PageSidebar',
   'Select',
   'Skeleton',
   'StatusDot',
@@ -41,9 +48,12 @@ export const componentNames = [
   'TabsContent',
   'TabsList',
   'TabsTrigger',
+  'TerminalCommandLine',
+  'TerminalStream',
   'Tooltip',
   'TooltipContent',
   'TooltipTrigger',
+  'WorkerConfigurationDialog',
 ]
 
 export default componentNames

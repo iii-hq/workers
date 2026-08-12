@@ -16,7 +16,7 @@
 import { Badge, Button, EmptyState, type Host, Input, Select, StatusPanel } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { schemaDiagram } from '../lib/rpc'
-import { AlertCircle, KeyRound, Link2, RefreshCw, Table2 } from './icons'
+import { AlertCircle, KeyRound, Link2, Maximize, Table2 } from './icons'
 import { useDatabaseRead } from './useDatabaseRead'
 
 const MIN_ZOOM = 0.15
@@ -269,9 +269,10 @@ export function ErdPanel({
 
   return (
     <div className="db-erd">
-      <div className="db-erd-bar">
+      <div className="db-erd-bar db-toolbar">
         <span className="db-erd-stat">
-          {diagram.nodes.length} tables · {diagram.edges.length} relations
+          {diagram.nodes.length} table{diagram.nodes.length === 1 ? '' : 's'} · {diagram.edges.length} relation
+          {diagram.edges.length === 1 ? '' : 's'}
         </span>
         {related === 0 ? (
           <span className="db-erd-stat quiet">no foreign keys — nothing to connect</span>
@@ -281,7 +282,7 @@ export function ErdPanel({
           </span>
         )}
         {diagram.truncated ? <Badge variant="warn">truncated</Badge> : null}
-        <div className="db-erd-spacer" />
+        <div className="db-toolbar-spacer" />
         {focus ? (
           <>
             <span className="db-erd-focus">
@@ -316,8 +317,10 @@ export function ErdPanel({
             reset positions
           </Button>
         ) : null}
+        {/* A frame icon, not the refresh arrows: fit re-frames the view, the
+            header's refresh re-reads data — same glyph implied same verb. */}
         <Button variant="ghost" size="sm" onClick={fitToFrame}>
-          <RefreshCw size={13} aria-hidden />
+          <Maximize size={13} aria-hidden />
           fit
         </Button>
       </div>
@@ -451,7 +454,16 @@ export function ErdPanel({
                     setFocus(n.table)
                     setSelected(null)
                   }}
-                  title={`${n.table} · ${n.degree} relation${n.degree === 1 ? '' : 's'} · drag to move, double-click to focus`}
+                  // Double-click has no keyboard equivalent — F is it.
+                  onKeyDown={(e) => {
+                    if (e.key === 'f' || e.key === 'F') {
+                      e.preventDefault()
+                      setFocus(n.table)
+                      setSelected(null)
+                    }
+                  }}
+                  aria-keyshortcuts="F"
+                  title={`${n.table} · ${n.degree} relation${n.degree === 1 ? '' : 's'} · drag to move, double-click or F to focus`}
                 >
                   <span className="db-erd-node-name">{n.table}</span>
                   {n.degree > 0 ? <span className="db-erd-node-deg">{n.degree}</span> : null}
