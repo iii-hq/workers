@@ -679,9 +679,9 @@ fn send_options(job: &EvalJobRecordV1, variant: &crate::contract::EvalVariantV1)
     SendOptions {
         system_prompt: variant.system_prompt.clone(),
         system_prompt_strategy: if variant.system_prompt.is_none() {
-            harness::prompt::SystemPromptStrategy::Disabled
+            Some(harness::prompt::SystemPromptStrategy::Disabled)
         } else {
-            job.request.model.system_prompt_strategy
+            Some(job.request.model.system_prompt_strategy)
         },
         mode: job.request.model.mode,
         max_turns: Some(job.request.limits.execution.max_turns),
