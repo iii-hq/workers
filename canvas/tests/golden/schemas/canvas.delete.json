@@ -1,0 +1,37 @@
+{
+  "description": "Delete a stored canvas by its stable 8-character id. Deleting an unknown id is not an error: the response reports deleted=false instead.",
+  "function_id": "canvas::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "id": {
+        "description": "Stable 8-character canvas id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "deleted": {
+        "description": "`true` when a record existed and was removed; `false` for an unknown id.",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "The id the call asked to delete.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "deleted",
+      "id"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

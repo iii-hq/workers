@@ -1,0 +1,104 @@
+{
+  "description": "Validate canvas source without storing it: detect the mermaid diagram family, check the size cap, balanced fences and per-family lints, or check an excalidraw scene JSON's shape. A cheap pre-flight — full parsing happens at render time in the console.",
+  "function_id": "canvas::validate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CanvasFormat": {
+        "description": "Diagram format a canvas holds.",
+        "oneOf": [
+          {
+            "description": "Mermaid text — rendered from source by the console.",
+            "enum": [
+              "mermaid"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A freeform whiteboard — the source is an excalidraw scene JSON.",
+            "enum": [
+              "freeform"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CanvasFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Format the source claims to be: `mermaid` or `freeform`. Omit to auto-detect — a source whose first character is `{` is treated as an excalidraw scene, anything else as mermaid text."
+      },
+      "source": {
+        "description": "The source to validate: mermaid text, or an excalidraw scene JSON string.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "source"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ValidationIssue": {
+        "description": "One problem found in the source.",
+        "properties": {
+          "line": {
+            "description": "1-indexed source line the issue points at, when known.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "Human-readable description of the issue.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "family": {
+        "description": "The mermaid diagram family derived from the source (`flowchart`, `sequenceDiagram`, …). `null` for freeform or when the first meaningful line names no supported family.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "issues": {
+        "description": "Every issue found; empty when `valid` is `true`.",
+        "items": {
+          "$ref": "#/definitions/ValidationIssue"
+        },
+        "type": "array"
+      },
+      "valid": {
+        "description": "`true` when every cheap check passed. This is a pre-flight verdict, not a render guarantee — full parsing happens in the console.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "issues",
+      "valid"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

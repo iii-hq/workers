@@ -1,0 +1,108 @@
+{
+  "description": "Update a stored canvas's name and/or source by id. The id never changes; updated_at is stamped and, for mermaid, the diagram family is re-derived from the new source. Returns the full updated record.",
+  "function_id": "canvas::update",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "id": {
+        "description": "Stable 8-character canvas id.",
+        "type": "string"
+      },
+      "name": {
+        "default": null,
+        "description": "New canvas name. Omit to keep the current one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "source": {
+        "default": null,
+        "description": "New source (mermaid text or excalidraw scene JSON, matching the canvas's format). Omit to keep the current one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CanvasFormat": {
+        "description": "Diagram format a canvas holds.",
+        "oneOf": [
+          {
+            "description": "Mermaid text — rendered from source by the console.",
+            "enum": [
+              "mermaid"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A freeform whiteboard — the source is an excalidraw scene JSON.",
+            "enum": [
+              "freeform"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "One stored canvas. The id is a stable 8-character slug that never changes across updates; `source` is always the editable source of truth (mermaid text, or the excalidraw scene JSON for freeform).",
+    "properties": {
+      "created_at": {
+        "description": "Creation time, unix seconds.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "family": {
+        "description": "Mermaid diagram family (`flowchart`, `sequenceDiagram`, …), derived from the source. `null` for a freeform canvas.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "format": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/CanvasFormat"
+          }
+        ],
+        "description": "Diagram format: `mermaid` or `freeform`."
+      },
+      "id": {
+        "description": "Stable 8-character slug identifying this canvas. Never changes across updates.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Human-readable canvas name.",
+        "type": "string"
+      },
+      "source": {
+        "description": "The editable source of truth: mermaid text for `mermaid`, the excalidraw scene JSON for `freeform`.",
+        "type": "string"
+      },
+      "updated_at": {
+        "description": "Last update time, unix seconds.",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "created_at",
+      "format",
+      "id",
+      "name",
+      "source",
+      "updated_at"
+    ],
+    "title": "CanvasRecord",
+    "type": "object"
+  }
+}

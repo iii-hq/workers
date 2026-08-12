@@ -50,6 +50,7 @@ standard_workers:
   - approval-gate
   - bridge
   - browser
+  - canvas
   - claude-code
   - codex
   - computer

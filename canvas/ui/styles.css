@@ -1,0 +1,587 @@
+/**
+ * Every rule is scoped under [data-iii-ui="canvas"].
+ *
+ * Injected CSS is unlayered, so one unscoped selector silently beats the
+ * console's own fully-layered styles across the whole document. Colors come
+ * from the console's design tokens, so both themes work without a media query.
+ */
+
+[data-iii-ui='canvas'] .canvas-ui {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+[data-iii-ui='canvas'] .canvas-ui__empty {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__meta {
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+/* ── canvas page (src/page/**) ────────────────────────────────────────────
+   Sidebar list, the mermaid editor/preview split, the pan/zoom preview
+   frame, and the diagnostics strip. Tokens only. The split responds to its
+   own container width (`.cv-pane` is the query container — a container
+   query cannot style its own container element, so the pane wraps the
+   split): editor stacks above preview under ~700px of pane width. */
+
+[data-iii-ui='canvas'] .cv-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+[data-iii-ui='canvas'] .cv-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem 0.25rem;
+  flex: none;
+}
+
+[data-iii-ui='canvas'] .cv-side-count {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+[data-iii-ui='canvas'] .cv-note {
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+  padding: 0.5rem 0.625rem;
+}
+
+[data-iii-ui='canvas'] .cv-note.warn {
+  color: var(--color-warn);
+}
+
+[data-iii-ui='canvas'] .cv-note.pad {
+  padding: 1rem;
+}
+
+[data-iii-ui='canvas'] .cv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0.375rem 0.5rem;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-iii-ui='canvas'] .cv-item {
+  position: relative;
+  border-radius: 6px;
+}
+
+[data-iii-ui='canvas'] .cv-item:hover {
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui='canvas'] .cv-item.selected {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui='canvas'] .cv-item-open {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0.4375rem 1.75rem 0.4375rem 0.5rem;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--color-ink);
+  font: inherit;
+}
+
+[data-iii-ui='canvas'] .cv-item-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='canvas'] .cv-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='canvas'] .cv-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='canvas'] .cv-item-time {
+  color: var(--color-ink-ghost);
+  font-size: 0.6875rem;
+}
+
+[data-iii-ui='canvas'] .cv-item-delete {
+  position: absolute;
+  top: 0.4375rem;
+  right: 0.375rem;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+
+[data-iii-ui='canvas'] .cv-item:hover .cv-item-delete,
+[data-iii-ui='canvas'] .cv-item-delete:focus-visible {
+  display: inline-flex;
+}
+
+[data-iii-ui='canvas'] .cv-item-delete:hover {
+  color: var(--color-alert);
+  background: var(--color-alert-muted);
+}
+
+[data-iii-ui='canvas'] .cv-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex: none;
+}
+
+[data-iii-ui='canvas'] .cv-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+[data-iii-ui='canvas'] .cv-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  container: cv-pane / inline-size;
+}
+
+[data-iii-ui='canvas'] .cv-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  border-bottom: 1px solid var(--color-edge);
+  flex: none;
+}
+
+[data-iii-ui='canvas'] .cv-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 14rem;
+}
+
+[data-iii-ui='canvas'] .cv-spacer {
+  flex: 1;
+}
+
+[data-iii-ui='canvas'] .cv-zoom {
+  font-size: 0.6875rem;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.5rem;
+  text-align: right;
+}
+
+[data-iii-ui='canvas'] .cv-note-inline {
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18rem;
+}
+
+[data-iii-ui='canvas'] .cv-note-inline.warn {
+  color: var(--color-warn);
+}
+
+[data-iii-ui='canvas'] .cv-split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 44%) minmax(0, 1fr);
+}
+
+[data-iii-ui='canvas'] .cv-editor {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='canvas'] .cv-code {
+  min-height: 100%;
+}
+
+[data-iii-ui='canvas'] .cv-preview {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-bg);
+  cursor: grab;
+  touch-action: none;
+}
+
+[data-iii-ui='canvas'] .cv-preview:active {
+  cursor: grabbing;
+}
+
+[data-iii-ui='canvas'] .cv-preview-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+[data-iii-ui='canvas'] .cv-svg-host {
+  width: 100%;
+  height: 100%;
+}
+
+[data-iii-ui='canvas'] .cv-svg-host svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* mermaid inlines a max-width style on the root svg; the transform canvas
+     is already sized to the viewBox, so the clamp only fights the zoom. */
+  max-width: none !important;
+}
+
+[data-iii-ui='canvas'] .cv-preview-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-ghost);
+  font-size: 0.8125rem;
+  text-align: center;
+  padding: 1rem;
+  pointer-events: none;
+}
+
+[data-iii-ui='canvas'] .cv-diag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--color-alert-muted);
+  border-top: 1px solid var(--color-edge);
+  color: var(--color-alert);
+  max-height: 8.5em;
+  overflow: auto;
+  cursor: auto;
+}
+
+[data-iii-ui='canvas'] .cv-diag-icon {
+  flex: none;
+  margin-top: 0.125rem;
+}
+
+[data-iii-ui='canvas'] .cv-diag-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+[data-iii-ui='canvas'] .cv-diag-line {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+[data-iii-ui='canvas'] .cv-diag-msg {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-ink);
+}
+
+/* Narrow pane: editor stacks above the preview. */
+@container cv-pane (max-width: 700px) {
+  [data-iii-ui='canvas'] .cv-split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(140px, 40%) minmax(0, 1fr);
+  }
+
+  [data-iii-ui='canvas'] .cv-editor {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-edge);
+  }
+}
+
+/* ── freeform (excalidraw) ──────────────────────────────────────────────
+   Owned by the freeform surface (ui/src/freeform). Only the WRAPPER is
+   styled here: excalidraw's own stylesheet is unscoped vendor CSS that
+   cannot ride this (scoped) console:style asset, so it ships as a text
+   export of the freeform vendor bundle and loadFreeform() injects it into
+   a <style data-iii-ui="canvas"> head tag (see ui/src/lib/loaders.ts).
+
+   Excalidraw measures itself against its container's computed size, so the
+   wrapper must resolve to a real box: flex:1 + min-height:0 inside the
+   page's flex column, height/width 100% when the parent sizes explicitly. */
+
+[data-iii-ui='canvas'] .canvas-freeform {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+[data-iii-ui='canvas'] .canvas-freeform--status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 12rem;
+}
+
+[data-iii-ui='canvas'] .canvas-freeform__status {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  text-align: center;
+  max-width: 32rem;
+}
+
+/* --- chat function-trigger cards -------------------------------------- */
+/* Rendered inside the FunctionTriggerCard host; the console wraps every
+   injected render in <div data-iii-ui="canvas">, so scoping holds here. */
+
+[data-iii-ui='canvas'] .canvas-trigger__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__pill {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__pill--quiet {
+  border-color: var(--color-edge);
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__name {
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__chip {
+  border: 1px solid var(--color-edge);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__open {
+  font-size: 11.5px;
+  color: var(--color-accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--color-accent-border);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__open:hover {
+  color: var(--color-accent-hover);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__note {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__pulse {
+  animation: canvas-trigger-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes canvas-trigger-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__diagram {
+  display: block;
+  max-height: 380px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+  padding: 10px;
+  text-decoration: none;
+  color: inherit;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__diagram--loading {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__fail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__error {
+  font-size: 12px;
+  color: var(--color-alert);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__source {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+  padding: 8px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink);
+  white-space: pre;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__table-wrap {
+  overflow-x: auto;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  border-bottom: 1px solid var(--color-edge);
+  padding: 3px 10px 3px 0;
+  white-space: nowrap;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__table td {
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-edge);
+  padding: 3px 10px 3px 0;
+  vertical-align: top;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__ok {
+  font-size: 12px;
+  color: var(--color-ok);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__issue {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+[data-iii-ui='canvas'] .canvas-trigger__issue-line {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-warn);
+}

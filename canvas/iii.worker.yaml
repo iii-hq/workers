@@ -1,0 +1,12 @@
+iii: v1
+name: canvas
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: canvas
+tags: [diagram, mermaid, flowchart, whiteboard, drawing, svg]
+description: Create, edit and render diagrams in the console — stored as editable source, drawn live in chat and on a canvas page.
+dependencies:
+  state: "^0.21.3"
+  configuration: "^0.21.6"

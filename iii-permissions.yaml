@@ -195,6 +195,10 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # canvas: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!canvas::on-config-change'
+
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list
@@ -341,3 +345,16 @@ rules:
   - pdf::extract-text
   - pdf::extract-items
   - pdf::extract-regions
+
+  # canvas: every function touches only the worker's own store (state scope
+  # "canvas"), sources are size-capped by its configuration, and nothing here
+  # spends, executes, or leaves the machine. Storing and revising a diagram is
+  # the point of the surface, so the write half stays agent-callable too —
+  # gating it would mean an approval prompt to draw a picture.
+  - canvas::create
+  - canvas::get
+  - canvas::list
+  - canvas::update
+  - canvas::delete
+  - canvas::syntax
+  - canvas::validate
