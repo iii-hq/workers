@@ -1,0 +1,437 @@
+/*
+ * The code-runner worker's console stylesheet, shipped as its own
+ * `console:style` asset (code-runner/styles.css) — the console mounts it as a
+ * <link> in document.head and link-swaps it on hot reload, styles-before-
+ * scripts on boot.
+ *
+ * Every rule is scoped under `[data-iii-ui="code-runner"]`, the wrapper the
+ * console mounts around every injected render. No :root/html/body/bare element
+ * selectors and no @font-face — injected CSS is unlayered, so an unscoped rule
+ * would silently beat the console's own document-wide. Colours are design
+ * tokens only, so light/dark theming is free.
+ *
+ * Shared shell first (`cr-ui-*`, used by every card), then one section per
+ * renderer (`cr-<op>-*`, used by exactly one). Anything a second renderer
+ * needs moves up into the shell rather than being copied.
+ *
+ * `@keyframes` names are global even here, so they carry the prefix too.
+ *
+ * Two deliberate differences from `sandbox-code-runner/ui/styles.css`, which
+ * this is otherwise a port of: there are no `.cr-run-net` rules (this worker's
+ * request has no `network` field — neither engine has any network, so a chip
+ * would imply a knob exists), and there is a `.cr-ui-result-*` block for the
+ * completion value, which is the field this worker's wire adds.
+ */
+
+/* --- card frame -------------------------------------------------------- */
+[data-iii-ui="code-runner"] .cr-ui-msg {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="code-runner"] .cr-ui-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="code-runner"] .cr-ui-pill {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+[data-iii-ui="code-runner"] .cr-ui-pill.quiet {
+  border-color: var(--color-rule);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="code-runner"] .cr-ui-msg-tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="code-runner"] .cr-ui-msg-note {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="code-runner"] .cr-ui-msg-note.pulse {
+  animation: cr-ui-pulse 1.6s ease-in-out infinite;
+}
+@keyframes cr-ui-pulse {
+  0%, 100% { opacity: 1 }
+  50% { opacity: 0.35 }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="code-runner"] .cr-ui-msg-note.pulse {
+    animation: none;
+  }
+}
+
+/* --- chips ------------------------------------------------------------- */
+[data-iii-ui="code-runner"] .cr-ui-chip {
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+[data-iii-ui="code-runner"] .cr-ui-chip .k { color: var(--color-ink-ghost); }
+
+/* The runtime-id capability chip: a button, because it copies on click. */
+[data-iii-ui="code-runner"] .cr-ui-rt {
+  border: 1px dashed var(--color-rule);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="code-runner"] .cr-ui-rt .k { color: var(--color-ink-ghost); }
+[data-iii-ui="code-runner"] .cr-ui-rt:hover { border-color: var(--color-accent); }
+[data-iii-ui="code-runner"] .cr-ui-rt:focus-visible {
+  outline: 1px solid var(--color-ring);
+  outline-offset: 1px;
+}
+[data-iii-ui="code-runner"] .cr-ui-rt.copied { border-color: var(--color-ok); color: var(--color-ok); }
+[data-iii-ui="code-runner"] .cr-ui-rt.failed { border-color: var(--color-alert); color: var(--color-alert); }
+[data-iii-ui="code-runner"] .cr-ui-rt-flash { font-size: 10.5px; letter-spacing: 0.06em; }
+
+/* --- terminal streams (stdout / stderr) -------------------------------- */
+/* Process output, not log records: no per-line level gutter, whitespace
+   preserved, and a hard height ceiling so a chatty script scrolls inside its
+   own box instead of pushing the conversation off screen. */
+[data-iii-ui="code-runner"] .cr-ui-stream {
+  border-top: 1px solid var(--color-rule-2);
+  padding: 6px 12px 8px;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="code-runner"] .cr-ui-stream-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+  margin-bottom: 4px;
+}
+[data-iii-ui="code-runner"] .cr-ui-stream-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+}
+/* stderr is the user's own compiler/runtime message on a failed script —
+   informational, so it is tinted, not alarmed. */
+[data-iii-ui="code-runner"] .cr-ui-stream.err .cr-ui-stream-label,
+[data-iii-ui="code-runner"] .cr-ui-stream.err .cr-ui-stream-body {
+  color: var(--color-warn);
+}
+
+/* --- exit status -------------------------------------------------------- */
+[data-iii-ui="code-runner"] .cr-ui-exit {
+  border-top: 1px solid var(--color-rule-2);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+[data-iii-ui="code-runner"] .cr-ui-exit-code {
+  border: 1px solid var(--color-rule);
+  font-size: 11.5px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+[data-iii-ui="code-runner"] .cr-ui-exit-code.ok {
+  border-color: var(--color-ok);
+  color: var(--color-ok);
+}
+/* warn, never alert: a non-zero exit is the script failing, not the worker. */
+[data-iii-ui="code-runner"] .cr-ui-exit-code.failed {
+  border-color: var(--color-warn);
+  color: var(--color-warn);
+}
+[data-iii-ui="code-runner"] .cr-ui-exit-note { color: var(--color-ink-faint); }
+[data-iii-ui="code-runner"] .cr-ui-exit-dur {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-size: 11.5px;
+}
+
+/* --- registered ids ----------------------------------------------------- */
+[data-iii-ui="code-runner"] .cr-ui-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 12px 10px;
+}
+[data-iii-ui="code-runner"] .cr-ui-id {
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 6px;
+}
+
+/* --- completion value ---------------------------------------------------- */
+/* `result` is what the code RETURNED, as distinct from what it printed: the
+   streams above are stdout/stderr, this is the value. Pretty-printed JSON, so
+   it needs the same monospace + scroll treatment as a stream, with a lower
+   ceiling — a result is usually small and a huge one is better expanded. */
+[data-iii-ui="code-runner"] .cr-ui-result-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+/* A null result is the routine "returned nothing", not a fault — ghost weight,
+   never warn: the overwhelmingly common cause is a `return`-vs-`result`
+   convention mismatch, which the hint beside it explains. */
+[data-iii-ui="code-runner"] .cr-ui-result-null {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="code-runner"] .cr-ui-result-hint {
+  color: var(--color-ink-ghost);
+}
+
+/* --- renderer body slots ----------------------------------------------- */
+[data-iii-ui="code-runner"] .cr-ui-section {
+  border-top: 1px solid var(--color-rule-2);
+  padding: 8px 12px;
+}
+[data-iii-ui="code-runner"] .cr-ui-section-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+  margin-bottom: 6px;
+}
+[data-iii-ui="code-runner"] .cr-ui-code {
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-panel);
+  font-size: 12px;
+  max-height: 320px;
+  overflow: auto;
+}
+[data-iii-ui="code-runner"] .cr-ui-warn { color: var(--color-warn); }
+[data-iii-ui="code-runner"] .cr-ui-alert { color: var(--color-alert); }
+
+/* The "expand · N lines" / "collapse" link. Shared by every collapsible
+   block: the streams, run's source, register_function's source. */
+[data-iii-ui="code-runner"] .cr-ui-toggle {
+  align-self: flex-start;
+  margin-top: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* --- run card ------------------------------------------------------------ */
+/* A runtime the call CREATED is a resource the caller now owns and has to
+   tear down — the warn tint marks "you are holding something", not an error. */
+[data-iii-ui="code-runner"] .cr-run-fresh {
+  border-color: var(--color-warn);
+  color: var(--color-warn);
+}
+
+/* --- register_function card ---------------------------------------------- */
+[data-iii-ui="code-runner"] .cr-register-function-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* A function id runs to hundreds of bytes and a description further still;
+   neither may push the conversation off screen. */
+[data-iii-ui="code-runner"] .cr-register-function-id {
+  font-size: 15px;
+  color: var(--color-accent);
+  overflow-wrap: anywhere;
+  max-height: 84px;
+  overflow: auto;
+}
+[data-iii-ui="code-runner"] .cr-register-function-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow: auto;
+}
+/* `.cr-ui-warn` alone is the same specificity as the two rules above, so
+   whichever sits later in this file would otherwise win regardless of which
+   one is more meaningful — an empty id or description would render at full
+   accent/ink-faint weight instead of the warn tint. These compound selectors
+   outrank both so the warn treatment always applies when the class is
+   actually present on the element. */
+[data-iii-ui="code-runner"] .cr-register-function-id.cr-ui-warn,
+[data-iii-ui="code-runner"] .cr-register-function-desc.cr-ui-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="code-runner"] .cr-register-function-status {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--color-rule);
+  padding: 0 6px;
+}
+[data-iii-ui="code-runner"] .cr-register-function-status.live {
+  border-color: var(--color-ok);
+  color: var(--color-ok);
+}
+[data-iii-ui="code-runner"] .cr-register-function-status.refused {
+  border-color: var(--color-warn);
+  color: var(--color-warn);
+}
+/* The namespace the id claims for its runtime — the surprise this card exists
+   to spoil, so it sits under the id rather than in a chip row. */
+[data-iii-ui="code-runner"] .cr-register-function-ns {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+}
+/* Same specificity fight as `.cr-register-function-id`/`-desc` above: an id
+   with no namespace must read as warn, not the routine ink-faint tone. */
+[data-iii-ui="code-runner"] .cr-register-function-ns.cr-ui-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="code-runner"] .cr-register-function-ns code {
+  font-family: inherit;
+  color: var(--color-ink);
+}
+/* The highlighting is a guess (this request has no `lang`), so it is labelled
+   as one — quietly, at ghost weight. */
+[data-iii-ui="code-runner"] .cr-register-function-lang {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-ink-ghost);
+}
+
+/* --- teardown card: ids that no longer resolve -------------------------- */
+/* Struck through, because these ids stopped resolving on the bus. Ids are
+   caller-chosen strings, so one long unbroken id must wrap inside its chip
+   rather than push the card sideways. (The count is clamped in the DOM by the
+   card itself — a runtime may hold up to 64 functions.) */
+[data-iii-ui="code-runner"] .cr-teardown-gone .cr-ui-id {
+  color: var(--color-ink-faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--color-ink-ghost);
+  overflow-wrap: anywhere;
+}
+/* The "expand · N ids" toggle sits below the chips, on the list's padding. */
+[data-iii-ui="code-runner"] .cr-teardown-more {
+  padding: 0 12px 10px;
+}
+
+/* --- configuration form (Workers tab, `code-runner` entry) -------------- */
+/* Same field grammar as the state worker's form: mono, token colors only,
+ * host owns the SaveBar below. The section badges carry the reload split —
+ * green-ish accent for hot-applied, faint for restart-applied — because that
+ * split is the one thing an operator must know before saving. */
+[data-iii-ui="code-runner"] .cr-cfg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="code-runner"] .cr-cfg-caption {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="code-runner"] .cr-cfg-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-rule-2);
+  padding-bottom: 6px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-live,
+[data-iii-ui="code-runner"] .cr-cfg-restart {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+[data-iii-ui="code-runner"] .cr-cfg-live { color: var(--color-accent); }
+[data-iii-ui="code-runner"] .cr-cfg-restart { color: var(--color-ink-ghost); }
+[data-iii-ui="code-runner"] .cr-cfg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-field > label {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="code-runner"] .cr-cfg-field .hint,
+[data-iii-ui="code-runner"] .cr-cfg-section > .hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="code-runner"] .cr-cfg-input {
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  max-width: 420px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-input:focus {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-error {
+  border: 1px solid var(--color-alert);
+  color: var(--color-alert);
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+[data-iii-ui="code-runner"] .cr-cfg-checkrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+[data-iii-ui="code-runner"] .cr-cfg-checkrow input { accent-color: var(--color-accent); }

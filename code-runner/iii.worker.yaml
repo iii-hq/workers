@@ -1,0 +1,28 @@
+iii: v1
+name: code-runner
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: code-runner
+tags: [javascript, python, run, sandbox, v8, wasm]
+description: Run untrusted Node.js and Python in-process — V8 isolates and CPython-on-WebAssembly behind one run/register_function/teardown API, with no microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory.
+dependencies:
+  configuration: "^0.21.6"
+
+# Restricted for TWO independent reasons, both of which must hold before this
+# list can be widened — do not conclude it is liftable by dropping one
+# dependency:
+#   1. rusty_v8 150.4.0 (via deno_core) publishes no prebuilt for
+#      i686-pc-windows-msvc or armv7-unknown-linux-gnueabihf.
+#   2. Cranelift (wasmtime's compiler) has no backend for those same two.
+# With no `targets:` the release matrix fans out to all 9 default triples,
+# those two shards fail, and `publish` is gated `if: !failure()` — so a
+# code-runner/v* tag would build red and never reach the registry.
+targets:
+  - x86_64-apple-darwin
+  - aarch64-apple-darwin
+  - x86_64-pc-windows-msvc
+  - aarch64-pc-windows-msvc
+  - x86_64-unknown-linux-gnu
+  - x86_64-unknown-linux-musl
+  - aarch64-unknown-linux-gnu

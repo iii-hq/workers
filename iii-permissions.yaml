@@ -195,6 +195,10 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # code-runner: internal hot-reload hook, same pattern as the other
+  # on-config-change denies.
+  - '!code-runner::on-config-change'
+
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list

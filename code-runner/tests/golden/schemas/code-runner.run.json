@@ -1,0 +1,106 @@
+{
+  "function_id": "code-runner::run",
+  "description": "Run code in an in-process sandbox — lang \"node\" or \"python\"; no network, no host filesystem, no package installs. One-shot by default; keep: true returns a runtime_id, and passing runtime_id later reuses that runtime (same globals and scratch) until code-runner::teardown or the idle TTL reaps it (then: code-runner::expired — retry without runtime_id). Code gets an `iii` global for bus calls. stdout/stderr/exit_code come back verbatim — a failing script is a response, not an error — and `result` carries the returned value: node code is a FUNCTION BODY (`return x`), python a MODULE (assign `result = x`).",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RunRequest",
+    "type": "object",
+    "required": [
+      "code"
+    ],
+    "properties": {
+      "code": {
+        "description": "Node: the body of an async function — `return x` yields the result, top-level `await` works. Python: a module — assign `result = x`. Both get a global `iii` that can trigger any bus function; node's can also register functions for the life of the runtime and reach its private scratch directory via `iii.files`, python's is synchronous and gets `/work` instead.",
+        "type": "string"
+      },
+      "keep": {
+        "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — create a runtime, run `code`, return the result, destroy it. Nothing persists. `true`: leave it running; the response's `runtime_id` addresses it for later runs and is the capability `code-runner::teardown` needs to stop it.",
+        "default": false,
+        "type": "boolean"
+      },
+      "lang": {
+        "description": "Required when `runtime_id` is omitted — picks the engine (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime.",
+        "default": null,
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Lang"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "runtime_id": {
+        "description": "Run in a SPECIFIC runtime, sharing its scratch directory and its globals: the run lands in that runtime and it is NOT destroyed afterwards — you own it. Omit this to run one-shot (see `keep`).",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timeout_ms": {
+        "description": "Wall-clock budget in milliseconds, clamped to the configured maximum.",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0.0
+      }
+    },
+    "definitions": {
+      "Lang": {
+        "description": "Which engine backs a runtime.\n\nOnly `node` and `python` are accepted; anything else fails deserialization before a handler runs, so the schema itself is the validation.",
+        "type": "string",
+        "enum": [
+          "node",
+          "python"
+        ]
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RunResponse",
+    "type": "object",
+    "required": [
+      "duration_ms",
+      "exit_code",
+      "result",
+      "stderr",
+      "stdout",
+      "success"
+    ],
+    "properties": {
+      "duration_ms": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "exit_code": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "result": {
+        "description": "The completion value: what the code returned (node) or assigned to `result` (python). Null when it returned nothing, when it returned something JSON cannot represent, or when the run failed.\n\nAlways present, never skipped — unlike `runtime_id`, a null result is information (\"the code returned nothing\") rather than an absence."
+      },
+      "runtime_id": {
+        "description": "Present when this run addresses a runtime that outlives the call — a `keep: true` run that SUCCEEDED, or a `runtime_id` echoed back. Absent, not null, otherwise: there is nothing to address. Treat a present value as a secret.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "success": {
+        "type": "boolean"
+      }
+    }
+  }
+}

@@ -11,6 +11,7 @@ packages:
   - console/ui
   - browser/ui
   - sandbox-code-runner/ui
+  - code-runner/ui
   - computer/ui
   - database/ui
   - editor/ui
