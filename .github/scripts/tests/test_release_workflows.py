@@ -149,3 +149,8 @@ def test_reusable_release_executors_have_no_implicit_inputs() -> None:
         assert inputs, name
         assert all(definition.get("required") == "true" for definition in inputs.values()), name
         assert all("default" not in definition for definition in inputs.values()), name
+
+
+def test_registry_publish_authenticates_iii_installer() -> None:
+    body = (WORKFLOWS / "_publish-registry.yml").read_text()
+    assert "GITHUB_TOKEN: ${{ github.token }}" in body
