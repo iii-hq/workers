@@ -147,6 +147,16 @@ pub struct PathMatch {
     /// itself are not resolved. Operations on it re-validate through the
     /// jail.
     pub path: String,
+    /// What matched: `file` or `dir`. Directories match by NAME only —
+    /// content search never reads them.
+    pub kind: PathMatchKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PathMatchKind {
+    File,
+    Dir,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -263,7 +273,11 @@ fn inner(
             && resolver.is_default_excluded_dir(e.path()))
     });
     for entry in entries.filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
+        // Directories participate in PATH matching (a folder is findable
+        // by name); only files go on to content matching. Symlinks and
+        // special files stay out of both lists, as before.
+        let is_dir = entry.file_type().is_dir();
+        if !entry.file_type().is_file() && !is_dir {
             continue;
         }
         let abs = entry.path();
@@ -309,6 +323,11 @@ fn inner(
                 } else if charge(&mut budget_remaining, abs_wire.len()) {
                     path_matches.push(PathMatch {
                         path: abs_wire.clone(),
+                        kind: if is_dir {
+                            PathMatchKind::Dir
+                        } else {
+                            PathMatchKind::File
+                        },
                     });
                 } else {
                     truncated = true;
@@ -318,6 +337,9 @@ fn inner(
         }
         if budget_exhausted {
             break;
+        }
+        if is_dir {
+            continue;
         }
 
         if let Some(matcher) = &content_matcher {
@@ -559,6 +581,56 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(p, body).unwrap();
+    }
+
+    /// Path search finds FOLDERS by name, not just files — and flags
+    /// each match's kind so a UI can render and act on them differently.
+    /// Content search must never list a directory.
+    #[tokio::test]
+    async fn path_search_matches_directories_with_kind() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join("needle-dir/sub")).unwrap();
+        write(&tmp, "needle.txt", "no content hit");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let dir_abs = abs(&tmp, "needle-dir");
+        let file_abs = abs(&tmp, "needle.txt");
+        let dir_match = out
+            .path_matches
+            .iter()
+            .find(|m| m.path == dir_abs)
+            .expect("directory must appear in path matches");
+        assert!(matches!(dir_match.kind, PathMatchKind::Dir));
+        let file_match = out
+            .path_matches
+            .iter()
+            .find(|m| m.path == file_abs)
+            .expect("file must appear in path matches");
+        assert!(matches!(file_match.kind, PathMatchKind::File));
+        assert!(
+            out.content_matches.iter().all(|m| m.path != dir_abs),
+            "a directory must never produce a content match"
+        );
     }
 
     #[tokio::test]

@@ -10,7 +10,12 @@
 import { CodeEditor, type Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
-import { coderReadFile, coderWriteFile, joinPath } from './coder'
+import {
+  coderReadFile,
+  coderReadFileBase64,
+  coderWriteFile,
+  joinPath,
+} from './coder'
 
 /** File-extension → Monaco language id (unknown ids render plain). */
 export function monacoLangFromPath(path: string): string {
@@ -70,6 +75,31 @@ export function monacoLangFromPath(path: string): string {
     truncated body would destroy the tail). */
 export type ReadOnlyReason = 'binary' | 'truncated' | null
 
+/** Extension → MIME for the image preview (SVG stays in the text editor
+    — it's editable markup first). */
+export function imageMimeFromPath(path: string): string | null {
+  const ext = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
+  switch (ext) {
+    case 'png':
+      return 'image/png'
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg'
+    case 'gif':
+      return 'image/gif'
+    case 'webp':
+      return 'image/webp'
+    case 'bmp':
+      return 'image/bmp'
+    case 'ico':
+      return 'image/x-icon'
+    case 'avif':
+      return 'image/avif'
+    default:
+      return null
+  }
+}
+
 export interface EditorCacheEntry {
   /** What the worker last gave (or accepted) for this file. */
   savedContent: string
@@ -78,6 +108,8 @@ export interface EditorCacheEntry {
   readOnly: ReadOnlyReason
   mode: number | null
   size: number | null
+  /** data: URL when the file rendered as an image preview. */
+  image?: string | null
 }
 
 /** Page-owned; survives tab switches, dropped when a tab closes. */
@@ -128,6 +160,30 @@ export function EditorPane({
       return
     }
     setPane({ phase: 'loading' })
+    const mime = imageMimeFromPath(relPath)
+    if (mime) {
+      coderReadFileBase64(host, absPath)
+        .then((out) => {
+          if (seqRef.current !== seq) return
+          const fresh: EditorCacheEntry = {
+            savedContent: '',
+            draft: '',
+            readOnly: 'binary',
+            mode: out.mode ?? null,
+            size: out.size ?? null,
+            image: `data:${mime};base64,${out.content ?? ''}`,
+          }
+          cache.set(relPath, fresh)
+          setDraftState('')
+          setSavedContent('')
+          setPane({ phase: 'ready' })
+        })
+        .catch((err: unknown) => {
+          if (seqRef.current !== seq) return
+          setPane({ phase: 'error', message: errorMessage(err) })
+        })
+      return
+    }
     coderReadFile(host, absPath)
       .then((out) => {
         if (seqRef.current !== seq) return
@@ -219,9 +275,11 @@ export function EditorPane({
         {dirty ? <span className="shui-dirty" title="unsaved changes" /> : null}
         {readOnly ? (
           <span className="shui-ro-note">
-            {readOnly === 'binary'
-              ? 'binary — read-only'
-              : 'truncated read — read-only'}
+            {entry?.image
+              ? 'image'
+              : readOnly === 'binary'
+                ? 'binary — read-only'
+                : 'truncated read — read-only'}
           </span>
         ) : null}
         {entry?.size != null ? (
@@ -245,6 +303,10 @@ export function EditorPane({
           <div className="shui-side-note">loading {relPath}…</div>
         ) : pane.phase === 'error' ? (
           <div className="shui-side-note warn">{pane.message}</div>
+        ) : entry?.image ? (
+          <div className="shui-image-wrap">
+            <img src={entry.image} alt={relPath} />
+          </div>
         ) : (
           <CodeEditor
             value={draft}
