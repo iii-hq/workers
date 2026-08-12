@@ -13,12 +13,13 @@
 use crate::chat::chat::{ChatCall, ChatFnInput};
 use crate::types::router::{
     AbortRequest, AbortResponse, ChatResponse, CompleteResponse, ConfigChangedEvent,
-    ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest, ModelGetResponse, ModelsListRequest,
-    ModelsListResponse, ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest,
-    ModelsSupportsResponse, ProviderListRequest, ProviderListResponse, ProviderRegisterRequest,
-    ProviderRegisterResponse, ProviderResolveRequest, ProviderResolveResponse, RouteRequest,
-    RouteResponse, RouterAck, SystemPromptGetRequest, SystemPromptGetResponse,
-    UpdateCredentialRequest, UpdateCredentialResponse,
+    FunctionsChangedEvent, ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest,
+    ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
+    ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
+    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
+    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
+    SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
+    UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
@@ -180,5 +181,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
             MODELS_RECONCILE_DESC,
         ),
         spec::<ConfigChangedEvent, RouterAck>(ON_CONFIG_CHANGED_ID, ON_CONFIG_CHANGED_DESC),
+        spec::<FunctionsChangedEvent, RouterAck>(
+            ON_FUNCTIONS_CHANGED_ID,
+            ON_FUNCTIONS_CHANGED_DESC,
+        ),
     ]
 }

@@ -454,6 +454,19 @@ pub struct ConfigChangedEvent {
     pub id: Option<String>,
 }
 
+/// Advisory function-registry change event delivered to
+/// `router::on_functions_changed`. The handler ignores event values and
+/// re-fetches the authoritative registry before nudging live providers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionsChangedEvent {
+    /// Engine event tag (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// Worker whose registered functions changed (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+}
+
 /// Generic acknowledgement returned by trigger-bound handlers whose result is
 /// not consumed by callers (kept typed so the response schema is concrete).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
