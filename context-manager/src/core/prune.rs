@@ -383,14 +383,16 @@ pub fn cap_results_with_sizes(
         let function_id = function_id.clone();
 
         // Build the marker first: it depends only on `tokens` and
-        // `function_id`, both already known, and its own byte cost has to
-        // be reserved out of the kept budget below — otherwise a small cap
-        // or long function_id can leave the rewritten result still over
-        // the threshold (the marker's fixed cost can exceed the 10% margin
-        // once the cap itself is small).
-        let marker = format!(
+        // `function_id`, both already known. Fall back when that marker alone
+        // exceeds the cap, then reserve its byte cost from the kept budget.
+        let full_marker = format!(
             "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted middle is needed]\n"
         );
+        let marker = [full_marker.as_str(), "[cap]", "…", ""]
+            .into_iter()
+            .find(|candidate| estimator.text(candidate) <= max_result_tokens)
+            .unwrap_or_default()
+            .to_owned();
 
         // Chars kept: scale the text down to 90% of the cap, preserving the
         // text's own chars-per-token ratio, then reserve the marker's own
@@ -958,6 +960,18 @@ mod tests {
     }
 
     #[test]
+    fn cap_holds_the_threshold_below_the_full_marker_cost() {
+        let mut messages = vec![result("function::with::a::long::identifier", 200_000, 1)];
+        let mut sizes = sizes_of(&messages);
+
+        cap_results_with_sizes(&mut messages, &mut sizes, 1, &HeuristicEstimator);
+
+        let text = text_of(messages[0].content());
+        assert!(!text.is_empty());
+        assert!(HeuristicEstimator.text(&text) <= 1);
+    }
+
+    #[test]
     fn cap_holds_the_threshold_with_a_long_function_id_and_is_idempotent() {
         // A longer function_id makes the marker's fixed cost bigger still;
         // the budget reservation has to account for it regardless.
@@ -1062,6 +1076,7 @@ mod tests {
     /// always-exempt last-2-turns zone, where prune's window can't reach
     /// it). With both passes the worst step is turn 13 at 75_653 tokens,
     /// which decomposes exactly as:
+    /// ```text
     ///   33_343  last-2-user-turns zone (unconditionally exempt): the
     ///           just-landed state::get whale capped to 18_041 (~90% of
     ///           the 20k cap) + 3 same-turn mid results + the prior
@@ -1076,7 +1091,10 @@ mod tests {
     ///           already collapsed above + 133 tokens of aged-region
     ///           user messages (past both the recent-turn and window
     ///           zones, never charged against either budget)
-    /// = 75_653. 78_000 is a fixed ceiling with headroom over that
+    /// = 75_653.
+    /// ```
+    ///
+    /// 78_000 is a fixed ceiling with headroom over that
     /// verified 75_653 (for incidental token-count drift from unrelated
     /// wording changes elsewhere in this file), while staying far below
     /// both the >100k range that would indicate cap or prune regressing

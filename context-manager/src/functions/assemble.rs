@@ -65,11 +65,12 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
     };
     let mut later_user = false;
     let mut later_assistant = false;
+    let mut later_user_after_assistant = false;
 
     for message in messages.iter_mut().rev() {
         let direct_marker = if supports_vision {
             match message.role() {
-                Role::User if later_user && later_assistant => Some(USER_IMAGE_OMITTED),
+                Role::User if later_user_after_assistant => Some(USER_IMAGE_OMITTED),
                 Role::FunctionResult if later_assistant => Some(TOOL_IMAGE_OMITTED),
                 _ => None,
             }
@@ -86,7 +87,10 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
 
         match message.role() {
             Role::User => later_user = true,
-            Role::Assistant => later_assistant = true,
+            Role::Assistant => {
+                later_assistant = true;
+                later_user_after_assistant |= later_user;
+            }
             _ => {}
         }
     }
@@ -627,6 +631,41 @@ mod tests {
                 text: USER_IMAGE_OMITTED.into()
             }]
         );
+    }
+
+    #[test]
+    fn user_images_survive_steering_before_a_tool_continuation() {
+        let mut messages = vec![
+            message(json!({
+                "role": "user",
+                "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+                "timestamp": 1
+            })),
+            message(json!({
+                "role": "user", "content": [{ "type": "text", "text": "steer" }],
+                "timestamp": 2
+            })),
+            message(json!({
+                "role": "assistant", "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "browser::screenshot", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 3
+            })),
+            message(json!({
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "browser::screenshot",
+                "content": [{ "type": "text", "text": "result" }],
+                "timestamp": 4
+            })),
+        ];
+
+        normalize_media(&mut messages, Some(true));
+
+        assert!(matches!(
+            messages[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
     }
 
     #[test]
