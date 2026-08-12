@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reflex-worker"
+version = "0.1.0"
+description = "Local tool router for the harness loop: proposes the next function call with a calibrated confidence score and shadows real turns to build the calibration curve."
+authors = [{ name = "iii" }]
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "iii-sdk==0.22.1",
+    "cactus-needle==2.0.0",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+reflex-worker = "src.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

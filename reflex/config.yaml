@@ -1,0 +1,19 @@
+engine_url: ws://127.0.0.1:49134
+
+# Where the embedded function index persists between boots. Re-embedding is
+# incremental (schema fingerprint per function), so a warm boot is instant.
+index_path: .index/functions.idx
+
+# Shadow-mode log: one jsonl row per proposal and per observed frontier
+# generation. This file is both the calibration source and fine-tune data.
+shadow_log: shadow.jsonl
+
+# Shadow hook binding. fail_open is load-bearing: pre-generate hooks default
+# to fail-closed, and a router outage must never deny a turn.
+shadow:
+  enabled: true
+  priority: 100
+  timeout_ms: 2000
+
+# Seconds to debounce engine::functions-available bursts before re-indexing.
+refresh_debounce_s: 5

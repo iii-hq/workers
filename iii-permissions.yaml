@@ -195,6 +195,17 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # reflex: internal targets. The shadow hooks are harness hook-chain targets
+  # whose direct call could forge calibration rows; the catalog-change handler
+  # follows the on-config-change pattern. Routing itself is propose-only and
+  # read-safe, so route/status/report stay agent-callable.
+  - '!reflex::shadow::pre-generate'
+  - '!reflex::shadow::post-generate'
+  - '!reflex::on-functions-change'
+  - reflex::route
+  - reflex::index::status
+  - reflex::shadow::report
+
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list
