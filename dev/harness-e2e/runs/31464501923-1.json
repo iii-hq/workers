@@ -5,7 +5,7 @@
     "completed_at": "2026-08-11T07:04:27Z",
     "conclusion": "success",
     "event": "schedule",
-    "head_branch": "main",
+    "head_branch": "daily/2026-08-11",
     "head_sha": "3b2f20401689d2aa70a25c69bc820f35a9e68976",
     "id": "31464501923-1",
     "repository": "iii-hq/workers",
