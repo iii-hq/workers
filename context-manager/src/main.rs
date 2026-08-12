@@ -33,7 +33,7 @@ use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
 use context_manager::configuration::{self, ConfigCell};
 use context_manager::ports::{lease_cell, Deps, SystemClock};
-use context_manager::{config, functions, manifest};
+use context_manager::{config, functions, manifest, ui};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -154,6 +154,7 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
     context_manager::adapters::cache::register_models_changed_flush(&iii, resolver);
+    ui::register(&iii);
 
     // LAST: bind the configuration-change trigger so its handler closes over
     // the snapshot cell + the lease cell it rebuilds on a lease_dir change.
