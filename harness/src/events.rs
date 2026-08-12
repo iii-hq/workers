@@ -1,8 +1,10 @@
 //! The async orchestration trigger types the harness emits —
 //! `harness::ready` after boot, `harness::turn-started` /
-//! `harness::turn-completed` at turn boundaries, and `harness::message-queued`
-//! when a message parks in the mid-turn queue (harness.md § Trigger types
-//! emitted). Consumers and siblings bind these to react without polling.
+//! `harness::turn-completed` at turn boundaries, `harness::message-queued`
+//! when a message parks in the mid-turn queue, and
+//! `harness::triggers-changed` when a session's binding set or fire count
+//! changes (harness.md § Trigger types emitted). Consumers and siblings bind
+//! these to react without polling.
 //!
 //! Delivery is fire-and-forget (`TriggerAction::Void`), at-least-once, and
 //! unordered. Per-binding `config` filters (`session_id`, `parent_session_id`)
@@ -27,6 +29,7 @@ use crate::types::turn::ParentLink;
 pub const TURN_STARTED: &str = "harness::turn-started";
 pub const TURN_COMPLETED: &str = "harness::turn-completed";
 pub const MESSAGE_QUEUED: &str = "harness::message-queued";
+pub const TRIGGERS_CHANGED: &str = "harness::triggers-changed";
 pub const READY: &str = "harness::ready";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -216,6 +219,7 @@ pub struct TurnEvents {
     started: SubscriberSet,
     completed: SubscriberSet,
     queued: SubscriberSet,
+    triggers_changed: SubscriberSet,
 }
 
 impl TurnEvents {
@@ -227,6 +231,7 @@ impl TurnEvents {
         let started = SubscriberSet::default();
         let completed = SubscriberSet::default();
         let queued = SubscriberSet::default();
+        let triggers_changed = SubscriberSet::default();
 
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
@@ -273,8 +278,19 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        let _ = iii.register_trigger_type(
+            RegisterTriggerType::new(
+                TRIGGERS_CHANGED,
+                "A session's trigger-binding set or fire count changed — refetch harness::triggers::list.",
+                TurnEventTriggerHandler {
+                    type_id: TRIGGERS_CHANGED,
+                    set: triggers_changed.clone(),
+                },
+            )
+            .trigger_request_format::<TurnEventBindingConfig>(),
+        );
         tracing::info!(
-            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued trigger types"
+            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed trigger types"
         );
 
         Self {
@@ -284,6 +300,7 @@ impl TurnEvents {
             started,
             completed,
             queued,
+            triggers_changed,
         }
     }
 
@@ -311,6 +328,25 @@ impl TurnEvents {
         self.fan_out(
             &self.queued,
             MESSAGE_QUEUED,
+            session_id,
+            None,
+            None,
+            payload,
+        )
+        .await;
+    }
+
+    /// Doorbell only — a session's binding set or fires count changed;
+    /// consumers refetch `harness::triggers::list`. No per-event logging:
+    /// a single fire rings twice (claim + retirement).
+    pub async fn emit_triggers_changed(&self, session_id: &str) {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "timestamp": now_ms(),
+        });
+        self.fan_out(
+            &self.triggers_changed,
+            TRIGGERS_CHANGED,
             session_id,
             None,
             None,
