@@ -38,8 +38,12 @@ broken diagram never lands in the store or renders as an error card.
   canvas — the id is what earlier references point at.
 - A spatial sketch a person will edit by hand on a whiteboard: create with
   format `freeform` and an excalidraw scene JSON as the source.
+- Drawing while a person watches: create a freeform canvas, then
+  `canvas::element::add` one shape or small group per call — the open
+  console board shows each step as it lands.
 - Finding what is already drawn: `canvas::list`, newest first, with an
-  optional format filter.
+  optional format filter; `canvas::element::list` for the shapes on one
+  freeform board.
 
 ## Boundaries
 

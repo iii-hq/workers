@@ -6,9 +6,13 @@ stable 8-character id, so the architecture sketch drawn in one turn can be
 revised ten turns later and every earlier link to it keeps working. The
 console does the drawing: a `canvas::*` call renders in chat as the live
 diagram rather than a wall of source, and a canvas page lists, edits and
-redraws everything stored. For generated mermaid there is a primer on the
-bus (`canvas::syntax`) and a parse check (`canvas::validate`), so source
-validates on the first try instead of guessing dialect details.
+redraws everything stored. Freeform whiteboards go further: the
+`canvas::element::*` family adds, moves and removes individual shapes one
+call at a time, and because every mutation is a state write the open page
+streams, the board draws itself while the agent works. For generated
+mermaid there is a primer on the bus (`canvas::syntax`) and a parse check
+(`canvas::validate`), so source validates on the first try instead of
+guessing dialect details.
 
 ## Install
 
@@ -76,11 +80,50 @@ reports `deleted: false` on an unknown id rather than erroring.
 A freeform canvas takes an excalidraw scene JSON string as its source;
 `canvas::validate` checks the scene's shape the same way it parses mermaid.
 
+## Drawing element by element
+
+Freeform whiteboards are also editable one shape at a time — the flow an
+agent uses to draw something live while a person watches the page:
+
+```rust
+// Same `call` helper as above. Skeleton shorthand is enough: position,
+// size, and a label; the console converts to full shapes at render time.
+let board = call("canvas::create", json!({
+    "name": "Request path", "format": "freeform",
+    "source": r#"{"type":"excalidraw","version":2,"elements":[]}"#,
+})).await?;
+
+let added = call("canvas::element::add", json!({
+    "id": board["id"],
+    "elements": [
+        { "type": "rectangle", "x": 100, "y": 100, "width": 200, "height": 80,
+          "label": { "text": "engine" } },
+        { "type": "ellipse", "x": 400, "y": 100, "width": 180, "height": 80,
+          "label": { "text": "worker" } },
+        { "type": "arrow", "x": 302, "y": 140, "width": 96, "height": 0 }
+    ],
+})).await?;
+// { "id": "…", "element_ids": ["…", "…", "…"], "element_count": 3 }
+```
+
+`canvas::element::list` returns the board map (id, type, position, text)
+before connecting or moving shapes, `canvas::element::update` merges
+properties into one element by id, and `canvas::element::delete` removes by
+id. The family works on freeform canvases only; mermaid canvases are edited
+as text through `canvas::update`.
+
 ## Console page
 
 The page at `#/ext/canvas` lists every stored canvas and opens each one for
 editing: mermaid source beside its live rendering, a freeform scene on a
-drawable whiteboard. In chat, a `canvas::*` call renders as the diagram it
+drawable whiteboard. The page streams: records live in the state worker's
+`canvas` scope, so an agent-side create pops into the sidebar (and opens,
+when nothing else is), an update redraws the open diagram in place, and
+element calls land on the open whiteboard as they happen — no reload,
+no polling. Renders sketch themselves in with a stroke animation, mermaid
+ships the hand-drawn look, and both panes export SVG and PNG with a
+background-or-transparent and light-or-dark choice independent of the
+console theme. In chat, a `canvas::*` call renders as the diagram it
 touched, not as JSON.
 
 ## Configuration
