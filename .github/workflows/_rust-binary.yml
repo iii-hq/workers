@@ -4,10 +4,9 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
-        required: false
+        description: 'Exact release tag to build'
+        required: true
         type: string
-        default: ''
       bin_name:
         description: 'Binary name (e.g., image-resize)'
         required: true
@@ -20,36 +19,14 @@ on:
         description: 'Git tag for the GitHub Release (e.g., image-resize/v1.0.0)'
         required: true
         type: string
-      is_prerelease:
-        description: 'Mark as pre-release'
-        required: false
-        type: boolean
-        default: false
-      skip_create_release:
-        description: 'Skip GH release creation (assumes release already exists for the tag)'
-        required: false
-        type: boolean
-        default: false
-      dry_run:
-        description: 'Build binaries without uploading or creating releases'
-        required: false
-        type: boolean
-        default: false
       targets:
-        description: 'Optional comma-separated subset of build targets (default: all). Use to mark a worker as unix-only, host-only, etc.'
-        required: false
+        description: 'Exact comma-separated target subset; empty means all supported targets'
+        required: true
         type: string
-        default: ''
-      version_override:
-        description: 'When set, rewrite [package].version in manifest_path to this value before building. Used by the harness bundle to force coordinated versions across deps.'
-        required: false
-        type: string
-        default: ''
       web_bundle:
         description: "Pre-build the SPA in <worker>/web/ (Node + pnpm) and ship the dist artifact to every matrix shard before `cargo build`. Required when the worker's build.rs embeds a Vite-built bundle (e.g. console)."
-        required: false
+        required: true
         type: boolean
-        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,27 +34,6 @@ env:
   CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
 
 jobs:
-  pre-build:
-    name: Pre-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Create GitHub Release
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.tag_name }}
-          name: ${{ inputs.bin_name }} ${{ inputs.tag_name }}
-          draft: false
-          prerelease: ${{ inputs.is_prerelease }}
-          generate_release_notes: true
-
   matrix:
     name: Compute build matrix
     runs-on: ubuntu-latest
@@ -232,7 +188,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [pre-build, matrix, web-build]
+    needs: [matrix, web-build]
     # `web-build` is gated on `inputs.web_bundle`, so it is skipped for any
     # worker without a `web/package.json` (database, shell, mcp, …). GitHub
     # Actions' default `success()` gate treats a skipped need as "not
@@ -295,42 +251,6 @@ jobs:
           # found or saved, so every build of every target ships cold.
           workspaces: ${{ steps.cache_workdir.outputs.dir }}
 
-      - name: Rewrite [package].version (bundle coordinated release)
-        if: inputs.version_override != ''
-        shell: bash
-        env:
-          MANIFEST: ${{ inputs.manifest_path }}
-          VERSION: ${{ inputs.version_override }}
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, re, sys
-          path = pathlib.Path(os.environ["MANIFEST"])
-          version = os.environ["VERSION"]
-          if not path.is_file():
-              print(f"::error::manifest not found: {path}")
-              sys.exit(1)
-          lines = path.read_text().splitlines(keepends=True)
-          out, in_package, rewrote = [], False, False
-          for line in lines:
-              stripped = line.strip()
-              if stripped.startswith("["):
-                  in_package = stripped == "[package]"
-                  out.append(line)
-                  continue
-              if in_package and not rewrote:
-                  m = re.match(r'(\s*version\s*=\s*)"[^"]*"(.*)', line)
-                  if m:
-                      out.append(f'{m.group(1)}"{version}"{m.group(2)}\n')
-                      rewrote = True
-                      continue
-              out.append(line)
-          if not rewrote:
-              print(f"::error::[package].version not found in {path}")
-              sys.exit(1)
-          path.write_text("".join(out))
-          print(f"::notice::set [package].version to {version} in {path}")
-          PY
-
       # When `web_bundle: true`, every frontend bundle was built by the
       # `web-build` job. Restore their original web/dist and ui/dist paths,
       # then signal build.rs to skip its own pnpm invocation.
@@ -374,4 +294,4 @@ jobs:
           checksum: sha256
           manifest-path: ${{ inputs.manifest_path }}
           token: ${{ github.token }}
-          dry-run: ${{ inputs.dry_run }}
+          dry-run: false

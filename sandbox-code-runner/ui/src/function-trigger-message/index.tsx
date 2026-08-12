@@ -30,6 +30,7 @@
 
 import type { FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
 import { redactRuntimeIdsDeep } from '../lib/shared'
+import { createListRuntimesRenderer } from './list-runtimes'
 import { createRegisterFunctionRenderer } from './register-function'
 import { createRunRenderer } from './run'
 import { createTeardownRenderer } from './teardown'
@@ -50,5 +51,6 @@ export function createSandboxCodeRunnerRenderers(
     createRunRenderer(host),
     createRegisterFunctionRenderer(host),
     createTeardownRenderer(host),
+    createListRuntimesRenderer(host),
   ].map((renderer) => ({ ...renderer, redactRaw: redactRuntimeIdsDeep }))
 }

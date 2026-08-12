@@ -5,124 +5,92 @@ on:
     inputs:
       runs:
         description: Number of executions per scenario
-        required: false
+        required: true
         type: number
-        default: 1
       max_parallel:
         description: Maximum number of live model scenarios
-        required: false
+        required: true
         type: number
-        default: 2
       subjects:
         description: JSON array of subject entries with id, model, and provider
-        required: false
+        required: true
         type: string
-        default: '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]'
       judge_model:
         description: Fixed judge model id
-        required: false
+        required: true
         type: string
-        default: claude-sonnet-4-6
       judge_provider:
         description: Fixed judge provider id
-        required: false
+        required: true
         type: string
-        default: anthropic
       source_ref:
-        description: Git ref or commit to evaluate; defaults to the caller revision
-        required: false
+        description: Exact Git ref or commit to evaluate
+        required: true
         type: string
-        default: ''
       stack_mode:
-        description: Resolve runtime workers from source binaries or the registry
-        required: false
+        description: Runtime worker source
+        required: true
         type: string
-        default: source
-      benchmark_lane:
-        description: Stable comparison lane written to benchmark history
-        required: false
+      validation_lane:
+        description: Release Control validation lane
+        required: true
         type: string
-        default: ci
       release_tag:
         description: Release tag associated with this run
-        required: false
+        required: true
         type: string
-        default: ''
       release_worker:
         description: Released worker associated with this run
-        required: false
+        required: true
         type: string
-        default: ''
       release_version:
         description: Released worker version associated with this run
-        required: false
+        required: true
         type: string
-        default: ''
-      release_url:
-        description: GitHub release URL associated with this run
-        required: false
-        type: string
-        default: ''
       release_run_id:
         description: GitHub Actions run that published the released worker
-        required: false
+        required: true
         type: string
-        default: ''
-      smoke_run_id:
-        description: GitHub Actions smoke run that preceded this E2E run
-        required: false
-        type: string
-        default: ''
       registry_tag:
         description: Registry artifact tag associated with this run
-        required: false
+        required: true
         type: string
-        default: ''
       cli_channel:
         description: iii installer channel used for a registry stack
-        required: false
+        required: true
         type: string
-        default: latest
       stack_versions:
         description: JSON object of exact worker versions required in a registry E2E stack
-        required: false
+        required: true
         type: string
-        default: '{}'
-      stack_digest:
-        description: SHA-256 digest of the resolved registry lock
-        required: false
-        type: string
-        default: ''
-      resolve_stack:
-        description: Resolve the live registry stack from latest and freeze its lock
-        required: false
-        type: boolean
-        default: false
       validation_profile:
         description: Scenario profile resolved for this execution
-        required: false
+        required: true
         type: string
-        default: full
       scenarios_json:
-        description: Exact scenario ids; required for custom and checked for named profiles
-        required: false
+        description: Exact scenario ids
+        required: true
         type: string
-        default: '[]'
+      required_scenarios_json:
+        description: Exact policy-required subset of selected scenarios
+        required: true
+        type: string
       catalog_sha:
-        description: Release catalog SHA used by the caller preview
-        required: false
+        description: Immutable source SHA used by the Release Control plan
+        required: true
         type: string
-        default: ''
       profile_digest:
-        description: Canonical scenario profile digest used by the caller preview
-        required: false
+        description: Release Control policy digest
+        required: true
         type: string
-        default: ''
+      policy_version:
+        description: Release Control typed policy version
+        required: true
+        type: string
       coverage:
         description: Instrument the E2E stack and produce an LLVM coverage report
-        required: false
+        required: true
         type: boolean
-        default: false
     outputs:
       validation_profile:
         description: Resolved scenario profile
@@ -152,7 +120,6 @@ on:
 jobs:
   build:
     name: harness e2e build
-    if: inputs.stack_mode == 'registry' || github.ref == 'refs/heads/main' || inputs.source_ref != ''
     runs-on: ubuntu-latest
     # Instrumented cold builds are slower than regular ones.
     timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
@@ -204,7 +171,6 @@ jobs:
           RELEASE_WORKER: ${{ inputs.release_worker }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           STACK_VERSIONS: ${{ inputs.stack_versions }}
-          RESOLVE_STACK: ${{ inputs.resolve_stack }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -226,21 +192,15 @@ jobs:
               [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
               [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
               [[ "$COVERAGE" == "false" ]]
-              if [[ "$RESOLVE_STACK" == "true" ]]; then
-                [[ "$RELEASE_WORKER" == "harness" ]]
-                [[ "$RELEASE_VERSION" == "latest" ]]
-                jq -e 'type == "object" and length == 0' <<<"$STACK_VERSIONS" >/dev/null
-              else
-                [[ -n "$RELEASE_VERSION" ]]
-                jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
-                  type == "object" and
-                  all(to_entries[];
-                    (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
-                    (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
-                  ) and
-                  .[$worker] == $version
-                ' <<<"$STACK_VERSIONS" >/dev/null
-              fi
+              [[ -n "$RELEASE_VERSION" ]]
+              jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
+                type == "object" and length > 0 and
+                all(to_entries[];
+                  (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+                  (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+                ) and
+                .[$worker] == $version
+              ' <<<"$STACK_VERSIONS" >/dev/null
               ;;
             *)
               echo "::error::stack_mode must be source or registry"
@@ -357,31 +317,32 @@ jobs:
         if: inputs.stack_mode == 'registry'
         run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
 
-      - name: Read code-defined scenarios
+      - name: Validate exact scenarios against the executable suite
         id: scenarios
         env:
           VALIDATION_PROFILE: ${{ inputs.validation_profile }}
           REQUESTED_SCENARIOS: ${{ inputs.scenarios_json }}
-          EXPECTED_CATALOG_SHA: ${{ inputs.catalog_sha }}
-          EXPECTED_PROFILE_DIGEST: ${{ inputs.profile_digest }}
+          REQUIRED_SCENARIOS: ${{ inputs.required_scenarios_json }}
+          POLICY_DIGEST: ${{ inputs.profile_digest }}
+          POLICY_VERSION: ${{ inputs.policy_version }}
           # The instrumented binary would otherwise drop default.profraw in cwd.
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
         run: |
           set -euo pipefail
           available=$(harness/target/release/harness-e2e list)
-          resolved=$(python3 .github/scripts/harness_e2e_profiles.py \
+          resolved=$(python3 .github/scripts/validate_harness_scenarios.py \
             --available-json "$available" \
+            --requested-json "$REQUESTED_SCENARIOS" \
+            --required-json "$REQUIRED_SCENARIOS" \
             --profile "$VALIDATION_PROFILE" \
-            --scenarios-json "$REQUESTED_SCENARIOS" \
-            --catalog-sha "${{ github.sha }}" \
-            --expected-catalog-sha "$EXPECTED_CATALOG_SHA" \
-            --expected-profile-digest "$EXPECTED_PROFILE_DIGEST")
+            --policy-digest "$POLICY_DIGEST" \
+            --policy-version "$POLICY_VERSION")
           {
             echo "json=$(jq -c .scenarios <<<"$resolved")"
             echo "required=$(jq -c .required_scenarios <<<"$resolved")"
             echo "profile=$(jq -r .validation_profile <<<"$resolved")"
             echo "profile_digest=$(jq -r .profile_digest <<<"$resolved")"
-            echo "catalog_sha=$(jq -r .catalog_sha <<<"$resolved")"
+            echo "catalog_sha=${{ inputs.catalog_sha }}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Package E2E binaries
@@ -526,10 +487,7 @@ jobs:
           HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
           HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
           HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
           HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
-          HARNESS_E2E_STACK_DIGEST: ${{ inputs.stack_digest }}
-          HARNESS_E2E_RESOLVE_STACK: ${{ inputs.resolve_stack }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
@@ -630,7 +588,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ github.sha }}
 
       - name: Download E2E results
         continue-on-error: true
@@ -685,11 +643,15 @@ jobs:
             ' "${reports[@]}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Collect compact benchmark metrics
+      - name: Collect canonical Release Control summary
         env:
           SUBJECTS: ${{ inputs.subjects }}
           SCENARIOS: ${{ needs.build.outputs.scenarios }}
-          BENCHMARK_LANE: ${{ inputs.benchmark_lane }}
+          REQUIRED_SCENARIOS: ${{ needs.build.outputs.required_scenarios }}
+          VALIDATION_LANE: ${{ inputs.validation_lane }}
+          VALIDATION_PROFILE: ${{ needs.build.outputs.validation_profile }}
+          PROFILE_DIGEST: ${{ needs.build.outputs.profile_digest }}
+          CATALOG_SHA: ${{ needs.build.outputs.catalog_sha }}
           REQUESTED_RUNS: ${{ inputs.runs }}
           SOURCE_SHA: ${{ inputs.source_ref || github.sha }}
           SOURCE_REF: ${{ inputs.release_tag || inputs.source_ref || github.ref }}
@@ -698,61 +660,46 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_WORKER: ${{ inputs.release_worker }}
           RELEASE_VERSION: ${{ inputs.release_version }}
-          RELEASE_URL: ${{ inputs.release_url }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
-          STACK_MODE: ${{ inputs.stack_mode }}
           STACK_VERSIONS: ${{ inputs.stack_versions }}
-          STACK_DIGEST: ${{ inputs.stack_digest }}
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-          EXECUTION_RUN_ID: ${{ github.run_id }}
-          EXECUTION_ATTEMPT: ${{ github.run_attempt }}
-          EXECUTION_EVENT: ${{ github.event_name }}
-          EXECUTION_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/collect_harness_e2e_benchmarks.py \
+          python3 .github/scripts/collect_harness_e2e_summary.py \
             --reports-root target/harness-e2e-results \
-            --output-dir target/harness-e2e-benchmark \
-            --subjects-json "$SUBJECTS" \
+            --output target/harness-e2e-summary/summary.json \
+            --subjects "$SUBJECTS" \
             --scenarios-json "$SCENARIOS" \
-            --lane "$BENCHMARK_LANE" \
+            --required-scenarios-json "$REQUIRED_SCENARIOS" \
+            --lane "$VALIDATION_LANE" \
+            --profile "$VALIDATION_PROFILE" \
+            --profile-digest "$PROFILE_DIGEST" \
+            --catalog-sha "$CATALOG_SHA" \
             --requested-runs "$REQUESTED_RUNS" \
             --source-sha "$SOURCE_SHA" \
             --source-ref "$SOURCE_REF" \
             --repository "$REPOSITORY" \
             --workflow-url "$WORKFLOW_URL" \
+            --workflow-sha '${{ github.sha }}' \
+            --workflow-ref '${{ github.ref }}' \
             --release-tag "$RELEASE_TAG" \
             --release-worker "$RELEASE_WORKER" \
             --release-version "$RELEASE_VERSION" \
-            --release-url "$RELEASE_URL" \
             --registry-tag "$REGISTRY_TAG" \
-            --stack-mode "$STACK_MODE" \
             --stack-versions "$STACK_VERSIONS" \
-            --stack-digest "$STACK_DIGEST" \
             --judge-model "$JUDGE_MODEL" \
             --judge-provider "$JUDGE_PROVIDER" \
-            --execution-run-id "$EXECUTION_RUN_ID" \
-            --execution-attempt "$EXECUTION_ATTEMPT" \
-            --execution-event "$EXECUTION_EVENT" \
-            --execution-actor "$EXECUTION_ACTOR"
+            --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' \
+            --event '${{ github.event_name }}' \
+            --actor '${{ github.actor }}'
 
-      - name: Upload compact benchmark metrics
+      - name: Upload canonical Release Control summary
         uses: actions/upload-artifact@v6
         with:
-          name: harness-e2e-benchmark
-          path: |
-            target/harness-e2e-benchmark/quality.json
-            target/harness-e2e-benchmark/efficiency.json
-            target/harness-e2e-benchmark/snapshot.json
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Upload dashboard execution detail
-        uses: actions/upload-artifact@v6
-        with:
-          name: harness-e2e-dashboard
-          path: target/harness-e2e-benchmark/execution.json
+          name: harness-e2e-summary
+          path: target/harness-e2e-summary/summary.json
           retention-days: 30
           if-no-files-found: error
 

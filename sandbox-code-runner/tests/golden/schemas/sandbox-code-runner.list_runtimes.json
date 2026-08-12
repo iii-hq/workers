@@ -1,0 +1,80 @@
+{
+  "description": "List every runtime this worker currently holds: kept-run runtimes (sandbox-code-runner::run keep=true) and register_function namespace runtimes alike, newest first. Each entry carries runtime_id (treat it as a secret — it is the capability to run into or tear down that runtime), lang, the backing sandbox_id, created_at_ms (epoch milliseconds), and the bus function ids registered onto it. One-shot runs never appear: their VM is destroyed before the run's response is sent.",
+  "function_id": "sandbox-code-runner::list_runtimes",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`list_runtimes` takes no arguments; this empty struct publishes an accurate (empty-object) request schema.\n\nNOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects a `_caller_worker_id` field into every call's payload, so a strict no-arg struct would reject EVERY call.",
+    "title": "ListRuntimesRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Lang": {
+        "enum": [
+          "node",
+          "python"
+        ],
+        "type": "string"
+      },
+      "RuntimeSummary": {
+        "description": "One live runtime, exactly as this worker tracks it.",
+        "properties": {
+          "created_at_ms": {
+            "description": "Wall-clock creation time, epoch milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lang": {
+            "$ref": "#/definitions/Lang"
+          },
+          "registered_functions": {
+            "description": "Bus function ids registered onto this runtime, in registration order. Always empty for a kept-run runtime — nothing is ever registered onto one.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtime_id": {
+            "description": "Treat as a secret: it is the capability to run into or tear down this runtime (`sandbox-code-runner::run` / `teardown`).",
+            "type": "string"
+          },
+          "sandbox_id": {
+            "description": "The backing iii-sandbox VM's id.",
+            "type": "string"
+          },
+          "vm_gone": {
+            "description": "`true` when the backing VM no longer appears in `sandbox::list` — the daemon's idle reaper (or an out-of-band stop) took it and this worker has not yet observed the loss through a failed use. Absent when the reconciliation read itself failed, so absence means \"unknown\", never \"alive\".",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_at_ms",
+          "lang",
+          "registered_functions",
+          "runtime_id",
+          "sandbox_id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "runtimes": {
+        "description": "Every live runtime — kept-run and namespace runtimes alike — newest first. One-shot run VMs never appear: they are destroyed before their run's response is sent.",
+        "items": {
+          "$ref": "#/definitions/RuntimeSummary"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "runtimes"
+    ],
+    "title": "ListRuntimesResponse",
+    "type": "object"
+  }
+}

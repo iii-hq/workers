@@ -240,6 +240,21 @@ export declare const tokens: readonly string[]
 
 /* ── the shared component library ───────────────────────────────────── */
 
+export interface AnsiTextProps {
+  /** Raw terminal output, ANSI escapes included. */
+  text: string
+  className?: string
+}
+/** Terminal text with its ANSI SGR colors mapped onto the design tokens
+    (red→alert, green→ok, yellow→warn, blue/cyan/magenta→accent,
+    bold→semibold). Extended-color params are consumed, every other
+    CSI/OSC sequence is stripped, and pathological input falls back to
+    stripped plain text. The console's one ANSI renderer — like
+    `CodeEditor`, never bundle an ANSI parser into a worker asset; import
+    this instead. Inherits the parent's font, so put it inside a
+    whitespace-preserving mono pane (`TerminalStream` does). */
+export declare const AnsiText: React.ComponentType<AnsiTextProps>
+
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: 'default' | 'warn' | 'alert' | 'accent'
 }
@@ -495,6 +510,49 @@ export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
 }
 export declare const TabsContent: React.ComponentType<TabsContentProps>
+
+export interface TerminalCommandLineProps {
+  /** The command, verbatim — also the hover title and the copy payload. */
+  command: string
+  /** Prompt glyph, accent ink. Default `'$'`. */
+  prompt?: string
+  /** Trailing slot for header chips / pills. */
+  chips?: React.ReactNode
+  /** Render the copy affordance (standard copied/failed flash; the
+      clipboard write survives insecure origins). */
+  copy?: boolean
+  className?: string
+}
+/** One-line command header — the `$ command` row a terminal-shaped card
+    opens with: accent prompt glyph, mono command that ellipsizes with the
+    full text riding on `title`, optional trailing chips and copy button.
+    Like `CodeEditor`, never carry a private command-line header in a
+    worker asset; import this instead. */
+export declare const TerminalCommandLine: React.ComponentType<TerminalCommandLineProps>
+
+export interface TerminalStreamProps {
+  /** Pane label (`stdout`, `stderr`, `build`), rendered uppercase. */
+  label: string
+  /** The stream body; renders nothing when empty — the caller decides
+      what "no output" should say, if anything. */
+  text: string
+  /** `'err'` tints the body warn, and nothing more: stderr is the user's
+      program failing, not the console failing. Default `'out'`. */
+  tone?: 'out' | 'err'
+  /** Parse ANSI SGR colors in the body (`AnsiText`); plain otherwise. */
+  ansi?: boolean
+  /** Collapse behind the expand toggle past this many lines (default 12)… */
+  clampLines?: number
+  /** …or this many characters (default 2000). */
+  clampChars?: number
+  className?: string
+}
+/** Labeled monospace stream pane — the shared rendering for stdout /
+    stderr / log bodies in terminal-shaped cards: whitespace preserved,
+    long output clamped behind an `expand · N lines / collapse` toggle,
+    scrolls within itself, never page-wide. Like `CodeEditor`, never carry
+    a private stream pane in a worker asset; import this instead. */
+export declare const TerminalStream: React.ComponentType<TerminalStreamProps>
 
 /** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content only. */
 export interface TooltipProps {

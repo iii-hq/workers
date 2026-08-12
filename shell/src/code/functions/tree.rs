@@ -7,9 +7,14 @@
 //! Noise folders matching `default_exclude_globs` (.git, node_modules, …)
 //! surface as childless stub nodes flagged `truncated` with reason
 //! `default_exclude` — never silently hidden; opt out per call with
-//! `use_default_excludes: false`. Nodes carry only `name`; absolute paths
-//! derive from the response's top-level `path` (child = parent + "/" +
-//! name), which cuts thousands of redundant tokens from large snapshots.
+//! `use_default_excludes: false`. `include_hidden: false` omits dot
+//! entries outright, before the per-folder cap is counted, so the cap
+//! serves visible names. A total node budget ([`TREE_NODE_BUDGET`])
+//! bounds every snapshot — folders reached after it is spent are
+//! flagged `truncated` with reason `max_nodes`. Nodes carry only
+//! `name`; absolute paths derive from the response's top-level `path`
+//! (child = parent + "/" + name), which cuts thousands of redundant
+//! tokens from large snapshots.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -46,6 +51,13 @@ pub struct TreeInput {
     /// are omitted. Pass `false` to list everything.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
+    /// List hidden (dot-prefixed) entries. Pass `false` to omit them —
+    /// files and folders alike — at every level; omitted entries do not
+    /// count toward `per_folder_limit`, so the cap serves visible names.
+    /// The requested root itself is exempt: explicitly naming a hidden
+    /// folder still lists its contents.
+    #[serde(default = "default_true")]
+    pub include_hidden: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
@@ -94,8 +106,9 @@ pub struct TreeNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<TreeNode>>,
     /// Set on directories whose `children` was capped at
-    /// `per_folder_limit`, whose subtree was cut off by `max_depth`, or
-    /// which matched `default_exclude_globs` (reason "default_exclude").
+    /// `per_folder_limit`, whose subtree was cut off by `max_depth`,
+    /// which matched `default_exclude_globs` (reason "default_exclude"),
+    /// or where the snapshot's node budget ran out (reason "max_nodes").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<TruncationInfo>,
 }
@@ -112,15 +125,16 @@ pub enum NodeKind {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TruncationInfo {
     /// Reason this folder was truncated: hit `per_folder_limit`, cut off
-    /// by `max_depth`, or matched `default_exclude_globs`
-    /// (`default_exclude`).
+    /// by `max_depth`, matched `default_exclude_globs`
+    /// (`default_exclude`), or the snapshot's total node budget ran out
+    /// (`max_nodes`).
     pub reason: String,
     /// Number of children actually returned.
     pub shown: u32,
     /// Total number of children eligible for listing in the folder,
-    /// counted after default-exclude filtering (only populated when
-    /// `reason == "per_folder_limit"`; for depth truncation we don't
-    /// peek into the folder).
+    /// counted after hidden and default-exclude filtering (only
+    /// populated when `reason == "per_folder_limit"`; for depth
+    /// truncation we don't peek into the folder).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u32>,
     pub hint: String,
@@ -137,6 +151,14 @@ pub async fn handle(
         .await
         .map_err(|e| format!("tree task join failed: {e}"))?
 }
+
+/// Total nodes any snapshot may carry. Without it a wide-and-deep root
+/// (a home directory) walks for tens of seconds and produces a response
+/// large enough to kill the worker's engine socket — the engine stops
+/// the invocation at its own timeout, the worker still tries to flush
+/// the giant frame, and the connection loops on broken pipes. ~20k
+/// nodes is a few MB of JSON and a sub-second walk.
+const TREE_NODE_BUDGET: u32 = 20_000;
 
 fn inner(
     resolver: &PathResolver,
@@ -167,9 +189,10 @@ fn inner(
             .unwrap_or(cfg.tree_per_folder_limit)
             .max(1),
         use_default_excludes,
+        include_hidden: req.include_hidden,
     };
 
-    let root = walk_dir(resolver, &abs, 0, &opts)?;
+    let root = walk(resolver, &abs, &opts, TREE_NODE_BUDGET)?;
     Ok(TreeOutput {
         path: abs.display().to_string(),
         root,
@@ -180,127 +203,239 @@ struct WalkOpts {
     max_depth: u32,
     per_folder_limit: u32,
     use_default_excludes: bool,
+    include_hidden: bool,
 }
 
-fn walk_dir(
-    resolver: &PathResolver,
-    abs: &Path,
+/// A directory waiting for its listing pass, pointing at its arena slot.
+struct PendingDir {
+    slot: usize,
+    abs: std::path::PathBuf,
     depth: u32,
+}
+
+fn max_nodes_truncation(shown: u32, total: Option<u32>) -> TruncationInfo {
+    TruncationInfo {
+        reason: "max_nodes".to_string(),
+        shown,
+        total,
+        hint: "snapshot node budget exhausted; re-call coder::tree rooted at a \
+               subfolder, or use coder::list-folder for paginated access"
+            .into(),
+    }
+}
+
+/// Breadth-first walk under the global node budget. Level order is the
+/// point: when the budget cannot cover the whole tree, it is spent on
+/// the SHALLOW entries first, so every folder the caller can actually
+/// see lists completely and only deep subtrees come back as `max_nodes`
+/// stubs. A depth-first walk under the same budget starves later
+/// siblings — the first big subtree eats the budget and the root
+/// listing itself comes back short.
+///
+/// Nodes live in an arena where parents always precede their children;
+/// a reverse pass at the end attaches fully-built subtrees.
+fn walk(
+    resolver: &PathResolver,
+    root_abs: &Path,
     opts: &WalkOpts,
+    mut budget: u32,
 ) -> Result<TreeNode, CoderError> {
     // Deliberately bare `?` (generic From fallback, no path in the message):
-    // `abs` here can be a DISCOVERED child during the walk — naming it would
-    // violate the REDACTION INVARIANT. Do not "fix" this to io_for_path.
-    let md = std::fs::metadata(abs)?;
-    let name = abs
+    // naming a walked path here would violate the REDACTION INVARIANT.
+    // Do not "fix" this to io_for_path.
+    let md = std::fs::metadata(root_abs)?;
+    let name = root_abs
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| ".".to_string());
 
-    let mut node = TreeNode {
+    let mut slots: Vec<Option<TreeNode>> = vec![Some(TreeNode {
         name,
         kind: NodeKind::Dir,
         size: md.len(),
         mtime: unix_mtime(&md),
-        non_accessible: resolver.is_non_accessible(abs),
+        non_accessible: resolver.is_non_accessible(root_abs),
         children: None,
         truncated: None,
-    };
+    })];
+    // Children (in listing order) to attach to each slot, and whether
+    // the slot's dir got a listing pass (stubbed dirs and files keep
+    // `children: None`).
+    let mut child_slots: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut listed: Vec<bool> = vec![false];
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(PendingDir {
+        slot: 0,
+        abs: root_abs.to_path_buf(),
+        depth: 0,
+    });
 
-    // `abs` is always a directory here (the walk only recurses into
-    // dirs), so the dir-boundary check applies. The excluded node still
-    // appears — never silently hidden. The root can't trip this: inner()
-    // disables the filter when the requested root is itself excluded.
-    if opts.use_default_excludes && resolver.is_default_excluded_dir(abs) {
-        node.truncated = Some(TruncationInfo {
-            reason: "default_exclude".to_string(),
-            shown: 0,
-            total: None,
-            hint: "folder matches default_exclude_globs (coder::info lists them); \
-                   re-call coder::tree with use_default_excludes: false to descend"
-                .into(),
-        });
-        return Ok(node);
-    }
+    while let Some(PendingDir { slot, abs, depth }) = queue.pop_front() {
+        let set_truncated = |slots: &mut Vec<Option<TreeNode>>, info: TruncationInfo| {
+            if let Some(node) = slots[slot].as_mut() {
+                node.truncated = Some(info);
+            }
+        };
 
-    if depth >= opts.max_depth {
-        node.truncated = Some(TruncationInfo {
-            reason: "max_depth".to_string(),
-            shown: 0,
-            total: None,
-            hint: "raise max_depth or call coder::tree with this path as the new root".into(),
-        });
-        return Ok(node);
-    }
-
-    let mut entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(abs) {
-        Ok(it) => it.filter_map(|e| e.ok()).collect(),
-        Err(e) => {
-            // Surface as a node with no children rather than failing the whole tree.
-            node.truncated = Some(TruncationInfo {
-                reason: "io_error".to_string(),
-                shown: 0,
-                total: None,
-                hint: format!("read_dir failed: {e}"),
-            });
-            return Ok(node);
+        // `abs` is always a directory here (only dirs are queued), so
+        // the dir-boundary check applies. The excluded node still
+        // appears — never silently hidden. The root can't trip this:
+        // inner() disables the filter when the requested root is itself
+        // excluded.
+        if opts.use_default_excludes && resolver.is_default_excluded_dir(&abs) {
+            set_truncated(
+                &mut slots,
+                TruncationInfo {
+                    reason: "default_exclude".to_string(),
+                    shown: 0,
+                    total: None,
+                    hint: "folder matches default_exclude_globs (coder::info lists them); \
+                           re-call coder::tree with use_default_excludes: false to descend"
+                        .into(),
+                },
+            );
+            continue;
         }
-    };
-    if opts.use_default_excludes {
-        // Excluded non-directory entries are omitted outright — matched
-        // against the configured globs ONLY (no dir companions), so a
-        // file or symlink merely NAMED like an excluded directory is
-        // kept. Directories stay regardless; excluded ones surface as
-        // childless stubs in the recursive call.
-        entries.retain(|e| {
-            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-            is_dir || !resolver.is_default_excluded(&e.path())
-        });
-    }
-    entries.sort_by_key(|a| a.file_name());
 
-    let total = entries.len() as u32;
-    let cap = opts.per_folder_limit as usize;
-    let truncated_here = total as usize > cap;
-    let visible = if truncated_here {
-        &entries[..cap]
-    } else {
-        &entries[..]
-    };
+        if depth >= opts.max_depth {
+            set_truncated(
+                &mut slots,
+                TruncationInfo {
+                    reason: "max_depth".to_string(),
+                    shown: 0,
+                    total: None,
+                    hint: "raise max_depth or call coder::tree with this path as the new root"
+                        .into(),
+                },
+            );
+            continue;
+        }
 
-    let mut children = Vec::with_capacity(visible.len());
-    for e in visible {
-        let child_abs = e.path();
-        let ft = e.file_type().ok();
-        if ft.as_ref().is_some_and(|t| t.is_dir()) {
-            let sub = walk_dir(resolver, &child_abs, depth + 1, opts)?;
-            children.push(sub);
+        // Discovered before the budget ran out, dequeued after: stub it
+        // without reading the directory at all.
+        if budget == 0 {
+            set_truncated(&mut slots, max_nodes_truncation(0, None));
+            continue;
+        }
+
+        let mut entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(&abs) {
+            Ok(it) => it.filter_map(|e| e.ok()).collect(),
+            Err(e) => {
+                // Surface as a node with no children rather than failing the whole tree.
+                set_truncated(
+                    &mut slots,
+                    TruncationInfo {
+                        reason: "io_error".to_string(),
+                        shown: 0,
+                        total: None,
+                        hint: format!("read_dir failed: {e}"),
+                    },
+                );
+                continue;
+            }
+        };
+        if !opts.include_hidden {
+            // Dot entries drop out BEFORE the per-folder cap is counted:
+            // byte order sorts "." names first, so in a home-shaped folder
+            // they would otherwise fill the cap by themselves and every
+            // visible name would land in the truncated remainder.
+            entries.retain(|e| !e.file_name().to_string_lossy().starts_with('.'));
+        }
+        if opts.use_default_excludes {
+            // Excluded non-directory entries are omitted outright — matched
+            // against the configured globs ONLY (no dir companions), so a
+            // file or symlink merely NAMED like an excluded directory is
+            // kept. Directories stay regardless; excluded ones surface as
+            // childless stubs on their own listing pass.
+            entries.retain(|e| {
+                let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+                is_dir || !resolver.is_default_excluded(&e.path())
+            });
+        }
+        entries.sort_by_key(|a| a.file_name());
+
+        let total = entries.len() as u32;
+        let cap = opts.per_folder_limit as usize;
+        let truncated_here = total as usize > cap;
+        let visible = if truncated_here {
+            &entries[..cap]
         } else {
+            &entries[..]
+        };
+
+        let mut budget_hit = false;
+        for e in visible {
+            if budget == 0 {
+                budget_hit = true;
+                break;
+            }
+            budget -= 1;
+            let child_abs = e.path();
+            // Entries whose metadata vanishes mid-walk (unlink race) are
+            // skipped rather than failing the whole snapshot.
             let cmd = match e.metadata() {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            children.push(TreeNode {
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+            slots.push(Some(TreeNode {
                 name: e.file_name().to_string_lossy().into_owned(),
-                kind: classify(&cmd),
+                kind: if is_dir {
+                    NodeKind::Dir
+                } else {
+                    classify(&cmd)
+                },
                 size: cmd.len(),
                 mtime: unix_mtime(&cmd),
                 non_accessible: resolver.is_non_accessible(&child_abs),
                 children: None,
                 truncated: None,
-            });
+            }));
+            child_slots.push(Vec::new());
+            listed.push(false);
+            let child = slots.len() - 1;
+            child_slots[slot].push(child);
+            if is_dir {
+                queue.push_back(PendingDir {
+                    slot: child,
+                    abs: child_abs,
+                    depth: depth + 1,
+                });
+            }
+        }
+        let shown = child_slots[slot].len() as u32;
+        listed[slot] = true;
+        if budget_hit {
+            set_truncated(&mut slots, max_nodes_truncation(shown, Some(total)));
+        } else if truncated_here {
+            set_truncated(
+                &mut slots,
+                TruncationInfo {
+                    reason: "per_folder_limit".to_string(),
+                    shown: cap as u32,
+                    total: Some(total),
+                    hint: "use coder::list-folder for paginated access to all entries".into(),
+                },
+            );
         }
     }
-    node.children = Some(children);
-    if truncated_here {
-        node.truncated = Some(TruncationInfo {
-            reason: "per_folder_limit".to_string(),
-            shown: cap as u32,
-            total: Some(total),
-            hint: "use coder::list-folder for paginated access to all entries".into(),
-        });
+
+    // Assemble bottom-up: children always sit at higher indices than
+    // their parent, so a reverse pass attaches fully-built subtrees.
+    for i in (0..slots.len()).rev() {
+        if !listed[i] {
+            continue;
+        }
+        let ids = std::mem::take(&mut child_slots[i]);
+        let children: Vec<TreeNode> = ids
+            .into_iter()
+            .map(|j| slots[j].take().expect("child slot taken once"))
+            .collect();
+        if let Some(node) = slots[i].as_mut() {
+            node.children = Some(children);
+        }
     }
-    Ok(node)
+    Ok(slots[0].take().expect("root slot"))
 }
 
 fn classify(md: &std::fs::Metadata) -> NodeKind {
@@ -348,6 +483,7 @@ mod tests {
             max_depth: None,
             per_folder_limit: None,
             use_default_excludes: true,
+            include_hidden: true,
             fs_scope: None,
         }
     }
@@ -580,6 +716,180 @@ mod tests {
         assert!(pkg.truncated.is_none());
         assert_eq!(pkg.children.as_ref().unwrap()[0].name, "index.js");
         assert_no_default_exclude_stubs(&out.root);
+    }
+
+    /// The node budget must stop a walk and say so — a snapshot cut
+    /// short by it has to carry `max_nodes` stubs, never pass itself
+    /// off as complete. Exercised through `walk` directly so the test
+    /// doesn't need [`TREE_NODE_BUDGET`]-many real files.
+    #[tokio::test]
+    async fn node_budget_stops_the_walk_and_flags_max_nodes() {
+        let (tmp, r, _c) = setup();
+        for i in 0..6 {
+            std::fs::write(tmp.path().join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let opts = WalkOpts {
+            max_depth: 4,
+            per_folder_limit: 50,
+            use_default_excludes: true,
+            include_hidden: true,
+        };
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let node = walk(&r, &base, &opts, 4).unwrap();
+        assert_eq!(node.children.as_ref().unwrap().len(), 4);
+        let trunc = node.truncated.as_ref().unwrap();
+        assert_eq!(trunc.reason, "max_nodes");
+        assert_eq!(trunc.shown, 4);
+        assert_eq!(trunc.total, Some(6));
+        assert!(trunc.hint.contains("coder::list-folder"));
+    }
+
+    /// The budget is spent breadth-first: every shallow entry lists
+    /// before any deep subtree spends a node, so a big early-alphabet
+    /// folder can't starve its siblings out of the root listing — the
+    /// failure mode that made a depth-first budget return 7 of a home
+    /// directory's 123 visible folders.
+    #[tokio::test]
+    async fn node_budget_spends_breadth_first_so_shallow_entries_win() {
+        let (tmp, r, _c) = setup();
+        std::fs::create_dir(tmp.path().join("aa")).unwrap();
+        for i in 0..3 {
+            std::fs::write(tmp.path().join(format!("aa/f{i}.txt")), "x").unwrap();
+        }
+        std::fs::create_dir(tmp.path().join("zz")).unwrap();
+        std::fs::write(tmp.path().join("zz/late.txt"), "x").unwrap();
+        let opts = WalkOpts {
+            max_depth: 4,
+            per_folder_limit: 50,
+            use_default_excludes: true,
+            include_hidden: true,
+        };
+        // 5 nodes: aa + zz (the whole level), then aa/f0..f2 — zz is
+        // dequeued with the budget spent and must come back a stub.
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let node = walk(&r, &base, &opts, 5).unwrap();
+        assert!(
+            node.truncated.is_none(),
+            "the root listed every direct child"
+        );
+        let kids = node.children.as_ref().unwrap();
+        let names: Vec<_> = kids.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["aa", "zz"]);
+        let aa = kids.iter().find(|k| k.name == "aa").unwrap();
+        assert_eq!(aa.children.as_ref().unwrap().len(), 3);
+        assert!(aa.truncated.is_none());
+        let zz = kids.iter().find(|k| k.name == "zz").unwrap();
+        let trunc = zz.truncated.as_ref().unwrap();
+        assert_eq!(trunc.reason, "max_nodes");
+        assert_eq!(trunc.shown, 0);
+        assert!(
+            zz.children.is_none(),
+            "a budget stub never got a listing pass"
+        );
+    }
+
+    /// The home-directory shape that motivated the flag: enough dot
+    /// entries to fill the per-folder cap by themselves (byte order
+    /// sorts them first), with the visible names behind them. The filter
+    /// must both omit the dots and stop them consuming the cap.
+    #[tokio::test]
+    async fn include_hidden_false_omits_dot_entries_and_frees_the_cap() {
+        let (tmp, r, _c) = setup();
+        for i in 0..5 {
+            std::fs::create_dir(tmp.path().join(format!(".h{i}"))).unwrap();
+        }
+        std::fs::write(tmp.path().join(".hidden.txt"), "x").unwrap();
+        std::fs::create_dir(tmp.path().join("projects")).unwrap();
+        std::fs::write(tmp.path().join("readme.md"), "x").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            tree_default_depth: 4,
+            tree_per_folder_limit: 3,
+            ..CoderConfig::default()
+        });
+        let out = handle(
+            r,
+            cfg,
+            TreeInput {
+                include_hidden: false,
+                ..input(".")
+            },
+        )
+        .await
+        .unwrap();
+        let kids = out.root.children.as_ref().unwrap();
+        let names: Vec<_> = kids.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["projects", "readme.md"]);
+        assert!(
+            out.root.truncated.is_none(),
+            "omitted hidden entries must not count toward per_folder_limit"
+        );
+    }
+
+    /// Hidden entries filter at EVERY level, not just the root's own
+    /// children — and the default (`include_hidden: true`) keeps them.
+    #[tokio::test]
+    async fn hidden_filter_applies_at_depth_and_defaults_to_listing() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/.cache"), "x").unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "x").unwrap();
+
+        let filtered = handle(
+            r.clone(),
+            c.clone(),
+            TreeInput {
+                include_hidden: false,
+                ..input(".")
+            },
+        )
+        .await
+        .unwrap();
+        let src = &filtered.root.children.as_ref().unwrap()[0];
+        let names: Vec<_> = src
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|k| k.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["lib.rs"]);
+
+        let unfiltered = handle(r, c, input(".")).await.unwrap();
+        let src = &unfiltered.root.children.as_ref().unwrap()[0];
+        assert!(subtree_contains(src, ".cache"), "default must keep dots");
+    }
+
+    /// Explicitly rooting the walk at a hidden folder expresses intent to
+    /// see it — the filter must not blank the listing, only its own
+    /// hidden CHILDREN drop out.
+    #[tokio::test]
+    async fn hidden_root_explicitly_requested_still_lists_contents() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir(tmp.path().join(".claude")).unwrap();
+        std::fs::write(tmp.path().join(".claude/settings.json"), "x").unwrap();
+        std::fs::write(tmp.path().join(".claude/.credentials"), "x").unwrap();
+
+        let out = handle(
+            r,
+            c,
+            TreeInput {
+                include_hidden: false,
+                ..input(".claude")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.root.name, ".claude");
+        let names: Vec<_> = out
+            .root
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|k| k.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["settings.json"]);
     }
 
     #[tokio::test]

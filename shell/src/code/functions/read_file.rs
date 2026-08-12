@@ -39,6 +39,11 @@
 //! never depend on budget state, and deny must precede any metadata
 //! syscall so stat/budget can't become an existence or size oracle.
 //!
+//! **Binary reads**: `encoding: "base64"` (single-path FULL reads only)
+//! returns the file's exact bytes base64-encoded — the binary-aware
+//! read for payloads like images. The encoded length is charged against
+//! `max_output_bytes`; C210 with `stat`/window/`numbered`.
+//!
 //! LINE CONVENTION (shared with `coder::update-file`): a line is a
 //! 0x0A-terminated or EOF-terminated byte segment. An empty file has 0
 //! lines; a trailing newline does NOT create a phantom last line. This
@@ -207,6 +212,16 @@ pub struct ReadFileInput {
     /// is governed by `batch_read_budget_bytes`).
     #[serde(default)]
     pub max_output_bytes: Option<u64>,
+    /// Content encoding for single-path FULL reads. Default `text`
+    /// returns UTF-8 (binary bytes replaced by U+FFFD); `base64` returns
+    /// the file's exact bytes base64-encoded (standard alphabet, padded)
+    /// — for binary payloads like images that a caller needs to
+    /// reconstruct. The ENCODED length is what's charged against
+    /// `max_output_bytes`. C210 combined with `stat`,
+    /// `line_from`/`line_to`, or `numbered` (text-shaping fields);
+    /// ignored when `paths` is set.
+    #[serde(default)]
+    pub encoding: ReadEncoding,
     /// Batch of files (or windowed slices) to read in a single call.
     /// Each entry is either a plain path string (whole-file read) or an
     /// object `{path, line_from?, line_to?}` with per-entry window
@@ -223,6 +238,17 @@ pub struct ReadFileInput {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+}
+
+/// Wire encoding for returned `content`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadEncoding {
+    /// UTF-8 text; invalid bytes replaced by U+FFFD.
+    #[default]
+    Text,
+    /// Exact file bytes, base64-encoded (standard alphabet, padded).
+    Base64,
 }
 
 // examples are wire-contract; goldens pin them.
@@ -304,9 +330,10 @@ pub struct ReadFileOutput {
     /// File content as a UTF-8 string — the whole file, or just the
     /// requested window when `line_from`/`line_to` was given (window
     /// lines keep their newline terminators). Binary content is returned
-    /// with invalid bytes replaced by U+FFFD; use a future binary-aware
-    /// function if exact bytes matter. **Single-path mode only; null when
-    /// the request used `paths[]`.**
+    /// with invalid bytes replaced by U+FFFD; request `encoding:
+    /// "base64"` when exact bytes matter (content is then the file's
+    /// bytes base64-encoded). **Single-path mode only; null when the
+    /// request used `paths[]`.**
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Whether `content` survived UTF-8 conversion without losing bytes.
@@ -403,6 +430,7 @@ fn inner(
                 stat: req.stat,
                 numbered: req.numbered,
                 max_output_bytes: req.max_output_bytes,
+                encoding: req.encoding,
             };
             single_read(resolver, cfg, single_req).map(|o| ReadFileOutput {
                 path: Some(o.path),
@@ -464,6 +492,7 @@ struct SingleReadReq<'a> {
     stat: bool,
     numbered: bool,
     max_output_bytes: Option<u64>,
+    encoding: ReadEncoding,
 }
 
 /// Internal result for a single-path read before wrapping in
@@ -517,6 +546,26 @@ fn single_read(
                 .into(),
         ));
     }
+    if req.encoding == ReadEncoding::Base64 {
+        if req.stat {
+            return Err(stat_conflict("encoding: base64"));
+        }
+        if window.is_some() {
+            return Err(CoderError::BadInput(
+                "encoding: base64 returns the exact bytes of a FULL read; a \
+                 line_from/line_to window is text-shaped (C210). Drop the \
+                 window to fetch the bytes, or drop encoding to read text."
+                    .into(),
+            ));
+        }
+        if req.numbered {
+            return Err(CoderError::BadInput(
+                "numbered prefixes are text-only and cannot apply to \
+                 encoding: base64 content (C210). Drop one of the two."
+                    .into(),
+            ));
+        }
+    }
     // REDACTION ORDERING: resolve + deny-check (C211) BEFORE any metadata
     // syscall — stat on a denied path must be byte-identical to stat on a
     // missing path, and no budget may reclassify either.
@@ -532,7 +581,15 @@ fn single_read(
         return stat_read(&abs, req.path, cfg, &md);
     }
     match window {
-        None => full_read(&abs, req.path, cfg, &md, req.numbered, req.max_output_bytes),
+        None => full_read(
+            &abs,
+            req.path,
+            cfg,
+            &md,
+            req.numbered,
+            req.max_output_bytes,
+            req.encoding,
+        ),
         Some((from, to)) => windowed_read(&abs, req.path, cfg, &md, from, to, req.numbered),
     }
 }
@@ -581,6 +638,7 @@ fn full_read(
     md: &std::fs::Metadata,
     numbered: bool,
     max_output_override: Option<u64>,
+    encoding: ReadEncoding,
 ) -> Result<SingleReadOut, CoderError> {
     if md.len() > cfg.max_read_bytes {
         return Err(CoderError::TooLarge(format!(
@@ -594,11 +652,24 @@ fn full_read(
     }
     let bytes = std::fs::read(abs).map_err(|e| CoderError::io_for_path(e, wire_path))?;
     let lines = count_lines(&bytes);
-    let (content, is_utf8) = lossy_utf8(bytes);
-    let content = if numbered {
-        number_lines(&content, 1)
-    } else {
-        content
+    let (content, is_utf8) = match encoding {
+        ReadEncoding::Text => {
+            let (content, is_utf8) = lossy_utf8(bytes);
+            let content = if numbered {
+                number_lines(&content, 1)
+            } else {
+                content
+            };
+            (content, is_utf8)
+        }
+        ReadEncoding::Base64 => {
+            use base64::Engine as _;
+            let is_utf8 = std::str::from_utf8(&bytes).is_ok();
+            (
+                base64::engine::general_purpose::STANDARD.encode(&bytes),
+                is_utf8,
+            )
+        }
     };
     // Per-call override clamps SILENTLY to max_read_bytes (documented on
     // the input field); without an override the config value applies.
@@ -1040,6 +1111,73 @@ mod tests {
             paths: Some(paths),
             ..ReadFileInput::default()
         }
+    }
+
+    fn base64_req(path: &str) -> ReadFileInput {
+        ReadFileInput {
+            path: Some(path.into()),
+            encoding: ReadEncoding::Base64,
+            ..ReadFileInput::default()
+        }
+    }
+
+    /// encoding: base64 must round-trip EXACT bytes — the whole point is
+    /// binary payloads (images) that lossy UTF-8 destroys.
+    #[tokio::test]
+    async fn base64_full_read_roundtrips_exact_bytes() {
+        let (tmp, r, c) = setup();
+        let raw: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x00, 0xFF, 0x0A, 0x1B];
+        std::fs::write(tmp.path().join("img.png"), &raw).unwrap();
+        let out = handle(r, c, base64_req("img.png")).await.unwrap();
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(out.content.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(decoded, raw);
+        assert_eq!(out.is_utf8, Some(false));
+        assert_eq!(out.size, Some(raw.len() as u64));
+    }
+
+    #[tokio::test]
+    async fn base64_conflicts_with_stat_window_and_numbered() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.bin"), [0u8, 1, 2]).unwrap();
+        for req in [
+            ReadFileInput {
+                stat: true,
+                ..base64_req("a.bin")
+            },
+            ReadFileInput {
+                line_from: Some(1),
+                ..base64_req("a.bin")
+            },
+            ReadFileInput {
+                numbered: true,
+                ..base64_req("a.bin")
+            },
+        ] {
+            let err = handle(r.clone(), c.clone(), req).await.unwrap_err();
+            assert!(err.contains("C210"), "expected C210, got: {err}");
+        }
+    }
+
+    /// The output budget bites on the ENCODED length (4/3 of the raw
+    /// size), never silently on the raw bytes.
+    #[tokio::test]
+    async fn base64_budget_counts_encoded_bytes() {
+        let (tmp, r, _c) = setup();
+        // 90 raw bytes → 120 encoded: inside a 100-byte budget only if
+        // the raw length were (wrongly) the measure.
+        std::fs::write(tmp.path().join("a.bin"), vec![0xFFu8; 90]).unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            max_read_bytes: 1024,
+            max_output_bytes: 100,
+            ..CoderConfig::default()
+        });
+        let err = handle(r, cfg, base64_req("a.bin")).await.unwrap_err();
+        assert!(err.contains("C218"), "expected C218, got: {err}");
+        assert!(err.contains("120"), "names the encoded length: {err}");
     }
 
     fn stat_req(path: &str) -> ReadFileInput {

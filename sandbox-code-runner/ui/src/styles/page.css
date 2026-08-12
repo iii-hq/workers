@@ -1,0 +1,1331 @@
+/*
+ * The sandbox fleet page's stylesheet (src/page/*). Shipped as part of the
+ * worker's `console:style` asset; every rule is scoped under
+ * `[data-iii-ui="sandbox-code-runner"]` (the wrapper the console mounts
+ * around every injected render) and prefixed `cr-page-` — the chat-card
+ * rules in the root styles.css own `cr-ui-`/`cr-<op>-`. Design tokens
+ * only, so light/dark theming is free.
+ *
+ * Surface roles (console redesign):
+ *   navigation  --color-sidebar        the fleet rail
+ *   workspace   --color-panel          the selected sandbox's tabs
+ *   raised      --color-panel-raised   headers inside the workspace
+ *   states      --color-surface-*      hover / selected washes
+ *   edges       --color-edge           hairline separation
+ *
+ * The page adapts to the width it HAS: `.cr-page-shell` is a named
+ * inline-size container (the wrapper itself is never the query target —
+ * only descendants are styled) and the @container blocks at the END of
+ * this file collapse the rail above the workspace below ~700px.
+ *
+ * `@keyframes` names are global even here, so they carry the prefix.
+ */
+
+/* ── shell + header chrome ─────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-shell {
+  min-height: 360px;
+  color: var(--color-ink);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  container-name: cr-page;
+  container-type: inline-size;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-spin {
+  animation: cr-page-spin 1s linear infinite;
+}
+@keyframes cr-page-spin {
+  to { transform: rotate(360deg); }
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-faint {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+/* ── the rail (navigation column) ──────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-sidebar {
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-body.right .cr-page-sidebar {
+  border-right: 0;
+  border-left: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 0 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-ghost);
+  padding: 12px 14px 6px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-empty {
+  padding: 4px 8px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row.selected {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -1px;
+}
+
+/* Full id, elastic: grows with the rail width, middle space is shared
+   with the meta cluster, ellipsis only when genuinely out of room. */
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 9ch;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  min-width: 0;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-image {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 9ch;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-age {
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-slots {
+  white-space: nowrap;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-slots.full {
+  color: var(--color-warn);
+}
+
+/* under REAP_WARN_SECS to the idle reap — the row itself warns */
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row.reap-soon {
+  background: var(--color-warn-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row.reap-soon .cr-page-fleet-age {
+  color: var(--color-warn);
+}
+
+/* runtimes strip */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-toggle:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-toggle:disabled {
+  cursor: default;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-chev {
+  transition: transform 120ms ease;
+  flex-shrink: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chev.open {
+  transform: rotate(90deg);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-count {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-fns {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 4px 22px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-fn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-fn-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* catalog */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-catalog {
+  list-style: none;
+  margin: 0;
+  padding: 0 14px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-catalog-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-catalog-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ── the workspace column ──────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-main {
+  background: var(--color-panel);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-main-error {
+  margin: 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-alert-muted);
+  background: var(--color-alert-muted);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-tabs-list {
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
+  padding: 0 12px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── overview ──────────────────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-overview {
+  padding: 18px 20px;
+  max-width: 720px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-identity {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  margin: 0 0 18px;
+  font-size: 12.5px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-identity dt {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-ghost);
+  padding-top: 2px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-identity dd {
+  margin: 0;
+  min-width: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-identity code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+/* idle-deadline countdown inside REAP_WARN_SECS of the reap */
+[data-iii-ui="sandbox-code-runner"] .cr-page-reap-warn {
+  color: var(--color-warn);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-identity-id,
+[data-iii-ui="sandbox-code-runner"] .cr-page-identity-image {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-state-pill {
+  display: inline-block;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+  border: 1px solid var(--color-rule, transparent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-state-pill.running {
+  color: var(--color-ok);
+  background: var(--color-ok-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-state-pill.busy {
+  color: var(--color-warn);
+  background: var(--color-warn-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-state-pill.stopped {
+  color: var(--color-ink-faint);
+  background: var(--color-surface);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-slots-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-slot {
+  width: 14px;
+  height: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-slot.used {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-slots-count {
+  margin-left: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-actions-gap {
+  flex: 1;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-stop-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-danger-btn {
+  border: 1px solid var(--color-alert);
+  background: transparent;
+  color: var(--color-alert);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-danger-btn:hover {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-danger-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-danger-link {
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-danger-link:hover {
+  color: var(--color-alert);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-limit-note {
+  margin: 16px 0 0;
+  font-size: 11.5px;
+  color: var(--color-ink-ghost);
+}
+
+/* ── console tab ───────────────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-console {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-banner {
+  padding: 8px 12px;
+  font-size: 12.5px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-banner.warn {
+  background: var(--color-warn-muted);
+  color: var(--color-warn);
+  border: 1px solid var(--color-warn-muted);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--color-panel-raised);
+  border: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-composer-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-composer-line > :first-child {
+  flex: 1;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-composer-opts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-toggle {
+  border: 1px solid var(--color-edge);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-toggle.on {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-probes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-probe {
+  border: 1px dashed var(--color-edge);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-probe:hover {
+  border-color: var(--color-accent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-probe:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* processes section — the parsed ps table */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps {
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  padding: 4px 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 2px 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-ghost);
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-table td {
+  padding: 2px 8px;
+  vertical-align: baseline;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-pid {
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-cmd {
+  width: 100%;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-cmd code {
+  word-break: break-all;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-act {
+  white-space: nowrap;
+  text-align: right;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps-raw {
+  margin: 2px 0 6px;
+  padding: 6px 8px;
+  background: var(--color-surface);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  overflow: auto;
+  max-height: 260px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-ps .cr-page-faint {
+  padding: 2px 8px 6px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-record {
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-record-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  min-width: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-record-cmd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-record-dur {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-exit-pill {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-exit-pill.ok {
+  color: var(--color-ok);
+  background: var(--color-ok-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-exit-pill.warn {
+  color: var(--color-warn);
+  background: var(--color-warn-muted);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-exit-pill.alert {
+  color: var(--color-alert);
+  background: var(--color-alert-muted);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-record-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 12px 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip {
+  border: 1px solid var(--color-edge);
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 34ch;
+}
+
+/* stdout/stderr stacked, terminal-toned, hard height ceiling */
+[data-iii-ui="sandbox-code-runner"] .cr-page-stream {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-stream-label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+  padding: 6px 12px 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-stream-body {
+  margin: 4px 0 0;
+  padding: 0 12px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-stream.err .cr-page-stream-body {
+  color: var(--color-warn);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-no-output {
+  padding: 0 12px 10px;
+}
+
+/* ── files tab ─────────────────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-files {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-files .cr-page-banner {
+  margin: 14px 16px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
+  flex-wrap: wrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-files-toolbar > :first-child {
+  flex: 1;
+  min-width: 160px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-files-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree {
+  width: 240px;
+  flex-shrink: 0;
+  overflow: auto;
+  border-right: 1px solid var(--color-edge);
+  padding: 8px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  padding-right: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree-row.selected {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree-size {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-tree-loading {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-viewer {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-viewer-empty {
+  padding: 24px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-grep-results {
+  border-bottom: 1px solid var(--color-edge);
+  padding-bottom: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-grep-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px 6px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-grep-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-grep-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-grep-loc {
+  color: var(--color-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-grep-text {
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-bincard {
+  margin: 24px;
+  padding: 16px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-bincard-title code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-bincard-size {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-filepane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-filepane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-filepane-path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-file-body {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  flex: 1;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-file-editor {
+  flex: 1;
+  min-height: 240px;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-checkline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+/* ── dialogs (create / run code / invoke / fs ops) ─────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 560px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-dialog-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-field-row > * {
+  min-width: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The console's CodeEditor grows with its content (one line when empty) —
+   the pane provides the real editing surface: fixed height, own scroll. */
+[data-iii-ui="sandbox-code-runner"] .cr-page-editor-pane {
+  height: 220px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  border-radius: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-payload-editor {
+  min-height: 100%;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-invoke-result {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-pending {
+  font-size: 12.5px;
+  color: var(--color-ink-faint);
+  animation: cr-page-pulse 1.6s ease-in-out infinite;
+}
+
+/* streamed create phases — dormant until the daemon emits them */
+[data-iii-ui="sandbox-code-runner"] .cr-page-create-steps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 0 0 14px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-create-steps li::before {
+  content: "› ";
+  color: var(--color-ink-ghost);
+}
+@keyframes cr-page-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── shared widgets ────────────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px dashed var(--color-edge);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-copy:hover {
+  border-color: var(--color-accent);
+  color: var(--color-ink);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-copy.copied {
+  border-color: var(--color-ok);
+  color: var(--color-ok);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-copy.failed {
+  border-color: var(--color-alert);
+  color: var(--color-alert);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-copy .flash {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+/* Screen-reader-only live region — zero footprint in the flex row. */
+[data-iii-ui="sandbox-code-runner"] .cr-page-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-linkish {
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-linkish:hover {
+  text-decoration: underline;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-linkish:disabled {
+  color: var(--color-ink-ghost);
+  cursor: default;
+  text-decoration: none;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-envrows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-envrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-envrow-eq {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-inline-error {
+  font-size: 12px;
+  color: var(--color-alert);
+  padding: 6px 10px;
+  background: var(--color-alert-muted);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-errcard {
+  border: 1px solid var(--color-alert-muted);
+  background: var(--color-alert-muted);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-errcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-errcode {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-alert);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-errcard-msg {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-errcard-fix {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+/* ── configuration form ────────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-caption {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-label {
+  display: block;
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  margin-bottom: 4px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-input {
+  width: 100%;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  padding: 5px 8px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-input:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -1px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-echo {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  margin-top: 3px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-hint {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  margin-top: 2px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-warning {
+  font-size: 12px;
+  color: var(--color-warn);
+  background: var(--color-warn-muted);
+  padding: 6px 10px;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-errors {
+  font-size: 12px;
+  color: var(--color-alert);
+}
+
+/* ── session chip ──────────────────────────────────────────────────── */
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-root {
+  position: relative;
+  display: inline-flex;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-btn {
+  border: 1px solid var(--color-edge);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-btn:hover {
+  color: var(--color-ink);
+  border-color: var(--color-accent);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+  box-shadow: 0 8px 24px var(--color-surface-active, rgba(0, 0, 0, 0.12));
+  padding: 6px 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-empty {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  flex-shrink: 0;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-dot.stopped {
+  background: var(--color-ink-ghost);
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-meta {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 14ch;
+}
+
+/* ── fleet tombstones + gone badges ───────────────────────────────────
+   A reaped/stopped sandbox lingers as a ghost row for 30s so the loss is
+   an event the operator sees; a runtime whose VM left sandbox::list wears
+   a warn badge until teardown cleans the record up. */
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row.ghost {
+  opacity: 0.55;
+  cursor: default;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-gone {
+  color: var(--color-warn);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rt-gone {
+  color: var(--color-warn);
+  background: var(--color-warn-muted);
+  border-radius: 9999px;
+  font-size: 10px;
+  padding: 0 7px 1px;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-none {
+  padding: 4px 10px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="sandbox-code-runner"] .cr-page-job-actions {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-chip-live {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+/* ── rail resizer ─────────────────────────────────────────────────────
+   A slim col-resize splitter between the rail and the workspace. The
+   visible line only appears on hover/focus/drag so the resting layout
+   stays line-free like the rest of the console. */
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer {
+  flex-shrink: 0;
+  width: 6px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+  position: relative;
+  z-index: 1;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:hover::after,
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:active::after {
+  background: var(--color-accent);
+  opacity: 0.55;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:focus-visible {
+  outline: none;
+}
+[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:focus-visible::after {
+  background: var(--color-accent);
+  opacity: 0.9;
+}
+
+/* ── container queries — LAST in the file ──────────────────────────────
+   `.cr-page-shell` is the `cr-page` inline-size container; below ~700px
+   of PANE width (not viewport) the rail collapses above the workspace.
+   The sidebar's fixed width arrives as an inline style from the
+   PageSidebar `width` prop, so only `!important` can release it here. */
+
+@container cr-page (max-width: 700px) {
+  [data-iii-ui="sandbox-code-runner"] .cr-page-body {
+    flex-direction: column;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-sidebar {
+    width: auto !important;
+    max-height: 240px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-edge);
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-body.right .cr-page-sidebar {
+    border-left: 0;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer {
+    display: none;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-files-body {
+    flex-direction: column;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-tree {
+    width: auto;
+    max-height: 200px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-edge);
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-identity {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-identity dt {
+    padding-top: 8px;
+  }
+}
+
+@container cr-page (max-width: 460px) {
+  [data-iii-ui="sandbox-code-runner"] .cr-page-composer-opts,
+  [data-iii-ui="sandbox-code-runner"] .cr-page-composer-line {
+    flex-wrap: wrap;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-overview {
+    padding: 14px;
+  }
+  [data-iii-ui="sandbox-code-runner"] .cr-page-console {
+    padding: 10px;
+  }
+}

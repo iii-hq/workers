@@ -20,7 +20,7 @@ import {
   PageSidebar,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
-import { FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
+import { Eye, EyeOff, FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
 import { type CoderInfo, coderInfo, coderTree, type FlatTree, flattenTree } from './coder'
@@ -46,6 +46,14 @@ import {
 
 type SideTab = 'files' | 'git' | 'search'
 
+const SIDEBAR_DEFAULT_WIDTH = 280
+const SIDEBAR_MIN_WIDTH = 180
+const SIDEBAR_MAX_WIDTH = 560
+
+function clampSidebarWidth(w: number): number {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
+}
+
 const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
   { id: 'files', label: 'files', Icon: FolderTree },
   { id: 'git', label: 'git', Icon: GitBranch },
@@ -66,10 +74,15 @@ export function ShellExplorerPage({
   const [root, setRoot] = useState<string | null>(null)
   const [sideTab, setSideTab] = useState<SideTab>('files')
   const [collapsed, setCollapsed] = useState(false)
+  const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const [tree, setTree] = useState<FlatTree | null>(null)
+  // Dot entries are filtered by default (Finder/VS Code convention) —
+  // in home-shaped folders they otherwise crowd out every visible name.
+  const [showHidden, setShowHidden] = useState(false)
   const [git, setGit] = useState<GitState | null>(null)
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
   const [expanded, setExpanded] = useState<string[]>([])
+  const [reveal, setReveal] = useState<string | null>(null)
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
   const [diff, setDiff] = useState<GitChange | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
@@ -111,10 +124,14 @@ export function ShellExplorerPage({
     if (persisted) {
       setTabs(restoreTabs(restored?.open, restored?.active))
       setExpanded(restored?.expanded ?? [])
+      setShowHidden(restored?.showHidden ?? false)
+      setSideWidth(clampSidebarWidth(restored?.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
     } else if (restored && !restored.root && next === info.primary_root) {
       // Legacy/first save without a root: restore against the primary.
       setTabs(restoreTabs(restored.open, restored.active))
       setExpanded(restored.expanded)
+      setShowHidden(restored.showHidden ?? false)
+      setSideWidth(clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
     }
   }, [info, restored, root, workingDir])
 
@@ -141,7 +158,7 @@ export function ShellExplorerPage({
   const refreshTree = useCallback(() => {
     if (!root) return
     const seq = ++treeSeqRef.current
-    coderTree(host, root)
+    coderTree(host, root, showHidden)
       .then((out) => {
         if (treeSeqRef.current === seq) setTree(flattenTree(out.root))
       })
@@ -150,14 +167,19 @@ export function ShellExplorerPage({
           setTree({ paths: [], kinds: new Map(), truncations: [] })
         }
       })
-  }, [host, root])
+  }, [host, root, showHidden])
 
+  // Separate effects: toggling the hidden filter reloads the TREE only —
+  // the git listing is unaffected and must not flash back to loading.
   useEffect(() => {
     setTree(null)
-    setGit(null)
     refreshTree()
+  }, [refreshTree])
+
+  useEffect(() => {
+    setGit(null)
     refreshGit()
-  }, [refreshTree, refreshGit])
+  }, [refreshGit])
 
   // ── persistence: any state change after boot writes (debounced) ──
   const saver = useMemo(() => createTabUiStateSaver(host, tabId), [host, tabId])
@@ -175,8 +197,10 @@ export function ShellExplorerPage({
       open: tabs.tabs,
       active: tabs.active,
       expanded,
+      showHidden,
+      sideWidth,
     })
-  }, [saver, root, tabs, expanded])
+  }, [saver, root, tabs, expanded, showHidden, sideWidth])
 
   // ── open/close/pin actions ──
   const previewFile = useCallback((relPath: string) => {
@@ -188,6 +212,13 @@ export function ShellExplorerPage({
     setDiff(null)
     setTabs((s) => openPinned(s, relPath))
   }, [])
+
+  const revealFolder = useCallback((relPath: string) => {
+    setSideTab('files')
+    setReveal(relPath)
+  }, [])
+
+  const onRevealed = useCallback(() => setReveal(null), [])
 
   const onDirtyChange = useCallback((relPath: string, dirty: boolean) => {
     setDirtyPaths((prev) => {
@@ -217,6 +248,44 @@ export function ShellExplorerPage({
     },
     [dirtyPaths],
   )
+
+  // ── sidebar resize (drag handle on the boundary toward the main pane) ──
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const onHandlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      dragRef.current = { startX: e.clientX, startWidth: sideWidth }
+      // Capture is best-effort: some pointer types refuse it, and the
+      // drag still works through the move/up handlers.
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId)
+      } catch {
+        // no capture — moves outside the handle end the drag early
+      }
+    },
+    [sideWidth],
+  )
+  const onHandlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current
+      if (!drag) return
+      const delta = e.clientX - drag.startX
+      // A right-hugging sidebar widens as the handle moves LEFT.
+      setSideWidth(
+        clampSidebarWidth(
+          panelSide === 'right' ? drag.startWidth - delta : drag.startWidth + delta,
+        ),
+      )
+    },
+    [panelSide],
+  )
+  const onHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      // never captured — nothing to release
+    }
+  }, [])
 
   const changeRoot = useCallback((nextRoot: string) => {
     cacheRef.current.clear()
@@ -288,7 +357,22 @@ export function ShellExplorerPage({
     <PageShell>
       {header}
       <PageBody side={panelSide}>
-        <PageSidebar width={collapsed ? 34 : 280} className={`shui-sidebar${collapsed ? ' collapsed' : ''}`}>
+        <PageSidebar
+          width={collapsed ? 34 : sideWidth}
+          className={`shui-sidebar${collapsed ? ' collapsed' : ''}`}
+        >
+          {!collapsed ? (
+            <div
+              className={`shui-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
+              onPointerDown={onHandlePointerDown}
+              onPointerMove={onHandlePointerMove}
+              onPointerUp={onHandlePointerUp}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="resize sidebar"
+              title="drag to resize"
+            />
+          ) : null}
           {collapsed ? (
             <button
               type="button"
@@ -315,6 +399,22 @@ export function ShellExplorerPage({
                   </button>
                 ))}
                 <span className="spacer" />
+                {sideTab === 'files' ? (
+                  <button
+                    type="button"
+                    className={`shui-side-tab${showHidden ? ' active' : ''}`}
+                    onClick={() => setShowHidden((v) => !v)}
+                    aria-pressed={showHidden}
+                    aria-label={showHidden ? 'hide hidden files' : 'show hidden files'}
+                    title={showHidden ? 'hide hidden files' : 'show hidden files'}
+                  >
+                    {showHidden ? (
+                      <Eye aria-hidden className="shui-side-tab-icon" />
+                    ) : (
+                      <EyeOff aria-hidden className="shui-side-tab-icon" />
+                    )}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="shui-collapse-btn"
@@ -352,15 +452,24 @@ export function ShellExplorerPage({
                     tree={tree}
                     gitStatus={treeGitStatus}
                     theme={theme}
+                    hiddenFiltered={!showHidden}
                     expanded={expanded}
                     onExpandedChange={setExpanded}
+                    reveal={reveal}
+                    onRevealed={onRevealed}
                     onPreviewFile={previewFile}
                     onPinFile={pinFile}
                   />
                 ) : sideTab === 'git' ? (
                   <GitTab state={git} theme={theme} onSelect={(change) => setDiff(change)} onRefresh={refreshGit} />
                 ) : (
-                  <SearchTab host={host} root={root} onPreviewFile={previewFile} onPinFile={pinFile} />
+                  <SearchTab
+                    host={host}
+                    root={root}
+                    onPreviewFile={previewFile}
+                    onPinFile={pinFile}
+                    onRevealFolder={revealFolder}
+                  />
                 )}
               </div>
             </>

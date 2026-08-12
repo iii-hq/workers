@@ -203,50 +203,26 @@ zero.
 | Workflow | Trigger | Live-model runs | Gate |
 | --- | --- | ---: | --- |
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
-| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
-| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Score is advisory; empty reports, hard-gate and technical failures are blocking; history is always published |
-| Harness E2E deployed | Successful post-release smoke or Release Control dispatch | 1 per selected subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking; promotion requires the release gate |
+| Harness source validation | Release Control operation with an immutable SHA | Policy-defined | Empty reports, hard-gate and technical failures are blocking |
+| Harness Registry validation | Release Control operation with an exact `latest` or `next` stack | Policy-defined | Empty reports, hard-gate and technical failures are blocking; promotion requires exact evidence |
 
-The reusable workflow supports source and registry stack modes. Source runs
-install the latest stable `iii` release with its companion binaries, then build
-the runtime workers from the selected commit. Registry runs build only the E2E
-runner and install every runtime worker through `iii worker add`. Scenario ids
-come directly from `harness-e2e list`. Each subject/scenario pair receives a
-fresh stack, and repetitions run sequentially inside that job with unique table,
-session, and state namespaces. At most two matrix jobs make live-model calls
-concurrently.
+Release Control owns the schedule, source/Registry choice, exact stack,
+profiles, selected and required scenarios, repetitions, subjects, judge and
+promotion decision. It dispatches one of two strict entrypoints:
 
-The daily lane uses the registry mode to measure the currently published live
-stack. It resolves `latest` once per matrix job, records the exact versions and
-SHA-256 digest of the resulting `iii.lock`, and treats Registry resolution
-failures as `infra_failed`; it does not fall back to a source build. The main
-lane keeps the source build and LLVM coverage so operational daily metrics stay
-separate from checkout regression coverage.
+- `harness-e2e-source.yml` builds an immutable source SHA;
+- `harness-e2e-registry.yml` installs the exact `latest` or `next` stack.
 
-The deployed lane is a separate workflow run dispatched by the release smoke
-workflow. The release publishes first, the smoke validates the published
-installation and exact released version, and only a successful smoke dispatches
-the deployed E2E workflow. The release workflow does not wait for either child
-run. Deployed E2E jobs install `harness`, its mandatory dependencies, the
-scenario database worker, and the configured providers through `iii worker add`;
-they do not build runtime workers from the checkout. The expected release
-worker and version are checked against `iii.lock` before any model call.
+Both entrypoints validate every required input and call `_harness-e2e.yml`,
+which only builds, executes and uploads canonical schema-v3 evidence. The
+Workers repository has no release-policy catalog, autonomous schedule, run
+discovery, promotion decision or public dashboard. Each subject/scenario pair
+receives a fresh stack, and repetitions run sequentially inside that job with
+unique table, session and state namespaces. At most two matrix jobs make
+live-model calls concurrently.
 
-Release Control may choose one of three deployed-E2E profiles declared in
-`.github/release-workers.yaml`: `release` runs the promotable operational gate,
-`custom` runs an explicit non-empty scenario set, and `full` runs every
-code-defined scenario. A custom set remains promotable only when it contains
-every release-gate scenario. The workflow compares the previewed catalog SHA
-with its checkout, verifies scenario IDs against `harness-e2e list`, and records
-the selected, required and completed sets plus the canonical profile digest in
-schema-v3 evidence. Main and daily lanes continue to run their complete matrix.
-
-The scheduled benchmark runs even when `main` has not changed. This preserves
-one comparable observation per day and exposes model or infrastructure drift.
-A manual dispatch may pin another full commit SHA but must run from `main`.
-
-The subject matrix comes from the `HARNESS_E2E_SUBJECTS` repository variable.
-Daily dispatch inputs may override the matrix and judge:
+The subject matrix and judge are exact dispatch inputs. A representative
+subject matrix is:
 
 ```json
 [
@@ -278,64 +254,13 @@ and `ZAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
 providers require their credential files to be provisioned securely on the
 runner; the current workflow does not inject those files.
 
-### Daily benchmark dashboard
-
-The scheduled workflow evaluates the default branch once per day with three
-runs for every subject/scenario pair. A manual dispatch can pin a full commit
-SHA. The stable cadence makes missing days visible and keeps the time series
-independent of release frequency.
-
-The dashboard is published at
-<https://iii-hq.github.io/workers/dev/harness-e2e/>. Its execution overview and
-detail pages support workflow debugging, while **Trends** preserves the daily
-metric review:
-
-- the overview surfaces the latest KPIs, a workflow-by-scenario health matrix,
-  and a filterable table of workflow attempts;
-- each workflow attempt has a shareable detail page with configuration,
-  scenarios, individual runs, gates, criteria, failures, retries, usage, cost,
-  prompts, transcripts, sessions, traces, and the complete JSON record;
-- the primary chart uses calendar time, switches between score, pass rate, cost,
-  and runtime, and filters by scenario;
-- hovering a line shows the nearest daily value, and selecting its point opens
-  the retained execution detail;
-- the scenario breakdown makes regressions and missing reports visible;
-- the execution table keeps failed, incomplete, and cancelled workflows visible
-  even when they did not produce metrics.
-
-The public `gh-pages` history retains 100 aggregate workflow summaries and the
-complete structured reports for the latest 30 attempts. Those complete reports
-include prompts, transcripts, session ids, judge attempts, gates, criteria,
-failure messages, usage, cost, and traces. Diagnostic logs, stack files, and
-credentials remain in access-controlled workflow artifacts. Missing reports are
-stored as reliability events; unknown cost is omitted instead of recorded as
-zero.
-
-The daily lane evaluates repository binaries built from the resolved default
-branch commit. It does not install registry artifacts; registry installation
-remains the responsibility of the quickstart validator.
-
-Repository administration has one manual prerequisite: under **Settings →
-Pages**, select **GitHub Actions** as the Pages source. The benchmark workflow
-maintains the `gh-pages` data history and deploys that history through the
-official Pages artifact flow.
-
-Each matrix job publishes its result for 14 days; failed jobs also publish
-diagnostics for 14 days. The workflow summary shows subject, judge, and total
-cost per scenario and consolidated by subject. The daily dashboard retains the
-latest 100 comparable points and summaries, plus complete reports for the latest
-30 workflow attempts. Historical score deltas are team-facing quality signals;
-they do not affect pass or fail.
-
 The source launcher performs a clean first boot with isolated configuration,
-session, queue, state, and log directories. It starts the provider workers
-named by the subject and judge configuration and executes repository binaries
-directly. The deployed launcher uses the same isolated layout but installs the
-runtime workers from the selected registry channel and records the resolved
-`iii.lock`, worker list, and bootstrap logs. The `shell_coder_sandbox` scenario
-tests engine-side registry installation through `worker::add`; the
-`iii worker add` CLI path remains covered by the nightly/manual [Harness
-quickstart validator](../quickstart/README.md).
+session, queue, state and log directories. The Registry launcher uses the same
+isolated layout, installs the exact dispatched versions and records the
+resolved `iii.lock`, worker list and bootstrap logs. The
+`shell_coder_sandbox` scenario tests engine-side Registry installation through
+`worker::add`; the `iii worker add` CLI path remains covered by the explicit
+[Harness quickstart validator](../quickstart/README.md).
 
 ## Adding a scenario
 

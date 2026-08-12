@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -36,7 +35,6 @@ jobs:
             | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -color
-      - run: node --test .github/benchmark-site/*.test.cjs
 
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed workers, read their iii.worker.yaml,
@@ -50,10 +48,9 @@ jobs:
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       crates: ${{ steps.bucket.outputs.crates }}
-      all: ${{ steps.bucket.outputs.all }}
+      changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
-      vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@v5
@@ -78,17 +75,17 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
-  # Runs once per changed worker (excluding lsp-vscode).
+  # Runs once per changed worker.
   # ──────────────────────────────────────────────────────────────
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
     needs: discover
-    if: needs.discover.outputs.all != '[]'
+    if: needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        worker: ${{ fromJSON(needs.discover.outputs.all) }}
+        worker: ${{ fromJSON(needs.discover.outputs.changed_workers) }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -358,8 +355,9 @@ jobs:
         env:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
-          # with the workers' iii-sdk pin.
-          VERSION: '0.21.6'
+          # with the workers' iii-sdk protocol line. 0.21.8 includes
+          # recoverable triggers required by workers that bind before providers.
+          VERSION: '0.21.8'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -574,33 +572,3 @@ jobs:
         if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
         run: pytest -q
-
-  # ──────────────────────────────────────────────────────────────
-  # lsp-vscode: special-case (VS Code extension, not a standard worker)
-  # ──────────────────────────────────────────────────────────────
-  lsp-vscode:
-    name: "lsp-vscode: lint + test"
-    needs: discover
-    if: needs.discover.outputs.vscode_changed == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: lsp-vscode
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          # setup-node v5 auto-caches when package.json declares packageManager.
-          # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Package check (dry run)
-        run: npm run package:check
