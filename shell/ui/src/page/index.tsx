@@ -47,6 +47,15 @@ import {
 
 type SideTab = 'files' | 'git' | 'search'
 
+interface DiffSelection {
+  /** The change shown — from git status, or synthesized for live
+      follows in folders that aren't a repo. */
+  change: GitChange
+  /** Overrides the git-HEAD baseline: the last content this page saw,
+      so modified files outside a repo still diff instead of dumping. */
+  baseline?: string
+}
+
 const SIDEBAR_DEFAULT_WIDTH = 280
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
@@ -85,7 +94,7 @@ export function ShellExplorerPage({
   const [expanded, setExpanded] = useState<string[]>([])
   const [reveal, setReveal] = useState<string | null>(null)
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
-  const [diff, setDiff] = useState<GitChange | null>(null)
+  const [diff, setDiff] = useState<DiffSelection | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
 
   // ── boot: worker info + this workspace tab's persisted state ──
@@ -138,12 +147,13 @@ export function ShellExplorerPage({
 
   // ── data loads (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
-  const refreshGit = useCallback(() => {
-    if (!root) return
+  const refreshGit = useCallback((): Promise<GitState | null> => {
+    if (!root) return Promise.resolve(null)
     const seq = ++gitSeqRef.current
-    gitChanges(host, root)
+    return gitChanges(host, root)
       .then((state) => {
         if (gitSeqRef.current === seq) setGit(state)
+        return state
       })
       .catch((err: unknown) => {
         if (gitSeqRef.current === seq) {
@@ -152,6 +162,7 @@ export function ShellExplorerPage({
             message: errorMessage(err),
           })
         }
+        return null
       })
   }, [host, root])
 
@@ -222,20 +233,23 @@ export function ShellExplorerPage({
       })
   }, [host])
 
-  // The last written file in a burst follows the writer into the editor:
-  // the tree alone can't show a change (a file among thousands of folders
-  // refreshes in far below the fold), so the write itself opens as the
-  // PREVIEW tab — non-destructive by construction: preview replacement
-  // never touches pinned tabs, and a dirty preview auto-pins on edit.
-  // A system-level watch sees AMBIENT writes too (session logs, caches),
-  // so only visible, non-system paths ever steal the preview.
-  const followRef = useRef<string | null>(null)
+  // The last written file in a burst follows the writer into view — as a
+  // DIFF, the way the change reads best: git baseline in a repo, empty
+  // baseline for a created file, the last content this page saw for a
+  // modified one. The file also opens as the PREVIEW tab underneath —
+  // non-destructive by construction: preview replacement never touches
+  // pinned tabs, and a dirty preview auto-pins on edit. A system-level
+  // watch sees AMBIENT writes too (session logs, caches, build output),
+  // so only visible, non-system, non-artifact paths ever steal the view.
+  const followRef = useRef<{ rel: string; kind: string } | null>(null)
   const followable = (rel: string): boolean => {
+    const noise = ['Library', 'node_modules', 'target', 'dist', 'build', 'out', 'vendor', '__pycache__']
     const segments = rel.split('/')
-    if (segments.some((s) => s.startsWith('.'))) return false
-    const noise = ['Library', 'node_modules', 'target', 'dist']
-    return !noise.includes(segments[0])
+    if (segments.some((s) => s.startsWith('.') || noise.includes(s))) return false
+    return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|lock|log)$/.test(rel)
   }
+  const diffRef = useRef(diff)
+  diffRef.current = diff
   useWorkspaceChanges(host, root, (event) => {
     changedAbsRef.current.add(joinPath(event.root, event.path))
     if (event.kind !== 'deleted') {
@@ -245,7 +259,7 @@ export function ShellExplorerPage({
         const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
         if (abs.startsWith(prefix)) {
           const rel = abs.slice(prefix.length)
-          if (followable(rel)) followRef.current = rel
+          if (followable(rel)) followRef.current = { rel, kind: event.kind }
         }
       }
     }
@@ -253,15 +267,40 @@ export function ShellExplorerPage({
     liveTimerRef.current = window.setTimeout(() => {
       liveTimerRef.current = null
       refreshTree()
-      refreshGit()
+      const gitLoad = refreshGit()
       reloadActiveFile()
       const follow = followRef.current
       followRef.current = null
+      const changed = changedAbsRef.current
       changedAbsRef.current = new Set()
-      if (follow !== null && follow !== tabsRef.current.active) {
-        setDiff(null)
-        setTabs((s) => openPreview(s, follow))
-      }
+      void gitLoad.then((state) => {
+        const changes = state?.kind === 'ready' ? state.changes : []
+        const currentRoot = rootRef.current
+        if (follow !== null && follow.rel !== tabsRef.current.active) {
+          const fromGit = changes.find((c) => c.path === follow.rel)
+          const entry = cacheRef.current.get(follow.rel)
+          setTabs((s) => openPreview(s, follow.rel))
+          if (fromGit) {
+            setDiff({ change: fromGit })
+          } else if (follow.kind === 'created') {
+            setDiff({ change: { path: follow.rel, status: 'untracked', staged: false } })
+          } else if (entry !== undefined) {
+            setDiff({
+              change: { path: follow.rel, status: 'modified', staged: false },
+              baseline: entry.savedContent,
+            })
+          } else {
+            setDiff(null)
+          }
+        } else if (diffRef.current !== null && currentRoot !== null) {
+          // The open diff tracks further writes to its file live.
+          const open = diffRef.current
+          if (changed.has(joinPath(currentRoot, open.change.path))) {
+            const fresh = changes.find((c) => c.path === open.change.path)
+            setDiff(fresh ? { change: fresh } : { change: { ...open.change }, baseline: open.baseline })
+          }
+        }
+      })
     }, 400)
   })
   useEffect(
@@ -553,7 +592,7 @@ export function ShellExplorerPage({
                     onPinFile={pinFile}
                   />
                 ) : sideTab === 'git' ? (
-                  <GitTab state={git} theme={theme} onSelect={(change) => setDiff(change)} onRefresh={refreshGit} />
+                  <GitTab state={git} theme={theme} onSelect={(change) => setDiff({ change })} onRefresh={refreshGit} />
                 ) : (
                   <SearchTab
                     host={host}
@@ -606,7 +645,7 @@ export function ShellExplorerPage({
           ) : null}
 
           {diff !== null ? (
-            <DiffPane host={host} root={root} change={diff} />
+            <DiffPane host={host} root={root} change={diff.change} baseline={diff.baseline} />
           ) : tabs.active !== null ? (
             <EditorPane
               // fileBump remounts after an agent-side write to the active
