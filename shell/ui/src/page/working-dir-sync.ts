@@ -63,7 +63,9 @@ export function deepLinkRootTarget(
 ): string {
   if (workingDir !== null) {
     const prefix = workingDir.endsWith('/') ? workingDir : `${workingDir}/`
-    if (absolutePath.startsWith(prefix)) return workingDir
+    if (absolutePath === workingDir || absolutePath.startsWith(prefix)) {
+      return workingDir
+    }
   }
   const cut = absolutePath.lastIndexOf('/')
   return cut > 0 ? absolutePath.slice(0, cut) : '/'

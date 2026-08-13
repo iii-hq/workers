@@ -157,6 +157,10 @@ describe('working directory synchronization', () => {
 
   it('roots a nested deep link at the chat working directory during recovery', () => {
     expect(
+      deepLinkRootTarget('/tmp/harness-app', '/tmp/harness-app'),
+    ).toBe('/tmp/harness-app')
+
+    expect(
       deepLinkRootTarget(
         '/tmp/harness-app/src/components/App.tsx',
         '/tmp/harness-app',
