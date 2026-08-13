@@ -1,7 +1,11 @@
 import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useExtConfigForm } from '@/lib/ui-slots'
+import {
+  isExtConfigFormPending,
+  useExtConfigForm,
+  useUiAssetsStatus,
+} from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import type { ConfigurationSchemaView, JsonValue } from './api'
 import { isDirty } from './dirty'
@@ -56,6 +60,11 @@ export function WorkerEditor({
   // Injectable-UI configForms slot: a worker-registered form replaces the
   // FORM REGION only — the save lifecycle below stays host-owned either way.
   const formOverride = useExtConfigForm(entry.id)
+  const uiAssetsStatus = useUiAssetsStatus()
+  const isFormOverrideLoading = isExtConfigFormPending(
+    uiAssetsStatus,
+    formOverride,
+  )
 
   const [draft, setDraft] = useState<JsonValue | undefined>(undefined)
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
@@ -203,7 +212,9 @@ export function WorkerEditor({
           />
         ) : null}
         {!valueQuery.isLoading && !valueQuery.isError && draft !== undefined ? (
-          formOverride ? (
+          isFormOverrideLoading ? (
+            <EditorLoading />
+          ) : formOverride ? (
             <>
               <div
                 className={cn(

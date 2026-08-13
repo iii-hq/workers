@@ -5,12 +5,7 @@ import type { FileChangeRow, FileChangesSummary } from './file-changes'
 function titleFor(summary: FileChangesSummary, running: boolean): string {
   const count = summary.rows.length
   if (running) return `Changing ${count} ${count === 1 ? 'file' : 'files'}`
-  const verb =
-    summary.action === 'created'
-      ? 'Created'
-      : summary.action === 'updated'
-        ? 'Updated'
-        : 'Deleted'
+  const verb = summary.action === 'created' ? 'Created' : summary.action === 'updated' ? 'Updated' : 'Deleted'
   return `${verb} ${count} ${count === 1 ? 'file' : 'files'}`
 }
 
@@ -46,25 +41,17 @@ export function FileChangesCard({
       <header className="shui-file-changes-head">
         <Files aria-hidden className="shui-file-changes-icon" />
         <div className="shui-file-changes-title-group">
-          <div className="shui-file-changes-title">
-            {titleFor(summary, running)}
-          </div>
+          <div className="shui-file-changes-title">{titleFor(summary, running)}</div>
           <div className="shui-file-changes-totals">
-            {total.additions > 0 ? (
-              <span className="is-added">+{total.additions}</span>
-            ) : null}
-            {total.deletions > 0 ? (
-              <span className="is-deleted">−{total.deletions}</span>
-            ) : null}
-            {total.failures > 0 ? (
-              <span className="is-failed">{total.failures} failed</span>
-            ) : null}
+            {total.additions > 0 ? <span className="is-added">+{total.additions}</span> : null}
+            {total.deletions > 0 ? <span className="is-deleted">−{total.deletions}</span> : null}
+            {total.failures > 0 ? <span className="is-failed">{total.failures} failed</span> : null}
             {running ? <span className="is-running">working…</span> : null}
           </div>
         </div>
       </header>
 
-      <ul className="shui-file-changes-list" role="list">
+      <ul className="shui-file-changes-list">
         {visible.map((row, index) => (
           <li className="shui-file-change-row" key={`${row.path}:${index}`}>
             {onOpenDiff && row.changeId ? (
@@ -81,19 +68,13 @@ export function FileChangesCard({
             )}
             <div className="shui-file-change-actions">
               <div className="shui-file-change-stats">
-                {row.additions != null ? (
-                  <span className="is-added">+{row.additions}</span>
-                ) : null}
-                {row.deletions != null ? (
-                  <span className="is-deleted">−{row.deletions}</span>
-                ) : null}
+                {row.additions != null ? <span className="is-added">+{row.additions}</span> : null}
+                {row.deletions != null ? <span className="is-deleted">−{row.deletions}</span> : null}
                 {row.additions == null && row.deletions == null ? (
                   <span className={`is-${row.status}`}>{row.status}</span>
                 ) : null}
               </div>
-              {onOpenFile &&
-              row.absolutePath &&
-              (row.status === 'created' || row.status === 'updated') ? (
+              {onOpenFile && row.absolutePath && (row.status === 'created' || row.status === 'updated') ? (
                 <button
                   type="button"
                   className="shui-file-change-view"
@@ -117,13 +98,8 @@ export function FileChangesCard({
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
-          <span>
-            {expanded ? 'Show fewer files' : `Show ${hidden} more files`}
-          </span>
-          <ChevronDown
-            aria-hidden
-            className={expanded ? 'is-expanded' : undefined}
-          />
+          <span>{expanded ? 'Show fewer files' : `Show ${hidden} more files`}</span>
+          <ChevronDown aria-hidden className={expanded ? 'is-expanded' : undefined} />
         </button>
       ) : null}
     </section>

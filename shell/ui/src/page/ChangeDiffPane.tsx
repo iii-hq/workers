@@ -23,13 +23,7 @@ interface ChangeDiffPaneProps {
   onViewFile: (path: string) => void
 }
 
-export function ChangeDiffPane({
-  host,
-  changeId,
-  path,
-  canViewFile,
-  onViewFile,
-}: ChangeDiffPaneProps) {
+export function ChangeDiffPane({ host, changeId, path, canViewFile, onViewFile }: ChangeDiffPaneProps) {
   const [state, setState] = useState<DiffState>({ phase: 'loading' })
   const seqRef = useRef(0)
 
@@ -65,11 +59,7 @@ export function ChangeDiffPane({
         <span className="meta">exact change</span>
         <span className="spacer" />
         {canViewFile ? (
-          <button
-            type="button"
-            className="shui-view-file-btn"
-            onClick={() => onViewFile(resolvedPath)}
-          >
+          <button type="button" className="shui-view-file-btn" onClick={() => onViewFile(resolvedPath)}>
             <Eye aria-hidden />
             View file
           </button>

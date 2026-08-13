@@ -6,7 +6,7 @@
  * is this tab's own handler. The console worker answers with a `sync` push
  * (the subscription IS the seed) and follows with incremental `set`/`delete`
  * pushes. The loader diffs every event against loaded state — new/changed
- * hash ⇒ dispose + cache-busted re-import + `setup(host)`; missing path ⇒
+ * hash ⇒ cache-busted import + `setup(host)` + atomic swap; missing path ⇒
  * dispose. Styles are `<link>` swaps; scripts are ES modules.
  */
 
@@ -18,12 +18,15 @@ import {
   registerExtPage,
   registerExtRenderer,
   registerExtSessionChip,
+  registerExtSessionTurnSummary,
+  setUiAssetsStatus,
 } from '@/lib/ui-slots'
 import type {
   ConfigFormProps,
   ConsoleApi,
   Host,
   SessionChipProps,
+  SessionTurnSummaryProps,
   SetupFn,
   UiAssetKind,
   UiAssetRef,
@@ -50,6 +53,13 @@ interface LoadedStyle {
 }
 
 type Loaded = LoadedScript | LoadedStyle
+
+interface UiLoaderOptions {
+  /** Test seam; production resolves assets against the document base. */
+  baseUrl?: URL
+  /** Test seam; production uses a cache-busted dynamic import. */
+  importModule?: (url: string) => Promise<{ default?: SetupFn }>
+}
 
 /**
  * The scope wrapper every injected render mounts inside: `data-iii-ui`
@@ -165,6 +175,21 @@ function makeHost(
           }),
         )
       },
+      registerTurnSummary(summary) {
+        const Summary = summary.render
+        return track(
+          registerExtSessionTurnSummary({
+            ...summary,
+            scope,
+            path,
+            render: (props: SessionTurnSummaryProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Summary {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
     },
   }
 }
@@ -174,17 +199,27 @@ function makeHost(
  * unsubscribes and disposes every loaded asset (tests; the real tab never
  * calls it).
  */
-export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
+export function startUiLoader(
+  client: IiiClient,
+  api: ConsoleApi,
+  options: UiLoaderOptions = {},
+): () => void {
   const loaded = new Map<string, Loaded>()
+  let active = true
+  let receivedInitialSync = false
+  setUiAssetsStatus('loading')
   // Asset URLs resolve against the DOCUMENT base (the console supports
   // arbitrary subpath mounting); the loader itself lives in a Vite chunk
   // under assets/, so module-relative resolution would be wrong.
-  const base = new URL('.', document.baseURI)
+  const base = options.baseUrl ?? new URL('.', document.baseURI)
+  const importModule =
+    options.importModule ??
+    ((url: string) =>
+      import(/* @vite-ignore */ url) as Promise<{
+        default?: SetupFn
+      }>)
 
-  function dispose(path: string) {
-    const entry = loaded.get(path)
-    if (!entry) return
-    loaded.delete(path)
+  function disposeEntry(entry: Loaded) {
     if (entry.kind === 'style') {
       entry.link.remove()
       return
@@ -193,9 +228,16 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
       try {
         cleanup()
       } catch (err) {
-        console.error(`[iii-ui] cleanup for ${path} threw`, err)
+        console.error(`[iii-ui] cleanup for ${entry.path} threw`, err)
       }
     }
+  }
+
+  function dispose(path: string) {
+    const entry = loaded.get(path)
+    if (!entry) return
+    loaded.delete(path)
+    disposeEntry(entry)
   }
 
   function assetUrl(path: string, hash: string): string {
@@ -203,12 +245,10 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
   }
 
   async function applyScript(path: string, hash: string) {
-    dispose(path)
+    const previous = loaded.get(path)
     const cleanups: Array<() => void> = []
     try {
-      const mod = (await import(/* @vite-ignore */ assetUrl(path, hash))) as {
-        default?: SetupFn
-      }
+      const mod = await importModule(assetUrl(path, hash))
       if (typeof mod.default !== 'function') {
         throw new Error('no default setup() export')
       }
@@ -216,9 +256,10 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
       const teardown = await mod.default(host)
       if (typeof teardown === 'function') cleanups.push(teardown)
       loaded.set(path, { kind: 'script', path, hash, cleanups })
+      if (previous) disposeEntry(previous)
     } catch (err) {
-      // Non-fatal: the previous version was already disposed, so this
-      // script's contributions simply drop out until the next good version.
+      // Non-fatal and atomic: discard only the failed candidate. The last
+      // good version stays registered until a replacement finishes setup.
       for (const cleanup of [...cleanups].reverse()) {
         try {
           cleanup()
@@ -290,7 +331,12 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
       if (!payload || typeof payload !== 'object') return
       switch (payload.event) {
         case 'sync':
-          return applySync(Array.isArray(payload.assets) ? payload.assets : [])
+          return applySync(
+            Array.isArray(payload.assets) ? payload.assets : [],
+          ).then(() => {
+            receivedInitialSync = true
+            if (active) setUiAssetsStatus('ready')
+          })
         case 'set':
           return applySet(payload.path, payload.kind, payload.hash)
         case 'delete':
@@ -307,9 +353,32 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
     config: {},
   })
 
+  // With injectable UI disabled, the console intentionally does not own the
+  // `console:assets` trigger type, so no initial sync will arrive. The
+  // manifest remains registered specifically to expose that kill switch and
+  // lets built-in forms fall back instead of waiting forever.
+  void client
+    .trigger<{ disabled?: boolean }>(
+      'console::ui-manifest',
+      {},
+      { timeoutMs: 5_000 },
+    )
+    .then((manifest) => {
+      if (active && !receivedInitialSync && manifest.disabled) {
+        setUiAssetsStatus('unavailable')
+      }
+    })
+    .catch((err) => {
+      if (!active || receivedInitialSync) return
+      setUiAssetsStatus('unavailable')
+      console.warn('[iii-ui] availability check failed', err)
+    })
+
   return () => {
+    active = false
     offTrigger()
     offHandler()
     for (const path of [...loaded.keys()]) dispose(path)
+    setUiAssetsStatus('unavailable')
   }
 }

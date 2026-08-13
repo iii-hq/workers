@@ -21,6 +21,7 @@ import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
 import { createShellTriggerRenderer } from './src/function-trigger'
 import { ShellExplorerPage } from './src/page'
+import { ShellTurnSummary } from './src/page/ShellTurnSummary'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -33,4 +34,9 @@ export default function setup(host: Host) {
   // general shell renderer so their non-null card and display metadata win.
   host.functionTriggers.register(createFileChangesRenderer(host))
   host.functionTriggers.register(createShellTriggerRenderer())
+
+  host.chat?.registerTurnSummary?.({
+    id: 'shell-last-turn',
+    render: ShellTurnSummary,
+  })
 }

@@ -57,12 +57,7 @@ const updateRequestSchema = z.object({
 
 const deleteRequestSchema = z.object({ paths: z.array(z.string()) })
 
-export type FileChangeStatus =
-  | 'created'
-  | 'updated'
-  | 'deleted'
-  | 'unchanged'
-  | 'failed'
+export type FileChangeStatus = 'created' | 'updated' | 'deleted' | 'unchanged' | 'failed'
 
 export interface FileChangeRow {
   path: string
@@ -118,11 +113,7 @@ function resultContext(output: unknown, index: number) {
   }
 }
 
-export function summarizeFileChanges(
-  functionId: string,
-  input: unknown,
-  output?: unknown,
-): FileChangesSummary | null {
+export function summarizeFileChanges(functionId: string, input: unknown, output?: unknown): FileChangesSummary | null {
   if (functionId === CREATE_ID) {
     const req = createRequestSchema.safeParse(input)
     if (!req.success) return null
@@ -133,12 +124,7 @@ export function summarizeFileChanges(
         return {
           path: file.path,
           ...resultContext(output, index),
-          status:
-            result && !result.success
-              ? 'failed'
-              : file.overwrite
-                ? 'updated'
-                : 'created',
+          status: result && !result.success ? 'failed' : file.overwrite ? 'updated' : 'created',
           additions: countLines(file.content),
         }
       }),
@@ -187,12 +173,7 @@ export function summarizeFileChanges(
         return {
           path,
           ...resultContext(output, index),
-          status:
-            result && !result.success
-              ? 'failed'
-              : result?.removed === false
-                ? 'unchanged'
-                : 'deleted',
+          status: result && !result.success ? 'failed' : result?.removed === false ? 'unchanged' : 'deleted',
         }
       }),
     }

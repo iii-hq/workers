@@ -1,16 +1,7 @@
-import {
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
-  type Host,
-} from '@iii-dev/console-ui'
+import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
 import { ErrorDisplayView } from '../lib/errors'
-import {
-  diffPanelRequest,
-  filePanelRequest,
-  isFileChangesResponse,
-  summarizeFileChanges,
-} from './file-changes'
 import { FileChangesCard } from './FileChangesCard'
+import { diffPanelRequest, filePanelRequest, isFileChangesResponse, summarizeFileChanges } from './file-changes'
 import { parseShellErrorDisplay, unwrapEnvelope } from './parsers'
 
 const CREATE_ID = 'coder::create-file'
@@ -18,10 +9,7 @@ const UPDATE_ID = 'coder::update-file'
 const DELETE_ID = 'coder::delete-file'
 const FILE_CHANGE_IDS = new Set([CREATE_ID, UPDATE_ID, DELETE_ID])
 
-function render(
-  host: Host,
-  message: FunctionTriggerMessage,
-): React.ReactNode | null {
+function render(host: Host, message: FunctionTriggerMessage): React.ReactNode | null {
   if (!FILE_CHANGE_IDS.has(message.functionId)) return null
   const rawOutput = message.output
   const input = unwrapEnvelope(message.input)
@@ -31,40 +19,25 @@ function render(
   // require the coder response shape before declaring any file successful;
   // gate/transport errors must fall through to the shared error renderer.
   const summary =
-    message.running || isFileChangesResponse(output)
-      ? summarizeFileChanges(message.functionId, input, output)
-      : null
+    message.running || isFileChangesResponse(output) ? summarizeFileChanges(message.functionId, input, output) : null
   if (summary) {
     return (
       <FileChangesCard
         summary={summary}
         running={!!message.running}
-        onOpenDiff={
-          host.panels
-            ? (row) => host.panels?.open(diffPanelRequest(row))
-            : undefined
-        }
-        onOpenFile={
-          host.panels
-            ? (row) => host.panels?.open(filePanelRequest(row))
-            : undefined
-        }
+        onOpenDiff={host.panels ? (row) => host.panels?.open(diffPanelRequest(row)) : undefined}
+        onOpenFile={host.panels ? (row) => host.panels?.open(filePanelRequest(row)) : undefined}
       />
     )
   }
 
-  const error =
-    !message.running && rawOutput != null
-      ? parseShellErrorDisplay(rawOutput)
-      : null
+  const error = !message.running && rawOutput != null ? parseShellErrorDisplay(rawOutput) : null
   if (error) return <ErrorDisplayView display={error} />
   return null
 }
 
 function FunctionIdLabel({ functionId }: { functionId: string }) {
-  const tail = functionId.startsWith('coder::')
-    ? functionId.slice('coder::'.length)
-    : functionId
+  const tail = functionId.startsWith('coder::') ? functionId.slice('coder::'.length) : functionId
   return (
     <>
       <span style={{ color: 'var(--color-ink-faint)' }}>coder::</span>

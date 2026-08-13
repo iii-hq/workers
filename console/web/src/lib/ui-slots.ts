@@ -13,6 +13,7 @@ import type {
   FunctionTriggerRenderer,
   PageRegistration,
   SessionChipRegistration,
+  SessionTurnSummaryRegistration,
 } from '@/types/injectable-ui'
 
 export interface RegisteredPage extends PageRegistration {
@@ -44,11 +45,23 @@ export interface RegisteredSessionChip extends SessionChipRegistration {
   path: string
 }
 
+export interface RegisteredSessionTurnSummary
+  extends SessionTurnSummaryRegistration {
+  scope: string
+  path: string
+}
+
 interface Store<T> {
   subscribe(listener: () => void): () => void
   get(): readonly T[]
   /** Append; returns a remover for exactly this entry. */
   add(entry: T): () => void
+}
+
+interface ValueStore<T> {
+  subscribe(listener: () => void): () => void
+  get(): T
+  set(value: T): void
 }
 
 function createStore<T>(): Store<T> {
@@ -79,10 +92,33 @@ function createStore<T>(): Store<T> {
   }
 }
 
+function createValueStore<T>(initialValue: T): ValueStore<T> {
+  let value = initialValue
+  const listeners = new Set<() => void>()
+  return {
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    get() {
+      return value
+    },
+    set(nextValue) {
+      if (nextValue === value) return
+      value = nextValue
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
+
+export type UiAssetsStatus = 'loading' | 'ready' | 'unavailable'
+
 const pagesStore = createStore<RegisteredPage>()
 const renderersStore = createStore<RegisteredRenderer>()
 const configFormsStore = createStore<RegisteredConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
+const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
+const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
 /**
  * Register an extension page. Duplicate `id`: last registration wins in
@@ -91,7 +127,7 @@ const sessionChipsStore = createStore<RegisteredSessionChip>()
  */
 export function registerExtPage(entry: RegisteredPage): () => void {
   const duplicate = pagesStore.get().find((p) => p.id === entry.id)
-  if (duplicate) {
+  if (duplicate && duplicate.path !== entry.path) {
     console.warn(
       `[iii-ui] duplicate extension page id '${entry.id}' — ` +
         `'${entry.path}' overrides '${duplicate.path}'`,
@@ -109,7 +145,7 @@ export function registerExtConfigForm(entry: RegisteredConfigForm): () => void {
   const duplicate = configFormsStore
     .get()
     .find((f) => f.configurationId === entry.configurationId)
-  if (duplicate) {
+  if (duplicate && duplicate.path !== entry.path) {
     console.warn(
       `[iii-ui] duplicate config-form override for '${entry.configurationId}' — ` +
         `'${entry.path}' overrides '${duplicate.path}'`,
@@ -123,13 +159,29 @@ export function registerExtSessionChip(
   entry: RegisteredSessionChip,
 ): () => void {
   const duplicate = sessionChipsStore.get().find((c) => c.id === entry.id)
-  if (duplicate) {
+  if (duplicate && duplicate.path !== entry.path) {
     console.warn(
       `[iii-ui] duplicate session chip id '${entry.id}' — ` +
         `'${entry.path}' overrides '${duplicate.path}'`,
     )
   }
   return sessionChipsStore.add(entry)
+}
+
+/** Duplicate summary id: last registration wins in chat footer lookups. */
+export function registerExtSessionTurnSummary(
+  entry: RegisteredSessionTurnSummary,
+): () => void {
+  const duplicate = sessionTurnSummariesStore
+    .get()
+    .find((summary) => summary.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate session turn-summary id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return sessionTurnSummariesStore.add(entry)
 }
 
 export function getExtPages(): readonly RegisteredPage[] {
@@ -143,6 +195,32 @@ export function getExtPage(id: string): RegisteredPage | undefined {
     if (pages[i].id === id) return pages[i]
   }
   return undefined
+}
+
+/** The injected form override for one configuration id (last wins). */
+export function getExtConfigForm(
+  configurationId: string,
+): RegisteredConfigForm | undefined {
+  const forms = configFormsStore.get()
+  for (let i = forms.length - 1; i >= 0; i--) {
+    if (forms[i].configurationId === configurationId) return forms[i]
+  }
+  return undefined
+}
+
+export function getUiAssetsStatus(): UiAssetsStatus {
+  return uiAssetsStatusStore.get()
+}
+
+export function setUiAssetsStatus(status: UiAssetsStatus): void {
+  uiAssetsStatusStore.set(status)
+}
+
+export function isExtConfigFormPending(
+  status: UiAssetsStatus,
+  form: RegisteredConfigForm | undefined,
+): boolean {
+  return status === 'loading' && form === undefined
 }
 
 const EMPTY: readonly never[] = []
@@ -187,6 +265,28 @@ export function useExtSessionChips(): readonly RegisteredSessionChip[] {
   return useMemo(() => dedupeSessionChips(chips), [chips])
 }
 
+function dedupeSessionTurnSummaries(
+  summaries: readonly RegisteredSessionTurnSummary[],
+): readonly RegisteredSessionTurnSummary[] {
+  const byId = new Map<string, RegisteredSessionTurnSummary>()
+  for (const summary of summaries) byId.set(summary.id, summary)
+  return [...byId.values()]
+}
+
+/** Footer turn summaries deduplicated by id; last registration wins. */
+export function getExtSessionTurnSummaries(): readonly RegisteredSessionTurnSummary[] {
+  return dedupeSessionTurnSummaries(sessionTurnSummariesStore.get())
+}
+
+export function useExtSessionTurnSummaries(): readonly RegisteredSessionTurnSummary[] {
+  const summaries = useSyncExternalStore(
+    sessionTurnSummariesStore.subscribe,
+    sessionTurnSummariesStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => dedupeSessionTurnSummaries(summaries), [summaries])
+}
+
 /** The injected form override for one configuration id (last wins). */
 export function useExtConfigForm(
   configurationId: string,
@@ -200,4 +300,16 @@ export function useExtConfigForm(
     if (forms[i].configurationId === configurationId) return forms[i]
   }
   return undefined
+}
+
+/**
+ * Initial injected assets must settle before a consumer can distinguish
+ * "there is no override" from "the override has not loaded yet".
+ */
+export function useUiAssetsStatus(): UiAssetsStatus {
+  return useSyncExternalStore(
+    uiAssetsStatusStore.subscribe,
+    uiAssetsStatusStore.get,
+    () => 'unavailable',
+  )
 }

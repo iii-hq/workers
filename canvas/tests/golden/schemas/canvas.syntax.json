@@ -1,0 +1,66 @@
+{
+  "description": "Return the mermaid syntax reference: every supported diagram family with a short summary and a working example, or — narrowed to one family — a compact syntax primer. Call this before writing mermaid source.",
+  "function_id": "canvas::syntax",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "family": {
+        "default": null,
+        "description": "Only return this diagram family (`flowchart`, `sequenceDiagram`, …; aliases like `graph`, `sequence` or `state` are accepted). Omit for the one-line overview of every family.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FamilySyntax": {
+        "description": "One diagram family's reference entry.",
+        "properties": {
+          "example": {
+            "description": "A minimal, valid mermaid example of this family.",
+            "type": "string"
+          },
+          "family": {
+            "description": "Canonical family name (`flowchart`, `sequenceDiagram`, …) — the same string `canvas::validate` reports and `canvas::create` stores.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "One-line description of what this family is for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "example",
+          "family",
+          "summary"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "families": {
+        "description": "The reference entries — every family for the overview, exactly one when the request named a family.",
+        "items": {
+          "$ref": "#/definitions/FamilySyntax"
+        },
+        "type": "array"
+      },
+      "syntax": {
+        "description": "The reference as readable text: one line per family for the overview, or the named family's syntax primer with its example.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "families",
+      "syntax"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

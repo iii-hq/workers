@@ -25,6 +25,7 @@
 //!   see the case comment for why no handler drives this one)
 //! - C213: create-file exists without overwrite; move destination exists
 //!   without overwrite (one house C213 shape)
+//! - C221: create-file optimistic overwrite conflict (no bytes written)
 //!
 //! Regenerate with `UPDATE_GOLDENS=1 cargo test`.
 
@@ -229,6 +230,7 @@ async fn error_message_formats_match_golden() {
                 mode: "9z9".into(),
                 parents: true,
                 overwrite: false,
+                expected_revision: None,
             },
         )
         .await;
@@ -311,6 +313,7 @@ async fn error_message_formats_match_golden() {
                 mode: "0644".into(),
                 parents: true,
                 overwrite: false,
+                expected_revision: None,
             },
         )
         .await;
@@ -426,6 +429,7 @@ async fn error_message_formats_match_golden() {
                 mode: "0644".into(),
                 parents: true,
                 overwrite: false,
+                expected_revision: None,
             },
         )
         .await;
@@ -458,6 +462,30 @@ async fn error_message_formats_match_golden() {
             "C213_move_dst_exists_without_overwrite",
             (wire.code.clone(), wire.message.clone()),
             &jail,
+        );
+    }
+
+    // --- C221: optimistic whole-file overwrite conflict -----------------
+    {
+        std::fs::write(jail.root0.join("conflict.txt"), "newer on disk").unwrap();
+        let got = create_err(
+            &jail,
+            jail.cfg.clone(),
+            create_file::CreateFileSpec {
+                path: "conflict.txt".into(),
+                content: "stale draft".into(),
+                mode: "0644".into(),
+                parents: true,
+                overwrite: true,
+                expected_revision: Some(format!("sha256:{}", "0".repeat(64))),
+            },
+        )
+        .await;
+        put("C221_create_stale_revision", got, &jail);
+        assert_eq!(
+            std::fs::read_to_string(jail.root0.join("conflict.txt")).unwrap(),
+            "newer on disk",
+            "a conflict must leave the newer file intact"
         );
     }
 

@@ -2,11 +2,15 @@
 //! treated independently so a single bad input never aborts the rest.
 //! Non-accessible paths and oversized payloads are rejected.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
+use once_cell::sync::Lazy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
@@ -42,6 +46,12 @@ pub struct CreateFileSpec {
     /// When false (the default), refuse to write if `path` already exists.
     #[serde(default)]
     pub overwrite: bool,
+    /// Optional optimistic concurrency precondition for an overwrite. Pass
+    /// the opaque `revision` returned by `coder::read-file`; if the file no
+    /// longer has that exact content, the entry fails with C221 and is not
+    /// written. Omit for backward-compatible unconditional overwrite.
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -85,6 +95,10 @@ pub struct CreateFileResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(skip)]
     pub change_id: Option<String>,
+    /// Opaque revision for the exact bytes written. Supply this as
+    /// `expected_revision` on a later overwrite to avoid lost updates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     /// Structured error for this entry. `code` is stable for programmatic
     /// branching (e.g. `"C213"` means already-exists; pass `overwrite=true`
     /// to replace). `message` carries the corrective action an LLM agent
@@ -108,13 +122,13 @@ pub async fn handle_with_journal(
     journal: ChangeJournal,
     req: CreateFileInput,
 ) -> Result<CreateFileOutput, String> {
-    handle_impl(resolver, cfg, Some(&journal), req).await
+    handle_impl(resolver, cfg, Some(journal), req).await
 }
 
 async fn handle_impl(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
-    journal: Option<&ChangeJournal>,
+    journal: Option<ChangeJournal>,
     req: CreateFileInput,
 ) -> Result<CreateFileOutput, String> {
     if req.files.is_empty() {
@@ -131,10 +145,17 @@ async fn handle_impl(
             Err(e) => entries.push((spec, Err(e))),
         }
     }
-    let results = entries
-        .into_iter()
-        .map(|(spec, resolved)| create_one(&cfg, journal, spec, resolved))
-        .collect();
+    // File hashing, syncing, and publication are blocking filesystem work.
+    // Keep them off the async worker runtime so a slow disk or large target
+    // cannot stall unrelated function handling.
+    let results = tokio::task::spawn_blocking(move || {
+        entries
+            .into_iter()
+            .map(|(spec, resolved)| create_one(&cfg, journal.as_ref(), spec, resolved))
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("coder::create-file blocking task failed: {e}"))?;
     Ok(CreateFileOutput { results })
 }
 
@@ -156,17 +177,19 @@ fn create_one(
                 success: false,
                 bytes_written: 0,
                 change_id: None,
+                revision: None,
                 error: Some((&e).into()),
             }
         }
     };
     let wire_path = abs.display().to_string();
     match try_create_one(cfg, journal, &abs, spec) {
-        Ok((bytes, change_id)) => CreateFileResult {
+        Ok(written) => CreateFileResult {
             path: wire_path,
             success: true,
-            bytes_written: bytes,
-            change_id,
+            bytes_written: written.bytes,
+            change_id: written.change_id,
+            revision: Some(written.revision),
             error: None,
         },
         Err(e) => CreateFileResult {
@@ -174,6 +197,7 @@ fn create_one(
             success: false,
             bytes_written: 0,
             change_id: None,
+            revision: None,
             error: Some((&e).into()),
         },
     }
@@ -186,12 +210,26 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
     )
 }
 
+struct WriteSuccess {
+    bytes: u64,
+    revision: String,
+    change_id: Option<String>,
+}
+
+/// Serialize publication within this worker. The revision is checked while
+/// this lock is held, so two `coder::create-file` callers presenting the same
+/// revision cannot both succeed. A non-cooperating external process can still
+/// write at any time, so `atomic_write` repeats the check immediately before
+/// the rename to make that race window as small as the filesystem permits.
+static WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 fn try_create_one(
     cfg: &CoderConfig,
     journal: Option<&ChangeJournal>,
     abs: &Path,
     spec: CreateFileSpec,
-) -> Result<(u64, Option<String>), CoderError> {
+) -> Result<WriteSuccess, CoderError> {
     let bytes = spec.content.as_bytes();
     if (bytes.len() as u64) > cfg.max_write_bytes {
         return Err(CoderError::TooLarge(format!(
@@ -203,17 +241,17 @@ fn try_create_one(
             cfg.max_write_bytes
         )));
     }
-    if abs.exists() && !spec.overwrite {
-        return Err(CoderError::AlreadyExists(format!(
-            "{} already exists; pass overwrite=true to replace",
+    let mode = parse_mode(&spec.mode)?;
+    if spec.expected_revision.is_some() && !spec.overwrite {
+        return Err(CoderError::BadInput(format!(
+            "{}: expected_revision requires overwrite=true; either enable overwrite or omit the precondition",
             spec.path
         )));
     }
-    let before = if abs.is_file() {
-        std::fs::read(abs).map_err(|e| CoderError::io_for_path(e, &spec.path))?
-    } else {
-        Vec::new()
-    };
+    if let Some(expected) = spec.expected_revision.as_deref() {
+        validate_revision(expected)?;
+    }
+
     if spec.parents {
         if let Some(parent) = abs.parent() {
             // io_for_path names spec.path (caller-supplied, redaction-safe)
@@ -221,25 +259,208 @@ fn try_create_one(
             std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
         }
     }
-    std::fs::write(abs, bytes).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
-    apply_mode(abs, &spec.mode)?;
-    let change_id = journal
-        .and_then(|journal| journal.record(abs.display().to_string(), before, bytes.to_vec()));
-    Ok((bytes.len() as u64, change_id))
+    let before = atomic_write(
+        abs,
+        &spec.path,
+        bytes,
+        mode,
+        spec.overwrite,
+        spec.expected_revision.as_deref(),
+        cfg.max_read_bytes,
+        journal.is_some(),
+    )?;
+    let change_id = before.and_then(|before| {
+        journal
+            .and_then(|journal| journal.record(abs.display().to_string(), before, bytes.to_vec()))
+    });
+    Ok(WriteSuccess {
+        bytes: bytes.len() as u64,
+        revision: content_revision(bytes),
+        change_id,
+    })
+}
+
+fn parse_mode(mode_str: &str) -> Result<u32, CoderError> {
+    let digits = mode_str.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    u32::from_str_radix(digits, 8)
+        .map(|mode| mode & 0o777)
+        .map_err(|e| CoderError::BadInput(format!("bad mode {mode_str:?}: {e}")))
 }
 
 #[cfg(unix)]
-fn apply_mode(path: &Path, mode_str: &str) -> Result<(), CoderError> {
+fn apply_mode(path: &Path, mode: u32, wire_path: &str) -> Result<(), CoderError> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = u32::from_str_radix(mode_str.trim_start_matches('0'), 8)
-        .map_err(|e| CoderError::BadInput(format!("bad mode {mode_str:?}: {e}")))?;
     let perms = std::fs::Permissions::from_mode(mode & 0o777);
-    std::fs::set_permissions(path, perms).map_err(CoderError::from)
+    std::fs::set_permissions(path, perms).map_err(|e| CoderError::io_for_path(e, wire_path))
 }
 
 #[cfg(not(unix))]
-fn apply_mode(_path: &Path, _mode_str: &str) -> Result<(), CoderError> {
+fn apply_mode(_path: &Path, _mode: u32, _wire_path: &str) -> Result<(), CoderError> {
     Ok(())
+}
+
+/// Strong content identity shared with `coder::read-file`. The algorithm
+/// prefix keeps this opaque token forward-compatible if the digest changes.
+pub(crate) fn content_revision(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn validate_revision(revision: &str) -> Result<(), CoderError> {
+    let Some(hex) = revision.strip_prefix("sha256:") else {
+        return Err(CoderError::BadInput(
+            "expected_revision must be the opaque sha256:<64 lowercase hex> token returned by coder::read-file"
+                .into(),
+        ));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(CoderError::BadInput(
+            "expected_revision must be the opaque sha256:<64 lowercase hex> token returned by coder::read-file"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn file_revision(path: &Path, wire_path: &str, max_read_bytes: u64) -> Result<String, CoderError> {
+    let mut file = std::fs::File::open(path).map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    let size = file
+        .metadata()
+        .map_err(|e| CoderError::io_for_path(e, wire_path))?
+        .len();
+    if size > max_read_bytes {
+        return Err(conflict(wire_path));
+    }
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = file
+            .read(&mut buf)
+            .map_err(|e| CoderError::io_for_path(e, wire_path))?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > max_read_bytes {
+            // The file grew after metadata was read. A legal full read could
+            // not have produced the caller's revision, so fail closed.
+            return Err(conflict(wire_path));
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn verify_expected_revision(
+    path: &Path,
+    wire_path: &str,
+    expected: &str,
+    max_read_bytes: u64,
+) -> Result<(), CoderError> {
+    let actual = match file_revision(path, wire_path, max_read_bytes) {
+        Ok(revision) => revision,
+        Err(CoderError::NotFoundOrDenied(_)) => {
+            return Err(conflict(wire_path));
+        }
+        Err(other) => return Err(other),
+    };
+    if actual != expected {
+        return Err(conflict(wire_path));
+    }
+    Ok(())
+}
+
+fn conflict(wire_path: &str) -> CoderError {
+    CoderError::Conflict(format!(
+        "{wire_path} changed since it was read; no bytes were written. Reload it with coder::read-file and retry using the returned revision, or omit expected_revision only after explicitly choosing to overwrite the newer content."
+    ))
+}
+
+struct TempGuard(PathBuf);
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Publish a complete file through a permissioned sibling temp and rename.
+/// The original remains intact if writing, syncing, chmod, or the optimistic
+/// recheck fails. Sibling placement guarantees rename stays on one filesystem.
+fn atomic_write(
+    target: &Path,
+    wire_path: &str,
+    bytes: &[u8],
+    mode: u32,
+    overwrite: bool,
+    expected_revision: Option<&str>,
+    max_read_bytes: u64,
+    capture_before: bool,
+) -> Result<Option<Vec<u8>>, CoderError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| CoderError::Io(format!("{wire_path}: target has no parent directory")))?;
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| CoderError::BadInput(format!("{wire_path}: target must name a file")))?;
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut temp_name = file_name.to_os_string();
+    temp_name.push(format!(".coder-tmp-{}-{sequence}", std::process::id()));
+    let temp_path = parent.join(temp_name);
+    let guard = TempGuard(temp_path.clone());
+
+    let mut temp = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    temp.write_all(bytes)
+        .map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    temp.flush()
+        .map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    temp.sync_all()
+        .map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    drop(temp);
+    apply_mode(&temp_path, mode, wire_path)?;
+
+    // Only the final optimistic check and rename need serialization. Temp
+    // creation, writes, chmod, and fsync above can proceed concurrently.
+    let _write_guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(expected) = expected_revision {
+        verify_expected_revision(target, wire_path, expected, max_read_bytes)?;
+    } else if !overwrite && target.exists() {
+        return Err(CoderError::AlreadyExists(format!(
+            "{wire_path} already exists; pass overwrite=true to replace"
+        )));
+    }
+
+    // Capture the exact pre-publication body while cooperative writers are
+    // serialized. Journaling is best-effort and bounded by the normal read
+    // limit, so an oversized or transiently unreadable target never blocks a
+    // successful write merely for the console artifact.
+    let before = if capture_before {
+        match std::fs::metadata(target) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= max_read_bytes => {
+                std::fs::read(target).ok()
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    std::fs::rename(&temp_path, target).map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    drop(guard);
+    if let Ok(parent_dir) = std::fs::File::open(parent) {
+        let _ = parent_dir.sync_all();
+    }
+    Ok(before)
 }
 
 #[cfg(test)]
@@ -273,6 +494,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: false,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },
@@ -281,6 +503,10 @@ mod tests {
         .unwrap();
         assert!(out.results[0].success);
         assert_eq!(out.results[0].bytes_written, 5);
+        assert_eq!(
+            out.results[0].revision.as_deref(),
+            Some(content_revision(b"hello").as_str())
+        );
         // Successful entries echo the canonical absolute path.
         assert_eq!(
             out.results[0].path,
@@ -309,6 +535,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: false,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },
@@ -333,6 +560,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: false,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },
@@ -362,6 +590,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: true,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },
@@ -372,6 +601,221 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "new"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_revision_overwrites_and_returns_the_new_revision() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "old").unwrap();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "new".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: true,
+                    expected_revision: Some(content_revision(b"old")),
+                }],
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert_eq!(
+            out.results[0].revision.as_deref(),
+            Some(content_revision(b"new").as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "new"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_revision_conflicts_without_overwriting() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "agent changed it").unwrap();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "my draft".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: true,
+                    expected_revision: Some(content_revision(b"old")),
+                }],
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C221");
+        assert_eq!(out.results[0].revision, None);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "agent changed it"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_current_file_conflicts_without_overwriting() {
+        let (tmp, r, _c) = setup();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            non_accessible_globs: vec![],
+            max_read_bytes: 4,
+            max_write_bytes: 1024,
+            ..CoderConfig::default()
+        });
+        std::fs::write(tmp.path().join("a.txt"), "external content is too large").unwrap();
+
+        let out = handle(
+            r,
+            cfg,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "mine".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: true,
+                    expected_revision: Some(content_revision(b"old")),
+                }],
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C221");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "external content is too large"
+        );
+    }
+
+    #[test]
+    fn concurrent_writers_cannot_both_use_the_same_revision() {
+        let (tmp, _r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "old").unwrap();
+        let expected = content_revision(b"old");
+        let target = std::fs::canonicalize(tmp.path()).unwrap().join("a.txt");
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let writers = ["first", "second"].map(|content| {
+            let barrier = barrier.clone();
+            let cfg = c.clone();
+            let target = target.clone();
+            let expected = expected.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                try_create_one(
+                    &cfg,
+                    None,
+                    &target,
+                    CreateFileSpec {
+                        path: "a.txt".into(),
+                        content: content.into(),
+                        mode: "0644".into(),
+                        parents: true,
+                        overwrite: true,
+                        expected_revision: Some(expected),
+                    },
+                )
+            })
+        });
+        barrier.wait();
+        let results = writers.map(|writer| writer.join().unwrap());
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+                .filter(|error| error.code() == "C221")
+                .count(),
+            1
+        );
+        let final_content = std::fs::read_to_string(target).unwrap();
+        assert!(final_content == "first" || final_content == "second");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn atomic_overwrite_publishes_the_requested_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "old").unwrap();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "new".into(),
+                    mode: "0600".into(),
+                    parents: true,
+                    overwrite: true,
+                    expected_revision: None,
+                }],
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success);
+        let mode = std::fs::metadata(tmp.path().join("a.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn failed_atomic_publish_keeps_original_and_cleans_the_temp() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir(tmp.path().join("target")).unwrap();
+        std::fs::write(tmp.path().join("target/child.txt"), "keep").unwrap();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "target".into(),
+                    content: "replacement".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: true,
+                    expected_revision: None,
+                }],
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("target/child.txt")).unwrap(),
+            "keep"
+        );
+        let names = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            names.iter().all(|name| !name.contains(".coder-tmp-")),
+            "orphan temp file after failed publish: {names:?}"
         );
     }
 
@@ -388,6 +832,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: true,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },
@@ -416,6 +861,7 @@ mod tests {
                         mode: "0644".into(),
                         parents: true,
                         overwrite: false,
+                        expected_revision: None,
                     },
                     CreateFileSpec {
                         path: "../escape.txt".into(),
@@ -423,6 +869,7 @@ mod tests {
                         mode: "0644".into(),
                         parents: true,
                         overwrite: false,
+                        expected_revision: None,
                     },
                 ],
                 fs_scope: None,
@@ -458,6 +905,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: false,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },
@@ -482,6 +930,7 @@ mod tests {
                         mode: "0644".into(),
                         parents: true,
                         overwrite: false,
+                        expected_revision: None,
                     },
                     CreateFileSpec {
                         path: "ok.txt".into(),
@@ -489,6 +938,7 @@ mod tests {
                         mode: "0644".into(),
                         parents: true,
                         overwrite: false,
+                        expected_revision: None,
                     },
                 ],
                 fs_scope: None,
@@ -519,6 +969,7 @@ mod tests {
                     mode: "0644".into(),
                     parents: true,
                     overwrite: false,
+                    expected_revision: None,
                 }],
                 fs_scope: None,
             },

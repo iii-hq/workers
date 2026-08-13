@@ -228,6 +228,10 @@ fn create_file_example_round_trips_with_relative_and_absolute_entries() {
     );
     assert!(!input.files[0].overwrite);
     assert!(input.files[1].overwrite);
+    assert!(input
+        .files
+        .iter()
+        .all(|file| file.expected_revision.is_none()));
 }
 
 #[test]
