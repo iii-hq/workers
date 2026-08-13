@@ -773,3 +773,28 @@
   color: var(--color-ink-ghost);
   font-size: 11px;
 }
+
+[data-iii-ui="shell"] .shui-feed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px 7px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-muted);
+  border-bottom: 1px solid var(--color-line);
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+}
+[data-iii-ui="shell"] .shui-feed-stats {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-feed-stats .add { color: var(--color-git-added, #4d9a57); }
+[data-iii-ui="shell"] .shui-feed-stats .del { color: var(--color-git-deleted, #c05353); }

@@ -29,7 +29,8 @@ import { type EditorCache, EditorPane } from './EditorPane'
 import { useWorkspaceChanges } from './live'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
-import { type GitChange, type GitState, gitChanges, nestedGitStatus } from './git'
+import { lineDelta, splitLines } from './feed'
+import { type GitChange, type GitState, gitChanges, gitNumstat, nestedGitStatus } from './git'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
 import { SearchTab } from './SearchTab'
 import {
@@ -60,12 +61,20 @@ interface DiffSelection {
 }
 
 /** One live event the changes tab keeps for review — the auto-follow is
-    last-write-wins and moves fast; this list doesn't. */
+    last-write-wins and moves fast; this list doesn't. Line counts fill
+    in asynchronously: `undefined` = still computing, `null` = not
+    countable (binary, unreadable). */
 interface FeedEntry {
   rel: string
   kind: string
   at: number
+  add?: number | null
+  del?: number | null
 }
+
+/** Stats are per-file probes (a git call or a read each) — bound how
+    many one burst fires; later rows just show no chip. */
+const FEED_STATS_PER_BURST = 15
 
 function timeAgo(at: number): string {
   const s = Math.max(0, Math.round((Date.now() - at) / 1000))
@@ -375,6 +384,45 @@ export function ShellExplorerPage({
     [host],
   )
 
+  // Fill one feed row's +N/−M chip: `git diff HEAD --numstat` from the
+  // file's own directory (auto-discovers nested repos), untracked files
+  // count whole, non-repo files diff against the page's last-seen
+  // content. Best-effort — a row without a chip still opens its diff.
+  const computeFeedStats = useCallback(
+    (rel: string, kind: string) => {
+      const currentRoot = rootRef.current
+      if (currentRoot === null) return
+      const abs = joinPath(currentRoot, rel)
+      const cut = abs.lastIndexOf('/')
+      const dir = abs.slice(0, cut)
+      const name = abs.slice(cut + 1)
+      const apply = (add: number | null, del: number | null) => {
+        if (rootRef.current !== currentRoot) return
+        setFeed((prev) => prev.map((e) => (e.rel === rel ? { ...e, add, del } : e)))
+      }
+      void (async () => {
+        const num = await gitNumstat(host, dir, name)
+        if (num === 'binary') return apply(null, null)
+        if (num !== null && num !== 'clean') return apply(num.add, num.del)
+        if (num === 'clean') {
+          const status = await nestedGitStatus(host, dir, name)
+          if (status !== 'untracked') return apply(0, 0)
+        }
+        const entry = cacheRef.current.get(rel)
+        if (kind === 'deleted') {
+          return apply(0, entry !== undefined ? splitLines(entry.savedContent).length : null)
+        }
+        const out = await coderReadFile(host, abs).catch(() => null)
+        const content = out !== null && out.is_utf8 !== false ? (out.content ?? '') : null
+        if (content === null) return apply(null, null)
+        if (kind === 'created' || entry === undefined) return apply(splitLines(content).length, 0)
+        const delta = lineDelta(entry.savedContent, content)
+        apply(delta.add, delta.del)
+      })().catch(() => apply(null, null))
+    },
+    [host],
+  )
+
   useWorkspaceChanges(host, root, (event) => {
     changedAbsRef.current.set(joinPath(event.root, event.path), event.kind)
     if (event.kind !== 'deleted') {
@@ -418,6 +466,9 @@ export function ShellExplorerPage({
             const fresh = new Set(entries.map((e) => e.rel))
             return [...entries, ...prev.filter((e) => !fresh.has(e.rel))].slice(0, 200)
           })
+          for (const e of entries.slice(0, FEED_STATS_PER_BURST)) {
+            computeFeedStats(e.rel, e.kind)
+          }
         }
         // A lazily fetched subtree with a change under it is stale —
         // drop it; the load effect refetches while it stays expanded.
@@ -755,21 +806,40 @@ export function ShellExplorerPage({
                         · nothing yet — every change under this folder lands here live
                       </div>
                     ) : (
-                      feed.map((e) => (
-                        <button
-                          key={e.rel}
-                          type="button"
-                          className="shui-feed-row"
-                          title={e.rel}
-                          onClick={() => openChangeDiff(e.rel, e.kind)}
-                        >
-                          <span className={`shui-feed-kind ${e.kind}`}>
-                            {e.kind === 'created' ? '+' : e.kind === 'deleted' ? '−' : '~'}
+                      <>
+                        <div className="shui-feed-head">
+                          <span>
+                            {feed.length} {feed.length === 1 ? 'file' : 'files'}
                           </span>
-                          <span className="shui-feed-path">{e.rel}</span>
-                          <span className="shui-feed-time">{timeAgo(e.at)}</span>
-                        </button>
-                      ))
+                          <span className="shui-feed-stats">
+                            <span className="add">
+                              +{feed.reduce((n, e) => n + (typeof e.add === 'number' ? e.add : 0), 0)}
+                            </span>
+                            <span className="del">
+                              −{feed.reduce((n, e) => n + (typeof e.del === 'number' ? e.del : 0), 0)}
+                            </span>
+                          </span>
+                        </div>
+                        {feed.map((e) => (
+                          <button
+                            key={e.rel}
+                            type="button"
+                            className="shui-feed-row"
+                            title={`${e.rel} — ${e.kind}`}
+                            onClick={() => openChangeDiff(e.rel, e.kind)}
+                          >
+                            <span className={`shui-feed-kind ${e.kind}`}>
+                              {e.kind === 'created' ? '+' : e.kind === 'deleted' ? '−' : '~'}
+                            </span>
+                            <span className="shui-feed-path">{e.rel}</span>
+                            <span className="shui-feed-stats">
+                              {typeof e.add === 'number' && e.add > 0 ? <span className="add">+{e.add}</span> : null}
+                              {typeof e.del === 'number' && e.del > 0 ? <span className="del">−{e.del}</span> : null}
+                            </span>
+                            <span className="shui-feed-time">{timeAgo(e.at)}</span>
+                          </button>
+                        ))}
+                      </>
                     )}
                   </div>
                 ) : (

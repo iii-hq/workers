@@ -157,6 +157,27 @@ export async function nestedGitStatus(
   return status === 'renamed' ? 'modified' : status
 }
 
+/** Line counts for ONE file's worktree-vs-HEAD diff, probed from its
+    own directory (`git -C` auto-discovers the repo upward). `'clean'`
+    means the repo has no diff for it — tracked-and-unchanged OR
+    untracked; the caller disambiguates. `'binary'` is git's `-` numstat.
+    `null` means no repo contains the file. */
+export async function gitNumstat(
+  host: Host,
+  dir: string,
+  name: string,
+): Promise<{ add: number; del: number } | 'binary' | 'clean' | null> {
+  const probe = await git(host, dir, ['rev-parse', '--is-inside-work-tree'])
+  if (probe.exit_code !== 0 || !probe.stdout.startsWith('true')) return null
+  const out = await git(host, dir, ['diff', 'HEAD', '--numstat', '--', `./${name}`])
+  if (out.exit_code !== 0) return null
+  const line = out.stdout.split('\n')[0]?.trim() ?? ''
+  if (line === '') return 'clean'
+  const [a, d] = line.split('\t')
+  if (a === '-' || d === '-') return 'binary'
+  return { add: Number(a) || 0, del: Number(d) || 0 }
+}
+
 export async function gitShowHead(
   host: Host,
   root: string,
