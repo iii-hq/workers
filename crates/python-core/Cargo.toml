@@ -1,0 +1,50 @@
+[workspace]
+
+[package]
+name = "iii-python-core"
+version = "0.1.0"
+edition = "2021"
+description = "Run untrusted one-shot Python in CPython-on-WebAssembly inside wasmtime — the runner, guest wrapper and manager, with no bus dependency"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished: workers in this repo link it by path, the same way
+# they link crates/console-ui.
+publish = false
+
+# NO iii-sdk, and no feature to add one back — same posture as
+# crates/node-core, for the same reason. Nothing in this crate ever names an
+# SDK type: `Manager` and `Runner` are pure compute over `RunSpec`/`RunOutcome`,
+# and the hosting worker owns every connection. A crate with no SDK dependency
+# has no exact pin to collide with a worker's own.
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `BoxFuture` for the guest-bridge trait, the same shape node-core uses.
+futures = "0.3"
+# `RunRequest`/`RunResponse`/`LogLine` reach the wire through the hosting
+# worker's registration, so their `JsonSchema` derives have to live with the
+# structs. Must stay on the same schemars major as iii-sdk so the derived
+# schema matches what `RegisterFunction` emits.
+schemars = "0.8"
+anyhow = "1"
+tracing = "0.1"
+# The sandbox. Pinned exact like deno_core in node-core: wasmtime majors churn
+# monthly and the containment behaviour (epoch traps, limiter semantics) must
+# not move under us.
+wasmtime = "=47.0.3"
+wasmtime-wasi = "=47.0.3"
+# `OutputStream::write` takes `bytes::Bytes` and wasmtime-wasi does not
+# re-export the crate, so the trait cannot be implemented without naming it.
+bytes = "1"
+# Runtime extraction of the embedded CPython-WASI bundle.
+zip = "8"
+tempfile = "3"
+# Runtime ids. `rt-<uuid>` matches every sibling worker's shape.
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+sha2 = "0.11"
+
+[dev-dependencies]
+which = "8"

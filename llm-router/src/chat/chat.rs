@@ -48,6 +48,9 @@ use super::synthesize::{synthesize_aborted, synthesize_error};
 pub struct ChatCall {
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Stable conversation identity, forwarded separately from the per-turn request id.
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub model: String,
     #[serde(default)]
     pub provider: Option<String>,
@@ -538,7 +541,7 @@ fn rand_unit() -> f64 {
 /// null — provider-side schemas reject `null` where a string or array is
 /// expected. `resolution_key` is the request id: stable across retry attempts
 /// within a turn, fresh per turn, so providers can dedupe per-turn credential
-/// resolution.
+/// resolution. `session_id` remains stable across turns for provider affinity.
 fn build_stream_input(
     call: &ChatCall,
     provider: &str,
@@ -555,6 +558,11 @@ fn build_stream_input(
     input.insert(
         "resolution_key".into(),
         Value::String(request_id.to_string()),
+    );
+    insert_present(
+        &mut input,
+        "session_id",
+        call.session_id.clone().map(Value::String),
     );
     insert_present(
         &mut input,
@@ -714,6 +722,7 @@ mod tests {
             "thinking_level",
             "provider_options",
             "model_meta",
+            "session_id",
         ] {
             assert!(
                 !obj.contains_key(absent),
@@ -739,12 +748,14 @@ mod tests {
             "system_prompt": "be brief",
             "tools": [{ "name": "t", "description": "d", "parameters": {} }],
             "thinking_level": "high",
+            "session_id": "s_1",
             "provider_options": { "anthropic": { "beta": true }, "openai": { "x": 1 } },
         }))
         .unwrap();
         let input = build_stream_input(&call, "anthropic", writer_ref, 8192, None, "req-2");
         assert_eq!(input["system_prompt"], json!("be brief"));
         assert_eq!(input["thinking_level"], json!("high"));
+        assert_eq!(input["session_id"], json!("s_1"));
         assert_eq!(input["provider_options"], json!({ "beta": true }));
     }
 }

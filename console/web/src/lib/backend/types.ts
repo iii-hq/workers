@@ -315,6 +315,13 @@ export interface ChatBackend {
    */
   listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
   /**
+   * Subscribe to `harness::triggers-changed` for a session: fires when the
+   * binding set or a fire count changes (registration, unregistration from
+   * any tab, a fire, expiry, GC) — the signal to refetch `listTriggers`.
+   * Returns an unsubscribe.
+   */
+  onTriggersChanged?(sessionId: string, onEvent: () => void): () => void
+  /**
    * Tear one subscription down via `harness::triggers::unregister` (engine
    * trigger AND durable record; a raw engine unregister would orphan the
    * record and strand the owner's armed wake).

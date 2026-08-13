@@ -33,6 +33,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 # JWT payload (account id / exp) decode — unsigned, no verification.
 base64 = "0.22"
+# Header-safe cache-affinity UUID derived from the stable session id.
+sha2 = "0.10"
 
 [dev-dependencies]
 uuid = { version = "1", features = ["v4"] }

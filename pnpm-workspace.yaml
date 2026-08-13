@@ -12,6 +12,7 @@ packages:
   - browser/ui
   - canvas/ui
   - sandbox-code-runner/ui
+  - code-runner/ui
   - computer/ui
   - database/ui
   - editor/ui
