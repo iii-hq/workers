@@ -118,6 +118,22 @@ fn is_git_internal(path: &Path) -> bool {
         .any(|c| c.as_os_str().to_str() == Some(".git"))
 }
 
+/// This worker's own atomic-write machinery: sibling temp files that
+/// exist for a moment between write and rename (`coder::update-file`'s
+/// `.coder-tmp-`, the fs backend's `.iii-tmp-` and `.tmp.<uuid>`).
+/// Reporting them would hand every write a phantom neighbor — and the
+/// rename lands as an event on the REAL path regardless.
+fn is_own_temp(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.contains(".coder-tmp-")
+        || name.contains(".iii-tmp-")
+        || name
+            .rsplit_once(".tmp.")
+            .is_some_and(|(_, id)| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Fold two kinds seen for one path in one window. A create followed by
 /// the write that fills the file is still a creation; a deletion
 /// supersedes what came before it; a creation after a deletion is a
@@ -163,7 +179,7 @@ async fn pump(
             }
             let kind = kind_of(&event.kind);
             for p in &event.paths {
-                if is_git_internal(p) {
+                if is_git_internal(p) || is_own_temp(p) {
                     continue;
                 }
                 if let Some(rel) = rel_to(&root, p) {
@@ -326,6 +342,22 @@ mod tests {
         assert!(is_git_internal(Path::new("/repo/.git/objects/ab")));
         assert!(!is_git_internal(Path::new("/repo/src/.gitignore")));
         assert!(!is_git_internal(Path::new("/repo/src/main.rs")));
+    }
+
+    #[test]
+    fn own_atomic_write_temps_are_filtered() {
+        assert!(is_own_temp(Path::new(
+            "/w/index.html.coder-tmp-58416-681434000"
+        )));
+        assert!(is_own_temp(Path::new(
+            "/w/a.txt.iii-tmp-1f2e3d4c-0000-0000-0000-000000000000"
+        )));
+        assert!(is_own_temp(Path::new(
+            "/w/a.txt.tmp.0123456789abcdef0123456789abcdef"
+        )));
+        assert!(!is_own_temp(Path::new("/w/index.html")));
+        assert!(!is_own_temp(Path::new("/w/notes.tmp.md")));
+        assert!(!is_own_temp(Path::new("/w/archive.tmp.backup")));
     }
 
     #[test]

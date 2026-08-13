@@ -67,9 +67,14 @@ export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps
       })
       .catch((err: unknown) => {
         if (seqRef.current !== seq) return
+        const raw = errorMessage(err)
         setState({
           phase: 'error',
-          message: errorMessage(err),
+          // A followed file can vanish between the event and the read
+          // (renamed away, deleted) — say that instead of a raw C211.
+          message: raw.includes('not found or not accessible')
+            ? 'file no longer exists on disk'
+            : raw,
         })
       })
   }, [host, root, change, baseline, gitDir])
