@@ -18,7 +18,7 @@ SCRAPLING_VENV := $(SCRAPLING_ROOT)/.venv
 SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 
 BASE_STACK := state queue iii-directory llm-router session-manager context-manager \
-              provider-anthropic provider-openai provider-openai-codex provider-opencode-go shell scrapling cron \
+              provider-anthropic provider-openai provider-openai-codex shell scrapling cron \
               approval-gate harness console
 STACK := $(BASE_STACK) eval
 
