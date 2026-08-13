@@ -12,9 +12,10 @@
 
 import type { FileTreeDirectoryHandle, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
-import { useEffect, useMemo, useRef } from 'react'
+import { Search, X } from 'lucide-react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
-import { TREE_THEME } from './tree-theme'
+import { TREE_THEME, TREE_UNSAFE_CSS } from './tree-theme'
 
 /** Directory paths live in the model with a trailing slash; callers key
     everything slash-less — accept either on the way in, strip on the
@@ -54,13 +55,22 @@ export function FilesTab({
   onPreviewFile,
   onPinFile,
 }: FilesTabProps) {
+  const filterId = useId()
+  const [filter, setFilter] = useState('')
+  const [filterMatchCount, setFilterMatchCount] = useState<number | null>(null)
   // The model is created once per component lifetime; data arriving
   // later flows through resetPaths/setGitStatus below. Selection opens
   // through a ref so the creation-time callback never goes stale.
   const openRef = useRef<(paths: readonly string[]) => void>(() => {})
   const lastFileRef = useRef<string | null>(null)
   const { model } = useFileTree({
+    fileTreeSearchMode: 'hide-non-matches',
+    flattenEmptyDirectories: true,
+    itemHeight: 29,
     paths: tree?.paths ?? [],
+    search: false,
+    stickyFolders: true,
+    unsafeCSS: TREE_UNSAFE_CSS,
     onSelectionChange: (selected) => openRef.current(selected),
   })
 
@@ -100,10 +110,7 @@ export function FilesTab({
         const handle = model.getItem(path) ?? model.getItem(`${path}/`)
         // A method call doesn't narrow the handle union — the literal
         // `isDirectory(): true` return type needs the explicit cast.
-        if (
-          handle?.isDirectory() &&
-          (handle as FileTreeDirectoryHandle).isExpanded()
-        ) {
+        if (handle?.isDirectory() && (handle as FileTreeDirectoryHandle).isExpanded()) {
           open.push(path)
         }
       }
@@ -129,16 +136,21 @@ export function FilesTab({
   const pathsKey = useMemo(() => tree?.paths.join('\n') ?? '', [tree])
   const lastPathsKeyRef = useRef('')
   useEffect(() => {
-    if (pathsKey === '' || pathsKey === lastPathsKeyRef.current) return
+    if (pathsKey === lastPathsKeyRef.current) return
     lastPathsKeyRef.current = pathsKey
     // The model accepts dir ids in either spelling depending on how the
     // row materialized — hand it both.
-    const initialExpandedPaths = expandedRef.current.flatMap((p) => [
-      p,
-      `${p}/`,
-    ])
+    const initialExpandedPaths = expandedRef.current.flatMap((p) => [p, `${p}/`])
     model.resetPaths(tree?.paths ?? [], { initialExpandedPaths })
   }, [model, pathsKey, tree])
+
+  // Codex keeps the filter outside the tree's shadow DOM and drives the
+  // model directly, avoiding a second built-in search surface.
+  useEffect(() => {
+    const query = filter.trim()
+    model.setSearch(query === '' ? null : query)
+    setFilterMatchCount(query === '' ? null : model.getSearchMatchingPaths().length)
+  }, [model, filter, pathsKey])
 
   useEffect(() => {
     model.setGitStatus(gitStatus.length > 0 ? gitStatus : undefined)
@@ -162,34 +174,62 @@ export function FilesTab({
     onRevealed()
   }, [reveal, kinds, model, onRevealed])
 
-  if (!tree) {
-    return <div className="shui-side-note">loading tree…</div>
-  }
-  if (tree.paths.length === 0) {
-    return (
-      <div className="shui-side-note">
-        {hiddenFiltered ? '· nothing visible — hidden entries are filtered' : '· empty folder'}
-      </div>
-    )
-  }
-
   return (
-    <div
-      className="shui-tree-wrap"
-      onDoubleClick={() => {
-        if (lastFileRef.current) onPinFile(lastFileRef.current)
-      }}
-    >
-      <FileTree
-        model={model}
-        className="shui-tree"
-        style={{ ...TREE_THEME, colorScheme: theme }}
-      />
-      {tree.truncations.length > 0 ? (
+    <div className="shui-tree-wrap">
+      <div className="shui-tree-filter-shell">
+        <div className="shui-tree-filter">
+          <label className="shui-sr-only" htmlFor={filterId}>
+            Filter files
+          </label>
+          <Search aria-hidden className="shui-tree-filter-search" />
+          <input
+            id={filterId}
+            type="text"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Filter files…"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {filter !== '' ? (
+            <button
+              type="button"
+              className="shui-tree-filter-clear"
+              aria-label="Clear file filter"
+              title="clear file filter"
+              onClick={() => setFilter('')}
+            >
+              <X aria-hidden />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="shui-tree-stage">
+        {!tree ? (
+          <div className="shui-side-note">loading tree…</div>
+        ) : tree.paths.length === 0 ? (
+          <div className="shui-side-note">
+            {hiddenFiltered ? 'nothing visible — hidden entries are filtered' : 'empty folder'}
+          </div>
+        ) : filterMatchCount === 0 ? (
+          <div className="shui-side-note">no matching files</div>
+        ) : (
+          <FileTree
+            model={model}
+            className="shui-tree"
+            style={{ ...TREE_THEME, colorScheme: theme }}
+            onDoubleClick={() => {
+              if (lastFileRef.current) onPinFile(lastFileRef.current)
+            }}
+          />
+        )}
+      </div>
+
+      {tree && tree.truncations.length > 0 ? (
         <div className="shui-side-note ghost">
-          partial listing — {tree.truncations.length}{' '}
-          {tree.truncations.length === 1 ? 'folder' : 'folders'} truncated by
-          depth/size limits
+          partial listing — {tree.truncations.length} {tree.truncations.length === 1 ? 'folder' : 'folders'} truncated
+          by depth/size limits
         </div>
       ) : null}
     </div>

@@ -20,17 +20,16 @@ import {
   PageSidebar,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
-import { Eye, EyeOff, FolderTree, GitBranch, History, Search, SquareTerminal, X } from 'lucide-react'
+import { Eye, EyeOff, FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
 import { type CoderInfo, coderInfo, coderReadFile, coderTree, type FlatTree, flattenTree, joinPath } from './coder'
 import { DiffPane } from './DiffPane'
 import { type EditorCache, EditorPane } from './EditorPane'
-import { useWorkspaceChanges } from './live'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
-import { lineDelta, splitLines } from './feed'
-import { type GitChange, type GitState, gitChanges, gitNumstat, nestedGitStatus } from './git'
+import { type GitChange, type GitState, gitChanges, nestedGitStatus } from './git'
+import { useWorkspaceChanges } from './live'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
 import { SearchTab } from './SearchTab'
 import {
@@ -46,7 +45,7 @@ import {
   type TabsState,
 } from './tabs'
 
-type SideTab = 'files' | 'git' | 'search' | 'changes'
+type SideTab = 'files' | 'git' | 'search'
 
 interface DiffSelection {
   /** The change shown — from git status, or synthesized for live
@@ -60,51 +59,7 @@ interface DiffSelection {
   gitDir?: string
 }
 
-/** One live event the changes tab keeps for review — the auto-follow is
-    last-write-wins and moves fast; this list doesn't. Line counts fill
-    in asynchronously: `undefined` = still computing, `null` = not
-    countable (binary, unreadable). */
-interface FeedEntry {
-  rel: string
-  kind: string
-  add?: number | null
-  del?: number | null
-}
-
-/** One coalesced burst of changes, kept whole — an agent turn that
-    edits four files reads as ONE reviewable group with its own totals,
-    and the same file edited across bursts keeps its history. */
-interface FeedGroup {
-  at: number
-  entries: FeedEntry[]
-}
-
-/** Stats are per-file probes (a git call or a read each) — bound how
-    many one burst fires; later rows just show no chip. */
-const FEED_STATS_PER_BURST = 15
-
-/** Total rows kept across all groups; oldest groups fall off whole. */
-const FEED_MAX_ROWS = 300
-
-function trimFeed(groups: FeedGroup[]): FeedGroup[] {
-  let rows = 0
-  const kept: FeedGroup[] = []
-  for (const g of groups) {
-    if (rows >= FEED_MAX_ROWS) break
-    kept.push(g)
-    rows += g.entries.length
-  }
-  return kept
-}
-
-function timeAgo(at: number): string {
-  const s = Math.max(0, Math.round((Date.now() - at) / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  return `${Math.floor(s / 3600)}h`
-}
-
-const SIDEBAR_DEFAULT_WIDTH = 280
+const SIDEBAR_DEFAULT_WIDTH = 244
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
 
@@ -116,7 +71,6 @@ const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
   { id: 'files', label: 'files', Icon: FolderTree },
   { id: 'git', label: 'git', Icon: GitBranch },
   { id: 'search', label: 'search', Icon: Search },
-  { id: 'changes', label: 'changes', Icon: History },
 ]
 
 export function ShellExplorerPage({
@@ -144,7 +98,6 @@ export function ShellExplorerPage({
   // snapshot didn't reach fetches its subtree on demand. An entry with
   // no paths marks a fetched-and-empty folder (no refetch loop).
   const [subtrees, setSubtrees] = useState<ReadonlyMap<string, FlatTree>>(new Map())
-  const [feed, setFeed] = useState<FeedGroup[]>([])
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
   const [expanded, setExpanded] = useState<string[]>([])
   const [reveal, setReveal] = useState<string | null>(null)
@@ -245,11 +198,6 @@ export function ShellExplorerPage({
     refreshTree()
   }, [refreshTree])
 
-  // The feed survives a hidden-filter toggle; only a new root clears it.
-  useEffect(() => {
-    setFeed([])
-  }, [root])
-
   // The tree the sidebar renders: the budgeted base snapshot plus every
   // lazily fetched subtree spliced in under its folder.
   const mergedTree = useMemo((): FlatTree | null => {
@@ -296,9 +244,7 @@ export function ShellExplorerPage({
           // Inaccessible folder — recorded as fetched-and-empty so the
           // load effect doesn't refetch it on every live burst; a change
           // under it drops the entry and retries.
-          setSubtrees((prev) =>
-            new Map(prev).set(dir, { paths: [], kinds: new Map(), truncations: [] }),
-          )
+          setSubtrees((prev) => new Map(prev).set(dir, { paths: [], kinds: new Map(), truncations: [] }))
         })
         .finally(() => subtreeLoadRef.current.delete(dir))
     }
@@ -379,7 +325,7 @@ export function ShellExplorerPage({
   // supports — the browsed root's git status first, then the file's OWN
   // repo (`git -C` auto-discovers upward, covering a worktree under the
   // home directory), then created/last-seen baselines, then plain
-  // content. Used by both the auto-follow and the changes tab.
+  // content.
   const openChangeDiff = useCallback(
     (rel: string, kindHint: string) => {
       const currentRoot = rootRef.current
@@ -420,61 +366,12 @@ export function ShellExplorerPage({
     [host],
   )
 
-  // Fill one feed row's +N/−M chip: `git diff HEAD --numstat` from the
-  // file's own directory (auto-discovers nested repos), untracked files
-  // count whole, non-repo files diff against the page's last-seen
-  // content. Best-effort — a row without a chip still opens its diff.
-  const computeFeedStats = useCallback(
-    (rel: string, kind: string, groupAt: number) => {
-      const currentRoot = rootRef.current
-      if (currentRoot === null) return
-      const abs = joinPath(currentRoot, rel)
-      const cut = abs.lastIndexOf('/')
-      const dir = abs.slice(0, cut)
-      const name = abs.slice(cut + 1)
-      const apply = (add: number | null, del: number | null) => {
-        if (rootRef.current !== currentRoot) return
-        setFeed((prev) =>
-          prev.map((g) =>
-            g.at !== groupAt
-              ? g
-              : { ...g, entries: g.entries.map((e) => (e.rel === rel ? { ...e, add, del } : e)) },
-          ),
-        )
-      }
-      void (async () => {
-        const num = await gitNumstat(host, dir, name)
-        if (num === 'binary') return apply(null, null)
-        if (num !== null && num !== 'clean') return apply(num.add, num.del)
-        if (num === 'clean') {
-          const status = await nestedGitStatus(host, dir, name)
-          if (status !== 'untracked') return apply(0, 0)
-        }
-        const entry = cacheRef.current.get(rel)
-        if (kind === 'deleted') {
-          return apply(0, entry !== undefined ? splitLines(entry.savedContent).length : null)
-        }
-        const out = await coderReadFile(host, abs).catch(() => null)
-        const content = out !== null && out.is_utf8 !== false ? (out.content ?? '') : null
-        if (content === null) return apply(null, null)
-        if (kind === 'created' || entry === undefined) return apply(splitLines(content).length, 0)
-        const delta = lineDelta(entry.savedContent, content)
-        apply(delta.add, delta.del)
-      })().catch(() => apply(null, null))
-    },
-    [host],
-  )
-
-  const changedDirsRef = useRef<Set<string>>(new Set())
   useWorkspaceChanges(host, root, (event) => {
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
     // Directories refresh the tree but must never open as files —
     // reading one is a C210.
-    if (event.dir === true) {
-      changedDirsRef.current.add(eventAbs)
-      // fall through to the flush timer below
-    } else if (event.kind !== 'deleted') {
+    if (event.dir !== true && event.kind !== 'deleted') {
       const currentRoot = rootRef.current
       if (currentRoot) {
         const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
@@ -498,28 +395,8 @@ export function ShellExplorerPage({
       followRef.current = null
       const changed = changedAbsRef.current
       changedAbsRef.current = new Map()
-      const changedDirs = changedDirsRef.current
-      changedDirsRef.current = new Set()
       const currentRoot = rootRef.current
       if (currentRoot !== null) {
-        const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
-        // Every visible FILE change lands in the review feed — the
-        // auto-follow is last-write-wins; this list is where a burst
-        // stays legible.
-        const entries: FeedEntry[] = []
-        for (const [abs, kind] of changed) {
-          if (changedDirs.has(abs)) continue
-          if (!abs.startsWith(prefix)) continue
-          const rel = abs.slice(prefix.length)
-          if (followable(rel)) entries.push({ rel, kind })
-        }
-        if (entries.length > 0) {
-          const groupAt = Date.now()
-          setFeed((prev) => trimFeed([{ at: groupAt, entries }, ...prev]))
-          for (const e of entries.slice(0, FEED_STATS_PER_BURST)) {
-            computeFeedStats(e.rel, e.kind, groupAt)
-          }
-        }
         // A lazily fetched subtree with a change under it is stale —
         // drop it; the load effect refetches while it stays expanded.
         setSubtrees((prev) => {
@@ -538,8 +415,7 @@ export function ShellExplorerPage({
         })
       }
       if (follow !== null && follow.rel !== tabsRef.current.active) {
-        const looksCreated =
-          follow.kind === 'created' || (knownBefore !== null && !knownBefore.has(follow.rel))
+        const looksCreated = follow.kind === 'created' || (knownBefore !== null && !knownBefore.has(follow.rel))
         openChangeDiff(follow.rel, looksCreated ? 'created' : follow.kind)
       } else {
         void gitLoad.then((state) => {
@@ -550,9 +426,7 @@ export function ShellExplorerPage({
           if (changed.has(joinPath(currentRoot, open.change.path))) {
             const fresh = changes.find((c) => c.path === open.change.path)
             setDiff(
-              fresh
-                ? { change: fresh }
-                : { change: { ...open.change }, baseline: open.baseline, gitDir: open.gitDir },
+              fresh ? { change: fresh } : { change: { ...open.change }, baseline: open.baseline, gitDir: open.gitDir },
             )
           }
         })
@@ -639,7 +513,7 @@ export function ShellExplorerPage({
   // ── sidebar resize (drag handle on the boundary toward the main pane) ──
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const onHandlePointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
+    (e: React.PointerEvent<HTMLButtonElement>) => {
       dragRef.current = { startX: e.clientX, startWidth: sideWidth }
       // Capture is best-effort: some pointer types refuse it, and the
       // drag still works through the move/up handlers.
@@ -652,20 +526,16 @@ export function ShellExplorerPage({
     [sideWidth],
   )
   const onHandlePointerMove = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
+    (e: React.PointerEvent<HTMLButtonElement>) => {
       const drag = dragRef.current
       if (!drag) return
       const delta = e.clientX - drag.startX
       // A right-hugging sidebar widens as the handle moves LEFT.
-      setSideWidth(
-        clampSidebarWidth(
-          panelSide === 'right' ? drag.startWidth - delta : drag.startWidth + delta,
-        ),
-      )
+      setSideWidth(clampSidebarWidth(panelSide === 'right' ? drag.startWidth - delta : drag.startWidth + delta))
     },
     [panelSide],
   )
-  const onHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+  const onHandlePointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     dragRef.current = null
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
@@ -713,8 +583,7 @@ export function ShellExplorerPage({
       )
       const raw = m[1]
       const colon = raw.lastIndexOf(':')
-      const encoded =
-        colon !== -1 && /^\d+$/.test(raw.slice(colon + 1)) ? raw.slice(0, colon) : raw
+      const encoded = colon !== -1 && /^\d+$/.test(raw.slice(colon + 1)) ? raw.slice(0, colon) : raw
       let abs: string
       try {
         abs = decodeURIComponent(encoded)
@@ -764,7 +633,73 @@ export function ShellExplorerPage({
     <PageHeader
       icon={<SquareTerminal />}
       title="shell"
-      description={root ? <span title={root}>{root}</span> : undefined}
+      description={
+        root ? (
+          rootOptions.length > 1 ? (
+            <select
+              className="shui-header-root-select"
+              value={root}
+              onChange={(event) => changeRoot(event.target.value)}
+              aria-label="browsed root"
+              title={root}
+            >
+              {rootOptions.map((path) => (
+                <option key={path} value={path}>
+                  {lastSegments(path)}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span title={root}>{lastSegments(root)}</span>
+          )
+        ) : undefined
+      }
+      actions={
+        info && root ? (
+          <div className="shui-page-actions">
+            {SIDE_TABS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                className={`shui-side-tab${sideTab === id ? ' active' : ''}`}
+                onClick={() => {
+                  setSideTab(id)
+                  setCollapsed(false)
+                }}
+                aria-label={label}
+                title={label}
+              >
+                <Icon aria-hidden className="shui-side-tab-icon" />
+              </button>
+            ))}
+            {sideTab === 'files' && !collapsed ? (
+              <button
+                type="button"
+                className={`shui-side-tab${showHidden ? ' active' : ''}`}
+                onClick={() => setShowHidden((value) => !value)}
+                aria-pressed={showHidden}
+                aria-label={showHidden ? 'hide hidden files' : 'show hidden files'}
+                title={showHidden ? 'hide hidden files' : 'show hidden files'}
+              >
+                {showHidden ? (
+                  <Eye aria-hidden className="shui-side-tab-icon" />
+                ) : (
+                  <EyeOff aria-hidden className="shui-side-tab-icon" />
+                )}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="shui-collapse-btn"
+              onClick={() => setCollapsed((value) => !value)}
+              aria-label={collapsed ? 'show explorer' : 'hide explorer'}
+              title={collapsed ? 'show explorer' : 'hide explorer'}
+            >
+              {panelSide === 'right' ? (collapsed ? '‹' : '›') : collapsed ? '›' : '‹'}
+            </button>
+          </div>
+        ) : undefined
+      }
       onClose={onRequestClose}
     />
   )
@@ -792,200 +727,53 @@ export function ShellExplorerPage({
     <PageShell>
       {header}
       <PageBody side={panelSide}>
-        <PageSidebar
-          width={collapsed ? 34 : sideWidth}
-          className={`shui-sidebar${collapsed ? ' collapsed' : ''}`}
-        >
-          {!collapsed ? (
-            <div
+        {!collapsed ? (
+          <PageSidebar width={sideWidth} className="shui-sidebar">
+            <button
+              type="button"
               className={`shui-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
               onPointerDown={onHandlePointerDown}
               onPointerMove={onHandlePointerMove}
               onPointerUp={onHandlePointerUp}
               onPointerCancel={onHandlePointerUp}
               onLostPointerCapture={onHandlePointerUp}
-              role="separator"
-              aria-orientation="vertical"
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                event.preventDefault()
+                const inward = panelSide === 'right' ? 'ArrowLeft' : 'ArrowRight'
+                setSideWidth((width) => clampSidebarWidth(width + (event.key === inward ? 10 : -10)))
+              }}
               aria-label="resize sidebar"
               title="drag to resize"
             />
-          ) : null}
-          {collapsed ? (
-            <button
-              type="button"
-              className="shui-collapse-btn"
-              onClick={() => setCollapsed(false)}
-              aria-label="expand sidebar"
-              title="expand sidebar"
-            >
-              {panelSide === 'right' ? '‹' : '›'}
-            </button>
-          ) : (
-            <>
-              <div className="shui-side-tabs">
-                {SIDE_TABS.map(({ id, label, Icon }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className={`shui-side-tab${sideTab === id ? ' active' : ''}`}
-                    onClick={() => setSideTab(id)}
-                    aria-label={label}
-                    title={label}
-                  >
-                    <Icon aria-hidden className="shui-side-tab-icon" />
-                  </button>
-                ))}
-                <span className="spacer" />
-                {sideTab === 'files' ? (
-                  <button
-                    type="button"
-                    className={`shui-side-tab${showHidden ? ' active' : ''}`}
-                    onClick={() => setShowHidden((v) => !v)}
-                    aria-pressed={showHidden}
-                    aria-label={showHidden ? 'hide hidden files' : 'show hidden files'}
-                    title={showHidden ? 'hide hidden files' : 'show hidden files'}
-                  >
-                    {showHidden ? (
-                      <Eye aria-hidden className="shui-side-tab-icon" />
-                    ) : (
-                      <EyeOff aria-hidden className="shui-side-tab-icon" />
-                    )}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="shui-collapse-btn"
-                  onClick={() => setCollapsed(true)}
-                  aria-label="collapse sidebar"
-                  title="collapse sidebar"
-                >
-                  {panelSide === 'right' ? '›' : '‹'}
-                </button>
-              </div>
-
-              {rootOptions.length > 1 ? (
-                <select
-                  className="shui-root-select"
-                  value={root}
-                  onChange={(e) => changeRoot(e.target.value)}
-                  aria-label="browsed root"
-                  title={root}
-                >
-                  {rootOptions.map((p) => (
-                    <option key={p} value={p}>
-                      {lastSegments(p)}
-                    </option>
-                  ))}
-                </select>
+            <div className="shui-side-body">
+              {sideTab === 'files' ? (
+                <FilesTab
+                  tree={mergedTree}
+                  gitStatus={treeGitStatus}
+                  theme={theme}
+                  hiddenFiltered={!showHidden}
+                  expanded={expanded}
+                  onExpandedChange={setExpanded}
+                  reveal={reveal}
+                  onRevealed={onRevealed}
+                  onPreviewFile={previewFile}
+                  onPinFile={pinFile}
+                />
+              ) : sideTab === 'git' ? (
+                <GitTab state={git} theme={theme} onSelect={(change) => setDiff({ change })} onRefresh={refreshGit} />
               ) : (
-                <div className="shui-root-label" title={root}>
-                  {lastSegments(root)}
-                </div>
+                <SearchTab
+                  host={host}
+                  root={root}
+                  onPreviewFile={previewFile}
+                  onPinFile={pinFile}
+                  onRevealFolder={revealFolder}
+                />
               )}
-
-              <div className="shui-side-body">
-                {sideTab === 'files' ? (
-                  <FilesTab
-                    tree={mergedTree}
-                    gitStatus={treeGitStatus}
-                    theme={theme}
-                    hiddenFiltered={!showHidden}
-                    expanded={expanded}
-                    onExpandedChange={setExpanded}
-                    reveal={reveal}
-                    onRevealed={onRevealed}
-                    onPreviewFile={previewFile}
-                    onPinFile={pinFile}
-                  />
-                ) : sideTab === 'git' ? (
-                  <GitTab state={git} theme={theme} onSelect={(change) => setDiff({ change })} onRefresh={refreshGit} />
-                ) : sideTab === 'changes' ? (
-                  <div className="shui-feed">
-                    {feed.length === 0 ? (
-                      <div className="shui-side-note">
-                        · nothing yet — every change under this folder lands here live
-                      </div>
-                    ) : (
-                      <>
-                        <div className="shui-feed-head">
-                          <span>
-                            {feed.reduce((n, g) => n + g.entries.length, 0)} changes
-                          </span>
-                          <span className="shui-feed-stats">
-                            <span className="add">
-                              +
-                              {feed.reduce(
-                                (n, g) =>
-                                  n + g.entries.reduce((m, e) => m + (typeof e.add === 'number' ? e.add : 0), 0),
-                                0,
-                              )}
-                            </span>
-                            <span className="del">
-                              −
-                              {feed.reduce(
-                                (n, g) =>
-                                  n + g.entries.reduce((m, e) => m + (typeof e.del === 'number' ? e.del : 0), 0),
-                                0,
-                              )}
-                            </span>
-                          </span>
-                        </div>
-                        {feed.map((g) => (
-                          <div key={g.at} className="shui-feed-group">
-                            <div className="shui-feed-group-head">
-                              <span>
-                                {g.entries.length} {g.entries.length === 1 ? 'file' : 'files'}
-                              </span>
-                              <span className="shui-feed-stats">
-                                <span className="add">
-                                  +{g.entries.reduce((m, e) => m + (typeof e.add === 'number' ? e.add : 0), 0)}
-                                </span>
-                                <span className="del">
-                                  −{g.entries.reduce((m, e) => m + (typeof e.del === 'number' ? e.del : 0), 0)}
-                                </span>
-                              </span>
-                              <span className="shui-feed-time">{timeAgo(g.at)}</span>
-                            </div>
-                            {g.entries.map((e) => (
-                              <button
-                                key={e.rel}
-                                type="button"
-                                className="shui-feed-row"
-                                title={`${e.rel} — ${e.kind}`}
-                                onClick={() => openChangeDiff(e.rel, e.kind)}
-                              >
-                                <span className={`shui-feed-kind ${e.kind}`}>
-                                  {e.kind === 'created' ? '+' : e.kind === 'deleted' ? '−' : '~'}
-                                </span>
-                                <span className="shui-feed-path">{e.rel}</span>
-                                <span className="shui-feed-stats">
-                                  {typeof e.add === 'number' && e.add > 0 ? (
-                                    <span className="add">+{e.add}</span>
-                                  ) : null}
-                                  {typeof e.del === 'number' && e.del > 0 ? (
-                                    <span className="del">−{e.del}</span>
-                                  ) : null}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        ))}
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <SearchTab
-                    host={host}
-                    root={root}
-                    onPreviewFile={previewFile}
-                    onPinFile={pinFile}
-                    onRevealFolder={revealFolder}
-                  />
-                )}
-              </div>
-            </>
-          )}
-        </PageSidebar>
+            </div>
+          </PageSidebar>
+        ) : null}
 
         <PageMain>
           {tabs.tabs.length > 0 ? (

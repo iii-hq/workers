@@ -3,8 +3,6 @@
    stripped first), then context folding, then char-span pairing so a
    replaced line can emphasize what actually changed inside it. */
 
-import { splitLines } from './feed'
-
 export type DiffOp =
   | { type: 'same'; text: string; oldLine: number; newLine: number }
   | { type: 'del'; text: string; oldLine: number; hl?: [number, number] }
@@ -20,6 +18,11 @@ const MYERS_LIMIT = 5000
     files fall back to the coarse replace instead of freezing the tab
     inside a synchronous useMemo. */
 const MYERS_MAX_D = 400
+
+function splitLines(text: string): string[] {
+  const body = text.endsWith('\n') ? text.slice(0, -1) : text
+  return body === '' ? [] : body.split('\n')
+}
 
 export function diffLines(oldText: string, newText: string): DiffOp[] {
   const a = splitLines(oldText)

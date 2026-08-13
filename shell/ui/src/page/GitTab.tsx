@@ -9,7 +9,7 @@
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { useEffect, useMemo, useRef } from 'react'
 import type { GitChange, GitState } from './git'
-import { TREE_THEME } from './tree-theme'
+import { TREE_THEME, TREE_UNSAFE_CSS } from './tree-theme'
 
 interface GitTabProps {
   state: GitState | null
@@ -25,8 +25,8 @@ export function GitTab({ state, theme, onSelect, onRefresh }: GitTabProps) {
   if (state.kind === 'not-a-repo') {
     return (
       <div className="shui-side-note">
-        · not a git repository — this tab reads the browsed folder itself; for a repo nested below
-        it, browse into that folder (live diffs still find nested repos on their own)
+        · not a git repository — this tab reads the browsed folder itself; for a repo nested below it, browse into that
+        folder (live diffs still find nested repos on their own)
       </div>
     )
   }
@@ -55,17 +55,12 @@ export function GitTab({ state, theme, onSelect, onRefresh }: GitTabProps) {
   return (
     <div className="shui-git-tree">
       <div className="shui-side-note head">
-        {state.changes.length}{' '}
-        {state.changes.length === 1 ? 'change' : 'changes'}
+        {state.changes.length} {state.changes.length === 1 ? 'change' : 'changes'}
         <button type="button" className="shui-linkish" onClick={onRefresh}>
           refresh
         </button>
       </div>
-      <GitChangesTree
-        changes={state.changes}
-        theme={theme}
-        onSelect={onSelect}
-      />
+      <GitChangesTree changes={state.changes} theme={theme} onSelect={onSelect} />
     </div>
   )
 }
@@ -97,21 +92,21 @@ function GitChangesTree({
 }) {
   // Defensive: a record that still names a directory (e.g. a submodule)
   // must not become a fake file row.
-  const fileChanges = useMemo(
-    () => changes.filter((c) => c.path !== '' && !c.path.endsWith('/')),
-    [changes],
-  )
-  const byPath = useMemo(
-    () => new Map(fileChanges.map((c) => [c.path, c] as const)),
-    [fileChanges],
-  )
+  const fileChanges = useMemo(() => changes.filter((c) => c.path !== '' && !c.path.endsWith('/')), [changes])
+  const byPath = useMemo(() => new Map(fileChanges.map((c) => [c.path, c] as const)), [fileChanges])
   const byPathRef = useRef(byPath)
   byPathRef.current = byPath
   const onSelectRef = useRef(onSelect)
   onSelectRef.current = onSelect
 
   const { model } = useFileTree({
+    fileTreeSearchMode: 'hide-non-matches',
+    flattenEmptyDirectories: true,
+    itemHeight: 29,
     paths: fileChanges.map((c) => c.path),
+    search: false,
+    stickyFolders: true,
+    unsafeCSS: TREE_UNSAFE_CSS,
     onSelectionChange: (selected) => {
       const path = selected[0]
       if (!path) return
@@ -120,10 +115,7 @@ function GitChangesTree({
     },
   })
 
-  const pathsKey = useMemo(
-    () => fileChanges.map((c) => c.path).join('\n'),
-    [fileChanges],
-  )
+  const pathsKey = useMemo(() => fileChanges.map((c) => c.path).join('\n'), [fileChanges])
   const lastPathsKeyRef = useRef('')
   useEffect(() => {
     if (pathsKey === lastPathsKeyRef.current) return
@@ -133,16 +125,12 @@ function GitChangesTree({
   }, [model, pathsKey, fileChanges])
 
   useEffect(() => {
-    model.setGitStatus(
-      fileChanges.map((c) => ({ path: c.path, status: c.status })),
-    )
+    model.setGitStatus(fileChanges.map((c) => ({ path: c.path, status: c.status })))
   }, [model, fileChanges])
 
   return (
-    <FileTree
-      model={model}
-      className="shui-tree"
-      style={{ ...TREE_THEME, colorScheme: theme }}
-    />
+    <div className="shui-tree-stage">
+      <FileTree model={model} className="shui-tree" style={{ ...TREE_THEME, colorScheme: theme }} />
+    </div>
   )
 }

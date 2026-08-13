@@ -103,7 +103,7 @@ export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps
           {change.from ? `${change.from} → ${change.path}` : change.path}
         </span>
         {totals !== null ? (
-          <span className="shui-feed-stats">
+          <span className="shui-diff-stats">
             (<span className="add">+{totals.add}</span> <span className="del">−{totals.del}</span>)
           </span>
         ) : null}
