@@ -148,7 +148,7 @@ export async function nestedGitStatus(
 ): Promise<GitFileStatus | 'clean' | null> {
   const probe = await git(host, dir, ['rev-parse', '--is-inside-work-tree'])
   if (probe.exit_code !== 0 || !probe.stdout.startsWith('true')) return null
-  const out = await git(host, dir, ['status', '--porcelain', '-z', '--', `./${name}`])
+  const out = await git(host, dir, ['status', '--porcelain', '-z', '--', `:(literal)${name}`])
   if (out.exit_code !== 0) return null
   const rec = out.stdout.split('\0')[0] ?? ''
   if (rec.length < 3) return 'clean'
@@ -169,7 +169,7 @@ export async function gitNumstat(
 ): Promise<{ add: number; del: number } | 'binary' | 'clean' | null> {
   const probe = await git(host, dir, ['rev-parse', '--is-inside-work-tree'])
   if (probe.exit_code !== 0 || !probe.stdout.startsWith('true')) return null
-  const out = await git(host, dir, ['diff', 'HEAD', '--numstat', '--', `./${name}`])
+  const out = await git(host, dir, ['diff', 'HEAD', '--numstat', '--', `:(literal)${name}`])
   if (out.exit_code !== 0) return null
   const line = out.stdout.split('\n')[0]?.trim() ?? ''
   if (line === '') return 'clean'

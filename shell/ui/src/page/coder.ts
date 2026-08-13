@@ -103,8 +103,11 @@ export function coderReadFile(
 }
 
 /** Exact bytes, base64-encoded — the image-preview read. The override
-    lifts the 128 KiB text budget; the worker clamps it to its
-    max_read_bytes cap, so oversized files still fail loud (C218). */
+    lifts the 128 KiB text budget to a preview-sized ceiling (the base64
+    string lives in the per-tab cache plus a data: URL — an unbounded
+    read would hold two copies of an arbitrarily large file); the worker
+    clamps further to its max_read_bytes cap, and oversized files still
+    fail loud (C218). */
 export function coderReadFileBase64(
   host: Host,
   path: string,
@@ -112,7 +115,7 @@ export function coderReadFileBase64(
   return host.iii.trigger<ReadFileResponse>('coder::read-file', {
     path,
     encoding: 'base64',
-    max_output_bytes: 100_000_000,
+    max_output_bytes: 16_000_000,
   })
 }
 

@@ -28,6 +28,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::code::path::PathResolver;
+use crate::code::state::ResolverCell;
+
 /// The trigger type a surface binds to watch a directory change.
 pub const CHANGED: &str = "shell::changed";
 
@@ -67,25 +70,32 @@ impl Drop for WatchEntry {
 struct ChangedTriggerHandler {
     iii: IIIClient,
     watches: Arc<Mutex<HashMap<String, WatchEntry>>>,
+    /// The coder surface's path policy — a watch is a read of every
+    /// filename under a tree, so it obeys the SAME jail and denylist as
+    /// `coder::*`/`shell::fs::*` (hot-reload aware through the cell).
+    resolver: ResolverCell,
 }
 
-/// Resolve and validate the watched directory out of a binding's config.
-fn watch_root(config: &Value) -> Result<PathBuf, Error> {
+/// Resolve and validate the watched directory out of a binding's config —
+/// through the shared path policy: jail containment, operator denylist,
+/// canonicalization. Watching `/` or a denied tree fails exactly like
+/// reading it would.
+fn watch_root(config: &Value, resolver: &PathResolver) -> Result<PathBuf, Error> {
     let Some(path) = config.get("path").and_then(Value::as_str) else {
         return Err(Error::Handler(
             "shell::changed needs config.path — the directory to watch".into(),
         ));
     };
-    match std::fs::canonicalize(path) {
-        Ok(p) if p.is_dir() => Ok(p),
-        Ok(p) => Err(Error::Handler(format!(
+    let canon = resolver
+        .resolve(path)
+        .map_err(|e| Error::Handler(format!("shell::changed cannot watch {path}: {e}")))?;
+    if !canon.is_dir() {
+        return Err(Error::Handler(format!(
             "shell::changed config.path is not a directory: {}",
-            p.display()
-        ))),
-        Err(e) => Err(Error::Handler(format!(
-            "shell::changed cannot watch {path}: {e}"
-        ))),
+            canon.display()
+        )));
     }
+    Ok(canon)
 }
 
 /// Map a notify event kind onto the wire vocabulary.
@@ -214,24 +224,32 @@ async fn pump(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if let Err(e) = iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload,
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await
-            {
-                tracing::warn!(function_id = %function_id, error = %e, "shell::changed fan-out failed");
-            } else {
-                tracing::info!(
-                    function_id = %function_id,
-                    path = %event.path,
-                    kind = %event.kind,
-                    "shell::changed delivered"
-                );
-            }
+            // Deliveries ride their own tasks: awaiting them here would
+            // let one hung send stop the pump from draining `rx`, fill
+            // the channel, and silently drop distinct events — the exact
+            // "slow subscriber never delays anything" violation.
+            let iii = iii.clone();
+            let function_id = function_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = iii
+                    .trigger(TriggerRequest {
+                        function_id: function_id.clone(),
+                        payload,
+                        action: Some(TriggerAction::Void),
+                        timeout_ms: None,
+                    })
+                    .await
+                {
+                    tracing::warn!(function_id = %function_id, error = %e, "shell::changed fan-out failed");
+                } else {
+                    tracing::info!(
+                        function_id = %function_id,
+                        path = %event.path,
+                        kind = %event.kind,
+                        "shell::changed delivered"
+                    );
+                }
+            });
         }
     }
 }
@@ -239,7 +257,8 @@ async fn pump(
 #[async_trait]
 impl TriggerHandler for ChangedTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let root = watch_root(&config.config)?;
+        let resolver = self.resolver.read().await.clone();
+        let root = watch_root(&config.config, &resolver)?;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<notify::Event>(1024);
         let mut watcher = notify::recommended_watcher(move |res| {
@@ -268,31 +287,38 @@ impl TriggerHandler for ChangedTriggerHandler {
             watcher,
             rx,
         ));
-        if let Ok(mut watches) = self.watches.lock() {
-            watches.insert(config.id, WatchEntry { task });
-        }
+        // Poison recovery: the map is plain data — a panic elsewhere must
+        // not silently drop this registration (the entry's Drop aborts
+        // the pump) while we still return Ok.
+        self.watches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(config.id, WatchEntry { task });
         Ok(())
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         tracing::info!(trigger_type = CHANGED, id = %config.id, "watch unregistered");
-        if let Ok(mut watches) = self.watches.lock() {
-            watches.remove(&config.id);
-        }
+        self.watches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&config.id);
         Ok(())
     }
 }
 
 /// Register the trigger type. The SDK queues the registration and cannot
 /// report failure; a dead type surfaces as bindings that never fire.
-pub fn register_changed_trigger(iii: &IIIClient) {
+pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
     let _handle = iii.register_trigger_type(RegisterTriggerType::new(
         CHANGED,
         "Fires when anything under the watched directory changes, whoever changed \
-         it — bind with config: { path } naming the directory.",
+         it — bind with config: { path } naming the directory (jail-checked like \
+         every coder::* path).",
         ChangedTriggerHandler {
             iii: iii.clone(),
             watches: Arc::new(Mutex::new(HashMap::new())),
+            resolver,
         },
     ));
     tracing::info!(
@@ -375,18 +401,44 @@ mod tests {
         assert!(rel_to(root, Path::new("/elsewhere/b.rs")).is_none());
     }
 
+    fn resolver_rooted_at(root: &Path) -> PathResolver {
+        let cfg = crate::code::config::CoderConfig {
+            base_paths: vec![root.to_path_buf()],
+            ..Default::default()
+        };
+        PathResolver::new(&cfg).unwrap()
+    }
+
     #[test]
-    fn watch_root_validates_shape_and_existence() {
-        let err = watch_root(&json!({})).unwrap_err();
-        assert!(err.to_string().contains("config.path"), "{err}");
-        let err = watch_root(&json!({ "path": "/definitely/not/here-xyz" })).unwrap_err();
-        assert!(err.to_string().contains("cannot watch"), "{err}");
+    fn watch_root_validates_shape_existence_and_jail() {
         let tmp = tempfile::tempdir().unwrap();
-        let ok = watch_root(&json!({ "path": tmp.path().to_string_lossy() })).unwrap();
+        let jail = tmp.path().canonicalize().unwrap();
+        let resolver = resolver_rooted_at(&jail);
+
+        let err = watch_root(&json!({}), &resolver).unwrap_err();
+        assert!(err.to_string().contains("config.path"), "{err}");
+        let err =
+            watch_root(&json!({ "path": "/definitely/not/here-xyz" }), &resolver).unwrap_err();
+        assert!(err.to_string().contains("cannot watch"), "{err}");
+
+        let sub = jail.join("watched");
+        std::fs::create_dir(&sub).unwrap();
+        let ok = watch_root(&json!({ "path": sub.to_string_lossy() }), &resolver).unwrap();
         assert!(ok.is_dir());
-        let file = tmp.path().join("f.txt");
+
+        let file = jail.join("f.txt");
         std::fs::write(&file, "x").unwrap();
-        let err = watch_root(&json!({ "path": file.to_string_lossy() })).unwrap_err();
+        let err = watch_root(&json!({ "path": file.to_string_lossy() }), &resolver).unwrap_err();
         assert!(err.to_string().contains("not a directory"), "{err}");
+
+        // The jail holds: an existing directory OUTSIDE the allowed root
+        // is refused exactly like reading it would be.
+        let outside = tempfile::tempdir().unwrap();
+        let err = watch_root(
+            &json!({ "path": outside.path().to_string_lossy() }),
+            &resolver,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot watch"), "{err}");
     }
 }

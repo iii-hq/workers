@@ -15,6 +15,12 @@ export type DiffOp =
     at the cost of a coarser diff. */
 const MYERS_LIMIT = 5000
 
+/** Myers stores one frontier snapshot per edit step for the backtrack,
+    so memory is O(D·(N+M)) — a D budget caps it: two mostly different
+    files fall back to the coarse replace instead of freezing the tab
+    inside a synchronous useMemo. */
+const MYERS_MAX_D = 400
+
 export function diffLines(oldText: string, newText: string): DiffOp[] {
   const a = splitLines(oldText)
   const b = splitLines(newText)
@@ -80,6 +86,7 @@ function myers(a: string[], b: string[]): DiffOp[] {
   const trace: Int32Array[] = []
 
   outer: for (let d = 0; d <= max; d++) {
+    if (d > MYERS_MAX_D) return coarseReplace(a, b)
     trace.push(v.slice())
     for (let k = -d; k <= d; k += 2) {
       let x: number

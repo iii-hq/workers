@@ -39,7 +39,13 @@ export function useWorkspaceChanges(
     const offHandler = host.iii.on<WorkspaceChangedEvent>(
       EVENTS_FN,
       (event) => {
-        if (typeof event?.path !== 'string') return
+        if (
+          typeof event?.path !== 'string' ||
+          typeof event.kind !== 'string' ||
+          typeof event.root !== 'string'
+        ) {
+          return
+        }
         handlerRef.current(event)
       },
     )

@@ -240,10 +240,15 @@ export function ShellExplorerPage({
   // the git listing is unaffected and must not flash back to loading.
   useEffect(() => {
     setTree(null)
+    // Lazy subtrees were fetched with the OLD hidden filter — always stale.
     setSubtrees(new Map())
-    setFeed([])
     refreshTree()
   }, [refreshTree])
+
+  // The feed survives a hidden-filter toggle; only a new root clears it.
+  useEffect(() => {
+    setFeed([])
+  }, [root])
 
   // The tree the sidebar renders: the budgeted base snapshot plus every
   // lazily fetched subtree spliced in under its folder.
@@ -288,8 +293,12 @@ export function ShellExplorerPage({
           setSubtrees((prev) => new Map(prev).set(dir, flattenTree(out.root)))
         })
         .catch(() => {
-          // Inaccessible folder — leave it childless; the next expand
-          // after a live change under it retries.
+          // Inaccessible folder — recorded as fetched-and-empty so the
+          // load effect doesn't refetch it on every live burst; a change
+          // under it drops the entry and retries.
+          setSubtrees((prev) =>
+            new Map(prev).set(dir, { paths: [], kinds: new Map(), truncations: [] }),
+          )
         })
         .finally(() => subtreeLoadRef.current.delete(dir))
     }
@@ -319,6 +328,9 @@ export function ShellExplorerPage({
     const currentRoot = rootRef.current
     const active = tabsRef.current.active
     if (!currentRoot || !active) return
+    // An image preview follows the disk through its own render path; a
+    // text read here would overwrite the cache with mangled bytes.
+    if (cacheRef.current.get(active)?.image) return
     const absPath = joinPath(currentRoot, active)
     if (!changedAbsRef.current.has(absPath)) return
     coderReadFile(host, absPath)
@@ -703,7 +715,12 @@ export function ShellExplorerPage({
       const colon = raw.lastIndexOf(':')
       const encoded =
         colon !== -1 && /^\d+$/.test(raw.slice(colon + 1)) ? raw.slice(0, colon) : raw
-      const abs = decodeURIComponent(encoded)
+      let abs: string
+      try {
+        abs = decodeURIComponent(encoded)
+      } catch {
+        return // malformed percent escape — not our link
+      }
       if (!abs.startsWith('/')) return
       pendingOpenRef.current = abs
       setOpenBump((n) => n + 1)
@@ -785,6 +802,8 @@ export function ShellExplorerPage({
               onPointerDown={onHandlePointerDown}
               onPointerMove={onHandlePointerMove}
               onPointerUp={onHandlePointerUp}
+              onPointerCancel={onHandlePointerUp}
+              onLostPointerCapture={onHandlePointerUp}
               role="separator"
               aria-orientation="vertical"
               aria-label="resize sidebar"

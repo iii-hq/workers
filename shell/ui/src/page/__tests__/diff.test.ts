@@ -29,6 +29,18 @@ describe('diffLines', () => {
     expect(sames).toEqual(['a', 'c', 'd'])
   })
 
+  it('falls back to a coarse replace past the edit-distance budget', () => {
+    // 500 fully different lines each side: D ≈ 1000 blows the budget —
+    // the result must be the whole middle as del-run then add-run, not
+    // an O(D·N)-memory backtrack.
+    const olds = Array.from({ length: 500 }, (_, i) => `old-${String(i)}`).join('\n')
+    const news = Array.from({ length: 500 }, (_, i) => `new-${String(i)}`).join('\n')
+    const ops = diffLines(olds, news)
+    expect(diffTotals(ops)).toEqual({ add: 500, del: 500 })
+    expect(ops.slice(0, 500).every((o) => o.type === 'del')).toBe(true)
+    expect(ops.slice(500).every((o) => o.type === 'add')).toBe(true)
+  })
+
   it('marks the changed char span inside a replaced line pair', () => {
     const ops = diffLines('const value = 1', 'const value = 2')
     const del = ops.find((o) => o.type === 'del')

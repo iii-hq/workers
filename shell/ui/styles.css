@@ -767,6 +767,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   direction: rtl;
+  unicode-bidi: plaintext;
 }
 [data-iii-ui="shell"] .shui-feed-time {
   flex-shrink: 0;

@@ -250,8 +250,11 @@ crate). A subscriber names the directory in its binding config:
 ```
 
 Each registration starts one recursive watcher; unregistering (or the
-console GC'ing a closed tab's binding) tears it down. `config.path` must
-exist and be a directory, or the registration fails.
+console GC'ing a closed tab's binding) tears it down. `config.path` goes
+through the same path policy as every `coder::*` call — jail containment
+(`fs.host_roots`), the operator denylist, canonicalization — and must be
+a directory: watching a tree is a read of every filename under it, so a
+path you can't read is a path you can't watch.
 
 The payload is lean — `{ path, kind, root, dir }` with `kind` ∈
 `created | modified | deleted`, `path` relative to the watched `root`,
