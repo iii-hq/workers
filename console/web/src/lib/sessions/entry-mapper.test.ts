@@ -255,10 +255,10 @@ describe('entrySegments', () => {
     expect(entrySegments(assistantItem('e-a', []))).toEqual([])
   })
 
-  // Mid-stream, the harness rides the raw in-flight args tail on
-  // `_streaming` beside the salvaged fields — the request pane shows the
-  // command forming instead of `empty` for the whole stream.
-  it('surfaces the streaming arguments tail while wrapper args form', () => {
+  // Mid-stream, the harness exposes the router's bounded identity preview
+  // beside the raw tail. The row can render the action before valid JSON has
+  // reached the closing delimiters without parsing JSON in the harness.
+  it('surfaces partial wrapper identity while args form', () => {
     const withTarget = entrySegments(
       assistantItem('e-a', [
         {
@@ -266,14 +266,17 @@ describe('entrySegments', () => {
           id: 'fc-1',
           function_id: 'agent_trigger',
           arguments: {
-            function: 'state::set',
+            function: 'state::se',
+            description: 'Updating arti',
+            _partial: true,
             _streaming: '"payload":{"value":"grow',
           },
         },
       ]),
     )[0]
     expect(withTarget).toMatchObject({
-      functionId: 'state::set',
+      functionId: 'state::se',
+      description: 'Updating arti',
       input: { _streaming: '"payload":{"value":"grow' },
     })
     expect(withTarget).not.toMatchObject({ unresolvedTarget: true })

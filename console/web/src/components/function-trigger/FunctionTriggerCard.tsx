@@ -278,8 +278,8 @@ export function FunctionTriggerCard({
       ? { rawInput: redact(message.input), rawOutput: redact(message.output) }
       : { rawInput: message.input, rawOutput: message.output }
   }, [renderers, message.functionId, message.input, message.output])
-  // Raw in-flight arguments tail (`_streaming`, injected by the harness
-  // while a call's arguments are still forming) — rendered as a live pane.
+  // Raw in-flight arguments tail (`_streaming`, injected beside the harness's
+  // incrementally reconstructed fields) — rendered as a live pane.
   const streamingTail =
     running &&
     rawInput &&
@@ -360,6 +360,11 @@ export function FunctionTriggerCard({
   const ran =
     !isDeniedOutput(message.output) &&
     (message.output !== undefined || typeof message.durationMs === 'number')
+  // While arguments are forming, the incrementally parsed function id or
+  // description is already the activity label; do not replace it with the
+  // generic "triggering" fallback.
+  const hideGenericVerb =
+    message.identityInherited || (running && streamingTail !== undefined)
   // `rawInput`, not `message.input`: the collapsed header digests the request
   // args inline, so it is a display exit like the raw pane and the clipboard —
   // a claimed card's `redactRaw` has to cover it or a secret shows up in the
@@ -453,7 +458,7 @@ export function FunctionTriggerCard({
                       : 'waiting for your approval to run'}
                   </span>{' '}
                 </>
-              ) : message.identityInherited ? null : running ? (
+              ) : hideGenericVerb ? null : running ? (
                 <>triggering </>
               ) : errored && !denied ? (
                 <>failed </>
@@ -751,8 +756,8 @@ function PaneShell({
 }
 
 /**
- * Live view of a call's arguments while they stream — the harness rides the
- * raw tail on `_streaming` (providers degrade the incomplete JSON itself).
+ * Live view of a call's arguments while they stream — the harness rides a
+ * bounded raw tail on `_streaming` beside the incrementally parsed fields.
  * Column-reverse pins the newest text to the bottom, terminal-style.
  */
 function StreamingArgsPane({ text }: { text: string }) {

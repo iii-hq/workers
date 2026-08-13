@@ -142,6 +142,21 @@ describe('compact activity presentation', () => {
     expect(out).toContain('function-trigger-shimmer')
     expect(out).toContain('animate-spin')
     expect(out).toContain('stroke-trigger-running')
+    expect(out).not.toContain('triggering ')
+  })
+
+  it('shows an incrementally resolved function id without the generic fallback', () => {
+    const out = collapsedHtml({
+      functionId: 'state::se',
+      input: { _streaming: '{"function":"state::se' },
+      running: true,
+      unresolvedTarget: false,
+      output: undefined,
+      durationMs: undefined,
+    })
+
+    expect(out).toContain('state::se')
+    expect(out).not.toContain('triggering ')
   })
 })
 
