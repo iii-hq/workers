@@ -154,3 +154,25 @@ def test_reusable_release_executors_have_no_implicit_inputs() -> None:
 def test_registry_publish_authenticates_iii_installer() -> None:
     body = (WORKFLOWS / "_publish-registry.yml").read_text()
     assert "GITHUB_TOKEN: ${{ github.token }}" in body
+
+
+def test_rust_binary_cache_is_keyed_by_frontend_bundle_digest() -> None:
+    jobs = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
+    web_build = jobs["web-build"]
+    assert web_build["outputs"]["frontend_digest"] == "${{ steps.stage.outputs.frontend_digest }}"
+    assert web_build["outputs"]["frontends"] == "${{ steps.dirs.outputs.frontends }}"
+
+    stage = next(step for step in web_build["steps"] if step.get("name") == "Stage frontend bundles")
+    assert stage["id"] == "stage"
+    assert "frontend_digest=$digest" in stage["run"]
+    assert "git hash-object" in stage["run"]
+
+    build_steps = jobs["build"]["steps"]
+    cache = next(step for step in build_steps if step.get("uses") == "Swatinem/rust-cache@v2")
+    assert "needs.web-build.outputs.frontend_digest" in cache["with"]["key"]
+
+    verify = next(step for step in build_steps if step.get("name") == "Verify frontend bundle digest")
+    assert verify["if"] == "inputs.web_bundle"
+    assert verify["env"]["EXPECTED_DIGEST"] == "${{ needs.web-build.outputs.frontend_digest }}"
+    assert "git hash-object" in verify["run"]
+    assert '[[ "$actual" == "$EXPECTED_DIGEST" ]]' in verify["run"]
