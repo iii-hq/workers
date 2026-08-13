@@ -61,9 +61,10 @@ async fn run_upstream(
     let resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
+            tracing::debug!(error = %error_chain(&e), "llamacpp request failed");
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("llamacpp fetch failed: {}", error_chain(&e)),
+                    &llm_router::provider_scaffold::errors::public_transport_error("llamacpp"),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -76,11 +77,16 @@ async fn run_upstream(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
-        let msg = if text.is_empty() {
-            format!("llamacpp http {status}")
-        } else {
-            text
-        };
+        tracing::debug!(
+            status = status.as_u16(),
+            body_bytes = text.len(),
+            "llamacpp upstream rejected request"
+        );
+        let msg = llm_router::provider_scaffold::errors::public_http_error(
+            "llamacpp",
+            status.as_u16(),
+            kind,
+        );
         let _ = tx
             .send(synthetic_error_event(&msg, &args.model, kind))
             .await;
@@ -133,9 +139,10 @@ async fn run_upstream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
+                tracing::debug!(provider = "llamacpp", error = %e, "stream read failed");
                 let _ = tx
                     .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
+                        &llm_router::provider_scaffold::errors::public_transport_error("llamacpp"),
                         &args.model,
                         ErrorKind::Transient,
                     ))
@@ -249,10 +256,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn builder_error_surfaces_its_source_not_just_builder_error() {
+    async fn builder_error_is_detailed_only_in_logs() {
         // A header value with a newline is an invalid HeaderValue → reqwest
-        // raises a builder error before connecting. The frame must name the
-        // cause, not stop at the opaque "builder error".
+        // raises a builder error before connecting. Details stay in logs; the
+        // public frame is bounded and cannot echo the credential.
         let mut a = args("http://127.0.0.1:1/v1/chat/completions".into());
         a.headers = vec![("authorization", "Bearer sk-bad\ninjected".into())];
         let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
@@ -260,13 +267,11 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 let msg = error.error_message.as_deref().unwrap_or_default();
-                assert!(msg.starts_with("llamacpp fetch failed: "), "got {msg:?}");
-                // The source chain was appended past the bare "builder error".
-                assert_ne!(
-                    msg, "llamacpp fetch failed: builder error",
-                    "source dropped"
+                assert_eq!(
+                    msg,
+                    "llamacpp request failed before a response; inspect provider logs"
                 );
-                assert!(msg.matches(':').count() >= 2, "no source segment: {msg:?}");
+                assert!(!msg.contains("sk-bad"));
             }
             other => panic!("want error, got {other:?}"),
         }

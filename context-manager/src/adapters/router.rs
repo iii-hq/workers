@@ -180,6 +180,7 @@ impl Summarizer for RouterSummarizer {
                     .unwrap_or(0),
             }],
             "tools": [],
+            "failure_mode": "structured",
         });
         if let Some(p) = &req.provider {
             payload["provider"] = json!(p);
@@ -219,8 +220,11 @@ impl Summarizer for RouterSummarizer {
         };
         if response.get("ok").and_then(Value::as_bool) == Some(false) {
             let detail = response
-                .get("error")
-                .map(|e| e.to_string())
+                .get("failure")
+                .and_then(|failure| failure.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| response.get("error").map(|e| e.to_string()))
                 .unwrap_or_else(|| "unknown router error".to_string());
             return Err(SummarizeError::Failed(detail));
         }

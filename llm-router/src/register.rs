@@ -69,11 +69,15 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             rec.declaration.config_schema.as_ref(),
             &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
             rec.declaration.system_prompt.as_deref(),
+            rec.declaration.credential_requirement,
         );
         provider_schemas.insert(rec.declaration.id.clone(), schema);
     }
     register_entry(&iii, &provider_schemas).await?;
-    let config = new_config_cell(read_entry_value(&iii).await?);
+    let initial_config = read_entry_value(&iii).await?;
+    crate::settings::validate_settings(&initial_config, &registry.ids().await)
+        .map_err(Error::from)?;
+    let config = new_config_cell(initial_config);
 
     // 4. Shared runtime state + router event fan-out.
     let inflight = Arc::new(InflightMap::default());
@@ -168,8 +172,20 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_LIST_ID,
-        RegisterFunction::new_async(make_provider_list(config.clone(), registry.clone()))
-            .description(surface::PROVIDER_LIST_DESC),
+        RegisterFunction::new_async(make_provider_list(
+            config.clone(),
+            registry.clone(),
+            catalog.clone(),
+        ))
+        .description(surface::PROVIDER_LIST_DESC),
+    );
+    iii.register_function(
+        surface::PROVIDER_STATUS_ID,
+        RegisterFunction::new_async(crate::registry::status::make_provider_status(
+            registry.clone(),
+        ))
+        .description(surface::PROVIDER_STATUS_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::SYSTEM_PROMPT_GET_ID,
@@ -247,9 +263,16 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                     .unwrap_or(false)
             })
         });
+        let registry_for_ids = registry.clone();
+        let ids: crate::config::on_changed::ProviderIdsLookup = Arc::new(move || {
+            let registry = registry_for_ids.clone();
+            Box::pin(async move { registry.ids().await })
+        });
         make_on_config_changed(
             iii.clone(),
             lookup,
+            ids,
+            registry.clone(),
             config.clone(),
             entry_lock.clone(),
             2000,

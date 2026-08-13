@@ -11,6 +11,13 @@
         ],
         "type": "string"
       },
+      "FailureMode": {
+        "enum": [
+          "legacy_throw",
+          "structured"
+        ],
+        "type": "string"
+      },
       "StreamChannelRef": {
         "properties": {
           "access_key": {
@@ -33,6 +40,14 @@
     },
     "description": "Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's write channel. The handler relays assistant frames to `writer_ref` and also returns the terminal [`ChatResponse`].",
     "properties": {
+      "failure_mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/FailureMode"
+          }
+        ],
+        "default": "legacy_throw"
+      },
       "max_output_tokens": {
         "default": null,
         "format": "uint64",
@@ -110,6 +125,16 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "ErrorKind": {
+        "enum": [
+          "auth_expired",
+          "rate_limited",
+          "context_overflow",
+          "transient",
+          "permanent"
+        ],
+        "type": "string"
+      },
       "ErrorShape": {
         "properties": {
           "code": {
@@ -122,6 +147,48 @@
         "required": [
           "code",
           "message"
+        ],
+        "type": "object"
+      },
+      "RouterFailure": {
+        "description": "Stable machine-readable failure returned by router surfaces and terminal assistant messages. Legacy fields remain populated for compatibility.",
+        "properties": {
+          "attempts": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ErrorKind"
+          },
+          "message": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "code",
+          "kind",
+          "message",
+          "retryable"
         ],
         "type": "object"
       },
@@ -193,6 +260,16 @@
         "anyOf": [
           {
             "$ref": "#/definitions/ErrorShape"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "failure": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RouterFailure"
           },
           {
             "type": "null"

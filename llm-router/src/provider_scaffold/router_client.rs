@@ -2,8 +2,10 @@
 //! carry the registration token (identity binding, spec adaptation #1).
 //! `provider_id` is the caller's declared provider id (e.g. "anthropic").
 use crate::types::credential::Credential;
+use crate::types::errors::{RouterCode, RouterFailure};
+use crate::types::events::ErrorKind;
 use crate::types::model::Model;
-use crate::types::router::{CredentialSource, ProviderResolveResponse};
+use crate::types::router::{CatalogState, CredentialSource, ProviderResolveResponse};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -72,6 +74,36 @@ pub async fn models_get(iii: &IIIClient, provider_id: &str, model_id: &str) -> O
 /// `router::provider::register` — returns the registration token to persist.
 pub async fn register(iii: &IIIClient, declaration: Value) -> Result<Value, Error> {
     call(iii, "router::provider::register", declaration).await
+}
+
+/// Persist a safe discovery failure for Console/operator recovery. Providers
+/// call this after their self-started or periodic refresh fails; router-started
+/// refreshes are also guarded by the router itself.
+pub async fn report_catalog_failure(
+    iii: &IIIClient,
+    provider_id: &str,
+    state_scope: &str,
+) -> Result<(), Error> {
+    let token = crate::provider_scaffold::state::load_token(iii, state_scope).await;
+    let failure = RouterFailure::new(
+        RouterCode::UpstreamUnavailable,
+        ErrorKind::Transient,
+        format!("{provider_id} model discovery failed; inspect provider logs"),
+        true,
+        Some(provider_id),
+        None,
+        1,
+    );
+    let mut payload = json!({
+        "id": provider_id,
+        "catalog_state": CatalogState::Error,
+        "failure": failure,
+    });
+    if let Some(token) = token {
+        payload["token"] = json!(token);
+    }
+    call(iii, "router::provider::status", payload).await?;
+    Ok(())
 }
 
 /// Inject an env-sourced ApiKey only when the router resolved nothing.

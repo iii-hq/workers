@@ -10,7 +10,11 @@ use std::collections::HashMap;
 
 use crate::state::{state_get, state_set};
 use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
-use crate::types::router::ProviderDeclaration;
+use crate::types::errors::{sanitize_failure_message, RouterFailure};
+use crate::types::router::{
+    CatalogState, CredentialRequirement, CredentialState, ProviderDeclaration, ProviderDiagnostic,
+    ProviderStatusRequest,
+};
 use iii_sdk::{errors::Error, IIIClient};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,6 +41,8 @@ pub struct ProviderRecord {
     pub worker_id: Option<String>,
     pub available: bool,
     pub registered_at: i64,
+    #[serde(default)]
+    pub diagnostic: ProviderDiagnostic,
 }
 
 pub struct RegistryStore {
@@ -62,6 +68,19 @@ fn build_record(
     worker_id: Option<String>,
     raw_token: &str,
 ) -> ProviderRecord {
+    let mut diagnostic = existing.map(|e| e.diagnostic.clone()).unwrap_or_default();
+    diagnostic.credential_state = match declaration.credential_requirement {
+        CredentialRequirement::External => CredentialState::External,
+        CredentialRequirement::Optional => CredentialState::Ready,
+        CredentialRequirement::Required => diagnostic.credential_state,
+    };
+    if declaration.supports_model_listing.unwrap_or(false)
+        && diagnostic.catalog_state == CatalogState::Unknown
+    {
+        diagnostic.catalog_state = CatalogState::Discovering;
+    }
+    diagnostic.updated_at = now_ms();
+    diagnostic.stale = false;
     ProviderRecord {
         token_hash: existing
             .map(|e| e.token_hash.clone())
@@ -72,6 +91,7 @@ fn build_record(
         // flips this back down (chat.rs).
         available: true,
         registered_at: existing.map(|e| e.registered_at).unwrap_or_else(now_ms),
+        diagnostic,
         declaration,
     }
 }
@@ -117,6 +137,7 @@ impl RegistryStore {
         // here — flags re-persist on their next real change.
         for rec in records.values_mut() {
             rec.available = false;
+            rec.diagnostic.stale = true;
         }
         Ok(())
     }
@@ -207,10 +228,71 @@ impl RegistryStore {
             return false;
         }
         rec.available = available;
-        let snapshot = records.clone();
-        drop(records);
-        let _ = self.persist(&snapshot).await; // best-effort persist of a flag flip
+        let _ = self.persist(&records).await; // best-effort persist of a flag flip
         true
+    }
+
+    /// Merge a provider-authored diagnostic update after verifying ownership.
+    pub async fn update_diagnostic(
+        &self,
+        req: ProviderStatusRequest,
+    ) -> Result<ProviderDiagnostic, RouterError> {
+        self.verify_token(&req.id, req.token.as_deref()).await?;
+        let mut records = self.records.lock().await;
+        let rec = records.get_mut(&req.id).expect("verified record exists");
+        if let Some(state) = req.credential_state {
+            rec.diagnostic.credential_state = state;
+        }
+        if let Some(state) = req.catalog_state {
+            rec.diagnostic.catalog_state = state;
+        }
+        if req.clear_failure {
+            rec.diagnostic.last_failure = None;
+        } else if let Some(mut failure) = req.failure {
+            failure.message = sanitize_failure_message(&failure.message);
+            if !RouterCode::is_known(&failure.code) {
+                failure.code = RouterCode::UpstreamUnavailable.as_str().to_string();
+            }
+            failure.provider = Some(req.id.clone());
+            rec.diagnostic.last_failure = Some(failure);
+        }
+        rec.diagnostic.updated_at = now_ms();
+        rec.diagnostic.stale = false;
+        let diagnostic = rec.diagnostic.clone();
+        self.persist(&records).await.map_err(|e| {
+            RouterError::new(
+                RouterCode::InvalidRequest,
+                format!("registry persist failed: {e}"),
+            )
+        })?;
+        Ok(diagnostic)
+    }
+
+    /// Router-authored runtime evidence (chat/discovery); no provider token is
+    /// involved because this code runs inside the registry owner.
+    pub async fn set_runtime_diagnostic(
+        &self,
+        id: &str,
+        failure: Option<RouterFailure>,
+        catalog_state: Option<CatalogState>,
+    ) {
+        let mut records = self.records.lock().await;
+        let Some(rec) = records.get_mut(id) else {
+            return;
+        };
+        rec.diagnostic.last_failure = failure.map(|mut failure| {
+            failure.message = sanitize_failure_message(&failure.message);
+            failure.provider = Some(id.to_string());
+            failure
+        });
+        if let Some(state) = catalog_state {
+            rec.diagnostic.catalog_state = state;
+        }
+        rec.diagnostic.updated_at = now_ms();
+        rec.diagnostic.stale = false;
+        if let Err(error) = self.persist(&records).await {
+            tracing::error!(provider = %id, %error, "failed to persist provider diagnostic");
+        }
     }
 }
 
@@ -272,5 +354,20 @@ mod tests {
     fn reregistering_an_up_provider_is_not_a_recovery() {
         let up = build_record(None, decl("anthropic"), Some("w-1".into()), "tok"); // available: true
         assert!(!availability_recovered(Some(&up)));
+    }
+
+    #[test]
+    fn registration_initializes_operator_diagnostics_without_stale_evidence() {
+        let mut declaration = decl("openai-codex");
+        declaration.credential_requirement = CredentialRequirement::External;
+        declaration.supports_model_listing = Some(true);
+        let record = build_record(None, declaration, Some("w-1".into()), "tok");
+        assert_eq!(
+            record.diagnostic.credential_state,
+            CredentialState::External
+        );
+        assert_eq!(record.diagnostic.catalog_state, CatalogState::Discovering);
+        assert!(!record.diagnostic.stale);
+        assert!(record.diagnostic.updated_at > 0);
     }
 }

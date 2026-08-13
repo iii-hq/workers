@@ -23,7 +23,7 @@ use tokio::sync::{watch, Notify};
 
 use crate::error::HarnessError;
 use crate::types::event::{AssistantMessageEvent, StopReason};
-use crate::types::message::{empty_assistant, AssistantMessage};
+use crate::types::message::{empty_assistant, AssistantMessage, RouterFailure};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
 
 /// Receives coalesced partial assistant messages as a stream progresses.
@@ -53,6 +53,7 @@ pub struct ChatOutcome {
     pub ok: bool,
     pub stop_reason: Option<StopReason>,
     pub error: Option<String>,
+    pub failure: Option<RouterFailure>,
 }
 
 /// Ceiling for `count_tokens`, independent of the generation-sized router
@@ -138,6 +139,7 @@ impl RouterClient {
             "model": params.model,
             "messages": params.messages,
             "tools": params.tools,
+            "failure_mode": "structured",
         });
         if let Some(p) = &params.provider {
             payload["provider"] = json!(p);
@@ -188,6 +190,7 @@ impl RouterClient {
             .unwrap_or_else(Instant::now);
         let mut final_message: Option<AssistantMessage> = None;
         let mut terminal_error: Option<String> = None;
+        let mut terminal_failure: Option<RouterFailure> = None;
         // Raw in-flight tool-call arguments per call id: providers degrade
         // incomplete args to a placeholder object (replay safety), so the
         // delta text accumulated here is the only live view of a long
@@ -283,6 +286,7 @@ impl RouterClient {
                             stop_reason: Some(StopReason::Aborted),
                             message,
                             error: None,
+                            failure: None,
                         });
                     }
                     r = &mut trigger => {
@@ -304,6 +308,7 @@ impl RouterClient {
                     final_message = Some(message);
                 }
                 AssistantMessageEvent::Error { error } => {
+                    terminal_failure = error.failure.clone();
                     terminal_error = error
                         .error_message
                         .clone()
@@ -360,7 +365,7 @@ impl RouterClient {
                 .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
         };
 
-        let (ok, response_error) = match &response {
+        let (ok, response_error, response_failure) = match &response {
             Ok(v) => {
                 let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
                 let err = v
@@ -368,10 +373,16 @@ impl RouterClient {
                     .and_then(|e| e.get("message"))
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                (ok, err)
+                let failure = v
+                    .get("failure")
+                    .cloned()
+                    .and_then(|f| serde_json::from_value(f).ok());
+                (ok, err, failure)
             }
-            Err(e) => (false, Some(e.to_string())),
+            Err(e) => (false, Some(e.to_string()), None),
         };
+
+        let failure = terminal_failure.or(response_failure);
 
         let message = final_message.unwrap_or_else(|| {
             let mut m = empty_assistant(params.provider.as_deref().unwrap_or(""), &params.model);
@@ -388,6 +399,7 @@ impl RouterClient {
             } else {
                 crate::types::event::ErrorKind::Transient
             });
+            m.failure = failure.clone();
             m
         });
 
@@ -412,6 +424,7 @@ impl RouterClient {
             message,
             stop_reason,
             error,
+            failure,
         })
     }
 

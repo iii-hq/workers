@@ -834,8 +834,18 @@ pub async fn run_step(
             .clone()
             .unwrap_or_else(|| "generation failed".to_string());
         preserve_assistant_partial(&mut record.result, &outcome.message);
+        let retryable = outcome
+            .failure
+            .as_ref()
+            .map(|failure| failure.retryable)
+            .unwrap_or_else(|| {
+                outcome
+                    .message
+                    .error_kind
+                    .is_some_and(|kind| kind.is_retryable())
+            });
         if transient_resume_allowed(
-            outcome.message.error_kind,
+            retryable,
             record.transient_resumes,
             record.options.max_transient_resumes,
             record.turn_count,
@@ -1825,15 +1835,13 @@ fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMe
 }
 
 fn transient_resume_allowed(
-    error_kind: Option<crate::types::event::ErrorKind>,
+    retryable: bool,
     resumes: u32,
     max_resumes: u32,
     turn_count: u32,
     max_turns: u32,
 ) -> bool {
-    error_kind.is_some_and(|kind| kind.is_retryable())
-        && resumes < max_resumes
-        && turn_count < max_turns
+    retryable && resumes < max_resumes && turn_count < max_turns
 }
 
 async fn finalize_cancelled(
@@ -2616,7 +2624,7 @@ impl Clone for SessionStreamSink {
 mod tests {
     use super::{cancel_requested, count_model_visible, transient_resume_allowed};
     use crate::types::content::ContentBlock;
-    use crate::types::event::{ErrorKind, StopReason};
+    use crate::types::event::StopReason;
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
 
     fn queued(message: AgentMessage) -> crate::state::QueuedMessage {
@@ -2794,41 +2802,11 @@ mod tests {
 
     #[test]
     fn transient_resume_is_bounded_and_only_for_retryable_midstream_failures() {
-        assert!(transient_resume_allowed(
-            Some(ErrorKind::Transient),
-            0,
-            1,
-            1,
-            16
-        ));
-        assert!(transient_resume_allowed(
-            Some(ErrorKind::RateLimited),
-            0,
-            1,
-            1,
-            16
-        ));
-        assert!(!transient_resume_allowed(
-            Some(ErrorKind::Permanent),
-            0,
-            1,
-            1,
-            16
-        ));
-        assert!(!transient_resume_allowed(
-            Some(ErrorKind::Transient),
-            1,
-            1,
-            1,
-            16
-        ));
-        assert!(!transient_resume_allowed(
-            Some(ErrorKind::Transient),
-            0,
-            1,
-            16,
-            16
-        ));
+        assert!(transient_resume_allowed(true, 0, 1, 1, 16));
+        assert!(transient_resume_allowed(true, 0, 1, 1, 16));
+        assert!(!transient_resume_allowed(false, 0, 1, 1, 16));
+        assert!(!transient_resume_allowed(true, 1, 1, 1, 16));
+        assert!(!transient_resume_allowed(true, 0, 1, 16, 16));
     }
 
     #[test]

@@ -1,0 +1,9 @@
+{
+  "code": "router/rate_limited",
+  "kind": "rate_limited",
+  "message": "rate limit reached; retry after the provider window resets",
+  "retryable": true,
+  "provider": "openai",
+  "model": "gpt-5",
+  "attempts": 2
+}

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::routing::Heuristic;
+use crate::types::errors::{RouterCode, RouterError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouterSettings {
@@ -65,6 +66,163 @@ pub fn parse_settings(entry_value: &Value) -> RouterSettings {
     out
 }
 
+/// Semantic validation that JSON Schema cannot express (cross-field limits,
+/// regex compilation, live provider references and absolute HTTP URLs).
+/// Callers must run this before swapping the active snapshot.
+pub fn validate_settings(
+    entry_value: &Value,
+    registered_providers: &[String],
+) -> Result<(), RouterError> {
+    if entry_value.is_null() {
+        return Ok(());
+    }
+    let root = entry_value.as_object().ok_or_else(|| {
+        RouterError::new(
+            RouterCode::InvalidRequest,
+            "configuration must be an object or null",
+        )
+    })?;
+    let registered = |id: &str| registered_providers.iter().any(|p| p == id);
+
+    if let Some(default) = root.get("default_provider") {
+        let id = default
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                RouterError::new(
+                    RouterCode::InvalidRequest,
+                    "default_provider must be a non-empty string",
+                )
+            })?;
+        if !registered(id) {
+            return Err(RouterError::new(
+                RouterCode::InvalidRequest,
+                format!("default_provider references unknown provider {id}"),
+            ));
+        }
+    }
+
+    if let Some(heuristics) = root.get("routing_heuristics") {
+        let rows = heuristics.as_array().ok_or_else(|| {
+            RouterError::new(
+                RouterCode::InvalidRequest,
+                "routing_heuristics must be an array",
+            )
+        })?;
+        for (index, row) in rows.iter().enumerate() {
+            let row = row.as_object().ok_or_else(|| {
+                RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!("routing_heuristics[{index}] must be an object"),
+                )
+            })?;
+            let pattern = row.get("pattern").and_then(Value::as_str).ok_or_else(|| {
+                RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!("routing_heuristics[{index}].pattern must be a string"),
+                )
+            })?;
+            regex::Regex::new(pattern).map_err(|e| {
+                RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!("routing_heuristics[{index}].pattern is invalid: {e}"),
+                )
+            })?;
+            let provider = row.get("provider").and_then(Value::as_str).ok_or_else(|| {
+                RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!("routing_heuristics[{index}].provider must be a string"),
+                )
+            })?;
+            if !registered(provider) {
+                return Err(RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!(
+                        "routing_heuristics[{index}].provider references unknown provider {provider}"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let parsed = parse_settings(entry_value);
+    if let Some(settings) = root.get("settings") {
+        let settings = settings.as_object().ok_or_else(|| {
+            RouterError::new(RouterCode::InvalidRequest, "settings must be an object")
+        })?;
+        for (name, allows_zero, maximum) in [
+            ("stream_timeout_ms", false, None),
+            ("idle_timeout_ms", false, None),
+            ("retry_max", true, Some(10)),
+            ("output_token_max", false, None),
+        ] {
+            if let Some(value) = settings.get(name) {
+                let number = value.as_u64().ok_or_else(|| {
+                    RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("settings.{name} must be an integer"),
+                    )
+                })?;
+                if !allows_zero && number == 0 {
+                    return Err(RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("settings.{name} must be greater than zero"),
+                    ));
+                }
+                if maximum.is_some_and(|max| number > max) {
+                    return Err(RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("settings.{name} must be at most {}", maximum.unwrap()),
+                    ));
+                }
+            }
+        }
+    }
+    if parsed.idle_timeout_ms > parsed.stream_timeout_ms {
+        return Err(RouterError::new(
+            RouterCode::InvalidRequest,
+            "settings.idle_timeout_ms must not exceed settings.stream_timeout_ms",
+        ));
+    }
+
+    if let Some(Value::Object(providers)) = root.get("providers") {
+        for (id, slice) in providers {
+            let Some(slice) = slice.as_object() else {
+                continue;
+            };
+            if let Some(api_url) = slice.get("api_url") {
+                let raw = api_url.as_str().ok_or_else(|| {
+                    RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("providers.{id}.api_url must be a string"),
+                    )
+                })?;
+                let parsed = url::Url::parse(raw).map_err(|e| {
+                    RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("providers.{id}.api_url must be an absolute URL: {e}"),
+                    )
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("providers.{id}.api_url must use http or https"),
+                    ));
+                }
+            }
+            if let Some(max_tokens) = slice.get("max_tokens") {
+                if max_tokens.as_u64().filter(|v| *v > 0).is_none() {
+                    return Err(RouterError::new(
+                        RouterCode::InvalidRequest,
+                        format!("providers.{id}.max_tokens must be a positive integer"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Provider config slices from the entry value ({ providers: { id: slice } }).
 pub fn provider_slices(entry_value: &Value) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
@@ -119,5 +277,31 @@ mod tests {
         assert_eq!(slices.len(), 1);
         assert!(slices.contains_key("a"));
         assert!(provider_slices(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
+    fn semantic_validation_rejects_silent_fallbacks() {
+        let providers = vec!["openai".to_string()];
+        for invalid in [
+            json!({ "settings": { "retry_max": 11 } }),
+            json!({ "settings": { "stream_timeout_ms": 100, "idle_timeout_ms": 101 } }),
+            json!({ "routing_heuristics": [{ "pattern": "([", "provider": "openai" }] }),
+            json!({ "routing_heuristics": [{ "pattern": "^gpt", "provider": "missing" }] }),
+            json!({ "providers": { "openai": { "api_url": "localhost:1234" } } }),
+        ] {
+            assert!(
+                validate_settings(&invalid, &providers).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(validate_settings(
+            &json!({
+                "default_provider": "openai",
+                "settings": { "stream_timeout_ms": 100, "idle_timeout_ms": 100, "retry_max": 0 },
+                "providers": { "openai": { "api_url": "https://api.example.test/v1", "max_tokens": 1 } }
+            }),
+            &providers,
+        )
+        .is_ok());
     }
 }

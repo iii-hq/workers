@@ -163,6 +163,8 @@ export interface ConfigFormProps {
   onChange(next: JsonValue): void
   /** JSON-pointer → message, merged client + server validation. */
   errors?: ReadonlyMap<string, string>
+  /** Report worker-specific semantic errors for host-owned save gating. */
+  onValidationChange?(errors: ReadonlyMap<string, string>): void
   /**
    * Deep-link focus request: the decoded fieldPath segments from
    * `#/workers/configuration/<id>/<fieldPath>`. The host's own scroll+focus
@@ -227,7 +229,7 @@ export interface Host {
 /** The ONLY required export of a script asset. */
 export type SetupFn = (
   host: Host,
-) => void | (() => void) | Promise<void | (() => void)>
+) => void | (() => void) | Promise<void> | Promise<() => void>
 
 export type UiAssetKind = 'script' | 'style'
 

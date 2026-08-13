@@ -29,6 +29,7 @@ pub fn declaration() -> ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("GitHub Copilot".into()),
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
+        credential_requirement: llm_router::types::router::CredentialRequirement::External,
         defaults: Some(ProviderDefaults {
             // Deliberately no api_url default: the router's resolve step
             // falls back to this value when the operator has not set one, and
@@ -40,13 +41,9 @@ pub fn declaration() -> ProviderDeclaration {
             max_tokens: Some(DEFAULT_MAX_TOKENS),
             extra: BTreeMap::new(),
         }),
-        // The router's default {api_key, api_url, max_tokens} slice. The
-        // api_key field goes unused — signing in is the device flow and the
-        // credential lives in iii-state — but the console renders a fixed
-        // field set per provider regardless of what a custom schema
-        // declares, so a custom one would buy nothing and cost `max_tokens`
-        // (the router rejects custom-schema fields containing "token"
-        // unless marked write-only).
+        // The router's external-credential default slice exposes only
+        // {api_url, max_tokens}; sign-in lives in iii-state and the Console
+        // points operators to the device flow instead of rendering api_key.
         config_schema: None,
         supports_model_listing: Some(true),
         // No static slice: GET /models is the source of truth once a login
@@ -126,7 +123,19 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client, cache: B
             "[provider-github-copilot] catalog empty — sign in via provider::github-copilot::login::start"
         ),
         Ok(count) => println!("[provider-github-copilot] catalog refreshed: {count} models"),
-        Err(e) => eprintln!("[provider-github-copilot] post-register refresh failed ({e})"),
+        Err(e) => {
+            eprintln!("[provider-github-copilot] post-register refresh failed ({e})");
+            if let Err(status_error) =
+                llm_router::provider_scaffold::router_client::report_catalog_failure(
+                    &iii,
+                    PROVIDER_ID,
+                    state::STATE_SCOPE,
+                )
+                .await
+            {
+                tracing::debug!(error = %status_error, "failed to report catalog diagnostic");
+            }
+        }
     }
 }
 

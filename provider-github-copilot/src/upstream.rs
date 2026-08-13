@@ -8,10 +8,6 @@ use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-/// Cap on an upstream error body quoted back to the caller. A gateway can
-/// answer with a whole HTML page; the error frame should stay readable.
-const MAX_ERROR_BODY: usize = 2_000;
-
 /// Cap on the un-framed SSE buffer. An upstream that never sends a blank
 /// line would otherwise grow it for the whole response while every chunk
 /// rescans it. Exceeding this is a broken stream, not a slow one.
@@ -87,9 +83,10 @@ async fn run_upstream(
     let resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
+            tracing::debug!(error = %e, "copilot request failed");
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("copilot fetch failed: {e}"),
+                    &llm_router::provider_scaffold::errors::public_transport_error("copilot"),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -102,13 +99,16 @@ async fn run_upstream(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
-        let msg = if text.is_empty() {
-            format!("copilot http {status}")
-        } else if text.len() > MAX_ERROR_BODY {
-            format!("{}…", &text[..text.floor_char_boundary(MAX_ERROR_BODY)])
-        } else {
-            text
-        };
+        tracing::debug!(
+            status = status.as_u16(),
+            body_bytes = text.len(),
+            "copilot upstream rejected request"
+        );
+        let msg = llm_router::provider_scaffold::errors::public_http_error(
+            "copilot",
+            status.as_u16(),
+            kind,
+        );
         let _ = tx
             .send(synthetic_error_event(&msg, &args.model, kind))
             .await;
@@ -134,9 +134,12 @@ async fn run_upstream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
+                tracing::debug!(provider = "github-copilot", error = %e, "stream read failed");
                 let _ = tx
                     .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
+                        &llm_router::provider_scaffold::errors::public_transport_error(
+                            "github-copilot",
+                        ),
                         &args.model,
                         ErrorKind::Transient,
                     ))
@@ -312,8 +315,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn oversized_error_body_is_truncated_in_the_frame() {
-        let big = "x".repeat(MAX_ERROR_BODY * 2);
+    async fn upstream_error_body_is_not_echoed_in_the_frame() {
+        let big = "sensitive-upstream-body".repeat(200);
         let response: &'static str = Box::leak(
             format!(
                 "HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n{big}"
@@ -325,8 +328,8 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 let msg = error.error_message.as_deref().unwrap_or_default();
-                assert!(msg.len() <= MAX_ERROR_BODY + 8, "got {} bytes", msg.len());
-                assert!(msg.ends_with('…'));
+                assert_eq!(msg, "copilot is temporarily unavailable (HTTP 500)");
+                assert!(!msg.contains("sensitive-upstream-body"));
             }
             other => panic!("want error, got {other:?}"),
         }

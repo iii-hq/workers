@@ -17,16 +17,90 @@
  * secret itself.
  */
 
-import { useEffect, useRef } from 'react'
 import {
   type ConfigFormProps,
+  type Host,
   type JsonValue,
   Select,
   type SelectOption,
 } from '@iii-dev/console-ui'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { providerCardIds } from './provider-cards'
+import { validateRouterConfig } from './validation'
 
 type JsonObject = { [key: string]: JsonValue }
+
+type RouterFailure = {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+type ProviderRuntime = {
+  id: string
+  display_name: string
+  configured: boolean
+  available: boolean
+  supports_model_listing: boolean
+  credential_requirement: 'required' | 'optional' | 'external'
+  model_count: number
+  diagnostic: {
+    credential_state: 'unknown' | 'ready' | 'missing' | 'external'
+    catalog_state: 'unknown' | 'discovering' | 'ready' | 'empty' | 'error'
+    last_failure?: RouterFailure
+    updated_at: number
+    stale: boolean
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function useProviderRuntime(host: Host) {
+  const [providers, setProviders] = useState<ProviderRuntime[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await host.iii.trigger<{ providers: ProviderRuntime[] }>(
+        'router::provider::list',
+        {},
+      )
+      setProviders(response.providers)
+    } catch (cause) {
+      // Keep the last successful snapshot visible while reporting refresh
+      // failure separately; an empty array would falsely say every worker died.
+      setError(errorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }, [host])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const retryDiscovery = useCallback(
+    async (id: string) => {
+      setLoading(true)
+      setError(null)
+      try {
+        await host.iii.trigger(`provider::${id}::refresh_models`, {})
+        await refresh()
+      } catch (cause) {
+        setError(errorMessage(cause))
+        setLoading(false)
+      }
+    },
+    [host, refresh],
+  )
+
+  return { providers, loading, error, refresh, retryDiscovery }
+}
 
 function asObject(v: JsonValue | undefined): JsonObject {
   return v && typeof v === 'object' && !Array.isArray(v) ? { ...v } : {}
@@ -134,7 +208,7 @@ const SETTINGS_FIELDS = [
   },
 ] as const
 
-export function LlmRouterConfigForm(props: ConfigFormProps) {
+export function LlmRouterConfigForm(props: ConfigFormProps & { host: Host }) {
   const value = asObject(props.value)
   const providers = asObject(value.providers)
   const providerIds = providerCardIds(props.schema, props.value)
@@ -142,6 +216,26 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
   const heuristics = Array.isArray(value.routing_heuristics)
     ? (value.routing_heuristics as JsonValue[])
     : []
+  const runtime = useProviderRuntime(props.host)
+  const runtimeById = useMemo(
+    () => new Map(runtime.providers?.map((provider) => [provider.id, provider]) ?? []),
+    [runtime.providers],
+  )
+  const registeredProviderIds = useMemo(
+    () =>
+      runtime.providers?.map((provider) => provider.id) ??
+      providerCardIds(props.schema, null),
+    [props.schema, runtime.providers],
+  )
+  const semanticErrors = useMemo(
+    () => validateRouterConfig(props.value, registeredProviderIds),
+    [props.value, registeredProviderIds.join('\u0000')],
+  )
+
+  useEffect(() => {
+    props.onValidationChange?.(semanticErrors)
+    return () => props.onValidationChange?.(new Map())
+  }, [props.onValidationChange, semanticErrors])
 
   const commit = (patch: JsonObject) => props.onChange({ ...value, ...patch })
 
@@ -184,6 +278,19 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
       </div>
 
       <h3 className="llmr-cfg-heading">providers</h3>
+      {runtime.error ? (
+        <div className="llmr-cfg-runtime-error" role="alert">
+          <span>
+            Runtime status could not be refreshed: {runtime.error}. Showing the
+            last successful snapshot when available.
+          </span>
+          <button type="button" className="llmr-cfg-toggle" onClick={() => void runtime.refresh()}>
+            retry status
+          </button>
+        </div>
+      ) : runtime.loading ? (
+        <div className="llmr-cfg-runtime-loading">refreshing provider status…</div>
+      ) : null}
       {providerIds.length === 0 ? (
         <div className="llmr-cfg-empty">
           No providers connected yet — provider workers register themselves
@@ -196,6 +303,9 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
             id={id}
             slice={asObject(providers[id])}
             promptDefault={providerPromptDefault(props.schema, id)}
+            runtime={runtimeById.get(id)}
+            runtimeLoaded={runtime.providers !== null}
+            onRetryDiscovery={() => void runtime.retryDiscovery(id)}
             onChange={(next) =>
               commit({ providers: { ...providers, [id]: next } })
             }
@@ -253,7 +363,6 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
         return (
           // Rows have no id; order IS the routing priority, so index keys
           // are the honest choice here.
-          // biome-ignore lint/suspicious/noArrayIndexKey: positional rows
           <div key={i} className="llmr-cfg-row llmr-cfg-heuristic">
             <input
               className="llmr-cfg-input"
@@ -317,12 +426,18 @@ function ProviderCard({
   slice,
   promptDefault,
   onChange,
+  runtime,
+  runtimeLoaded,
+  onRetryDiscovery,
 }: {
   id: string
   slice: JsonObject
   /** The provider-declared identity prompt (schema default), if any. */
   promptDefault: string | null
   onChange(next: JsonObject): void
+  runtime?: ProviderRuntime
+  runtimeLoaded: boolean
+  onRetryDiscovery(): void
 }) {
   const apiKey = asString(slice.api_key)
   // Plain text = something typed that is not an env reference. A partial
@@ -340,51 +455,66 @@ function ProviderCard({
 
   return (
     <section className="llmr-cfg-card" data-field={`providers-${id}`}>
-      <header className="llmr-cfg-card-head">{id}</header>
+      <header className="llmr-cfg-card-head">
+        <span>{runtime?.display_name ?? id}</span>
+        <ProviderStatus
+          runtime={runtime}
+          runtimeLoaded={runtimeLoaded}
+          onRetryDiscovery={onRetryDiscovery}
+        />
+      </header>
 
-      <label className="llmr-cfg-label" htmlFor={`llmr-${id}-api-key`}>
-        api key
-      </label>
-      <input
-        id={`llmr-${id}-api-key`}
-        className="llmr-cfg-input"
-        // Env references are not secrets — keep them readable; anything
-        // else gets masked like the generic password field.
-        type={apiKey === '' || isEnvReference(apiKey) ? 'text' : 'password'}
-        autoComplete="off"
-        spellCheck={false}
-        value={apiKey}
-        placeholder={`\${${suggestedEnvVar(id)}}`}
-        onChange={(e) => set('api_key', e.target.value || undefined)}
-      />
-      {plainTextKey ? (
-        <div className="llmr-cfg-warning" role="alert">
-          <strong>plain-text secret</strong> — this key is stored verbatim in
-          the configuration entry (and every export of it). Set it as an
-          environment variable on the engine host and reference it instead:{' '}
-          <button
-            type="button"
-            className="llmr-cfg-envfix"
-            title="replace with the env reference"
-            onClick={() => set('api_key', `\${${suggestedEnvVar(id)}}`)}
-          >
-            {'${'}
-            {suggestedEnvVar(id)}
-            {'}'}
-          </button>{' '}
-          — the value expands when the entry is read, so the secret never
-          lands in the store.
+      {runtime?.credential_requirement !== 'external' ? (
+        <>
+          <label className="llmr-cfg-label" htmlFor={`llmr-${id}-api-key`}>
+            api key
+          </label>
+          <input
+            id={`llmr-${id}-api-key`}
+            className="llmr-cfg-input"
+            // Env references are not secrets — keep them readable; anything
+            // else gets masked like the generic password field.
+            type={apiKey === '' || isEnvReference(apiKey) ? 'text' : 'password'}
+            autoComplete="off"
+            spellCheck={false}
+            value={apiKey}
+            placeholder={`\${${suggestedEnvVar(id)}}`}
+            onChange={(e) => set('api_key', e.target.value || undefined)}
+          />
+          {plainTextKey ? (
+            <div className="llmr-cfg-warning" role="alert">
+              <strong>plain-text secret</strong> — this key is stored verbatim in
+              the configuration entry (and every export of it). Set it as an
+              environment variable on the engine host and reference it instead:{' '}
+              <button
+                type="button"
+                className="llmr-cfg-envfix"
+                title="replace with the env reference"
+                onClick={() => set('api_key', `\${${suggestedEnvVar(id)}}`)}
+              >
+                {'${'}
+                {suggestedEnvVar(id)}
+                {'}'}
+              </button>{' '}
+              — the value expands when the entry is read, so the secret never
+              lands in the store.
+            </div>
+          ) : isEnvReference(apiKey) ? (
+            <div className="llmr-cfg-envok">
+              env reference — expands on read, secret stays out of the store
+            </div>
+          ) : hasEnvReference(apiKey) ? (
+            <div className="llmr-cfg-warning" role="alert">
+              partial env reference — the literal part is still stored as plain
+              text. Move the whole key into one variable.
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="llmr-cfg-echo">
+          Credentials are managed by this provider's external sign-in flow.
         </div>
-      ) : isEnvReference(apiKey) ? (
-        <div className="llmr-cfg-envok">
-          env reference — expands on read, secret stays out of the store
-        </div>
-      ) : hasEnvReference(apiKey) ? (
-        <div className="llmr-cfg-warning" role="alert">
-          partial env reference — the literal part is still stored as plain
-          text. Move the whole key into one variable.
-        </div>
-      ) : null}
+      )}
 
       <label className="llmr-cfg-label" htmlFor={`llmr-${id}-api-url`}>
         api url
@@ -454,5 +584,60 @@ function ProviderCard({
         <div className="llmr-cfg-echo">no provider-declared prompt</div>
       )}
     </section>
+  )
+}
+
+function ProviderStatus({
+  runtime,
+  runtimeLoaded,
+  onRetryDiscovery,
+}: {
+  runtime?: ProviderRuntime
+  runtimeLoaded: boolean
+  onRetryDiscovery(): void
+}) {
+  if (!runtimeLoaded) {
+    return <span className="llmr-cfg-status llmr-cfg-status-muted">status unknown</span>
+  }
+  if (!runtime?.available) {
+    return <span className="llmr-cfg-status llmr-cfg-status-error">worker missing</span>
+  }
+  if (
+    runtime.credential_requirement === 'required' &&
+    runtime.diagnostic.credential_state === 'missing'
+  ) {
+    return <span className="llmr-cfg-status llmr-cfg-status-warn">credential missing</span>
+  }
+  if (runtime.diagnostic.catalog_state === 'discovering') {
+    return <span className="llmr-cfg-status llmr-cfg-status-muted">discovering models…</span>
+  }
+  if (runtime.diagnostic.catalog_state === 'error') {
+    const failure = runtime.diagnostic.last_failure
+    return (
+      <span className="llmr-cfg-status llmr-cfg-status-error" title={failure?.message}>
+        discovery error
+        {failure?.retryable ? (
+          <button type="button" className="llmr-cfg-status-retry" onClick={onRetryDiscovery}>
+            retry
+          </button>
+        ) : null}
+      </span>
+    )
+  }
+  if (
+    runtime.credential_requirement === 'external' &&
+    (runtime.diagnostic.catalog_state === 'unknown' ||
+      runtime.diagnostic.catalog_state === 'empty')
+  ) {
+    return <span className="llmr-cfg-status llmr-cfg-status-info">external login</span>
+  }
+  if (runtime.diagnostic.catalog_state === 'empty') {
+    return <span className="llmr-cfg-status llmr-cfg-status-warn">empty catalog</span>
+  }
+  return (
+    <span className="llmr-cfg-status llmr-cfg-status-ok">
+      {runtime.model_count} {runtime.model_count === 1 ? 'model' : 'models'}
+      {runtime.diagnostic.stale ? ' · historical' : ''}
+    </span>
   )
 }

@@ -17,16 +17,24 @@ use serde_json::{json, Value};
 use super::entry::{read_entry_value, EntryWriteLock};
 use super::fingerprint::{changed_slices, fingerprint_slices};
 use super::state::{apply_config, snapshot, ConfigCell};
+use crate::registry::store::RegistryStore;
 use crate::settings::provider_slices;
+use crate::settings::validate_settings;
+use crate::types::errors::{RouterCode, RouterFailure};
+use crate::types::events::ErrorKind;
+use crate::types::router::CatalogState;
 use crate::types::router::{ConfigChangedEvent, RouterAck};
 
 /// Async lookup: the registry's records sit behind a tokio mutex, so a sync
 /// closure would have to block — async keeps the handler deadlock-free.
 pub type ListingLookup = Arc<dyn Fn(&str) -> BoxFuture<'static, bool> + Send + Sync>;
+pub type ProviderIdsLookup = Arc<dyn Fn() -> BoxFuture<'static, Vec<String>> + Send + Sync>;
 
 pub fn make_on_config_changed(
     iii: IIIClient,
     supports_model_listing: ListingLookup,
+    provider_ids: ProviderIdsLookup,
+    registry: Arc<RegistryStore>,
     config: ConfigCell,
     entry_lock: EntryWriteLock,
     debounce_ms: u64,
@@ -47,6 +55,8 @@ pub fn make_on_config_changed(
     move |_event: ConfigChangedEvent| {
         let iii = iii.clone();
         let supports = supports_model_listing.clone();
+        let provider_ids = provider_ids.clone();
+        let registry = registry.clone();
         let config = config.clone();
         let entry_lock = entry_lock.clone();
         let last_fingerprints = last_fingerprints.clone();
@@ -66,6 +76,14 @@ pub fn make_on_config_changed(
                     let _guard = entry_lock.lock().await;
                     match read_entry_value(&iii).await {
                         Ok(new_value) => {
+                            let ids = provider_ids().await;
+                            if let Err(error) = validate_settings(&new_value, &ids) {
+                                tracing::error!(
+                                    %error,
+                                    "config-change: rejected invalid configuration; keeping previous snapshot"
+                                );
+                                return Ok(RouterAck { ok: false });
+                            }
                             apply_config(&config, new_value.clone());
                             let slices = provider_slices(&new_value);
                             let next = fingerprint_slices(
@@ -117,6 +135,7 @@ pub fn make_on_config_changed(
             let generation = flush_generation.fetch_add(1, Ordering::SeqCst) + 1;
             let pending = pending.clone();
             let flush_generation = flush_generation.clone();
+            let registry = registry.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)).await;
                 if flush_generation.load(Ordering::SeqCst) != generation {
@@ -126,15 +145,40 @@ pub fn make_on_config_changed(
                     .into_iter()
                     .collect();
                 for id in ids {
-                    // fire-and-forget; discovery reports back via models::reconcile
-                    let _ = iii
+                    registry
+                        .set_runtime_diagnostic(&id, None, Some(CatalogState::Discovering))
+                        .await;
+                    // Discovery reports back via models::reconcile. A failed
+                    // dispatch is observable instead of disappearing behind
+                    // a discarded Result.
+                    if let Err(error) = iii
                         .trigger(TriggerRequest {
                             function_id: format!("provider::{id}::refresh_models"),
                             payload: json!({}),
                             action: None,
                             timeout_ms: None,
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::error!(provider = %id, %error, "model discovery refresh failed");
+                        registry
+                            .set_runtime_diagnostic(
+                                &id,
+                                Some(RouterFailure::new(
+                                    RouterCode::UpstreamUnavailable,
+                                    ErrorKind::Transient,
+                                    format!(
+                                        "{id} model discovery failed; inspect router/provider logs"
+                                    ),
+                                    true,
+                                    Some(&id),
+                                    None,
+                                    1,
+                                )),
+                                Some(CatalogState::Error),
+                            )
+                            .await;
+                    }
                 }
             });
             Ok(RouterAck { ok: true })

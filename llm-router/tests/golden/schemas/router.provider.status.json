@@ -1,0 +1,254 @@
+{
+  "description": "Token-gated provider update for credential, catalog, and sanitized failure status.",
+  "function_id": "router::provider::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CatalogState": {
+        "enum": [
+          "unknown",
+          "discovering",
+          "ready",
+          "empty",
+          "error"
+        ],
+        "type": "string"
+      },
+      "CredentialState": {
+        "enum": [
+          "unknown",
+          "ready",
+          "missing",
+          "external"
+        ],
+        "type": "string"
+      },
+      "ErrorKind": {
+        "enum": [
+          "auth_expired",
+          "rate_limited",
+          "context_overflow",
+          "transient",
+          "permanent"
+        ],
+        "type": "string"
+      },
+      "RouterFailure": {
+        "description": "Stable machine-readable failure returned by router surfaces and terminal assistant messages. Legacy fields remain populated for compatibility.",
+        "properties": {
+          "attempts": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ErrorKind"
+          },
+          "message": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "code",
+          "kind",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Token-gated provider health update. Omitted fields keep their prior value; `clear_failure` explicitly clears the last sanitized failure.",
+    "properties": {
+      "catalog_state": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CatalogState"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "clear_failure": {
+        "default": false,
+        "type": "boolean"
+      },
+      "credential_state": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CredentialState"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "failure": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RouterFailure"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "id": {
+        "default": "",
+        "type": "string"
+      },
+      "token": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ProviderStatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CatalogState": {
+        "enum": [
+          "unknown",
+          "discovering",
+          "ready",
+          "empty",
+          "error"
+        ],
+        "type": "string"
+      },
+      "CredentialState": {
+        "enum": [
+          "unknown",
+          "ready",
+          "missing",
+          "external"
+        ],
+        "type": "string"
+      },
+      "ErrorKind": {
+        "enum": [
+          "auth_expired",
+          "rate_limited",
+          "context_overflow",
+          "transient",
+          "permanent"
+        ],
+        "type": "string"
+      },
+      "ProviderDiagnostic": {
+        "properties": {
+          "catalog_state": {
+            "$ref": "#/definitions/CatalogState"
+          },
+          "credential_state": {
+            "$ref": "#/definitions/CredentialState"
+          },
+          "last_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RouterFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale": {
+            "description": "True after router restart until fresh provider/runtime evidence lands.",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "catalog_state",
+          "credential_state",
+          "stale",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "RouterFailure": {
+        "description": "Stable machine-readable failure returned by router surfaces and terminal assistant messages. Legacy fields remain populated for compatibility.",
+        "properties": {
+          "attempts": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ErrorKind"
+          },
+          "message": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "code",
+          "kind",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "diagnostic": {
+        "$ref": "#/definitions/ProviderDiagnostic"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "diagnostic",
+      "ok"
+    ],
+    "title": "ProviderStatusResponse",
+    "type": "object"
+  }
+}

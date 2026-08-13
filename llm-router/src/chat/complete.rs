@@ -82,6 +82,7 @@ pub fn make_complete(
             };
             let usage = message.usage.clone().or(response.usage);
             Ok(CompleteResponse {
+                failure: response.failure,
                 message,
                 usage,
                 provider: response.provider,

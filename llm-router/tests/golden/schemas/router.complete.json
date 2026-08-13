@@ -3,8 +3,25 @@
   "function_id": "router::complete",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FailureMode": {
+        "enum": [
+          "legacy_throw",
+          "structured"
+        ],
+        "type": "string"
+      }
+    },
     "description": "ChatRequest minus writer_ref (the sink arrives separately — the function handler wraps the looked-up writer, complete wraps its own).\n\n`messages` / `tools` / `response_format` / `thinking_level` / `provider_options` stay `Value`: they are forwarded to the provider verbatim, so the router intentionally does not re-validate their shape. The struct still derives `JsonSchema` so the SDK emits a real request schema (the freeform sub-fields surface as permissive sub-schemas).",
     "properties": {
+      "failure_mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/FailureMode"
+          }
+        ],
+        "default": "legacy_throw"
+      },
       "max_output_tokens": {
         "default": null,
         "format": "uint64",
@@ -95,6 +112,16 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RouterFailure"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "model": {
@@ -308,6 +335,48 @@
         ],
         "type": "string"
       },
+      "RouterFailure": {
+        "description": "Stable machine-readable failure returned by router surfaces and terminal assistant messages. Legacy fields remain populated for compatibility.",
+        "properties": {
+          "attempts": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ErrorKind"
+          },
+          "message": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "code",
+          "kind",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -373,6 +442,16 @@
     },
     "description": "Output of the `router::complete` iii function (non-streaming convenience).",
     "properties": {
+      "failure": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RouterFailure"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "message": {
         "$ref": "#/definitions/AssistantMessage"
       },

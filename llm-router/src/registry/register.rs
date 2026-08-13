@@ -94,6 +94,7 @@ pub fn make_provider_register(
                         &serde_json::to_value(rec.declaration.defaults.clone())
                             .unwrap_or(Value::Null),
                         rec.declaration.system_prompt.as_deref(),
+                        rec.declaration.credential_requirement,
                     );
                     provider_schemas.insert(rec.declaration.id.clone(), schema);
                 }
@@ -124,6 +125,13 @@ pub fn make_provider_register(
                 if !models.is_empty() {
                     let count = models.len();
                     catalog.set_slice(&id, models).await?;
+                    registry
+                        .set_runtime_diagnostic(
+                            &id,
+                            None,
+                            Some(crate::types::router::CatalogState::Ready),
+                        )
+                        .await;
                     events
                         .emit(
                             triggers::MODELS_CHANGED,

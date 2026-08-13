@@ -158,6 +158,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            failure: None,
             warnings: None,
             usage: None,
             model: "m".into(),

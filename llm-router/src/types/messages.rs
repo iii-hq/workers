@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::types::content::ContentBlock;
+use crate::types::errors::RouterFailure;
 use crate::types::events::{ErrorKind, StopReason, Usage};
 
 /// Single-variant role tags: exact-match on deserialize, correct wire string on
@@ -45,6 +46,8 @@ pub struct AssistantMessage {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<RouterFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>, // report-and-continue notices
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,6 +261,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            failure: None,
             warnings: None,
             usage: None,
             model: "m".into(),

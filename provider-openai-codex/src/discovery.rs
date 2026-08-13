@@ -98,8 +98,10 @@ fn default_resolve() -> ProviderResolveResponse {
 
 /// Turn the configured Responses endpoint into its sibling models endpoint.
 fn models_url(api_url: &str) -> Result<reqwest::Url, Error> {
-    let mut url = reqwest::Url::parse(api_url)
-        .map_err(|e| provider_error("invalid_models_url", e.to_string()))?;
+    let mut url = reqwest::Url::parse(api_url).map_err(|e| {
+        tracing::debug!(provider = PROVIDER_ID, error = %e, "invalid models endpoint");
+        provider_error("invalid_models_url", "Codex models endpoint is invalid")
+    })?;
     let path = url.path().trim_end_matches('/');
     let base = path.strip_suffix("/responses").unwrap_or(path);
     url.set_path(&format!("{base}/models"));
@@ -171,31 +173,43 @@ async fn fetch_catalog(
     for (name, value) in build_backend_headers(cfg) {
         request = request.header(name, value);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| provider_error("models_fetch_failed", e.to_string()))?;
+    let response = request.send().await.map_err(|e| {
+        tracing::debug!(provider = PROVIDER_ID, error = %e, "models request failed");
+        provider_error(
+            "models_fetch_failed",
+            "Codex model discovery failed; inspect provider logs",
+        )
+    })?;
     let status = response.status();
     let etag = response
         .headers()
         .get(ETAG)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| provider_error("models_body_failed", e.to_string()))?;
+    let body = response.bytes().await.map_err(|e| {
+        tracing::debug!(provider = PROVIDER_ID, error = %e, "models response read failed");
+        provider_error(
+            "models_body_failed",
+            "Codex model discovery failed; inspect provider logs",
+        )
+    })?;
     if !status.is_success() {
-        let text = String::from_utf8_lossy(&body);
+        tracing::debug!(
+            provider = PROVIDER_ID,
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            "models request rejected"
+        );
         return Err(provider_error(
             "models_http_error",
-            format!("Codex models endpoint returned {status}: {text}"),
+            format!("Codex model discovery failed (HTTP {status})"),
         ));
     }
     let response: ModelsResponse = serde_json::from_slice(&body).map_err(|e| {
+        tracing::debug!(provider = PROVIDER_ID, error = %e, "invalid models response");
         provider_error(
             "bad_models_response",
-            format!("failed to decode Codex models response: {e}"),
+            "Codex returned an invalid model catalog; inspect provider logs",
         )
     })?;
     let models = map_models(response.models);
@@ -272,10 +286,24 @@ pub async fn refresh_models_periodically(
     loop {
         tokio::time::sleep(MODELS_REFRESH_INTERVAL).await;
         match refresh_models(&iii, &http, &refresh_state, false).await {
-            Ok(count) => println!("[provider-openai-codex] periodic catalog refresh: {count} models"),
-            Err(e) => eprintln!(
-                "[provider-openai-codex] periodic catalog refresh failed ({e}); keeping last known catalog"
-            ),
+            Ok(count) => {
+                println!("[provider-openai-codex] periodic catalog refresh: {count} models")
+            }
+            Err(e) => {
+                eprintln!(
+                    "[provider-openai-codex] periodic catalog refresh failed ({e}); keeping last known catalog"
+                );
+                if let Err(status_error) =
+                    llm_router::provider_scaffold::router_client::report_catalog_failure(
+                        &iii,
+                        PROVIDER_ID,
+                        registration_state::STATE_SCOPE,
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %status_error, "failed to report catalog diagnostic");
+                }
+            }
         }
     }
 }

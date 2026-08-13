@@ -57,9 +57,10 @@ async fn run_upstream(
     let resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
+            tracing::debug!(error = %e, "kimi request failed");
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("kimi fetch failed: {e}"),
+                    &llm_router::provider_scaffold::errors::public_transport_error("kimi"),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -72,11 +73,13 @@ async fn run_upstream(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
-        let msg = if text.is_empty() {
-            format!("kimi http {status}")
-        } else {
-            text
-        };
+        tracing::debug!(
+            status = status.as_u16(),
+            body_bytes = text.len(),
+            "kimi upstream rejected request"
+        );
+        let msg =
+            llm_router::provider_scaffold::errors::public_http_error("kimi", status.as_u16(), kind);
         let _ = tx
             .send(synthetic_error_event(&msg, &args.model, kind))
             .await;
@@ -100,9 +103,10 @@ async fn run_upstream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
+                tracing::debug!(provider = "kimi", error = %e, "stream read failed");
                 let _ = tx
                     .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
+                        &llm_router::provider_scaffold::errors::public_transport_error("kimi"),
                         &args.model,
                         ErrorKind::Transient,
                     ))

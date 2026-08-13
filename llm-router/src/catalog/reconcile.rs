@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
+use crate::types::router::CatalogState;
 use crate::types::router::{ModelsReconcileRequest, ModelsReconcileResponse};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
@@ -44,6 +45,17 @@ pub fn make_models_reconcile(
             }
             let count = models.len();
             catalog.set_slice(&provider, models).await?;
+            registry
+                .set_runtime_diagnostic(
+                    &provider,
+                    None,
+                    Some(if count == 0 {
+                        CatalogState::Empty
+                    } else {
+                        CatalogState::Ready
+                    }),
+                )
+                .await;
             events
                 .emit(
                     triggers::MODELS_CHANGED,

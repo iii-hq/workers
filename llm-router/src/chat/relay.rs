@@ -57,6 +57,7 @@ use super::pricing::fill_cost_usd;
 pub enum NoTerminalReason {
     Closed,
     Idle,
+    Protocol,
 }
 
 #[derive(Debug)]
@@ -156,7 +157,13 @@ pub async fn relay_frames(
             }
             ReadEvent::Msg(msg) => {
                 let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(&msg) else {
-                    continue; // malformed frame: skip, never fatal
+                    reader.close();
+                    return RelayResult::NoTerminal {
+                        reason: NoTerminalReason::Protocol,
+                        partial: acc.current(),
+                        usage,
+                        forwarded,
+                    };
                 };
                 if !matches!(ev, AssistantMessageEvent::Ping) {
                     last_progress = std::time::Instant::now();
@@ -196,13 +203,14 @@ pub async fn relay_frames(
 
                 let is_done = matches!(enriched, Some(AssistantMessageEvent::Done { .. }));
                 let is_error = matches!(enriched, Some(AssistantMessageEvent::Error { .. }));
-                // Terminal-holdback: a pre-content error terminal stays with us
-                // so chat.rs can retry the attempt invisibly.
-                if is_error && !forwarded {
+                // Hold every error terminal so chat.rs can attach the stable
+                // RouterFailure metadata before the caller sees it. Pre-content
+                // errors can additionally be retried invisibly.
+                if is_error {
                     reader.close();
                     return RelayResult::ErrorFrame {
                         terminal: enriched.expect("error frame just matched"),
-                        forwarded: false,
+                        forwarded,
                         terminal_forwarded: false,
                     };
                 }
@@ -224,13 +232,6 @@ pub async fn relay_frames(
                     return RelayResult::Done {
                         terminal: enriched.expect("done frame just matched"),
                         forwarded,
-                    };
-                }
-                if is_error {
-                    return RelayResult::ErrorFrame {
-                        terminal: enriched.expect("error frame just matched"),
-                        forwarded,
-                        terminal_forwarded: true,
                     };
                 }
             }
@@ -375,7 +376,7 @@ mod loop_tests {
     }
 
     #[tokio::test]
-    async fn error_after_content_is_forwarded_and_marked() {
+    async fn error_after_content_is_held_for_router_failure_enrichment() {
         let provider = FakeChannel::new();
         let mut caller = FakeChannel::new();
         send(
@@ -399,8 +400,11 @@ mod loop_tests {
         else {
             panic!()
         };
-        assert!(forwarded && terminal_forwarded);
-        assert_eq!(drain(&mut caller).await.len(), 2);
+        assert!(forwarded);
+        assert!(!terminal_forwarded);
+        // Content already reached the caller; the terminal is held so chat.rs
+        // can attach RouterFailure before forwarding it exactly once.
+        assert_eq!(drain(&mut caller).await.len(), 1);
     }
 
     #[tokio::test]

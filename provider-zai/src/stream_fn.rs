@@ -76,13 +76,14 @@ async fn run_stream_call(
         Ok(r) => r,
         Err(e) => {
             let kind = classify_bus_error(&e);
+            tracing::debug!(provider = "zai", error = %e, "provider resolution failed");
             if kind == ErrorKind::AuthExpired {
                 cache.invalidate();
             }
             let _ = send_event(
                 sink,
                 &synthetic_error_event(
-                    &format!("router::provider::resolve failed: {e}"),
+                    &llm_router::provider_scaffold::errors::public_error("zai", kind),
                     &model,
                     kind,
                 ),

@@ -26,6 +26,7 @@ pub fn declaration() -> ProviderDeclaration {
         // ~/.claude/.credentials.json dev fallback), never from a router-config
         // api_key or an env var. API keys belong on provider-anthropic.
         credential_env_var: None,
+        credential_requirement: llm_router::types::router::CredentialRequirement::External,
         defaults: Some(ProviderDefaults {
             api_url: Some(DEFAULT_API_URL.into()),
             max_tokens: Some(DEFAULT_MAX_TOKENS),
@@ -111,9 +112,21 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     auth::import_claude_home_if_absent(&iii).await;
     match refresh_models(&iii, &http).await {
         Ok(count) => println!("[provider-claude-code] catalog refreshed: {count} models"),
-        Err(e) => eprintln!(
-            "[provider-claude-code] post-register refresh failed ({e}); keeping last known catalog"
-        ),
+        Err(e) => {
+            eprintln!(
+                "[provider-claude-code] post-register refresh failed ({e}); keeping last known catalog"
+            );
+            if let Err(status_error) =
+                llm_router::provider_scaffold::router_client::report_catalog_failure(
+                    &iii,
+                    PROVIDER_ID,
+                    state::STATE_SCOPE,
+                )
+                .await
+            {
+                tracing::debug!(error = %status_error, "failed to report catalog diagnostic");
+            }
+        }
     }
 }
 

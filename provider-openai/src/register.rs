@@ -26,6 +26,7 @@ pub fn declaration() -> ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("OpenAI".into()),
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
+        credential_requirement: llm_router::types::router::CredentialRequirement::Required,
         defaults: Some(ProviderDefaults {
             api_url: Some(DEFAULT_API_URL.into()),
             max_tokens: Some(DEFAULT_MAX_TOKENS),
@@ -107,7 +108,19 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     declare_with_backoff(iii.clone()).await;
     match refresh_models(&iii, &http).await {
         Ok(count) => println!("[provider-openai] catalog refreshed: {count} models"),
-        Err(e) => eprintln!("[provider-openai] post-register refresh failed ({e})"),
+        Err(e) => {
+            eprintln!("[provider-openai] post-register refresh failed ({e})");
+            if let Err(status_error) =
+                llm_router::provider_scaffold::router_client::report_catalog_failure(
+                    &iii,
+                    PROVIDER_ID,
+                    state::STATE_SCOPE,
+                )
+                .await
+            {
+                tracing::debug!(error = %status_error, "failed to report catalog diagnostic");
+            }
+        }
     }
 }
 

@@ -8,6 +8,9 @@
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::provider_scaffold::errors::{
+    public_http_error, public_protocol_error, public_transport_error,
+};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
@@ -142,24 +145,36 @@ pub async fn handle(
     for (name, value) in build_headers(&cfg) {
         request = request.header(name, value);
     }
-    let response = request
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| Error::Handler(format!("provider/upstream: {e}")))?;
+    let response = request.json(&body).send().await.map_err(|e| {
+        tracing::debug!(provider = "anthropic", error = %e, "token count request failed");
+        Error::Handler(format!(
+            "provider/upstream: {}",
+            public_transport_error("anthropic")
+        ))
+    })?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        let excerpt: String = body.chars().take(300).collect();
+        let kind = crate::errors::classify(Some(status.as_u16()), &body);
+        tracing::debug!(
+            provider = "anthropic",
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            "token count request rejected"
+        );
         return Err(Error::Handler(format!(
-            "provider/upstream_status: {status}: {excerpt}"
+            "provider/upstream_status: {}",
+            public_http_error("anthropic", status.as_u16(), kind)
         )));
     }
-    let wire: WireCountResponse = response
-        .json()
-        .await
-        .map_err(|e| Error::Handler(format!("provider/bad_response: {e}")))?;
+    let wire: WireCountResponse = response.json().await.map_err(|e| {
+        tracing::debug!(provider = "anthropic", error = %e, "invalid token count response");
+        Error::Handler(format!(
+            "provider/bad_response: {}",
+            public_protocol_error("anthropic")
+        ))
+    })?;
 
     Ok(CountTokensResponse {
         model: cfg.model,

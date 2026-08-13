@@ -8,9 +8,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::types::errors::{RouterCode, RouterError};
+use crate::types::errors::{RouterCode, RouterError, RouterFailure};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
-use crate::types::router::{ChatResponse, ErrorShape};
+use crate::types::router::{ChatResponse, ErrorShape, FailureMode};
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
@@ -70,6 +70,8 @@ pub struct ChatCall {
     #[allow(dead_code)]
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub failure_mode: FailureMode,
 }
 
 /// Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's
@@ -115,59 +117,86 @@ impl ChatPipeline {
         // the sink. Without it, `router::complete`'s drain blocks for its full
         // reader budget and `router::chat` consumers never see a terminal.
         // (Regression: pre_stream_routing_failure_emits_one_error_terminal_frame.)
-        let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> Error {
-            // Pre-stream failures are permanent: a bad model or an unrouted
-            // request won't succeed on retry. Mark the frame Permanent so a
-            // streaming consumer inspecting error_kind doesn't retry it.
-            let frame = synthesize_error(
-                None,
-                &call.model,
-                provider,
-                &message,
-                ErrorKind::Permanent,
-                None,
-                now_ms(),
-            );
-            let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
-            RouterError::new(code, message).into()
-        };
+        let fail_pre_stream =
+            |provider: &str, code: RouterCode, message: String| -> Result<ChatResponse, Error> {
+                // Pre-stream failures are permanent: a bad model or an unrouted
+                // request won't succeed on retry. Mark the frame Permanent so a
+                // streaming consumer inspecting error_kind doesn't retry it.
+                let failure = RouterFailure::new(
+                    code,
+                    ErrorKind::Permanent,
+                    message.clone(),
+                    false,
+                    Some(provider),
+                    Some(&call.model),
+                    0,
+                );
+                let mut frame = synthesize_error(
+                    None,
+                    &call.model,
+                    provider,
+                    &message,
+                    ErrorKind::Permanent,
+                    None,
+                    now_ms(),
+                );
+                if let AssistantMessageEvent::Error { error } = &mut frame {
+                    error.failure = Some(failure.clone());
+                    error.error_message = Some(failure.message.clone());
+                }
+                let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
+                if call.failure_mode == FailureMode::Structured {
+                    Ok(ChatResponse {
+                        ok: false,
+                        provider: provider.to_string(),
+                        model: call.model.clone(),
+                        stop_reason: Some(StopReason::Error),
+                        usage: None,
+                        error: Some(ErrorShape {
+                            code: failure.code.clone(),
+                            message: failure.message.clone(),
+                        }),
+                        failure: Some(failure),
+                    })
+                } else {
+                    Err(RouterError::new(code, failure.message).into())
+                }
+            };
 
         // ── validate (pre-stream typed throws) ──
         if call.model.is_empty() {
-            return Err(fail_pre_stream(
-                "",
-                RouterCode::InvalidRequest,
-                "model is required".into(),
-            ));
+            return fail_pre_stream("", RouterCode::InvalidRequest, "model is required".into());
         }
         if !call.messages.is_array() {
-            return Err(fail_pre_stream(
+            return fail_pre_stream(
                 "",
                 RouterCode::InvalidRequest,
                 "messages must be an array".into(),
-            ));
+            );
         }
 
         let config = snapshot(&self.config);
         let settings = config.settings().clone();
-        let candidates = decide(&DecideInput {
+        let candidates = match decide(&DecideInput {
             model: call.model.clone(),
             provider: call.provider.clone(),
             registered_providers: self.registry.ids().await,
             catalog: self.catalog.model_ids().await,
             heuristics: settings.routing_heuristics.clone(),
             default_provider: settings.default_provider.clone(),
-        })
-        .map_err(|e| fail_pre_stream("", e.code, e.message))?;
+        }) {
+            Ok(candidates) => candidates,
+            Err(e) => return fail_pre_stream("", e.code, e.message),
+        };
         let provider = candidates[0].clone(); // MVP consumes candidates[0]
         let record = match self.registry.get(&provider).await {
             Some(record) => record,
             None => {
-                return Err(fail_pre_stream(
+                return fail_pre_stream(
                     &provider,
                     RouterCode::UnknownProvider,
                     format!("unknown provider {provider}"),
-                ))
+                )
             }
         };
 
@@ -177,11 +206,11 @@ impl ChatPipeline {
         if call.response_format.is_some() {
             if let Some(meta) = &model_meta {
                 if !model_supports(meta, "structured_output") {
-                    return Err(fail_pre_stream(
+                    return fail_pre_stream(
                         &provider,
                         RouterCode::StructuredOutputUnsupported,
                         format!("structured output unsupported for model {}", call.model),
-                    ));
+                    );
                 }
             }
         }
@@ -254,16 +283,24 @@ impl ChatPipeline {
         let send_frame = |frame: &AssistantMessageEvent| {
             let _ = sink.send(&serde_json::to_string(frame).expect("serializable frame"));
         };
-        let respond_err = |stop: StopReason, code: &str, message: String, usage| ChatResponse {
-            ok: false,
-            provider: provider.to_string(),
-            model: call.model.clone(),
-            stop_reason: Some(stop),
-            usage,
-            error: Some(ErrorShape {
-                code: code.to_string(),
-                message,
-            }),
+        let respond_err = |stop: StopReason, failure: RouterFailure, usage| -> ChatResponse {
+            ChatResponse {
+                ok: false,
+                provider: provider.to_string(),
+                model: call.model.clone(),
+                stop_reason: Some(stop),
+                usage,
+                error: Some(ErrorShape {
+                    // Compatibility field: historically this was the bare
+                    // ErrorKind wire value. Stable router codes live in failure.
+                    code: serde_json::to_value(failure.kind)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "transient".to_string()),
+                    message: failure.message.clone(),
+                }),
+                failure: Some(failure),
+            }
         };
 
         let max_attempts = 1 + settings.retry_max;
@@ -371,6 +408,9 @@ impl ChatPipeline {
                             )
                             .await;
                     }
+                    self.registry
+                        .set_runtime_diagnostic(provider, None, None)
+                        .await;
                     return Ok(ChatResponse {
                         ok: true,
                         provider: provider.to_string(),
@@ -378,6 +418,7 @@ impl ChatPipeline {
                         stop_reason: Some(message.stop_reason),
                         usage: message.usage,
                         error: None,
+                        failure: None,
                     });
                 }
                 RelayResult::ErrorFrame {
@@ -400,24 +441,62 @@ impl ChatPipeline {
                         .await;
                         continue;
                     }
+                    let AssistantMessageEvent::Error { mut error } = terminal else {
+                        unreachable!()
+                    };
+                    let message = error
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "provider error".into());
+                    let retryable = !forwarded && kind.map(|k| k.is_retryable()).unwrap_or(false);
+                    let failure = error.failure.clone().unwrap_or_else(|| {
+                        RouterFailure::from_kind(
+                            kind.unwrap_or(ErrorKind::Transient),
+                            message,
+                            retryable,
+                            Some(provider),
+                            Some(&call.model),
+                            attempt,
+                        )
+                    });
+                    // Reconstruct even an already-enriched provider failure so
+                    // untrusted provider text always crosses the router's
+                    // public-message sanitizer.
+                    let code = if RouterCode::is_known(&failure.code) {
+                        failure.code
+                    } else {
+                        RouterFailure::from_kind(
+                            failure.kind,
+                            &failure.message,
+                            retryable,
+                            Some(provider),
+                            Some(&call.model),
+                            attempt,
+                        )
+                        .code
+                    };
+                    let failure = RouterFailure::from_remote(
+                        code,
+                        failure.kind,
+                        failure.message,
+                        retryable,
+                        Some(provider),
+                        Some(&call.model),
+                        attempt,
+                    );
+                    error.failure = Some(failure.clone());
+                    error.error_message = Some(failure.message.clone());
+                    let terminal = AssistantMessageEvent::Error { error };
                     if !terminal_forwarded {
                         send_frame(&terminal);
                     }
                     let AssistantMessageEvent::Error { error } = terminal else {
                         unreachable!()
                     };
-                    let code = kind
-                        .and_then(|k| serde_json::to_value(k).ok())
-                        .and_then(|v| v.as_str().map(String::from))
-                        .unwrap_or_else(|| "transient".into());
-                    return Ok(respond_err(
-                        StopReason::Error,
-                        &code,
-                        error
-                            .error_message
-                            .unwrap_or_else(|| "provider error".into()),
-                        error.usage,
-                    ));
+                    self.registry
+                        .set_runtime_diagnostic(provider, Some(failure.clone()), None)
+                        .await;
+                    return Ok(respond_err(StopReason::Error, failure, error.usage));
                 }
                 RelayResult::Aborted { partial, usage, .. } => {
                     last_partial = partial;
@@ -433,6 +512,7 @@ impl ChatPipeline {
                         stop_reason: Some(StopReason::Aborted),
                         usage: None,
                         error: None,
+                        failure: None,
                     });
                 }
                 RelayResult::NoTerminal {
@@ -446,7 +526,38 @@ impl ChatPipeline {
                     if let Err(err) = call_outcome {
                         if !forwarded {
                             if is_router_coded(&err) {
-                                return Err(err);
+                                if call.failure_mode == FailureMode::LegacyThrow {
+                                    return Err(err);
+                                }
+                                let Error::Remote { code, message, .. } = err else {
+                                    unreachable!("is_router_coded only accepts remote errors")
+                                };
+                                let failure = RouterFailure::from_remote(
+                                    code,
+                                    ErrorKind::Permanent,
+                                    message,
+                                    false,
+                                    Some(provider),
+                                    Some(&call.model),
+                                    attempt,
+                                );
+                                let mut terminal = synthesize_error(
+                                    last_partial.as_ref(),
+                                    &call.model,
+                                    provider,
+                                    &failure.message,
+                                    failure.kind,
+                                    usage.clone(),
+                                    now_ms(),
+                                );
+                                if let AssistantMessageEvent::Error { error } = &mut terminal {
+                                    error.failure = Some(failure.clone());
+                                }
+                                send_frame(&terminal);
+                                self.registry
+                                    .set_runtime_diagnostic(provider, Some(failure.clone()), None)
+                                    .await;
+                                return Ok(respond_err(StopReason::Error, failure, usage));
                             }
                             if is_function_not_found(&err) {
                                 if self.registry.set_availability(provider, false).await {
@@ -457,17 +568,49 @@ impl ChatPipeline {
                                         )
                                         .await;
                                 }
-                                return Err(RouterError::new(
+                                let message = format!("provider {provider} unavailable");
+                                if call.failure_mode == FailureMode::LegacyThrow {
+                                    return Err(RouterError::new(
+                                        RouterCode::ProviderUnavailable,
+                                        message,
+                                    )
+                                    .into());
+                                }
+                                let failure = RouterFailure::new(
                                     RouterCode::ProviderUnavailable,
-                                    format!("provider {provider} unavailable"),
-                                )
-                                .into());
+                                    ErrorKind::Transient,
+                                    message.clone(),
+                                    true,
+                                    Some(provider),
+                                    Some(&call.model),
+                                    attempt,
+                                );
+                                let mut terminal = synthesize_error(
+                                    last_partial.as_ref(),
+                                    &call.model,
+                                    provider,
+                                    &message,
+                                    ErrorKind::Transient,
+                                    usage,
+                                    now_ms(),
+                                );
+                                if let AssistantMessageEvent::Error { error } = &mut terminal {
+                                    error.failure = Some(failure.clone());
+                                    error.error_message = Some(failure.message.clone());
+                                }
+                                send_frame(&terminal);
+                                self.registry
+                                    .set_runtime_diagnostic(provider, Some(failure.clone()), None)
+                                    .await;
+                                return Ok(respond_err(StopReason::Error, failure, None));
                             }
                         }
                     }
                     let is_idle = matches!(reason, NoTerminalReason::Idle);
+                    let is_protocol = matches!(reason, NoTerminalReason::Protocol);
                     let can_retry = !forwarded
                         && !is_idle
+                        && !is_protocol
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
@@ -482,6 +625,8 @@ impl ChatPipeline {
                             "provider {provider} stream idle past {}ms",
                             settings.idle_timeout_ms
                         )
+                    } else if is_protocol {
+                        format!("provider {provider} emitted a malformed stream frame")
                     } else {
                         format!("provider {provider} stream ended without a terminal frame")
                     };
@@ -494,16 +639,35 @@ impl ChatPipeline {
                         usage,
                         now_ms(),
                     );
+                    let code = if is_idle {
+                        RouterCode::StreamIdleTimeout
+                    } else if is_protocol {
+                        RouterCode::ProviderProtocolError
+                    } else {
+                        RouterCode::StreamIncomplete
+                    };
+                    let failure = RouterFailure::new(
+                        code,
+                        ErrorKind::Transient,
+                        message.clone(),
+                        !forwarded && !is_protocol,
+                        Some(provider),
+                        Some(&call.model),
+                        attempt,
+                    );
+                    let mut terminal = terminal;
+                    if let AssistantMessageEvent::Error { error } = &mut terminal {
+                        error.failure = Some(failure.clone());
+                        error.error_message = Some(failure.message.clone());
+                    }
                     send_frame(&terminal);
                     let AssistantMessageEvent::Error { error } = terminal else {
                         unreachable!()
                     };
-                    return Ok(respond_err(
-                        StopReason::Error,
-                        "transient",
-                        message,
-                        error.usage,
-                    ));
+                    self.registry
+                        .set_runtime_diagnostic(provider, Some(failure.clone()), None)
+                        .await;
+                    return Ok(respond_err(StopReason::Error, failure, error.usage));
                 }
             }
         }
@@ -527,6 +691,7 @@ impl ChatPipeline {
             stop_reason: Some(StopReason::Aborted),
             usage: message.usage,
             error: None,
+            failure: None,
         })
     }
 }
@@ -682,6 +847,59 @@ mod tests {
             matches!(second, ReadEvent::Eof | ReadEvent::Timeout),
             "exactly one frame expected, got a second: {second:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn structured_pre_stream_failure_returns_the_same_failure_as_the_terminal() {
+        use crate::catalog::store::CatalogStore;
+        use crate::chat::inflight::InflightMap;
+        use crate::chat::relay::{ReadEvent, RelayRead};
+        use crate::config::state::new_config_cell;
+        use crate::registry::store::RegistryStore;
+        use crate::testkit::fake_channels::FakeChannel;
+        use crate::triggers::RouterEvents;
+        use std::time::Duration;
+
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:0", iii_sdk::InitOptions::default());
+        let pipeline = ChatPipeline {
+            iii: iii.clone(),
+            registry: Arc::new(RegistryStore::new(iii.clone())),
+            catalog: Arc::new(CatalogStore::new(iii.clone())),
+            inflight: Arc::new(InflightMap::default()),
+            config: new_config_cell(Value::Null),
+            events: RouterEvents::register(&iii),
+        };
+        let ch = FakeChannel::new();
+        let call: ChatCall = serde_json::from_value(json!({
+            "model": "ghost-model-routes-nowhere",
+            "messages": [],
+            "failure_mode": "structured",
+        }))
+        .unwrap();
+
+        let response = pipeline
+            .run(call, Arc::new(ch.writer.clone()))
+            .await
+            .expect("structured semantic failures do not throw");
+        assert!(!response.ok);
+        let response_failure = response.failure.expect("structured failure");
+        assert_eq!(response_failure.code, "router/no_provider_for_model");
+        assert!(!response_failure.retryable);
+
+        let mut reader = ch.reader;
+        let ReadEvent::Msg(frame) = reader.next(Duration::from_millis(50)).await else {
+            panic!("missing structured terminal frame")
+        };
+        let AssistantMessageEvent::Error { error } =
+            serde_json::from_str::<AssistantMessageEvent>(&frame).unwrap()
+        else {
+            panic!("expected error terminal")
+        };
+        assert_eq!(error.failure.as_ref(), Some(&response_failure));
+        assert!(matches!(
+            reader.next(Duration::from_millis(50)).await,
+            ReadEvent::Eof | ReadEvent::Timeout
+        ));
     }
 
     /// Provider-side schemas reject `null` where a string or array is

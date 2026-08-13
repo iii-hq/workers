@@ -28,6 +28,7 @@ pub fn declaration() -> ProviderDeclaration {
         // OAuth-only: credentials come from the auth-credentials vault, never
         // from a router-config api_key or an env var.
         credential_env_var: None,
+        credential_requirement: llm_router::types::router::CredentialRequirement::External,
         defaults: Some(ProviderDefaults {
             api_url: Some(DEFAULT_API_URL.into()),
             max_tokens: Some(DEFAULT_MAX_TOKENS),
@@ -109,9 +110,21 @@ pub async fn declare_and_refresh(
     auth::import_codex_home_if_absent(&iii).await;
     match refresh_models(&iii, &http, &refresh_state, true).await {
         Ok(count) => println!("[provider-openai-codex] catalog reconciled: {count} models"),
-        Err(e) => eprintln!(
-            "[provider-openai-codex] post-register reconcile failed ({e}); keeping last known catalog"
-        ),
+        Err(e) => {
+            eprintln!(
+                "[provider-openai-codex] post-register reconcile failed ({e}); keeping last known catalog"
+            );
+            if let Err(status_error) =
+                llm_router::provider_scaffold::router_client::report_catalog_failure(
+                    &iii,
+                    PROVIDER_ID,
+                    state::STATE_SCOPE,
+                )
+                .await
+            {
+                tracing::debug!(error = %status_error, "failed to report catalog diagnostic");
+            }
+        }
     }
 }
 

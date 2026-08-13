@@ -2,25 +2,34 @@
 use std::collections::BTreeMap;
 
 use crate::types::errors::{RouterCode, RouterError};
+use crate::types::router::CredentialRequirement;
 use serde_json::{json, Value};
 
-pub fn default_provider_schema(defaults: &Value) -> Value {
+pub fn default_provider_schema(
+    defaults: &Value,
+    credential_requirement: CredentialRequirement,
+) -> Value {
     let mut api_url = json!({ "type": "string" });
     if let Some(u) = defaults.get("api_url").and_then(Value::as_str) {
         api_url["default"] = json!(u);
     }
-    let mut max_tokens = json!({ "type": "number" });
+    let mut max_tokens = json!({ "type": "integer", "minimum": 1 });
     if let Some(m) = defaults.get("max_tokens").and_then(Value::as_u64) {
         max_tokens["default"] = json!(m);
     }
+    let mut properties = serde_json::Map::new();
+    if credential_requirement != CredentialRequirement::External {
+        properties.insert(
+            "api_key".into(),
+            json!({ "type": "string", "writeOnly": true, "format": "password" }),
+        );
+    }
+    properties.insert("api_url".into(), api_url);
+    properties.insert("max_tokens".into(), max_tokens);
     json!({
         "type": "object",
         "additionalProperties": true,
-        "properties": {
-            "api_key": { "type": "string", "writeOnly": true, "format": "password" },
-            "api_url": api_url,
-            "max_tokens": max_tokens,
-        }
+        "properties": properties
     })
 }
 
@@ -65,10 +74,11 @@ pub fn provider_entry_schema(
     config_schema: Option<&Value>,
     defaults: &Value,
     declared_prompt: Option<&str>,
+    credential_requirement: CredentialRequirement,
 ) -> Value {
     let mut schema = config_schema
         .cloned()
-        .unwrap_or_else(|| default_provider_schema(defaults));
+        .unwrap_or_else(|| default_provider_schema(defaults, credential_requirement));
     if declared_prompt.is_some() {
         if let Some(Value::Object(props)) = schema.get_mut("properties") {
             props.insert(
@@ -118,10 +128,10 @@ pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value
             "settings": {
                 "type": "object",
                 "properties": {
-                    "stream_timeout_ms": { "type": "number", "default": 300000 },
-                    "idle_timeout_ms": { "type": "number", "default": 120000 },
-                    "retry_max": { "type": "number", "default": 2 },
-                    "output_token_max": { "type": "number", "default": 32000 }
+                    "stream_timeout_ms": { "type": "integer", "minimum": 1, "default": 300000 },
+                    "idle_timeout_ms": { "type": "integer", "minimum": 1, "default": 120000 },
+                    "retry_max": { "type": "integer", "minimum": 0, "maximum": 10, "default": 2 },
+                    "output_token_max": { "type": "integer", "minimum": 1, "default": 32000 }
                 }
             },
             "providers": { "type": "object", "properties": provider_schemas }
@@ -136,7 +146,10 @@ mod tests {
 
     #[test]
     fn default_provider_schema_marks_api_key_write_only() {
-        let s = default_provider_schema(&json!({ "api_url": "https://x", "max_tokens": 8192 }));
+        let s = default_provider_schema(
+            &json!({ "api_url": "https://x", "max_tokens": 8192 }),
+            CredentialRequirement::Required,
+        );
         assert_eq!(s["properties"]["api_key"]["writeOnly"], true);
         assert_eq!(s["properties"]["api_key"]["format"], "password");
         assert_eq!(s["properties"]["api_url"]["default"], "https://x");
@@ -146,7 +159,10 @@ mod tests {
     #[test]
     fn compose_nests_provider_slices_plus_router_owned_fields() {
         let mut providers = std::collections::BTreeMap::new();
-        providers.insert("anthropic".to_string(), default_provider_schema(&json!({})));
+        providers.insert(
+            "anthropic".to_string(),
+            default_provider_schema(&json!({}), CredentialRequirement::Required),
+        );
         let s = compose_entry_schema(&providers);
         for key in [
             "default_provider",
@@ -164,13 +180,18 @@ mod tests {
     #[test]
     fn provider_entry_schema_carries_declared_prompt_as_default() {
         // declared prompt → system_prompt.default so the console pre-fills it
-        let s = provider_entry_schema(None, &json!({}), Some("DECLARED"));
+        let s = provider_entry_schema(
+            None,
+            &json!({}),
+            Some("DECLARED"),
+            CredentialRequirement::Required,
+        );
         let sp = &s["properties"]["system_prompt"];
         assert_eq!(sp["type"], json!(["string", "null"]));
         assert_eq!(sp["format"], "textarea");
         assert_eq!(sp["default"], "DECLARED");
         // no declared prompt → compose still adds the knob, without a default
-        let s = provider_entry_schema(None, &json!({}), None);
+        let s = provider_entry_schema(None, &json!({}), None, CredentialRequirement::Required);
         assert!(s["properties"].get("system_prompt").is_none());
         let composed = with_prompt_fields(&s);
         assert!(composed["properties"]["system_prompt"]
@@ -181,7 +202,10 @@ mod tests {
     #[test]
     fn compose_injects_prompt_field_into_every_slice_including_custom() {
         let mut providers = std::collections::BTreeMap::new();
-        providers.insert("anthropic".to_string(), default_provider_schema(&json!({})));
+        providers.insert(
+            "anthropic".to_string(),
+            default_provider_schema(&json!({}), CredentialRequirement::Required),
+        );
         providers.insert(
             "custom".to_string(),
             json!({ "type": "object", "properties": { "region": { "type": "string" } } }),
@@ -210,5 +234,11 @@ mod tests {
         let good = json!({ "type": "object", "properties": { "api_key": { "type": "string", "writeOnly": true } } });
         assert!(validate_custom_schema(&good).is_ok());
         assert!(validate_custom_schema(&json!({ "type": "object" })).is_ok());
+    }
+
+    #[test]
+    fn external_credentials_do_not_render_an_api_key_field() {
+        let schema = default_provider_schema(&json!({}), CredentialRequirement::External);
+        assert!(schema["properties"].get("api_key").is_none());
     }
 }

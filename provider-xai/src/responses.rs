@@ -17,6 +17,9 @@ use crate::wire::messages::to_wire_messages;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
 use futures::StreamExt;
+use llm_router::provider_scaffold::errors::{
+    public_error, public_http_error, public_transport_error,
+};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AgentMessage, AssistantMessage, AssistantRoleTag};
@@ -130,6 +133,7 @@ fn partial(state: &ResponsesState, model: &str) -> AssistantMessage {
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        failure: None,
         warnings: (!warnings.is_empty()).then_some(warnings),
         usage: state.usage_seen.then(|| state.usage.clone()),
         model: model.to_string(),
@@ -318,9 +322,10 @@ async fn run_responses_upstream(
     let resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
+            tracing::debug!(provider = PROVIDER_ID, error = %e, "responses request failed");
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("xai responses fetch failed: {e}"),
+                    &public_transport_error(PROVIDER_ID),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -332,11 +337,13 @@ async fn run_responses_upstream(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
-        let msg = if text.is_empty() {
-            format!("xai responses http {status}")
-        } else {
-            text
-        };
+        tracing::debug!(
+            provider = PROVIDER_ID,
+            status = status.as_u16(),
+            body_bytes = text.len(),
+            "responses request rejected"
+        );
+        let msg = public_http_error(PROVIDER_ID, status.as_u16(), kind);
         let _ = tx
             .send(synthetic_error_event(&msg, &args.model, kind))
             .await;
@@ -363,9 +370,10 @@ async fn run_responses_upstream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
+                tracing::debug!(provider = PROVIDER_ID, error = %e, "responses stream read failed");
                 let _ = tx
                     .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
+                        &public_error(PROVIDER_ID, ErrorKind::Transient),
                         &args.model,
                         ErrorKind::Transient,
                     ))

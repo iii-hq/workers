@@ -4,6 +4,14 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "CredentialRequirement": {
+        "enum": [
+          "required",
+          "optional",
+          "external"
+        ],
+        "type": "string"
+      },
       "Model": {
         "description": "The capability record (README § Model descriptor).",
         "properties": {
@@ -192,6 +200,14 @@
           "string",
           "null"
         ]
+      },
+      "credential_requirement": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/CredentialRequirement"
+          }
+        ],
+        "default": "required"
       },
       "defaults": {
         "anyOf": [

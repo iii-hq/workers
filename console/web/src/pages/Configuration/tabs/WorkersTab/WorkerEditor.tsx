@@ -60,6 +60,9 @@ export function WorkerEditor({
   const [draft, setDraft] = useState<JsonValue | undefined>(undefined)
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
   const [errors, setErrors] = useState<Map<string, string>>(new Map())
+  const [semanticErrors, setSemanticErrors] = useState<
+    ReadonlyMap<string, string>
+  >(new Map())
 
   // Seed / re-seed the draft from the loaded value. We track equality
   // against the previously-seeded reference so a re-render with the same
@@ -92,8 +95,10 @@ export function WorkerEditor({
   const displayErrors = useMemo(() => {
     const merged = new Map(errors)
     for (const [pointer, message] of clientErrors) merged.set(pointer, message)
+    for (const [pointer, message] of semanticErrors)
+      merged.set(pointer, message)
     return merged
-  }, [errors, clientErrors])
+  }, [errors, clientErrors, semanticErrors])
 
   // A root-level ('') validation error can't attach to any field; surface it
   // near the save bar so a disabled Save button always has a visible reason.
@@ -151,11 +156,13 @@ export function WorkerEditor({
     if (draft === undefined) return
     // Defensive: the Save button is disabled while client errors exist, but
     // guard here too in case a draft change races the click.
-    if (clientErrors.size > 0) {
+    if (clientErrors.size > 0 || semanticErrors.size > 0) {
       setStatus({
         kind: 'error',
         message:
-          clientErrors.get('') ?? 'fix the validation errors before saving',
+          clientErrors.get('') ??
+          semanticErrors.get('') ??
+          'fix the validation errors before saving',
       })
       return
     }
@@ -179,7 +186,7 @@ export function WorkerEditor({
         },
       },
     )
-  }, [draft, entry.id, setMutation, clientErrors])
+  }, [draft, entry.id, setMutation, clientErrors, semanticErrors])
 
   return (
     <section
@@ -206,6 +213,7 @@ export function WorkerEditor({
                   value={draft}
                   onChange={handleDraftChange}
                   errors={displayErrors}
+                  onValidationChange={setSemanticErrors}
                   focusField={fieldPathFromHash(entry.id)?.map(String)}
                 />
                 {rootError ? (
@@ -219,7 +227,7 @@ export function WorkerEditor({
                 status={status}
                 onSave={handleSave}
                 onReset={handleReset}
-                saveDisabled={clientErrors.size > 0}
+                saveDisabled={clientErrors.size > 0 || semanticErrors.size > 0}
               />
             </>
           ) : isObjectSchema(entry.schema) ? (

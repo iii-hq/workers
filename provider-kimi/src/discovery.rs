@@ -81,7 +81,12 @@ async fn fetch_live_models(
         .header("authorization", format!("Bearer {credential_value}"));
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {e}")),
+        Err(e) => {
+            tracing::debug!(provider = "kimi", error = %e, "model discovery request failed");
+            return FetchOutcome::Transient(
+                "kimi model discovery failed; inspect provider logs".into(),
+            );
+        }
     };
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
@@ -92,7 +97,12 @@ async fn fetch_live_models(
     }
     match resp.json::<Value>().await {
         Ok(v) => FetchOutcome::Ok(parse_live_models(&v)),
-        Err(e) => FetchOutcome::Transient(format!("models response not json: {e}")),
+        Err(e) => {
+            tracing::debug!(provider = "kimi", error = %e, "invalid model catalog response");
+            FetchOutcome::Transient(
+                "kimi returned an invalid model catalog; inspect provider logs".into(),
+            )
+        }
     }
 }
 

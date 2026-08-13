@@ -132,17 +132,19 @@ pub fn make_count_tokens(
                 .await
                 .map_err(|e| {
                     if is_function_not_found(&e) {
-                        Error::Handler(format!(
-                            "router/no_token_counter: provider '{provider}' has no token counter"
-                        ))
+                        RouterError::new(
+                            RouterCode::NoTokenCounter,
+                            format!("provider '{provider}' has no token counter"),
+                        )
+                        .into()
                     } else {
                         e
                     }
                 })?;
             let reply: ProviderCountTokensReply = serde_json::from_value(reply).map_err(|e| {
-                Error::Handler(format!(
-                    "router/bad_provider_response: provider::{provider}::count_tokens \
-                         returned an invalid response: {e}"
+                Error::from(RouterError::new(
+                    RouterCode::BadProviderResponse,
+                    format!("provider::{provider}::count_tokens returned an invalid response: {e}"),
                 ))
             })?;
             Ok(RouterCountTokensResponse {

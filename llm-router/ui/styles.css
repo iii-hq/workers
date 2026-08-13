@@ -62,9 +62,56 @@
 }
 
 [data-iii-ui='llm-router'] .llmr-cfg-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 13px;
   font-weight: 600;
   color: var(--color-ink);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-status-muted,
+[data-iii-ui='llm-router'] .llmr-cfg-runtime-loading {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-status-ok { color: var(--color-ok); }
+[data-iii-ui='llm-router'] .llmr-cfg-status-warn { color: var(--color-warn); }
+[data-iii-ui='llm-router'] .llmr-cfg-status-error { color: var(--color-alert); }
+[data-iii-ui='llm-router'] .llmr-cfg-status-info { color: var(--color-accent); }
+
+[data-iii-ui='llm-router'] .llmr-cfg-status-retry {
+  padding: 1px 4px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  cursor: pointer;
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-runtime-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--color-alert);
+  border-left: 2px solid var(--color-alert);
+  background: color-mix(in srgb, var(--color-alert) 8%, transparent);
+}
+
+[data-iii-ui='llm-router'] .llmr-cfg-runtime-loading {
+  font-size: 11px;
 }
 
 [data-iii-ui='llm-router'] .llmr-cfg-warning {

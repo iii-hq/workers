@@ -87,7 +87,12 @@ pub async fn handle(
     let token = state::load_token(iii).await;
     let resolved = router_client::resolve(iii, token.as_deref())
         .await
-        .map_err(|e| Error::Handler(format!("router::provider::resolve failed: {e}")))?;
+        .map_err(|e| {
+            tracing::debug!(provider = "kimi", error = %e, "provider resolution failed");
+            Error::Handler(
+                "provider/config: kimi configuration is unavailable; inspect provider logs".into(),
+            )
+        })?;
     let cfg = config_from_resolve(&req.model, None, &resolved)
         .map_err(|_| Error::Handler("provider/not_configured: no usable credential".into()))?;
 

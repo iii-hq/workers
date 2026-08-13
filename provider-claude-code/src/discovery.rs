@@ -124,7 +124,12 @@ async fn fetch_live_models(
         .header("anthropic-beta", OAUTH_BETA);
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {e}")),
+        Err(e) => {
+            tracing::debug!(provider = "claude-code", error = %e, "model discovery request failed");
+            return FetchOutcome::Transient(
+                "claude-code model discovery failed; inspect provider logs".into(),
+            );
+        }
     };
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
@@ -135,7 +140,12 @@ async fn fetch_live_models(
     }
     match resp.json::<Value>().await {
         Ok(v) => FetchOutcome::Ok(parse_live_models(&v)),
-        Err(e) => FetchOutcome::Transient(format!("models response not json: {e}")),
+        Err(e) => {
+            tracing::debug!(provider = "claude-code", error = %e, "invalid model catalog response");
+            FetchOutcome::Transient(
+                "claude-code returned an invalid model catalog; inspect provider logs".into(),
+            )
+        }
     }
 }
 
@@ -206,10 +216,24 @@ pub async fn refresh_models_periodically(iii: IIIClient, http: reqwest::Client) 
     loop {
         ticker.tick().await;
         match refresh_models(&iii, &http).await {
-            Ok(count) => println!("[provider-claude-code] periodic catalog refresh: {count} models"),
-            Err(e) => eprintln!(
-                "[provider-claude-code] periodic catalog refresh failed ({e}); keeping last known catalog"
-            ),
+            Ok(count) => {
+                println!("[provider-claude-code] periodic catalog refresh: {count} models")
+            }
+            Err(e) => {
+                eprintln!(
+                    "[provider-claude-code] periodic catalog refresh failed ({e}); keeping last known catalog"
+                );
+                if let Err(status_error) =
+                    llm_router::provider_scaffold::router_client::report_catalog_failure(
+                        &iii,
+                        PROVIDER_ID,
+                        state::STATE_SCOPE,
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %status_error, "failed to report catalog diagnostic");
+                }
+            }
         }
     }
 }

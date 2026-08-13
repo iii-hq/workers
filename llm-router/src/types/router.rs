@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::types::credential::Credential;
+use crate::types::errors::RouterFailure;
 use crate::types::events::{StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
@@ -45,6 +46,16 @@ pub struct ChatRequest {
     pub provider_options: Option<BTreeMap<String, Value>>, // namespaced by provider id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_mode: Option<FailureMode>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureMode {
+    #[default]
+    LegacyThrow,
+    Structured,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -64,6 +75,8 @@ pub struct ChatResponse {
     pub usage: Option<Usage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorShape>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<RouterFailure>,
 }
 
 /// Output of the `router::complete` iii function (non-streaming convenience).
@@ -74,6 +87,8 @@ pub struct CompleteResponse {
     pub usage: Option<Usage>,
     pub provider: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<RouterFailure>,
 }
 
 /// Input of the `router::abort` iii function.
@@ -93,6 +108,9 @@ pub struct ProviderInfo {
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,
+    pub credential_requirement: CredentialRequirement,
+    pub model_count: usize,
+    pub diagnostic: ProviderDiagnostic,
 }
 /// Input of `router::provider::list` — takes no arguments. A struct (rather
 /// than `Value`) keeps the request schema concrete; unknown fields (e.g. the
@@ -126,6 +144,8 @@ pub struct ProviderDeclaration {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_env_var: Option<String>,
+    #[serde(default)]
+    pub credential_requirement: CredentialRequirement,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defaults: Option<ProviderDefaults>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -138,6 +158,47 @@ pub struct ProviderDeclaration {
     pub system_prompt: Option<String>, // provider-authored identity prompt, served via router::system_prompt::get
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>, // self-reported; availability mapping only, never authorization
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialRequirement {
+    #[default]
+    Required,
+    Optional,
+    External,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialState {
+    #[default]
+    Unknown,
+    Ready,
+    Missing,
+    External,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogState {
+    #[default]
+    Unknown,
+    Discovering,
+    Ready,
+    Empty,
+    Error,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderDiagnostic {
+    pub credential_state: CredentialState,
+    pub catalog_state: CatalogState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<RouterFailure>,
+    pub updated_at: i64,
+    /// True after router restart until fresh provider/runtime evidence lands.
+    pub stale: bool,
 }
 
 /// Input of the `router::system_prompt::get` iii function. Unknown fields
@@ -428,6 +489,30 @@ pub struct UpdateCredentialRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateCredentialResponse {
     pub ok: bool,
+}
+
+/// Token-gated provider health update. Omitted fields keep their prior value;
+/// `clear_failure` explicitly clears the last sanitized failure.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderStatusRequest {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_state: Option<CredentialState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_state: Option<CatalogState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<RouterFailure>,
+    #[serde(default)]
+    pub clear_failure: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderStatusResponse {
+    pub ok: bool,
+    pub diagnostic: ProviderDiagnostic,
 }
 
 /// Input of `router::models::reconcile` — the only catalog write path.

@@ -17,9 +17,9 @@ use crate::types::router::{
     ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
     ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
     ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
-    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
-    SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
-    UpdateCredentialResponse,
+    ProviderResolveRequest, ProviderResolveResponse, ProviderStatusRequest, ProviderStatusResponse,
+    RouteRequest, RouteResponse, RouterAck, SystemPromptGetRequest, SystemPromptGetResponse,
+    UpdateCredentialRequest, UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
@@ -68,7 +68,11 @@ pub const MODELS_SUPPORTS_DESC: &str =
 
 pub const PROVIDER_LIST_ID: &str = "router::provider::list";
 pub const PROVIDER_LIST_DESC: &str =
-    "List registered providers with their configured/available status.";
+    "List registered providers with configuration, availability, catalog, and sanitized diagnostics.";
+
+pub const PROVIDER_STATUS_ID: &str = "router::provider::status";
+pub const PROVIDER_STATUS_DESC: &str =
+    "Token-gated provider update for credential, catalog, and sanitized failure status.";
 
 pub const SYSTEM_PROMPT_GET_ID: &str = "router::system_prompt::get";
 pub const SYSTEM_PROMPT_GET_DESC: &str =
@@ -159,6 +163,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             MODELS_SUPPORTS_DESC,
         ),
         spec::<ProviderListRequest, ProviderListResponse>(PROVIDER_LIST_ID, PROVIDER_LIST_DESC),
+        spec::<ProviderStatusRequest, ProviderStatusResponse>(
+            PROVIDER_STATUS_ID,
+            PROVIDER_STATUS_DESC,
+        ),
         spec::<SystemPromptGetRequest, SystemPromptGetResponse>(
             SYSTEM_PROMPT_GET_ID,
             SYSTEM_PROMPT_GET_DESC,

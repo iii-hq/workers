@@ -87,11 +87,14 @@ pub async fn start(
         .form(&[("client_id", OAUTH_CLIENT_ID), ("scope", "read:user")])
         .send()
         .await
-        .map_err(|e| login_error(format!("device code request failed: {e}")))?;
-    let v: Value = resp
-        .json()
-        .await
-        .map_err(|e| login_error(format!("device code reply not json: {e}")))?;
+        .map_err(|e| {
+            tracing::debug!(provider = "github-copilot", error = %e, "device code request failed");
+            login_error("device code request failed; inspect provider logs")
+        })?;
+    let v: Value = resp.json().await.map_err(|e| {
+        tracing::debug!(provider = "github-copilot", error = %e, "invalid device code reply");
+        login_error("GitHub returned an invalid device code reply; inspect provider logs")
+    })?;
     let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
     match (
         field("user_code"),
@@ -105,7 +108,20 @@ pub async fn start(
             interval: v.get("interval").and_then(Value::as_u64).unwrap_or(5),
             expires_in: v.get("expires_in").and_then(Value::as_u64).unwrap_or(900),
         }),
-        _ => Err(login_error(format!("unexpected device code reply: {v}"))),
+        _ => {
+            let keys: Vec<&str> = v
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            tracing::debug!(
+                provider = "github-copilot",
+                ?keys,
+                "unexpected device code reply"
+            );
+            Err(login_error(
+                "GitHub returned an invalid device code reply; inspect provider logs",
+            ))
+        }
     }
 }
 
@@ -125,11 +141,14 @@ pub async fn poll(
         ])
         .send()
         .await
-        .map_err(|e| login_error(format!("access token request failed: {e}")))?;
-    let v: Value = resp
-        .json()
-        .await
-        .map_err(|e| login_error(format!("access token reply not json: {e}")))?;
+        .map_err(|e| {
+            tracing::debug!(provider = "github-copilot", error = %e, "access token request failed");
+            login_error("access token request failed; inspect provider logs")
+        })?;
+    let v: Value = resp.json().await.map_err(|e| {
+        tracing::debug!(provider = "github-copilot", error = %e, "invalid access token reply");
+        login_error("GitHub returned an invalid access token reply; inspect provider logs")
+    })?;
 
     if let Some(token) = v.get("access_token").and_then(Value::as_str) {
         auth::store_oauth(iii, token).await?;
@@ -143,7 +162,16 @@ pub async fn poll(
         Some("slow_down") => LoginStatus::SlowDown,
         Some("expired_token") => LoginStatus::Expired,
         Some("access_denied") => LoginStatus::Denied,
-        Some(other) => return Err(login_error(format!("device flow failed: {other}"))),
+        Some(other) => {
+            tracing::debug!(
+                provider = "github-copilot",
+                upstream_code = other,
+                "device flow failed"
+            );
+            return Err(login_error(
+                "GitHub sign-in failed; start the login flow again",
+            ));
+        }
         // Never interpolate the reply itself: this branch is reached with a
         // body we did not recognise, which may still carry a credential.
         None => {
@@ -151,9 +179,14 @@ pub async fn poll(
                 .as_object()
                 .map(|o| o.keys().map(String::as_str).collect())
                 .unwrap_or_default();
-            return Err(login_error(format!(
-                "unexpected access token reply (keys: {keys:?})"
-            )));
+            tracing::debug!(
+                provider = "github-copilot",
+                ?keys,
+                "unexpected access token reply"
+            );
+            return Err(login_error(
+                "GitHub returned an invalid access token reply; inspect provider logs",
+            ));
         }
     };
     let retry_after_seconds = (status == LoginStatus::SlowDown).then_some(SLOW_DOWN_BACKOFF_SECS);

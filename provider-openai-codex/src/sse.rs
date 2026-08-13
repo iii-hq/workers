@@ -70,6 +70,7 @@ pub fn empty_assistant(model: &str) -> AssistantMessage {
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        failure: None,
         warnings: None,
         usage: None,
         model: model.to_string(),
@@ -123,6 +124,7 @@ pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
         native_stop_reason: None,
         error_message: state.error_message.clone(),
         error_kind: None,
+        failure: None,
         warnings: if state.warnings.is_empty() {
             None
         } else {

@@ -165,6 +165,8 @@ export interface ConfigFormProps {
   onChange(next: JsonValue): void
   /** JSON-pointer → message, merged client + server validation. */
   errors?: ReadonlyMap<string, string>
+  /** Report worker-specific semantic errors for host-owned save gating. */
+  onValidationChange?(errors: ReadonlyMap<string, string>): void
   /** Deep-link focus request; honoring it is the override's job. */
   focusField?: readonly string[]
 }
@@ -228,7 +230,7 @@ export interface Host {
 /** The ONLY required export of a script asset. */
 export type SetupFn = (
   host: Host,
-) => void | (() => void) | Promise<void | (() => void)>
+) => void | (() => void) | Promise<void> | Promise<() => void>
 
 /* ── module-level api (same objects the Host carries) ───────────────── */
 

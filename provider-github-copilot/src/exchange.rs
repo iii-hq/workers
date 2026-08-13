@@ -88,18 +88,21 @@ async fn exchange(
     for (name, value) in client_headers() {
         req = req.header(name, value);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| ExchangeError::Transient(format!("token exchange failed: {e}")))?;
+    let resp = req.send().await.map_err(|e| {
+        tracing::debug!(provider = "github-copilot", error = %e, "token exchange failed");
+        ExchangeError::Transient("copilot token exchange failed; inspect provider logs".into())
+    })?;
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
     if status == 401 || status == 403 {
-        // Bounded: the reply is GitHub's, but an error body is not a place to
-        // spill an arbitrary upstream payload into logs and error frames.
-        let detail: String = body.chars().take(200).collect();
+        tracing::debug!(
+            provider = "github-copilot",
+            status,
+            body_bytes = body.len(),
+            "token exchange rejected"
+        );
         return Err(ExchangeError::Unauthorized(format!(
-            "copilot token exchange rejected (http {status}): {detail}"
+            "copilot token exchange rejected (HTTP {status}); sign in again"
         )));
     }
     if !(200..300).contains(&status) {

@@ -153,6 +153,7 @@ pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
         native_stop_reason: state.native_stop_reason.clone(),
         error_message: state.error_message.clone(),
         error_kind: None,
+        failure: None,
         warnings: if state.warnings.is_empty() {
             None
         } else {

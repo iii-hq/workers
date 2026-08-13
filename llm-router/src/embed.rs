@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::registry::store::RegistryStore;
-use crate::types::errors::is_function_not_found;
+use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
 
 const EMBED_TIMEOUT_MS: u64 = 30_000;
 
@@ -69,8 +69,9 @@ async fn try_provider(
         .map(str::to_string)
         .filter(|m| !m.is_empty())
         .ok_or_else(|| {
-            Error::Handler(format!(
-                "router/bad_provider_response: provider::{provider}::embed returned no model"
+            Error::from(RouterError::new(
+                RouterCode::BadProviderResponse,
+                format!("provider::{provider}::embed returned no model"),
             ))
         })?;
     let embeddings: Vec<Vec<f32>> = reply
@@ -78,18 +79,23 @@ async fn try_provider(
         .cloned()
         .and_then(|e| serde_json::from_value(e).ok())
         .ok_or_else(|| {
-            Error::Handler(format!(
-                "router/bad_provider_response: provider::{provider}::embed returned no embeddings array"
+            Error::from(RouterError::new(
+                RouterCode::BadProviderResponse,
+                format!("provider::{provider}::embed returned no embeddings array"),
             ))
         })?;
     // Callers zip vectors back onto their inputs by position; a count
     // mismatch would misattribute every vector after the gap.
     if embeddings.len() != input.len() {
-        return Err(Error::Handler(format!(
-            "router/bad_provider_response: provider::{provider}::embed returned {} embeddings for {} inputs",
-            embeddings.len(),
-            input.len()
-        )));
+        return Err(RouterError::new(
+            RouterCode::BadProviderResponse,
+            format!(
+                "provider::{provider}::embed returned {} embeddings for {} inputs",
+                embeddings.len(),
+                input.len()
+            ),
+        )
+        .into());
     }
     Ok(Some(RouterEmbedResponse {
         provider: provider.to_string(),
@@ -107,9 +113,11 @@ pub fn make_embed(
         let registry = registry.clone();
         Box::pin(async move {
             if req.input.is_empty() {
-                return Err(Error::Handler(
-                    "router/invalid_input: input must not be empty".into(),
-                ));
+                return Err(RouterError::new(
+                    RouterCode::InvalidRequest,
+                    "input must not be empty",
+                )
+                .into());
             }
             let candidates: Vec<String> = match req.provider.filter(|p| !p.trim().is_empty()) {
                 Some(p) => vec![p],
@@ -125,20 +133,25 @@ pub fn make_embed(
                 }
             };
             if candidates.is_empty() {
-                return Err(Error::Handler(
-                    "router/no_embed_provider: no providers are registered".into(),
-                ));
+                return Err(RouterError::new(
+                    RouterCode::NoEmbedProvider,
+                    "no providers are registered",
+                )
+                .into());
             }
             for provider in &candidates {
                 if let Some(resp) = try_provider(&iii, provider, &req.model, &req.input).await? {
                     return Ok(resp);
                 }
             }
-            Err(Error::Handler(format!(
-                "router/no_embed_provider: none of the registered providers ({}) implement \
-                 provider::<id>::embed",
-                candidates.join(", ")
-            )))
+            Err(RouterError::new(
+                RouterCode::NoEmbedProvider,
+                format!(
+                    "none of the registered providers ({}) implement provider::<id>::embed",
+                    candidates.join(", ")
+                ),
+            )
+            .into())
         })
     }
 }

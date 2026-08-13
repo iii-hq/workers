@@ -7,6 +7,9 @@
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::provider_scaffold::errors::{
+    public_http_error, public_protocol_error, public_transport_error,
+};
 use llm_router::types::events::ErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -126,20 +129,36 @@ pub async fn handle(
         .json(&serde_json::json!({ "model": model, "input": req.input }))
         .send()
         .await
-        .map_err(|e| Error::Handler(format!("provider/upstream: {e}")))?;
+        .map_err(|e| {
+            tracing::debug!(provider = "openai", error = %e, "embedding request failed");
+            Error::Handler(format!(
+                "provider/upstream: {}",
+                public_transport_error("openai")
+            ))
+        })?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        let excerpt: String = body.chars().take(300).collect();
+        let kind = crate::errors::classify(Some(status.as_u16()), &body);
+        tracing::debug!(
+            provider = "openai",
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            "embedding request rejected"
+        );
         return Err(Error::Handler(format!(
-            "provider/upstream_status: {status}: {excerpt}"
+            "provider/upstream_status: {}",
+            public_http_error("openai", status.as_u16(), kind)
         )));
     }
-    let wire: WireResponse = response
-        .json()
-        .await
-        .map_err(|e| Error::Handler(format!("provider/bad_response: {e}")))?;
+    let wire: WireResponse = response.json().await.map_err(|e| {
+        tracing::debug!(provider = "openai", error = %e, "invalid embedding response");
+        Error::Handler(format!(
+            "provider/bad_response: {}",
+            public_protocol_error("openai")
+        ))
+    })?;
 
     // One-vector-per-input contract: sorting alone cannot prove every
     // input got exactly one result. A silent gap here would attach the

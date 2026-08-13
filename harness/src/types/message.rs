@@ -8,6 +8,19 @@ use serde::{Deserialize, Serialize};
 use crate::types::content::ContentBlock;
 use crate::types::event::{ErrorKind, StopReason, Usage};
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RouterFailure {
+    pub code: String,
+    pub kind: ErrorKind,
+    pub message: String,
+    pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub attempts: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum UserRoleTag {
     #[serde(rename = "user")]
@@ -47,6 +60,8 @@ pub struct AssistantMessage {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<RouterFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +145,7 @@ pub fn empty_assistant(provider: &str, model: &str) -> AssistantMessage {
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        failure: None,
         warnings: None,
         usage: None,
         model: model.to_string(),
