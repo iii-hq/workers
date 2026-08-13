@@ -82,6 +82,11 @@ pub enum CoderError {
     #[error("C220: {0}")]
     #[serde(rename = "C220")]
     OutsideSession(String),
+
+    /// An optimistic write precondition no longer matches the file on disk.
+    #[error("C221: {0}")]
+    #[serde(rename = "C221")]
+    Conflict(String),
 }
 
 impl CoderError {
@@ -102,6 +107,7 @@ impl CoderError {
             CoderError::Io(_) => "C216",
             CoderError::AlreadyExists(_) => "C213",
             CoderError::OutsideSession(_) => "C220",
+            CoderError::Conflict(_) => "C221",
         }
     }
 
@@ -116,7 +122,8 @@ impl CoderError {
             | CoderError::OutsideBase(m)
             | CoderError::Io(m)
             | CoderError::AlreadyExists(m)
-            | CoderError::OutsideSession(m) => m,
+            | CoderError::OutsideSession(m)
+            | CoderError::Conflict(m) => m,
         }
     }
 
@@ -288,10 +295,11 @@ mod tests {
             CoderError::Io("a".into()).code(),
             CoderError::AlreadyExists("a".into()).code(),
             CoderError::OutsideSession("a".into()).code(),
+            CoderError::Conflict("a".into()).code(),
         ]
         .into_iter()
         .collect();
-        assert_eq!(codes.len(), 7);
+        assert_eq!(codes.len(), 8);
     }
 
     /// DRIFT PREVENTION: `to_wire_error()` (structured per-entry form)
@@ -308,6 +316,7 @@ mod tests {
             CoderError::Io("io msg".into()),
             CoderError::AlreadyExists("already exists msg".into()),
             CoderError::OutsideSession("outside session msg".into()),
+            CoderError::Conflict("conflict msg".into()),
         ];
         for v in &variants {
             let wire = v.to_wire_error();

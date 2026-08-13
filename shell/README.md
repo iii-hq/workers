@@ -182,9 +182,9 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
 `config.yaml`'s `code:` block — the **same** list `shell::fs::*` enforces.
-`coder::*` returns its own `C2xx` codes. Since 0.10.0 the NUMBERS mean the
-same thing on both surfaces — `C2xx` and `S2xx` with equal digits are the
-same failure class, so a caller can learn the taxonomy once:
+`coder::*` returns its own `C2xx` codes. Since 0.10.0, shared `C2xx` and
+`S2xx` numbers mean the same failure class; coder-only failures are called
+out explicitly below:
 
 | Code | Meaning | fs twin |
 |---|---|---|
@@ -195,6 +195,7 @@ same failure class, so a caller can learn the taxonomy once:
 | `C216` | Underlying I/O error. | `S216` |
 | `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
+| `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
 
 No separate install: `iii worker add shell` brings the whole surface.
 
@@ -238,6 +239,53 @@ Conventions (hold these when adding functions to either surface):
   tools.
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
+
+## Live change feed (`shell::changed`)
+
+The worker registers a custom **trigger type** backed by a system-level
+directory watch (FSEvents on macOS, inotify on Linux, via the `notify`
+crate). A subscriber names the directory in its binding config:
+
+```json
+{ "type": "shell::changed", "config": { "path": "/some/dir" } }
+```
+
+Each registration starts one recursive watcher; unregistering (or the
+console GC'ing a closed tab's binding) tears it down. `config.path` goes
+through the same path policy as every `coder::*` call — jail containment
+(`fs.host_roots`), the operator denylist, canonicalization — and must be
+a directory: watching a tree is a read of every filename under it, so a
+path you can't read is a path you can't watch.
+
+The payload is lean — `{ path, kind, root, dir }` with `kind` ∈
+`created | modified | deleted`, `path` relative to the watched `root`,
+and `dir` true when the path is a directory (a subscriber that opens
+files must skip those; deleted paths can't be probed and report false).
+A subscriber that wants content asks `coder::read-file`; one that wants
+the diff asks git.
+
+Semantics:
+
+- **Catches every writer** — an agent calling `coder::*`, a
+  `shell::exec` command's side effects, or an editor outside the engine
+  entirely. Nothing is coupled to the harness and no other worker is
+  involved.
+- **Coalesced**: raw OS events storm, so each watcher batches per path
+  in a 200 ms window; kinds merge toward the visible outcome (a create
+  plus the write that fills it is `created`, a deletion supersedes what
+  came before, a create-after-delete is `created`). `.git` internals
+  are filtered — the visible outcome arrives as worktree events of its
+  own.
+- **Best-effort fan-out**: events fire with no reply expected; a slow
+  or absent subscriber never delays anything.
+
+The console explorer page binds this on its browsed root: the tree and
+git panels refresh live, a clean active buffer follows the disk (a dirty
+one keeps the user's edits), and the last written file follows the
+writer into view as a diff — git baseline in a repo, empty baseline for
+created files, the page's last-seen content otherwise. Hidden segments,
+noise directories (`target`, `node_modules`, `dist`, `build`, …) at any
+depth, and build/temp artifact extensions never steal the view.
 
 ## Hot-reload
 

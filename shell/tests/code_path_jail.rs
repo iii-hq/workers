@@ -188,6 +188,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
                 mode: "0644".into(),
                 parents: true,
                 overwrite: false,
+                expected_revision: None,
             }],
             fs_scope: Some(shell::fs::FsScope {
                 root: scope_root.clone(),

@@ -63,6 +63,7 @@ use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
 
+use super::create_file::content_revision;
 use super::read_window::{count_lines, lossy_utf8, number_lines, read_window, read_window_wire};
 
 // ---------------------------------------------------------------------------
@@ -374,6 +375,11 @@ pub struct ReadFileOutput {
     /// only; null when the request used `paths[]`.**
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime: Option<i64>,
+    /// Opaque identity of the file's exact bytes. Present for complete
+    /// single-path reads only; pass it as `expected_revision` to
+    /// `coder::create-file` for a conflict-safe whole-file overwrite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     /// Per-entry results for a batch `paths[]` request. **Present only
     /// when the request used `paths[]`; null in single-path mode.**
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -442,6 +448,7 @@ fn inner(
                 size: Some(o.size),
                 mode: Some(o.mode),
                 mtime: Some(o.mtime),
+                revision: o.revision,
                 results: None,
             })
         }
@@ -467,6 +474,7 @@ fn inner(
                 size: None,
                 mode: None,
                 mtime: None,
+                revision: None,
                 results: Some(results),
             })
         }
@@ -507,6 +515,7 @@ struct SingleReadOut {
     size: u64,
     mode: u32,
     mtime: i64,
+    revision: Option<String>,
 }
 
 /// C210 for a field combined with `stat: true`. Prescriptive: stat
@@ -651,6 +660,7 @@ fn full_read(
         )));
     }
     let bytes = std::fs::read(abs).map_err(|e| CoderError::io_for_path(e, wire_path))?;
+    let revision = content_revision(&bytes);
     let lines = count_lines(&bytes);
     let (content, is_utf8) = match encoding {
         ReadEncoding::Text => {
@@ -701,6 +711,7 @@ fn full_read(
         size: md.len(),
         mode: unix_mode(md),
         mtime: unix_mtime(md),
+        revision: Some(revision),
     })
 }
 
@@ -729,6 +740,7 @@ fn stat_read(
         size: md.len(),
         mode: unix_mode(md),
         mtime: unix_mtime(md),
+        revision: None,
     })
 }
 
@@ -790,6 +802,7 @@ fn windowed_read(
         size: md.len(),
         mode: unix_mode(md),
         mtime: unix_mtime(md),
+        revision: None,
     })
 }
 
@@ -822,6 +835,7 @@ fn wire_windowed_read(
         size: md.len(),
         mode: unix_mode(md),
         mtime: unix_mtime(md),
+        revision: None,
     })
 }
 
@@ -1136,6 +1150,7 @@ mod tests {
         assert_eq!(decoded, raw);
         assert_eq!(out.is_utf8, Some(false));
         assert_eq!(out.size, Some(raw.len() as u64));
+        assert_eq!(out.revision, Some(content_revision(&raw)));
     }
 
     #[tokio::test]
@@ -1274,6 +1289,7 @@ mod tests {
         let (tmp, r, c) = setup();
         std::fs::write(tmp.path().join("hi.txt"), b"hello").unwrap();
         let out = handle(r, c, full("hi.txt")).await.unwrap();
+        assert_eq!(out.revision, Some(content_revision(b"hello")));
         let (path, content, is_utf8, lines, total, more) = unwrap_single(out);
         assert_eq!(content, "hello");
         assert!(is_utf8);
@@ -1334,6 +1350,10 @@ mod tests {
         let out = handle(r, c, window_req("f.txt", Some(3), Some(5)))
             .await
             .unwrap();
+        assert_eq!(
+            out.revision, None,
+            "partial reads have no whole-file revision"
+        );
         let (_, content, is_utf8, lines, total, more) = unwrap_single(out);
         assert_eq!(content, "L3\nL4\nL5\n");
         assert_eq!(lines, 3);

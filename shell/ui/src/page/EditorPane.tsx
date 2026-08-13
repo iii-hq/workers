@@ -105,6 +105,8 @@ export interface EditorCacheEntry {
   savedContent: string
   /** The live buffer, possibly unsaved. */
   draft: string
+  /** Opaque digest returned by coder::read-file for optimistic saves. */
+  revision?: string
   readOnly: ReadOnlyReason
   mode: number | null
   size: number | null
@@ -168,6 +170,7 @@ export function EditorPane({
           const fresh: EditorCacheEntry = {
             savedContent: '',
             draft: '',
+            revision: out.revision ?? undefined,
             readOnly: 'binary',
             mode: out.mode ?? null,
             size: out.size ?? null,
@@ -191,6 +194,7 @@ export function EditorPane({
         const fresh: EditorCacheEntry = {
           savedContent: content,
           draft: content,
+          revision: out.revision ?? undefined,
           readOnly:
             out.is_utf8 === false
               ? 'binary'
@@ -236,16 +240,21 @@ export function EditorPane({
     const current = cache.get(relPath)
     if (!current || current.readOnly !== null || saving) return
     if (current.draft === current.savedContent) return
+    if (current.revision === undefined) {
+      setSaveError('reload the file before saving so its revision can be verified')
+      return
+    }
     const body = current.draft
     setSaving(true)
     setSaveError(null)
-    coderWriteFile(host, absPath, body, current.mode)
+    coderWriteFile(host, absPath, body, current.mode, current.revision)
       .then((result) => {
         if (!result.success) {
           setSaveError(result.error?.message ?? 'save failed')
           return
         }
         current.savedContent = body
+        current.revision = result.revision ?? current.revision
         setSavedContent(body)
         onDirtyChange(relPath, current.draft !== body)
         onSaved()

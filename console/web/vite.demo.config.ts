@@ -29,7 +29,8 @@ export default defineConfig({
     alias: [
       // `@pierre/diffs` drags in every shiki grammar (~13MB of chunks) for
       // coder diff views the demo never renders. Order matters: the
-      // `/react` entry must match before the bare specifier.
+      // subpath entries must match before the bare specifier.
+      { find: '@pierre/diffs/edit', replacement: pierreStub },
       { find: '@pierre/diffs/react', replacement: pierreStub },
       { find: '@pierre/diffs', replacement: pierreStub },
       { find: '@', replacement: src },

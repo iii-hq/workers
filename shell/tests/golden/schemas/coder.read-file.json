@@ -345,6 +345,13 @@
           "null"
         ]
       },
+      "revision": {
+        "description": "Opaque identity of the file's exact bytes. Present for complete single-path reads only; pass it as `expected_revision` to `coder::create-file` for a conflict-safe whole-file overwrite.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "size": {
         "description": "Size of the FILE in bytes (from metadata) — not the size of `content`; in windowed mode the two differ. **Single-path mode only; null when the request used `paths[]`.**",
         "format": "uint64",

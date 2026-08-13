@@ -42,7 +42,7 @@
       },
       "use_default_excludes": {
         "default": true,
-        "description": "Apply the worker's `default_exclude_globs` config (noise folders like .git/node_modules/target — call `coder::info` for the active list). Excluded directories still appear as childless nodes flagged `truncated` with reason \"default_exclude\"; excluded files are omitted. Pass `false` to list everything.",
+        "description": "Apply the worker's `default_exclude_globs` config (noise folders like .git/node_modules/target — call `coder::info` for the active list). Excluded directories still appear as childless nodes flagged `truncated` with reason \"default_exclude\"; excluded files are omitted and their containing directory carries the same truncation reason. Pass `false` to list everything.",
         "type": "boolean"
       }
     },
@@ -100,7 +100,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set on directories whose `children` was capped at `per_folder_limit`, whose subtree was cut off by `max_depth`, which matched `default_exclude_globs` (reason \"default_exclude\"), or where the snapshot's node budget ran out (reason \"max_nodes\")."
+            "description": "Set on directories whose `children` was capped at `per_folder_limit`, whose subtree was cut off by `max_depth`, which matched `default_exclude_globs` or omitted matching non-directory children (reason \"default_exclude\"), or where the snapshot's node budget ran out (reason \"max_nodes\")."
           }
         },
         "required": [
@@ -118,7 +118,7 @@
             "type": "string"
           },
           "reason": {
-            "description": "Reason this folder was truncated: hit `per_folder_limit`, cut off by `max_depth`, matched `default_exclude_globs` (`default_exclude`), or the snapshot's total node budget ran out (`max_nodes`).",
+            "description": "Reason this folder was truncated: hit `per_folder_limit`, cut off by `max_depth`, matched `default_exclude_globs` (`default_exclude`), omitted matching non-directory children, or the snapshot's total node budget ran out (`max_nodes`).",
             "type": "string"
           },
           "shown": {

@@ -12,6 +12,7 @@ import type {
   FunctionTriggerRenderer,
   PageRegistration,
   SessionChipRegistration,
+  SessionTurnSummaryRegistration,
 } from '@/types/injectable-ui'
 
 export interface RegisteredPage extends PageRegistration {
@@ -37,6 +38,12 @@ export interface RegisteredConfigForm {
 }
 
 export interface RegisteredSessionChip extends SessionChipRegistration {
+  scope: string
+  path: string
+}
+
+export interface RegisteredSessionTurnSummary
+  extends SessionTurnSummaryRegistration {
   scope: string
   path: string
 }
@@ -107,6 +114,7 @@ const pagesStore = createStore<RegisteredPage>()
 const renderersStore = createStore<RegisteredRenderer>()
 const configFormsStore = createStore<RegisteredConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
+const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
 /**
@@ -155,6 +163,22 @@ export function registerExtSessionChip(
     )
   }
   return sessionChipsStore.add(entry)
+}
+
+/** Duplicate summary id: last registration wins in chat footer lookups. */
+export function registerExtSessionTurnSummary(
+  entry: RegisteredSessionTurnSummary,
+): () => void {
+  const duplicate = sessionTurnSummariesStore
+    .get()
+    .find((summary) => summary.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate session turn-summary id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return sessionTurnSummariesStore.add(entry)
 }
 
 export function getExtPages(): readonly RegisteredPage[] {
@@ -236,6 +260,28 @@ export function useExtSessionChips(): readonly RegisteredSessionChip[] {
     () => EMPTY,
   )
   return useMemo(() => dedupeSessionChips(chips), [chips])
+}
+
+function dedupeSessionTurnSummaries(
+  summaries: readonly RegisteredSessionTurnSummary[],
+): readonly RegisteredSessionTurnSummary[] {
+  const byId = new Map<string, RegisteredSessionTurnSummary>()
+  for (const summary of summaries) byId.set(summary.id, summary)
+  return [...byId.values()]
+}
+
+/** Footer turn summaries deduplicated by id; last registration wins. */
+export function getExtSessionTurnSummaries(): readonly RegisteredSessionTurnSummary[] {
+  return dedupeSessionTurnSummaries(sessionTurnSummariesStore.get())
+}
+
+export function useExtSessionTurnSummaries(): readonly RegisteredSessionTurnSummary[] {
+  const summaries = useSyncExternalStore(
+    sessionTurnSummariesStore.subscribe,
+    sessionTurnSummariesStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => dedupeSessionTurnSummaries(summaries), [summaries])
 }
 
 /** The injected form override for one configuration id (last wins). */

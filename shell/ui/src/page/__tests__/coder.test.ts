@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { flattenTree, joinPath, relativeTo, type TreeNode } from '../coder'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  coderWriteFile,
+  flattenTree,
+  joinPath,
+  relativeTo,
+  type TreeNode,
+} from '../coder'
 
 const node = (
   name: string,
@@ -62,5 +68,44 @@ describe('path helpers', () => {
     expect(relativeTo('/work', '/work/a/b.ts')).toBe('a/b.ts')
     expect(relativeTo('/work', '/work')).toBe('')
     expect(relativeTo('/work', '/elsewhere/x')).toBe('/elsewhere/x')
+  })
+})
+
+describe('coderWriteFile', () => {
+  it('forwards the prior revision and returns the newly written revision', async () => {
+    const trigger = vi.fn(async () => ({
+      results: [
+        {
+          path: '/work/a.ts',
+          success: true,
+          bytes_written: 3,
+          revision: 'sha256:new',
+        },
+      ],
+    }))
+    const host = {
+      iii: { trigger },
+    } as unknown as Parameters<typeof coderWriteFile>[0]
+
+    const result = await coderWriteFile(
+      host,
+      '/work/a.ts',
+      'new',
+      0o600,
+      'sha256:old',
+    )
+
+    expect(trigger).toHaveBeenCalledWith('coder::create-file', {
+      files: [
+        {
+          path: '/work/a.ts',
+          content: 'new',
+          overwrite: true,
+          mode: '0600',
+          expected_revision: 'sha256:old',
+        },
+      ],
+    })
+    expect(result.revision).toBe('sha256:new')
   })
 })

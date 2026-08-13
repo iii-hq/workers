@@ -92,7 +92,7 @@ pub struct HookTriggerConfig {
     /// pre/post_trigger only: target function_id globs to consult on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Vec<String>>,
-    /// post_turn only: session_id globs this validator gates (omit = all).
+    /// pre_turn/post_turn: session_id globs this hook applies to (omit = all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<Vec<String>>,
     /// post_turn only: template mode — send THIS argument object to the
