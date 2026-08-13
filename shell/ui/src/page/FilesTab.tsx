@@ -4,9 +4,10 @@
    variables (custom properties inherit through shadow boundaries),
    mapped onto the console's design tokens.
 
-   Open semantics: single click previews (selection change), double
-   click pins — the dblclick is a composed DOM event, so it bubbles out
-   of the tree's shadow root to the wrapper. Folder expansion is
+   Open semantics: single click activates a file (changed files review,
+   clean files preview), double click delegates pin/review behavior to
+   the page. The dblclick is a composed DOM event, so it bubbles out of
+   the tree's shadow root to the wrapper. Folder expansion is
    reported (debounced) for per-tab persistence and replayed through
    `resetPaths({ initialExpandedPaths })`. */
 
@@ -15,6 +16,7 @@ import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Search, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
+import { reactivateSelectedFile, shouldActivateTreeSelection } from './tree-activation'
 import { TREE_THEME, TREE_UNSAFE_CSS } from './tree-theme'
 
 /** Directory paths live in the model with a trailing slash; callers key
@@ -37,9 +39,11 @@ interface FilesTabProps {
       result); acknowledged through onRevealed. */
   reveal: string | null
   onRevealed: () => void
-  /** Single click on a file — open as the preview tab. */
-  onPreviewFile: (relPath: string) => void
-  /** Double click on a file — open pinned. */
+  /** The file currently shown in the editor or diff. */
+  activePath: string | null
+  /** Single click on a file — review a change or preview a clean file. */
+  onActivateFile: (relPath: string) => void
+  /** Double click on a file — pin clean files; keep changes in review. */
   onPinFile: (relPath: string) => void
 }
 
@@ -52,7 +56,8 @@ export function FilesTab({
   onExpandedChange,
   reveal,
   onRevealed,
-  onPreviewFile,
+  activePath,
+  onActivateFile,
   onPinFile,
 }: FilesTabProps) {
   const filterId = useId()
@@ -62,7 +67,10 @@ export function FilesTab({
   // later flows through resetPaths/setGitStatus below. Selection opens
   // through a ref so the creation-time callback never goes stale.
   const openRef = useRef<(paths: readonly string[]) => void>(() => {})
+  const activePathRef = useRef(activePath)
+  activePathRef.current = activePath
   const lastFileRef = useRef<string | null>(null)
+  const skipClickPathRef = useRef<string | null>(null)
   const { model } = useFileTree({
     fileTreeSearchMode: 'hide-non-matches',
     flattenEmptyDirectories: true,
@@ -81,14 +89,24 @@ export function FilesTab({
       if (!path || !kinds) return
       if (kinds.get(path) === 'file') {
         lastFileRef.current = path
-        onPreviewFile(path)
+        // Controlled selection mirrors a file already opened by live
+        // follow. It must not re-enter activation and cancel that diff.
+        if (!shouldActivateTreeSelection(path, activePathRef.current)) return
+        // @pierre/trees only reports selection CHANGES. Remember this
+        // activation for the bubbling click so a new selection does not
+        // open twice; a later click on the same row still reactivates it.
+        skipClickPathRef.current = path
+        queueMicrotask(() => {
+          if (skipClickPathRef.current === path) skipClickPathRef.current = null
+        })
+        onActivateFile(path)
       } else {
         // A dir selection must not leave a stale file behind — the
         // wrapper's dblclick pin would hit the wrong path.
         lastFileRef.current = null
       }
     }
-  }, [kinds, onPreviewFile])
+  }, [kinds, onActivateFile])
 
   // Expansion state is read back through the dir handles (the model has
   // no expansion events on its public surface): every model notification
@@ -143,6 +161,29 @@ export function FilesTab({
     const initialExpandedPaths = expandedRef.current.flatMap((p) => [p, `${p}/`])
     model.resetPaths(tree?.paths ?? [], { initialExpandedPaths })
   }, [model, pathsKey, tree])
+
+  // Expansion reports normally originate in the model itself. Changed
+  // ancestors are also added by the page, so explicitly open any newly
+  // requested handles without collapsing folders the user closed.
+  useEffect(() => {
+    for (const path of expanded) {
+      const handle = model.getItem(path) ?? model.getItem(`${path}/`)
+      if (handle?.isDirectory()) (handle as FileTreeDirectoryHandle).expand()
+    }
+  }, [model, pathsKey, expanded])
+
+  // Keep the Files tree's selection aligned with the file currently
+  // visible in the main pane, including files opened by live follow.
+  useEffect(() => {
+    const selected = model.getSelectedPaths()
+    if (activePath === null || kinds?.get(activePath) !== 'file') {
+      for (const path of selected) model.getItem(path)?.deselect()
+      return
+    }
+    if (selected.length === 1 && selected[0] === activePath) return
+    for (const path of selected) model.getItem(path)?.deselect()
+    model.getItem(activePath)?.select()
+  }, [model, activePath, kinds, pathsKey])
 
   // Codex keeps the filter outside the tree's shadow DOM and drives the
   // model directly, avoiding a second built-in search surface.
@@ -219,6 +260,14 @@ export function FilesTab({
             model={model}
             className="shui-tree"
             style={{ ...TREE_THEME, colorScheme: theme }}
+            onClick={(event) => {
+              const selectedPath = model.getSelectedPaths()[0] ?? null
+              if (skipClickPathRef.current === selectedPath) {
+                skipClickPathRef.current = null
+                return
+              }
+              reactivateSelectedFile(event, selectedPath, onActivateFile)
+            }}
             onDoubleClick={() => {
               if (lastFileRef.current) onPinFile(lastFileRef.current)
             }}

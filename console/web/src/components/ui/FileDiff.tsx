@@ -16,6 +16,16 @@ export interface FileDiffProps {
   diffStyle?: 'unified' | 'split'
   /** Long lines wrap by default; `'scroll'` preserves strict columns. */
   overflow?: 'scroll' | 'wrap'
+  /** Intraline emphasis. `'none'` keeps only whole-line highlighting. */
+  lineDiffType?: 'word-alt' | 'word' | 'char' | 'none'
+  /** Ignore leading/trailing whitespace when computing changed lines. */
+  ignoreWhitespace?: boolean
+  /** Render the file body folded; useful for collapse-all review controls. */
+  collapsed?: boolean
+  /** Expand every unchanged line instead of the compact hunk view. */
+  expandUnchanged?: boolean
+  /** Hide Pierre's file header when the caller supplies its own review row. */
+  disableFileHeader?: boolean
   className?: string
 }
 
@@ -32,6 +42,11 @@ export function FileDiff({
   newFile,
   diffStyle = 'unified',
   overflow = 'wrap',
+  lineDiffType = 'word-alt',
+  ignoreWhitespace = false,
+  collapsed = false,
+  expandUnchanged = false,
+  disableFileHeader = false,
   className,
 }: FileDiffProps) {
   const [theme] = useTheme()
@@ -43,6 +58,11 @@ export function FileDiff({
       options={{
         diffStyle,
         overflow,
+        lineDiffType,
+        collapsed,
+        expandUnchanged,
+        disableFileHeader,
+        parseDiffOptions: { ignoreWhitespace },
         theme: DEFAULT_THEMES,
         themeType: theme,
       }}

@@ -48,7 +48,8 @@ pub struct TreeInput {
     /// like .git/node_modules/target — call `coder::info` for the active
     /// list). Excluded directories still appear as childless nodes
     /// flagged `truncated` with reason "default_exclude"; excluded files
-    /// are omitted. Pass `false` to list everything.
+    /// are omitted and their containing directory carries the same
+    /// truncation reason. Pass `false` to list everything.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
     /// List hidden (dot-prefixed) entries. Pass `false` to omit them —
@@ -107,7 +108,8 @@ pub struct TreeNode {
     pub children: Option<Vec<TreeNode>>,
     /// Set on directories whose `children` was capped at
     /// `per_folder_limit`, whose subtree was cut off by `max_depth`,
-    /// which matched `default_exclude_globs` (reason "default_exclude"),
+    /// which matched `default_exclude_globs` or omitted matching
+    /// non-directory children (reason "default_exclude"),
     /// or where the snapshot's node budget ran out (reason "max_nodes").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<TruncationInfo>,
@@ -126,8 +128,8 @@ pub enum NodeKind {
 pub struct TruncationInfo {
     /// Reason this folder was truncated: hit `per_folder_limit`, cut off
     /// by `max_depth`, matched `default_exclude_globs`
-    /// (`default_exclude`), or the snapshot's total node budget ran out
-    /// (`max_nodes`).
+    /// (`default_exclude`), omitted matching non-directory children, or
+    /// the snapshot's total node budget ran out (`max_nodes`).
     pub reason: String,
     /// Number of children actually returned.
     pub shown: u32,
@@ -341,15 +343,22 @@ fn walk(
             // visible name would land in the truncated remainder.
             entries.retain(|e| !e.file_name().to_string_lossy().starts_with('.'));
         }
+        let mut default_excluded_non_dirs = 0u32;
         if opts.use_default_excludes {
             // Excluded non-directory entries are omitted outright — matched
             // against the configured globs ONLY (no dir companions), so a
             // file or symlink merely NAMED like an excluded directory is
-            // kept. Directories stay regardless; excluded ones surface as
+            // kept. Record every omission on the containing directory so a
+            // caller can distinguish a filtered inventory from a complete
+            // one. Directories stay regardless; excluded ones surface as
             // childless stubs on their own listing pass.
             entries.retain(|e| {
                 let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-                is_dir || !resolver.is_default_excluded(&e.path())
+                let keep = is_dir || !resolver.is_default_excluded(&e.path());
+                if !keep {
+                    default_excluded_non_dirs = default_excluded_non_dirs.saturating_add(1);
+                }
+                keep
             });
         }
         entries.sort_by_key(|a| a.file_name());
@@ -415,6 +424,25 @@ fn walk(
                     shown: cap as u32,
                     total: Some(total),
                     hint: "use coder::list-folder for paginated access to all entries".into(),
+                },
+            );
+        } else if default_excluded_non_dirs > 0 {
+            set_truncated(
+                &mut slots,
+                TruncationInfo {
+                    reason: "default_exclude".to_string(),
+                    shown,
+                    total: None,
+                    hint: format!(
+                        "{default_excluded_non_dirs} non-directory {} omitted by \
+                         default_exclude_globs; re-call coder::tree with \
+                         use_default_excludes: false to include them",
+                        if default_excluded_non_dirs == 1 {
+                            "entry was"
+                        } else {
+                            "entries were"
+                        }
+                    ),
                 },
             );
         }
@@ -665,7 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_excluded_file_omitted_from_listing() {
+    async fn default_excluded_file_omission_marks_the_containing_directory() {
         let tmp = tempdir().unwrap();
         std::fs::write(tmp.path().join("debug.log"), "x").unwrap();
         std::fs::write(tmp.path().join("keep.txt"), "x").unwrap();
@@ -679,10 +707,68 @@ mod tests {
         let kids = out.root.children.unwrap();
         let names: Vec<_> = kids.iter().map(|k| k.name.as_str()).collect();
         assert_eq!(names, vec!["keep.txt"]);
-        assert!(
-            out.root.truncated.is_none(),
-            "omitted files must not count toward per_folder_limit truncation"
-        );
+        let trunc = out.root.truncated.as_ref().unwrap();
+        assert_eq!(trunc.reason, "default_exclude");
+        assert_eq!(trunc.shown, 1);
+        assert_eq!(trunc.total, None);
+        assert!(trunc.hint.contains("1 non-directory entry was omitted"));
+    }
+
+    #[tokio::test]
+    async fn custom_generated_file_omission_surfaces_on_its_parent() {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/schema.generated.ts"), "generated").unwrap();
+        std::fs::write(tmp.path().join("src/app.ts"), "source").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            default_exclude_globs: vec!["**/*.generated.ts".to_string()],
+            ..CoderConfig::default()
+        });
+        let r = Arc::new(PathResolver::new(&cfg).unwrap());
+        let out = handle(r, cfg, input(".")).await.unwrap();
+        assert!(out.root.truncated.is_none());
+        let src = out
+            .root
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|node| node.name == "src")
+            .unwrap();
+        let names: Vec<_> = src
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["app.ts"]);
+        let trunc = src.truncated.as_ref().unwrap();
+        assert_eq!(trunc.reason, "default_exclude");
+        assert_eq!(trunc.shown, 1);
+        assert!(!trunc.hint.contains("schema"));
+        assert!(trunc.hint.contains("use_default_excludes"));
+    }
+
+    #[tokio::test]
+    async fn structural_truncation_takes_priority_over_excluded_file_evidence() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.generated.ts"), "generated").unwrap();
+        std::fs::write(tmp.path().join("b.ts"), "source").unwrap();
+        std::fs::write(tmp.path().join("c.ts"), "source").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            default_exclude_globs: vec!["**/*.generated.ts".to_string()],
+            tree_per_folder_limit: 1,
+            ..CoderConfig::default()
+        });
+        let r = Arc::new(PathResolver::new(&cfg).unwrap());
+        let out = handle(r, cfg, input(".")).await.unwrap();
+        let trunc = out.root.truncated.as_ref().unwrap();
+        assert_eq!(trunc.reason, "per_folder_limit");
+        assert_eq!(trunc.shown, 1);
+        assert_eq!(trunc.total, Some(2));
     }
 
     fn assert_no_default_exclude_stubs(node: &TreeNode) {

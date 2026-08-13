@@ -80,6 +80,9 @@ export interface PageRenderProps {
    * no conversation is active or none is set.
    */
   workingDir?: string | null
+  /** Active chat session id. Reactive pages use it to subscribe to exact
+      Harness turn boundaries without receiving another chat's events. */
+  conversationId?: string | null
 }
 
 export interface PageRegistration {
@@ -194,6 +197,23 @@ export interface SessionChipRegistration {
   render: React.ComponentType<SessionChipProps>
 }
 
+/** Props a chat footer turn-summary receives. */
+export interface SessionTurnSummaryProps {
+  sessionId: string
+  /** Whether this session is currently producing a turn. */
+  isStreaming: boolean
+}
+
+/**
+ * A compact per-session summary rendered immediately above the composer.
+ * Duplicate `id`: last registration wins.
+ */
+export interface SessionTurnSummaryRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<SessionTurnSummaryProps>
+}
+
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
@@ -222,6 +242,10 @@ export interface Host {
    */
   chat?: {
     registerSessionChip(chip: SessionChipRegistration): () => void
+    /** Optional on consoles that predate the footer turn-summary slot. */
+    registerTurnSummary?(
+      summary: SessionTurnSummaryRegistration,
+    ): () => void
   }
 }
 
@@ -357,6 +381,16 @@ export interface FileDiffProps {
   diffStyle?: 'unified' | 'split'
   /** Long lines wrap by default; `'scroll'` preserves strict columns. */
   overflow?: 'scroll' | 'wrap'
+  /** Intraline emphasis. `'none'` keeps only whole-line highlighting. */
+  lineDiffType?: 'word-alt' | 'word' | 'char' | 'none'
+  /** Ignore leading/trailing whitespace when computing changed lines. */
+  ignoreWhitespace?: boolean
+  /** Render the file body folded; useful for collapse-all review controls. */
+  collapsed?: boolean
+  /** Expand every unchanged line instead of the compact hunk view. */
+  expandUnchanged?: boolean
+  /** Hide the built-in file header when the caller supplies its own. */
+  disableFileHeader?: boolean
   className?: string
 }
 /** The console's one file-diff surface — the diff is computed from the two

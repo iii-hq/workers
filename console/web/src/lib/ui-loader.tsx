@@ -17,12 +17,14 @@ import {
   registerExtPage,
   registerExtRenderer,
   registerExtSessionChip,
+  registerExtSessionTurnSummary,
 } from '@/lib/ui-slots'
 import type {
   ConfigFormProps,
   ConsoleApi,
   Host,
   SessionChipProps,
+  SessionTurnSummaryProps,
   SetupFn,
   UiAssetKind,
   UiAssetRef,
@@ -153,6 +155,21 @@ function makeHost(
             render: (props: SessionChipProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Chip {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerTurnSummary(summary) {
+        const Summary = summary.render
+        return track(
+          registerExtSessionTurnSummary({
+            ...summary,
+            scope,
+            path,
+            render: (props: SessionTurnSummaryProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Summary {...props} />
               </ScopedExtension>
             ),
           }),

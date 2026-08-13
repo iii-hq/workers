@@ -20,17 +20,68 @@ import {
   PageSidebar,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
-import { Eye, EyeOff, FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
+import {
+  Check,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Columns2,
+  Eye,
+  EyeOff,
+  FolderTree,
+  MoreHorizontal,
+  RefreshCw,
+  Rows3,
+  Search,
+  SquareTerminal,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
-import { type CoderInfo, coderInfo, coderReadFile, coderTree, type FlatTree, flattenTree, joinPath } from './coder'
-import { DiffPane } from './DiffPane'
+import { captureWorkspaceBaseline, classifyWorkspaceBaselinePath } from './baseline'
+import {
+  type CoderInfo,
+  coderInfo,
+  coderReadFile,
+  coderStatFiles,
+  coderTree,
+  type FlatTree,
+  flattenTree,
+  joinPath,
+  type TreeNode,
+  workspaceValidate,
+} from './coder'
 import { type EditorCache, EditorPane } from './EditorPane'
 import { FilesTab } from './FilesTab'
-import { GitTab } from './GitTab'
-import { type GitChange, type GitState, gitChanges, nestedGitStatus } from './git'
+import {
+  type GitChange,
+  type GitCommitSummary,
+  type GitComparisonEntry,
+  type GitComparisonScope,
+  type GitRevisionComparisonEntry,
+  type GitRefSummary,
+  type GitState,
+  gitChanges,
+  gitBranchComparison,
+  gitCommitComparison,
+  gitComparison,
+  gitRecentCommits,
+  gitRefs,
+} from './git'
 import { useWorkspaceChanges } from './live'
+import { normalizeLiveReviewEvent } from './live-review'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
+import { diffForReviewEntry, mergeGitReviewEntries, mergeReviewEntry, type ReviewEntry } from './review'
+import { useShellReviewSummaryBridge } from './review-summary-store'
+import { changedParentDirs, withReviewChanges } from './review-tree'
+import {
+  ReviewScopePicker,
+  type ReviewScopeSelection,
+} from './ReviewScopePicker'
+import {
+  ReviewPane,
+  type ReviewFileSummary,
+  type ReviewOptions,
+} from './ReviewPane'
 import { SearchTab } from './SearchTab'
 import {
   activateTab,
@@ -44,8 +95,15 @@ import {
   restoreTabs,
   type TabsState,
 } from './tabs'
+import { useHarnessPreTurn, useHarnessTurn } from './turn'
+import {
+  canCaptureHarnessWorkspaceChange,
+  type HarnessReviewWindow,
+} from './turn-status'
 
-type SideTab = 'files' | 'git' | 'search'
+type SideTab = 'files' | 'search'
+
+const LAST_TURN_SCOPE: ReviewScopeSelection = { kind: 'last-turn' }
 
 interface DiffSelection {
   /** The change shown — from git status, or synthesized for live
@@ -53,15 +111,74 @@ interface DiffSelection {
   change: GitChange
   /** Overrides the git-HEAD baseline: the last content this page saw,
       so modified files outside a repo still diff instead of dumping. */
-  baseline?: string
+  /** null means the pre-write text could not be captured. */
+  baseline?: string | null
   /** The file's own repo directory when the browsed root sits above it
       (a worktree under the home directory) — see DiffPane. */
   gitDir?: string
 }
 
+function ReviewOption({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      className="shui-review-option"
+      role="menuitemcheckbox"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+    >
+      <span>{label}</span>
+      <span className="check" aria-hidden>
+        {checked ? <Check /> : null}
+      </span>
+    </button>
+  )
+}
+
+function reviewEntriesFromGit(
+  changes: readonly (GitComparisonEntry | GitRevisionComparisonEntry)[],
+): ReadonlyMap<string, ReviewEntry> {
+  return new Map(
+    changes.map((entry) => {
+      const change: GitChange = {
+        path: entry.path,
+        status: entry.status,
+        staged: entry.staged,
+        ...(entry.from === undefined ? {} : { from: entry.from }),
+      }
+      return [
+        entry.path,
+        {
+          path: entry.path,
+          change,
+          before: entry.before,
+          after: entry.after,
+        },
+      ] as const
+    }),
+  )
+}
+
 const SIDEBAR_DEFAULT_WIDTH = 244
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
+function reviewablePath(rel: string): boolean {
+  // This page's own persisted UI state changes on every tab/expand and
+  // must never become part of the user's review set.
+  if (rel.endsWith('shell-ui.yaml')) return false
+  const noise = ['Library', 'node_modules', 'target', 'dist', 'build', 'out', 'vendor', '__pycache__']
+  const segments = rel.split('/')
+  if (segments.some((segment) => segment === '.git' || noise.includes(segment))) return false
+  return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|log|output|tmp|swp|part|pid|sock)$/.test(rel)
+}
 
 function clampSidebarWidth(w: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
@@ -69,7 +186,6 @@ function clampSidebarWidth(w: number): number {
 
 const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
   { id: 'files', label: 'files', Icon: FolderTree },
-  { id: 'git', label: 'git', Icon: GitBranch },
   { id: 'search', label: 'search', Icon: Search },
 ]
 
@@ -79,12 +195,21 @@ export function ShellExplorerPage({
   tabId,
   onRequestClose,
   workingDir,
+  conversationId,
 }: { host: Host } & PageRenderProps) {
   const theme = host.useTheme()
+  const observedReview = useHarnessTurn(host, conversationId)
+  const observedReviewKey = observedReview.turnId
+  const [reviewKey, setReviewKey] = useState<string | null>(observedReviewKey)
   const [info, setInfo] = useState<CoderInfo | null>(null)
   const [infoError, setInfoError] = useState<string | null>(null)
   const [restored, setRestored] = useState<TabUiState | null | 'loading'>('loading')
   const [root, setRoot] = useState<string | null>(null)
+  const rootRef = useRef(root)
+  rootRef.current = root
+  const rootGenerationRef = useRef(0)
+  const rootResolveSeqRef = useRef(0)
+  const rootTransitionRef = useRef(false)
   const [sideTab, setSideTab] = useState<SideTab>('files')
   const [collapsed, setCollapsed] = useState(false)
   const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
@@ -103,7 +228,170 @@ export function ShellExplorerPage({
   const [reveal, setReveal] = useState<string | null>(null)
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
   const [diff, setDiff] = useState<DiffSelection | null>(null)
+  const diffRequestRef = useRef(0)
+  const [reviewRefreshEpoch, setReviewRefreshEpoch] = useState(0)
+  const [reviewCollapseEpoch, setReviewCollapseEpoch] = useState(0)
+  const [reviewExpandEpoch, setReviewExpandEpoch] = useState(0)
+  const [reviewMenuOpen, setReviewMenuOpen] = useState(false)
+  const [reviewScope, setReviewScope] = useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
+  const reviewScopeRef = useRef(reviewScope)
+  reviewScopeRef.current = reviewScope
+  const [scopeEntries, setScopeEntries] = useState<ReadonlyMap<string, ReviewEntry>>(new Map())
+  const scopeEntriesRef = useRef<ReadonlyMap<string, ReviewEntry>>(scopeEntries)
+  scopeEntriesRef.current = scopeEntries
+  const [scopeSummary, setScopeSummary] = useState<readonly ReviewFileSummary[]>([])
+  const [scopeLoading, setScopeLoading] = useState(false)
+  const [scopeError, setScopeError] = useState<string | null>(null)
+  const [scopeCommits, setScopeCommits] = useState<readonly GitCommitSummary[]>([])
+  const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
+  const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
+  const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(null)
+  const scopeLoadSeqRef = useRef(0)
+  const scopeMetadataSeqRef = useRef(0)
+  const [reviewSummary, setReviewSummary] = useState<readonly ReviewFileSummary[]>([])
+  const [reviewOptions, setReviewOptions] = useState<ReviewOptions>({
+    diffStyle: 'unified',
+    wordWrap: true,
+    wordDiffs: true,
+    hideWhitespace: false,
+    expandUnchanged: false,
+    richPreview: false,
+  })
+  const [reviewEntries, setReviewEntries] = useState<ReadonlyMap<string, ReviewEntry>>(new Map())
+  const reviewEntriesRef = useRef<ReadonlyMap<string, ReviewEntry>>(reviewEntries)
+  reviewEntriesRef.current = reviewEntries
+  // For ordinary non-Git folders, snapshot initial text before Harness
+  // writes so every later row can open a real before/after diff.
+  const baselineRef = useRef<Map<string, string>>(new Map())
+  const baselineKindsRef = useRef<ReadonlyMap<string, TreeNode['kind']>>(new Map())
+  const baselineCompleteRef = useRef(false)
+  const baselineCapturedRef = useRef(false)
+  const baselineReadyRef = useRef<Promise<void>>(Promise.resolve())
+  const preparedTurnRef = useRef<string | null>(null)
+  const lastReviewKeyRef = useRef<string | null>(observedReviewKey ?? null)
+  const reviewEpochRef = useRef(0)
+  const reviewWindowRef = useRef<HarnessReviewWindow>({
+    turnId: observedReviewKey,
+    epoch: reviewEpochRef.current,
+    active: observedReview.active,
+    completedAtMs: observedReview.completedAtMs,
+  })
+  if (observedReviewKey === lastReviewKeyRef.current) {
+    reviewWindowRef.current = {
+      turnId: observedReviewKey,
+      epoch: reviewEpochRef.current,
+      active: observedReview.active,
+      completedAtMs: observedReview.completedAtMs,
+    }
+  }
   const cacheRef = useRef<EditorCache>(new Map())
+
+  const forceLastTurnScope = useCallback(() => {
+    // Every forced Last Turn transition must retire an in-flight Git scope
+    // request before changing the visible scope. Otherwise its late result can
+    // replace the file selected from the chat summary or live watcher.
+    scopeLoadSeqRef.current += 1
+    setReviewScope(LAST_TURN_SCOPE)
+    setScopeLoading(false)
+    setScopeError(null)
+  }, [])
+
+  const beginReviewTurn = useCallback((turnId: string) => {
+    if (turnId === lastReviewKeyRef.current) return false
+    lastReviewKeyRef.current = turnId
+    setReviewKey(turnId)
+    reviewEpochRef.current += 1
+    reviewWindowRef.current = {
+      turnId,
+      epoch: reviewEpochRef.current,
+      active: false,
+      completedAtMs: null,
+    }
+    scopeMetadataSeqRef.current += 1
+    diffRequestRef.current += 1
+    if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
+    liveTimerRef.current = null
+    changedAbsRef.current = new Map()
+    reviewEligibleAbsRef.current = new Set()
+    changedDirsRef.current = new Set()
+    followRef.current = null
+    preparedTurnRef.current = null
+    baselineRef.current = new Map()
+    baselineKindsRef.current = new Map()
+    baselineCompleteRef.current = false
+    baselineCapturedRef.current = false
+    baselineReadyRef.current = Promise.resolve()
+    reviewEntriesRef.current = new Map()
+    setReviewEntries(new Map())
+    scopeEntriesRef.current = new Map()
+    setScopeEntries(new Map())
+    setScopeSummary([])
+    setScopeMetadataLoading(false)
+    setScopeMetadataError(null)
+    forceLastTurnScope()
+    setReviewSummary([])
+    setDiff(null)
+    return true
+  }, [forceLastTurnScope])
+
+  // This runs inside Harness's awaited pre-turn hook: the snapshot is fully
+  // frozen before model/tool execution can create, edit, rename, or delete.
+  useHarnessPreTurn(host, conversationId, tabId, async ({ turn_id }) => {
+    const currentRoot = rootRef.current
+    if (currentRoot === null) return
+    beginReviewTurn(turn_id)
+    reviewWindowRef.current = {
+      turnId: turn_id,
+      epoch: reviewEpochRef.current,
+      active: true,
+      completedAtMs: null,
+    }
+    if (preparedTurnRef.current === turn_id) {
+      await baselineReadyRef.current
+      return
+    }
+    preparedTurnRef.current = turn_id
+    const generation = rootGenerationRef.current
+    const epoch = reviewEpochRef.current
+    baselineRef.current = new Map()
+    baselineKindsRef.current = new Map()
+    baselineCompleteRef.current = false
+    baselineCapturedRef.current = false
+    const snapshot = captureWorkspaceBaseline(host, currentRoot, reviewablePath)
+      .then(({ contents, kinds, complete }) => {
+        if (
+          rootGenerationRef.current !== generation ||
+          reviewEpochRef.current !== epoch ||
+          rootRef.current !== currentRoot
+        ) {
+          return
+        }
+        baselineRef.current = new Map(contents)
+        baselineKindsRef.current = kinds
+        baselineCompleteRef.current = complete
+        baselineCapturedRef.current = true
+      })
+      .catch(() => {
+        // Git can still provide HEAD; non-Git rows fail closed with a clear
+        // unavailable-baseline message instead of showing a false empty diff.
+      })
+    baselineReadyRef.current = snapshot
+    await snapshot
+  })
+
+  // Catch up when the page mounted after pre-turn (or against an older
+  // Harness without hook support). It can still track rows, but deliberately
+  // does not pretend that a post-write read is a pre-turn baseline.
+  useEffect(() => {
+    if (observedReviewKey === null) return
+    beginReviewTurn(observedReviewKey)
+    reviewWindowRef.current = {
+      turnId: observedReviewKey,
+      epoch: reviewEpochRef.current,
+      active: observedReview.active,
+      completedAtMs: observedReview.completedAtMs,
+    }
+  }, [observedReviewKey, observedReview.active, observedReview.completedAtMs, beginReviewTurn])
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -127,31 +415,39 @@ export function ShellExplorerPage({
     }
   }, [host, tabId])
 
-  // Root resolution waits for BOTH: a persisted root only counts while it
-  // still lives inside an allowed base path (chat-synced roots may be
-  // subfolders, not just the base paths themselves). Without one, the
-  // chat's working dir wins over the primary root, so a fresh split opens
-  // where the conversation is.
+  // Root resolution waits for BOTH. A chat's working directory is the
+  // live source of truth for a split Shell pane; persisted state is only
+  // restored when there is no current chat folder. Both may be subfolders
+  // of an allowed base path, not just the base paths themselves.
   useEffect(() => {
     if (!info || restored === 'loading' || root !== null) return
-    const withinBase = (p: string) =>
-      info.base_paths.includes(p) || info.base_paths.some((base) => p.startsWith(`${base}/`))
-    const persisted = restored?.root && withinBase(restored.root) ? restored.root : null
-    const next = persisted ?? workingDir ?? info.primary_root
-    setRoot(next)
-    if (persisted) {
-      setTabs(restoreTabs(restored?.open, restored?.active))
-      setExpanded(restored?.expanded ?? [])
-      setShowHidden(restored?.showHidden ?? false)
-      setSideWidth(clampSidebarWidth(restored?.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
-    } else if (restored && !restored.root && next === info.primary_root) {
-      // Legacy/first save without a root: restore against the primary.
-      setTabs(restoreTabs(restored.open, restored.active))
-      setExpanded(restored.expanded)
-      setShowHidden(restored.showHidden ?? false)
-      setSideWidth(clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
+    let cancelled = false
+    const seq = ++rootResolveSeqRef.current
+    const requested = workingDir ?? restored?.root ?? info.primary_root
+    workspaceValidate(host, requested)
+      .then(({ path: next }) => {
+        if (cancelled || rootResolveSeqRef.current !== seq) return
+        setRoot(next)
+        if (restored?.root && requested === restored.root && next === restored.root) {
+          setTabs(restoreTabs(restored.open, restored.active))
+          setExpanded(restored.expanded)
+          setShowHidden(restored.showHidden ?? false)
+          setSideWidth(clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
+        } else if (restored && !restored.root && requested === info.primary_root) {
+          // Legacy/first save without a root: restore against the primary.
+          setTabs(restoreTabs(restored.open, restored.active))
+          setExpanded(restored.expanded)
+          setShowHidden(restored.showHidden ?? false)
+          setSideWidth(clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
+        }
+      })
+      .catch(() => {
+        if (!cancelled && rootResolveSeqRef.current === seq) setRoot(info.primary_root)
+      })
+    return () => {
+      cancelled = true
     }
-  }, [info, restored, root, workingDir])
+  }, [host, info, restored, root, workingDir])
 
   // ── data loads (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
@@ -219,10 +515,70 @@ export function ShellExplorerPage({
     return { paths, kinds, truncations: tree.truncations }
   }, [tree, subtrees])
 
+  // Git is an optional baseline/enrichment source. The review set itself
+  // is also fed by shell::changed, so plain temporary folders behave the
+  // same as worktrees.
+  useEffect(() => {
+    if (git?.kind !== 'ready') return
+    setReviewEntries((previous) => {
+      const next = mergeGitReviewEntries(previous, git.changes, false)
+      reviewEntriesRef.current = next
+      return next
+    })
+  }, [git, reviewKey])
+
+  const visibleReviewEntries = reviewScope.kind === 'last-turn' ? reviewEntries : scopeEntries
+  const visibleReviewEntriesRef = useRef<ReadonlyMap<string, ReviewEntry>>(visibleReviewEntries)
+  visibleReviewEntriesRef.current = visibleReviewEntries
+  const visibleReviewSummary = reviewScope.kind === 'last-turn' ? reviewSummary : scopeSummary
+  const reviewChanges = useMemo<readonly GitChange[]>(
+    () => [...visibleReviewEntries.values()].map((entry) => entry.change),
+    [visibleReviewEntries],
+  )
+  const orderedReviewEntries = useMemo<readonly ReviewEntry[]>(
+    () => [...visibleReviewEntries.values()],
+    [visibleReviewEntries],
+  )
+  const reviewTotals = useMemo(
+    () =>
+      visibleReviewSummary.reduce(
+        (total, file) => ({
+          add: total.add + (file.add ?? 0),
+          del: total.del + (file.del ?? 0),
+          ready: total.ready + (file.state === 'ready' ? 1 : 0),
+          pending: total.pending + (file.state === 'pending' ? 1 : 0),
+          unavailable:
+            total.unavailable + (file.state === 'unavailable' ? 1 : 0),
+        }),
+        { add: 0, del: 0, ready: 0, pending: 0, unavailable: 0 },
+      ),
+    [visibleReviewSummary],
+  )
+  // The Files tree is also the review navigator. Review-only rows keep
+  // deleted files visible even after they disappear from coder::tree.
+  const reviewTree = useMemo(() => withReviewChanges(mergedTree, reviewChanges), [mergedTree, reviewChanges])
+  const changedDirsKey = useMemo(() => changedParentDirs(reviewChanges).join('\n'), [reviewChanges])
+  useEffect(() => {
+    if (changedDirsKey === '') return
+    const changedDirs = changedDirsKey.split('\n')
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      let added = false
+      for (const dir of changedDirs) {
+        if (!next.has(dir)) {
+          next.add(dir)
+          added = true
+        }
+      }
+      return added ? [...next] : previous
+    })
+  }, [changedDirsKey])
+
   // Expanding a folder the snapshot didn't reach fetches its listing.
   const subtreeLoadRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (root === null || mergedTree === null) return
+    const generation = rootGenerationRef.current
     for (const dir of expanded) {
       if (mergedTree.kinds.get(dir) !== 'dir') continue
       if (subtrees.has(dir) || subtreeLoadRef.current.has(dir)) continue
@@ -238,15 +594,19 @@ export function ShellExplorerPage({
       subtreeLoadRef.current.add(dir)
       coderTree(host, joinPath(root, dir), showHidden)
         .then((out) => {
+          if (rootGenerationRef.current !== generation) return
           setSubtrees((prev) => new Map(prev).set(dir, flattenTree(out.root)))
         })
         .catch(() => {
+          if (rootGenerationRef.current !== generation) return
           // Inaccessible folder — recorded as fetched-and-empty so the
           // load effect doesn't refetch it on every live burst; a change
           // under it drops the entry and retries.
           setSubtrees((prev) => new Map(prev).set(dir, { paths: [], kinds: new Map(), truncations: [] }))
         })
-        .finally(() => subtreeLoadRef.current.delete(dir))
+        .finally(() => {
+          if (rootGenerationRef.current === generation) subtreeLoadRef.current.delete(dir)
+        })
     }
   }, [expanded, mergedTree, subtrees, root, showHidden, host])
 
@@ -263,15 +623,18 @@ export function ShellExplorerPage({
   // (a clean buffer follows the disk, a dirty one keeps the user's edits).
   // Bursts coalesce worker-side and again in a short window here.
   const [fileBump, setFileBump] = useState(0)
-  const rootRef = useRef(root)
-  rootRef.current = root
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
+  const gitRef = useRef(git)
+  gitRef.current = git
   const liveTimerRef = useRef<number | null>(null)
   const changedAbsRef = useRef<Map<string, string>>(new Map())
+  const reviewEligibleAbsRef = useRef<Set<string>>(new Set())
+  const changedDirsRef = useRef<Set<string>>(new Set())
 
   const reloadActiveFile = useCallback(() => {
     const currentRoot = rootRef.current
+    const generation = rootGenerationRef.current
     const active = tabsRef.current.active
     if (!currentRoot || !active) return
     // An image preview follows the disk through its own render path; a
@@ -281,6 +644,7 @@ export function ShellExplorerPage({
     if (!changedAbsRef.current.has(absPath)) return
     coderReadFile(host, absPath)
       .then((out) => {
+        if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
         if (tabsRef.current.active !== active) return
         const content = out.content ?? ''
         const entry = cacheRef.current.get(active)
@@ -298,105 +662,212 @@ export function ShellExplorerPage({
       })
   }, [host])
 
-  // The last written file in a burst follows the writer into view — as a
-  // DIFF, the way the change reads best: git baseline in a repo, empty
-  // baseline for a created file, the last content this page saw for a
-  // modified one. The file also opens as the PREVIEW tab underneath —
-  // non-destructive by construction: preview replacement never touches
-  // pinned tabs, and a dirty preview auto-pins on edit. A system-level
-  // watch sees AMBIENT writes too (session logs, caches, build output),
-  // so only visible, non-system, non-artifact paths ever steal the view.
+  // The last written file in a burst follows the writer into review. All
+  // files in the burst stay in reviewEntries, independent of Git.
   const followRef = useRef<{ rel: string; kind: string } | null>(null)
-  const followable = (rel: string): boolean => {
-    // This page's own persisted UI state — every tab/expand change
-    // writes it, so following it would chase our own tail forever.
-    if (rel.endsWith('shell-ui.yaml')) return false
-    const noise = ['Library', 'node_modules', 'target', 'dist', 'build', 'out', 'vendor', '__pycache__']
-    const segments = rel.split('/')
-    if (segments.some((s) => s.startsWith('.') || noise.includes(s))) return false
-    return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|lock|log|output|tmp|swp|part|pid|sock)$/.test(rel)
-  }
   const diffRef = useRef(diff)
   diffRef.current = diff
   const treeRef = useRef(tree)
   treeRef.current = tree
+  const openReviewEntry = useCallback((entry: ReviewEntry) => {
+    diffRequestRef.current += 1
+    setTabs((state) => openPreview(state, entry.path))
+    setDiff(diffForReviewEntry(entry))
+    setReviewRefreshEpoch((value) => value + 1)
+  }, [])
 
-  // Open one change for review: preview tab plus the best diff this file
-  // supports — the browsed root's git status first, then the file's OWN
-  // repo (`git -C` auto-discovers upward, covering a worktree under the
-  // home directory), then created/last-seen baselines, then plain
-  // content.
-  const openChangeDiff = useCallback(
-    (rel: string, kindHint: string) => {
-      const currentRoot = rootRef.current
-      if (currentRoot === null) return
-      const entry = cacheRef.current.get(rel)
-      setTabs((s) => openPreview(s, rel))
-      void gitChanges(host, currentRoot)
-        .then(async (state): Promise<DiffSelection | null> => {
-          const changes = state.kind === 'ready' ? state.changes : []
-          const fromGit = changes.find((c) => c.path === rel)
-          if (fromGit) return { change: fromGit }
-          const abs = joinPath(currentRoot, rel)
-          const cut = abs.lastIndexOf('/')
-          const dir = abs.slice(0, cut)
-          const nested = await nestedGitStatus(host, dir, abs.slice(cut + 1))
-          if (nested === 'clean') return null
-          if (nested !== null) {
-            return { change: { path: rel, status: nested, staged: false }, gitDir: dir }
+  const loadScopeMetadata = useCallback(() => {
+    if (root === null) return
+    const seq = ++scopeMetadataSeqRef.current
+    setScopeMetadataLoading(true)
+    setScopeMetadataError(null)
+    void Promise.all([gitRecentCommits(host, root), gitRefs(host, root)])
+      .then(([commits, refs]) => {
+        if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root) return
+        setScopeCommits(commits.kind === 'ready' ? commits.commits : [])
+        setScopeRefs(refs.kind === 'ready' ? refs.refs : [])
+        const failure =
+          commits.kind === 'error'
+            ? commits.message
+            : refs.kind === 'error'
+              ? refs.message
+              : commits.kind === 'not-a-repo' || refs.kind === 'not-a-repo'
+                ? 'not a git repository'
+                : null
+        setScopeMetadataError(failure)
+      })
+      .finally(() => {
+        if (scopeMetadataSeqRef.current === seq) setScopeMetadataLoading(false)
+      })
+  }, [host, root])
+
+  const loadReviewScope = useCallback(
+    (scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>) => {
+      if (root === null) return
+      const seq = ++scopeLoadSeqRef.current
+      setScopeLoading(true)
+      setScopeError(null)
+      const comparison =
+        scope.kind === 'uncommitted' || scope.kind === 'unstaged' || scope.kind === 'staged'
+          ? gitComparison(host, root, scope.kind satisfies GitComparisonScope)
+          : scope.kind === 'commit'
+            ? gitCommitComparison(host, root, scope.sha)
+            : gitBranchComparison(host, root, scope.ref)
+      void comparison
+        .then((state) => {
+          if (scopeLoadSeqRef.current !== seq || rootRef.current !== root) return
+          if (state.kind !== 'ready') {
+            const message = state.kind === 'error' ? state.message : 'not a git repository'
+            scopeEntriesRef.current = new Map()
+            setScopeEntries(new Map())
+            setScopeError(message)
+            diffRequestRef.current += 1
+            setDiff(null)
+            return
           }
-          if (kindHint === 'created') {
-            return { change: { path: rel, status: 'untracked', staged: false } }
+          const next = reviewEntriesFromGit(state.changes)
+          scopeEntriesRef.current = next
+          setScopeEntries(next)
+          const activePath = diffRef.current?.change.path
+          const entry = (activePath ? next.get(activePath) : undefined) ?? next.values().next().value
+          if (entry) openReviewEntry(entry)
+          else {
+            diffRequestRef.current += 1
+            setDiff(null)
           }
-          if (entry !== undefined) {
-            return {
-              change: { path: rel, status: 'modified', staged: false },
-              baseline: entry.savedContent,
-            }
-          }
-          return null
         })
-        .then((sel) => {
-          if (rootRef.current === currentRoot) setDiff(sel)
+        .catch((error: unknown) => {
+          if (scopeLoadSeqRef.current !== seq || rootRef.current !== root) return
+          scopeEntriesRef.current = new Map()
+          setScopeEntries(new Map())
+          setScopeError(errorMessage(error))
+          diffRequestRef.current += 1
+          setDiff(null)
         })
-        .catch(() => {
-          if (rootRef.current === currentRoot) setDiff(null)
+        .finally(() => {
+          if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
         })
     },
-    [host],
+    [host, root, openReviewEntry],
   )
 
+  useEffect(() => {
+    if (reviewScope.kind !== 'last-turn') loadReviewScope(reviewScope)
+  }, [reviewScope, loadReviewScope])
+
+  const selectReviewScope = useCallback(
+    (next: ReviewScopeSelection) => {
+      setScopeSummary([])
+      setScopeError(null)
+      setReviewMenuOpen(false)
+      if (next.kind === 'last-turn') {
+        forceLastTurnScope()
+        const activePath = diffRef.current?.change.path
+        const entry =
+          (activePath ? reviewEntriesRef.current.get(activePath) : undefined) ??
+          reviewEntriesRef.current.values().next().value
+        if (entry) openReviewEntry(entry)
+        else {
+          diffRequestRef.current += 1
+          setDiff(null)
+        }
+        return
+      }
+      scopeLoadSeqRef.current += 1
+      setReviewScope(next)
+      scopeEntriesRef.current = new Map()
+      setScopeEntries(new Map())
+      setScopeLoading(true)
+      diffRequestRef.current += 1
+      setDiff(null)
+    },
+    [forceLastTurnScope, openReviewEntry],
+  )
+
+  useShellReviewSummaryBridge({
+    sessionId: conversationId,
+    sourceId: tabId,
+    turnId: reviewKey,
+    files: reviewSummary,
+    onSelectFile: (path) => {
+      const entry = reviewEntriesRef.current.get(path)
+      if (entry) {
+        forceLastTurnScope()
+        openReviewEntry(entry)
+      }
+    },
+  })
+
   useWorkspaceChanges(host, root, (event) => {
+    if (rootTransitionRef.current) return
+    if (event.root !== rootRef.current) return
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
     // Directories refresh the tree but must never open as files —
     // reading one is a C210.
-    if (event.dir !== true && event.kind !== 'deleted') {
+    if (event.dir === true) {
+      changedDirsRef.current.add(eventAbs)
+    } else {
       const currentRoot = rootRef.current
       if (currentRoot) {
         const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
         if (eventAbs.startsWith(prefix)) {
           const rel = eventAbs.slice(prefix.length)
-          if (followable(rel)) followRef.current = { rel, kind: event.kind }
+          if (
+            reviewablePath(rel) &&
+            canCaptureHarnessWorkspaceChange(
+              reviewWindowRef.current,
+              lastReviewKeyRef.current,
+              reviewEpochRef.current,
+              Date.now(),
+            )
+          ) {
+            reviewEligibleAbsRef.current.add(eventAbs)
+            followRef.current = { rel, kind: event.kind }
+          }
         }
       }
     }
     if (liveTimerRef.current !== null) return
+    const generation = rootGenerationRef.current
+    const reviewEpoch = reviewEpochRef.current
     liveTimerRef.current = window.setTimeout(() => {
-      liveTimerRef.current = null
-      // Captured before the refresh: "was this file known?" decides
-      // created-vs-modified when the OS event kind is unreliable (macOS
-      // reports the create and the write that fills it separately).
-      const knownBefore = treeRef.current === null ? null : new Set(treeRef.current.paths)
-      refreshTree()
-      const gitLoad = refreshGit()
-      reloadActiveFile()
-      const follow = followRef.current
-      followRef.current = null
-      const changed = changedAbsRef.current
-      changedAbsRef.current = new Map()
-      const currentRoot = rootRef.current
-      if (currentRoot !== null) {
+      // Keep the burst buffered until the turn's baseline snapshot is
+      // complete. New watcher events coalesce into the same maps meanwhile.
+      void baselineReadyRef.current.then(() => {
+        liveTimerRef.current = null
+        if (rootGenerationRef.current !== generation || reviewEpochRef.current !== reviewEpoch) return
+        // Capture the pre-refresh tree: watcher kinds are noisy, while this
+        // tells an atomic replacement from a truly new path.
+        const knownBefore = treeRef.current === null ? null : new Set(treeRef.current.paths)
+        const kindsBefore = treeRef.current?.kinds
+        reloadActiveFile()
+        const follow = followRef.current
+        followRef.current = null
+        const changed = changedAbsRef.current
+        changedAbsRef.current = new Map()
+        const reviewEligible = reviewEligibleAbsRef.current
+        reviewEligibleAbsRef.current = new Set()
+        const changedDirs = changedDirsRef.current
+        changedDirsRef.current = new Set()
+        const currentRoot = rootRef.current
+        if (currentRoot === null) return
+
+        const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
+        const fileEvents = [...changed]
+          .filter(
+            ([abs]) =>
+              reviewEligible.has(abs) &&
+              !changedDirs.has(abs) &&
+              abs.startsWith(prefix),
+          )
+          .map(([abs, rawKind]) => ({
+            abs,
+            rawKind,
+            rel: abs.slice(prefix.length),
+          }))
+          .filter(({ rel }) => reviewablePath(rel))
+
         // A lazily fetched subtree with a change under it is stale —
         // drop it; the load effect refetches while it stays expanded.
         setSubtrees((prev) => {
@@ -413,24 +884,98 @@ export function ShellExplorerPage({
           }
           return next ?? prev
         })
-      }
-      if (follow !== null && follow.rel !== tabsRef.current.active) {
-        const looksCreated = follow.kind === 'created' || (knownBefore !== null && !knownBefore.has(follow.rel))
-        openChangeDiff(follow.rel, looksCreated ? 'created' : follow.kind)
-      } else {
-        void gitLoad.then((state) => {
-          const changes = state?.kind === 'ready' ? state.changes : []
-          if (diffRef.current === null || currentRoot === null) return
-          // The open diff tracks further writes to its file live.
-          const open = diffRef.current
-          if (changed.has(joinPath(currentRoot, open.change.path))) {
-            const fresh = changes.find((c) => c.path === open.change.path)
-            setDiff(
-              fresh ? { change: fresh } : { change: { ...open.change }, baseline: open.baseline, gitDir: open.gitDir },
+        refreshTree()
+        const followTicket = diffRequestRef.current
+        void Promise.all([
+          coderStatFiles(
+            host,
+            fileEvents.map(({ abs }) => abs),
+          ).catch(() => null),
+          refreshGit(),
+        ]).then(([results, state]) => {
+          if (
+            rootGenerationRef.current !== generation ||
+            reviewEpochRef.current !== reviewEpoch ||
+            rootRef.current !== currentRoot
+          ) {
+            return
+          }
+          const existsByPath = new Map(results?.map((result) => [result.path, result.success] as const) ?? [])
+          const currentGitChanges = state?.kind === 'ready' ? state.changes : []
+          const currentGitByPath = new Map(currentGitChanges.map((change) => [change.path, change] as const))
+          let nextReview = reviewEntriesRef.current
+          for (const { abs, rawKind, rel } of fileEvents) {
+            const baselinePath = baselineCapturedRef.current
+              ? classifyWorkspaceBaselinePath(
+                  {
+                    kinds: baselineKindsRef.current,
+                    complete: baselineCompleteRef.current,
+                  },
+                  rel,
+                )
+              : null
+            const priorKind = baselineCapturedRef.current
+              ? baselinePath?.priorKind ?? null
+              : kindsBefore === undefined
+                ? undefined
+                : kindsBefore.get(rel) === 'file'
+                  ? 'file'
+                  : kindsBefore.get(rel) === 'dir' || knownBefore?.has(`${rel}/`)
+                    ? 'dir'
+                    : null
+            const baseline = baselineRef.current.get(rel) ?? cacheRef.current.get(rel)?.savedContent
+            const baselineUnavailable =
+              baselinePath?.priorKind === 'file' && baseline === undefined
+            const decision = normalizeLiveReviewEvent({
+              path: rel,
+              rawKind,
+              priorKind,
+              priorBaseline: baseline,
+              existsNow:
+                results === null
+                  ? rawKind !== 'deleted'
+                  : existsByPath.get(abs) === true,
+            })
+            if (decision.action === 'ignore-directory' || decision.action === 'ignore-delete') continue
+            nextReview = mergeReviewEntry(
+              nextReview,
+              rel,
+              decision.action,
+              decision.baseline,
+              // An added/untracked Git status normally supplies an empty
+              // baseline. Do not use that fallback when an incomplete tree
+              // may simply have omitted an existing pre-turn file.
+              baselineUnavailable ? undefined : currentGitByPath.get(rel),
             )
           }
+          const enriched = mergeGitReviewEntries(nextReview, currentGitChanges, false)
+          reviewEntriesRef.current = enriched
+          setReviewEntries(enriched)
+
+          if (follow !== null && diffRequestRef.current === followTicket) {
+            const entry =
+              enriched.get(follow.rel) ??
+              [...fileEvents]
+                .reverse()
+                .map(({ rel }) => enriched.get(rel))
+                .find((candidate) => candidate !== undefined)
+            if (entry) {
+              forceLastTurnScope()
+              openReviewEntry(entry)
+            }
+            return
+          }
+          const open = diffRef.current
+          if (
+            reviewScopeRef.current.kind === 'last-turn' &&
+            open !== null &&
+            changed.has(joinPath(currentRoot, open.change.path))
+          ) {
+            const entry = enriched.get(open.change.path)
+            if (entry) setDiff(diffForReviewEntry(entry))
+          }
         })
-      }
+      })
     }, 400)
   })
   useEffect(
@@ -465,14 +1010,33 @@ export function ShellExplorerPage({
 
   // ── open/close/pin actions ──
   const previewFile = useCallback((relPath: string) => {
+    diffRequestRef.current += 1
     setDiff(null)
     setTabs((s) => openPreview(s, relPath))
   }, [])
 
-  const pinFile = useCallback((relPath: string) => {
-    setDiff(null)
-    setTabs((s) => openPinned(s, relPath))
-  }, [])
+  const activateFile = useCallback(
+    (relPath: string) => {
+      const entry = visibleReviewEntriesRef.current.get(relPath)
+      if (entry) openReviewEntry(entry)
+      else previewFile(relPath)
+    },
+    [openReviewEntry, previewFile],
+  )
+
+  const pinFile = useCallback(
+    (relPath: string) => {
+      const entry = visibleReviewEntriesRef.current.get(relPath)
+      if (entry) {
+        openReviewEntry(entry)
+        return
+      }
+      diffRequestRef.current += 1
+      setDiff(null)
+      setTabs((s) => openPinned(s, relPath))
+    },
+    [openReviewEntry],
+  )
 
   const revealFolder = useCallback((relPath: string) => {
     setSideTab('files')
@@ -499,6 +1063,10 @@ export function ShellExplorerPage({
         return
       }
       cacheRef.current.delete(relPath)
+      if (diffRef.current?.change.path === relPath) {
+        diffRequestRef.current += 1
+        setDiff(null)
+      }
       setDirtyPaths((prev) => {
         if (!prev.has(relPath)) return prev
         const next = new Set(prev)
@@ -545,18 +1113,74 @@ export function ShellExplorerPage({
   }, [])
 
   const changeRoot = useCallback((nextRoot: string) => {
+    const resolveSeq = ++rootResolveSeqRef.current
+    rootTransitionRef.current = true
+    rootGenerationRef.current += 1
+    reviewEpochRef.current += 1
+    scopeMetadataSeqRef.current += 1
+    treeSeqRef.current += 1
+    gitSeqRef.current += 1
+    diffRequestRef.current += 1
+    if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
+    liveTimerRef.current = null
+    followRef.current = null
+    changedAbsRef.current = new Map()
+    reviewEligibleAbsRef.current = new Set()
+    changedDirsRef.current = new Set()
+    subtreeLoadRef.current.clear()
+    baselineRef.current.clear()
+    baselineKindsRef.current = new Map()
+    baselineCompleteRef.current = false
+    baselineCapturedRef.current = false
+    baselineReadyRef.current = Promise.resolve()
+    preparedTurnRef.current = null
+    reviewEntriesRef.current = new Map()
     cacheRef.current.clear()
     setDirtyPaths(new Set())
     setTabs(EMPTY_TABS)
     setExpanded([])
     setDiff(null)
-    setRoot(nextRoot)
-  }, [])
+    setReviewEntries(new Map())
+    scopeEntriesRef.current = new Map()
+    setScopeEntries(new Map())
+    setReviewSummary([])
+    setScopeSummary([])
+    setScopeCommits([])
+    setScopeRefs([])
+    setScopeMetadataLoading(false)
+    setScopeMetadataError(null)
+    forceLastTurnScope()
+    setTree(null)
+    setGit(null)
+    setSubtrees(new Map())
+    workspaceValidate(host, nextRoot)
+      .then(({ path }) => {
+        if (rootResolveSeqRef.current === resolveSeq) {
+          rootTransitionRef.current = false
+          if (path === rootRef.current) {
+            refreshTree()
+            void refreshGit()
+          } else {
+            setRoot(path)
+          }
+        }
+      })
+      .catch(() => {
+        if (rootResolveSeqRef.current === resolveSeq) {
+          rootTransitionRef.current = false
+          if (nextRoot === rootRef.current) {
+            refreshTree()
+            void refreshGit()
+          } else {
+            setRoot(nextRoot)
+          }
+        }
+      })
+  }, [forceLastTurnScope, host, refreshGit, refreshTree])
 
   // ── follow the chat's working directory ──
   // Picking another folder in chat re-roots the explorer (the split-screen
-  // sync). Only CHANGES sync: the boot-resolved root wins on mount, and a
-  // manual root pick sticks until the chat's folder moves again.
+  // sync). A manual root pick sticks until the chat's folder moves again.
   const lastWorkingDirRef = useRef(workingDir ?? null)
   useEffect(() => {
     const next = workingDir ?? null
@@ -604,6 +1228,7 @@ export function ShellExplorerPage({
     const prefix = root.endsWith('/') ? root : `${root}/`
     if (abs.startsWith(prefix)) {
       pendingOpenRef.current = null
+      diffRequestRef.current += 1
       setDiff(null)
       setTabs((s) => openPinned(s, abs.slice(prefix.length)))
     } else if (abs !== root) {
@@ -617,9 +1242,8 @@ export function ShellExplorerPage({
   }, [refreshGit])
 
   const treeGitStatus = useMemo<readonly GitStatusEntry[]>(() => {
-    if (git?.kind !== 'ready') return []
-    return git.changes.map((c) => ({ path: c.path, status: c.status }))
-  }, [git])
+    return reviewChanges.map((change) => ({ path: change.path, status: change.status }))
+  }, [reviewChanges])
 
   // Chat-synced roots can be subfolders of a base path — surface the
   // current root as an option so the select never holds a value its
@@ -749,7 +1373,7 @@ export function ShellExplorerPage({
             <div className="shui-side-body">
               {sideTab === 'files' ? (
                 <FilesTab
-                  tree={mergedTree}
+                  tree={reviewTree}
                   gitStatus={treeGitStatus}
                   theme={theme}
                   hiddenFiltered={!showHidden}
@@ -757,11 +1381,10 @@ export function ShellExplorerPage({
                   onExpandedChange={setExpanded}
                   reveal={reveal}
                   onRevealed={onRevealed}
-                  onPreviewFile={previewFile}
+                  activePath={diff?.change.path ?? tabs.active}
+                  onActivateFile={activateFile}
                   onPinFile={pinFile}
                 />
-              ) : sideTab === 'git' ? (
-                <GitTab state={git} theme={theme} onSelect={(change) => setDiff({ change })} onRefresh={refreshGit} />
               ) : (
                 <SearchTab
                   host={host}
@@ -776,7 +1399,142 @@ export function ShellExplorerPage({
         ) : null}
 
         <PageMain>
-          {tabs.tabs.length > 0 ? (
+          <div className="shui-review-toolbar">
+              <ReviewScopePicker
+                value={reviewScope}
+                commits={scopeCommits}
+                branches={scopeRefs.map((ref) => ({
+                  ref: ref.fullName,
+                  name: ref.name,
+                  current: ref.current,
+                }))}
+                metadataLoading={scopeMetadataLoading}
+                metadataError={scopeMetadataError}
+                onOpen={loadScopeMetadata}
+                onChange={selectReviewScope}
+              />
+              <span className="shui-review-count">
+                {scopeLoading
+                  ? 'loading…'
+                  : `${orderedReviewEntries.length} ${orderedReviewEntries.length === 1 ? 'file' : 'files'}`}
+              </span>
+              {scopeError ? (
+                <span className="shui-review-scope-error" title={scopeError}>unavailable</span>
+              ) : null}
+              {reviewTotals.ready > 0 ? (
+                <>
+                  <span className="shui-review-total add">+{reviewTotals.add}</span>
+                  <span className="shui-review-total del">−{reviewTotals.del}</span>
+                </>
+              ) : null}
+              {reviewTotals.pending > 0 || reviewTotals.unavailable > 0 ? (
+                <span
+                  className="shui-review-total"
+                  title={`${reviewTotals.pending} pending, ${reviewTotals.unavailable} unavailable`}
+                  aria-label={`${reviewTotals.pending} change totals pending, ${reviewTotals.unavailable} unavailable`}
+                >
+                  …
+                </span>
+              ) : null}
+              <span className="spacer" />
+              <button
+                type="button"
+                className="shui-review-action"
+                onClick={() => {
+                  refreshTree()
+                  void refreshGit()
+                  if (reviewScope.kind === 'last-turn') {
+                    setReviewRefreshEpoch((value) => value + 1)
+                  } else {
+                    loadReviewScope(reviewScope)
+                  }
+                }}
+                aria-label="refresh review"
+                title="refresh"
+              >
+                <RefreshCw aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="shui-review-action"
+                onClick={() => setReviewExpandEpoch((value) => value + 1)}
+                aria-label="expand all diffs"
+                title="expand all diffs"
+              >
+                <ChevronsUpDown aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="shui-review-action"
+                onClick={() => setReviewCollapseEpoch((value) => value + 1)}
+                aria-label="collapse all diffs"
+                title="collapse all diffs"
+              >
+                <ChevronsDownUp aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="shui-review-action"
+                onClick={() =>
+                  setReviewOptions((previous) => ({
+                    ...previous,
+                    diffStyle: previous.diffStyle === 'unified' ? 'split' : 'unified',
+                  }))
+                }
+                aria-label={`switch to ${reviewOptions.diffStyle === 'unified' ? 'split' : 'unified'} diff`}
+                title={`switch to ${reviewOptions.diffStyle === 'unified' ? 'split' : 'unified'} diff`}
+              >
+                {reviewOptions.diffStyle === 'unified' ? <Columns2 aria-hidden /> : <Rows3 aria-hidden />}
+              </button>
+              <div className="shui-review-menu-wrap">
+                <button
+                  type="button"
+                  className={`shui-review-action${reviewMenuOpen ? ' active' : ''}`}
+                  onClick={() => setReviewMenuOpen((value) => !value)}
+                  aria-expanded={reviewMenuOpen}
+                  aria-label="review options"
+                  title="review options"
+                >
+                  <MoreHorizontal aria-hidden />
+                </button>
+                {reviewMenuOpen ? (
+                  <div className="shui-review-menu" role="menu">
+                    <ReviewOption
+                      label="Enable word wrap"
+                      checked={reviewOptions.wordWrap}
+                      onChange={(wordWrap) => setReviewOptions((value) => ({ ...value, wordWrap }))}
+                    />
+                    <ReviewOption
+                      label="Enable word diffs"
+                      checked={reviewOptions.wordDiffs}
+                      onChange={(wordDiffs) => setReviewOptions((value) => ({ ...value, wordDiffs }))}
+                    />
+                    <ReviewOption
+                      label="Hide whitespace"
+                      checked={reviewOptions.hideWhitespace}
+                      onChange={(hideWhitespace) =>
+                        setReviewOptions((value) => ({ ...value, hideWhitespace }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Load full files"
+                      checked={reviewOptions.expandUnchanged}
+                      onChange={(expandUnchanged) =>
+                        setReviewOptions((value) => ({ ...value, expandUnchanged }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Enable rich preview"
+                      checked={reviewOptions.richPreview}
+                      onChange={(richPreview) =>
+                        setReviewOptions((value) => ({ ...value, richPreview }))
+                      }
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          {diff === null && tabs.tabs.length > 0 ? (
             <div className="shui-editor-tabs" role="tablist">
               {tabs.tabs.map((tab) => {
                 const active = diff === null && tab.path === tabs.active
@@ -789,6 +1547,7 @@ export function ShellExplorerPage({
                       aria-selected={active}
                       title={tab.path}
                       onClick={() => {
+                        diffRequestRef.current += 1
                         setDiff(null)
                         setTabs((s) => activateTab(s, tab.path))
                       }}
@@ -813,7 +1572,29 @@ export function ShellExplorerPage({
           ) : null}
 
           {diff !== null ? (
-            <DiffPane host={host} root={root} change={diff.change} baseline={diff.baseline} gitDir={diff.gitDir} />
+            <ReviewPane
+              host={host}
+              root={root}
+              entries={orderedReviewEntries}
+              activePath={diff.change.path}
+              options={reviewOptions}
+              collapseEpoch={reviewCollapseEpoch}
+              expandEpoch={reviewExpandEpoch}
+              refreshEpoch={reviewRefreshEpoch}
+              onActivate={(path) => {
+                const entry = visibleReviewEntriesRef.current.get(path)
+                if (entry) openReviewEntry(entry)
+              }}
+              onSummaryChange={reviewScope.kind === 'last-turn' ? setReviewSummary : setScopeSummary}
+            />
+          ) : scopeLoading ? (
+            <div className="shui-main-empty">
+              <span className="t-ghost">loading review…</span>
+            </div>
+          ) : scopeError ? (
+            <div className="shui-main-empty">
+              <span className="t-warn">{scopeError}</span>
+            </div>
           ) : tabs.active !== null ? (
             <EditorPane
               // fileBump remounts after an agent-side write to the active
@@ -828,7 +1609,7 @@ export function ShellExplorerPage({
             />
           ) : (
             <div className="shui-main-empty">
-              <span className="t-ghost">select a file to edit — or a git change to diff</span>
+              <span className="t-ghost">select a file to edit or review</span>
             </div>
           )}
         </PageMain>

@@ -30,12 +30,12 @@ import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
 } from '@/lib/backend/triggers'
-import { copyTextToClipboard } from '@/lib/clipboard'
 import type {
   ApprovalStreamEvent,
   CompactResult,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
@@ -46,7 +46,7 @@ import {
   summaryLabel,
 } from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
-import { useExtSessionChips } from '@/lib/ui-slots'
+import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -645,6 +645,24 @@ export function ChatView({
   const hasInjectedContextChip = extSessionChips.some(
     (chip) => chip.id === 'context',
   )
+
+  /* Injected turn summaries live beside the composer rather than in the
+   * transcript. Workers own their data and subscribe by session id; the host
+   * only gives them the active turn state. */
+  const extSessionTurnSummaries = useExtSessionTurnSummaries()
+  const sessionTurnSummaries = useMemo(() => {
+    if (extSessionTurnSummaries.length === 0) return null
+    return [...extSessionTurnSummaries].sort(compareChips).map((summary) => {
+      const Summary = summary.render
+      return (
+        <Summary
+          key={summary.id}
+          sessionId={conversation.id}
+          isStreaming={streamingIndicator}
+        />
+      )
+    })
+  }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -1729,7 +1747,9 @@ export function ChatView({
                 type="button"
                 onClick={handleCopySessionId}
                 aria-label={
-                  copied ? `copied ${sessionId}` : `copy session id ${sessionId}`
+                  copied
+                    ? `copied ${sessionId}`
+                    : `copy session id ${sessionId}`
                 }
                 className="flex self-stretch items-center gap-1 text-ink-faint hover:text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
@@ -1928,6 +1948,14 @@ export function ChatView({
                 </div>
               ) : null}
             </section>
+          ) : null}
+          {sessionTurnSummaries ? (
+            <div
+              className="flex flex-wrap items-center justify-end gap-1.5 px-1"
+              data-chat-turn-summary-slot
+            >
+              {sessionTurnSummaries}
+            </div>
           ) : null}
           <Composer
             mode={conversation.mode}

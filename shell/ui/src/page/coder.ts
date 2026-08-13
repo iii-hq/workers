@@ -12,6 +12,10 @@ export interface CoderInfo {
   primary_root: string
 }
 
+export interface WorkspaceValidateResponse {
+  path: string
+}
+
 export interface TreeTruncation {
   /** "per_folder_limit" | "max_depth" | "default_exclude" | "max_nodes". */
   reason: string
@@ -48,6 +52,11 @@ export interface ReadFileResponse {
   mtime?: number | null
 }
 
+export interface BatchReadFileResult extends ReadFileResponse {
+  path: string
+  success: boolean
+}
+
 export interface CreateFileResult {
   path: string
   success: boolean
@@ -75,6 +84,15 @@ export function coderInfo(host: Host): Promise<CoderInfo> {
   return host.iii.trigger<CoderInfo>('coder::info', {})
 }
 
+/** Resolve a user/chat-selected directory to the worker's canonical path.
+    This keeps `/tmp` and `/private/tmp` aliases identical to the watcher. */
+export function workspaceValidate(
+  host: Host,
+  path: string,
+): Promise<WorkspaceValidateResponse> {
+  return host.iii.trigger<WorkspaceValidateResponse>('shell::workspace::validate', { path })
+}
+
 export function coderTree(
   host: Host,
   path: string,
@@ -100,6 +118,35 @@ export function coderReadFile(
   path: string,
 ): Promise<ReadFileResponse> {
   return host.iii.trigger<ReadFileResponse>('coder::read-file', { path })
+}
+
+/** Best-effort batch snapshot used to capture pre-change baselines for a
+    live review burst. Individual failures (deleted/binary/oversized)
+    remain isolated to their entry. */
+export async function coderReadFiles(
+  host: Host,
+  paths: readonly string[],
+): Promise<BatchReadFileResult[]> {
+  if (paths.length === 0) return []
+  const out = await host.iii.trigger<{ results?: BatchReadFileResult[] }>(
+    'coder::read-file',
+    { paths },
+  )
+  return out.results ?? []
+}
+
+/** Existence/metadata probe for a watcher burst. Unlike full reads this
+    remains reliable for binary and oversized files. */
+export async function coderStatFiles(
+  host: Host,
+  paths: readonly string[],
+): Promise<BatchReadFileResult[]> {
+  if (paths.length === 0) return []
+  const out = await host.iii.trigger<{ results?: BatchReadFileResult[] }>(
+    'coder::read-file',
+    { paths: paths.map((path) => ({ path, stat: true })) },
+  )
+  return out.results ?? []
 }
 
 /** Exact bytes, base64-encoded — the image-preview read. The override
