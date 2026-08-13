@@ -111,6 +111,19 @@ import {
   canCaptureHarnessWorkspaceChange,
   type HarnessReviewWindow,
 } from './turn-status'
+import {
+  acknowledgeValidatedWorkingDirectory,
+  deepLinkRootTarget,
+  ownsRequestToken,
+  ownsScopedRequestToken,
+  rebasePathAfterValidation,
+  rootValidationRetryDelay,
+  type ScopedRequestToken,
+  type RootTargetValidation,
+  validateRootTarget,
+  workingDirectoryNeedsFollow,
+  workingDirectoryRetryMessage,
+} from './working-dir-sync'
 
 type SideTab = 'files' | 'search'
 
@@ -133,6 +146,8 @@ interface ReviewEditBackup {
   cache: EditorCacheEntry | null
   hadTab: boolean
 }
+
+type RootChangeOutcome = RootTargetValidation['outcome'] | 'declined'
 
 function ReviewOption({
   label,
@@ -223,6 +238,21 @@ export function ShellExplorerPage({
   const [root, setRoot] = useState<string | null>(null)
   const rootRef = useRef(root)
   rootRef.current = root
+  const workingDirRef = useRef(workingDir ?? null)
+  workingDirRef.current = workingDir ?? null
+  const acknowledgedWorkingDirRef = useRef<string | null>(null)
+  const workingDirFollowRequestSeqRef = useRef(0)
+  const workingDirFollowPendingRef = useRef<{
+    path: string
+    request: number
+  } | null>(null)
+  const workingDirRetryRef = useRef({ path: null as string | null, failures: 0 })
+  const workingDirRetryTimerRef = useRef<number | null>(null)
+  const manualRootRequestSeqRef = useRef(0)
+  const manualRootActiveRequestRef = useRef<number | null>(null)
+  const [workingDirError, setWorkingDirError] = useState<string | null>(null)
+  const [workingDirRetryEpoch, setWorkingDirRetryEpoch] = useState(0)
+  const [rootChangeSettledEpoch, setRootChangeSettledEpoch] = useState(0)
   const rootGenerationRef = useRef(0)
   const rootResolveSeqRef = useRef(0)
   const rootTransitionRef = useRef(false)
@@ -562,9 +592,18 @@ export function ShellExplorerPage({
     let cancelled = false
     const seq = ++rootResolveSeqRef.current
     const requested = workingDir ?? restored?.root ?? info.primary_root
+    const requestedWorkingDir = workingDir ?? null
     workspaceValidate(host, requested)
       .then(({ path: next }) => {
         if (cancelled || rootResolveSeqRef.current !== seq) return
+        if (requestedWorkingDir !== null) {
+          acknowledgedWorkingDirRef.current = acknowledgeValidatedWorkingDirectory(
+            acknowledgedWorkingDirRef.current,
+            requestedWorkingDir,
+            workingDirRef.current,
+            true,
+          )
+        }
         setRoot(next)
         if (restored?.root && requested === restored.root && next === restored.root) {
           setTabs(restoreTabs(restored.open, restored.active))
@@ -1382,92 +1421,217 @@ export function ShellExplorerPage({
     }
   }, [])
 
-  const changeRoot = useCallback((nextRoot: string): boolean => {
-    if (!confirmDiscardAllEdits()) return false
+  const changeRoot = useCallback((
+    nextRoot: string,
+    onResolved?: (outcome: RootChangeOutcome, path?: string) => void,
+  ): boolean => {
+    if (!reviewSaveBarrier.canTransition()) return false
     const resolveSeq = ++rootResolveSeqRef.current
-    rootTransitionRef.current = true
-    rootGenerationRef.current += 1
-    reviewEpochRef.current += 1
-    scopeMetadataSeqRef.current += 1
-    treeSeqRef.current += 1
-    gitSeqRef.current += 1
-    diffRequestRef.current += 1
-    if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
-    liveTimerRef.current = null
-    followRef.current = null
-    changedAbsRef.current = new Map()
-    reviewEligibleAbsRef.current = new Set()
-    changedDirsRef.current = new Set()
-    subtreeLoadRef.current.clear()
-    baselineRef.current.clear()
-    baselineKindsRef.current = new Map()
-    baselineCompleteRef.current = false
-    baselineCapturedRef.current = false
-    baselineReadyRef.current = Promise.resolve()
-    preparedTurnRef.current = null
-    reviewEntriesRef.current = new Map()
-    reviewEditBackupsRef.current.clear()
-    cacheRef.current.clear()
-    setDirtyPaths(new Set())
-    setTabs(EMPTY_TABS)
-    setExpanded([])
-    setDiff(null)
-    setReviewEntries(new Map())
-    scopeEntriesRef.current = new Map()
-    setScopeEntries(new Map())
-    setReviewSummary([])
-    setScopeSummary([])
-    setScopeCommits([])
-    setScopeRefs([])
-    setScopeMetadataLoading(false)
-    setScopeMetadataError(null)
-    forceLastTurnScope()
-    setTree(null)
-    setGit(null)
-    setSubtrees(new Map())
-    workspaceValidate(host, nextRoot)
-      .then(({ path }) => {
-        if (rootResolveSeqRef.current === resolveSeq) {
-          rootTransitionRef.current = false
-          if (path === rootRef.current) {
-            refreshTree()
-            void refreshGit()
-          } else {
-            setRoot(path)
-          }
+    void validateRootTarget(
+      () => workspaceValidate(host, nextRoot),
+      () => rootResolveSeqRef.current === resolveSeq,
+    ).then((result) => {
+      if (result.outcome !== 'validated') {
+        onResolved?.(result.outcome)
+        if (result.outcome === 'failed') {
+          setRootChangeSettledEpoch((epoch) => epoch + 1)
         }
-      })
-      .catch(() => {
-        if (rootResolveSeqRef.current === resolveSeq) {
-          rootTransitionRef.current = false
-          if (nextRoot === rootRef.current) {
-            refreshTree()
-            void refreshGit()
-          } else {
-            setRoot(nextRoot)
-          }
-        }
-      })
+        return
+      }
+      if (result.path === rootRef.current) {
+        refreshTree()
+        void refreshGit()
+        onResolved?.('validated', result.path)
+        setRootChangeSettledEpoch((epoch) => epoch + 1)
+        return
+      }
+      // Validation can take long enough for a draft or save to begin. Confirm
+      // at commit time so the validated transition cannot discard newer work.
+      if (!confirmDiscardAllEdits()) {
+        onResolved?.('declined')
+        setRootChangeSettledEpoch((epoch) => epoch + 1)
+        return
+      }
+      if (rootResolveSeqRef.current !== resolveSeq) {
+        onResolved?.('superseded')
+        return
+      }
+
+      const path = result.path
+      rootTransitionRef.current = true
+      rootGenerationRef.current += 1
+      reviewEpochRef.current += 1
+      scopeMetadataSeqRef.current += 1
+      treeSeqRef.current += 1
+      gitSeqRef.current += 1
+      diffRequestRef.current += 1
+      if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
+      liveTimerRef.current = null
+      followRef.current = null
+      changedAbsRef.current = new Map()
+      reviewEligibleAbsRef.current = new Set()
+      changedDirsRef.current = new Set()
+      subtreeLoadRef.current.clear()
+      baselineRef.current.clear()
+      baselineKindsRef.current = new Map()
+      baselineCompleteRef.current = false
+      baselineCapturedRef.current = false
+      baselineReadyRef.current = Promise.resolve()
+      preparedTurnRef.current = null
+      reviewEntriesRef.current = new Map()
+      reviewEditBackupsRef.current.clear()
+      cacheRef.current.clear()
+      setDirtyPaths(new Set())
+      setTabs(EMPTY_TABS)
+      setExpanded([])
+      setDiff(null)
+      setReviewEntries(new Map())
+      scopeEntriesRef.current = new Map()
+      setScopeEntries(new Map())
+      setReviewSummary([])
+      setScopeSummary([])
+      setScopeCommits([])
+      setScopeRefs([])
+      setScopeMetadataLoading(false)
+      setScopeMetadataError(null)
+      forceLastTurnScope()
+      setTree(null)
+      setGit(null)
+      setSubtrees(new Map())
+      if (path === rootRef.current) {
+        rootTransitionRef.current = false
+        refreshTree()
+        void refreshGit()
+      } else {
+        // Keep event filtering coherent until React renders the new root.
+        rootRef.current = path
+        setRoot(path)
+        rootTransitionRef.current = false
+      }
+      onResolved?.('validated', path)
+      setRootChangeSettledEpoch((epoch) => epoch + 1)
+    })
     return true
-  }, [confirmDiscardAllEdits, forceLastTurnScope, host, refreshGit, refreshTree])
+  }, [
+    confirmDiscardAllEdits,
+    forceLastTurnScope,
+    host,
+    refreshGit,
+    refreshTree,
+    reviewSaveBarrier,
+  ])
 
   // ── follow the chat's working directory ──
   // Picking another folder in chat re-roots the explorer (the split-screen
   // sync). A manual root pick sticks until the chat's folder moves again.
-  const lastWorkingDirRef = useRef(workingDir ?? null)
   useEffect(() => {
     if (reviewSavePending) return
     const next = workingDir ?? null
-    if (next === lastWorkingDirRef.current) return
-    if (next === null || root === null || next === root) {
-      lastWorkingDirRef.current = next
+    if (next === null) {
+      acknowledgedWorkingDirRef.current = null
+      workingDirFollowPendingRef.current = null
+      workingDirRetryRef.current = { path: null, failures: 0 }
+      setWorkingDirError(null)
+      if (workingDirRetryTimerRef.current !== null) {
+        window.clearTimeout(workingDirRetryTimerRef.current)
+        workingDirRetryTimerRef.current = null
+      }
       return
     }
-    // A cancelled discard prompt must not acknowledge the chat directory:
-    // keeping the previous value lets the effect retry after edits are saved
-    // or discarded instead of permanently breaking chat-to-Shell following.
-    if (changeRoot(next)) lastWorkingDirRef.current = next
-  }, [workingDir, root, changeRoot, reviewSavePending])
+    if (workingDirRetryRef.current.path !== next) {
+      workingDirRetryRef.current = { path: next, failures: 0 }
+      setWorkingDirError(null)
+      if (workingDirRetryTimerRef.current !== null) {
+        window.clearTimeout(workingDirRetryTimerRef.current)
+        workingDirRetryTimerRef.current = null
+      }
+    }
+    if (
+      root === null ||
+      manualRootActiveRequestRef.current !== null ||
+      !workingDirectoryNeedsFollow(next, acknowledgedWorkingDirRef.current) ||
+      workingDirFollowPendingRef.current?.path === next
+    ) {
+      return
+    }
+    const request = ++workingDirFollowRequestSeqRef.current
+    workingDirFollowPendingRef.current = { path: next, request }
+    const accepted = changeRoot(next, (outcome) => {
+      if (workingDirFollowPendingRef.current?.request !== request) return
+      workingDirFollowPendingRef.current = null
+      if (outcome === 'validated') {
+        acknowledgedWorkingDirRef.current = acknowledgeValidatedWorkingDirectory(
+          acknowledgedWorkingDirRef.current,
+          next,
+          workingDirRef.current,
+          true,
+        )
+        workingDirRetryRef.current = { path: next, failures: 0 }
+        setWorkingDirError(null)
+      } else if (outcome === 'failed' && workingDirRef.current === next) {
+        const retry = workingDirRetryRef.current
+        const delay = rootValidationRetryDelay(retry.failures)
+        retry.failures += 1
+        if (delay !== null && workingDirRetryTimerRef.current === null) {
+          workingDirRetryTimerRef.current = window.setTimeout(() => {
+            workingDirRetryTimerRef.current = null
+            setWorkingDirRetryEpoch((epoch) => epoch + 1)
+          }, delay)
+        } else if (delay === null) {
+          setWorkingDirError(
+            workingDirectoryRetryMessage(next, 'failed', delay),
+          )
+        }
+      } else if (outcome === 'declined' && workingDirRef.current === next) {
+        setWorkingDirError(
+          workingDirectoryRetryMessage(next, 'declined', null),
+        )
+      }
+    })
+    if (!accepted && workingDirFollowPendingRef.current?.request === request) {
+      workingDirFollowPendingRef.current = null
+    }
+  }, [workingDir, root, changeRoot, reviewSavePending, workingDirRetryEpoch])
+
+  useEffect(
+    () => () => {
+      if (workingDirRetryTimerRef.current !== null) {
+        window.clearTimeout(workingDirRetryTimerRef.current)
+      }
+    },
+    [],
+  )
+
+  const changeManualRoot = useCallback((nextRoot: string) => {
+    const chatDir = workingDirRef.current
+    // Suppress both a scheduled retry and an in-flight chat result before the
+    // manual validation starts. changeRoot's new sequence supersedes the latter.
+    const request = ++manualRootRequestSeqRef.current
+    manualRootActiveRequestRef.current = request
+    workingDirFollowPendingRef.current = null
+    setWorkingDirError(null)
+    if (workingDirRetryTimerRef.current !== null) {
+      window.clearTimeout(workingDirRetryTimerRef.current)
+      workingDirRetryTimerRef.current = null
+    }
+    const accepted = changeRoot(nextRoot, (outcome) => {
+      if (!ownsRequestToken(manualRootActiveRequestRef.current, request)) return
+      manualRootActiveRequestRef.current = null
+      if (outcome === 'validated' && workingDirRef.current === chatDir) {
+        acknowledgedWorkingDirRef.current = chatDir
+        workingDirRetryRef.current = { path: chatDir, failures: 0 }
+      } else {
+        // Validation failure or a declined discard releases the unchanged chat
+        // directory to follow again.
+        setWorkingDirRetryEpoch((epoch) => epoch + 1)
+      }
+    })
+    if (accepted) return
+    if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
+      manualRootActiveRequestRef.current = null
+      setWorkingDirRetryEpoch((epoch) => epoch + 1)
+    }
+  }, [changeRoot])
 
   // ── deep link: #/ext/shell/open/<encoded-abs>[:line] ──
   // The chat's "open in shell" lands here. The request is captured (and
@@ -1475,6 +1639,16 @@ export function ShellExplorerPage({
   // resolved — re-rooting to the file's own folder when it lives outside
   // the browsed one; the effect refires on the new root and opens it.
   const pendingOpenRef = useRef<string | null>(null)
+  const pendingOpenCaptureSeqRef = useRef(0)
+  const pendingOpenRequestSeqRef = useRef(0)
+  const pendingOpenRootRequestRef = useRef<{
+    target: string
+    token: ScopedRequestToken
+  } | null>(null)
+  const pendingOpenWaitingForRetryRef = useRef(false)
+  const pendingOpenRetryRef = useRef(0)
+  const pendingOpenRetryTimerRef = useRef<number | null>(null)
+  const [pendingOpenError, setPendingOpenError] = useState<string | null>(null)
   const [openBump, setOpenBump] = useState(0)
   useEffect(() => {
     const capture = () => {
@@ -1495,7 +1669,17 @@ export function ShellExplorerPage({
         return // malformed percent escape — not our link
       }
       if (!abs.startsWith('/')) return
+      if (rootRef.current !== null) rootResolveSeqRef.current += 1
+      pendingOpenCaptureSeqRef.current += 1
       pendingOpenRef.current = abs
+      pendingOpenRootRequestRef.current = null
+      pendingOpenWaitingForRetryRef.current = false
+      pendingOpenRetryRef.current = 0
+      setPendingOpenError(null)
+      if (pendingOpenRetryTimerRef.current !== null) {
+        window.clearTimeout(pendingOpenRetryTimerRef.current)
+        pendingOpenRetryTimerRef.current = null
+      }
       setOpenBump((n) => n + 1)
     }
     capture()
@@ -1508,15 +1692,101 @@ export function ShellExplorerPage({
     if (!reviewSaveBarrier.canTransition()) return
     const prefix = root.endsWith('/') ? root : `${root}/`
     if (abs.startsWith(prefix)) {
+      pendingOpenCaptureSeqRef.current += 1
       pendingOpenRef.current = null
+      pendingOpenRootRequestRef.current = null
+      pendingOpenWaitingForRetryRef.current = false
+      pendingOpenRetryRef.current = 0
+      setPendingOpenError(null)
       diffRequestRef.current += 1
       setDiff(null)
       setTabs((s) => openPinned(s, abs.slice(prefix.length)))
     } else if (abs !== root) {
-      const cut = abs.lastIndexOf('/')
-      changeRoot(cut > 0 ? abs.slice(0, cut) : '/')
+      const target = deepLinkRootTarget(abs, workingDirRef.current)
+      if (
+        pendingOpenWaitingForRetryRef.current ||
+        pendingOpenRootRequestRef.current?.target === target
+      ) {
+        return
+      }
+      const requestToken: ScopedRequestToken = {
+        scope: pendingOpenCaptureSeqRef.current,
+        request: ++pendingOpenRequestSeqRef.current,
+      }
+      pendingOpenRootRequestRef.current = { target, token: requestToken }
+      const accepted = changeRoot(target, (outcome, validatedRoot) => {
+        if (
+          !ownsScopedRequestToken(
+            pendingOpenCaptureSeqRef.current,
+            pendingOpenRootRequestRef.current?.token ?? null,
+            requestToken,
+          )
+        ) {
+          return
+        }
+        pendingOpenRootRequestRef.current = null
+        if (outcome === 'validated') {
+          pendingOpenWaitingForRetryRef.current = false
+          if (validatedRoot !== undefined) {
+            pendingOpenRef.current = rebasePathAfterValidation(
+              abs,
+              target,
+              validatedRoot,
+            )
+          }
+          pendingOpenRetryRef.current = 0
+          setPendingOpenError(null)
+          return
+        }
+        if (outcome === 'failed') {
+          const delay = rootValidationRetryDelay(pendingOpenRetryRef.current)
+          pendingOpenRetryRef.current += 1
+          if (delay !== null && pendingOpenRetryTimerRef.current === null) {
+            pendingOpenWaitingForRetryRef.current = true
+            pendingOpenRetryTimerRef.current = window.setTimeout(() => {
+              if (pendingOpenCaptureSeqRef.current !== requestToken.scope) return
+              pendingOpenRetryTimerRef.current = null
+              pendingOpenWaitingForRetryRef.current = false
+              setOpenBump((bump) => bump + 1)
+            }, delay)
+          } else if (delay === null) {
+            pendingOpenWaitingForRetryRef.current = true
+            setPendingOpenError(`could not validate the folder for ${abs}`)
+          }
+        } else if (outcome === 'declined') {
+          pendingOpenWaitingForRetryRef.current = true
+          setPendingOpenError(`open paused for ${abs}`)
+        }
+        // A superseding root request will change root or report its own error;
+        // the pending absolute path stays intact and is reconsidered afterward.
+      })
+      if (
+        !accepted &&
+        ownsScopedRequestToken(
+          pendingOpenCaptureSeqRef.current,
+          pendingOpenRootRequestRef.current?.token ?? null,
+          requestToken,
+        )
+      ) {
+        pendingOpenRootRequestRef.current = null
+      }
     }
-  }, [root, openBump, changeRoot, reviewSavingPaths, reviewSaveBarrier])
+  }, [
+    root,
+    openBump,
+    changeRoot,
+    reviewSavingPaths,
+    reviewSaveBarrier,
+    rootChangeSettledEpoch,
+  ])
+  useEffect(
+    () => () => {
+      if (pendingOpenRetryTimerRef.current !== null) {
+        window.clearTimeout(pendingOpenRetryTimerRef.current)
+      }
+    },
+    [],
+  )
 
   const onSaved = useCallback(() => {
     refreshGit()
@@ -1544,7 +1814,7 @@ export function ShellExplorerPage({
             <select
               className="shui-header-root-select"
               value={root}
-              onChange={(event) => changeRoot(event.target.value)}
+              onChange={(event) => changeManualRoot(event.target.value)}
               disabled={reviewSavePending}
               aria-label="browsed root"
               title={root}
@@ -1687,6 +1957,45 @@ export function ShellExplorerPage({
         ) : null}
 
         <PageMain>
+            {workingDirError ? (
+              <div className="shui-review-message warn" role="alert">
+                <span>{workingDirError}</span>
+                <button
+                  type="button"
+                  className="shui-review-inline-action"
+                  onClick={() => {
+                    const next = workingDirRef.current
+                    if (next === null) return
+                    if (workingDirRetryTimerRef.current !== null) {
+                      window.clearTimeout(workingDirRetryTimerRef.current)
+                      workingDirRetryTimerRef.current = null
+                    }
+                    workingDirRetryRef.current = { path: next, failures: 0 }
+                    setWorkingDirError(null)
+                    setWorkingDirRetryEpoch((epoch) => epoch + 1)
+                  }}
+                >
+                  retry
+                </button>
+              </div>
+            ) : null}
+            {pendingOpenError ? (
+              <div className="shui-review-message warn" role="alert">
+                <span>{pendingOpenError}</span>
+                <button
+                  type="button"
+                  className="shui-review-inline-action"
+                  onClick={() => {
+                    pendingOpenRetryRef.current = 0
+                    pendingOpenWaitingForRetryRef.current = false
+                    setPendingOpenError(null)
+                    setOpenBump((bump) => bump + 1)
+                  }}
+                >
+                  retry
+                </button>
+              </div>
+            ) : null}
             <div className="shui-review-toolbar">
               {reviewSavePending ? (
                 <span
