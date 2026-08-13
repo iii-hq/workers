@@ -1,0 +1,91 @@
+{
+  "description": "List the elements of a freeform canvas: id, type, position and size per element — the map an agent reads before updating or connecting shapes. Full element bodies are in the record source via canvas::get.",
+  "function_id": "canvas::element::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "id": {
+        "description": "Stable 8-character canvas id (format must be freeform).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "ListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ElementSummary": {
+        "properties": {
+          "height": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "description": "The element's own `text`, or its `label.text` shorthand.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "Element type (`rectangle`, `ellipse`, `arrow`, `text`, ...).",
+            "type": "string"
+          },
+          "width": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "x": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "y": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "elements": {
+        "items": {
+          "$ref": "#/definitions/ElementSummary"
+        },
+        "type": "array"
+      },
+      "id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "elements",
+      "id"
+    ],
+    "title": "ListResponse",
+    "type": "object"
+  }
+}
