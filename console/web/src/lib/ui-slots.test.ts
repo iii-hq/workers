@@ -5,8 +5,12 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { RegisteredSessionChip } from './ui-slots'
-import { getExtSessionChips, registerExtSessionChip } from './ui-slots'
+import type { RegisteredConfigForm, RegisteredSessionChip } from './ui-slots'
+import {
+  getExtSessionChips,
+  isExtConfigFormPending,
+  registerExtSessionChip,
+} from './ui-slots'
 
 function chip(id: string, path: string): RegisteredSessionChip {
   return { id, path, scope: path.split('/')[0], render: () => null }
@@ -38,5 +42,16 @@ describe('session chip slot', () => {
     offA()
     offA()
     expect(getExtSessionChips()).toEqual([])
+  })
+})
+
+describe('config form slot readiness', () => {
+  const form = {} as RegisteredConfigForm
+
+  it('waits only while the initial assets are loading without an override', () => {
+    expect(isExtConfigFormPending('loading', undefined)).toBe(true)
+    expect(isExtConfigFormPending('loading', form)).toBe(false)
+    expect(isExtConfigFormPending('ready', undefined)).toBe(false)
+    expect(isExtConfigFormPending('unavailable', undefined)).toBe(false)
   })
 })
