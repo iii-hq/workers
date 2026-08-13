@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use provider_opencode_go::register::register_provider;
 use serde_json::{json, Value};
 use std::io::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 // ── engine bootstrap ────────────────────────────────────────────────────────
@@ -208,6 +209,54 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
         handle,
     }
 }
+/// Accepts the request, sends event-stream headers, then holds the
+/// connection open until the client goes away — keeps a chat stream in
+/// flight so an abort lands mid-stream instead of racing a fast response.
+/// `connected` flips once the headers are out (the provider's upstream
+/// request is in flight); `disconnected` flips when the client drops the
+/// socket (the provider abort cancelled the in-flight request).
+async fn stub_upstream_slow_hold() -> (StubUpstream, Arc<AtomicBool>, Arc<AtomicBool>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let connected = Arc::new(AtomicBool::new(false));
+    let disconnected = Arc::new(AtomicBool::new(false));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (c2, d2) = (connected.clone(), disconnected.clone());
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let (c3, d3) = (c2.clone(), d2.clone());
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                let _ = sock.read(&mut buf).await; // consume the request
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+                    .await;
+                c3.store(true, Ordering::SeqCst);
+                // Hold until EOF/error: the client aborting the connection
+                // (provider abort drops the in-flight HTTP request) ends it.
+                let mut drain = vec![0u8; 1024];
+                loop {
+                    match sock.read(&mut drain).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                d3.store(true, Ordering::SeqCst);
+            });
+        }
+    });
+    (
+        StubUpstream {
+            url: format!("http://{addr}/v1/chat/completions"),
+            handle,
+        },
+        connected,
+        disconnected,
+    )
+}
 // ── boot + config ───────────────────────────────────────────────────────────
 /// Boot router + provider on one engine; wait until the provider is listed.
 async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
@@ -352,6 +401,85 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
     assert_eq!(last["type"], "error");
     assert_eq!(last["error"]["error_kind"], "auth_expired");
+    consumer.shutdown();
+    router_iii.shutdown();
+    provider_iii.shutdown();
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn abort_lands_mid_stream_and_cancels_the_upstream() {
+    let engine = engine_or_skip!();
+    let (stub, connected, disconnected) = stub_upstream_slow_hold().await;
+    let (router_iii, provider_iii) = boot_stack(&engine.url).await;
+    configure_stub_key(&router_iii, &stub.url).await;
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    // Provider-pinned routing (like the 401 test) keeps the catalog out of
+    // the way; the slow stub only ever serves the chat endpoint.
+    let rid = "abort-test-1";
+    let chat = tokio::spawn({
+        let consumer = consumer.clone();
+        async move {
+            consumer
+                .trigger(TriggerRequest {
+                    function_id: "router::chat".into(),
+                    payload: json!({
+                        "writer_ref": writer_ref,
+                        "model": "deepseek-v4-flash",
+                        "provider": "opencode_go",
+                        "request_id": rid,
+                        "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
+                    }),
+                    action: None,
+                    timeout_ms: Some(30_000),
+                })
+                .await
+        }
+    });
+    // Wait until the provider's upstream request is in flight (headers sent,
+    // connection held open) — then the abort deterministically lands
+    // mid-stream, not before it starts or after it completes.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !connected.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "upstream never connected");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // router::abort closes the relay AND fires provider::opencode_go::abort
+    // (the provider's own abort surface), which drops the in-flight request.
+    let res = call(&router_iii, "router::abort", json!({ "request_id": rid }))
+        .await
+        .expect("abort resolves");
+    assert_eq!(res["aborted"], true, "abort response: {res}");
+    let res = chat
+        .await
+        .expect("chat task panicked")
+        .expect("chat resolves");
+    assert_eq!(res["ok"], true, "chat response: {res}");
+    assert_eq!(res["provider"], "opencode_go");
+    assert_eq!(res["stop_reason"], "aborted", "chat response: {res}");
+    // The in-flight HTTP request was actually cancelled — no billed tail
+    // keeps streaming past the abort.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !disconnected.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "upstream connection never dropped after abort"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
+    let frames = frames.lock();
+    let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+    assert_eq!(last["type"], "done");
+    assert_eq!(last["message"]["stop_reason"], "aborted");
+    // The provider abort surface is idempotent for a finished request.
+    let again = call(
+        &provider_iii,
+        "provider::opencode_go::abort",
+        json!({ "request_id": rid }),
+    )
+    .await
+    .expect("provider abort resolves");
+    assert_eq!(again["aborted"], false, "second abort: {again}");
     consumer.shutdown();
     router_iii.shutdown();
     provider_iii.shutdown();

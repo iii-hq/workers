@@ -6,6 +6,8 @@ Implements the provider protocol from
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
 `provider::opencode_go::refresh_models` (live `GET /v1/models` id list
 enriched from a hardcoded curated metadata table → `router::models::reconcile`),
+`provider::opencode_go::count_tokens` (local tiktoken prompt-token estimate,
+the same surface the other providers expose behind `router::count_tokens`),
 and `provider::opencode_go::abort` (cancels an in-flight upstream request).
 There is no embedding surface — the OpenCode Go API is Chat Completions only.
 

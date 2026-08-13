@@ -27,6 +27,11 @@ pub const REFRESH_MODELS_DESC: &str =
     "Refresh the OpenCode Go catalog slice from GET /v1/models and \
      reconcile it through the router; returns the model count written.";
 
+pub const COUNT_TOKENS_ID: &str = "provider::opencode_go::count_tokens";
+pub const COUNT_TOKENS_DESC: &str =
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the \
+     tiktoken tokenizers; never runs the model and costs nothing.";
+
 pub const ON_ROUTER_READY_ID: &str = "provider::opencode_go::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
     "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
@@ -66,6 +71,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ProviderStreamInput, ProviderStreamOutput>(STREAM_ID, STREAM_DESC),
         spec::<ProviderAbortRequest, ProviderAbortResponse>(ABORT_ID, ABORT_DESC),
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
+        spec::<crate::count_tokens::CountTokensRequest, crate::count_tokens::CountTokensResponse>(
+            COUNT_TOKENS_ID,
+            COUNT_TOKENS_DESC,
+        ),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
     ]
 }

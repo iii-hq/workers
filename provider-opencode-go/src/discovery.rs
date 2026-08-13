@@ -17,13 +17,17 @@ use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
 
-/// Derive the models endpoint from the generation endpoint.
-pub fn models_url(api_url: &str) -> String {
+/// Derive the models endpoint from the generation endpoint. `None` when the
+/// configured URL does not end in the OpenAI-compatible `/chat/completions`
+/// path: the sibling models route is unknowable then, so discovery is
+/// skipped and the current slice is kept — never a guess at the upstream's
+/// layout (a wrong host would feed the catalog ids the gateway does not
+/// serve).
+pub fn models_url(api_url: &str) -> Option<String> {
     let trimmed = api_url.trim_end_matches('/');
     trimmed
         .strip_suffix("/chat/completions")
         .map(|base| format!("{base}/models"))
-        .unwrap_or_else(|| "https://opencode.ai/zen/go/v1/models".to_string())
 }
 
 pub fn parse_live_models(json: &Value) -> Vec<Model> {
@@ -88,7 +92,12 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
     };
     let credential_value = crate::config::credential_parts(&credential);
 
-    let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
+    let Some(url) = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL)) else {
+        // Non-`/chat/completions` layout: the models route is not derivable
+        // from the configured generation endpoint — keep the current slice
+        // rather than polling a guessed host.
+        return Ok(0);
+    };
     match fetch_live_models(http, &url, credential_value).await {
         FetchOutcome::Ok(models) => {
             let count = models.len();
@@ -127,16 +136,16 @@ mod tests {
     fn models_url_derives_from_generation_endpoint() {
         assert_eq!(
             models_url("https://opencode.ai/zen/go/v1/chat/completions"),
-            "https://opencode.ai/zen/go/v1/models"
+            Some("https://opencode.ai/zen/go/v1/models".to_string())
         );
         assert_eq!(
             models_url("http://127.0.0.1:9999/v1/chat/completions"),
-            "http://127.0.0.1:9999/v1/models"
+            Some("http://127.0.0.1:9999/v1/models".to_string())
         );
-        assert_eq!(
-            models_url("https://proxy.example/custom"),
-            "https://opencode.ai/zen/go/v1/models"
-        );
+        // No /chat/completions suffix → no derivable sibling route; never
+        // fall back to a guessed host.
+        assert_eq!(models_url("https://proxy.example/custom"), None);
+        assert_eq!(models_url("https://opencode.ai/zen/go/v1"), None);
     }
 
     #[test]

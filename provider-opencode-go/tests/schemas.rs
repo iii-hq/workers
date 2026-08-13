@@ -36,6 +36,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::opencode_go::stream",
             "provider::opencode_go::abort",
             "provider::opencode_go::refresh_models",
+            "provider::opencode_go::count_tokens",
             "provider::opencode_go::on_router_ready",
         ]
     );
