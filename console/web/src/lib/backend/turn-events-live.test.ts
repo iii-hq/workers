@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import type { IiiClient } from '@/lib/iii-client'
 import type {
   MessageQueuedEvent,
+  TriggersChangedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
 import {
   startQueuedEventsSubscription,
+  startTriggersChangedSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 
@@ -147,6 +149,45 @@ describe('startQueuedEventsSubscription', () => {
   it('unregisters handler and trigger on cleanup', () => {
     const { client, offHandler, triggerUnregister } = fakeClient()
     const stop = startQueuedEventsSubscription(client, 'sess-1', () => {})
+    stop()
+    expect(offHandler).toHaveBeenCalledTimes(1)
+    expect(triggerUnregister).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('startTriggersChangedSubscription', () => {
+  it('binds harness::triggers-changed scoped to the session and delivers', () => {
+    const { client, triggers, fire } = fakeClient()
+    const onChanged = vi.fn()
+    startTriggersChangedSubscription(client, 'sess-1', onChanged)
+
+    expect(triggers).toEqual([
+      {
+        type: 'harness::triggers-changed',
+        function_id: 'iii::console::triggers_changed::console-test',
+        config: { session_id: 'sess-1' },
+      },
+    ])
+    const event: TriggersChangedEvent = { session_id: 'sess-1', timestamp: 1 }
+    fire('iii::console::triggers_changed', event)
+    expect(onChanged).toHaveBeenCalledWith(event)
+  })
+
+  it("drops another session's doorbell (shared handler id)", () => {
+    const { client, fire } = fakeClient()
+    const onChanged = vi.fn()
+    startTriggersChangedSubscription(client, 'sess-1', onChanged)
+
+    fire('iii::console::triggers_changed', {
+      session_id: 'sess-2',
+      timestamp: 1,
+    })
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('unregisters handler and trigger on cleanup', () => {
+    const { client, offHandler, triggerUnregister } = fakeClient()
+    const stop = startTriggersChangedSubscription(client, 'sess-1', () => {})
     stop()
     expect(offHandler).toHaveBeenCalledTimes(1)
     expect(triggerUnregister).toHaveBeenCalledTimes(1)

@@ -7,8 +7,8 @@
 //! model context), so this is a pure UI signal with two uses on the console:
 //!   * render a turn-less "trigger fired" notice in the timeline, and
 //!   * keep a fired `once` trigger visible in the panel after the engine
-//!     unregisters it (the 5s poll can no longer see it, but this durable
-//!     record can).
+//!     unregisters it (the console's list refetch can no longer see it, but
+//!     this durable record can).
 //!
 //! Best-effort: a failed append logs and returns; it never blocks the fire's
 //! real work (the notification wake or the dispatched call).

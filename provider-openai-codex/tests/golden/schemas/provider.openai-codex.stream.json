@@ -716,6 +716,14 @@
           }
         ]
       },
+      "session_id": {
+        "default": null,
+        "description": "Durable conversation identity used only to derive header affinity.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "system_prompt": {
         "type": [
           "string",

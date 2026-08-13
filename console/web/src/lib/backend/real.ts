@@ -49,6 +49,7 @@ import {
 } from './triggers'
 import {
   startQueuedEventsSubscription,
+  startTriggersChangedSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 import type {
@@ -516,6 +517,37 @@ function realOnQueuedMessage(
   }
 }
 
+/**
+ * `harness::triggers-changed` subscription: the doorbell to refetch
+ * `listTriggers`. Same sync-return-over-async-bootstrap shape as
+ * `realOnQueuedMessage`, plus a reconnect reseed: the SDK replays trigger
+ * registrations on reconnect, but doorbells rung during the outage are gone,
+ * so every `connected` transition fires one catch-up event (the same repair
+ * TracesV2 uses).
+ */
+function realOnTriggersChanged(
+  sessionId: string,
+  onEvent: () => void,
+): () => void {
+  let disposed = false
+  let off: (() => void) | null = null
+  let offConn: (() => void) | null = null
+  getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      off = startTriggersChangedSubscription(client, sessionId, () => onEvent())
+      offConn = client.addConnectionStateListener((state) => {
+        if (state === 'connected') onEvent()
+      })
+    })
+    .catch(() => {})
+  return () => {
+    disposed = true
+    off?.()
+    offConn?.()
+  }
+}
+
 async function realListTriggers(
   sessionId: string,
 ): Promise<SessionTriggerInfo[]> {
@@ -697,6 +729,7 @@ export const realBackend: ChatBackend = {
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
+  onTriggersChanged: realOnTriggersChanged,
   unregisterTrigger: realUnregisterTrigger,
   stateKeyExists: realStateKeyExists,
   watchApprovals: realWatchApprovals,

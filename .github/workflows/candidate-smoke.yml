@@ -83,6 +83,12 @@ jobs:
           export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
           iii --version
 
+      - name: Prepare KVM for Scrapling sandbox
+        if: inputs.worker == 'scrapling'
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+
       - name: Start empty engine
         run: |
           set -euo pipefail

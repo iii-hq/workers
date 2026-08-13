@@ -128,6 +128,14 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
+def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
+    steps = workflow(WORKFLOWS / "candidate-smoke.yml")["jobs"]["smoke"]["steps"]
+    prepare = next(step for step in steps if step.get("name") == "Prepare KVM for Scrapling sandbox")
+    assert prepare["if"] == "inputs.worker == 'scrapling'"
+    assert "test -c /dev/kvm" in prepare["run"]
+    assert "sudo chmod 0666 /dev/kvm" in prepare["run"]
+
+
 def test_reusable_harness_executor_has_no_implicit_inputs() -> None:
     inputs = workflow(WORKFLOWS / "_harness-e2e.yml")["on"]["workflow_call"]["inputs"]
     assert inputs
@@ -141,3 +149,30 @@ def test_reusable_release_executors_have_no_implicit_inputs() -> None:
         assert inputs, name
         assert all(definition.get("required") == "true" for definition in inputs.values()), name
         assert all("default" not in definition for definition in inputs.values()), name
+
+
+def test_registry_publish_authenticates_iii_installer() -> None:
+    body = (WORKFLOWS / "_publish-registry.yml").read_text()
+    assert "GITHUB_TOKEN: ${{ github.token }}" in body
+
+
+def test_rust_binary_cache_is_keyed_by_frontend_bundle_digest() -> None:
+    jobs = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
+    web_build = jobs["web-build"]
+    assert web_build["outputs"]["frontend_digest"] == "${{ steps.stage.outputs.frontend_digest }}"
+    assert web_build["outputs"]["frontends"] == "${{ steps.dirs.outputs.frontends }}"
+
+    stage = next(step for step in web_build["steps"] if step.get("name") == "Stage frontend bundles")
+    assert stage["id"] == "stage"
+    assert "frontend_digest=$digest" in stage["run"]
+    assert "git hash-object" in stage["run"]
+
+    build_steps = jobs["build"]["steps"]
+    cache = next(step for step in build_steps if step.get("uses") == "Swatinem/rust-cache@v2")
+    assert "needs.web-build.outputs.frontend_digest" in cache["with"]["key"]
+
+    verify = next(step for step in build_steps if step.get("name") == "Verify frontend bundle digest")
+    assert verify["if"] == "inputs.web_bundle"
+    assert verify["env"]["EXPECTED_DIGEST"] == "${{ needs.web-build.outputs.frontend_digest }}"
+    assert "git hash-object" in verify["run"]
+    assert '[[ "$actual" == "$EXPECTED_DIGEST" ]]' in verify["run"]
