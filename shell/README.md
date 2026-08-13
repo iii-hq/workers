@@ -182,9 +182,9 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
 `config.yaml`'s `code:` block — the **same** list `shell::fs::*` enforces.
-`coder::*` returns its own `C2xx` codes. Since 0.10.0 the NUMBERS mean the
-same thing on both surfaces — `C2xx` and `S2xx` with equal digits are the
-same failure class, so a caller can learn the taxonomy once:
+`coder::*` returns its own `C2xx` codes. Since 0.10.0, shared `C2xx` and
+`S2xx` numbers mean the same failure class; coder-only failures are called
+out explicitly below:
 
 | Code | Meaning | fs twin |
 |---|---|---|
@@ -195,6 +195,7 @@ same failure class, so a caller can learn the taxonomy once:
 | `C216` | Underlying I/O error. | `S216` |
 | `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
+| `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
 
 No separate install: `iii worker add shell` brings the whole surface.
 

@@ -50,7 +50,15 @@ import {
   type TreeNode,
   workspaceValidate,
 } from './coder'
-import { type EditorCache, EditorPane } from './EditorPane'
+import {
+  type EditorCache,
+  type EditorCacheEntry,
+  EditorPane,
+} from './EditorPane'
+import {
+  currentReviewDirtyPaths,
+  refreshCleanEditorCacheEntry,
+} from './editor-cache'
 import { FilesTab } from './FilesTab'
 import {
   type GitChange,
@@ -78,9 +86,12 @@ import {
   type ReviewScopeSelection,
 } from './ReviewScopePicker'
 import {
+  createReviewSaveBarrier,
   ReviewPane,
+  type ReviewEditDraft,
   type ReviewFileSummary,
   type ReviewOptions,
+  runReviewTransition,
 } from './ReviewPane'
 import { SearchTab } from './SearchTab'
 import {
@@ -116,6 +127,11 @@ interface DiffSelection {
   /** The file's own repo directory when the browsed root sits above it
       (a worktree under the home directory) — see DiffPane. */
   gitDir?: string
+}
+
+interface ReviewEditBackup {
+  cache: EditorCacheEntry | null
+  hadTab: boolean
 }
 
 function ReviewOption({
@@ -227,6 +243,20 @@ export function ShellExplorerPage({
   const [expanded, setExpanded] = useState<string[]>([])
   const [reveal, setReveal] = useState<string | null>(null)
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
+  const [reviewDirtyPaths, setReviewDirtyPaths] = useState<ReadonlySet<string>>(
+    new Set(),
+  )
+  const reviewSaveBarrierRef = useRef<ReturnType<
+    typeof createReviewSaveBarrier
+  > | null>(null)
+  if (reviewSaveBarrierRef.current === null) {
+    reviewSaveBarrierRef.current = createReviewSaveBarrier()
+  }
+  const reviewSaveBarrier = reviewSaveBarrierRef.current
+  const [reviewSavingPaths, setReviewSavingPaths] = useState<ReadonlySet<string>>(
+    new Set(),
+  )
+  const reviewSavePending = reviewSavingPaths.size > 0
   const [diff, setDiff] = useState<DiffSelection | null>(null)
   const diffRequestRef = useRef(0)
   const [reviewRefreshEpoch, setReviewRefreshEpoch] = useState(0)
@@ -285,8 +315,95 @@ export function ShellExplorerPage({
     }
   }
   const cacheRef = useRef<EditorCache>(new Map())
+  const reviewEditBackupsRef = useRef<Map<string, ReviewEditBackup>>(new Map())
+  const reviewDirtyPathsRef = useRef(reviewDirtyPaths)
+  reviewDirtyPathsRef.current = reviewDirtyPaths
+
+  const restoreReviewEditCaches = useCallback((paths: Iterable<string>) => {
+    const restored = new Set<string>()
+    const autoOpenedTabs = new Set<string>()
+    for (const path of paths) {
+      const backup = reviewEditBackupsRef.current.get(path)
+      if (backup === undefined) continue
+      reviewEditBackupsRef.current.delete(path)
+      if (backup.cache === null) cacheRef.current.delete(path)
+      else cacheRef.current.set(path, { ...backup.cache })
+      if (!backup.hadTab) autoOpenedTabs.add(path)
+      restored.add(path)
+    }
+    if (restored.size === 0) return
+    setDirtyPaths((previous) => {
+      const next = new Set(previous)
+      for (const path of restored) {
+        const cached = cacheRef.current.get(path)
+        if (cached !== undefined && cached.draft !== cached.savedContent) next.add(path)
+        else next.delete(path)
+      }
+      return next
+    })
+    if (autoOpenedTabs.size > 0) {
+      setTabs((previous) => {
+        let next = previous
+        for (const path of autoOpenedTabs) next = closeTab(next, path)
+        return next
+      })
+    }
+  }, [])
+
+  const confirmDiscardReviewEdits = useCallback(() => {
+    if (!reviewSaveBarrier.canTransition()) return false
+    const editPaths = [...reviewEditBackupsRef.current.keys()]
+    const dirtyReviewPaths = currentReviewDirtyPaths(
+      editPaths,
+      cacheRef.current,
+      reviewDirtyPaths,
+    )
+    if (dirtyReviewPaths.size === 0) {
+      restoreReviewEditCaches(editPaths)
+      return true
+    }
+    const label =
+      dirtyReviewPaths.size === 1
+        ? [...dirtyReviewPaths][0]
+        : `${dirtyReviewPaths.size} review files`
+    if (!window.confirm(`discard unsaved changes to ${label}?`)) return false
+    restoreReviewEditCaches(editPaths)
+    setReviewDirtyPaths(new Set())
+    return true
+  }, [reviewDirtyPaths, restoreReviewEditCaches, reviewSaveBarrier])
+
+  const confirmDiscardAllEdits = useCallback(() => {
+    if (!reviewSaveBarrier.canTransition()) return false
+    const dirtyReviewPaths = currentReviewDirtyPaths(
+      reviewEditBackupsRef.current.keys(),
+      cacheRef.current,
+      reviewDirtyPaths,
+    )
+    const count = new Set([...dirtyPaths, ...dirtyReviewPaths]).size
+    if (count === 0) return true
+    if (!window.confirm(`discard unsaved changes in ${count} ${count === 1 ? 'file' : 'files'}?`)) {
+      return false
+    }
+    restoreReviewEditCaches(reviewEditBackupsRef.current.keys())
+    setReviewDirtyPaths(new Set())
+    return true
+  }, [dirtyPaths, reviewDirtyPaths, restoreReviewEditCaches, reviewSaveBarrier])
+
+  useEffect(() => {
+    if (
+      dirtyPaths.size === 0 &&
+      reviewDirtyPaths.size === 0 &&
+      !reviewSavePending
+    ) {
+      return
+    }
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault()
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirtyPaths, reviewDirtyPaths, reviewSavePending])
 
   const forceLastTurnScope = useCallback(() => {
+    if (!reviewSaveBarrier.canTransition()) return false
     // Every forced Last Turn transition must retire an in-flight Git scope
     // request before changing the visible scope. Otherwise its late result can
     // replace the file selected from the chat summary or live watcher.
@@ -294,10 +411,22 @@ export function ShellExplorerPage({
     setReviewScope(LAST_TURN_SCOPE)
     setScopeLoading(false)
     setScopeError(null)
-  }, [])
+    return true
+  }, [reviewSaveBarrier])
 
   const beginReviewTurn = useCallback((turnId: string) => {
     if (turnId === lastReviewKeyRef.current) return false
+    if (!reviewSaveBarrier.canTransition()) return false
+    const reviewDrafts = [...reviewDirtyPathsRef.current]
+    if (reviewDrafts.length > 0) {
+      setTabs((previous) => {
+        let next = previous
+        for (const path of reviewDrafts) next = openPinned(next, path)
+        return next
+      })
+    }
+    reviewEditBackupsRef.current.clear()
+    setReviewDirtyPaths(new Set())
     lastReviewKeyRef.current = turnId
     setReviewKey(turnId)
     reviewEpochRef.current += 1
@@ -332,11 +461,12 @@ export function ShellExplorerPage({
     setReviewSummary([])
     setDiff(null)
     return true
-  }, [forceLastTurnScope])
+  }, [forceLastTurnScope, reviewSaveBarrier])
 
   // This runs inside Harness's awaited pre-turn hook: the snapshot is fully
   // frozen before model/tool execution can create, edit, rename, or delete.
   useHarnessPreTurn(host, conversationId, tabId, async ({ turn_id }) => {
+    await reviewSaveBarrier.wait()
     const currentRoot = rootRef.current
     if (currentRoot === null) return
     beginReviewTurn(turn_id)
@@ -384,6 +514,7 @@ export function ShellExplorerPage({
   // does not pretend that a post-write read is a pre-turn baseline.
   useEffect(() => {
     if (observedReviewKey === null) return
+    if (!reviewSaveBarrier.canTransition()) return
     beginReviewTurn(observedReviewKey)
     reviewWindowRef.current = {
       turnId: observedReviewKey,
@@ -391,7 +522,14 @@ export function ShellExplorerPage({
       active: observedReview.active,
       completedAtMs: observedReview.completedAtMs,
     }
-  }, [observedReviewKey, observedReview.active, observedReview.completedAtMs, beginReviewTurn])
+  }, [
+    observedReviewKey,
+    observedReview.active,
+    observedReview.completedAtMs,
+    beginReviewTurn,
+    reviewSavingPaths,
+    reviewSaveBarrier,
+  ])
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -649,13 +787,8 @@ export function ShellExplorerPage({
         const content = out.content ?? ''
         const entry = cacheRef.current.get(active)
         if (!entry) return
-        if (entry.savedContent === content) return
-        const wasClean = entry.draft === entry.savedContent
-        entry.savedContent = content
-        if (wasClean) {
-          entry.draft = content
-          setFileBump((n) => n + 1)
-        }
+        if (!refreshCleanEditorCacheEntry(entry, content, out.revision ?? undefined)) return
+        setFileBump((n) => n + 1)
       })
       .catch(() => {
         // A deleted-then-read race resolves through the next tree refresh.
@@ -670,11 +803,13 @@ export function ShellExplorerPage({
   const treeRef = useRef(tree)
   treeRef.current = tree
   const openReviewEntry = useCallback((entry: ReviewEntry) => {
+    if (!reviewSaveBarrier.canTransition()) return false
     diffRequestRef.current += 1
     setTabs((state) => openPreview(state, entry.path))
     setDiff(diffForReviewEntry(entry))
     setReviewRefreshEpoch((value) => value + 1)
-  }, [])
+    return true
+  }, [reviewSaveBarrier])
 
   const loadScopeMetadata = useCallback(() => {
     if (root === null) return
@@ -751,12 +886,139 @@ export function ShellExplorerPage({
     [host, root, openReviewEntry],
   )
 
+  const onReviewEditDirtyChange = useCallback((path: string, dirty: boolean) => {
+    // The page-owned draft remains authoritative until the row explicitly
+    // sends a clean draft, cancels, or saves.
+    if (!dirty) return
+    setReviewDirtyPaths((previous) => {
+      if (previous.has(path)) return previous
+      const next = new Set(previous)
+      next.add(path)
+      return next
+    })
+  }, [])
+
+  const onReviewEditSavingChange = useCallback(
+    (path: string, saving: boolean) => {
+      setReviewSavingPaths(reviewSaveBarrier.update(path, saving))
+    },
+    [reviewSaveBarrier],
+  )
+
+  const onRequestReviewEdit = useCallback((path: string) => {
+    if (!reviewSaveBarrier.canTransition()) return false
+    if (reviewEditBackupsRef.current.has(path)) return true
+    const cached = cacheRef.current.get(path)
+    if (
+      cached !== undefined &&
+      cached.draft !== cached.savedContent &&
+      !window.confirm(`discard the existing editor draft for ${path}?`)
+    ) {
+      return false
+    }
+    reviewEditBackupsRef.current.set(path, {
+      cache:
+        cached === undefined
+          ? null
+          : { ...cached, draft: cached.savedContent },
+      hadTab: tabsRef.current.tabs.some((tab) => tab.path === path),
+    })
+    if (cached !== undefined && cached.draft !== cached.savedContent) {
+      setDirtyPaths((previous) => {
+        const next = new Set(previous)
+        next.delete(path)
+        return next
+      })
+    }
+    return true
+  }, [reviewSaveBarrier])
+
+  const onReviewEditDraftChange = useCallback(
+    (path: string, edit: ReviewEditDraft | null) => {
+      if (edit === null) {
+        restoreReviewEditCaches([path])
+        setReviewDirtyPaths((previous) => {
+          if (!previous.has(path)) return previous
+          const next = new Set(previous)
+          next.delete(path)
+          return next
+        })
+        return
+      }
+      const previous = cacheRef.current.get(path)
+      cacheRef.current.set(path, {
+        savedContent: edit.savedContent,
+        draft: edit.draft,
+        revision: edit.revision,
+        readOnly: null,
+        mode: edit.mode ?? null,
+        size: previous?.size ?? null,
+      })
+      const dirty = edit.draft !== edit.savedContent
+      setReviewDirtyPaths((previous) => {
+        if (previous.has(path) === dirty) return previous
+        const next = new Set(previous)
+        if (dirty) next.add(path)
+        else next.delete(path)
+        return next
+      })
+      setDirtyPaths((paths) => {
+        if (paths.has(path) === dirty) return paths
+        const next = new Set(paths)
+        if (dirty) next.add(path)
+        else next.delete(path)
+        return next
+      })
+      if (dirty) setTabs((previousTabs) => openPinned(previousTabs, path))
+    },
+    [restoreReviewEditCaches],
+  )
+
+  const onReviewFileSaved = useCallback(
+    (path: string, contents: string, revision?: string) => {
+      const backup = reviewEditBackupsRef.current.get(path)
+      reviewEditBackupsRef.current.delete(path)
+      setReviewDirtyPaths((previous) => {
+        if (!previous.has(path)) return previous
+        const next = new Set(previous)
+        next.delete(path)
+        return next
+      })
+      const cached = cacheRef.current.get(path)
+      if (cached !== undefined && backup?.hadTab !== false) {
+        cached.savedContent = contents
+        cached.draft = contents
+        cached.revision = revision ?? cached.revision
+        setFileBump((value) => value + 1)
+      } else if (backup?.hadTab === false) {
+        cacheRef.current.delete(path)
+        setTabs((previous) => closeTab(previous, path))
+      }
+      setDirtyPaths((previous) => {
+        if (!previous.has(path)) return previous
+        const next = new Set(previous)
+        next.delete(path)
+        return next
+      })
+      refreshTree()
+      void refreshGit()
+      const scope = reviewScopeRef.current
+      if (scope.kind === 'last-turn') {
+        setReviewRefreshEpoch((value) => value + 1)
+      } else {
+        loadReviewScope(scope)
+      }
+    },
+    [loadReviewScope, refreshGit, refreshTree],
+  )
+
   useEffect(() => {
     if (reviewScope.kind !== 'last-turn') loadReviewScope(reviewScope)
   }, [reviewScope, loadReviewScope])
 
   const selectReviewScope = useCallback(
     (next: ReviewScopeSelection) => {
+      if (!confirmDiscardReviewEdits()) return
       setScopeSummary([])
       setScopeError(null)
       setReviewMenuOpen(false)
@@ -781,7 +1043,7 @@ export function ShellExplorerPage({
       diffRequestRef.current += 1
       setDiff(null)
     },
-    [forceLastTurnScope, openReviewEntry],
+    [confirmDiscardReviewEdits, forceLastTurnScope, openReviewEntry],
   )
 
   useShellReviewSummaryBridge({
@@ -790,6 +1052,7 @@ export function ShellExplorerPage({
     turnId: reviewKey,
     files: reviewSummary,
     onSelectFile: (path) => {
+      if (!confirmDiscardReviewEdits()) return
       const entry = reviewEntriesRef.current.get(path)
       if (entry) {
         forceLastTurnScope()
@@ -1010,10 +1273,11 @@ export function ShellExplorerPage({
 
   // ── open/close/pin actions ──
   const previewFile = useCallback((relPath: string) => {
+    if (!confirmDiscardReviewEdits()) return
     diffRequestRef.current += 1
     setDiff(null)
     setTabs((s) => openPreview(s, relPath))
-  }, [])
+  }, [confirmDiscardReviewEdits])
 
   const activateFile = useCallback(
     (relPath: string) => {
@@ -1031,11 +1295,12 @@ export function ShellExplorerPage({
         openReviewEntry(entry)
         return
       }
+      if (!confirmDiscardReviewEdits()) return
       diffRequestRef.current += 1
       setDiff(null)
       setTabs((s) => openPinned(s, relPath))
     },
-    [openReviewEntry],
+    [confirmDiscardReviewEdits, openReviewEntry],
   )
 
   const revealFolder = useCallback((relPath: string) => {
@@ -1059,6 +1324,11 @@ export function ShellExplorerPage({
 
   const onCloseTab = useCallback(
     (relPath: string) => {
+      if (!reviewSaveBarrier.canTransition()) return
+      if (reviewDirtyPaths.has(relPath)) {
+        setTabs((s) => closeTab(s, relPath))
+        return
+      }
       if (dirtyPaths.has(relPath) && !window.confirm(`discard unsaved changes to ${relPath}?`)) {
         return
       }
@@ -1075,7 +1345,7 @@ export function ShellExplorerPage({
       })
       setTabs((s) => closeTab(s, relPath))
     },
-    [dirtyPaths],
+    [dirtyPaths, reviewDirtyPaths, reviewSaveBarrier],
   )
 
   // ── sidebar resize (drag handle on the boundary toward the main pane) ──
@@ -1112,7 +1382,8 @@ export function ShellExplorerPage({
     }
   }, [])
 
-  const changeRoot = useCallback((nextRoot: string) => {
+  const changeRoot = useCallback((nextRoot: string): boolean => {
+    if (!confirmDiscardAllEdits()) return false
     const resolveSeq = ++rootResolveSeqRef.current
     rootTransitionRef.current = true
     rootGenerationRef.current += 1
@@ -1135,6 +1406,7 @@ export function ShellExplorerPage({
     baselineReadyRef.current = Promise.resolve()
     preparedTurnRef.current = null
     reviewEntriesRef.current = new Map()
+    reviewEditBackupsRef.current.clear()
     cacheRef.current.clear()
     setDirtyPaths(new Set())
     setTabs(EMPTY_TABS)
@@ -1176,18 +1448,26 @@ export function ShellExplorerPage({
           }
         }
       })
-  }, [forceLastTurnScope, host, refreshGit, refreshTree])
+    return true
+  }, [confirmDiscardAllEdits, forceLastTurnScope, host, refreshGit, refreshTree])
 
   // ── follow the chat's working directory ──
   // Picking another folder in chat re-roots the explorer (the split-screen
   // sync). A manual root pick sticks until the chat's folder moves again.
   const lastWorkingDirRef = useRef(workingDir ?? null)
   useEffect(() => {
+    if (reviewSavePending) return
     const next = workingDir ?? null
     if (next === lastWorkingDirRef.current) return
-    lastWorkingDirRef.current = next
-    if (next !== null && root !== null && next !== root) changeRoot(next)
-  }, [workingDir, root, changeRoot])
+    if (next === null || root === null || next === root) {
+      lastWorkingDirRef.current = next
+      return
+    }
+    // A cancelled discard prompt must not acknowledge the chat directory:
+    // keeping the previous value lets the effect retry after edits are saved
+    // or discarded instead of permanently breaking chat-to-Shell following.
+    if (changeRoot(next)) lastWorkingDirRef.current = next
+  }, [workingDir, root, changeRoot, reviewSavePending])
 
   // ── deep link: #/ext/shell/open/<encoded-abs>[:line] ──
   // The chat's "open in shell" lands here. The request is captured (and
@@ -1225,6 +1505,7 @@ export function ShellExplorerPage({
   useEffect(() => {
     const abs = pendingOpenRef.current
     if (abs === null || root === null) return
+    if (!reviewSaveBarrier.canTransition()) return
     const prefix = root.endsWith('/') ? root : `${root}/`
     if (abs.startsWith(prefix)) {
       pendingOpenRef.current = null
@@ -1235,7 +1516,7 @@ export function ShellExplorerPage({
       const cut = abs.lastIndexOf('/')
       changeRoot(cut > 0 ? abs.slice(0, cut) : '/')
     }
-  }, [root, openBump, changeRoot])
+  }, [root, openBump, changeRoot, reviewSavingPaths, reviewSaveBarrier])
 
   const onSaved = useCallback(() => {
     refreshGit()
@@ -1264,6 +1545,7 @@ export function ShellExplorerPage({
               className="shui-header-root-select"
               value={root}
               onChange={(event) => changeRoot(event.target.value)}
+              disabled={reviewSavePending}
               aria-label="browsed root"
               title={root}
             >
@@ -1324,7 +1606,13 @@ export function ShellExplorerPage({
           </div>
         ) : undefined
       }
-      onClose={onRequestClose}
+      onClose={
+        onRequestClose === undefined
+          ? undefined
+          : () => {
+              if (confirmDiscardAllEdits()) onRequestClose()
+            }
+      }
     />
   )
 
@@ -1399,7 +1687,16 @@ export function ShellExplorerPage({
         ) : null}
 
         <PageMain>
-          <div className="shui-review-toolbar">
+            <div className="shui-review-toolbar">
+              {reviewSavePending ? (
+                <span
+                  className="shui-review-count"
+                  role="status"
+                  aria-live="polite"
+                >
+                  saving {reviewSavingPaths.size === 1 ? 'review file' : `${reviewSavingPaths.size} review files`}… navigation paused
+                </span>
+              ) : null}
               <ReviewScopePicker
                 value={reviewScope}
                 commits={scopeCommits}
@@ -1546,12 +1843,18 @@ export function ShellExplorerPage({
                       role="tab"
                       aria-selected={active}
                       title={tab.path}
-                      onClick={() => {
-                        diffRequestRef.current += 1
-                        setDiff(null)
-                        setTabs((s) => activateTab(s, tab.path))
-                      }}
-                      onDoubleClick={() => setTabs((s) => pinTab(s, tab.path))}
+                      onClick={() =>
+                        runReviewTransition(reviewSaveBarrier, () => {
+                          diffRequestRef.current += 1
+                          setDiff(null)
+                          setTabs((s) => activateTab(s, tab.path))
+                        })
+                      }
+                      onDoubleClick={() =>
+                        runReviewTransition(reviewSaveBarrier, () => {
+                          setTabs((s) => pinTab(s, tab.path))
+                        })
+                      }
                     >
                       {basename(tab.path)}
                       {dirtyPaths.has(tab.path) ? <span className="shui-dirty" title="unsaved changes" /> : null}
@@ -1581,6 +1884,11 @@ export function ShellExplorerPage({
               collapseEpoch={reviewCollapseEpoch}
               expandEpoch={reviewExpandEpoch}
               refreshEpoch={reviewRefreshEpoch}
+              onRequestEdit={onRequestReviewEdit}
+              onEditDraftChange={onReviewEditDraftChange}
+              onEditDirtyChange={onReviewEditDirtyChange}
+              onEditSavingChange={onReviewEditSavingChange}
+              onFileSaved={onReviewFileSaved}
               onActivate={(path) => {
                 const entry = visibleReviewEntriesRef.current.get(path)
                 if (entry) openReviewEntry(entry)

@@ -1,8 +1,24 @@
-import { FileDiff, type Host } from '@iii-dev/console-ui'
-import { ChevronDown, ChevronRight, FileCode2 } from 'lucide-react'
+import {
+  FileDiff,
+  type FileDiffEditState,
+  type Host,
+} from '@iii-dev/console-ui'
+import {
+  ChevronDown,
+  ChevronRight,
+  FileCode2,
+  Pencil,
+  Save,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
-import { coderReadFile, joinPath, type ReadFileResponse } from './coder'
+import {
+  coderReadFile,
+  coderWriteFile,
+  joinPath,
+  type ReadFileResponse,
+} from './coder'
 import { diffLines, diffTotals } from './diff'
 import { gitReadSource, gitShowHead } from './git'
 import type { ReviewEntry } from './review'
@@ -27,6 +43,13 @@ export interface ReviewFileSummary {
   newContents: string | null
 }
 
+export interface ReviewEditDraft {
+  savedContent: string
+  draft: string
+  revision?: string
+  mode?: number | null
+}
+
 interface ReviewPaneProps {
   host: Host
   root: string
@@ -37,6 +60,11 @@ interface ReviewPaneProps {
   expandEpoch: number
   refreshEpoch: number
   onActivate: (path: string) => void
+  onRequestEdit: (path: string) => boolean
+  onEditDraftChange: (path: string, draft: ReviewEditDraft | null) => void
+  onEditDirtyChange: (path: string, dirty: boolean) => void
+  onEditSavingChange: (path: string, saving: boolean) => void
+  onFileSaved: (path: string, contents: string, revision?: string) => void
   onSummaryChange: (files: readonly ReviewFileSummary[]) => void
 }
 
@@ -44,7 +72,13 @@ type FileState =
   | { phase: 'idle' }
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
-  | { phase: 'ready'; oldContents: string; newContents: string }
+  | {
+      phase: 'ready'
+      oldContents: string
+      newContents: string
+      worktreeRevision?: string
+      mode?: number | null
+    }
 
 interface FileLoadDescriptor {
   host: Host
@@ -113,6 +147,117 @@ export function expandedReviewPaths(
   const next = new Set(collapsed)
   next.delete(activePath)
   return next
+}
+
+/** Only comparisons whose right-hand side is the current workspace can be
+    edited. Index, commit, and empty/deleted targets remain review-only. */
+export function reviewEntryWorktreePath(entry: ReviewEntry): string | null {
+  if (entry.change.status === 'deleted') return null
+  if (entry.after === undefined) return entry.path
+  return entry.after.kind === 'worktree' ? entry.after.path : null
+}
+
+export function updateReviewDraft(
+  saving: Readonly<{ current: boolean }>,
+  next: string,
+  setDraft: (next: string) => void,
+): void {
+  if (!saving.current) setDraft(next)
+}
+
+export interface ReviewSaveBarrier {
+  readonly paths: ReadonlySet<string>
+  update(path: string, saving: boolean): ReadonlySet<string>
+  canTransition(): boolean
+  wait(): Promise<void>
+}
+
+export function createReviewSaveBarrier(): ReviewSaveBarrier {
+  let paths: ReadonlySet<string> = new Set()
+  let idle = Promise.resolve()
+  let resolveIdle: (() => void) | null = null
+
+  return {
+    get paths() {
+      return paths
+    },
+    update(path, saving) {
+      if (paths.has(path) === saving) return paths
+      const next = new Set(paths)
+      if (saving) next.add(path)
+      else next.delete(path)
+
+      if (paths.size === 0 && next.size > 0) {
+        idle = new Promise<void>((resolve) => {
+          resolveIdle = resolve
+        })
+      }
+      paths = next
+      if (paths.size === 0 && resolveIdle !== null) {
+        const resolve = resolveIdle
+        resolveIdle = null
+        resolve()
+        idle = Promise.resolve()
+      }
+      return paths
+    },
+    canTransition() {
+      return paths.size === 0
+    },
+    async wait() {
+      while (paths.size > 0) await idle
+    },
+  }
+}
+
+export function runReviewTransition(
+  barrier: Pick<ReviewSaveBarrier, 'canTransition'>,
+  transition: () => void,
+): boolean {
+  if (!barrier.canTransition()) return false
+  transition()
+  return true
+}
+
+export async function withReviewSavePending<T>(
+  path: string,
+  onSavingChange: (path: string, saving: boolean) => void,
+  save: () => Promise<T>,
+): Promise<T> {
+  onSavingChange(path, true)
+  try {
+    return await save()
+  } finally {
+    onSavingChange(path, false)
+  }
+}
+
+export function reportActiveReviewDirty(
+  editing: boolean,
+  path: string,
+  dirty: boolean,
+  onChange: (path: string, dirty: boolean) => void,
+): void {
+  if (editing) onChange(path, dirty)
+}
+
+export function reviewEditStatus(
+  editing: boolean,
+  editorState: FileDiffEditState,
+  saving: boolean,
+): { role: 'status' | 'alert'; message: string } | null {
+  if (!editing) return null
+  if (saving) return { role: 'status', message: 'saving file…' }
+  if (editorState === 'loading') {
+    return { role: 'status', message: 'loading inline editor…' }
+  }
+  if (editorState === 'error') {
+    return {
+      role: 'alert',
+      message: 'inline editor failed to load; cancel and try again',
+    }
+  }
+  return null
 }
 
 export function orderedReviewSummaries(
@@ -197,10 +342,28 @@ async function loadReviewContents(
   host: Host,
   root: string,
   entry: ReviewEntry,
-): Promise<{ oldContents: string; newContents: string }> {
+): Promise<{
+  oldContents: string
+  newContents: string
+  worktreeRevision?: string
+  mode?: number | null
+}> {
   if (entry.before !== undefined && entry.after !== undefined) {
+    const oldSide = gitReadSource(host, root, entry.before)
+    if (entry.after.kind === 'worktree') {
+      const [oldContents, out] = await Promise.all([
+        oldSide,
+        coderReadFile(host, joinPath(root, entry.after.path)),
+      ])
+      return {
+        oldContents,
+        newContents: exactCoderText(out, entry.after.path),
+        worktreeRevision: out.revision ?? undefined,
+        mode: out.mode,
+      }
+    }
     const [oldContents, newContents] = await Promise.all([
-      gitReadSource(host, root, entry.before),
+      oldSide,
       gitReadSource(host, root, entry.after),
     ])
     return { oldContents, newContents }
@@ -218,14 +381,27 @@ async function loadReviewContents(
         : entry.gitDir !== undefined
           ? gitShowHead(host, entry.gitDir, oldPath.slice(oldPath.lastIndexOf('/') + 1))
           : gitShowHead(host, root, oldPath)
-  const newSide =
+  const newSide: Promise<{
+    contents: string
+    revision?: string
+    mode?: number | null
+  }> =
     change.status === 'deleted'
-      ? Promise.resolve('')
+      ? Promise.resolve({ contents: '' })
       : coderReadFile(host, joinPath(root, change.path)).then((out) =>
-          exactCoderText(out, change.path),
+          ({
+            contents: exactCoderText(out, change.path),
+            revision: out.revision ?? undefined,
+            mode: out.mode,
+          }),
         )
-  const [oldContents, newContents] = await Promise.all([oldSide, newSide])
-  return { oldContents, newContents }
+  const [oldContents, current] = await Promise.all([oldSide, newSide])
+  return {
+    oldContents,
+    newContents: current.contents,
+    worktreeRevision: current.revision,
+    mode: current.mode,
+  }
 }
 
 export function ReviewPane({
@@ -238,6 +414,11 @@ export function ReviewPane({
   expandEpoch,
   refreshEpoch,
   onActivate,
+  onRequestEdit,
+  onEditDraftChange,
+  onEditDirtyChange,
+  onEditSavingChange,
+  onFileSaved,
   onSummaryChange,
 }: ReviewPaneProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
@@ -465,6 +646,45 @@ export function ReviewPane({
     })
   }, [])
 
+  const saveFile = useCallback(
+    async (
+      entry: ReviewEntry,
+      state: Extract<FileState, { phase: 'ready' }>,
+      contents: string,
+      expectedRevision: string | undefined,
+    ) => {
+      const worktreePath = reviewEntryWorktreePath(entry)
+      if (worktreePath === null) throw new Error('this comparison is read-only')
+      if (expectedRevision === undefined) {
+        throw new Error('reload the file before editing so its revision can be verified')
+      }
+      const result = await coderWriteFile(
+        host,
+        joinPath(root, worktreePath),
+        contents,
+        state.mode,
+        expectedRevision,
+      )
+      if (!result.success) {
+        throw new Error(result.error?.message ?? 'save failed')
+      }
+      const descriptor = availableLoadsRef.current.get(entry.path)
+      if (descriptor !== undefined) {
+        cacheRef.current.set(entry.path, {
+          ...descriptor,
+          state: {
+            ...state,
+            newContents: contents,
+            worktreeRevision: result.revision ?? expectedRevision,
+          },
+        })
+        bumpCache()
+      }
+      onFileSaved(entry.path, contents, result.revision ?? expectedRevision)
+    },
+    [host, root, bumpCache, onFileSaved],
+  )
+
   const fileStates = useMemo(() => {
     const states = new Map<string, FileState>()
     for (const entry of entries) {
@@ -515,6 +735,12 @@ export function ReviewPane({
             eagerlyRender={index < LARGE_REVIEW_EAGER_FILE_COUNT}
             scrollRoot={bodyRef}
             onRequestLoad={requestViewportLoad}
+            onRequestEdit={onRequestEdit}
+            onEditDraftChange={onEditDraftChange}
+            onEditDirtyChange={onEditDirtyChange}
+            onEditSavingChange={onEditSavingChange}
+            onSave={saveFile}
+            onActivate={() => onActivate(entry.path)}
             onToggle={() => {
               const isCollapsed = collapsed.has(entry.path)
               // An already-active expanded header is a pure collapse action.
@@ -547,6 +773,12 @@ function ReviewFile({
   eagerlyRender,
   scrollRoot,
   onRequestLoad,
+  onRequestEdit,
+  onEditDraftChange,
+  onEditDirtyChange,
+  onEditSavingChange,
+  onSave,
+  onActivate,
   onToggle,
   onStats,
 }: {
@@ -559,6 +791,17 @@ function ReviewFile({
   eagerlyRender: boolean
   scrollRoot: React.RefObject<HTMLDivElement | null>
   onRequestLoad: (path: string) => void
+  onRequestEdit: (path: string) => boolean
+  onEditDraftChange: (path: string, draft: ReviewEditDraft | null) => void
+  onEditDirtyChange: (path: string, dirty: boolean) => void
+  onEditSavingChange: (path: string, saving: boolean) => void
+  onSave: (
+    entry: ReviewEntry,
+    state: Extract<FileState, { phase: 'ready' }>,
+    contents: string,
+    expectedRevision: string | undefined,
+  ) => Promise<void>
+  onActivate: () => void
   onToggle: () => void
   onStats: (summary: ReviewFileSummary | null, path: string) => void
 }) {
@@ -566,6 +809,14 @@ function ReviewFile({
   const [renderBody, setRenderBody] = useState(
     !largeReview || eagerlyRender || active,
   )
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [editBaseContents, setEditBaseContents] = useState('')
+  const [editRevision, setEditRevision] = useState<string | undefined>()
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const [editorState, setEditorState] = useState<FileDiffEditState>('loading')
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     if (active) {
@@ -635,6 +886,132 @@ function ReviewFile({
     )
   }, [totals, entry.path, onStats])
 
+  const editable =
+    reviewEntryWorktreePath(entry) !== null &&
+    state.phase === 'ready' &&
+    state.worktreeRevision !== undefined
+  const dirty = editing && draft !== editBaseContents
+  const changedOnDisk =
+    editing &&
+    editRevision !== undefined &&
+    state.phase === 'ready' &&
+    state.worktreeRevision !== undefined &&
+    state.worktreeRevision !== editRevision
+
+  useEffect(() => {
+    reportActiveReviewDirty(editing, entry.path, dirty, onEditDirtyChange)
+  }, [editing, entry.path, dirty, onEditDirtyChange])
+
+  useEffect(() => {
+    if (!editing) return
+    onEditDraftChange(entry.path, {
+      savedContent: editBaseContents,
+      draft,
+      revision: editRevision,
+      mode: state.phase === 'ready' ? state.mode : undefined,
+    })
+  }, [
+    editing,
+    entry.path,
+    editBaseContents,
+    draft,
+    editRevision,
+    state,
+    onEditDraftChange,
+  ])
+
+  const beginEditing = useCallback(() => {
+    if (!editable || state.phase !== 'ready') return
+    if (!onRequestEdit(entry.path)) return
+    onRequestLoad(entry.path)
+    if (collapsed) onToggle()
+    else onActivate()
+    setDraft(state.newContents)
+    setEditBaseContents(state.newContents)
+    setEditRevision(state.worktreeRevision)
+    savingRef.current = false
+    setEditorState('loading')
+    setSaveError(null)
+    setEditing(true)
+  }, [
+    editable,
+    state,
+    entry.path,
+    collapsed,
+    onRequestEdit,
+    onRequestLoad,
+    onToggle,
+    onActivate,
+  ])
+
+  const cancelEditing = useCallback(() => {
+    if (savingRef.current) return
+    if (dirty && !window.confirm(`discard unsaved changes to ${entry.path}?`)) return
+    setDraft(editBaseContents)
+    setSaveError(null)
+    setEditing(false)
+    onEditDraftChange(entry.path, null)
+    onEditDirtyChange(entry.path, false)
+  }, [dirty, entry.path, editBaseContents, onEditDraftChange, onEditDirtyChange])
+
+  const reloadEditing = useCallback(() => {
+    if (savingRef.current || state.phase !== 'ready') return
+    if (dirty && !window.confirm(`reload ${entry.path} and discard your draft?`)) return
+    setDraft(state.newContents)
+    setEditBaseContents(state.newContents)
+    setEditRevision(state.worktreeRevision)
+    setSaveError(null)
+    onEditDirtyChange(entry.path, false)
+  }, [state, dirty, entry.path, onEditDirtyChange])
+
+  const saveEditing = useCallback(() => {
+    if (
+      !editing ||
+      !dirty ||
+      savingRef.current ||
+      editorState !== 'ready' ||
+      state.phase !== 'ready'
+    ) {
+      return
+    }
+    const submittedDraft = draft
+    let saved = false
+    savingRef.current = true
+    setSaving(true)
+    setSaveError(null)
+    void withReviewSavePending(entry.path, onEditSavingChange, async () => {
+      try {
+        await onSave(entry, state, submittedDraft, editRevision)
+        saved = true
+        setEditBaseContents(submittedDraft)
+        setEditRevision(undefined)
+        setEditing(false)
+        onEditDraftChange(entry.path, null)
+        onEditDirtyChange(entry.path, false)
+      } catch (error: unknown) {
+        setSaveError(errorMessage(error))
+      }
+    })
+      .finally(() => {
+        if (!saved) savingRef.current = false
+        setSaving(false)
+      })
+  }, [
+    editing,
+    dirty,
+    editorState,
+    state,
+    onSave,
+    entry,
+    draft,
+    editRevision,
+    onEditDraftChange,
+    onEditDirtyChange,
+    onEditSavingChange,
+  ])
+
+  const editStatus = reviewEditStatus(editing, editorState, saving)
+
   const rich =
     renderBody && state.phase === 'ready'
       ? richPreviewFor(entry.path, state.newContents)
@@ -644,40 +1021,124 @@ function ReviewFile({
       ref={sectionRef}
       className={`shui-review-file${active ? ' active' : ''}`}
       data-review-path={entry.path}
+      aria-busy={saving}
+      onKeyDownCapture={(event) => {
+        if (
+          editing &&
+          (event.metaKey || event.ctrlKey) &&
+          event.key.toLowerCase() === 's'
+        ) {
+          event.preventDefault()
+          saveEditing()
+        }
+      }}
     >
-      <button type="button" className="shui-review-file-head" onClick={onToggle}>
-        {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}
-        <FileCode2 aria-hidden className="file-icon" />
-        <span className="path" title={entry.path}>
-          {entry.change.from ? `${entry.change.from} → ${entry.path}` : entry.path}
-        </span>
+      <div className="shui-review-file-head">
+        <button
+          type="button"
+          className="shui-review-file-toggle"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}
+          <FileCode2 aria-hidden className="file-icon" />
+          <span className="path" title={entry.path}>
+            {entry.change.from ? `${entry.change.from} → ${entry.path}` : entry.path}
+          </span>
+        </button>
         {totals !== null ? (
           <span className="shui-diff-stats">
             <span className="add">+{totals.add}</span>
             <span className="del">−{totals.del}</span>
           </span>
         ) : null}
-      </button>
+        {dirty ? <span className="shui-dirty" title="unsaved diff edit" /> : null}
+        {editable && state.phase === 'ready' ? (
+          editing ? (
+            <>
+              <button
+                type="button"
+                className="shui-review-file-action"
+                onClick={cancelEditing}
+                disabled={saving}
+                aria-label={`cancel editing ${entry.path}`}
+                title="cancel edit"
+              >
+                <X aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="shui-review-file-action primary"
+                onClick={saveEditing}
+                disabled={!dirty || saving || editorState !== 'ready'}
+                aria-label={`save ${entry.path}`}
+                title="save (⌘S)"
+              >
+                <Save aria-hidden />
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="shui-review-file-action"
+              onClick={beginEditing}
+              aria-label={`edit working file ${entry.path}`}
+              title="edit working file"
+            >
+              <Pencil aria-hidden />
+            </button>
+          )
+        ) : null}
+      </div>
+      {changedOnDisk ? (
+        <div className="shui-review-message warn">
+          <span>file changed on disk</span>
+          <button
+            type="button"
+            className="shui-review-inline-action"
+            onClick={reloadEditing}
+            disabled={saving}
+          >
+            reload latest
+          </button>
+        </div>
+      ) : saveError ? (
+        <div className="shui-review-message warn">{saveError}</div>
+      ) : editStatus ? (
+        <div
+          className={`shui-review-message${editStatus.role === 'alert' ? ' warn' : ''}`}
+          role={editStatus.role}
+        >
+          {editStatus.message}
+        </div>
+      ) : null}
       {collapsed ? null : !renderBody ? (
         <div className="shui-review-message">scroll to load diff…</div>
       ) : state.phase === 'idle' || state.phase === 'loading' ? (
         <div className="shui-review-message">loading diff…</div>
       ) : state.phase === 'error' ? (
         <div className="shui-review-message warn">{state.message}</div>
-      ) : options.richPreview && rich !== null ? (
+      ) : !editing && options.richPreview && rich !== null ? (
         rich
-      ) : totals?.add === 0 && totals.del === 0 ? (
+      ) : !editing && totals?.add === 0 && totals.del === 0 ? (
         <div className="shui-review-message">no line changes</div>
       ) : (
         <FileDiff
           oldFile={{ name: entry.change.from ?? entry.path, contents: state.oldContents }}
-          newFile={{ name: entry.path, contents: state.newContents }}
+          newFile={{ name: entry.path, contents: editing ? draft : state.newContents }}
           diffStyle={options.diffStyle}
           overflow={options.wordWrap ? 'wrap' : 'scroll'}
           lineDiffType={options.wordDiffs ? 'word-alt' : 'none'}
           ignoreWhitespace={options.hideWhitespace}
           expandUnchanged={options.expandUnchanged}
           disableFileHeader
+          edit={editing && !saving}
+          onChange={
+            editing && !saving
+              ? (next) => updateReviewDraft(savingRef, next, setDraft)
+              : undefined
+          }
+          onEditStateChange={editing && !saving ? setEditorState : undefined}
           className="shui-review-diff"
         />
       )}

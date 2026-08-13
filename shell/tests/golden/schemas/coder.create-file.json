@@ -1,5 +1,5 @@
 {
-  "description": "Create one or more files. Request shape: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` flags; non-accessible paths return C211. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Create one or more files. Request shape: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` flags; writes publish atomically. For a conflict-safe overwrite, pass the `revision` returned by coder::read-file as `expected_revision`; stale revisions return C221 without writing. Non-accessible paths return C211. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
   "function_id": "coder::create-file",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -8,6 +8,14 @@
         "properties": {
           "content": {
             "type": "string"
+          },
+          "expected_revision": {
+            "default": null,
+            "description": "Optional optimistic concurrency precondition for an overwrite. Pass the opaque `revision` returned by `coder::read-file`; if the file no longer has that exact content, the entry fails with C221 and is not written. Omit for backward-compatible unconditional overwrite.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "mode": {
             "default": "0644",
@@ -90,6 +98,13 @@
           "path": {
             "description": "Canonical absolute path (resolved through the jail); the caller's input verbatim when resolution failed.",
             "type": "string"
+          },
+          "revision": {
+            "description": "Opaque revision for the exact bytes written. Supply this as `expected_revision` on a later overwrite to avoid lost updates.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "success": {
             "type": "boolean"

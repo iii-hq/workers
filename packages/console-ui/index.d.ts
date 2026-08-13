@@ -374,6 +374,7 @@ export interface FileDiffSide {
   name: string
   contents: string
 }
+export type FileDiffEditState = 'loading' | 'ready' | 'error'
 export interface FileDiffProps {
   /** Pass empty `contents` for a created (old) / deleted (new) file. */
   oldFile: FileDiffSide
@@ -391,6 +392,12 @@ export interface FileDiffProps {
   expandUnchanged?: boolean
   /** Hide the built-in file header when the caller supplies its own. */
   disableFileHeader?: boolean
+  /** Enable direct editing of the new-file side. The editor loads lazily. */
+  edit?: boolean
+  /** Receives the complete current new-file body after each edit. */
+  onChange?(contents: string): void
+  /** Reports whether the lazily loaded inline editor can accept input. */
+  onEditStateChange?(state: FileDiffEditState): void
   className?: string
 }
 /** The console's one file-diff surface — the diff is computed from the two

@@ -1183,32 +1183,93 @@
   color: var(--color-ink-faint);
   font: 400 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   text-align: left;
-  cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-review-file.active > .shui-review-file-head,
 [data-iii-ui="shell"] .shui-review-file-head:hover {
   color: var(--color-ink);
   background: var(--color-surface-hover);
 }
-[data-iii-ui="shell"] .shui-review-file-head > svg {
+[data-iii-ui="shell"] .shui-review-file-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-file-toggle > svg {
   width: 14px;
   height: 14px;
   flex: none;
 }
 [data-iii-ui="shell"] .shui-review-file-head .file-icon { color: var(--color-accent); }
-[data-iii-ui="shell"] .shui-review-file-head .path {
+[data-iii-ui="shell"] .shui-review-file-toggle .path {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 [data-iii-ui="shell"] .shui-review-file-head .shui-diff-stats { margin-left: auto; }
+[data-iii-ui="shell"] .shui-review-file-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-file-action:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+[data-iii-ui="shell"] .shui-review-file-action.primary {
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-review-file-action:disabled {
+  color: var(--color-ink-ghost);
+  background: transparent;
+  cursor: default;
+}
+[data-iii-ui="shell"] .shui-review-file-action:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-review-file-action svg {
+  width: 13px;
+  height: 13px;
+}
 [data-iii-ui="shell"] .shui-review-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 14px 16px;
   color: var(--color-ink-ghost);
   font: 400 12px/18px var(--font-mono, ui-monospace, monospace);
 }
 [data-iii-ui="shell"] .shui-review-message.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-review-inline-action {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
 [data-iii-ui="shell"] .shui-review-diff { display: block; }
 [data-iii-ui="shell"] .shui-rich-preview {
   display: block;

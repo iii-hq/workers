@@ -50,6 +50,8 @@ export interface ReadFileResponse {
   /** Unix permission bits, lower 9 bits of st_mode. */
   mode?: number | null
   mtime?: number | null
+  /** Opaque exact-content identity for conflict-safe whole-file saves. */
+  revision?: string | null
 }
 
 export interface BatchReadFileResult extends ReadFileResponse {
@@ -61,6 +63,8 @@ export interface CreateFileResult {
   path: string
   success: boolean
   bytes_written: number
+  /** Opaque identity of the exact bytes written. */
+  revision?: string | null
   error?: { code: string; message: string } | null
 }
 
@@ -173,6 +177,7 @@ export async function coderWriteFile(
   path: string,
   content: string,
   mode?: number | null,
+  expectedRevision?: string | null,
 ): Promise<CreateFileResult> {
   const out = await host.iii.trigger<{ results: CreateFileResult[] }>(
     'coder::create-file',
@@ -183,6 +188,9 @@ export async function coderWriteFile(
           content,
           overwrite: true,
           ...(mode != null ? { mode: `0${mode.toString(8)}` } : {}),
+          ...(expectedRevision != null
+            ? { expected_revision: expectedRevision }
+            : {}),
         },
       ],
     },
