@@ -308,7 +308,7 @@ impl RouterClient {
                     final_message = Some(message);
                 }
                 AssistantMessageEvent::Error { error } => {
-                    terminal_failure = error.failure.clone();
+                    terminal_failure = error.failure.as_deref().cloned();
                     terminal_error = error
                         .error_message
                         .clone()
@@ -399,7 +399,7 @@ impl RouterClient {
             } else {
                 crate::types::event::ErrorKind::Transient
             });
-            m.failure = failure.clone();
+            m.failure = failure.clone().map(Box::new);
             m
         });
 

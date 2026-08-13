@@ -97,6 +97,16 @@
               "null"
             ]
           },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RouterFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "model": {
             "type": "string"
           },
@@ -437,6 +447,47 @@
           "message",
           "queued_at",
           "session_id"
+        ],
+        "type": "object"
+      },
+      "RouterFailure": {
+        "properties": {
+          "attempts": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ErrorKind"
+          },
+          "message": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "code",
+          "kind",
+          "message",
+          "retryable"
         ],
         "type": "object"
       },

@@ -141,7 +141,7 @@ impl ChatPipeline {
                     now_ms(),
                 );
                 if let AssistantMessageEvent::Error { error } = &mut frame {
-                    error.failure = Some(failure.clone());
+                    error.failure = Some(Box::new(failure.clone()));
                     error.error_message = Some(failure.message.clone());
                 }
                 let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
@@ -449,16 +449,20 @@ impl ChatPipeline {
                         .clone()
                         .unwrap_or_else(|| "provider error".into());
                     let retryable = !forwarded && kind.map(|k| k.is_retryable()).unwrap_or(false);
-                    let failure = error.failure.clone().unwrap_or_else(|| {
-                        RouterFailure::from_kind(
-                            kind.unwrap_or(ErrorKind::Transient),
-                            message,
-                            retryable,
-                            Some(provider),
-                            Some(&call.model),
-                            attempt,
-                        )
-                    });
+                    let failure = error
+                        .failure
+                        .clone()
+                        .map(|failure| *failure)
+                        .unwrap_or_else(|| {
+                            RouterFailure::from_kind(
+                                kind.unwrap_or(ErrorKind::Transient),
+                                message,
+                                retryable,
+                                Some(provider),
+                                Some(&call.model),
+                                attempt,
+                            )
+                        });
                     // Reconstruct even an already-enriched provider failure so
                     // untrusted provider text always crosses the router's
                     // public-message sanitizer.
@@ -484,7 +488,7 @@ impl ChatPipeline {
                         Some(&call.model),
                         attempt,
                     );
-                    error.failure = Some(failure.clone());
+                    error.failure = Some(Box::new(failure.clone()));
                     error.error_message = Some(failure.message.clone());
                     let terminal = AssistantMessageEvent::Error { error };
                     if !terminal_forwarded {
@@ -551,7 +555,7 @@ impl ChatPipeline {
                                     now_ms(),
                                 );
                                 if let AssistantMessageEvent::Error { error } = &mut terminal {
-                                    error.failure = Some(failure.clone());
+                                    error.failure = Some(Box::new(failure.clone()));
                                 }
                                 send_frame(&terminal);
                                 self.registry
@@ -595,7 +599,7 @@ impl ChatPipeline {
                                     now_ms(),
                                 );
                                 if let AssistantMessageEvent::Error { error } = &mut terminal {
-                                    error.failure = Some(failure.clone());
+                                    error.failure = Some(Box::new(failure.clone()));
                                     error.error_message = Some(failure.message.clone());
                                 }
                                 send_frame(&terminal);
@@ -657,7 +661,7 @@ impl ChatPipeline {
                     );
                     let mut terminal = terminal;
                     if let AssistantMessageEvent::Error { error } = &mut terminal {
-                        error.failure = Some(failure.clone());
+                        error.failure = Some(Box::new(failure.clone()));
                         error.error_message = Some(failure.message.clone());
                     }
                     send_frame(&terminal);
@@ -895,7 +899,7 @@ mod tests {
         else {
             panic!("expected error terminal")
         };
-        assert_eq!(error.failure.as_ref(), Some(&response_failure));
+        assert_eq!(error.failure.as_deref(), Some(&response_failure));
         assert!(matches!(
             reader.next(Duration::from_millis(50)).await,
             ReadEvent::Eof | ReadEvent::Timeout

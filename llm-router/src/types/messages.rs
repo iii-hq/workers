@@ -47,7 +47,7 @@ pub struct AssistantMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ErrorKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure: Option<RouterFailure>,
+    pub failure: Option<Box<RouterFailure>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>, // report-and-continue notices
     #[serde(skip_serializing_if = "Option::is_none")]
