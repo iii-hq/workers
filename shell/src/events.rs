@@ -102,6 +102,17 @@ fn is_git_internal(path: &Path) -> bool {
         .any(|c| c.as_os_str().to_str() == Some(".git"))
 }
 
+/// Fold two kinds seen for one path in one window. A create followed by
+/// the write that fills the file is still a creation; a deletion
+/// supersedes what came before it; a creation after a deletion is a
+/// creation again.
+fn merge_kinds(prev: &'static str, next: &'static str) -> &'static str {
+    match (prev, next) {
+        ("created", "modified") => "created",
+        _ => next,
+    }
+}
+
 /// Relative to the watched root; `None` for the root itself or paths
 /// outside it.
 fn rel_to(root: &Path, path: &Path) -> Option<String> {
@@ -127,7 +138,8 @@ async fn pump(
         let Some(first) = rx.recv().await else {
             return; // channel closed — the watch is gone
         };
-        // Coalesce the storm: latest kind wins per path.
+        // Coalesce the storm: kinds for one path merge across the window
+        // (macOS reports a create and the write that fills it separately).
         let mut batch: HashMap<String, &'static str> = HashMap::new();
         let mut fold = |event: notify::Event| {
             let kind = kind_of(&event.kind);
@@ -136,7 +148,10 @@ async fn pump(
                     continue;
                 }
                 if let Some(rel) = rel_to(&root, p) {
-                    batch.insert(rel, kind);
+                    batch
+                        .entry(rel)
+                        .and_modify(|prev| *prev = merge_kinds(prev, kind))
+                        .or_insert(kind);
                 }
             }
         };
@@ -261,6 +276,14 @@ mod tests {
         assert_eq!(kind_of(&EventKind::Remove(RemoveKind::File)), "deleted");
         assert_eq!(kind_of(&EventKind::Modify(ModifyKind::Any)), "modified");
         assert_eq!(kind_of(&EventKind::Access(AccessKind::Any)), "modified");
+    }
+
+    #[test]
+    fn kinds_merge_toward_the_visible_outcome() {
+        assert_eq!(merge_kinds("created", "modified"), "created");
+        assert_eq!(merge_kinds("created", "deleted"), "deleted");
+        assert_eq!(merge_kinds("deleted", "created"), "created");
+        assert_eq!(merge_kinds("modified", "modified"), "modified");
     }
 
     #[test]

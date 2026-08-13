@@ -250,6 +250,8 @@ export function ShellExplorerPage({
   }
   const diffRef = useRef(diff)
   diffRef.current = diff
+  const treeRef = useRef(tree)
+  treeRef.current = tree
   useWorkspaceChanges(host, root, (event) => {
     changedAbsRef.current.add(joinPath(event.root, event.path))
     if (event.kind !== 'deleted') {
@@ -266,6 +268,10 @@ export function ShellExplorerPage({
     if (liveTimerRef.current !== null) return
     liveTimerRef.current = window.setTimeout(() => {
       liveTimerRef.current = null
+      // Captured before the refresh: "was this file known?" decides
+      // created-vs-modified when the OS event kind is unreliable (macOS
+      // reports the create and the write that fills it separately).
+      const knownBefore = treeRef.current === null ? null : new Set(treeRef.current.paths)
       refreshTree()
       const gitLoad = refreshGit()
       reloadActiveFile()
@@ -279,10 +285,12 @@ export function ShellExplorerPage({
         if (follow !== null && follow.rel !== tabsRef.current.active) {
           const fromGit = changes.find((c) => c.path === follow.rel)
           const entry = cacheRef.current.get(follow.rel)
+          const looksCreated =
+            follow.kind === 'created' || (knownBefore !== null && !knownBefore.has(follow.rel))
           setTabs((s) => openPreview(s, follow.rel))
           if (fromGit) {
             setDiff({ change: fromGit })
-          } else if (follow.kind === 'created') {
+          } else if (looksCreated) {
             setDiff({ change: { path: follow.rel, status: 'untracked', staged: false } })
           } else if (entry !== undefined) {
             setDiff({
