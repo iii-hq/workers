@@ -11,9 +11,4 @@
 # start while the builtin is active. If you need the builtin back, re-add
 # `- name: iii-state` and stop the standalone worker. (Its adapter value lives
 # in the configuration worker; edit via `configuration::set`.)
-#
-# iii-stream provides the `stream` trigger type the console's live views
-# (traces, workers runtime watch) subscribe through; without it those
-# triggers stay PENDING.
-workers:
-  - name: iii-stream
+workers: []
