@@ -182,12 +182,13 @@ export function ShellExplorerPage({
     refreshGit()
   }, [refreshGit])
 
-  // ── live updates: an agent writing through the harness streams here ──
-  // The editor worker observes every filesystem-touching harness call and
-  // emits `editor::changed`; each event refreshes the tree and git views,
-  // and reloads the ACTIVE file when the agent wrote it (a clean buffer
-  // follows the worker, a dirty one keeps the user's edits). Bursts (one
-  // event per written file in a turn) coalesce in a short window.
+  // ── live updates: the watched root streams every change here ──
+  // The worker runs a system-level watch on the browsed root for this
+  // binding (`shell::changed`), so agent writes, shell::exec side effects,
+  // and outside-the-engine edits all land: each event refreshes the tree
+  // and git views, and reloads the ACTIVE file when it was the one written
+  // (a clean buffer follows the disk, a dirty one keeps the user's edits).
+  // Bursts coalesce worker-side and again in a short window here.
   const [fileBump, setFileBump] = useState(0)
   const rootRef = useRef(root)
   rootRef.current = root
@@ -221,15 +222,46 @@ export function ShellExplorerPage({
       })
   }, [host])
 
-  useWorkspaceChanges(host, (event) => {
+  // The last written file in a burst follows the writer into the editor:
+  // the tree alone can't show a change (a file among thousands of folders
+  // refreshes in far below the fold), so the write itself opens as the
+  // PREVIEW tab — non-destructive by construction: preview replacement
+  // never touches pinned tabs, and a dirty preview auto-pins on edit.
+  // A system-level watch sees AMBIENT writes too (session logs, caches),
+  // so only visible, non-system paths ever steal the preview.
+  const followRef = useRef<string | null>(null)
+  const followable = (rel: string): boolean => {
+    const segments = rel.split('/')
+    if (segments.some((s) => s.startsWith('.'))) return false
+    const noise = ['Library', 'node_modules', 'target', 'dist']
+    return !noise.includes(segments[0])
+  }
+  useWorkspaceChanges(host, root, (event) => {
     changedAbsRef.current.add(joinPath(event.root, event.path))
+    if (event.kind !== 'deleted') {
+      const currentRoot = rootRef.current
+      if (currentRoot) {
+        const abs = joinPath(event.root, event.path)
+        const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
+        if (abs.startsWith(prefix)) {
+          const rel = abs.slice(prefix.length)
+          if (followable(rel)) followRef.current = rel
+        }
+      }
+    }
     if (liveTimerRef.current !== null) return
     liveTimerRef.current = window.setTimeout(() => {
       liveTimerRef.current = null
       refreshTree()
       refreshGit()
       reloadActiveFile()
+      const follow = followRef.current
+      followRef.current = null
       changedAbsRef.current = new Set()
+      if (follow !== null && follow !== tabsRef.current.active) {
+        setDiff(null)
+        setTabs((s) => openPreview(s, follow))
+      }
     }, 400)
   })
   useEffect(

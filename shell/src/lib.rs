@@ -5,6 +5,7 @@
 pub mod code;
 pub mod config;
 pub mod configuration;
+pub mod events;
 pub mod exec;
 pub mod exec_dispatch;
 pub mod filesystem_access;

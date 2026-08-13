@@ -14,6 +14,8 @@ path = "src/main.rs"
 iii-sdk = "=0.21.6"
 iii-helpers = "=0.21.6"
 iii-console-ui = { path = "../crates/console-ui" }
+# Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
+notify = "8"
 schemars = { version = "0.8", features = ["uuid1"] }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util", "fs"] }
