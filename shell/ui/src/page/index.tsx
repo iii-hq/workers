@@ -67,14 +67,35 @@ interface DiffSelection {
 interface FeedEntry {
   rel: string
   kind: string
-  at: number
   add?: number | null
   del?: number | null
+}
+
+/** One coalesced burst of changes, kept whole — an agent turn that
+    edits four files reads as ONE reviewable group with its own totals,
+    and the same file edited across bursts keeps its history. */
+interface FeedGroup {
+  at: number
+  entries: FeedEntry[]
 }
 
 /** Stats are per-file probes (a git call or a read each) — bound how
     many one burst fires; later rows just show no chip. */
 const FEED_STATS_PER_BURST = 15
+
+/** Total rows kept across all groups; oldest groups fall off whole. */
+const FEED_MAX_ROWS = 300
+
+function trimFeed(groups: FeedGroup[]): FeedGroup[] {
+  let rows = 0
+  const kept: FeedGroup[] = []
+  for (const g of groups) {
+    if (rows >= FEED_MAX_ROWS) break
+    kept.push(g)
+    rows += g.entries.length
+  }
+  return kept
+}
 
 function timeAgo(at: number): string {
   const s = Math.max(0, Math.round((Date.now() - at) / 1000))
@@ -123,7 +144,7 @@ export function ShellExplorerPage({
   // snapshot didn't reach fetches its subtree on demand. An entry with
   // no paths marks a fetched-and-empty folder (no refetch loop).
   const [subtrees, setSubtrees] = useState<ReadonlyMap<string, FlatTree>>(new Map())
-  const [feed, setFeed] = useState<FeedEntry[]>([])
+  const [feed, setFeed] = useState<FeedGroup[]>([])
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
   const [expanded, setExpanded] = useState<string[]>([])
   const [reveal, setReveal] = useState<string | null>(null)
@@ -389,7 +410,7 @@ export function ShellExplorerPage({
   // count whole, non-repo files diff against the page's last-seen
   // content. Best-effort — a row without a chip still opens its diff.
   const computeFeedStats = useCallback(
-    (rel: string, kind: string) => {
+    (rel: string, kind: string, groupAt: number) => {
       const currentRoot = rootRef.current
       if (currentRoot === null) return
       const abs = joinPath(currentRoot, rel)
@@ -398,7 +419,13 @@ export function ShellExplorerPage({
       const name = abs.slice(cut + 1)
       const apply = (add: number | null, del: number | null) => {
         if (rootRef.current !== currentRoot) return
-        setFeed((prev) => prev.map((e) => (e.rel === rel ? { ...e, add, del } : e)))
+        setFeed((prev) =>
+          prev.map((g) =>
+            g.at !== groupAt
+              ? g
+              : { ...g, entries: g.entries.map((e) => (e.rel === rel ? { ...e, add, del } : e)) },
+          ),
+        )
       }
       void (async () => {
         const num = await gitNumstat(host, dir, name)
@@ -459,15 +486,13 @@ export function ShellExplorerPage({
         for (const [abs, kind] of changed) {
           if (!abs.startsWith(prefix)) continue
           const rel = abs.slice(prefix.length)
-          if (followable(rel)) entries.push({ rel, kind, at: Date.now() })
+          if (followable(rel)) entries.push({ rel, kind })
         }
         if (entries.length > 0) {
-          setFeed((prev) => {
-            const fresh = new Set(entries.map((e) => e.rel))
-            return [...entries, ...prev.filter((e) => !fresh.has(e.rel))].slice(0, 200)
-          })
+          const groupAt = Date.now()
+          setFeed((prev) => trimFeed([{ at: groupAt, entries }, ...prev]))
           for (const e of entries.slice(0, FEED_STATS_PER_BURST)) {
-            computeFeedStats(e.rel, e.kind)
+            computeFeedStats(e.rel, e.kind, groupAt)
           }
         }
         // A lazily fetched subtree with a change under it is stale —
@@ -809,35 +834,66 @@ export function ShellExplorerPage({
                       <>
                         <div className="shui-feed-head">
                           <span>
-                            {feed.length} {feed.length === 1 ? 'file' : 'files'}
+                            {feed.reduce((n, g) => n + g.entries.length, 0)} changes
                           </span>
                           <span className="shui-feed-stats">
                             <span className="add">
-                              +{feed.reduce((n, e) => n + (typeof e.add === 'number' ? e.add : 0), 0)}
+                              +
+                              {feed.reduce(
+                                (n, g) =>
+                                  n + g.entries.reduce((m, e) => m + (typeof e.add === 'number' ? e.add : 0), 0),
+                                0,
+                              )}
                             </span>
                             <span className="del">
-                              −{feed.reduce((n, e) => n + (typeof e.del === 'number' ? e.del : 0), 0)}
+                              −
+                              {feed.reduce(
+                                (n, g) =>
+                                  n + g.entries.reduce((m, e) => m + (typeof e.del === 'number' ? e.del : 0), 0),
+                                0,
+                              )}
                             </span>
                           </span>
                         </div>
-                        {feed.map((e) => (
-                          <button
-                            key={e.rel}
-                            type="button"
-                            className="shui-feed-row"
-                            title={`${e.rel} — ${e.kind}`}
-                            onClick={() => openChangeDiff(e.rel, e.kind)}
-                          >
-                            <span className={`shui-feed-kind ${e.kind}`}>
-                              {e.kind === 'created' ? '+' : e.kind === 'deleted' ? '−' : '~'}
-                            </span>
-                            <span className="shui-feed-path">{e.rel}</span>
-                            <span className="shui-feed-stats">
-                              {typeof e.add === 'number' && e.add > 0 ? <span className="add">+{e.add}</span> : null}
-                              {typeof e.del === 'number' && e.del > 0 ? <span className="del">−{e.del}</span> : null}
-                            </span>
-                            <span className="shui-feed-time">{timeAgo(e.at)}</span>
-                          </button>
+                        {feed.map((g) => (
+                          <div key={g.at} className="shui-feed-group">
+                            <div className="shui-feed-group-head">
+                              <span>
+                                {g.entries.length} {g.entries.length === 1 ? 'file' : 'files'}
+                              </span>
+                              <span className="shui-feed-stats">
+                                <span className="add">
+                                  +{g.entries.reduce((m, e) => m + (typeof e.add === 'number' ? e.add : 0), 0)}
+                                </span>
+                                <span className="del">
+                                  −{g.entries.reduce((m, e) => m + (typeof e.del === 'number' ? e.del : 0), 0)}
+                                </span>
+                              </span>
+                              <span className="shui-feed-time">{timeAgo(g.at)}</span>
+                            </div>
+                            {g.entries.map((e) => (
+                              <button
+                                key={e.rel}
+                                type="button"
+                                className="shui-feed-row"
+                                title={`${e.rel} — ${e.kind}`}
+                                onClick={() => openChangeDiff(e.rel, e.kind)}
+                              >
+                                <span className={`shui-feed-kind ${e.kind}`}>
+                                  {e.kind === 'created' ? '+' : e.kind === 'deleted' ? '−' : '~'}
+                                </span>
+                                <span className="shui-feed-path">{e.rel}</span>
+                                <span className="shui-feed-stats">
+                                  {typeof e.add === 'number' && e.add > 0 ? (
+                                    <span className="add">+{e.add}</span>
+                                  ) : null}
+                                  {typeof e.del === 'number' && e.del > 0 ? (
+                                    <span className="del">−{e.del}</span>
+                                  ) : null}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
                         ))}
                       </>
                     )}

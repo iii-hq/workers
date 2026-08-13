@@ -798,3 +798,20 @@
 }
 [data-iii-ui="shell"] .shui-feed-stats .add { color: var(--color-git-added, #4d9a57); }
 [data-iii-ui="shell"] .shui-feed-stats .del { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-feed-group {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--color-line);
+  padding-bottom: 3px;
+}
+[data-iii-ui="shell"] .shui-feed-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 3px;
+  font-size: 11px;
+  color: var(--color-ink-muted);
+}
+[data-iii-ui="shell"] .shui-feed-group-head .shui-feed-time {
+  margin-left: auto;
+}
