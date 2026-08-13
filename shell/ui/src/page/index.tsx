@@ -23,9 +23,10 @@ import type { GitStatusEntry } from '@pierre/trees'
 import { Eye, EyeOff, FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
-import { type CoderInfo, coderInfo, coderTree, type FlatTree, flattenTree } from './coder'
+import { type CoderInfo, coderInfo, coderReadFile, coderTree, type FlatTree, flattenTree, joinPath } from './coder'
 import { DiffPane } from './DiffPane'
 import { type EditorCache, EditorPane } from './EditorPane'
+import { useWorkspaceChanges } from './live'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
 import { type GitChange, type GitState, gitChanges } from './git'
@@ -180,6 +181,65 @@ export function ShellExplorerPage({
     setGit(null)
     refreshGit()
   }, [refreshGit])
+
+  // ── live updates: an agent writing through the harness streams here ──
+  // The editor worker observes every filesystem-touching harness call and
+  // emits `editor::changed`; each event refreshes the tree and git views,
+  // and reloads the ACTIVE file when the agent wrote it (a clean buffer
+  // follows the worker, a dirty one keeps the user's edits). Bursts (one
+  // event per written file in a turn) coalesce in a short window.
+  const [fileBump, setFileBump] = useState(0)
+  const rootRef = useRef(root)
+  rootRef.current = root
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const liveTimerRef = useRef<number | null>(null)
+  const changedAbsRef = useRef<Set<string>>(new Set())
+
+  const reloadActiveFile = useCallback(() => {
+    const currentRoot = rootRef.current
+    const active = tabsRef.current.active
+    if (!currentRoot || !active) return
+    const absPath = joinPath(currentRoot, active)
+    if (!changedAbsRef.current.has(absPath)) return
+    coderReadFile(host, absPath)
+      .then((out) => {
+        if (tabsRef.current.active !== active) return
+        const content = out.content ?? ''
+        const entry = cacheRef.current.get(active)
+        if (!entry) return
+        if (entry.savedContent === content) return
+        const wasClean = entry.draft === entry.savedContent
+        entry.savedContent = content
+        if (wasClean) {
+          entry.draft = content
+          setFileBump((n) => n + 1)
+        }
+      })
+      .catch(() => {
+        // A deleted-then-read race resolves through the next tree refresh.
+      })
+  }, [host])
+
+  useWorkspaceChanges(host, (event) => {
+    changedAbsRef.current.add(joinPath(event.root, event.path))
+    if (liveTimerRef.current !== null) return
+    liveTimerRef.current = window.setTimeout(() => {
+      liveTimerRef.current = null
+      refreshTree()
+      refreshGit()
+      reloadActiveFile()
+      changedAbsRef.current = new Set()
+    }, 400)
+  })
+  useEffect(
+    () => () => {
+      if (liveTimerRef.current !== null) {
+        window.clearTimeout(liveTimerRef.current)
+      }
+    },
+    [],
+  )
 
   // ── persistence: any state change after boot writes (debounced) ──
   const saver = useMemo(() => createTabUiStateSaver(host, tabId), [host, tabId])
@@ -517,7 +577,9 @@ export function ShellExplorerPage({
             <DiffPane host={host} root={root} change={diff} />
           ) : tabs.active !== null ? (
             <EditorPane
-              key={tabs.active}
+              // fileBump remounts after an agent-side write to the active
+              // file: the pane rehydrates from the refreshed cache entry.
+              key={`${tabs.active}:${fileBump}`}
               host={host}
               root={root}
               relPath={tabs.active}
