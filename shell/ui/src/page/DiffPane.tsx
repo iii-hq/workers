@@ -87,17 +87,24 @@ export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps
   const totals = useMemo(() => (ops !== null ? diffTotals(ops) : null), [ops])
   const rows = useMemo(() => (ops !== null ? foldRows(ops) : null), [ops])
 
+  const verb =
+    change.status === 'added' || change.status === 'untracked'
+      ? 'Added'
+      : change.status === 'deleted'
+        ? 'Deleted'
+        : change.status === 'renamed'
+          ? 'Renamed'
+          : 'Edited'
   return (
     <div className="shui-main-pane">
       <div className="shui-editor-head">
+        <span className="shui-diff-verb">{verb}</span>
         <span className="path" title={change.path}>
           {change.from ? `${change.from} → ${change.path}` : change.path}
         </span>
-        <span className="meta">{change.status}</span>
         {totals !== null ? (
           <span className="shui-feed-stats">
-            <span className="add">+{totals.add}</span>
-            <span className="del">−{totals.del}</span>
+            (<span className="add">+{totals.add}</span> <span className="del">−{totals.del}</span>)
           </span>
         ) : null}
       </div>
@@ -116,17 +123,20 @@ export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps
   )
 }
 
+/** Past this many visible rows the per-line tokenizer is skipped — the
+    same guard the reference TUI applies to keep huge diffs instant. */
+const HIGHLIGHT_ROW_LIMIT = 3000
+
 function DiffBody({ rows, lang }: { rows: DiffRow[]; lang: string }) {
   // Folds expand in place and stay expanded for this diff instance.
   const [openFolds, setOpenFolds] = useState<ReadonlySet<number>>(new Set())
+  const effLang = rows.length > HIGHLIGHT_ROW_LIMIT ? 'plain' : lang
   return (
     <div className="shui-diff">
       {rows.map((row) => {
         if (row.kind === 'fold') {
           if (openFolds.has(row.index)) {
-            return row.ops.map((op) => (
-              <DiffLine key={`${op.type}:${'oldLine' in op ? op.oldLine : 0}:${'newLine' in op ? op.newLine : 0}`} op={op} lang={lang} />
-            ))
+            return row.ops.map((op) => <DiffLine key={opKey(op)} op={op} lang={effLang} />)
           }
           return (
             <button
@@ -139,21 +149,25 @@ function DiffBody({ rows, lang }: { rows: DiffRow[]; lang: string }) {
             </button>
           )
         }
-        const op = row.op
-        return (
-          <DiffLine key={`${op.type}:${'oldLine' in op ? op.oldLine : 0}:${'newLine' in op ? op.newLine : 0}`} op={op} lang={lang} />
-        )
+        return <DiffLine key={opKey(row.op)} op={row.op} lang={effLang} />
       })}
     </div>
   )
 }
 
+function opKey(op: DiffOp): string {
+  return `${op.type}:${'oldLine' in op ? op.oldLine : 0}:${'newLine' in op ? op.newLine : 0}`
+}
+
+/** One gutter, the way the reference renders it: the NEW line number for
+    additions and context, the OLD one for deletions — the sign column
+    disambiguates. */
 function DiffLine({ op, lang }: { op: DiffOp; lang: string }) {
   const marker = op.type === 'add' ? '+' : op.type === 'del' ? '−' : ' '
+  const ln = op.type === 'del' ? op.oldLine : op.newLine
   return (
     <div className={`shui-diff-line ${op.type}`}>
-      <span className="ln old">{op.type !== 'add' ? op.oldLine : ''}</span>
-      <span className="ln new">{op.type !== 'del' ? op.newLine : ''}</span>
+      <span className="ln">{ln}</span>
       <span className="mark">{marker}</span>
       <span className="code">
         {renderCodeLine(op.text, lang, op.type === 'same' ? undefined : op.hl)}

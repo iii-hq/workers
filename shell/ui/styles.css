@@ -823,8 +823,14 @@
 }
 [data-iii-ui="shell"] .shui-diff-line {
   display: grid;
-  grid-template-columns: 3.2em 3.2em 1.2em 1fr;
+  grid-template-columns: 3.6em 1.2em 1fr;
   align-items: start;
+}
+[data-iii-ui="shell"] .shui-diff-line.del .code {
+  opacity: 0.72;
+}
+[data-iii-ui="shell"] .shui-diff-verb {
+  font-weight: 600;
 }
 [data-iii-ui="shell"] .shui-diff-line .ln {
   text-align: right;
