@@ -239,6 +239,48 @@ Conventions (hold these when adding functions to either surface):
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 
+## Live change feed (`shell::changed`)
+
+The worker registers a custom **trigger type** backed by a system-level
+directory watch (FSEvents on macOS, inotify on Linux, via the `notify`
+crate). A subscriber names the directory in its binding config:
+
+```json
+{ "type": "shell::changed", "config": { "path": "/some/dir" } }
+```
+
+Each registration starts one recursive watcher; unregistering (or the
+console GC'ing a closed tab's binding) tears it down. `config.path` must
+exist and be a directory, or the registration fails.
+
+The payload is lean — `{ path, kind, root }` with `kind` ∈
+`created | modified | deleted` and `path` relative to the watched `root`.
+A subscriber that wants content asks `coder::read-file`; one that wants
+the diff asks git.
+
+Semantics:
+
+- **Catches every writer** — an agent calling `coder::*`, a
+  `shell::exec` command's side effects, or an editor outside the engine
+  entirely. Nothing is coupled to the harness and no other worker is
+  involved.
+- **Coalesced**: raw OS events storm, so each watcher batches per path
+  in a 200 ms window; kinds merge toward the visible outcome (a create
+  plus the write that fills it is `created`, a deletion supersedes what
+  came before, a create-after-delete is `created`). `.git` internals
+  are filtered — the visible outcome arrives as worktree events of its
+  own.
+- **Best-effort fan-out**: events fire with no reply expected; a slow
+  or absent subscriber never delays anything.
+
+The console explorer page binds this on its browsed root: the tree and
+git panels refresh live, a clean active buffer follows the disk (a dirty
+one keeps the user's edits), and the last written file follows the
+writer into view as a diff — git baseline in a repo, empty baseline for
+created files, the page's last-seen content otherwise. Hidden segments,
+noise directories (`target`, `node_modules`, `dist`, `build`, …) at any
+depth, and build/temp artifact extensions never steal the view.
+
 ## Hot-reload
 
 When the `configuration` worker pushes an updated config, the shell worker swaps in the new security policy and fs backend atomically. A few things to know:
