@@ -728,3 +728,48 @@
   min-height: 0;
   overflow: auto;
 }
+
+[data-iii-ui="shell"] .shui-feed {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+[data-iii-ui="shell"] .shui-feed-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--color-ink);
+  padding: 4px 10px;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-feed-row:hover {
+  background: var(--color-surface);
+}
+[data-iii-ui="shell"] .shui-feed-kind {
+  flex-shrink: 0;
+  width: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink-muted);
+}
+[data-iii-ui="shell"] .shui-feed-kind.created { color: var(--color-git-added, #4d9a57); }
+[data-iii-ui="shell"] .shui-feed-kind.deleted { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-feed-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+}
+[data-iii-ui="shell"] .shui-feed-time {
+  flex-shrink: 0;
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}

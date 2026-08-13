@@ -21,9 +21,13 @@ interface DiffPaneProps {
   /** When set, diff against this text instead of git HEAD — the live
       view's baseline for files outside a repo. */
   baseline?: string
+  /** When set, resolve the git baseline from THIS directory instead of
+      the browsed root — the file's own repo when the browsed root sits
+      above it (a worktree under the home directory). */
+  gitDir?: string
 }
 
-export function DiffPane({ host, root, change, baseline }: DiffPaneProps) {
+export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps) {
   const [state, setState] = useState<DiffState>({ phase: 'loading' })
   const seqRef = useRef(0)
 
@@ -37,7 +41,9 @@ export function DiffPane({ host, root, change, baseline }: DiffPaneProps) {
         ? Promise.resolve(baseline)
         : change.status === 'added' || change.status === 'untracked'
           ? Promise.resolve('')
-          : gitShowHead(host, root, oldPath)
+          : gitDir !== undefined
+            ? gitShowHead(host, gitDir, oldPath.slice(oldPath.lastIndexOf('/') + 1))
+            : gitShowHead(host, root, oldPath)
     const newSide =
       change.status === 'deleted'
         ? Promise.resolve('')
@@ -61,7 +67,7 @@ export function DiffPane({ host, root, change, baseline }: DiffPaneProps) {
           message: errorMessage(err),
         })
       })
-  }, [host, root, change, baseline])
+  }, [host, root, change, baseline, gitDir])
 
   return (
     <div className="shui-main-pane">

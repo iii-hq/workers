@@ -20,7 +20,7 @@ import {
   PageSidebar,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
-import { Eye, EyeOff, FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
+import { Eye, EyeOff, FolderTree, GitBranch, History, Search, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
 import { type CoderInfo, coderInfo, coderReadFile, coderTree, type FlatTree, flattenTree, joinPath } from './coder'
@@ -29,7 +29,7 @@ import { type EditorCache, EditorPane } from './EditorPane'
 import { useWorkspaceChanges } from './live'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
-import { type GitChange, type GitState, gitChanges } from './git'
+import { type GitChange, type GitState, gitChanges, nestedGitStatus } from './git'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
 import { SearchTab } from './SearchTab'
 import {
@@ -45,7 +45,7 @@ import {
   type TabsState,
 } from './tabs'
 
-type SideTab = 'files' | 'git' | 'search'
+type SideTab = 'files' | 'git' | 'search' | 'changes'
 
 interface DiffSelection {
   /** The change shown — from git status, or synthesized for live
@@ -54,6 +54,24 @@ interface DiffSelection {
   /** Overrides the git-HEAD baseline: the last content this page saw,
       so modified files outside a repo still diff instead of dumping. */
   baseline?: string
+  /** The file's own repo directory when the browsed root sits above it
+      (a worktree under the home directory) — see DiffPane. */
+  gitDir?: string
+}
+
+/** One live event the changes tab keeps for review — the auto-follow is
+    last-write-wins and moves fast; this list doesn't. */
+interface FeedEntry {
+  rel: string
+  kind: string
+  at: number
+}
+
+function timeAgo(at: number): string {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  return `${Math.floor(s / 3600)}h`
 }
 
 const SIDEBAR_DEFAULT_WIDTH = 280
@@ -68,6 +86,7 @@ const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
   { id: 'files', label: 'files', Icon: FolderTree },
   { id: 'git', label: 'git', Icon: GitBranch },
   { id: 'search', label: 'search', Icon: Search },
+  { id: 'changes', label: 'changes', Icon: History },
 ]
 
 export function ShellExplorerPage({
@@ -90,6 +109,12 @@ export function ShellExplorerPage({
   // in home-shaped folders they otherwise crowd out every visible name.
   const [showHidden, setShowHidden] = useState(false)
   const [git, setGit] = useState<GitState | null>(null)
+  // Lazily fetched deep-folder listings, keyed by the folder's rel path.
+  // The base tree snapshot is node-budgeted; expanding a folder the
+  // snapshot didn't reach fetches its subtree on demand. An entry with
+  // no paths marks a fetched-and-empty folder (no refetch loop).
+  const [subtrees, setSubtrees] = useState<ReadonlyMap<string, FlatTree>>(new Map())
+  const [feed, setFeed] = useState<FeedEntry[]>([])
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
   const [expanded, setExpanded] = useState<string[]>([])
   const [reveal, setReveal] = useState<string | null>(null)
@@ -185,8 +210,60 @@ export function ShellExplorerPage({
   // the git listing is unaffected and must not flash back to loading.
   useEffect(() => {
     setTree(null)
+    setSubtrees(new Map())
+    setFeed([])
     refreshTree()
   }, [refreshTree])
+
+  // The tree the sidebar renders: the budgeted base snapshot plus every
+  // lazily fetched subtree spliced in under its folder.
+  const mergedTree = useMemo((): FlatTree | null => {
+    if (tree === null) return null
+    if (subtrees.size === 0) return tree
+    const paths = [...tree.paths]
+    const kinds = new Map(tree.kinds)
+    const seen = new Set(paths)
+    for (const [dir, sub] of subtrees) {
+      for (const p of sub.paths) {
+        const joined = `${dir}/${p}`
+        if (!seen.has(joined)) {
+          seen.add(joined)
+          paths.push(joined)
+        }
+      }
+      for (const [p, k] of sub.kinds) kinds.set(`${dir}/${p}`, k)
+    }
+    return { paths, kinds, truncations: tree.truncations }
+  }, [tree, subtrees])
+
+  // Expanding a folder the snapshot didn't reach fetches its listing.
+  const subtreeLoadRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (root === null || mergedTree === null) return
+    for (const dir of expanded) {
+      if (mergedTree.kinds.get(dir) !== 'dir') continue
+      if (subtrees.has(dir) || subtreeLoadRef.current.has(dir)) continue
+      const prefix = `${dir}/`
+      let hasChild = false
+      for (const key of mergedTree.kinds.keys()) {
+        if (key.startsWith(prefix)) {
+          hasChild = true
+          break
+        }
+      }
+      if (hasChild) continue
+      subtreeLoadRef.current.add(dir)
+      coderTree(host, joinPath(root, dir), showHidden)
+        .then((out) => {
+          setSubtrees((prev) => new Map(prev).set(dir, flattenTree(out.root)))
+        })
+        .catch(() => {
+          // Inaccessible folder — leave it childless; the next expand
+          // after a live change under it retries.
+        })
+        .finally(() => subtreeLoadRef.current.delete(dir))
+    }
+  }, [expanded, mergedTree, subtrees, root, showHidden, host])
 
   useEffect(() => {
     setGit(null)
@@ -206,7 +283,7 @@ export function ShellExplorerPage({
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
   const liveTimerRef = useRef<number | null>(null)
-  const changedAbsRef = useRef<Set<string>>(new Set())
+  const changedAbsRef = useRef<Map<string, string>>(new Map())
 
   const reloadActiveFile = useCallback(() => {
     const currentRoot = rootRef.current
@@ -252,8 +329,54 @@ export function ShellExplorerPage({
   diffRef.current = diff
   const treeRef = useRef(tree)
   treeRef.current = tree
+
+  // Open one change for review: preview tab plus the best diff this file
+  // supports — the browsed root's git status first, then the file's OWN
+  // repo (`git -C` auto-discovers upward, covering a worktree under the
+  // home directory), then created/last-seen baselines, then plain
+  // content. Used by both the auto-follow and the changes tab.
+  const openChangeDiff = useCallback(
+    (rel: string, kindHint: string) => {
+      const currentRoot = rootRef.current
+      if (currentRoot === null) return
+      const entry = cacheRef.current.get(rel)
+      setTabs((s) => openPreview(s, rel))
+      void gitChanges(host, currentRoot)
+        .then(async (state): Promise<DiffSelection | null> => {
+          const changes = state.kind === 'ready' ? state.changes : []
+          const fromGit = changes.find((c) => c.path === rel)
+          if (fromGit) return { change: fromGit }
+          const abs = joinPath(currentRoot, rel)
+          const cut = abs.lastIndexOf('/')
+          const dir = abs.slice(0, cut)
+          const nested = await nestedGitStatus(host, dir, abs.slice(cut + 1))
+          if (nested === 'clean') return null
+          if (nested !== null) {
+            return { change: { path: rel, status: nested, staged: false }, gitDir: dir }
+          }
+          if (kindHint === 'created') {
+            return { change: { path: rel, status: 'untracked', staged: false } }
+          }
+          if (entry !== undefined) {
+            return {
+              change: { path: rel, status: 'modified', staged: false },
+              baseline: entry.savedContent,
+            }
+          }
+          return null
+        })
+        .then((sel) => {
+          if (rootRef.current === currentRoot) setDiff(sel)
+        })
+        .catch(() => {
+          if (rootRef.current === currentRoot) setDiff(null)
+        })
+    },
+    [host],
+  )
+
   useWorkspaceChanges(host, root, (event) => {
-    changedAbsRef.current.add(joinPath(event.root, event.path))
+    changedAbsRef.current.set(joinPath(event.root, event.path), event.kind)
     if (event.kind !== 'deleted') {
       const currentRoot = rootRef.current
       if (currentRoot) {
@@ -278,37 +401,61 @@ export function ShellExplorerPage({
       const follow = followRef.current
       followRef.current = null
       const changed = changedAbsRef.current
-      changedAbsRef.current = new Set()
-      void gitLoad.then((state) => {
-        const changes = state?.kind === 'ready' ? state.changes : []
-        const currentRoot = rootRef.current
-        if (follow !== null && follow.rel !== tabsRef.current.active) {
-          const fromGit = changes.find((c) => c.path === follow.rel)
-          const entry = cacheRef.current.get(follow.rel)
-          const looksCreated =
-            follow.kind === 'created' || (knownBefore !== null && !knownBefore.has(follow.rel))
-          setTabs((s) => openPreview(s, follow.rel))
-          if (fromGit) {
-            setDiff({ change: fromGit })
-          } else if (looksCreated) {
-            setDiff({ change: { path: follow.rel, status: 'untracked', staged: false } })
-          } else if (entry !== undefined) {
-            setDiff({
-              change: { path: follow.rel, status: 'modified', staged: false },
-              baseline: entry.savedContent,
-            })
-          } else {
-            setDiff(null)
+      changedAbsRef.current = new Map()
+      const currentRoot = rootRef.current
+      if (currentRoot !== null) {
+        const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
+        // Every visible change lands in the review feed — the auto-follow
+        // is last-write-wins; this list is where a burst stays legible.
+        const entries: FeedEntry[] = []
+        for (const [abs, kind] of changed) {
+          if (!abs.startsWith(prefix)) continue
+          const rel = abs.slice(prefix.length)
+          if (followable(rel)) entries.push({ rel, kind, at: Date.now() })
+        }
+        if (entries.length > 0) {
+          setFeed((prev) => {
+            const fresh = new Set(entries.map((e) => e.rel))
+            return [...entries, ...prev.filter((e) => !fresh.has(e.rel))].slice(0, 200)
+          })
+        }
+        // A lazily fetched subtree with a change under it is stale —
+        // drop it; the load effect refetches while it stays expanded.
+        setSubtrees((prev) => {
+          let next: Map<string, FlatTree> | null = null
+          for (const dir of prev.keys()) {
+            const dirPrefix = `${joinPath(currentRoot, dir)}/`
+            for (const abs of changed.keys()) {
+              if (abs.startsWith(dirPrefix)) {
+                next ??= new Map(prev)
+                next.delete(dir)
+                break
+              }
+            }
           }
-        } else if (diffRef.current !== null && currentRoot !== null) {
+          return next ?? prev
+        })
+      }
+      if (follow !== null && follow.rel !== tabsRef.current.active) {
+        const looksCreated =
+          follow.kind === 'created' || (knownBefore !== null && !knownBefore.has(follow.rel))
+        openChangeDiff(follow.rel, looksCreated ? 'created' : follow.kind)
+      } else {
+        void gitLoad.then((state) => {
+          const changes = state?.kind === 'ready' ? state.changes : []
+          if (diffRef.current === null || currentRoot === null) return
           // The open diff tracks further writes to its file live.
           const open = diffRef.current
           if (changed.has(joinPath(currentRoot, open.change.path))) {
             const fresh = changes.find((c) => c.path === open.change.path)
-            setDiff(fresh ? { change: fresh } : { change: { ...open.change }, baseline: open.baseline })
+            setDiff(
+              fresh
+                ? { change: fresh }
+                : { change: { ...open.change }, baseline: open.baseline, gitDir: open.gitDir },
+            )
           }
-        }
-      })
+        })
+      }
     }, 400)
   })
   useEffect(
@@ -588,7 +735,7 @@ export function ShellExplorerPage({
               <div className="shui-side-body">
                 {sideTab === 'files' ? (
                   <FilesTab
-                    tree={tree}
+                    tree={mergedTree}
                     gitStatus={treeGitStatus}
                     theme={theme}
                     hiddenFiltered={!showHidden}
@@ -601,6 +748,30 @@ export function ShellExplorerPage({
                   />
                 ) : sideTab === 'git' ? (
                   <GitTab state={git} theme={theme} onSelect={(change) => setDiff({ change })} onRefresh={refreshGit} />
+                ) : sideTab === 'changes' ? (
+                  <div className="shui-feed">
+                    {feed.length === 0 ? (
+                      <div className="shui-side-note">
+                        · nothing yet — every change under this folder lands here live
+                      </div>
+                    ) : (
+                      feed.map((e) => (
+                        <button
+                          key={e.rel}
+                          type="button"
+                          className="shui-feed-row"
+                          title={e.rel}
+                          onClick={() => openChangeDiff(e.rel, e.kind)}
+                        >
+                          <span className={`shui-feed-kind ${e.kind}`}>
+                            {e.kind === 'created' ? '+' : e.kind === 'deleted' ? '−' : '~'}
+                          </span>
+                          <span className="shui-feed-path">{e.rel}</span>
+                          <span className="shui-feed-time">{timeAgo(e.at)}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 ) : (
                   <SearchTab
                     host={host}
@@ -653,7 +824,7 @@ export function ShellExplorerPage({
           ) : null}
 
           {diff !== null ? (
-            <DiffPane host={host} root={root} change={diff.change} baseline={diff.baseline} />
+            <DiffPane host={host} root={root} change={diff.change} baseline={diff.baseline} gitDir={diff.gitDir} />
           ) : tabs.active !== null ? (
             <EditorPane
               // fileBump remounts after an agent-side write to the active

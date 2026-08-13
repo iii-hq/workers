@@ -135,6 +135,28 @@ export async function gitChanges(host: Host, root: string): Promise<GitState> {
 /** The file's content at HEAD, or '' when it didn't exist there
     (added/untracked). Paths are toplevel-relative on the git side —
     `:./<path>` anchors the pathspec to `cwd` instead. */
+/** Probe ONE file's git standing from its own directory — `git -C`
+    auto-discovers the repo upward, so this works when the browsed root
+    sits ABOVE a repo (a worktree under the home directory). Returns the
+    file's status, `'clean'` for a tracked-and-unchanged file, or `null`
+    when no repo contains it. Renames report as `modified` — the probe
+    has no rename source to offer. */
+export async function nestedGitStatus(
+  host: Host,
+  dir: string,
+  name: string,
+): Promise<GitFileStatus | 'clean' | null> {
+  const probe = await git(host, dir, ['rev-parse', '--is-inside-work-tree'])
+  if (probe.exit_code !== 0 || !probe.stdout.startsWith('true')) return null
+  const out = await git(host, dir, ['status', '--porcelain', '-z', '--', `./${name}`])
+  if (out.exit_code !== 0) return null
+  const rec = out.stdout.split('\0')[0] ?? ''
+  if (rec.length < 3) return 'clean'
+  const status = statusFromCode(rec[0], rec[1])
+  if (status === null) return 'clean'
+  return status === 'renamed' ? 'modified' : status
+}
+
 export async function gitShowHead(
   host: Host,
   root: string,

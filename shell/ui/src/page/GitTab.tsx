@@ -23,7 +23,12 @@ export function GitTab({ state, theme, onSelect, onRefresh }: GitTabProps) {
     return <div className="shui-side-note">checking repository…</div>
   }
   if (state.kind === 'not-a-repo') {
-    return <div className="shui-side-note">· not a git repository</div>
+    return (
+      <div className="shui-side-note">
+        · not a git repository — this tab reads the browsed folder itself; for a repo nested below
+        it, browse into that folder (live diffs still find nested repos on their own)
+      </div>
+    )
   }
   if (state.kind === 'error') {
     return (

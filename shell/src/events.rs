@@ -94,6 +94,18 @@ fn kind_of(kind: &notify::EventKind) -> &'static str {
     }
 }
 
+/// Reads and bare metadata touches are not workspace changes — reporting
+/// them would turn every `cat` and `chmod` into a phantom modification.
+/// Content writes carry their own Data events regardless.
+fn is_noise_kind(kind: &notify::EventKind) -> bool {
+    use notify::event::ModifyKind;
+    use notify::EventKind;
+    matches!(
+        kind,
+        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_))
+    )
+}
+
 /// Git internals churn constantly during any git operation and mean
 /// nothing to a workspace surface — the visible outcome arrives as
 /// worktree events of its own.
@@ -142,6 +154,9 @@ async fn pump(
         // (macOS reports a create and the write that fills it separately).
         let mut batch: HashMap<String, &'static str> = HashMap::new();
         let mut fold = |event: notify::Event| {
+            if is_noise_kind(&event.kind) {
+                return;
+            }
             let kind = kind_of(&event.kind);
             for p in &event.paths {
                 if is_git_internal(p) {
@@ -271,11 +286,25 @@ mod tests {
 
     #[test]
     fn notify_kinds_map_onto_the_wire_vocabulary() {
-        use notify::event::{AccessKind, CreateKind, EventKind, ModifyKind, RemoveKind};
+        use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind};
         assert_eq!(kind_of(&EventKind::Create(CreateKind::File)), "created");
         assert_eq!(kind_of(&EventKind::Remove(RemoveKind::File)), "deleted");
         assert_eq!(kind_of(&EventKind::Modify(ModifyKind::Any)), "modified");
-        assert_eq!(kind_of(&EventKind::Access(AccessKind::Any)), "modified");
+    }
+
+    #[test]
+    fn reads_and_metadata_touches_are_noise() {
+        use notify::event::{
+            AccessKind, CreateKind, DataChange, EventKind, MetadataKind, ModifyKind,
+        };
+        assert!(is_noise_kind(&EventKind::Access(AccessKind::Any)));
+        assert!(is_noise_kind(&EventKind::Modify(ModifyKind::Metadata(
+            MetadataKind::Any
+        ))));
+        assert!(!is_noise_kind(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
+        assert!(!is_noise_kind(&EventKind::Create(CreateKind::File)));
     }
 
     #[test]
