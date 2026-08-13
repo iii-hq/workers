@@ -683,6 +683,49 @@ export function ShellExplorerPage({
     if (next !== null && root !== null && next !== root) changeRoot(next)
   }, [workingDir, root, changeRoot])
 
+  // ── deep link: #/ext/shell/open/<encoded-abs>[:line] ──
+  // The chat's "open in shell" lands here. The request is captured (and
+  // stripped from the URL) immediately, then applied once the root has
+  // resolved — re-rooting to the file's own folder when it lives outside
+  // the browsed one; the effect refires on the new root and opens it.
+  const pendingOpenRef = useRef<string | null>(null)
+  const [openBump, setOpenBump] = useState(0)
+  useEffect(() => {
+    const capture = () => {
+      const m = window.location.hash.match(/^#\/ext\/shell\/open\/([^/]+)/)
+      if (m === null) return
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${window.location.pathname}${window.location.search}#/ext/shell`,
+      )
+      const raw = m[1]
+      const colon = raw.lastIndexOf(':')
+      const encoded =
+        colon !== -1 && /^\d+$/.test(raw.slice(colon + 1)) ? raw.slice(0, colon) : raw
+      const abs = decodeURIComponent(encoded)
+      if (!abs.startsWith('/')) return
+      pendingOpenRef.current = abs
+      setOpenBump((n) => n + 1)
+    }
+    capture()
+    window.addEventListener('hashchange', capture)
+    return () => window.removeEventListener('hashchange', capture)
+  }, [])
+  useEffect(() => {
+    const abs = pendingOpenRef.current
+    if (abs === null || root === null) return
+    const prefix = root.endsWith('/') ? root : `${root}/`
+    if (abs.startsWith(prefix)) {
+      pendingOpenRef.current = null
+      setDiff(null)
+      setTabs((s) => openPinned(s, abs.slice(prefix.length)))
+    } else if (abs !== root) {
+      const cut = abs.lastIndexOf('/')
+      changeRoot(cut > 0 ? abs.slice(0, cut) : '/')
+    }
+  }, [root, openBump, changeRoot])
+
   const onSaved = useCallback(() => {
     refreshGit()
   }, [refreshGit])
