@@ -430,6 +430,8 @@ export function ReviewPane({
   >(new Set())
   const [cacheVersion, setCacheVersion] = useState(0)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const entriesRef = useRef(entries)
+  entriesRef.current = entries
   const autoCollapsedRef = useRef(defaultCollapsedReviewPaths(entries))
   const seenPathsRef = useRef(new Set(entries.map((entry) => entry.path)))
   const wasLargeReviewRef = useRef(entries.length > LARGE_REVIEW_THRESHOLD)
@@ -606,9 +608,9 @@ export function ReviewPane({
   useEffect(() => {
     if (collapseEpoch > 0) {
       autoCollapsedRef.current = new Set()
-      setCollapsed(new Set(entries.map((entry) => entry.path)))
+      setCollapsed(new Set(entriesRef.current.map((entry) => entry.path)))
     }
-  }, [collapseEpoch, entries])
+  }, [collapseEpoch])
   useEffect(() => {
     if (expandEpoch > 0) {
       autoCollapsedRef.current = new Set()
