@@ -67,7 +67,7 @@ configuration entry (`providers.opencode_go.api_key`, default endpoint
 ## Tests
 
 ```bash
-cargo test                                            # unit (pure modules + TCP stubs)
+cargo test --lib --test schemas                        # unit (pure modules + TCP stubs) + golden schema checks
 III_ENGINE_BIN=$(which iii) cargo test --test integration -- --test-threads=1
 ```
 
