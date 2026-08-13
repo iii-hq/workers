@@ -85,6 +85,10 @@ impl Deps {
     /// clients so a hot-reloaded timeout applies to the next read.
     pub async fn bindings(&self) -> BindingStore {
         let cfg = self.cfg().await;
-        BindingStore::new(self.iii.clone(), cfg.session_timeout_ms)
+        BindingStore::new(
+            self.iii.clone(),
+            cfg.session_timeout_ms,
+            self.events.clone(),
+        )
     }
 }

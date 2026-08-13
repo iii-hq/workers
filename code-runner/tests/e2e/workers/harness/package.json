@@ -1,0 +1,20 @@
+{
+  "name": "code-runner-e2e-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Self-asserting end-to-end harness for the iii code-runner worker.",
+  "scripts": {
+    "dev": "tsx src/worker.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "iii-sdk": "0.22.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "Apache-2.0"
+}

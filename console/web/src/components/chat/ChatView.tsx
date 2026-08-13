@@ -26,6 +26,7 @@ import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import { serialRefresh } from '@/lib/backend/serial-refresh'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -315,32 +316,56 @@ export function ChatView({
 
   // Registered trigger subscriptions (the harness's durable binding rows,
   // owned by this session): shown above the composer, unregisterable, detail
-  // on click. Polled — bindings come and go as the agent registers them.
+  // on click. Pushed — `harness::triggers-changed` rings on every binding
+  // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by subscription id. When a once
-  // binding fires and retires, the poll drops it — this cache lets the fired
-  // ghost keep its full config/conditions after retirement.
+  // Every full row this tab has EVER fetched, by subscription id. When a once
+  // binding fires and retires, the refetch drops it — this cache lets the
+  // fired ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
+  // The current conversation's serialized list loader. Doorbells arrive
+  // at-least-once and burst on rapid fires; serialRefresh coalesces them
+  // behind one in-flight read so snapshots never apply out of order.
+  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
   const refreshTriggers = useCallback(() => {
+    triggersLoaderRef.current?.refresh()
+  }, [])
+  useEffect(() => {
     const listTriggers = backend.listTriggers
     if (!listTriggers) return
-    listTriggers(conversation.id)
-      .then((rows) => {
-        for (const row of rows) seenTriggersRef.current.set(row.id, row)
-        setSessionTriggers(rows)
-      })
-      .catch(() => {})
-  }, [backend.listTriggers, conversation.id])
-  useEffect(() => {
-    if (!backend.listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    refreshTriggers()
-    const timer = window.setInterval(refreshTriggers, 5000)
-    return () => window.clearInterval(timer)
-  }, [refreshTriggers, backend.listTriggers])
+    const loader = serialRefresh(
+      () => listTriggers(conversation.id),
+      (rows) => {
+        for (const row of rows) seenTriggersRef.current.set(row.id, row)
+        setSessionTriggers(rows)
+      },
+    )
+    triggersLoaderRef.current = loader
+    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
+    // rings instead of being missed (both ride the same client bootstrap, so
+    // the registration frames are queued ahead of the list read).
+    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
+    loader.refresh()
+    // Catch-up for doorbells missed while hidden (throttled tab). Missed
+    // doorbells across a socket outage are reseeded by the backend's
+    // reconnect listener.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loader.refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      off?.()
+      document.removeEventListener('visibilitychange', onVisible)
+      // Discard any in-flight snapshot so the old conversation's rows can't
+      // land in the next conversation's state.
+      loader.reset()
+      if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
+    }
+  }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
 
   const handleUnregisterTrigger = useCallback(
     async (subscriptionId: string) => {
@@ -396,7 +421,7 @@ export function ChatView({
 
   // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
   // system messages). Drives the panel's fired/unregistered ghost rows so a
-  // once-trigger stays visible after the engine drops it from the poll.
+  // once-trigger stays visible after the engine drops it from the list.
   const firedTriggers = useMemo<TriggerFiredData[]>(() => {
     const out: TriggerFiredData[] = []
     for (const m of conversation.messages) {

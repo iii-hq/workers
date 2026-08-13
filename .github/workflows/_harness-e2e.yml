@@ -317,6 +317,14 @@ jobs:
         if: inputs.stack_mode == 'registry'
         run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
 
+      - name: Checkout workflow scenario validator
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: _workflow
+          sparse-checkout: .github/scripts/validate_harness_scenarios.py
+          sparse-checkout-cone-mode: false
+
       - name: Validate exact scenarios against the executable suite
         id: scenarios
         env:
@@ -330,7 +338,7 @@ jobs:
         run: |
           set -euo pipefail
           available=$(harness/target/release/harness-e2e list)
-          resolved=$(python3 .github/scripts/validate_harness_scenarios.py \
+          resolved=$(python3 _workflow/.github/scripts/validate_harness_scenarios.py \
             --available-json "$available" \
             --requested-json "$REQUESTED_SCENARIOS" \
             --required-json "$REQUIRED_SCENARIOS" \

@@ -35,8 +35,8 @@ export interface SessionTriggerInfo {
   /**
    * This subscription already fired and was retired (per a durable
    * `trigger_fired` transcript entry — see `mergeFiredTriggers`). Either a
-   * still-polled row annotated ahead of the next poll, or a synthesized
-   * "ghost" row reconstructed after the poll dropped it. Nothing left to
+   * still-listed row annotated ahead of the next refetch, or a synthesized
+   * "ghost" row reconstructed after the refetch dropped it. Nothing left to
    * unregister — the ✕ dismisses locally instead.
    */
   fired?: boolean
@@ -133,23 +133,23 @@ function firedGhostRow(t: TriggerFiredData): SessionTriggerInfo {
 }
 
 /**
- * Merge the live poll with fired-subscription history, correlated on the
+ * Merge the live list with fired-subscription history, correlated on the
  * subscription id (present on both sides). A *retired* fire means the binding
- * is gone: if the (≤5s stale) poll still lists it, annotate that row as fired
- * in place; once the poll drops it, append a greyed "ghost" row. Non-retired
- * fires leave their live row untouched; repeat fires collapse to one record
- * (newest wins).
+ * is gone: if a not-yet-refetched list still carries it, annotate that row as
+ * fired in place; once the refetch drops it, append a greyed "ghost" row.
+ * Non-retired fires leave their live row untouched; repeat fires collapse to
+ * one record (newest wins).
  *
- * Ghost fidelity is two-tier: prefer the FULL last-seen polled row (from
+ * Ghost fidelity is two-tier: prefer the FULL last-seen listed row (from
  * `seenRows`) — the fired record alone carries no config or conditions. The
  * thin record-only ghost remains the post-reload fallback.
  */
 export function mergeFiredTriggers(
-  polled: SessionTriggerInfo[],
+  listed: SessionTriggerInfo[],
   fired: TriggerFiredData[],
   seenRows?: ReadonlyMap<string, SessionTriggerInfo>,
 ): SessionTriggerInfo[] {
-  const liveIds = new Set(polled.map((t) => t.id))
+  const liveIds = new Set(listed.map((t) => t.id))
   const retiredLive = new Map<string, TriggerFiredData>()
   const ghosts: SessionTriggerInfo[] = []
   const seen = new Set<string>()
@@ -160,7 +160,7 @@ export function mergeFiredTriggers(
     if (seen.has(key)) continue
     seen.add(key)
     if (liveIds.has(key)) {
-      retiredLive.set(key, t) // stale poll row — mark, don't ghost
+      retiredLive.set(key, t) // not-yet-refetched row — mark, don't ghost
     } else {
       const remembered = seenRows?.get(key)
       ghosts.push(
@@ -170,8 +170,8 @@ export function mergeFiredTriggers(
       )
     }
   }
-  if (retiredLive.size === 0 && ghosts.length === 0) return polled
-  const rows = polled.map((row) => {
+  if (retiredLive.size === 0 && ghosts.length === 0) return listed
+  const rows = listed.map((row) => {
     const t = retiredLive.get(row.id)
     return t ? { ...row, fired: true, firedAt: t.fired_at } : row
   })

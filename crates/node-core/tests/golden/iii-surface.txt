@@ -1,0 +1,13 @@
+files:object
+  list:function/0
+  read:function/1
+  readText:function/1
+  remove:function/1
+  write:function/2
+namespace:string
+registerFunction:function/3
+registerTrigger:function/1
+registerTriggerType:function/2
+shutdown:function/0
+trigger:function/1
+unregisterTriggerType:function/1

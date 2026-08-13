@@ -49,11 +49,20 @@ pub enum ReserveOutcome {
 pub struct BindingStore {
     iii: std::sync::Arc<IIIClient>,
     timeout_ms: u64,
+    events: crate::events::TurnEvents,
 }
 
 impl BindingStore {
-    pub fn new(iii: std::sync::Arc<IIIClient>, timeout_ms: u64) -> Self {
-        Self { iii, timeout_ms }
+    pub fn new(
+        iii: std::sync::Arc<IIIClient>,
+        timeout_ms: u64,
+        events: crate::events::TurnEvents,
+    ) -> Self {
+        Self {
+            iii,
+            timeout_ms,
+            events,
+        }
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<Binding>, HarnessError> {
@@ -123,7 +132,12 @@ impl BindingStore {
         }
 
         match self.reserve_owner_slot(binding).await {
-            Ok(ReserveOutcome::Reserved) => Ok(ReserveOutcome::Reserved),
+            Ok(ReserveOutcome::Reserved) => {
+                self.events
+                    .emit_triggers_changed(&binding.owner.session_id)
+                    .await;
+                Ok(ReserveOutcome::Reserved)
+            }
             Ok(outcome) => {
                 let _ = self.delete_if_unchanged(binding).await;
                 Ok(outcome)
@@ -156,7 +170,12 @@ impl BindingStore {
             let mut next = expected.clone();
             next.trigger_id = Some(trigger_id.to_string());
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
-                None => return Ok(AttachOutcome::Attached(Box::new(next))),
+                None => {
+                    self.events
+                        .emit_triggers_changed(&binding.owner.session_id)
+                        .await;
+                    return Ok(AttachOutcome::Attached(Box::new(next)));
+                }
                 Some(current) if current.is_null() => return Ok(AttachOutcome::Gone),
                 Some(current) => {
                     expected = serde_json::from_value(current).map_err(|e| {
@@ -179,6 +198,9 @@ impl BindingStore {
     pub async fn delete_if_unchanged(&self, binding: &Binding) -> Result<bool, HarnessError> {
         let deleted = state::cas_delete_binding(&self.iii, binding, self.timeout_ms).await?;
         if deleted {
+            self.events
+                .emit_triggers_changed(&binding.owner.session_id)
+                .await;
             if let Err(error) = self
                 .release_owner_slot(&binding.owner.session_id, &binding.id)
                 .await
@@ -219,7 +241,12 @@ impl BindingStore {
             next.fires = expected.fires + 1;
 
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
-                None => return Ok(ClaimOutcome::Claimed(Box::new(next))),
+                None => {
+                    self.events
+                        .emit_triggers_changed(&binding.owner.session_id)
+                        .await;
+                    return Ok(ClaimOutcome::Claimed(Box::new(next)));
+                }
                 Some(current) => {
                     // Someone moved it. A record that is gone means the binding
                     // retired between the read and here — not an error, just

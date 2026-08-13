@@ -1,0 +1,33 @@
+[workspace]
+
+[package]
+name = "canvas"
+version = "0.1.0"
+edition = "2021"
+description = "Canvas worker for iii — create, edit and render diagrams stored as editable source (mermaid text or excalidraw scenes), drawn live in chat and on a canvas page (canvas::* functions)"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "canvas"
+path = "src/lib.rs"
+
+[[bin]]
+name = "canvas"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.21.6"
+# Worker-side injectable console UI (content function + console:script/style
+# triggers + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
