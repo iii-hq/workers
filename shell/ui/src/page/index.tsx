@@ -246,7 +246,7 @@ export function ShellExplorerPage({
     const noise = ['Library', 'node_modules', 'target', 'dist', 'build', 'out', 'vendor', '__pycache__']
     const segments = rel.split('/')
     if (segments.some((s) => s.startsWith('.') || noise.includes(s))) return false
-    return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|lock|log)$/.test(rel)
+    return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|lock|log|output|tmp|swp|part|pid|sock)$/.test(rel)
   }
   const diffRef = useRef(diff)
   diffRef.current = diff
