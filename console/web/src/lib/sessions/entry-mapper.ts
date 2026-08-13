@@ -245,12 +245,14 @@ function unwrapFunctionTrigger(
 ): {
   functionId: string
   input: unknown
+  description?: string
   unresolvedTarget?: boolean
 } {
   if (block.function_id === 'agent_trigger') {
     if (block.arguments && typeof block.arguments === 'object') {
       const args = block.arguments as {
         function?: unknown
+        description?: unknown
         payload?: unknown
         _streaming?: unknown
       }
@@ -259,16 +261,30 @@ function unwrapFunctionTrigger(
       // command can be watched forming in the request pane.
       const streaming =
         typeof args._streaming === 'string' ? args._streaming : undefined
+      const description =
+        typeof args.description === 'string' &&
+        args.description.trim().length > 0
+          ? args.description.trim()
+          : undefined
       if (typeof args.function === 'string' && args.function.length > 0) {
         if (streaming !== undefined) {
-          return { functionId: args.function, input: { _streaming: streaming } }
+          return {
+            functionId: args.function,
+            input: { _streaming: streaming },
+            description,
+          }
         }
-        return { functionId: args.function, input: args.payload ?? {} }
+        return {
+          functionId: args.function,
+          input: args.payload ?? {},
+          description,
+        }
       }
       if (streaming !== undefined) {
         return {
           functionId: block.function_id,
           input: { _streaming: streaming },
+          description,
           unresolvedTarget: true,
         }
       }
@@ -541,12 +557,13 @@ function assistantSegments(
         })
         break
       case 'function_call': {
-        const { functionId, input, unresolvedTarget } =
+        const { functionId, input, description, unresolvedTarget } =
           unwrapFunctionTrigger(block)
         const msg: FunctionTriggerMessage = {
           id,
           role: 'function-trigger',
           functionId,
+          description,
           input,
           unresolvedTarget,
           functionTriggerId: block.id,

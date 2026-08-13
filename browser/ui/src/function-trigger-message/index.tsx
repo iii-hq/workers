@@ -80,6 +80,23 @@ function ScreenshotBody({ output }: { output: unknown }) {
   )
 }
 
+function renderScreenshot(
+  message: FunctionTriggerMessage,
+): React.ReactNode | null {
+  if (
+    message.functionId !== 'browser::screenshot' ||
+    message.pendingApproval ||
+    message.running ||
+    message.output == null
+  ) {
+    return null
+  }
+  if (parseInfraErrorDisplay(message.output)) return null
+  const screenshot = parseScreenshotOutput(message.output)
+  if (!screenshot?.dataUrl) return null
+  return <ScreenshotBody output={message.output} />
+}
+
 /**
  * Per-function pretty body; null when the function is unknown or its
  * payload doesn't parse, in which case the caller falls back to the
@@ -193,5 +210,22 @@ export function createBrowserRenderer(_host: Host): FunctionTriggerRenderer {
     tryRenderRunning: (message) => renderCall(message),
     tryRenderPreview: () => null,
     FunctionIdLabel,
+  }
+}
+
+/**
+ * Focused renderer that promotes successful screenshots into the chat flow.
+ * Keeping it separate means other browser calls retain the compact card and
+ * a malformed/error response safely falls through to the general renderer.
+ */
+export function createBrowserScreenshotRenderer(): FunctionTriggerRenderer {
+  return {
+    id: 'browser/page.js#screenshot-display',
+    isMatch: (functionId) => functionId === 'browser::screenshot',
+    tryRender: renderScreenshot,
+    tryRenderRunning: () => null,
+    tryRenderPreview: () => null,
+    FunctionIdLabel,
+    metadata: { display: true },
   }
 }

@@ -1,5 +1,6 @@
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { useExtConfigForm } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { useConfigurationSchema } from '@/pages/Configuration/tabs/WorkersTab/hooks'
 import { wt } from '@/pages/Configuration/tabs/WorkersTab/typography'
@@ -17,6 +18,7 @@ export function WorkerConfigurationDialog({
 }: WorkerConfigurationDialogProps) {
   const guard = useUnsavedGuard()
   const open = configurationId !== null
+  const fullForm = useExtConfigForm(configurationId ?? '')?.layout === 'full'
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) return
@@ -27,10 +29,15 @@ export function WorkerConfigurationDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className={cn(
-          'configuration-surface workers-tab flex h-[min(90vh,900px)] max-h-[90vh]',
-          // Sized to the editor's max-w-3xl content column (+ padding) —
-          // wider just manufactures dead margins around the form.
-          'w-[min(calc(100vw-2rem),880px)] max-w-none flex-col overflow-hidden p-0 font-sans',
+          'configuration-surface workers-tab flex max-w-none flex-col overflow-hidden p-0 font-sans',
+          fullForm
+            ? 'h-[calc(100vh-2rem)] max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)]'
+            : [
+                'h-[min(90vh,900px)] max-h-[90vh]',
+                // Sized to the editor's max-w-3xl content column (+ padding)
+                // so contained forms do not gain dead outer margins.
+                'w-[min(calc(100vw-2rem),880px)]',
+              ],
         )}
       >
         <DialogTitle className="sr-only">worker configuration</DialogTitle>

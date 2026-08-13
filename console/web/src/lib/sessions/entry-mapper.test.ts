@@ -228,7 +228,11 @@ describe('entrySegments', () => {
           type: 'function_call',
           id: 'fc-1',
           function_id: 'agent_trigger',
-          arguments: { function: 'shell::run', payload: { command: 'ls' } },
+          arguments: {
+            function: 'shell::run',
+            description: 'Listing project files',
+            payload: { command: 'ls' },
+          },
         },
       ]),
       'sess-1',
@@ -240,6 +244,7 @@ describe('entrySegments', () => {
     ])
     expect(segments[2]).toMatchObject({
       functionId: 'shell::run',
+      description: 'Listing project files',
       input: { command: 'ls' },
       functionTriggerId: 'fc-1',
       sessionId: 'sess-1',

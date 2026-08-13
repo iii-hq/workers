@@ -57,6 +57,22 @@ export interface ExtensionIii {
  */
 export type PanelSide = 'left' | 'right'
 
+/** JSON context sent by an injected renderer to an injected page. */
+export interface PanelContextEvent<T extends JsonValue = JsonValue> {
+  /** Monotonic per-console-tab id; repeated context still produces an event. */
+  id: number
+  /** Registered page id that owns this context. */
+  pageId: string
+  context: T
+}
+
+export interface PanelOpenRequest<T extends JsonValue = JsonValue> {
+  /** Registered extension page to place or reuse in the workspace. */
+  pageId: string
+  /** Worker-defined, JSON-serializable context delivered to that page. */
+  context?: T
+}
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -80,6 +96,8 @@ export interface PageRenderProps {
    * no conversation is active or none is set.
    */
   workingDir?: string | null
+  /** Latest context sent through `host.panels.open()` for this page. */
+  panelContext?: PanelContextEvent
 }
 
 export interface PageRegistration {
@@ -100,6 +118,8 @@ export interface FunctionTriggerMessage {
   id: string
   role: 'function-trigger'
   functionId: string
+  /** Short user-facing action supplied by the agent_trigger wrapper. */
+  description?: string
   input: unknown
   output?: unknown
   durationMs?: number
@@ -121,6 +141,13 @@ export interface FunctionTriggerRenderer {
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
+  /**
+   * Presentation hints owned by the worker. `display` makes a successful
+   * non-null render visible in chat without opening the raw call details.
+   */
+  metadata?: {
+    display?: boolean
+  }
   /**
    * Redact the raw request/response before the console DISPLAYS OR COPIES
    * it. The card's `raw json` tab renders `message.input` / `message.output`
@@ -169,6 +196,18 @@ export interface ConfigFormProps {
   focusField?: readonly string[]
 }
 
+/** Layout the Console should reserve for a configuration-form override. */
+export type ConfigFormLayout = 'contained' | 'full'
+
+export interface ConfigFormRegistrationOptions {
+  /**
+   * `contained` keeps the standard centered form column and host scroll.
+   * `full` gives the override all available width and height; the override
+   * must then manage any scrolling inside its own layout.
+   */
+  layout?: ConfigFormLayout
+}
+
 /**
  * Props a session chip receives from the chat host. Chips fetch their own
  * data through `host.iii`; the host only identifies the session and what
@@ -209,10 +248,19 @@ export interface Host {
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void
   }
+  /**
+   * Optional on older consoles. Feature-detect before opening contextual
+   * pages when a worker must remain compatible with them.
+   */
+  panels?: {
+    /** Place/reuse a registered page and deliver its worker-defined context. */
+    open(request: PanelOpenRequest): void
+  }
   configForms: {
     register(
       configurationId: string,
       component: React.ComponentType<ConfigFormProps>,
+      options?: ConfigFormRegistrationOptions,
     ): () => void
   }
   /**

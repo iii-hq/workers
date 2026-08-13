@@ -36,6 +36,7 @@ import {
   withColumnAdded,
   withColumnRemoved,
   withScreenDetached,
+  withWorkspaceScreenOpened,
   withWorkspaceTabs,
 } from '@/lib/workspace-tabs'
 
@@ -99,6 +100,8 @@ export interface UseWorkspaceTabsReturn {
   removeColumn: (id: string, column: number) => void
   /** Persist drag-to-resize column fractions (index-aligned). */
   resizeColumns: (id: string, sizes: number[]) => void
+  /** Reuse an existing screen or place it beside chat without replacing panes. */
+  openScreen: (screen: TabScreen) => void
 }
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
@@ -291,6 +294,15 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     [persist, tabs, activeTabId],
   )
 
+  const openScreen = useCallback(
+    (screen: TabScreen) => {
+      const next = withWorkspaceScreenOpened(tabs, activeTabId, screen)
+      setChosenTabId(next.activeTabId)
+      persist(next.tabs, next.activeTabId)
+    },
+    [activeTabId, persist, tabs],
+  )
+
   return {
     tabs,
     activeTabId,
@@ -305,5 +317,6 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     addColumn,
     removeColumn,
     resizeColumns,
+    openScreen,
   }
 }

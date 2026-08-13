@@ -197,7 +197,7 @@ const components: Components = {
     const isBlock = typeof className === 'string' && /language-/.test(className)
     if (isBlock) {
       return (
-        <code className={cn('font-mono', className)} {...rest}>
+        <code className={cn('font-code', className)} {...rest}>
           {children}
         </code>
       )
@@ -205,7 +205,7 @@ const components: Components = {
     return (
       <code
         className={cn(
-          'font-mono text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5',
+          'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5',
           className,
         )}
         {...rest}
@@ -238,7 +238,7 @@ const components: Components = {
     return (
       <pre
         className={cn(
-          'rounded-md border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-mono text-[12.5px] leading-[1.55] text-ink',
+          'rounded-md border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-code text-[12.5px] leading-[1.55] text-ink',
           className,
         )}
         {...rest}

@@ -23,7 +23,15 @@ import type { GitStatusEntry } from '@pierre/trees'
 import { Eye, EyeOff, FolderTree, GitBranch, Search, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
-import { type CoderInfo, coderInfo, coderTree, type FlatTree, flattenTree } from './coder'
+import {
+  type CoderInfo,
+  coderInfo,
+  coderTree,
+  type FlatTree,
+  flattenTree,
+  relativeTo,
+} from './coder'
+import { ChangeDiffPane } from './ChangeDiffPane'
 import { DiffPane } from './DiffPane'
 import { type EditorCache, EditorPane } from './EditorPane'
 import { FilesTab } from './FilesTab'
@@ -31,6 +39,7 @@ import { GitTab } from './GitTab'
 import { type GitChange, type GitState, gitChanges } from './git'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
 import { SearchTab } from './SearchTab'
+import { parseShellPanelContext } from './panel-context'
 import {
   activateTab,
   basename,
@@ -66,6 +75,7 @@ export function ShellExplorerPage({
   tabId,
   onRequestClose,
   workingDir,
+  panelContext,
 }: { host: Host } & PageRenderProps) {
   const theme = host.useTheme()
   const [info, setInfo] = useState<CoderInfo | null>(null)
@@ -85,6 +95,12 @@ export function ShellExplorerPage({
   const [reveal, setReveal] = useState<string | null>(null)
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
   const [diff, setDiff] = useState<GitChange | null>(null)
+  const [contextDiff, setContextDiff] = useState<{
+    eventId: number
+    changeId: string
+    path: string
+    canViewFile: boolean
+  } | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
 
   // ── boot: worker info + this workspace tab's persisted state ──
@@ -204,11 +220,13 @@ export function ShellExplorerPage({
 
   // ── open/close/pin actions ──
   const previewFile = useCallback((relPath: string) => {
+    setContextDiff(null)
     setDiff(null)
     setTabs((s) => openPreview(s, relPath))
   }, [])
 
   const pinFile = useCallback((relPath: string) => {
+    setContextDiff(null)
     setDiff(null)
     setTabs((s) => openPinned(s, relPath))
   }, [])
@@ -293,6 +311,7 @@ export function ShellExplorerPage({
     setTabs(EMPTY_TABS)
     setExpanded([])
     setDiff(null)
+    setContextDiff(null)
     setRoot(nextRoot)
   }, [])
 
@@ -307,6 +326,51 @@ export function ShellExplorerPage({
     lastWorkingDirRef.current = next
     if (next !== null && root !== null && next !== root) changeRoot(next)
   }, [workingDir, root, changeRoot])
+
+  const openContextFile = useCallback(
+    (path: string) => {
+      if (!info || !root) return
+      const candidates = [root, ...info.base_paths]
+        .filter(
+          (candidate, index, all) =>
+            all.indexOf(candidate) === index &&
+            (path === candidate || path.startsWith(`${candidate}/`)),
+        )
+        .sort((a, b) => b.length - a.length)
+      const nextRoot = path.startsWith('/') ? (candidates[0] ?? root) : root
+      const relPath = path.startsWith('/') ? relativeTo(nextRoot, path) : path
+      if (nextRoot !== root) changeRoot(nextRoot)
+      setContextDiff(null)
+      setDiff(null)
+      setSideTab('files')
+      setCollapsed(false)
+      setTabs((state) => openPinned(state, relPath))
+    },
+    [changeRoot, info, root],
+  )
+
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseShellPanelContext(panelContext.context)
+    if (!context) return
+    // A newly mounted shell page receives the context before coder::info and
+    // the persisted root have necessarily resolved. Leave file events
+    // unapplied until both are ready so the effect retries with real paths.
+    if (context.type === 'file' && (!info || !root)) return
+    appliedContextRef.current = panelContext.id
+    if (context.type === 'file') {
+      openContextFile(context.path)
+      return
+    }
+    setDiff(null)
+    setContextDiff({
+      eventId: panelContext.id,
+      changeId: context.changeId,
+      path: context.path,
+      canViewFile: context.canViewFile,
+    })
+  }, [info, openContextFile, panelContext, root])
 
   const onSaved = useCallback(() => {
     refreshGit()
@@ -461,7 +525,15 @@ export function ShellExplorerPage({
                     onPinFile={pinFile}
                   />
                 ) : sideTab === 'git' ? (
-                  <GitTab state={git} theme={theme} onSelect={(change) => setDiff(change)} onRefresh={refreshGit} />
+                  <GitTab
+                    state={git}
+                    theme={theme}
+                    onSelect={(change) => {
+                      setContextDiff(null)
+                      setDiff(change)
+                    }}
+                    onRefresh={refreshGit}
+                  />
                 ) : (
                   <SearchTab
                     host={host}
@@ -480,7 +552,10 @@ export function ShellExplorerPage({
           {tabs.tabs.length > 0 ? (
             <div className="shui-editor-tabs" role="tablist">
               {tabs.tabs.map((tab) => {
-                const active = diff === null && tab.path === tabs.active
+                const active =
+                  diff === null &&
+                  contextDiff === null &&
+                  tab.path === tabs.active
                 return (
                   <div key={tab.path} className={`shui-etab${active ? ' active' : ''}${tab.pinned ? '' : ' preview'}`}>
                     <button
@@ -491,6 +566,7 @@ export function ShellExplorerPage({
                       title={tab.path}
                       onClick={() => {
                         setDiff(null)
+                        setContextDiff(null)
                         setTabs((s) => activateTab(s, tab.path))
                       }}
                       onDoubleClick={() => setTabs((s) => pinTab(s, tab.path))}
@@ -513,7 +589,16 @@ export function ShellExplorerPage({
             </div>
           ) : null}
 
-          {diff !== null ? (
+          {contextDiff !== null ? (
+            <ChangeDiffPane
+              key={contextDiff.eventId}
+              host={host}
+              changeId={contextDiff.changeId}
+              path={contextDiff.path}
+              canViewFile={contextDiff.canViewFile}
+              onViewFile={openContextFile}
+            />
+          ) : diff !== null ? (
             <DiffPane host={host} root={root} change={diff} />
           ) : tabs.active !== null ? (
             <EditorPane

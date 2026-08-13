@@ -4,8 +4,8 @@
 # engine, launches the TS harness, greps for the HARNESS_DONE sentinel,
 # pretty-prints the report, and propagates pass/fail as the exit code.
 #
-# Local backend only — no docker compose, no AWS/GCP/CF creds. The
-# rustfs sidecar is spawned by storage itself when the engine starts.
+# Local backend only — no docker compose, no AWS/GCP/CF creds, and no
+# external object-storage process.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,8 +45,8 @@ for arg in "$@"; do
       cat <<EOF
 Usage: $0 [--providers=local|all|<csv>] [--trigger-providers=<csv>] [--keep] [--no-build] [--no-pull] [--filter=<substr>]
 
-  --providers=local           (default) only exercise the local rustfs backend.
-                              No docker required; preserves today's behavior.
+  --providers=local           (default) only exercise native local storage.
+                              No docker required.
   --providers=all             local + s3 + r2 via docker compose.
   --providers=local,s3        explicit subset (csv of: local, s3, r2).
   --trigger-providers=<csv>   subset of --providers whose trigger plumbing is
@@ -64,9 +64,6 @@ Env overrides:
   WORKER_BIN_TARGET        Path to the built worker binary.
   WORKER_BIN_LINK          Symlink the engine reads.
   HARNESS_TIMEOUT          Seconds to wait for the harness sentinel (default: 180).
-  RUSTFS_BIN               Override path to rustfs (otherwise auto-fetched).
-  RUSTFS_AUTO_FETCH        Set to 0 to disable rustfs auto-fetch.
-
 Script-self-tests:
   ./script-tests/run.sh        Run bash tests of run-tests.sh itself.
                                Independent from the harness; CI runs both.
@@ -105,7 +102,6 @@ ENGINE_PID=""
 HARNESS_PID=""
 COMPOSE_STARTED=0
 RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/storage-e2e.XXXXXX")
-RUSTFS_PID_FILE="${STORAGE_E2E_RUSTFS_PID_FILE:-$RUN_ROOT/rustfs.pid}"
 export HOME="$RUN_ROOT/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export CARGO_HOME=${CARGO_HOME:-"$host_home/.cargo"}
@@ -131,16 +127,6 @@ cleanup() {
     done
     kill -KILL -- "-$ENGINE_PID" 2>/dev/null || kill -KILL "$ENGINE_PID" 2>/dev/null || true
     wait "$ENGINE_PID" 2>/dev/null || true
-  fi
-
-  if [[ -s "$RUSTFS_PID_FILE" ]]; then
-    local rustfs_pid
-    rustfs_pid=$(<"$RUSTFS_PID_FILE")
-    if [[ "$rustfs_pid" =~ ^[0-9]+$ ]] && kill -0 "$rustfs_pid" 2>/dev/null; then
-      kill "$rustfs_pid" 2>/dev/null || true
-      sleep 0.5
-      kill -KILL "$rustfs_pid" 2>/dev/null || true
-    fi
   fi
 
   if [[ "$COMPOSE_STARTED" -eq 1 && "$KEEP" -eq 0 ]]; then
@@ -209,154 +195,7 @@ if [[ ! -x "$III_BIN" ]]; then
   exit 1
 fi
 
-# 3b. Ensure rustfs is available. storage's local provider spawns rustfs
-# as a sidecar; without it the worker exits with LOCAL_BACKEND_BIN_NOT_FOUND
-# before registering RPCs, and the harness then times out waiting for
-# functions that will never appear.
-#
-# Discovery order in storage/src/rustfs/spawn.rs::discover_binary:
-#   1. $RUSTFS_BIN
-#   2. <dir of storage binary>/rustfs   ← we drop the auto-fetched one here
-#   3. rustfs on $PATH
-#
-# RUSTFS_VERSION pins which release to fetch. Set RUSTFS_AUTO_FETCH=0 to skip
-# the download path entirely (e.g. air-gapped CI that pre-stages the binary).
-RUSTFS_VERSION="${RUSTFS_VERSION:-1.0.0-beta.1}"
-RUSTFS_AUTO_FETCH="${RUSTFS_AUTO_FETCH:-1}"
-RUSTFS_LOCAL_PATH="$(dirname "$WORKER_BIN_TARGET")/rustfs"
-
-ensure_rustfs() {
-  # Existing override / install wins — never re-download if the user already has one.
-  if [[ -n "${RUSTFS_BIN:-}" && -x "$RUSTFS_BIN" ]]; then
-    echo "[run-tests] using \$RUSTFS_BIN=$RUSTFS_BIN"
-    return 0
-  fi
-  if command -v rustfs >/dev/null 2>&1; then
-    echo "[run-tests] using rustfs from PATH: $(command -v rustfs)"
-    return 0
-  fi
-  if [[ -x "$RUSTFS_LOCAL_PATH" ]]; then
-    echo "[run-tests] using cached rustfs: $RUSTFS_LOCAL_PATH"
-    return 0
-  fi
-  if [[ "$RUSTFS_AUTO_FETCH" != "1" ]]; then
-    echo "[run-tests] FATAL: rustfs not found and RUSTFS_AUTO_FETCH=0" >&2
-    echo "[run-tests]   set \$RUSTFS_BIN, place a binary at $RUSTFS_LOCAL_PATH, or install rustfs on \$PATH" >&2
-    return 1
-  fi
-
-  # Detect platform. The release naming is rustfs-<os>-<arch>{-<libc>}-v<ver>.zip
-  # where <libc> is gnu|musl on Linux only. We default to gnu — alpine/musl users
-  # can pre-install rustfs and re-run with RUSTFS_AUTO_FETCH=0.
-  local uname_s uname_m os arch asset
-  uname_s="$(uname -s)"
-  uname_m="$(uname -m)"
-  case "$uname_s" in
-    Darwin) os="macos" ;;
-    Linux)  os="linux" ;;
-    *)
-      echo "[run-tests] FATAL: rustfs auto-fetch unsupported on $uname_s." >&2
-      echo "[run-tests]   install manually from https://github.com/rustfs/rustfs/releases and set \$RUSTFS_BIN" >&2
-      return 1 ;;
-  esac
-  case "$uname_m" in
-    arm64|aarch64) arch="aarch64" ;;
-    x86_64|amd64)  arch="x86_64" ;;
-    *)
-      echo "[run-tests] FATAL: rustfs auto-fetch unsupported on arch $uname_m." >&2
-      return 1 ;;
-  esac
-  if [[ "$os" == "linux" ]]; then
-    asset="rustfs-linux-${arch}-gnu-v${RUSTFS_VERSION}.zip"
-  else
-    asset="rustfs-macos-${arch}-v${RUSTFS_VERSION}.zip"
-  fi
-  local base="https://github.com/rustfs/rustfs/releases/download/${RUSTFS_VERSION}"
-  local url="${base}/${asset}"
-  local sums_url="${base}/SHA256SUMS"
-
-  echo "[run-tests] fetching rustfs ${RUSTFS_VERSION} (${os}/${arch}) — one-time, ~70-90MB compressed"
-  local tmpdir
-  tmpdir="$(mktemp -d -t rustfs-fetch.XXXXXX)"
-  trap 'rm -rf "$tmpdir"' RETURN
-  if ! curl -fsSL --retry 3 -o "$tmpdir/$asset" "$url"; then
-    echo "[run-tests] FATAL: download failed: $url" >&2
-    return 1
-  fi
-
-  # Best-effort SHA256 verification. If the sums file is unreachable we WARN
-  # but proceed — flaky CDN shouldn't block local dev. CI that wants to be
-  # strict can pre-stage the binary or set RUSTFS_AUTO_FETCH=0.
-  if curl -fsSL --retry 3 -o "$tmpdir/SHA256SUMS" "$sums_url" 2>/dev/null; then
-    local expected actual sum_cmd
-    expected="$(awk -v a="$asset" '$2==a {print $1}' "$tmpdir/SHA256SUMS")"
-    if [[ -n "$expected" ]]; then
-      if command -v sha256sum >/dev/null 2>&1; then sum_cmd="sha256sum"; else sum_cmd="shasum -a 256"; fi
-      actual="$($sum_cmd "$tmpdir/$asset" | awk '{print $1}')"
-      if [[ "$actual" != "$expected" ]]; then
-        echo "[run-tests] FATAL: rustfs SHA256 mismatch (expected $expected, got $actual)" >&2
-        return 1
-      fi
-      echo "[run-tests] sha256 verified ($expected)"
-    else
-      echo "[run-tests] WARN: $asset not listed in SHA256SUMS — skipping verification"
-    fi
-  else
-    echo "[run-tests] WARN: SHA256SUMS unreachable — skipping verification"
-  fi
-
-  if ! command -v unzip >/dev/null 2>&1; then
-    echo "[run-tests] FATAL: 'unzip' not on PATH; install it or pre-stage rustfs" >&2
-    return 1
-  fi
-  unzip -q -o "$tmpdir/$asset" -d "$tmpdir"
-  if [[ ! -f "$tmpdir/rustfs" ]]; then
-    echo "[run-tests] FATAL: zip did not contain a top-level 'rustfs' binary" >&2
-    ls "$tmpdir" >&2
-    return 1
-  fi
-
-  mkdir -p "$(dirname "$RUSTFS_LOCAL_PATH")"
-  chmod +x "$tmpdir/rustfs"
-  mv -f "$tmpdir/rustfs" "$RUSTFS_LOCAL_PATH"
-  # macOS quarantines downloaded binaries until first-launch confirm; strip
-  # the attribute so storage can spawn it without a Gatekeeper prompt.
-  if [[ "$os" == "macos" ]] && command -v xattr >/dev/null 2>&1; then
-    xattr -d com.apple.quarantine "$RUSTFS_LOCAL_PATH" 2>/dev/null || true
-  fi
-  echo "[run-tests] installed rustfs → $RUSTFS_LOCAL_PATH"
-}
-
-ensure_rustfs
-
-# Resolve the absolute rustfs path the engine should use and export it.
-# discover_binary() in storage tries $RUSTFS_BIN first, then a sibling of
-# the storage executable, then $PATH. The "sibling" path is fragile here
-# because the engine spawns storage via the symlink at $WORKER_BIN_LINK
-# (e.g. ~/.iii/workers/storage), and on macOS std::env::current_exe()
-# returns the symlink path — so the sibling lookup would find ~/.iii/workers/
-# rather than target/release/. Setting RUSTFS_BIN sidesteps that entirely
-# and the engine forwards the env to the worker process.
-if [[ -n "${RUSTFS_BIN:-}" && -x "$RUSTFS_BIN" ]]; then
-  RESOLVED_RUSTFS="$RUSTFS_BIN"
-elif [[ -x "$RUSTFS_LOCAL_PATH" ]]; then
-  RESOLVED_RUSTFS="$RUSTFS_LOCAL_PATH"
-elif command -v rustfs >/dev/null 2>&1; then
-  RESOLVED_RUSTFS="$(command -v rustfs)"
-fi
-if [[ -n "${RESOLVED_RUSTFS:-}" ]]; then
-  RUSTFS_WRAPPER="$RUN_ROOT/rustfs"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'printf "%%s\\n" "$$" > %q\n' "$RUSTFS_PID_FILE"
-    printf 'exec %q "$@"\n' "$RESOLVED_RUSTFS"
-  } >"$RUSTFS_WRAPPER"
-  chmod +x "$RUSTFS_WRAPPER"
-  export RUSTFS_BIN="$RUSTFS_WRAPPER"
-  echo "[run-tests] RUSTFS_BIN=$RESOLVED_RUSTFS (owned wrapper=$RUSTFS_WRAPPER)"
-fi
-
-# 4. Create the isolated rustfs data tree.
+# 4. Create the isolated native-local data tree.
 mkdir -p "$RUN_ROOT/data/storage"
 
 # 4b. Bring up docker compose stack (if needed) and bootstrap buckets.

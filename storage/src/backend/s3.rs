@@ -1,9 +1,7 @@
 //! AWS S3 backend.
 //!
-//! Used directly by `provider: s3`; also reused by R2 (`backend/r2.rs`) and
-//! local rustfs (`backend/local.rs`) by varying endpoint URL + credentials.
-//! All three providers speak the S3 protocol; this module is the one
-//! implementation.
+//! Used directly by `provider: s3` and reused by R2 (`backend/r2.rs`) by
+//! varying endpoint URL and credentials.
 
 use super::*;
 use aws_config::{BehaviorVersion, Region};
@@ -30,7 +28,7 @@ pub struct S3BackendOpts<'a> {
     pub credentials: Option<S3StaticCreds>,
     /// `None` for AWS S3; `Some(url)` for R2/local/custom endpoints.
     pub endpoint_url: Option<String>,
-    /// `true` for path-style addressing (rustfs, MinIO). `false` for virtual-host style (AWS, R2).
+    /// `true` for path-style addressing (MinIO, Ceph). `false` for virtual-host style (AWS, R2).
     pub force_path_style: bool,
     /// What to call this backend in error envelopes.
     pub provider_tag: &'static str,
@@ -210,6 +208,55 @@ impl Backend for S3Backend {
                 other => Err(other),
             },
         }
+    }
+
+    async fn list(&self, req: ListReq) -> Result<ListResp, BackendError> {
+        let mut list = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(req.prefix)
+            .max_keys(req.limit.min(1_000) as i32);
+        if let Some(delimiter) = req.delimiter {
+            list = list.delimiter(delimiter);
+        }
+        if let Some(cursor) = req.cursor {
+            list = list.continuation_token(cursor);
+        }
+        let resp = list.send().await.map_err(map_s3_error)?;
+        let objects = resp
+            .contents()
+            .iter()
+            .filter_map(|object| {
+                let key = object.key()?.to_string();
+                let last_modified = object
+                    .last_modified()
+                    .and_then(|dt| {
+                        chrono::Utc
+                            .timestamp_opt(dt.secs(), dt.subsec_nanos())
+                            .single()
+                    })
+                    .unwrap_or_else(Utc::now);
+                Some(ObjectSummary {
+                    key,
+                    etag: object.e_tag().unwrap_or_default().to_string(),
+                    size: object.size().unwrap_or_default().max(0) as u64,
+                    last_modified,
+                    // S3 list_objects_v2 does not include Content-Type.
+                    content_type: None,
+                })
+            })
+            .collect();
+        let common_prefixes = resp
+            .common_prefixes()
+            .iter()
+            .filter_map(|prefix| prefix.prefix().map(str::to_string))
+            .collect();
+        Ok(ListResp {
+            objects,
+            common_prefixes,
+            next_cursor: resp.next_continuation_token,
+        })
     }
 
     async fn presign(&self, req: PresignReq) -> Result<PresignResp, BackendError> {

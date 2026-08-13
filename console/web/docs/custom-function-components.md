@@ -1,8 +1,8 @@
 # Custom function components
 
-How to add bespoke UI for `function-call` messages in the console chat, instead of the default request/response JSON panes.
+How to add bespoke UI for `function-trigger` messages in the console chat, instead of the default request/response JSON panes.
 
-**Reference implementation:** `src/components/chat/sandbox/` (15 `sandbox::*` tools, terminal + raw JSON tabs, approval previews, unified error handling).
+**Reference implementations:** `shell/ui/` (worker-owned file-change artifact), `browser/ui/` (worker-owned screenshots), and `src/components/chat/sandbox/` (first-party terminal cards).
 
 **Definition of done:** A custom renderer is not complete until it ships with **both** dev surfaces below — static cards on **Examples** and at least one interactive **Playground** scenario. Do not merge UI-only changes without playground coverage.
 
@@ -10,23 +10,23 @@ How to add bespoke UI for `function-call` messages in the console chat, instead 
 
 ## How it works today
 
-Every tool invocation becomes a `FunctionCallMessage` (`src/types/chat.ts`). The shell component `FunctionCallMessage.tsx` renders:
+Every tool invocation becomes a `FunctionTriggerMessage` (`src/types/chat.ts`). `FunctionTriggerCard.tsx` renders:
 
-1. **Header** — status dot, `permission to run` / `running` / `ran`, function id, duration.
+1. **Header** — status dot, the agent's short activity description (or a legacy function-id fallback), and duration. Expanding it reveals the concrete function id.
 2. **Body** — depends on lifecycle and whether a custom renderer returned a node.
 3. **Pending bar** — approve/deny (unchanged by custom renderers).
 
 Default body = two `ValuePane`s (request + response) with `JsonHighlight`.
 
-Custom renderers opt in by returning a React node from `tryRender` / `tryRenderPreview`. If they return `null`, the UI falls back to JSON silently.
+Custom renderers opt in by returning a React node from `tryRender` / `tryRenderPreview`. If they return `null`, the ordered registry falls through. A renderer may set `metadata: { display: true }` to keep a successful rich result visible while the raw call details remain collapsed.
 
 ```mermaid
 flowchart TB
-  subgraph host [FunctionCallMessage.tsx]
-    H[Header + optional custom label]
+  subgraph host [FunctionTriggerCard.tsx]
+    H[Activity label; expand for function id]
     P[Pending preview slot]
     R[Running body slot]
-    D[Done: Tabs terminal + raw json OR JSON only]
+    D[Done: prominent artifact OR tabs/raw JSON]
     A[Approve/deny bar]
   end
   subgraph plugin [Your module e.g. sandbox/]
@@ -34,15 +34,17 @@ flowchart TB
     TR[tryRender]
     TP[tryRenderPreview]
     HL[optional FunctionIdLabel]
+    MD[optional metadata.display]
   end
   H --> HL
   P --> TP
   R --> TR
   D --> TR
+  D --> MD
   TR -->|null| JSON[ValuePane JSON fallback]
 ```
 
-**Important:** Only `sandbox` is wired today. `FunctionCallMessage.tsx` imports `SandboxToolView` and `SandboxFunctionIdLabel` directly. Adding another family requires either more imports in FCM or a small registry (see [Scale beyond one family](#scale-beyond-one-family)).
+Injected worker renderers register through `host.functionTriggers` and dispatch before first-party renderers. The first non-null node wins, and presentation metadata is read from that same winning renderer.
 
 ---
 
@@ -50,9 +52,10 @@ flowchart TB
 
 ```typescript
 // src/types/chat.ts
-interface FunctionCallMessage extends BaseMessage {
-  role: 'function-call'
+interface FunctionTriggerMessage extends BaseMessage {
+  role: 'function-trigger'
   functionId: string      // e.g. "sandbox::exec", "shell::run"
+  description?: string    // short activity from agent_trigger; absent on history
   input: unknown
   output?: unknown
   durationMs?: number
@@ -67,7 +70,7 @@ interface FunctionCallMessage extends BaseMessage {
 |-------|--------|------------------------------|
 | Pending approval | `pendingApproval: true` | Show `tryRenderPreview` only; return `null` from `tryRender`. Keep approve/deny bar as-is. |
 | Running | `running: true`, not pending | `tryRender` with `running` prop or equivalent; hide request JSON when you own the body. |
-| Done | neither flag | `tryRender` for success/error; FCM adds **terminal** (default) + **raw json** tabs when non-null. |
+| Done | neither flag | `tryRender` for success/error. By default the card adds custom + **raw json** tabs; `metadata.display` promotes the custom result into the collapsed chat flow. |
 | Failed | `output` set, parse as error | Return error UI from `tryRender` before success parsers (see sandbox `parseSandboxErrorDisplay`). |
 
 Wire shapes come from the harness/engine. They are not normalized in the UI layer except inside your parsers.
@@ -188,7 +191,7 @@ Per-tool views should accept `{ input, output?, running? }` and return `null` in
 
 ### Views
 
-- Reuse design tokens: `border-rule`, `bg-paper-2`, `text-ink`, `text-warn`, `font-mono`, `Badge`, `Cell`, `EmptyState`.
+- Reuse design tokens: `border-rule`, `bg-paper-2`, `text-ink`, `text-warn`, `font-mono` for technical chrome, `font-code` for source code, `Badge`, `Cell`, `EmptyState`.
 - Shared terminal chrome: copy `sandbox/terminal/Terminal.tsx` + `AnsiOutput.tsx` for command-like tools.
 - Code blocks: `CodeHighlight` from `src/lib/syntax.tsx` (or `sandbox/CodeHighlight.tsx`).
 - Running state: same shell as done, body shows muted `executing…` (see `ExecView`).
@@ -217,33 +220,52 @@ One renderer per tool (or per response shape). Include:
 - `running` prop
 - Optional `*Preview` for approval (high-value for destructive or costly ops)
 
-### 4. Wire into `FunctionCallMessage.tsx`
+### 4. Register through injectable UI
 
-**Today (minimal):**
+Worker-owned UI is the default for new worker functions:
 
 ```tsx
-import { MyFeatureToolView, MyFeatureFunctionIdLabel } from '@/components/chat/myfeature'
+import type { FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
 
-// Header: branch on functionId prefix or registry
-function FunctionIdLabel({ functionId }: { functionId: string }) {
-  if (MyFeatureToolView.isMyFeature(functionId))
-    return <MyFeatureFunctionIdLabel functionId={functionId} />
-  if (SandboxToolView.isSandboxFunction(functionId))
-    return <SandboxFunctionIdLabel functionId={functionId} />
-  return <span className="text-ink">{functionId}</span>
+const renderer: FunctionTriggerRenderer = {
+  id: 'myfeature/page.js#result',
+  isMatch: (functionId) => functionId === 'myfeature::do-thing',
+  tryRender: (message) => renderResult(message),
+  tryRenderRunning: (message) => renderRunning(message),
+  tryRenderPreview: (message) => renderApprovalPreview(message),
+  metadata: { display: true }, // only for results worth keeping inline
 }
 
-const preview =
-  SandboxToolView.tryRenderPreview(message) ??
-  MyFeatureToolView.tryRenderPreview(message)
-
-const terminal =
-  !pending
-    ? (SandboxToolView.tryRender(message) ?? MyFeatureToolView.tryRender(message))
-    : null
+export default function setup(host: Host) {
+  host.functionTriggers.register(renderer)
+}
 ```
 
-Rename tab labels if "terminal" is wrong for your UX (`custom` / `preview` / keep generic **preview** + **raw json**).
+Register focused renderers before general family renderers. `display` is honored only when that renderer actually returns a non-null node, so an image renderer can fall through to a general error renderer without promoting the error card.
+
+For artifacts that have a deeper worker-owned view, make a focused area a
+real button and open the registered page through the host:
+
+```tsx
+<button
+  onClick={() =>
+    host.panels?.open({
+      pageId: 'myfeature',
+      context: { type: 'result', resultId },
+    })
+  }
+>
+  inspect result
+</button>
+```
+
+The console reuses an already-open page or places it beside chat without
+replacing an existing pane. The target page receives `panelContext` in its
+`PageRenderProps`; react to `panelContext.id`, not only object identity, so a
+second click on the same item still opens it. Keep the payload JSON-sized and
+send opaque ids for content that the page can fetch lazily. The shell
+file-change renderer is the reference: filename → exact snapshot diff, and
+“View file” → Monaco editor.
 
 ### 5. Storybook stories (required)
 
@@ -401,37 +423,9 @@ Approve/deny handlers are props on `FunctionCallMessage`; custom modules do not 
 
 ## Scale beyond one family
 
-Duplicating `SandboxToolView` imports in FCM does not scale. Suggested refactor (not implemented yet):
+The ordered registry already supports both runtime-injected and first-party families. Runtime registrations are fenced and prepended in registration order; first-party renderers follow; the raw JSON card is the final fallback. `firstRendered()` returns both the node and its owner so `metadata.display` cannot accidentally promote content produced by a later renderer.
 
-```
-src/components/chat/function-plugins/
-  types.ts              # FunctionCallRenderer interface
-  registry.ts           # ordered list of plugins
-  index.ts              # resolvePreview(message), resolveTerminal(message), resolveLabel(functionId)
-```
-
-```typescript
-export interface FunctionCallRenderer {
-  id: string
-  isMatch: (functionId: string) => boolean
-  tryRender: (message: FunctionCallMessage) => React.ReactNode | null
-  tryRenderPreview?: (message: FunctionCallMessage) => React.ReactNode | null
-  FunctionIdLabel?: (props: { functionId: string }) => React.ReactNode
-  /** Tab label when this renderer wins; default "preview" */
-  primaryTabLabel?: string
-}
-```
-
-FCM becomes:
-
-```typescript
-const terminal = !pending ? resolveTerminal(message) : null
-const preview = resolvePreview(message)
-```
-
-Register `sandboxPlugin` and `myFeaturePlugin` in `registry.ts`. First non-null win, or explicit priority field.
-
-Until that exists, follow the **minimal wiring** in step 4 above.
+Keep worker logic in its worker UI whenever it can ship with the function. Add a first-party renderer only for console-owned functions or when the worker cannot ship assets. A focused renderer may claim one result shape (for example an image), return `null` for every other shape, and sit before its general family renderer.
 
 ---
 

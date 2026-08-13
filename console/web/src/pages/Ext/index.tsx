@@ -21,6 +21,7 @@ import { useEffect, useRef } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
+import { usePanelContext } from '@/lib/panel-context'
 import { useExtPages } from '@/lib/ui-slots'
 import type { PanelSide } from '@/types/injectable-ui'
 
@@ -65,6 +66,7 @@ export function ExtPage({
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
+  const panelContext = usePanelContext(pageId ?? '')
   const pages = useExtPages()
   const page = pageId
     ? [...pages].reverse().find((p) => p.id === pageId)
@@ -122,6 +124,7 @@ export function ExtPage({
         tabId={tabId}
         onRequestClose={onRequestClose}
         workingDir={workingDir}
+        panelContext={panelContext}
       />
     </div>
   )

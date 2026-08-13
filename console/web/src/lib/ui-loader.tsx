@@ -12,6 +12,7 @@
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import type { IiiClient } from '@/lib/iii-client'
+import { requestPanelOpen } from '@/lib/panel-context'
 import {
   registerExtConfigForm,
   registerExtPage,
@@ -125,12 +126,18 @@ function makeHost(
         return track(registerExtRenderer({ renderer, scope, path }))
       },
     },
+    panels: {
+      open(request) {
+        requestPanelOpen(request)
+      },
+    },
     configForms: {
-      register(configurationId, component) {
+      register(configurationId, component, options) {
         const Form = component
         return track(
           registerExtConfigForm({
             configurationId,
+            layout: options?.layout ?? 'contained',
             scope,
             path,
             component: (props: ConfigFormProps) => (

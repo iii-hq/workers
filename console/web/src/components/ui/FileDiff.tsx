@@ -1,6 +1,7 @@
 import { DEFAULT_THEMES } from '@pierre/diffs'
 import { MultiFileDiff } from '@pierre/diffs/react'
 import { useTheme } from '@/hooks/use-theme'
+import { cn } from '@/lib/utils'
 
 /** One side of the diff — a whole file's text, not a patch. */
 export interface FileDiffSide {
@@ -39,7 +40,7 @@ export function FileDiff({
     <MultiFileDiff
       oldFile={oldFile}
       newFile={newFile}
-      className={className}
+      className={cn('[--diffs-font-family:var(--font-code)]', className)}
       options={{
         diffStyle,
         overflow,

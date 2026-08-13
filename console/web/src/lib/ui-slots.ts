@@ -8,6 +8,7 @@
 
 import { useMemo, useSyncExternalStore } from 'react'
 import type {
+  ConfigFormLayout,
   ConfigFormProps,
   FunctionTriggerRenderer,
   PageRegistration,
@@ -32,6 +33,8 @@ export interface RegisteredConfigForm {
   configurationId: string
   /** Pre-wrapped by the loader (scope element + ErrorBoundary). */
   component: React.ComponentType<ConfigFormProps>
+  /** Host-owned layout for the form region. */
+  layout: ConfigFormLayout
   scope: string
   path: string
 }

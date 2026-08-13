@@ -228,61 +228,6 @@ pub fn normalize_r2(
     })
 }
 
-pub fn normalize_rustfs(
-    event: &Value,
-    bucket_reverse: &dyn Fn(&str) -> Option<String>,
-) -> Result<ObjectEventNormalized, NormalizeError> {
-    let event_name = event
-        .get("EventName")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| NormalizeError::Malformed("missing EventName".into()))?;
-    let kind = if event_name.contains("ObjectCreated") {
-        EventKind::Created
-    } else if event_name.contains("ObjectRemoved") {
-        EventKind::Deleted
-    } else {
-        return Err(NormalizeError::Ignored(event_name.to_string()));
-    };
-    let underlying = event
-        .pointer("/Records/0/s3/bucket/name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| NormalizeError::Malformed("missing bucket".into()))?;
-    let bucket = bucket_reverse(underlying)
-        .ok_or_else(|| NormalizeError::UnmappedBucket(underlying.to_string()))?;
-    let key = event
-        .pointer("/Records/0/s3/object/key")
-        .and_then(|v| v.as_str())
-        .map(decode_s3_key)
-        .unwrap_or_default();
-    let size = event
-        .pointer("/Records/0/s3/object/size")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let etag = event
-        .pointer("/Records/0/s3/object/eTag")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let now = Utc::now();
-    let raw_event_id = format!(
-        "{}:{}:{}",
-        bucket,
-        key,
-        now.timestamp_nanos_opt().unwrap_or(0)
-    );
-    Ok(ObjectEventNormalized {
-        bucket,
-        key,
-        size,
-        etag,
-        content_type: None,
-        created_at: matches!(kind, EventKind::Created).then_some(now),
-        deleted_at: matches!(kind, EventKind::Deleted).then_some(now),
-        event_kind: kind,
-        raw_event_id,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,27 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn rustfs_created_normalizes() {
-        let ev = fixture("rustfs_created");
-        let n = normalize_rustfs(&ev, &|under| {
-            (under == "scratch").then(|| "scratch".to_string())
-        })
-        .unwrap();
-        assert!(matches!(n.event_kind, EventKind::Created));
-        assert_eq!(n.size, 13);
-    }
-
-    #[test]
-    fn rustfs_deleted_normalizes() {
-        let ev = fixture("rustfs_deleted");
-        let n = normalize_rustfs(&ev, &|under| {
-            (under == "scratch").then(|| "scratch".to_string())
-        })
-        .unwrap();
-        assert!(matches!(n.event_kind, EventKind::Deleted));
-    }
-
-    #[test]
     fn unmapped_bucket_returns_error_for_s3() {
         let ev = fixture("s3_object_created");
         match normalize_s3(&ev, &|_| None) {
@@ -404,31 +328,6 @@ mod tests {
         let ev: Value = serde_json::json!({"NotRecords": []});
         let r = normalize_s3(&ev, &|_| None);
         assert!(matches!(r, Err(NormalizeError::Malformed(_))));
-    }
-
-    /// Regression: rustfs (and S3 / R2) percent-encode object keys in their
-    /// event payloads. Without decoding, trigger handlers receive keys like
-    /// `harness%2Ftriggers%2Ffoo` that never match the user-side `harness/triggers/foo`.
-    #[test]
-    fn rustfs_percent_encoded_key_is_decoded() {
-        let ev: Value = serde_json::json!({
-            "EventName": "s3:ObjectCreated:Put",
-            "Records": [{
-                "s3": {
-                    "bucket": { "name": "scratch" },
-                    "object": {
-                        "key": "harness%2Ftriggers%2Fcreated-target",
-                        "size": 7,
-                        "eTag": "abc"
-                    }
-                }
-            }]
-        });
-        let n = normalize_rustfs(&ev, &|under| {
-            (under == "scratch").then(|| "scratch".to_string())
-        })
-        .unwrap();
-        assert_eq!(n.key, "harness/triggers/created-target");
     }
 
     #[test]

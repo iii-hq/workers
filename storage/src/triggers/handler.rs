@@ -1,8 +1,8 @@
 //! TriggerHandler implementations for `storage::object-created` and
 //! `storage::object-deleted`. These are thin: they parse the bucket out
 //! of the per-instance config and add/remove a (bucket, kind) → function_id
-//! entry in the shared registry. The actual upstream polling runs once per
-//! provider source at worker startup; see `main.rs`.
+//! entry in the shared registry. Upstream pollers are reconciled whenever the
+//! storage configuration changes; see `configuration.rs`.
 
 use crate::triggers::normalize::EventKind;
 use crate::triggers::object_created::TriggerConfig as CreatedConfig;
@@ -11,19 +11,25 @@ use crate::triggers::registry::TriggerRegistry;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::RwLock;
+
+pub type WiredBuckets = Arc<RwLock<HashSet<String>>>;
 
 pub struct ObjectCreatedHandler {
     pub registry: Arc<TriggerRegistry>,
-    /// Set of buckets whose notifications source is wired up at startup.
+    /// Live set of buckets whose notifications source is currently wired.
     /// Registering a trigger for a bucket missing from this set fails fast
     /// instead of silently never firing.
-    pub wired_buckets: Arc<std::collections::HashSet<String>>,
+    pub wired_buckets: WiredBuckets,
+    pub reconfigure_gate: Arc<RwLock<()>>,
 }
 
 #[async_trait]
 impl TriggerHandler for ObjectCreatedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        let _gate = self.reconfigure_gate.read().await;
         let cfg: CreatedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
             // Build the envelope through serde_json so internal quotes,
             // newlines, and other JSON-special chars in `e` are escaped
@@ -36,7 +42,7 @@ impl TriggerHandler for ObjectCreatedHandler {
                 .to_string(),
             )
         })?;
-        if !self.wired_buckets.contains(&cfg.bucket) {
+        if !self.wired_buckets.read().await.contains(&cfg.bucket) {
             return Err(Error::Handler(
                 serde_json::json!({
                     "code": "CONFIG_ERROR",
@@ -72,12 +78,14 @@ impl TriggerHandler for ObjectCreatedHandler {
 
 pub struct ObjectDeletedHandler {
     pub registry: Arc<TriggerRegistry>,
-    pub wired_buckets: Arc<std::collections::HashSet<String>>,
+    pub wired_buckets: WiredBuckets,
+    pub reconfigure_gate: Arc<RwLock<()>>,
 }
 
 #[async_trait]
 impl TriggerHandler for ObjectDeletedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        let _gate = self.reconfigure_gate.read().await;
         let cfg: DeletedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
             Error::Handler(
                 serde_json::json!({
@@ -87,7 +95,7 @@ impl TriggerHandler for ObjectDeletedHandler {
                 .to_string(),
             )
         })?;
-        if !self.wired_buckets.contains(&cfg.bucket) {
+        if !self.wired_buckets.read().await.contains(&cfg.bucket) {
             return Err(Error::Handler(
                 serde_json::json!({
                     "code": "CONFIG_ERROR",

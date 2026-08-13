@@ -28,6 +28,7 @@ import {
   ConversationsProvider,
   useConversationsCtx,
 } from '@/lib/conversations-context'
+import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
@@ -84,6 +85,13 @@ export function App() {
   )
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
+  useEffect(
+    () =>
+      subscribePanelOpen((event) => {
+        workspaceRef.current.openScreen(`ext:${event.pageId}`)
+      }),
+    [],
+  )
   // Closing settings routes back to the ACTIVE tab's own screen (never to
   // whichever tab happens to own the previous view — that would switch
   // tabs under the user). Pre-marking keeps the hash-inbound effect quiet.

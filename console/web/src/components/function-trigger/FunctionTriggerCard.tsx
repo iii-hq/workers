@@ -1,8 +1,9 @@
-import { Check, Copy, X } from 'lucide-react'
+import { Check, Copy, Loader2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
 import {
   firstNonNull,
+  firstRendered,
   rawRedactor,
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
@@ -205,6 +206,25 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
+function FunctionIdentityRow({ functionId }: { functionId: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5">
+      <span className="shrink-0 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+        function
+      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+        <span className="text-accent italic font-semibold">ƒ</span>{' '}
+        <FunctionIdLabel functionId={functionId} />
+      </span>
+      <CopyMessageButton
+        text={functionId}
+        label="copy function id"
+        className="shrink-0"
+      />
+    </div>
+  )
+}
+
 /**
  * One-line `key: value` digest of the request args for the collapsed header —
  * what separates three settled calls to the same function without expanding
@@ -269,6 +289,11 @@ export function FunctionTriggerCard({
       : undefined
   const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
+  // Closed calls read as a lightweight activity list. Opening one restores
+  // the full raised function-call surface with the existing panes and
+  // controls. Pending approvals remain surfaces because they require action.
+  const expandedSurface = open || pending
+  const [showRawDetails, setShowRawDetails] = useState(false)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const [submitting, setSubmitting] = useState<
     'approve' | 'deny' | 'always_allow' | null
@@ -279,14 +304,20 @@ export function FunctionTriggerCard({
     renderers,
     (r) => r.tryRenderPreview?.(message) ?? null,
   )
-  const customTerminal = !pending
-    ? firstNonNull(renderers, (r) =>
+  const terminalRender = !pending
+    ? firstRendered(renderers, (r) =>
         running
           ? (r.tryRenderRunning ?? r.tryRender)(message)
           : r.tryRender(message),
       )
     : null
+  const customTerminal = terminalRender?.node ?? null
   const hasCustomTerminal = customTerminal != null
+  const displayCustomTerminal =
+    !pending &&
+    !running &&
+    hasCustomTerminal &&
+    terminalRender?.renderer.metadata?.display === true
   // The top request pane renders only while the call is in flight and no
   // richer view covers it; the settled (done) branch below renders its own
   // request/response panes, so showing it there would duplicate the pane.
@@ -334,13 +365,20 @@ export function FunctionTriggerCard({
   // a claimed card's `redactRaw` has to cover it or a secret shows up in the
   // one line that renders without anyone expanding the card.
   const preview = argsPreview(rawInput)
+  const description = message.description?.trim() || undefined
 
   return (
     <div
-      className="function-trigger-surface fcall-chrome rounded-md overflow-hidden"
+      className={cn(
+        'function-trigger-surface',
+        expandedSurface
+          ? 'fcall-chrome overflow-hidden rounded-md'
+          : 'overflow-visible bg-transparent',
+      )}
       data-message-id={message.id}
       data-message-role="function-call"
       data-function-id={message.functionId}
+      data-expanded={expandedSurface}
       data-function-status={
         pending ? 'pending' : running ? 'running' : errored ? 'error' : 'done'
       }
@@ -350,35 +388,64 @@ export function FunctionTriggerCard({
           title with the copy icon in flow right after it, and the caret
           strip is a pointer-only duplicate target so clicking anywhere on
           the row still collapses. */}
-      <div className="group/fchdr flex items-center gap-2 hover:bg-surface-hover/50 transition-colors">
+      <div
+        className={cn(
+          'group/fchdr flex items-center gap-2',
+          expandedSurface && 'hover:bg-surface-hover/50',
+        )}
+      >
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="min-w-0 flex items-center gap-2 pl-3 py-2 cursor-pointer text-left"
+          className={cn(
+            'min-w-0 cursor-pointer items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            expandedSurface ? 'flex py-2 pl-3' : 'flex flex-1 py-1.5 sm:py-1',
+          )}
         >
-          <span className="flex items-center gap-2 min-w-0">
-            {pending || running ? (
-              <StatusDot
-                tone={pending ? 'warn' : 'accent'}
-                pulse={running}
-                className="shrink-0"
+          <div className="flex min-w-0 items-center gap-2">
+            {pending ? (
+              <StatusDot tone="warn" className="shrink-0" />
+            ) : running ? (
+              <Loader2
+                aria-hidden
+                strokeWidth={2}
+                className="size-3.5 h-lh shrink-0 animate-spin stroke-trigger-running motion-reduce:animate-none"
               />
             ) : errored ? (
               <X
                 aria-hidden
                 strokeWidth={2.5}
-                className="size-3.5 shrink-0 text-alert"
+                className="size-3.5 shrink-0 stroke-alert"
               />
             ) : (
               <Check
                 aria-hidden
                 strokeWidth={2.5}
-                className="size-3.5 shrink-0 text-ok"
+                className={cn(
+                  'size-3.5 shrink-0',
+                  expandedSurface ? 'stroke-ok' : 'stroke-muted-foreground',
+                )}
               />
             )}
-            <span className="font-mono text-[13px] text-ink truncate">
-              {pending ? (
+            <div
+              className={cn(
+                'min-w-0 truncate',
+                expandedSurface
+                  ? 'font-mono text-[0.8125rem] text-ink'
+                  : cn(
+                      'font-sans text-sm sm:text-[0.8125rem]',
+                      running
+                        ? 'text-trigger-running'
+                        : 'text-muted-foreground',
+                    ),
+              )}
+            >
+              {description ? (
+                <span className={cn(running && 'function-trigger-shimmer')}>
+                  {description}
+                </span>
+              ) : pending ? (
                 <>
                   <span>
                     {filesystemAccess
@@ -393,17 +460,22 @@ export function FunctionTriggerCard({
               ) : ran ? (
                 <>triggered </>
               ) : null}
-              <span className="text-accent italic font-semibold">ƒ</span>{' '}
-              {running && message.unresolvedTarget ? (
-                <span className="text-ink-faint">…</span>
-              ) : (
-                <FunctionIdLabel functionId={message.functionId} />
-              )}
-              {!pending && !running && preview ? (
+              {!description ? (
+                <>
+                  <span className="text-accent italic font-semibold">ƒ</span>{' '}
+                  {running && message.unresolvedTarget ? (
+                    <span className="text-ink-faint">…</span>
+                  ) : (
+                    <FunctionIdLabel functionId={message.functionId} />
+                  )}
+                </>
+              ) : null}
+              {!description && !pending && !running && preview ? (
                 <span className="text-ink-ghost"> ({preview})</span>
               ) : null}
               {!pending &&
               !running &&
+              (!description || expandedSurface) &&
               typeof message.durationMs === 'number' ? (
                 <span className="text-ink-faint">
                   {' '}
@@ -413,10 +485,10 @@ export function FunctionTriggerCard({
                   </span>
                 </span>
               ) : null}
-            </span>
-          </span>
+            </div>
+          </div>
         </button>
-        {!(running && message.unresolvedTarget) ? (
+        {!description && !(running && message.unresolvedTarget) ? (
           <CopyMessageButton
             text={message.functionId}
             label="copy function id"
@@ -428,12 +500,19 @@ export function FunctionTriggerCard({
           aria-hidden="true"
           tabIndex={-1}
           onClick={() => setOpen((v) => !v)}
-          className="flex-1 self-stretch flex items-center justify-end pr-3 cursor-pointer"
+          className={cn(
+            'flex cursor-pointer items-center self-stretch',
+            expandedSurface
+              ? 'flex-1 justify-end pr-3'
+              : 'w-8 shrink-0 justify-center',
+          )}
         >
           <span
             className={cn(
-              'text-ink-ghost shrink-0 transition-transform duration-150 inline-block',
-              open && 'rotate-90',
+              'inline-block shrink-0 text-ink-ghost transition-[transform,opacity] duration-150',
+              open
+                ? 'rotate-90 opacity-100'
+                : 'opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100',
             )}
           >
             ▸
@@ -443,6 +522,9 @@ export function FunctionTriggerCard({
 
       {open ? (
         <div className="border-t border-rule-2">
+          {description && !(running && message.unresolvedTarget) ? (
+            <FunctionIdentityRow functionId={message.functionId} />
+          ) : null}
           {pending && customPreview ? (
             <div className="border-b border-rule-2">{customPreview}</div>
           ) : showRequestPaneAbove ? (
@@ -458,7 +540,24 @@ export function FunctionTriggerCard({
             )
           ) : null}
           {!pending && !running ? (
-            hasCustomTerminal ? (
+            displayCustomTerminal ? (
+              <div className="border-t border-rule-2 bg-paper-2">
+                <button
+                  type="button"
+                  aria-expanded={showRawDetails}
+                  onClick={() => setShowRawDetails((value) => !value)}
+                  className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                >
+                  {showRawDetails ? 'hide' : 'show'} raw request and response
+                </button>
+                {showRawDetails ? (
+                  <>
+                    <ValuePane label="request" value={rawInput} />
+                    <ValuePane label="response" value={rawOutput} bordered />
+                  </>
+                ) : null}
+              </div>
+            ) : hasCustomTerminal ? (
               <Tabs
                 value={tab}
                 onValueChange={(v) => setTab(v as 'terminal' | 'json')}
@@ -482,6 +581,10 @@ export function FunctionTriggerCard({
             )
           ) : null}
         </div>
+      ) : null}
+
+      {displayCustomTerminal ? (
+        <div className={cn(!open && 'pt-1')}>{customTerminal}</div>
       ) : null}
 
       {pending && filesystemAccess ? (

@@ -10,6 +10,7 @@ packages:
   - console/web
   - console/ui
   - browser/ui
+  - web/ui
   - sandbox-code-runner/ui
   - code-runner/ui
   - computer/ui
@@ -20,6 +21,7 @@ packages:
   - memory/ui
   - pdf/ui
   - state/ui
+  - storage/ui
   - iii-directory/ui
   - shell/ui
   - worktree/ui

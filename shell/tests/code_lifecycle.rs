@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use shell::code::change_journal::{diff as exact_diff, ChangeDiffInput, ChangeJournal};
 use shell::code::config::CoderConfig;
 use shell::code::functions::{
     create_file, delete_file, list_folder, read_file, search, tree, update_file,
@@ -35,6 +36,7 @@ struct Surface {
     root: std::path::PathBuf,
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
+    changes: ChangeJournal,
 }
 
 impl Surface {
@@ -52,6 +54,7 @@ impl Surface {
             root,
             resolver,
             cfg,
+            changes: ChangeJournal::default(),
         }
     }
 }
@@ -70,9 +73,10 @@ async fn full_lifecycle_via_handlers() {
 
     // 1. Create a file.
     let create = wire(
-        create_file::handle(
+        create_file::handle_with_journal(
             s.resolver.clone(),
             s.cfg.clone(),
+            s.changes.clone(),
             input(json!({
                 "files": [{
                     "path": "hello.txt",
@@ -93,6 +97,21 @@ async fn full_lifecycle_via_handlers() {
         "create failed: {:?}",
         create_results[0]["error"]
     );
+    let create_diff = exact_diff(
+        &s.changes,
+        ChangeDiffInput {
+            change_id: create_results[0]["change_id"]
+                .as_str()
+                .expect("create change id")
+                .to_string(),
+        },
+    )
+    .expect("create exact diff");
+    assert_eq!(create_diff.old_contents.as_deref(), Some(""));
+    assert_eq!(
+        create_diff.new_contents.as_deref(),
+        Some("hello world\nsecond line\n")
+    );
 
     // 2. Read it back.
     let read = wire(
@@ -109,9 +128,10 @@ async fn full_lifecycle_via_handlers() {
 
     // 3. Update — replace line 2.
     let updated = wire(
-        update_file::handle(
+        update_file::handle_with_journal(
             s.resolver.clone(),
             s.cfg.clone(),
+            s.changes.clone(),
             input(json!({
                 "files": [{
                     "path": "hello.txt",
@@ -125,6 +145,24 @@ async fn full_lifecycle_via_handlers() {
         .expect("update-file"),
     );
     assert_eq!(updated["results"][0]["success"], true);
+    let update_diff = exact_diff(
+        &s.changes,
+        ChangeDiffInput {
+            change_id: updated["results"][0]["change_id"]
+                .as_str()
+                .expect("update change id")
+                .to_string(),
+        },
+    )
+    .expect("update exact diff");
+    assert_eq!(
+        update_diff.old_contents.as_deref(),
+        Some("hello world\nsecond line\n")
+    );
+    assert_eq!(
+        update_diff.new_contents.as_deref(),
+        Some("hello world\nREPLACED\n")
+    );
 
     let after = wire(
         read_file::handle(
@@ -216,10 +254,29 @@ async fn full_lifecycle_via_handlers() {
 
     // 8. delete-file removes the file.
     let del = wire(
-        delete_file::handle(s.resolver.clone(), input(json!({ "paths": ["hello.txt"] })))
-            .await
-            .expect("delete-file"),
+        delete_file::handle_with_journal(
+            s.resolver.clone(),
+            s.changes.clone(),
+            input(json!({ "paths": ["hello.txt"] })),
+        )
+        .await
+        .expect("delete-file"),
     );
     assert_eq!(del["results"][0]["success"], true);
     assert_eq!(del["results"][0]["removed"], true);
+    let delete_diff = exact_diff(
+        &s.changes,
+        ChangeDiffInput {
+            change_id: del["results"][0]["change_id"]
+                .as_str()
+                .expect("delete change id")
+                .to_string(),
+        },
+    )
+    .expect("delete exact diff");
+    assert_eq!(
+        delete_diff.old_contents.as_deref(),
+        Some("hello world\nREPLACED\n")
+    );
+    assert_eq!(delete_diff.new_contents.as_deref(), Some(""));
 }

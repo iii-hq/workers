@@ -20,7 +20,10 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { createBrowserRenderer } from './src/function-trigger-message'
+import {
+  createBrowserRenderer,
+  createBrowserScreenshotRenderer,
+} from './src/function-trigger-message'
 import { BrowserPage } from './src/page'
 
 export default function setup(host: Host) {
@@ -30,5 +33,9 @@ export default function setup(host: Host) {
     render: (props) => <BrowserPage host={host} {...props} />,
   })
 
+  // A captured page is a first-class chat artifact. Register its focused
+  // renderer first; the general browser renderer still owns errors/running
+  // states and every other browser::* function.
+  host.functionTriggers.register(createBrowserScreenshotRenderer())
   host.functionTriggers.register(createBrowserRenderer(host))
 }

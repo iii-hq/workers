@@ -1,6 +1,6 @@
 // Edge cases for the storage RPC surface. Each case is parameterized
 // across active providers via forEachProvider; runtime length is roughly
-// 200ms per case per provider against MinIO, faster against local rustfs.
+// 200ms per case per provider against MinIO, faster against native local storage.
 import { randomBytes } from 'node:crypto';
 import { forEachProvider, type Provider, type TestCase } from './cases.ts';
 
@@ -91,10 +91,8 @@ export function buildKeyShapeCases(providers: readonly Provider[]): TestCase[] {
     }));
   }
 
-  // NOTE: "leading slashes" and "very long key (1024 chars)" cases were removed —
-  // rustfs (the local backend) rejects both with InvalidArgument. AWS S3 spec
-  // technically permits both, but since our local provider goes through rustfs,
-  // these can't be exercised end-to-end on the active provider set.
+  // NOTE: "leading slashes" and "very long key (1024 chars)" remain out of
+  // the cross-provider suite because cloud-compatible providers differ on them.
 
   cases.push(...forEachProvider('key with trailing slash', providers, async (ctx) => {
     const key = 'harness/edge/folder-like/';
@@ -171,11 +169,9 @@ export function buildMetadataCases(providers: readonly Provider[]): TestCase[] {
 //   accept max_inline_bytes (it always uses the 10 MiB INLINE_BODY_CAP), and
 //   putObject rejects > 10 MiB up-front, so this code path is unreachable
 //   from the JSON-RPC surface today.
-// - "deleteObject on missing key returns deleted=false": the S3 DeleteObject
-//   API returns success regardless of whether the key existed, so the local
-//   backend (rustfs over S3) returns deleted=true for missing keys. The
-//   `deleted=false` branch only fires if the SDK surfaces NoSuchKey, which
-//   AWS-flavoured DELETE never does.
+// - "deleteObject on missing key returns deleted=false": native local storage
+//   can report absence, while the S3 DeleteObject API reports success whether
+//   or not a key existed, so this cannot be asserted across all providers.
 //
 // Both behaviors are documented in the storage worker source; revisit
 // these cases if the handler contract changes.

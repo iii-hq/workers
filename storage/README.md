@@ -1,7 +1,7 @@
 # storage
 
-Object storage for the iii engine over S3, GCS, R2, and a managed local
-backend. Streamed uploads, presigned URLs, and `object-created` /
+Object storage for the iii engine over S3, GCS, R2, and a native local
+filesystem backend. Streamed uploads, signed downloads, and `object-created` /
 `object-deleted` triggers — all behind one `bucket:` name regardless of
 the cloud underneath.
 
@@ -17,8 +17,9 @@ boots.
 
 ## Quickstart
 
-Upload a profile photo, hand the browser a presigned URL for the next
-upload, then read it back.
+Use inline RPCs only for genuinely small values. Normal files should go
+directly between the client and object storage through a signed upload or
+download endpoint.
 
 ```ts
 import { registerWorker } from 'iii-sdk'
@@ -30,7 +31,7 @@ await iii.trigger({
   payload: {
     bucket: 'uploads',
     key: 'u/1/profile.jpg',
-    body_base64: fileBase64,         // ≤ 10 MiB inline; use presignUrl above that
+    body_base64: tinyValueBase64,    // small values only; 10 MiB hard limit
     content_type: 'image/jpeg',
   },
 })
@@ -44,6 +45,12 @@ const { url, expires_at } = await iii.trigger({
     expires_in_seconds: 600,
     content_type: 'image/jpeg',      // pinned into the signature
   },
+})
+
+await fetch(url, {
+  method: 'PUT',
+  headers: { 'Content-Type': 'image/jpeg' },
+  body: file,
 })
 
 const { body_base64, content_type } = await iii.trigger({
@@ -70,6 +77,31 @@ const { content_type, etag, size, last_modified } = await iii.trigger({
   },
 })                                  // fetches metadata only — no body download
 ```
+
+For a multipart upload to a native local bucket, use `presignPost`:
+
+```ts
+const { url, fields } = await iii.trigger({
+  function_id: 'storage::presignPost',
+  payload: {
+    bucket: 'scratch',
+    key: 'videos/demo.mp4',
+    content_type: 'video/mp4',
+    expires_in_seconds: 600,
+  },
+})
+
+const form = new FormData()
+for (const [name, value] of Object.entries(fields)) form.append(name, value)
+form.append('file', file)
+await fetch(url, { method: 'POST', body: form })
+```
+
+> `putObject` and `getObject` serialize bytes as base64 inside an engine
+> message. They buffer the complete value and base64 adds roughly 33% overhead.
+> Both enforce a 10 MiB decoded hard limit, but they are intended for truly
+> small values, not general file transfer. Use `presignPost`/a signed PUT for
+> uploads and a signed GET from `presignUrl` for downloads.
 
 From a Rust worker:
 
@@ -111,16 +143,16 @@ yet). It is not the live source of truth — once a value exists in the
 
 On a `configuration:updated` event the worker re-fetches the authoritative
 config from the `configuration` worker (it does **not** trust the event
-payload). It then rebuilds the in-memory **backend map only**, and only when the
-bucket/notification **topology is unchanged** — i.e. when just backend
-connection settings changed (credentials, endpoint, path-style).
+payload). Every setting is live: bucket additions/removals, providers,
+credentials, underlying names, notification sources, local data directory,
+and the local HTTP listener/public URL all apply without restarting the worker.
 
-Any change to the bucket set, a bucket's provider or underlying name, a
-notification source, or the local rustfs data dir is **refused**: the worker
-keeps the previously-running backends and logs that a restart is required.
-This avoids a split-brain where RPC reads/writes move to a new backend while
-the notification pollers/webhook stay wired to the old topology. A failed
-rebuild likewise keeps the previous backends.
+Application is transactional. The worker first prepares the candidate
+backends, notification clients, local service generation, and—when the bind
+address changes—the new TCP listener. Only after those fallible steps succeed
+does it publish the new runtime and gracefully retire the old listener and
+pollers. A failed backend build, authentication probe, or port bind leaves the
+previous configuration serving requests.
 
 A fresh install with no configured buckets runs with zero backends until a
 bucket is configured.
@@ -134,7 +166,10 @@ RPCs; they just don't fire triggers.
 ```yaml
 providers:
   local:
-    data_dir: ./data/storage           # rustfs sidecar root
+    data_dir: ./data/storage           # native object + metadata root
+    http:
+      bind_address: 0.0.0.0:49200      # omit `http` to disable direct transfers
+      public_url: http://10.0.0.42:49200 # browser-visible LAN/VPN/proxy URL
 
 buckets:
   uploads:
@@ -179,11 +214,20 @@ differ.
 - **R2** — required: `account_id`, `access_key_id`, `secret_access_key`.
   Endpoint URL is derived automatically as
   `https://{account_id}.r2.cloudflarestorage.com`.
-- **local** — managed [rustfs](https://github.com/rustfs/rustfs) sidecar,
-  spawned only when at least one `provider: local` bucket is configured.
-  Discovery order: `$RUSTFS_BIN`, then `./rustfs` next to the worker
-  binary, then `rustfs` on `$PATH`. Operators install rustfs separately
-  for now (v1.1 will side-download a pinned release).
+- **local** — implemented directly by the worker. Object bytes and JSON
+  metadata are persisted under `data_dir`; no sidecar or external binary is
+  required. `http` is optional: omit it when only the small inline RPCs are
+  needed. When enabled, `bind_address` controls the listener and `public_url`
+  controls the base URL returned to clients. Set `public_url` whenever clients
+  reach the worker through a LAN address, VPN, container port mapping, or
+  reverse proxy. With port `0` and no `public_url`, the worker chooses a free
+  loopback port and returns that address. The native listener includes browser
+  CORS support for these signed transfers; cloud buckets need equivalent CORS
+  rules on the provider when uploads originate in the Console.
+
+> Existing rustfs data directories are not imported automatically: the native
+> backend uses its own object/metadata layout under `data_dir`. Export or copy
+> existing objects before upgrading, then upload them into the native bucket.
 
 ### Custom endpoints
 
@@ -211,7 +255,7 @@ worker derive the endpoint automatically.
 | S3 | `notifications.sqs_queue_url` | SQS queue + bucket event config for `s3:ObjectCreated:*` / `s3:ObjectRemoved:*` + `sqs:ReceiveMessage,DeleteMessage` IAM on the queue ARN. |
 | GCS | `notifications.pubsub_subscription` | `gsutil notification create -t TOPIC -e OBJECT_FINALIZE,OBJECT_DELETE gs://<bucket>` + `roles/pubsub.subscriber` on the subscription. |
 | R2 | `notifications.queue_id` + `notifications.api_token` | Cloudflare Queue + R2 event notifications on the bucket + API token scoped `queue:consume`. |
-| local | (none) | Worker spawns rustfs and wires its notify webhook to a loopback HTTP receiver automatically. |
+| local | (none) | The worker dispatches events immediately after a native local write/delete commits. |
 
 Other config keys and their defaults live in
 [`src/config.rs`](src/config.rs); wire-stable error codes returned by
@@ -248,7 +292,45 @@ triggers:
 > redelivery or auth-scope edge cases in production, file an issue —
 > v1.1 will finalize the consume path.
 
+## Console explorer
+
+When the worker is connected, it injects a `storage` page into the Console.
+Wide panels use three simultaneous levels—buckets, folders/objects, and object
+details—while narrow panels show one level at a time. The explorer supports
+folder breadcrumbs, pagination, metadata inspection, direct upload, signed
+download, copy-key, and delete actions. Uploads and downloads use the direct
+transfer endpoints instead of moving file bodies through an inline RPC.
+
+For native local uploads, enable `providers.local.http`. Cloud uploads also
+require the provider bucket to permit the Console origin through CORS.
+
+The page's **configure** action opens a storage-specific editor while the
+Console continues to own validation, dirty tracking, save, reset, and the
+unsaved-change guard. The editor separates native-local runtime settings from
+bucket mappings and presents only the fields relevant to Local, S3, GCS, or
+R2. Saved changes are applied live; no storage setting requires a worker
+restart.
+
 ## RPC reference notes
+
+### Inline object calls are intentionally limited
+
+`storage::putObject` and `storage::getObject` are convenience functions for
+small configuration fragments, thumbnails, test fixtures, and similar values.
+They are not streaming APIs: the full object crosses the iii engine as base64
+and is held in memory. The decoded body is capped at 10 MiB. For files—even
+when a file happens to fit below that cap—prefer direct transfer endpoints:
+
+- upload: `storage::presignPost` for local multipart POST, or
+  `storage::presignUrl` with `method: "PUT"`;
+- download: `storage::presignUrl` with `method: "GET"`.
+
+### `storage::presignPost` — multipart upload
+
+Returns `{ url, fields, expires_at }`. Add every returned field to a
+`multipart/form-data` body before the `file` part. Native local storage streams
+the file to disk and can enforce optional `max_size_bytes` without buffering.
+Other providers currently return `PRESIGN_UNSUPPORTED`; use a signed PUT there.
 
 ### `storage::presignUrl` — GET-only response-override params
 
@@ -276,8 +358,8 @@ const { url } = await iii.trigger({
 
 ## Local development & testing
 
-The committed `config.yaml` declares a single `scratch` bucket served by the
-bundled rustfs sidecar. Pass it as a seed so the `configuration` worker picks it
+The committed `config.yaml` declares a single `scratch` bucket served directly
+by the worker. Pass it as a seed so the `configuration` worker picks it
 up on first boot — zero cloud credentials required.
 
 ```bash
@@ -289,10 +371,11 @@ cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
 ```
 
 The worker registers its schema with the `configuration` worker (seeding
-`config.yaml` if no stored value exists), fetches the live config, then spawns a
-rustfs process on a random port, waits for it to become healthy, and registers
+`config.yaml` if no stored value exists), fetches the live config, initializes
+the native store and optional direct-transfer HTTP listener, and registers
 `storage::putObject`, `storage::getObject`, `storage::deleteObject`,
-`storage::presignUrl`, and `storage::headObject`. Files land under
+`storage::presignUrl`, `storage::presignPost`, `storage::headObject`,
+`storage::listBuckets`, and `storage::listObjects`. Files land under
 `./data/storage/` (configurable via
 `providers.local.data_dir`).
 
@@ -312,9 +395,9 @@ cargo test --test manifest      # `--manifest` subprocess contract
 cargo test --test integration   # spec §9 pattern A: spawns engine + worker
 ```
 
-`tests/integration.rs` self-skips when `iii` (engine) or `rustfs` is not
-available on `PATH` (or via `$RUSTFS_BIN`), so CI hosts without those
-dependencies still pass. The richer per-provider e2e suite under `tests/e2e/`
+`tests/integration.rs` self-skips when the `iii` engine is not available on
+`PATH`. Native local tests require no external storage dependency. The richer
+per-provider e2e suite under `tests/e2e/`
 is env-var-gated — see `tests/e2e/run-tests.sh` for the orchestrator.
 
 ### Verification before publishing

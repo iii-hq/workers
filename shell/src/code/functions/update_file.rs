@@ -27,6 +27,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
@@ -192,6 +193,10 @@ pub struct UpdateFileResult {
     /// op echoes could be emitted. Use `coder::read-file` to inspect the
     /// full result if needed. Always present on the wire.
     pub echoes_truncated: bool,
+    /// Opaque id for the console UI to retrieve the exact before/after diff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub change_id: Option<String>,
     /// Structured error for this entry. `code` is stable for programmatic
     /// branching (e.g. `"C211"` for not-found-or-denied; `"C210"` for bad
     /// input such as overlapping ops). `message` carries the corrective
@@ -200,9 +205,28 @@ pub struct UpdateFileResult {
     pub error: Option<WireError>,
 }
 
+#[allow(dead_code)] // Public compatibility path used by integration callers without UI journaling.
 pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
+    req: UpdateFileInput,
+) -> Result<UpdateFileOutput, String> {
+    handle_impl(resolver, cfg, None, req).await
+}
+
+pub async fn handle_with_journal(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: ChangeJournal,
+    req: UpdateFileInput,
+) -> Result<UpdateFileOutput, String> {
+    handle_impl(resolver, cfg, Some(&journal), req).await
+}
+
+async fn handle_impl(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: Option<&ChangeJournal>,
     req: UpdateFileInput,
 ) -> Result<UpdateFileOutput, String> {
     if req.files.is_empty() {
@@ -221,13 +245,14 @@ pub async fn handle(
     }
     let results = entries
         .into_iter()
-        .map(|(spec, resolved)| update_one(&cfg, spec, resolved))
+        .map(|(spec, resolved)| update_one(&cfg, journal, spec, resolved))
         .collect();
     Ok(UpdateFileOutput { results })
 }
 
 fn update_one(
     cfg: &CoderConfig,
+    journal: Option<&ChangeJournal>,
     spec: UpdateFileSpec,
     resolved: Result<std::path::PathBuf, CoderError>,
 ) -> UpdateFileResult {
@@ -245,19 +270,21 @@ fn update_one(
                 new_line_count: 0,
                 echoes: vec![],
                 echoes_truncated: false,
+                change_id: None,
                 error: Some((&e).into()),
             }
         }
     };
     let wire_path = abs.display().to_string();
-    match try_update_one(cfg, &abs, spec) {
-        Ok((applied, new_line_count, echoes, echoes_truncated)) => UpdateFileResult {
+    match try_update_one(cfg, journal, &abs, spec) {
+        Ok((applied, new_line_count, echoes, echoes_truncated, change_id)) => UpdateFileResult {
             path: wire_path,
             success: true,
             applied,
             new_line_count,
             echoes,
             echoes_truncated,
+            change_id,
             error: None,
         },
         Err(e) => UpdateFileResult {
@@ -267,6 +294,7 @@ fn update_one(
             new_line_count: 0,
             echoes: vec![],
             echoes_truncated: false,
+            change_id: None,
             error: Some((&e).into()),
         },
     }
@@ -281,9 +309,10 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
 
 fn try_update_one(
     cfg: &CoderConfig,
+    journal: Option<&ChangeJournal>,
     abs: &Path,
     spec: UpdateFileSpec,
-) -> Result<(u32, u64, Vec<OpEcho>, bool), CoderError> {
+) -> Result<(u32, u64, Vec<OpEcho>, bool, Option<String>), CoderError> {
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -338,6 +367,8 @@ fn try_update_one(
         )));
     }
     atomic_write(abs, &new_bytes)?;
+    let change_id =
+        journal.and_then(|journal| journal.record(abs.display().to_string(), bytes, new_bytes));
 
     // Build per-op echoes by mapping each anchor through the events that
     // applied after it, then extracting from the FINAL body.
@@ -348,6 +379,7 @@ fn try_update_one(
         final_lines.len() as u64,
         echoes,
         echoes_truncated,
+        change_id,
     ))
 }
 

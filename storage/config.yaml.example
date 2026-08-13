@@ -4,6 +4,9 @@ workers:
       providers:
         local:
           data_dir: ./data/storage
+          http:
+            bind_address: 0.0.0.0:49200
+            public_url: http://10.0.0.42:49200
 
       buckets:
         uploads:

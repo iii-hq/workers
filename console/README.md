@@ -235,8 +235,11 @@ disposes the old module and re-imports the new one. Injected scripts default-
 export `setup(host)` and register through `host.pages` (whole pages at
 `#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
-built-in id overrides it), and `host.configForms` (replace the workers-tab
-form region for one configuration id; dirty/save/reset stay host-owned).
+built-in id overrides it; `metadata.display` promotes the winning renderer's
+rich result into the collapsed chat flow), and `host.configForms` (replace the workers-tab
+form region for one configuration id; dirty/save/reset stay host-owned). A
+configuration form can opt into `{ layout: 'full' }` to receive the entire
+available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under
 `data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
 loadable assets. The `state` worker's `ui/` directory is the working

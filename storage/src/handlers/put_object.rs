@@ -10,12 +10,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// Write a genuinely small object inline. The complete base64 payload is
+/// buffered, with a 10 MiB decoded hard limit. Use `storage::presignPost` or a
+/// signed PUT from `storage::presignUrl` for files and larger objects.
 pub struct PutReq {
     pub bucket: String,
     pub key: String,
-    /// Base64-encoded body. The legacy field name `body` is accepted as an
-    /// alias for backward compatibility with clients that pre-date the
-    /// rename.
+    /// Base64-encoded small body (10 MiB decoded hard limit). The legacy field
+    /// name `body` is accepted as an alias for backward compatibility.
     #[serde(alias = "body")]
     pub body_base64: String,
     pub content_type: Option<String>,
@@ -93,7 +95,6 @@ mod tests {
     use crate::backend::Backend;
     use serde_json::json;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     /// Returns `(AppState, Arc<MockBackend>)` — keep the typed Arc for
     /// inspection alongside the trait-object stored in AppState.
@@ -101,13 +102,7 @@ mod tests {
         let m = Arc::new(MockBackend::default());
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), m.clone() as Arc<dyn Backend>);
-        (
-            AppState {
-                backends: Arc::new(RwLock::new(map)),
-                local_ctx: None,
-            },
-            m,
-        )
+        (AppState::new(map), m)
     }
 
     fn req(v: serde_json::Value) -> PutReq {

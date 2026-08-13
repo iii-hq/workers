@@ -18,6 +18,7 @@
  */
 
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
+import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
 import { createShellTriggerRenderer } from './src/function-trigger'
 import { ShellExplorerPage } from './src/page'
 
@@ -28,5 +29,8 @@ export default function setup(host: Host) {
     render: (props: PageRenderProps) => <ShellExplorerPage host={host} {...props} />,
   })
 
+  // File mutations own a prominent chat artifact; register them before the
+  // general shell renderer so their non-null card and display metadata win.
+  host.functionTriggers.register(createFileChangesRenderer(host))
   host.functionTriggers.register(createShellTriggerRenderer())
 }

@@ -119,6 +119,12 @@ export interface ThoughtMessage extends BaseMessage {
 export interface FunctionTriggerMessage extends BaseMessage {
   role: 'function-trigger'
   functionId: string
+  /**
+   * Short user-facing action supplied by the agent_trigger wrapper. Calls
+   * recorded before this field existed omit it and keep the function-id
+   * fallback.
+   */
+  description?: string
   input: unknown
   output?: unknown
   durationMs?: number

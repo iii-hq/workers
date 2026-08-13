@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CHAT_SCREEN,
   defaultTabs,
+  MAX_COLUMNS,
   parseActiveTabId,
   parseWorkspaceTabs,
   resolveActiveTab,
@@ -14,6 +16,8 @@ import {
   withColumnAdded,
   withColumnRemoved,
   withScreenDetached,
+  withScreenOpenedBeside,
+  withWorkspaceScreenOpened,
   withWorkspaceTabs,
 } from './workspace-tabs'
 
@@ -227,6 +231,91 @@ describe('withColumnAdded / withColumnRemoved', () => {
     const parsed = parseWorkspaceTabs({ workspace: { tabs: [three] } })
     expect(parsed).toHaveLength(1)
     expect(tabColumns(parsed[0])).toBe(3)
+  })
+})
+
+describe('withScreenOpenedBeside', () => {
+  it('uses the empty column beside chat before growing the split', () => {
+    const tab: WorkspaceTab = {
+      id: 'a',
+      columns: 2,
+      screens: [CHAT_SCREEN, null],
+    }
+    expect(withScreenOpenedBeside(tab, 'ext:shell')?.screens).toEqual([
+      CHAT_SCREEN,
+      'ext:shell',
+    ])
+  })
+
+  it('inserts beside chat without replacing another panel', () => {
+    const tab: WorkspaceTab = {
+      id: 'a',
+      columns: 2,
+      screens: [CHAT_SCREEN, 'traces'],
+    }
+    const next = withScreenOpenedBeside(tab, 'ext:shell')
+    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+    expect(next?.sizes?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1)
+  })
+
+  it('reuses an existing screen and refuses to overwrite a full tab', () => {
+    const existing: WorkspaceTab = {
+      id: 'a',
+      columns: 2,
+      screens: [CHAT_SCREEN, 'ext:shell'],
+    }
+    expect(withScreenOpenedBeside(existing, 'ext:shell')).toBe(existing)
+
+    const full: WorkspaceTab = {
+      id: 'b',
+      columns: MAX_COLUMNS,
+      screens: [CHAT_SCREEN, 'traces', 'workers'],
+    }
+    expect(withScreenOpenedBeside(full, 'ext:shell')).toBeNull()
+  })
+})
+
+describe('withWorkspaceScreenOpened', () => {
+  it('activates an already-open panel without duplicating it', () => {
+    const tabs: WorkspaceTab[] = [
+      { id: 'chat', screens: [CHAT_SCREEN, 'traces'] },
+      { id: 'shell', screens: ['ext:shell'] },
+    ]
+    expect(
+      withWorkspaceScreenOpened(tabs, 'chat', 'ext:shell', () => 'new'),
+    ).toEqual({
+      tabs,
+      activeTabId: 'shell',
+    })
+  })
+
+  it('places beside chat, then creates a safe split when the active tab is full', () => {
+    const open = withWorkspaceScreenOpened(
+      [{ id: 'chat', columns: 2, screens: [CHAT_SCREEN, 'traces'] }],
+      'chat',
+      'ext:shell',
+      () => 'new',
+    )
+    expect(open.tabs[0].screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+
+    const full = withWorkspaceScreenOpened(
+      [
+        {
+          id: 'full',
+          columns: MAX_COLUMNS,
+          screens: [CHAT_SCREEN, 'traces', 'workers'],
+        },
+      ],
+      'full',
+      'ext:shell',
+      () => 'new',
+    )
+    expect(full.activeTabId).toBe('new')
+    expect(full.tabs[1]).toEqual({
+      id: 'new',
+      columns: 2,
+      screens: [CHAT_SCREEN, 'ext:shell'],
+    })
   })
 })
 

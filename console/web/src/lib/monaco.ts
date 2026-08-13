@@ -25,9 +25,9 @@ import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker'
 
 export const CONSOLE_THEME = 'iii-console'
 
-/** Mirrors `--font-mono` in index.css — used only if the token is unreadable. */
-const FALLBACK_MONO =
-  '"Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+/** Mirrors `--font-code` in index.css — used only if the token is unreadable. */
+const FALLBACK_CODE =
+  'Monaco, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace'
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
@@ -74,11 +74,11 @@ function toHex(css: string, fallback: string, base?: string): string {
   return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
 }
 
-export function monoFontFamily(): string {
+export function codeFontFamily(): string {
   const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue('--font-mono')
+    .getPropertyValue('--font-code')
     .trim()
-  return raw || FALLBACK_MONO
+  return raw || FALLBACK_CODE
 }
 
 /**

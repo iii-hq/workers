@@ -24,6 +24,7 @@ pub mod update_file;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 
+use crate::code::change_journal::{self, ChangeDiffInput};
 use crate::code::state::CodeCells;
 
 // ---------------------------------------------------------------------------
@@ -265,6 +266,7 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     registered += 1;
     register_delete_file(iii, cells.clone());
     registered += 1;
+    register_change_diff(iii, cells.clone());
     register_list_folder(iii, cells.clone());
     registered += 1;
     register_tree(iii, cells.clone());
@@ -279,6 +281,18 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
          (UPDATE_GOLDENS=1 cargo test)"
     );
     tracing::info!(count = registered, "coder registered functions");
+}
+
+fn register_change_diff(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        "coder::change-diff",
+        RegisterFunction::new_async(move |req: ChangeDiffInput| {
+            let journal = cells.changes.clone();
+            async move { change_journal::diff(&journal, req).map_err(Error::from) }
+        })
+        .description("Internal console UI: retrieve an exact before/after snapshot by change id.")
+        .metadata(serde_json::json!({ "internal": true })),
+    );
 }
 
 fn register_info(iii: &IIIClient, cells: CodeCells) {
@@ -350,12 +364,13 @@ fn register_update_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
                 let cfg = cells.config.read().await.clone();
-                update_file::handle(resolver, cfg, req)
+                update_file::handle_with_journal(resolver, cfg, cells.changes.clone(), req)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(UPDATE_FILE_DESC),
+        .description(UPDATE_FILE_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 
@@ -371,12 +386,13 @@ fn register_create_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
                 let cfg = cells.config.read().await.clone();
-                create_file::handle(resolver, cfg, req)
+                create_file::handle_with_journal(resolver, cfg, cells.changes.clone(), req)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(CREATE_FILE_DESC),
+        .description(CREATE_FILE_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 
@@ -391,12 +407,13 @@ fn register_delete_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_root(req.fs_scope.as_ref()),
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
-                delete_file::handle(resolver, req)
+                delete_file::handle_with_journal(resolver, cells.changes.clone(), req)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(DELETE_FILE_DESC),
+        .description(DELETE_FILE_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 
@@ -479,6 +496,7 @@ mod tests {
         let cells = CodeCells {
             config: Arc::new(RwLock::new(Arc::new(cfg))),
             resolver: Arc::new(RwLock::new(resolver)),
+            changes: Default::default(),
         };
         register_all(&iii, cells);
     }

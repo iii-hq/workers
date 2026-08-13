@@ -8,6 +8,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
@@ -80,6 +81,10 @@ pub struct CreateFileResult {
     pub path: String,
     pub success: bool,
     pub bytes_written: u64,
+    /// Opaque id for the console UI to retrieve the exact before/after diff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub change_id: Option<String>,
     /// Structured error for this entry. `code` is stable for programmatic
     /// branching (e.g. `"C213"` means already-exists; pass `overwrite=true`
     /// to replace). `message` carries the corrective action an LLM agent
@@ -88,9 +93,28 @@ pub struct CreateFileResult {
     pub error: Option<WireError>,
 }
 
+#[allow(dead_code)] // Public compatibility path used by integration callers without UI journaling.
 pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
+    req: CreateFileInput,
+) -> Result<CreateFileOutput, String> {
+    handle_impl(resolver, cfg, None, req).await
+}
+
+pub async fn handle_with_journal(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: ChangeJournal,
+    req: CreateFileInput,
+) -> Result<CreateFileOutput, String> {
+    handle_impl(resolver, cfg, Some(&journal), req).await
+}
+
+async fn handle_impl(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: Option<&ChangeJournal>,
     req: CreateFileInput,
 ) -> Result<CreateFileOutput, String> {
     if req.files.is_empty() {
@@ -109,13 +133,14 @@ pub async fn handle(
     }
     let results = entries
         .into_iter()
-        .map(|(spec, resolved)| create_one(&cfg, spec, resolved))
+        .map(|(spec, resolved)| create_one(&cfg, journal, spec, resolved))
         .collect();
     Ok(CreateFileOutput { results })
 }
 
 fn create_one(
     cfg: &CoderConfig,
+    journal: Option<&ChangeJournal>,
     spec: CreateFileSpec,
     resolved: Result<std::path::PathBuf, CoderError>,
 ) -> CreateFileResult {
@@ -130,22 +155,25 @@ fn create_one(
                 path: spec.path,
                 success: false,
                 bytes_written: 0,
+                change_id: None,
                 error: Some((&e).into()),
             }
         }
     };
     let wire_path = abs.display().to_string();
-    match try_create_one(cfg, &abs, spec) {
-        Ok(bytes) => CreateFileResult {
+    match try_create_one(cfg, journal, &abs, spec) {
+        Ok((bytes, change_id)) => CreateFileResult {
             path: wire_path,
             success: true,
             bytes_written: bytes,
+            change_id,
             error: None,
         },
         Err(e) => CreateFileResult {
             path: wire_path,
             success: false,
             bytes_written: 0,
+            change_id: None,
             error: Some((&e).into()),
         },
     }
@@ -158,7 +186,12 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
     )
 }
 
-fn try_create_one(cfg: &CoderConfig, abs: &Path, spec: CreateFileSpec) -> Result<u64, CoderError> {
+fn try_create_one(
+    cfg: &CoderConfig,
+    journal: Option<&ChangeJournal>,
+    abs: &Path,
+    spec: CreateFileSpec,
+) -> Result<(u64, Option<String>), CoderError> {
     let bytes = spec.content.as_bytes();
     if (bytes.len() as u64) > cfg.max_write_bytes {
         return Err(CoderError::TooLarge(format!(
@@ -176,6 +209,11 @@ fn try_create_one(cfg: &CoderConfig, abs: &Path, spec: CreateFileSpec) -> Result
             spec.path
         )));
     }
+    let before = if abs.is_file() {
+        std::fs::read(abs).map_err(|e| CoderError::io_for_path(e, &spec.path))?
+    } else {
+        Vec::new()
+    };
     if spec.parents {
         if let Some(parent) = abs.parent() {
             // io_for_path names spec.path (caller-supplied, redaction-safe)
@@ -185,7 +223,9 @@ fn try_create_one(cfg: &CoderConfig, abs: &Path, spec: CreateFileSpec) -> Result
     }
     std::fs::write(abs, bytes).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
     apply_mode(abs, &spec.mode)?;
-    Ok(bytes.len() as u64)
+    let change_id = journal
+        .and_then(|journal| journal.record(abs.display().to_string(), before, bytes.to_vec()));
+    Ok((bytes.len() as u64, change_id))
 }
 
 #[cfg(unix)]

@@ -5,16 +5,10 @@
 # registers with the engine — the published "interface". That interface is
 # static: it does NOT depend on which buckets are configured.
 #
-# The default config.yaml declares a `provider: local` bucket, which makes the
-# worker spawn a rustfs sidecar at startup (see src/main.rs `needs_local`).
-# The prebuilt release binary ships WITHOUT a co-located rustfs, so booting it
-# with the default config in CI fails with LOCAL_BACKEND_BIN_NOT_FOUND before
-# the worker can connect and register — and the publish never happens.
-#
-# This config declares a single cloud bucket with dummy static credentials
-# instead. It passes config validation (which requires >=1 bucket), builds a
-# lazy S3 client with no network call and no sidecar at startup, and registers
-# the exact same interface. The publish workflow launches the worker with
+# This config declares a single cloud bucket with dummy static credentials so
+# interface collection does not create local data files or bind a transfer
+# port. It builds a lazy S3 client with no network call and registers the exact
+# same interface. The publish workflow launches the worker with
 # `--config config.collect.yaml` whenever this file is present.
 
 buckets:

@@ -189,6 +189,7 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
       : undefined,
     FunctionIdLabel: renderer.FunctionIdLabel,
     primaryTabLabel: renderer.primaryTabLabel,
+    metadata: renderer.metadata,
     redactRaw: renderer.redactRaw
       ? (value: unknown) => {
           try {
@@ -247,6 +248,28 @@ export function firstNonNull(
   for (const renderer of renderers) {
     const node = pick(renderer)
     if (node != null) return node
+  }
+  return null
+}
+
+export interface RenderedFunctionTrigger {
+  renderer: FunctionTriggerRenderer
+  node: React.ReactNode
+}
+
+/**
+ * Resolve both the first non-null node and the renderer that produced it.
+ * The owner matters for presentation metadata such as `display`; deriving
+ * that hint from a separate `isMatch` pass would let a marker renderer style
+ * another renderer's content accidentally.
+ */
+export function firstRendered(
+  renderers: readonly FunctionTriggerRenderer[],
+  pick: (renderer: FunctionTriggerRenderer) => React.ReactNode | null,
+): RenderedFunctionTrigger | null {
+  for (const renderer of renderers) {
+    const node = pick(renderer)
+    if (node != null) return { renderer, node }
   }
   return null
 }
