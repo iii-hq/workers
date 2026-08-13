@@ -22,6 +22,9 @@ export interface WorkspaceChangedEvent {
   kind: string
   /** The watched directory the path is relative to. */
   root: string
+  /** True for directories — they refresh the tree but must never open
+      as files. Absent on older workers: treat as false. */
+  dir?: boolean
 }
 
 export function useWorkspaceChanges(

@@ -3,7 +3,10 @@
    this page saw. */
 
 export function splitLines(s: string): string[] {
-  return s === '' ? [] : s.split('\n')
+  // A trailing newline terminates the last line, it doesn't start an
+  // empty one — matches how git counts.
+  const body = s.endsWith('\n') ? s.slice(0, -1) : s
+  return body === '' ? [] : body.split('\n')
 }
 
 /** Approximate added/removed line counts: strip the common prefix and

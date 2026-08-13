@@ -46,6 +46,10 @@ pub struct ChangedEvent {
     pub kind: String,
     /// The watched directory this event is relative to.
     pub root: String,
+    /// True when the path is a directory — a subscriber that opens
+    /// files must skip these. Deleted paths can't be probed and report
+    /// false.
+    pub dir: bool,
 }
 
 struct WatchEntry {
@@ -183,10 +187,12 @@ async fn pump(
             }
         }
         for (path, kind) in batch.drain() {
+            let dir = kind != "deleted" && root.join(&path).is_dir();
             let event = ChangedEvent {
                 path,
                 kind: kind.to_string(),
                 root: root_str.clone(),
+                dir,
             };
             let payload = match serde_json::to_value(&event) {
                 Ok(v) => v,

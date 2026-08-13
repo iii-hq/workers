@@ -121,8 +121,9 @@ A custom trigger type backed by a system-level directory watch. Bind it
 with `config: { path: "/some/dir" }` to stream every change under that
 directory — whoever made it: `coder::*` calls, `shell::exec` side
 effects, or an editor outside the engine. Payload:
-`{ path, kind, root }` with `kind` ∈ `created | modified | deleted`,
-`path` relative to `root`. Events coalesce per path in a short window
+`{ path, kind, root, dir }` with `kind` ∈ `created | modified | deleted`,
+`path` relative to `root`, `dir` true for directories (skip those when
+opening files). Events coalesce per path in a short window
 (create + write = `created`; deletion supersedes), `.git` internals are
 filtered, and fan-out is fire-and-forget. Read content on demand via
 `coder::read-file` — the event deliberately carries none.

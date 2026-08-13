@@ -1,12 +1,17 @@
-/* The diff surface for git-tab selections — the console's shared
-   FileDiff (the same diff renderer chat cards use), fed with the two
-   full file bodies: HEAD content via `git show`, working-tree content
-   via `coder::read-file`. */
+/* The diff surface for git-tab selections and live follows — shell's
+   OWN renderer (no shared component): Myers line diff with folded
+   unmodified context, dual line-number gutters, syntax-colored lines,
+   and intraline change emphasis. Baselines: git HEAD via `git show`
+   (from the browsed root or the file's own repo), or a text baseline
+   the page supplies; the new side is the working tree via
+   `coder::read-file`. */
 
-import { FileDiff, type Host } from '@iii-dev/console-ui'
-import { useEffect, useRef, useState } from 'react'
+import type { Host } from '@iii-dev/console-ui'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
+import { langFromPath, renderCodeLine } from '../lib/syntax'
 import { coderReadFile, joinPath } from './coder'
+import { type DiffOp, type DiffRow, diffLines, diffTotals, foldRows } from './diff'
 import { type GitChange, gitShowHead } from './git'
 
 type DiffState =
@@ -69,6 +74,14 @@ export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps
       })
   }, [host, root, change, baseline, gitDir])
 
+  const ops = useMemo(
+    () =>
+      state.phase === 'ready' ? diffLines(state.oldContents, state.newContents) : null,
+    [state],
+  )
+  const totals = useMemo(() => (ops !== null ? diffTotals(ops) : null), [ops])
+  const rows = useMemo(() => (ops !== null ? foldRows(ops) : null), [ops])
+
   return (
     <div className="shui-main-pane">
       <div className="shui-editor-head">
@@ -76,22 +89,70 @@ export function DiffPane({ host, root, change, baseline, gitDir }: DiffPaneProps
           {change.from ? `${change.from} → ${change.path}` : change.path}
         </span>
         <span className="meta">{change.status}</span>
+        {totals !== null ? (
+          <span className="shui-feed-stats">
+            <span className="add">+{totals.add}</span>
+            <span className="del">−{totals.del}</span>
+          </span>
+        ) : null}
       </div>
       <div className="shui-editor-body">
         {state.phase === 'loading' ? (
           <div className="shui-side-note">loading diff…</div>
         ) : state.phase === 'error' ? (
           <div className="shui-side-note warn">{state.message}</div>
-        ) : (
-          <FileDiff
-            oldFile={{
-              name: change.from ?? change.path,
-              contents: state.oldContents,
-            }}
-            newFile={{ name: change.path, contents: state.newContents }}
-          />
-        )}
+        ) : rows !== null && totals !== null && totals.add === 0 && totals.del === 0 ? (
+          <div className="shui-side-note">· no line changes</div>
+        ) : rows !== null ? (
+          <DiffBody rows={rows} lang={langFromPath(change.path)} />
+        ) : null}
       </div>
+    </div>
+  )
+}
+
+function DiffBody({ rows, lang }: { rows: DiffRow[]; lang: string }) {
+  // Folds expand in place and stay expanded for this diff instance.
+  const [openFolds, setOpenFolds] = useState<ReadonlySet<number>>(new Set())
+  return (
+    <div className="shui-diff">
+      {rows.map((row) => {
+        if (row.kind === 'fold') {
+          if (openFolds.has(row.index)) {
+            return row.ops.map((op) => (
+              <DiffLine key={`${op.type}:${'oldLine' in op ? op.oldLine : 0}:${'newLine' in op ? op.newLine : 0}`} op={op} lang={lang} />
+            ))
+          }
+          return (
+            <button
+              key={`fold:${row.index}`}
+              type="button"
+              className="shui-diff-fold"
+              onClick={() => setOpenFolds((prev) => new Set(prev).add(row.index))}
+            >
+              ⌄ {row.count} unmodified {row.count === 1 ? 'line' : 'lines'}
+            </button>
+          )
+        }
+        const op = row.op
+        return (
+          <DiffLine key={`${op.type}:${'oldLine' in op ? op.oldLine : 0}:${'newLine' in op ? op.newLine : 0}`} op={op} lang={lang} />
+        )
+      })}
+    </div>
+  )
+}
+
+function DiffLine({ op, lang }: { op: DiffOp; lang: string }) {
+  const marker = op.type === 'add' ? '+' : op.type === 'del' ? '−' : ' '
+  return (
+    <div className={`shui-diff-line ${op.type}`}>
+      <span className="ln old">{op.type !== 'add' ? op.oldLine : ''}</span>
+      <span className="ln new">{op.type !== 'del' ? op.newLine : ''}</span>
+      <span className="mark">{marker}</span>
+      <span className="code">
+        {renderCodeLine(op.text, lang, op.type === 'same' ? undefined : op.hl)}
+      </span>
     </div>
   )
 }

@@ -253,8 +253,10 @@ Each registration starts one recursive watcher; unregistering (or the
 console GC'ing a closed tab's binding) tears it down. `config.path` must
 exist and be a directory, or the registration fails.
 
-The payload is lean — `{ path, kind, root }` with `kind` ∈
-`created | modified | deleted` and `path` relative to the watched `root`.
+The payload is lean — `{ path, kind, root, dir }` with `kind` ∈
+`created | modified | deleted`, `path` relative to the watched `root`,
+and `dir` true when the path is a directory (a subscriber that opens
+files must skip those; deleted paths can't be probed and report false).
 A subscriber that wants content asks `coder::read-file`; one that wants
 the diff asks git.
 

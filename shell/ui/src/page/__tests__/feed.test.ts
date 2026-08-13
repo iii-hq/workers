@@ -7,6 +7,11 @@ describe('splitLines', () => {
     expect(splitLines('a')).toEqual(['a'])
     expect(splitLines('a\nb')).toEqual(['a', 'b'])
   })
+
+  it('counts a trailing newline as a terminator, not a new line', () => {
+    expect(splitLines('a\nb\n')).toEqual(['a', 'b'])
+    expect(splitLines('\n')).toEqual([])
+  })
 })
 
 describe('lineDelta', () => {

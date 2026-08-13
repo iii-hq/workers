@@ -350,6 +350,9 @@ export function ShellExplorerPage({
   // so only visible, non-system, non-artifact paths ever steal the view.
   const followRef = useRef<{ rel: string; kind: string } | null>(null)
   const followable = (rel: string): boolean => {
+    // This page's own persisted UI state — every tab/expand change
+    // writes it, so following it would chase our own tail forever.
+    if (rel.endsWith('shell-ui.yaml')) return false
     const noise = ['Library', 'node_modules', 'target', 'dist', 'build', 'out', 'vendor', '__pycache__']
     const segments = rel.split('/')
     if (segments.some((s) => s.startsWith('.') || noise.includes(s))) return false
@@ -450,15 +453,21 @@ export function ShellExplorerPage({
     [host],
   )
 
+  const changedDirsRef = useRef<Set<string>>(new Set())
   useWorkspaceChanges(host, root, (event) => {
-    changedAbsRef.current.set(joinPath(event.root, event.path), event.kind)
-    if (event.kind !== 'deleted') {
+    const eventAbs = joinPath(event.root, event.path)
+    changedAbsRef.current.set(eventAbs, event.kind)
+    // Directories refresh the tree but must never open as files —
+    // reading one is a C210.
+    if (event.dir === true) {
+      changedDirsRef.current.add(eventAbs)
+      // fall through to the flush timer below
+    } else if (event.kind !== 'deleted') {
       const currentRoot = rootRef.current
       if (currentRoot) {
-        const abs = joinPath(event.root, event.path)
         const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
-        if (abs.startsWith(prefix)) {
-          const rel = abs.slice(prefix.length)
+        if (eventAbs.startsWith(prefix)) {
+          const rel = eventAbs.slice(prefix.length)
           if (followable(rel)) followRef.current = { rel, kind: event.kind }
         }
       }
@@ -477,13 +486,17 @@ export function ShellExplorerPage({
       followRef.current = null
       const changed = changedAbsRef.current
       changedAbsRef.current = new Map()
+      const changedDirs = changedDirsRef.current
+      changedDirsRef.current = new Set()
       const currentRoot = rootRef.current
       if (currentRoot !== null) {
         const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
-        // Every visible change lands in the review feed — the auto-follow
-        // is last-write-wins; this list is where a burst stays legible.
+        // Every visible FILE change lands in the review feed — the
+        // auto-follow is last-write-wins; this list is where a burst
+        // stays legible.
         const entries: FeedEntry[] = []
         for (const [abs, kind] of changed) {
+          if (changedDirs.has(abs)) continue
           if (!abs.startsWith(prefix)) continue
           const rel = abs.slice(prefix.length)
           if (followable(rel)) entries.push({ rel, kind })

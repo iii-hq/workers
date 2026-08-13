@@ -815,3 +815,67 @@
 [data-iii-ui="shell"] .shui-feed-group-head .shui-feed-time {
   margin-left: auto;
 }
+[data-iii-ui="shell"] .shui-diff {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 4px 0 12px;
+}
+[data-iii-ui="shell"] .shui-diff-line {
+  display: grid;
+  grid-template-columns: 3.2em 3.2em 1.2em 1fr;
+  align-items: start;
+}
+[data-iii-ui="shell"] .shui-diff-line .ln {
+  text-align: right;
+  padding-right: 8px;
+  color: var(--color-ink-ghost);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-diff-line .mark {
+  user-select: none;
+  color: var(--color-ink-muted);
+}
+[data-iii-ui="shell"] .shui-diff-line .code {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding-right: 12px;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-diff-line.add {
+  background: color-mix(in srgb, var(--color-git-added, #4d9a57) 12%, transparent);
+}
+[data-iii-ui="shell"] .shui-diff-line.add .mark { color: var(--color-git-added, #4d9a57); }
+[data-iii-ui="shell"] .shui-diff-line.del {
+  background: color-mix(in srgb, var(--color-git-deleted, #c05353) 12%, transparent);
+}
+[data-iii-ui="shell"] .shui-diff-line.del .mark { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-diff-line.add .shui-dl-emph {
+  background: color-mix(in srgb, var(--color-git-added, #4d9a57) 30%, transparent);
+  border-radius: 2px;
+}
+[data-iii-ui="shell"] .shui-diff-line.del .shui-dl-emph {
+  background: color-mix(in srgb, var(--color-git-deleted, #c05353) 30%, transparent);
+  border-radius: 2px;
+}
+[data-iii-ui="shell"] .shui-diff-fold {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-surface);
+  color: var(--color-ink-muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 12px 3px 4.2em;
+  cursor: pointer;
+  margin: 2px 0;
+}
+[data-iii-ui="shell"] .shui-diff-fold:hover { color: var(--color-ink); }
+[data-iii-ui="shell"] .shui-tok-str { color: var(--color-syn-string, #7a9646); }
+[data-iii-ui="shell"] .shui-tok-com { color: var(--color-ink-ghost); font-style: italic; }
+[data-iii-ui="shell"] .shui-tok-num { color: var(--color-syn-number, #b0803c); }
+[data-iii-ui="shell"] .shui-tok-kw { color: var(--color-syn-keyword, #7b6bb0); }
