@@ -56,8 +56,8 @@ export function OpenInEditorButton({
         <button
           type="button"
           className="inline-flex items-center shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
-          aria-label="open in editor"
-          title="open in editor"
+          aria-label="open file"
+          title="open file"
         >
           <SquareArrowOutUpRight size={12} aria-hidden />
         </button>
