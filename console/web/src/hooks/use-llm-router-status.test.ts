@@ -16,8 +16,30 @@ describe('llm-router presence probe wiring', () => {
   })
 
   it('gates on both presence and the initial probe settling', () => {
-    expect(isLlmRouterAvailable({ present: true, loading: false })).toBe(true)
-    expect(isLlmRouterAvailable({ present: true, loading: true })).toBe(false)
-    expect(isLlmRouterAvailable({ present: false, loading: false })).toBe(false)
+    const refresh = async () => true
+    expect(
+      isLlmRouterAvailable({
+        present: true,
+        loading: false,
+        revision: 1,
+        refresh,
+      }),
+    ).toBe(true)
+    expect(
+      isLlmRouterAvailable({
+        present: true,
+        loading: true,
+        revision: 1,
+        refresh,
+      }),
+    ).toBe(false)
+    expect(
+      isLlmRouterAvailable({
+        present: false,
+        loading: false,
+        revision: 1,
+        refresh,
+      }),
+    ).toBe(false)
   })
 })

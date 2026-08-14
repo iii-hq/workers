@@ -31,6 +31,7 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import {
+  fetchProviderList,
   type ProviderListEntry,
   refreshProviderModels,
 } from '@/lib/models-catalog'
@@ -107,9 +108,8 @@ export function ConversationsProvider({
   const harnessStatus = useHarnessStatus(backend.id === 'real')
   // The model picker reads router-owned RPCs; gate them on llm-router, not
   // the harness — the harness being slow or absent must not blank the picker.
-  const routerAvailable = isLlmRouterAvailable(
-    useLlmRouterStatus(backend.id === 'real'),
-  )
+  const routerStatus = useLlmRouterStatus(backend.id === 'real')
+  const routerAvailable = isLlmRouterAvailable(routerStatus)
   const approvalGateAvailable = isApprovalGateAvailable(
     useApprovalGateStatus(backend.id === 'real'),
   )
@@ -126,7 +126,7 @@ export function ConversationsProvider({
     catalogLoading,
     presentProviders,
     refresh,
-  } = useModelPickerSource(backend.id, routerAvailable)
+  } = useModelPickerSource(backend.id, routerAvailable, routerStatus.revision)
   // Conversations are backed by the session-manager worker on the real
   // backend; mocks stay in-memory.
   const api = useConversations(
@@ -137,23 +137,30 @@ export function ConversationsProvider({
 
   const [refreshingModels, setRefreshingModels] = useState(false)
   const refreshModels = useCallback(async () => {
-    if (!routerAvailable) return
+    // A manual refresh is also an escape hatch for stale presence. The hook's
+    // state update is asynchronous, so force the catalogue read below after
+    // the authoritative probe succeeds instead of waiting for another render.
+    const available = (await routerStatus.refresh()) || routerAvailable
+    if (!available) return
     setRefreshingModels(true)
     try {
       if (backend.id === 'real') {
         // Refresh the present providers that can list models. With no present
         // providers this is a no-op for discovery; the catalog re-read below
         // still runs.
-        const ids = presentProviders
+        const providers = await fetchProviderList().catch(
+          () => presentProviders,
+        )
+        const ids = providers
           .filter((p) => p.supports_model_listing)
           .map((p) => p.id)
         await refreshProviderModels(ids)
       }
-      await refresh()
+      await refresh(true)
     } finally {
       setRefreshingModels(false)
     }
-  }, [routerAvailable, refresh, presentProviders])
+  }, [routerStatus, routerAvailable, refresh, presentProviders])
 
   const value: ConversationsContextValue = {
     ...api,
