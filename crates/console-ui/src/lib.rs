@@ -261,11 +261,24 @@ impl ConsoleUi {
                         prev: spec.content.clone(),
                     });
                 }
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    path = spec.path,
-                    "failed to register console ui trigger"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = spec.path,
+                        "failed to register console ui trigger; retrying in background"
+                    );
+                    // One failed attempt used to mean the generic fallback UI
+                    // for the console's whole session. Retry until it lands —
+                    // the asset is static, so late is strictly better than
+                    // never. (Late assets skip the dev watcher; it is a
+                    // dev-only convenience.)
+                    spawn_registration_retry(
+                        iii.clone(),
+                        self.content_function_id.clone(),
+                        spec.kind,
+                        spec.path.clone(),
+                    );
+                }
             }
         }
 
@@ -373,6 +386,32 @@ impl Served {
             asset.content = next;
         }
     }
+}
+
+/// Keep retrying a failed asset-trigger registration with capped backoff.
+/// The handle can be dropped: unregistration is explicit, never on drop.
+fn spawn_registration_retry(
+    iii: Arc<IIIClient>,
+    function_id: String,
+    kind: AssetKind,
+    path: String,
+) {
+    tokio::spawn(async move {
+        let mut delay = std::time::Duration::from_secs(2);
+        loop {
+            tokio::time::sleep(delay).await;
+            match register_asset_trigger(&iii, &function_id, kind, &path) {
+                Ok(_handle) => {
+                    tracing::info!(path, "registered console ui asset (after retry)");
+                    return;
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, path, "console ui trigger retry failed");
+                    delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                }
+            }
+        }
+    });
 }
 
 fn register_asset_trigger(
