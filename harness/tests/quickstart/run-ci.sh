@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Validate the published quickstart in an isolated home and project:
 # install iii, boot an empty engine, add harness + console, and complete the
 # first Console conversation, switch from Anthropic Sonnet 5 to OpenAI Luna,
-# and start a second Luna conversation.
+# start a second Luna conversation, and exercise one real Harness capability.
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
@@ -21,6 +21,8 @@ trace_enabled=${HARNESS_QUICKSTART_TRACE:-0}
 result_provider_id=openai
 result_model_id=gpt-5.6-luna
 result_marker=QUICKSTART_OPENAI_NEW_CHAT_OK
+capability_function=shell::exec
+capability_output_marker=HARNESS_FIRST_CAPABILITY_OUTPUT
 playwright_bin=${HARNESS_QUICKSTART_PLAYWRIGHT_BIN:-"$repo_root/console/web/node_modules/.bin/playwright"}
 
 if [[ -n "${III_CHANNEL:-}" ]]; then
@@ -117,6 +119,8 @@ rm -f \
   "$artifact_dir/model-catalog.json" \
   "$artifact_dir/browser-evidence.json" \
   "$artifact_dir/terminal-status.json" \
+  "$artifact_dir/first-capability-browser-evidence.json" \
+  "$artifact_dir/first-capability-evidence.json" \
   "$artifact_dir/config.yaml" \
   "$artifact_dir/iii.lock" \
   "$artifact_dir/commands.log" \
@@ -163,10 +167,13 @@ die() {
 
 write_result() {
   local status=$1
-  local browser=null terminal=null video=null
+  local browser=null terminal=null first_capability_browser=null first_capability_durable=null
+  local video=null
   local video_path="$artifact_dir/slack-evidence/quickstart-provider-switch.mp4"
   [[ -f "$artifact_dir/browser-evidence.json" ]] && browser=$(jq -c . "$artifact_dir/browser-evidence.json")
   [[ -f "$artifact_dir/terminal-status.json" ]] && terminal=$(jq -c . "$artifact_dir/terminal-status.json")
+  [[ -f "$artifact_dir/first-capability-browser-evidence.json" ]] && first_capability_browser=$(jq -c . "$artifact_dir/first-capability-browser-evidence.json")
+  [[ -f "$artifact_dir/first-capability-evidence.json" ]] && first_capability_durable=$(jq -c . "$artifact_dir/first-capability-evidence.json")
   if [[ -f "$video_path" ]]; then
     video=$(jq -n \
       --arg path "slack-evidence/quickstart-provider-switch.mp4" \
@@ -187,6 +194,8 @@ write_result() {
     --arg marker "$result_marker" \
     --argjson browser "$browser" \
     --argjson terminal "$terminal" \
+    --argjson first_capability_browser "$first_capability_browser" \
+    --argjson first_capability_durable "$first_capability_durable" \
     --argjson slack_evidence "$video" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     --argjson engine_port "$engine_port" \
@@ -204,6 +213,10 @@ write_result() {
       models: ["claude-sonnet-5", "gpt-5.6-luna"],
       browser: $browser,
       terminal: $terminal,
+      first_capability: {
+        browser: $first_capability_browser,
+        durable: $first_capability_durable
+      },
       slack_evidence: $slack_evidence,
       elapsed_ms: $elapsed_ms,
       engine_port: $engine_port
@@ -317,6 +330,7 @@ wait_for_functions() {
     "session::messages",
     "context::assemble",
     "router::models::get",
+    "shell::exec",
     "console::status"
   ]'
 
@@ -379,7 +393,8 @@ record_browser_video() {
   playwright_status=$?
   set -e
 
-  video_source=$(find "$artifact_dir/playwright-output" -type f -name '*.webm' -print -quit 2>/dev/null || true)
+  video_source=$(find "$artifact_dir/playwright-output" \
+    -type f -path '*/console-first-message-*/video.webm' -print -quit 2>/dev/null || true)
   if [[ -n "$video_source" ]]; then
     mkdir -p "$output_dir"
     ffmpeg -hide_banner -loglevel error -y -i "$video_source" \
@@ -387,11 +402,11 @@ record_browser_video() {
       "$output_dir/quickstart-provider-switch.mp4" \
       >"$log_dir/ffmpeg.log" 2>&1 || die "Playwright video conversion failed"
   elif ((playwright_status == 0)); then
-    die "Playwright passed without producing a video"
+    die "provider-switch Playwright test passed without producing a video"
   fi
 
-  ((playwright_status == 0)) || die "Console provider-switch Playwright test failed"
-  ok "Console provider switch completed and Playwright video recorded"
+  ((playwright_status == 0)) || die "Console quickstart Playwright tests failed"
+  ok "Console provider switch and first capability completed with recorded evidence"
 }
 
 wait_for_terminal_turns() {
@@ -433,6 +448,89 @@ wait_for_terminal_turns() {
   done
   jq -n --argjson sessions "$statuses" \
     '{schema_version:2,sessions:$sessions}' >"$artifact_dir/terminal-status.json"
+}
+
+verify_first_capability() {
+  local session_id response attempt completed=0 transcript call_count result_count
+  session_id=$(jq -er '.session_id' "$artifact_dir/first-capability-browser-evidence.json") \
+    || die "first capability browser evidence has no session id"
+
+  log "Verifying the first capability for session $session_id"
+  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<capability-session>\"}'"
+  response=''
+  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+    response=$("$iii_bin" trigger harness::status --port "$engine_port" \
+      --json "{\"session_id\":\"$session_id\"}" \
+      2>>"$log_dir/first-capability-terminal.log" || true)
+    if jq -e '.status == "completed" and (.expects_wake // false) == false' \
+      <<<"$response" >/dev/null 2>&1; then
+      completed=1
+      break
+    fi
+    if jq -e '.status == "failed" or .status == "cancelled"' \
+      <<<"$response" >/dev/null 2>&1; then
+      die "first capability session reached terminal status $(jq -r '.status' <<<"$response")"
+    fi
+    sleep 1
+  done
+  ((completed == 1)) || die "first capability session did not reach durable completion"
+
+  log_command "iii trigger session::messages --port $engine_port --json '{\"session_id\":\"<capability-session>\",\"limit\":500}'"
+  transcript=$("$iii_bin" trigger session::messages --port "$engine_port" \
+    --json "{\"session_id\":\"$session_id\",\"limit\":500}" \
+    2>"$log_dir/first-capability-transcript.log") \
+    || die "could not load the first capability transcript"
+
+  call_count=$(jq -er --arg function "$capability_function" '
+    def normalized_function_id:
+      if .function_id == "agent_trigger"
+      then .arguments.function
+      else .function_id
+      end;
+    [
+      .messages[]?.message?
+      | select(.role == "assistant")
+      | .content[]?
+      | select(.type == "function_call")
+      | select(normalized_function_id == $function)
+    ] | length
+  ' <<<"$transcript") || die "could not inspect the first capability function call"
+  [[ "$call_count" == 1 ]] \
+    || die "expected exactly one durable $capability_function call, found $call_count"
+
+  result_count=$(jq -er \
+    --arg function "$capability_function" \
+    --arg marker "$capability_output_marker" '
+    [
+      .messages[]?.message?
+      | select(.role == "function_result")
+      | select(.function_id == $function)
+      | select((.is_error // false) == false)
+      | select(.details.exit_code == 0)
+      | select(.details.stdout == $marker)
+    ] | length
+  ' <<<"$transcript") || die "could not inspect the first capability result"
+  [[ "$result_count" == 1 ]] \
+    || die "$capability_function did not persist the expected successful output"
+
+  jq -n \
+    --arg session_id "$session_id" \
+    --arg function "$capability_function" \
+    --arg output_marker "$capability_output_marker" \
+    --arg status "$(jq -r '.status' <<<"$response")" \
+    --argjson expects_wake "$(jq -c '.expects_wake // false' <<<"$response")" \
+    --argjson call_count "$call_count" \
+    --argjson successful_result_count "$result_count" \
+    '{
+      schema_version: 1,
+      session_id: $session_id,
+      terminal: {status: $status, expects_wake: $expects_wake},
+      function: $function,
+      output_marker: $output_marker,
+      call_count: $call_count,
+      successful_result_count: $successful_result_count
+    }' >"$artifact_dir/first-capability-evidence.json"
+  ok "$capability_function completed once with the expected durable output"
 }
 
 artifacts_contain_secret() {
@@ -530,9 +628,10 @@ curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
 ok "Console answered on port $console_port"
 
-log "Step 8/9: Switch providers and start a new Luna conversation"
+log "Step 8/9: Validate provider switching and the first real capability"
 record_browser_video
 wait_for_terminal_turns
+verify_first_capability
 
 log "Step 9/9: Verify generated project files and secret-safe evidence"
 for output in config.yaml iii.lock; do
