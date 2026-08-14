@@ -67,6 +67,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
     runtime.start().await?;
 
     crate::functions::register_all(&iii, adapter.clone(), runtime.clone());
+    crate::ui::register(&iii);
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,
