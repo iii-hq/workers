@@ -637,6 +637,7 @@ mod tests {
 
     fn binding(function_id: &str, priority: i64) -> HookBinding {
         HookBinding {
+            id: format!("t_{function_id}"),
             function_id: function_id.into(),
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
@@ -755,6 +756,7 @@ mod tests {
     #[test]
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
+            id: "t_gate".into(),
             function_id: "gate".into(),
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),

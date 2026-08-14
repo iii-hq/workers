@@ -129,6 +129,8 @@ pub struct HookTriggerConfig {
 /// One parsed hook binding.
 #[derive(Debug, Clone)]
 pub struct HookBinding {
+    /// Trigger instance id (for unregister-by-id).
+    pub id: String,
     pub function_id: String,
     /// Static system-prompt contribution declared in trigger metadata. New
     /// harnesses apply it directly; the bound function remains the fallback
@@ -167,6 +169,7 @@ impl HookBinding {
             .filter(|prompt| !prompt.is_empty())
             .map(str::to_string);
         Ok(HookBinding {
+            id: config.id.clone(),
             function_id: config.function_id,
             inject_prompt,
             functions: cfg.functions,
@@ -189,12 +192,30 @@ pub struct HookSet {
 impl HookSet {
     fn add(&self, point: HookPoint, config: TriggerConfig) -> Result<(), String> {
         let binding = HookBinding::parse(point, config.clone())?;
-        self.lock().insert(config.id, binding);
+        let mut inner = self.lock();
+        // One binding per function per point: a re-arming registrar (retry
+        // loops, raced startup) can register the same function repeatedly,
+        // and the chain must consult it exactly once — `chain_slice`'s
+        // resume skips the SINGLE holder, so duplicates would re-run the
+        // hook on release (approval re-hold deadlock). First registration
+        // wins; later duplicates are dropped.
+        if let Some(existing) = inner.get(&binding.function_id) {
+            if existing.id != binding.id {
+                tracing::warn!(
+                    function_id = %binding.function_id,
+                    existing_id = %existing.id,
+                    dropped_id = %binding.id,
+                    "duplicate hook binding dropped (one per function per point)"
+                );
+            }
+            return Ok(());
+        }
+        inner.insert(binding.function_id.clone(), binding);
         Ok(())
     }
 
     fn remove(&self, id: &str) {
-        self.lock().remove(id);
+        self.lock().retain(|_, binding| binding.id != id);
     }
 
     /// Bindings sorted into chain order: ascending priority, ties by
@@ -385,6 +406,30 @@ mod tests {
             config: body,
             metadata: None,
         }
+    }
+
+    #[test]
+    fn duplicate_function_binding_registers_once() {
+        // A re-arming registrar (retry loop racing the engine's instance
+        // count) stacks identical bindings; the chain must consult the hook
+        // exactly once or release re-runs it (approval re-hold deadlock).
+        let set = HookSet::default();
+        set.add(HookPoint::PreTrigger, cfg("t_1", "approval::gate", json!({})))
+            .unwrap();
+        set.add(HookPoint::PreTrigger, cfg("t_2", "approval::gate", json!({})))
+            .unwrap();
+        set.add(HookPoint::PreTrigger, cfg("t_3", "approval::gate", json!({})))
+            .unwrap();
+        let ordered = set.ordered();
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].function_id, "approval::gate");
+        assert_eq!(ordered[0].id, "t_1", "first registration wins");
+        // unregistering the kept instance drops the binding; unregistering a
+        // dropped duplicate is a no-op that must not resurrect anything
+        set.remove("t_2");
+        assert_eq!(set.ordered().len(), 1);
+        set.remove("t_1");
+        assert!(set.is_empty());
     }
 
     #[test]
