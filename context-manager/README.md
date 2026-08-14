@@ -69,16 +69,19 @@ system prompt under `# Conversation summary`, and any further compaction
 correct at the cost of one summariser call per over-budget request.
 
 Before token accounting, `context::assemble` normalizes images in its cloned
-model-facing view. A known text-only model receives placeholders. For a known
-vision model, tool images age after the next assistant response and user images
-age when a later user turn begins after a response. Unknown capability keeps
-images. Live images cost a fixed 4,096-token heuristic budget; base64 bytes are
-never counted as text. The caller's transcript is unchanged.
+model-facing view. A known catalog model receives placeholders unless it
+explicitly declares vision support. For a known vision model, tool images age
+after the next assistant response and user images age when a later user turn
+begins after a response. Inline limits and unresolved models keep images. Live
+images cost a fixed 4,096-token heuristic budget; base64 bytes are never counted
+as text. The caller's transcript is unchanged.
 
-Before pruning or compaction runs, assemble unconditionally caps any single function
-result over `max_result_tokens` (default 20000; 0 disables the pass) to a bounded
-`[…result capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
-arguments if the omitted middle is needed]` head+tail view — see Configuration below.
+Before pruning or compaction runs, assemble unconditionally caps any message-level
+or inline function result over `max_result_tokens` (default 20000; 0 disables the
+pass) to a bounded `[…result capped: was ~N tokens; middle omitted; re-call
+{function_id} with narrower arguments if the omitted middle is needed]` head+tail
+view. Text uses provider-visible newline separators and each image costs the fixed
+4,096-token allowance — see Configuration below.
 
 Every successful `context::assemble` response satisfies `token_count <= usable`.
 Callers should include the complete `tools` array and set

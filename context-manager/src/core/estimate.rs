@@ -4,7 +4,7 @@
 
 use crate::types::{AgentFunction, AgentMessage, ContentBlock, Role};
 
-const IMAGE_TOKEN_BUDGET: u64 = 4_096;
+pub(crate) const IMAGE_TOKEN_BUDGET: u64 = 4_096;
 
 fn clear_image_payloads(blocks: &mut [ContentBlock]) -> u64 {
     blocks.iter_mut().fold(0u64, |count, block| {

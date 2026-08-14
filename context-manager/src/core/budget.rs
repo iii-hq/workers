@@ -77,7 +77,7 @@ impl ResolvedModel {
                 input_limit: model.input_limit,
             },
             thinking_budgets: model.thinking_budgets.clone(),
-            supports_vision: model.supports_vision,
+            supports_vision: model.supports_vision.or(Some(false)),
             resolved: ModelResolved::Router,
         }
     }

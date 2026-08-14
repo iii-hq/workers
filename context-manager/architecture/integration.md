@@ -162,12 +162,12 @@ overflow if nothing fits.
 Throws only: `context/invalid_request` (`messages is required`),
 `context/model_unresolved` (`could not resolve model limits` — only when no
 inline limits, no router, and `allow_fallback_limits` is off), and
-`context/overflow` (no safe combination of capping, pruning, and compaction
-can fit the complete request). A busy lease, a failed/absent summariser, or
-`allow_prune`/`allow_compaction: false` are **best effort** short of that —
-whichever step they skip, emergency reduction still runs unconditionally, and
-the call only throws `context/overflow` if the context still doesn't fit
-afterward.
+`context/overflow` (the request still exceeds the budget after capping,
+pruning, compaction, and emergency reduction). A busy lease, a failed/absent
+summariser, or `allow_prune`/`allow_compaction: false` are **best effort** short
+of that — whichever step they skip, emergency reduction still runs
+unconditionally, and the call only throws `context/overflow` if the context
+still doesn't fit afterward.
 
 ### `context::count-tokens` — estimate usage
 
@@ -313,7 +313,7 @@ provider-legal. Build on these:
 | `context/invalid_request` | `messages` missing or `null` (`messages is required`); a `model` missing where required; malformed shapes serde can't coerce. | all |
 | `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact |
 | `context/state` | A backing lease filesystem write hard-failed (rare; lease problems usually degrade to `busy`). | compact, assemble |
-| `context/overflow` | No safe combination of capping, pruning, and compaction can fit the complete request. | assemble |
+| `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction. | assemble |
 
 **Not errors — degradations you must read, not catch:**
 

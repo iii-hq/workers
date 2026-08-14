@@ -103,11 +103,12 @@ Load-bearing details:
    normalization, cap, and prune are all unconditional: they run on every call,
    no longer gated on being over `usable`, so even a within-budget request can
    have images replaced, a single oversized result capped, or an aged output
-   pruned. Before accounting, a known text-only model receives image
-   placeholders; a known vision model ages tool images after the next assistant
-   response and user images when a later user turn follows a response. Unknown
-   capability keeps images. Live images cost the fixed 4,096-token heuristic
-   budget, never their base64 payload length. Compaction and emergency
+   pruned. Before accounting, a known catalog model receives image placeholders
+   unless it explicitly declares vision support; a known vision model ages tool
+   images after the next assistant response and user images when a later user
+   turn follows a response. Inline limits and unresolved models keep images.
+   Live images cost the fixed 4,096-token heuristic budget, never their base64
+   payload length. Compaction and emergency
    reduction are both gated on *still being over budget*; compaction is
    additionally gated on `allow_compaction` and is the expensive one of the
    two (an LLM call). Each step re-counts.
@@ -244,23 +245,24 @@ capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
 arguments if the omitted middle is needed]` — reserving the marker's own
 bytes out of a 90%-of-cap-budget target *before* splitting head/tail, so the
 rewrite is idempotent without a fixpoint loop even at a small cap or a long
-`function_id`. The threshold check itself measures raw text (`estimator.text`,
-chars/4) while the size memo it updates — and every downstream budget check —
-measures the serialized non-image message plus fixed image allowances, so
-escape-heavy content (e.g.
-ANSI-colored shell output, where a raw ESC byte serializes as the
-6-character `\u001b`) can leave a capped result reading above the nominal cap
-in budget terms, though the hard `token_count <= usable` contract still holds
-because emergency reduction re-measures with the same message-level estimate
-the ledger uses. On the assemble path it runs **before** prune
+`function_id`. The threshold measures provider-visible text (text blocks joined
+with newlines) plus the fixed 4,096-token allowance for each image. Both
+message-level and inline `function_result` representations are traversed. The
+size memo it updates — and every downstream budget check — measures the whole
+serialized host message, so escape-heavy content (e.g. ANSI-colored shell
+output, where a raw ESC byte serializes as the 6-character `\u001b`) can leave
+a capped result reading above the nominal cap in budget terms, though the hard
+`token_count <= usable` contract still holds because emergency reduction
+re-measures with the same message-level estimate the ledger uses. On the
+assemble path it runs **before** prune
 (`functions/assemble.rs` Step 0): a result that is both oversized and aged is
 capped first and can still be pruned afterward if it's still verbose and old
 enough — the ordering doesn't skip prune's pass, it just means prune's own
 rewrite runs against the already-shrunk capped text instead of the original.
-Like prune and emergency reduction, the rewrite replaces a result's whole
-`content` vector with a single text block, so a non-text block (e.g. an
-image) riding alongside more than `max_result_tokens` of text is dropped from
-the model-facing view along with it. When the cap pass and emergency
+Like prune and emergency reduction, the rewrite replaces only the result's
+inner `content` vector with a single text block, preserving an inline wrapper
+and its host-message siblings. Images are dropped when their allowance pushes
+the result over the ceiling. When the cap pass and emergency
 reduction both rewrite the same result within one call, the emergency
 reference's `original_estimated_tokens` reports the already-capped size, not
 the true original, though the session transcript still holds the true
@@ -466,7 +468,7 @@ the code before the colon is the stable contract. One mapping point:
 | `InvalidRequest` | `context/invalid_request` | `messages` absent/null (`messages is required`); serde-survivable shape problems. |
 | `ModelUnresolved` | `context/model_unresolved` | No inline limits, router can't resolve, fallback disabled (`could not resolve model limits`). |
 | `State` | `context/state` | A filesystem call backing the lease failed (reserved; lease failures normally degrade to busy rather than throw). |
-| `Overflow` | `context/overflow` | No safe combination of capping, pruning, and compaction fits the request (assemble only). |
+| `Overflow` | `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction (assemble only). |
 
 `messages is required` and `could not resolve model limits` are kept word-for-word
 because callers match on them (`errors.feature`). Adding a variant means: add

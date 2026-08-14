@@ -17,10 +17,11 @@
 //!   touched at all. `context::assemble` may subsequently use the
 //!   unconditional emergency pass to enforce its hard budget.
 
-use crate::core::estimate::Estimator;
+use crate::core::estimate::{Estimator, IMAGE_TOKEN_BUDGET};
 use crate::types::{AgentMessage, ContentBlock, Role};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// Recent user turns that are always exempt, independent of the token
 /// window (prior-art constant, not operator-tunable).
@@ -64,13 +65,64 @@ pub fn placeholder(function_id: &str, tokens: u64) -> String {
 }
 
 fn text_of(blocks: &[ContentBlock]) -> String {
-    let mut out = String::new();
-    for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            out.push_str(text);
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn image_tokens(blocks: &[ContentBlock]) -> u64 {
+    blocks.iter().fold(0, |tokens, block| {
+        let nested = match block {
+            ContentBlock::Image { .. } => IMAGE_TOKEN_BUDGET,
+            ContentBlock::FunctionResult { content, .. } => image_tokens(content),
+            _ => 0,
+        };
+        tokens.saturating_add(nested)
+    })
+}
+
+fn result_tokens(blocks: &[ContentBlock], estimator: &dyn Estimator) -> u64 {
+    estimator
+        .text(&text_of(blocks))
+        .saturating_add(image_tokens(blocks))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResultLocation {
+    Message(usize),
+    Inline { message: usize, block: usize },
+}
+
+impl ResultLocation {
+    fn message(self) -> usize {
+        match self {
+            Self::Message(message) | Self::Inline { message, .. } => message,
         }
     }
-    out
+}
+
+fn set_result_content(
+    messages: &mut [AgentMessage],
+    location: ResultLocation,
+    content: Vec<ContentBlock>,
+) {
+    match location {
+        ResultLocation::Message(message) => messages[message].set_content(content),
+        ResultLocation::Inline { message, block } => {
+            let ContentBlock::FunctionResult {
+                content: current, ..
+            } = &mut messages[message].content_mut()[block]
+            else {
+                unreachable!("result location changed during reduction");
+            };
+            *current = content;
+        }
+    }
 }
 
 /// Rewrite verbose outputs in place. Returns the stats; `messages` is
@@ -103,44 +155,62 @@ fn prune_impl(
     params: &PruneParams,
     estimator: &dyn Estimator,
 ) -> PruneStats {
+    let function_ids = inline_function_ids(messages);
     let mut scanned: u64 = 0;
     let mut window_tokens: u64 = 0;
     let mut user_turns = 0usize;
-    // (message index, estimated tokens of its text content, function_id)
-    let mut queue: Vec<(usize, u64, String)> = Vec::new();
+    let mut queue: Vec<(ResultLocation, u64, String)> = Vec::new();
 
     for idx in (0..messages.len()).rev() {
         let message = &messages[idx];
-        if message.role() == Role::User {
+        if message.role() == Role::User && !message.has_function_result_block() {
             user_turns += 1;
             continue;
         }
         if user_turns < PROTECTED_USER_TURNS {
             continue;
         }
-        let AgentMessage::FunctionResult {
-            function_id,
-            content,
-            ..
-        } = message
-        else {
-            continue;
+        let mut consider = |location: ResultLocation,
+                            function_id: &str,
+                            content: &[ContentBlock]| {
+            if params
+                .protected_functions
+                .iter()
+                .any(|protected| protected == function_id)
+            {
+                return;
+            }
+            let text = text_of(content);
+            let tokens = result_tokens(content, estimator);
+            scanned += 1;
+            window_tokens = window_tokens.saturating_add(tokens);
+            if window_tokens > params.protect_recent_tokens && text.len() > params.max_output_chars
+            {
+                queue.push((location, tokens, function_id.to_owned()));
+            }
         };
-        if params.protected_functions.iter().any(|f| f == function_id) {
-            continue;
-        }
 
-        let text = text_of(content);
-        let tokens = estimator.text(&text);
-        scanned += 1;
-        window_tokens += tokens;
-        if window_tokens <= params.protect_recent_tokens {
-            continue;
+        match message {
+            AgentMessage::FunctionResult {
+                function_id,
+                content,
+                ..
+            } => consider(ResultLocation::Message(idx), function_id, content),
+            _ => {
+                for (block, content_block) in message.content().iter().enumerate().rev() {
+                    let ContentBlock::FunctionResult { content, .. } = content_block else {
+                        continue;
+                    };
+                    let location = ResultLocation::Inline {
+                        message: idx,
+                        block,
+                    };
+                    if let Some(function_id) = function_ids.get(&(idx, block)) {
+                        consider(location, function_id, content);
+                    }
+                }
+            }
         }
-        if text.len() <= params.max_output_chars {
-            continue;
-        }
-        queue.push((idx, tokens, function_id.clone()));
     }
 
     // Net tokens freed: each pruned output is replaced by a placeholder
@@ -160,14 +230,19 @@ fn prune_impl(
         };
     }
 
-    for (idx, tokens, function_id) in &queue {
-        messages[*idx].set_content(vec![ContentBlock::Text {
-            text: placeholder(function_id, *tokens),
-        }]);
+    for (location, tokens, function_id) in &queue {
+        set_result_content(
+            messages,
+            *location,
+            vec![ContentBlock::Text {
+                text: placeholder(function_id, *tokens),
+            }],
+        );
         if let Some(sizes) = sizes.as_deref_mut() {
             // Re-estimate the rewritten message — not freed-token
             // arithmetic — so the memo matches a from-scratch recount.
-            sizes[*idx] = estimator.message(&messages[*idx]);
+            let message = location.message();
+            sizes[message] = estimator.message(&messages[message]);
         }
     }
 
@@ -184,8 +259,8 @@ fn prune_impl(
 /// Unlike [`prune`], this emergency pass has no recent-turn window,
 /// protected-function list, size threshold, or minimum-free guard. It
 /// preserves every message and the call/result identity fields while
-/// replacing both rendered content and opaque details with a bounded,
-/// deterministic reference to the original transcript entry.
+/// replacing rendered content (and message-level opaque details) with a
+/// bounded, deterministic reference to the original transcript entry.
 pub fn emergency_reduce(
     messages: &mut [AgentMessage],
     required_tokens: u64,
@@ -212,44 +287,99 @@ fn emergency_reduce_impl(
     required_tokens: u64,
     estimator: &dyn Estimator,
 ) -> PruneStats {
-    let mut candidates: Vec<(usize, u64)> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| matches!(message, AgentMessage::FunctionResult { .. }))
-        .map(|(idx, message)| (idx, estimator.message(message)))
-        .collect();
+    let function_ids = inline_function_ids(messages);
+    let mut candidates: Vec<(ResultLocation, u64, usize)> = Vec::new();
+    let mut order = 0;
+    for (message_idx, message) in messages.iter().enumerate() {
+        match message {
+            AgentMessage::FunctionResult { .. } => {
+                candidates.push((
+                    ResultLocation::Message(message_idx),
+                    estimator.message(message),
+                    order,
+                ));
+                order += 1;
+            }
+            _ => {
+                for (block_idx, block) in message.content().iter().enumerate() {
+                    if let ContentBlock::FunctionResult { content, .. } = block {
+                        candidates.push((
+                            ResultLocation::Inline {
+                                message: message_idx,
+                                block: block_idx,
+                            },
+                            result_tokens(content, estimator),
+                            order,
+                        ));
+                        order += 1;
+                    }
+                }
+            }
+        }
+    }
 
     // Stable tie-break by transcript order keeps the reduction fully
     // deterministic when multiple results have the same estimate.
-    candidates.sort_by(|(left_idx, left_tokens), (right_idx, right_tokens)| {
-        right_tokens
-            .cmp(left_tokens)
-            .then_with(|| left_idx.cmp(right_idx))
-    });
+    candidates.sort_by(
+        |(_, left_tokens, left_order), (_, right_tokens, right_order)| {
+            right_tokens
+                .cmp(left_tokens)
+                .then_with(|| left_order.cmp(right_order))
+        },
+    );
 
     let mut stats = PruneStats {
         scanned_parts: candidates.len() as u64,
         ..PruneStats::default()
     };
 
-    for (idx, original_tokens) in candidates {
+    for (location, original_tokens, _) in candidates {
         if stats.pruned_tokens >= required_tokens {
             break;
         }
 
-        let replacement = emergency_reference(&messages[idx], original_tokens);
-        let replacement_tokens = estimator.message(&replacement);
-        let freed = original_tokens.saturating_sub(replacement_tokens);
-        if freed == 0 {
-            continue;
-        }
+        match location {
+            ResultLocation::Message(message) => {
+                let replacement = emergency_reference(&messages[message], original_tokens);
+                let replacement_tokens = estimator.message(&replacement);
+                let freed = original_tokens.saturating_sub(replacement_tokens);
+                if freed == 0 {
+                    continue;
+                }
 
-        messages[idx] = replacement;
-        if let Some(sizes) = sizes.as_deref_mut() {
-            sizes[idx] = replacement_tokens;
+                messages[message] = replacement;
+                if let Some(sizes) = sizes.as_deref_mut() {
+                    sizes[message] = replacement_tokens;
+                }
+                stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
+                stats.pruned_parts += 1;
+            }
+            ResultLocation::Inline { message, block } => {
+                let before = sizes
+                    .as_deref()
+                    .map(|sizes| sizes[message])
+                    .unwrap_or_else(|| estimator.message(&messages[message]));
+                let replacement = emergency_inline_reference(
+                    &messages[message].content()[block],
+                    function_ids.get(&(message, block)).map(String::as_str),
+                    original_tokens,
+                );
+                let original =
+                    std::mem::replace(&mut messages[message].content_mut()[block], replacement);
+                let after = estimator.message(&messages[message]);
+                let freed = before.saturating_sub(after);
+                if freed == 0 {
+                    messages[message].content_mut()[block] = original;
+                    continue;
+                }
+
+                if let Some(sizes) = sizes.as_deref_mut() {
+                    sizes[message] = after;
+                }
+                stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
+                stats.pruned_parts += 1;
+            }
         }
-        stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
-        stats.pruned_parts += 1;
     }
 
     stats
@@ -295,6 +425,46 @@ fn emergency_reference(message: &AgentMessage, original_tokens: u64) -> AgentMes
         details: json!({ "context_reference": reference }),
         is_error: *is_error,
         timestamp: *timestamp,
+    }
+}
+
+fn emergency_inline_reference(
+    block: &ContentBlock,
+    function_id: Option<&str>,
+    original_tokens: u64,
+) -> ContentBlock {
+    let ContentBlock::FunctionResult {
+        function_call_id,
+        content,
+        is_error,
+    } = block
+    else {
+        unreachable!("emergency references are only built for function results");
+    };
+    let serialized = serde_json::to_vec(block).expect("serializing a ContentBlock cannot fail");
+    let sha256 = format!("{:x}", Sha256::digest(&serialized));
+    let mut reference = json!({
+        "kind": "function_result_reference",
+        "function_call_id": function_call_id,
+        "original_bytes": serialized.len(),
+        "original_estimated_tokens": original_tokens,
+        "sha256": sha256,
+        "preview": emergency_preview(content, &Value::Null),
+        "retrieval_hint": EMERGENCY_RETRIEVAL_HINT,
+    });
+    if let Some(function_id) = function_id {
+        reference["function_id"] = json!(function_id);
+    }
+    let rendered = format!(
+        "[function result reduced for context budget] {}",
+        serde_json::to_string(&reference)
+            .expect("serializing a function-result reference cannot fail")
+    );
+
+    ContentBlock::FunctionResult {
+        function_call_id: function_call_id.clone(),
+        content: vec![ContentBlock::Text { text: rendered }],
+        is_error: *is_error,
     }
 }
 
@@ -347,7 +517,65 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// Unconditionally rewrite any single function result whose text estimates
+fn inline_function_ids(messages: &[AgentMessage]) -> HashMap<(usize, usize), String> {
+    let mut calls: HashMap<&str, &str> = HashMap::new();
+    let mut results = HashMap::new();
+    for (message, row) in messages.iter().enumerate() {
+        for (block, content) in row.content().iter().enumerate() {
+            match content {
+                ContentBlock::FunctionCall {
+                    id, function_id, ..
+                } => {
+                    calls.insert(id, function_id);
+                }
+                ContentBlock::FunctionResult {
+                    function_call_id, ..
+                } => {
+                    if let Some(function_id) = calls.get(function_call_id.as_str()) {
+                        results.insert((message, block), (*function_id).to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    results
+}
+
+fn capped_result_content(
+    content: &[ContentBlock],
+    function_id: Option<&str>,
+    max_result_tokens: u64,
+    estimator: &dyn Estimator,
+) -> Option<(Vec<ContentBlock>, u64)> {
+    let text = text_of(content);
+    let tokens = result_tokens(content, estimator);
+    if tokens <= max_result_tokens {
+        return None;
+    }
+    let function_id = function_id.unwrap_or("the function");
+
+    let full_marker = format!(
+        "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted middle is needed]\n"
+    );
+    let marker = [full_marker.as_str(), "[cap]", "…", ""]
+        .into_iter()
+        .find(|candidate| estimator.text(candidate) <= max_result_tokens)
+        .unwrap_or_default();
+
+    let target_chars = (text.len() as u64) * max_result_tokens * 9 / (tokens * 10);
+    let keep_chars = (target_chars as usize).saturating_sub(marker.len());
+    let head_budget = keep_chars * 6 / 10;
+    let tail_budget = keep_chars - head_budget;
+    let head_end = floor_char_boundary(&text, head_budget);
+    let tail_start =
+        ceil_char_boundary(&text, text.len().saturating_sub(tail_budget)).max(head_end);
+    let capped = format!("{}{}{}", &text[..head_end], marker, &text[tail_start..]);
+
+    Some((vec![ContentBlock::Text { text: capped }], tokens))
+}
+
+/// Unconditionally rewrite any single function result whose content estimates
 /// over `max_result_tokens` to a bounded head + marker + tail view
 /// (context-manager.md § context::assemble). Applies to every result — any
 /// age, protected or not, error or not: it is a generous ceiling, like the
@@ -365,75 +593,61 @@ pub fn cap_results_with_sizes(
     estimator: &dyn Estimator,
 ) -> CapStats {
     debug_assert_eq!(messages.len(), sizes.len());
+    let function_ids = inline_function_ids(messages);
     let mut stats = CapStats::default();
     for idx in 0..messages.len() {
-        let AgentMessage::FunctionResult {
-            function_id,
-            content,
-            ..
-        } = &messages[idx]
-        else {
-            continue;
-        };
-        let text = text_of(content);
-        let tokens = estimator.text(&text);
-        if tokens <= max_result_tokens {
-            continue;
-        }
-        let function_id = function_id.clone();
-
-        // Build the marker first: it depends only on `tokens` and
-        // `function_id`, both already known. Fall back when that marker alone
-        // exceeds the cap, then reserve its byte cost from the kept budget.
-        let full_marker = format!(
-            "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted middle is needed]\n"
-        );
-        let marker = [full_marker.as_str(), "[cap]", "…", ""]
-            .into_iter()
-            .find(|candidate| estimator.text(candidate) <= max_result_tokens)
-            .unwrap_or_default()
-            .to_owned();
-
-        // Chars kept: scale the text down to 90% of the cap, preserving the
-        // text's own chars-per-token ratio, then reserve the marker's own
-        // bytes out of that budget (saturating: a marker longer than the
-        // whole budget floors to zero kept chars rather than underflowing).
-        // u64 math: len ≤ ~16MB, cap ≤ ~10^6 — the product stays far under
-        // u64::MAX.
-        let target_chars = (text.len() as u64) * max_result_tokens * 9 / (tokens * 10);
-        let keep_chars = (target_chars as usize).saturating_sub(marker.len());
-        let head_budget = keep_chars * 6 / 10;
-        let tail_budget = keep_chars - head_budget;
-        let head_end = floor_char_boundary(&text, head_budget);
-        let tail_start =
-            ceil_char_boundary(&text, text.len().saturating_sub(tail_budget)).max(head_end);
-        let capped = format!("{}{}{}", &text[..head_end], marker, &text[tail_start..]);
-
-        let AgentMessage::FunctionResult {
-            content, details, ..
-        } = &mut messages[idx]
-        else {
-            unreachable!("matched FunctionResult above");
-        };
-        *content = vec![ContentBlock::Text { text: capped }];
-        let denied = details.get("status").and_then(Value::as_str) == Some("denied");
-        if !denied
-            && serde_json::to_string(&*details)
-                .map(|s| s.len())
-                .unwrap_or(0)
-                > MAX_CAPPED_DETAILS_BYTES
-        {
-            *details = json!({
-                "context_capped": { "original_estimated_tokens": tokens }
-            });
-        }
-
         let before = sizes[idx];
-        sizes[idx] = estimator.message(&messages[idx]);
-        stats.capped_tokens = stats
-            .capped_tokens
-            .saturating_add(before.saturating_sub(sizes[idx]));
-        stats.capped_parts += 1;
+        let mut capped_parts = 0;
+        match &mut messages[idx] {
+            AgentMessage::FunctionResult {
+                function_id,
+                content,
+                details,
+                ..
+            } => {
+                if let Some((capped, tokens)) =
+                    capped_result_content(content, Some(function_id), max_result_tokens, estimator)
+                {
+                    *content = capped;
+                    let denied = details.get("status").and_then(Value::as_str) == Some("denied");
+                    if !denied
+                        && serde_json::to_string(&*details)
+                            .map(|s| s.len())
+                            .unwrap_or(0)
+                            > MAX_CAPPED_DETAILS_BYTES
+                    {
+                        *details = json!({
+                            "context_capped": { "original_estimated_tokens": tokens }
+                        });
+                    }
+                    capped_parts = 1;
+                }
+            }
+            message => {
+                for (block_idx, block) in message.content_mut().iter_mut().enumerate() {
+                    let ContentBlock::FunctionResult { content, .. } = block else {
+                        continue;
+                    };
+                    if let Some((capped, _)) = capped_result_content(
+                        content,
+                        function_ids.get(&(idx, block_idx)).map(String::as_str),
+                        max_result_tokens,
+                        estimator,
+                    ) {
+                        *content = capped;
+                        capped_parts += 1;
+                    }
+                }
+            }
+        }
+
+        if capped_parts > 0 {
+            sizes[idx] = estimator.message(&messages[idx]);
+            stats.capped_tokens = stats
+                .capped_tokens
+                .saturating_add(before.saturating_sub(sizes[idx]));
+            stats.capped_parts += capped_parts;
+        }
     }
     stats
 }
@@ -499,6 +713,79 @@ mod tests {
         );
         // ...the one inside the last two user turns untouched.
         assert_eq!(text_of(messages[3].content()).len(), 8_000);
+    }
+
+    #[test]
+    fn prune_resolves_reused_inline_call_ids_positionally() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            { "role": "user", "content": [{ "type": "text", "text": "task" }], "timestamp": 1 },
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "shell::run", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 2
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "x".repeat(8_000) }]
+                }],
+                "timestamp": 3
+            },
+            {
+                "role": "assistant", "content": [{ "type": "text", "text": "used" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 4
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "next" }], "timestamp": 5 },
+            { "role": "user", "content": [{ "type": "text", "text": "done" }], "timestamp": 6 },
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "later::call", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 7
+            }
+        ]))
+        .unwrap();
+        let mut protected_messages = messages.clone();
+        let mut protected_sizes = sizes_of(&protected_messages);
+        let mut protected_params = params();
+        protected_params.protected_functions = vec!["shell::run".into()];
+
+        let protected_stats = prune_with_sizes(
+            &mut protected_messages,
+            &mut protected_sizes,
+            &protected_params,
+            &HeuristicEstimator,
+        );
+
+        assert_eq!(protected_stats.pruned_parts, 0);
+        assert_eq!(protected_messages, messages);
+        let mut sizes = sizes_of(&messages);
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &params(), &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            ..
+        } = &messages[2].content()[0]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert_eq!(
+            text_of(content),
+            "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
+        );
+        assert_eq!(sizes, sizes_of(&messages));
     }
 
     #[test]
@@ -626,6 +913,57 @@ mod tests {
             details["context_reference"]["function_id"],
             "protected::lookup"
         );
+    }
+
+    #[test]
+    fn emergency_reduces_inline_results_without_replacing_the_host_message() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "shell::run", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "function_result", "function_call_id": "c1",
+                        "content": [{ "type": "text", "text": "x".repeat(100_000) }]
+                    },
+                    { "type": "text", "text": "keep this sibling" }
+                ],
+                "timestamp": 2
+            }
+        ]))
+        .unwrap();
+        let mut sizes = sizes_of(&messages);
+
+        let stats = emergency_reduce_with_sizes(&mut messages, &mut sizes, 1, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_eq!(messages[1].role(), Role::User);
+        assert_eq!(
+            messages[1].content()[1],
+            ContentBlock::Text {
+                text: "keep this sibling".into()
+            }
+        );
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            ..
+        } = &messages[1].content()[0]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert!(text_of(content).starts_with("[function result reduced"));
+        assert!(text_of(content).contains("\"function_id\":\"shell::run\""));
+        assert_eq!(sizes, sizes_of(&messages));
     }
 
     #[test]
@@ -778,6 +1116,87 @@ mod tests {
         assert!(text.starts_with('x'));
         assert!(text.ends_with('x'));
         // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn cap_preserves_provider_separators_between_text_blocks() {
+        let mut messages = vec![serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c1",
+            "function_id": "shell::run",
+            "content": [
+                { "type": "text", "text": "header" },
+                { "type": "text", "text": "x".repeat(100_000) }
+            ],
+            "timestamp": 1
+        }))
+        .unwrap()];
+        let mut sizes = sizes_of(&messages);
+
+        cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+
+        assert!(text_of(messages[0].content()).starts_with("header\nx"));
+    }
+
+    #[test]
+    fn cap_counts_image_cost_in_the_result_ceiling() {
+        let mut messages = vec![serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c1",
+            "function_id": "browser::screenshots",
+            "content": (0..5).map(|_| json!({
+                "type": "image", "mime": "image/png", "data": "AAAA"
+            })).collect::<Vec<_>>(),
+            "timestamp": 1
+        }))
+        .unwrap()];
+        let mut sizes = sizes_of(&messages);
+
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+
+        assert_eq!(stats.capped_parts, 1);
+        assert!(text_of(messages[0].content()).contains("result capped"));
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn cap_rewrites_oversized_inline_results_without_breaking_pairing() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "shell::run", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "x".repeat(100_000) }]
+                }],
+                "timestamp": 2
+            }
+        ]))
+        .unwrap();
+        let mut sizes = sizes_of(&messages);
+
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+
+        assert_eq!(stats.capped_parts, 1);
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            ..
+        } = &messages[1].content()[0]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert!(text_of(content).contains("re-call shell::run"));
         assert_eq!(sizes, sizes_of(&messages));
     }
 

@@ -36,6 +36,13 @@ Feature: context::assemble — the model-ready context pipeline
     Then the call succeeds
     And response message 0 text is "[image omitted: model does not support vision]"
 
+  Scenario: a known model without a vision flag receives an image placeholder
+    Given the router knows model "missing-vision" with context window 200000 and max output 8000
+    And a user message containing an image of 400 chars
+    When I assemble the history with model "missing-vision"
+    Then the call succeeds
+    And response message 0 text is "[image omitted: model does not support vision]"
+
   # Prevents: the happy path being mangled — a context under budget
   # must pass through byte-identical when media normalization makes no
   # replacements, with nothing applied and no

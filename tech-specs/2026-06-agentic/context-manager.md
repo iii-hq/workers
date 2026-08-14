@@ -199,18 +199,19 @@ type AssembleResponse = {
 
 The per-result cap pass is a safety ceiling, not a policy choice: unlike prune, it has no age,
 protection, or error exemption — a `details` payload carrying `"status": "denied"` keeps its
-details, but nothing else is spared.
+details, but nothing else is spared. It traverses message-level and inline results, joins text
+blocks with provider-visible newlines, and includes the fixed 4,096-token allowance per image.
 
 The emergency reduction pass is a safety boundary, not a preference. It may replace a recent or
-normally protected `function_result` when that single result would otherwise overflow the model.
-The replacement preserves message order and `function_call_id`, and carries a bounded reference
-with the original size, hash, preview, and transcript retrieval hint; the durable session transcript
-retains the full result.
+normally protected message-level or inline `function_result` when that single result would otherwise
+overflow the model. The replacement preserves message order, inline host-message siblings, and
+`function_call_id`, and carries a bounded reference with the original size, hash, preview, and
+transcript retrieval hint; the durable session transcript retains the full result.
 
 Errors (thrown): `messages is required`; `could not resolve model limits` (only when neither inline
 limits nor `llm-router` are available and the fallback is explicitly disabled); `context/overflow`
-when no safe combination of capping, pruning, and compaction can fit the complete request. An
-overflow error never includes a model-ready response for the caller to send anyway.
+when the request still exceeds the budget after capping, pruning, compaction, and emergency
+reduction. An overflow error never includes a model-ready response for the caller to send anyway.
 
 Example:
 

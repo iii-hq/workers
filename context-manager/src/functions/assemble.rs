@@ -86,7 +86,7 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
         replace_images(message.content_mut(), direct_marker, nested_tool_marker);
 
         match message.role() {
-            Role::User => later_user = true,
+            Role::User if !message.has_function_result_block() => later_user = true,
             Role::Assistant => {
                 later_assistant = true;
                 later_user_after_assistant |= later_user;
@@ -659,6 +659,46 @@ mod tests {
                 "timestamp": 4
             })),
         ];
+
+        normalize_media(&mut messages, Some(true));
+
+        assert!(matches!(
+            messages[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn user_images_survive_inline_tool_results_before_the_continuation() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "user",
+                "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+                "timestamp": 1
+            },
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "browser::screenshot", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 2
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "result" }]
+                }],
+                "timestamp": 3
+            },
+            {
+                "role": "assistant", "content": [{ "type": "text", "text": "answer" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 4
+            }
+        ]))
+        .unwrap();
 
         normalize_media(&mut messages, Some(true));
 
