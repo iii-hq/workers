@@ -21,7 +21,12 @@ It verifies that:
   in the same chat, and complete another message without changing sessions;
 - a user can create a new chat and complete a third message with GPT-5.6 Luna;
 - both successful conversations survive a browser reload and reach durable
-  terminal Harness states; and
+  terminal Harness states;
+- in a separate chat, a user can invoke one real `shell::exec` capability,
+  observe its successful Console card and exact output, and recover the same
+  conversation after a reload;
+- the capability call and its exact output are present in the durable session
+  transcript; and
 - `config.yaml` and `iii.lock` contain the installed workers.
 
 Run it locally with:
@@ -48,10 +53,11 @@ Set `HARNESS_QUICKSTART_TRACE=1` to print only the important external commands
 are omitted.
 
 The CI workflow preserves `result.json`, the generated project files, sanitized
-browser and terminal evidence, raw logs, the command trace, and an MP4 of the
-Console success. It scans every artifact for the literal Anthropic and OpenAI
-credentials before upload. Release-triggered runs replace the released worker
-with its exact candidate version and verify it in `iii.lock`.
+browser, terminal, and first-capability evidence, raw Playwright output, the
+command trace, and the provider-switch MP4. It scans every artifact for the
+literal Anthropic and OpenAI credentials before upload. Release-triggered runs
+replace the released worker with its exact candidate version and verify it in
+`iii.lock`.
 
 After a successful `deploy_harness`, Release Control dispatches this check as a
 child observation. Its result and MP4 are appended to the release Slack thread,

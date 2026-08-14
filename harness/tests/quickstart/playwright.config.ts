@@ -8,7 +8,7 @@ if (!artifactsRoot) {
 
 export default defineConfig({
   testDir: __dirname,
-  testMatch: 'console-first-message.spec.ts',
+  testMatch: ['console-first-message.spec.ts', 'console-first-capability.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,
