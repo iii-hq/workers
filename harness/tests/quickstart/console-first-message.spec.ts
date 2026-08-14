@@ -181,6 +181,11 @@ test('switches from Sonnet 5 to Luna and starts a new Luna chat', async ({
   )
   await expect(reloadedAnthropic).toHaveCount(1)
   await expect(reloadedAnthropic).toContainText(ANTHROPIC_MODEL_ID)
+  await expect(
+    reloadedFirst.locator('[data-message-role="user"]', {
+      hasText: OPENAI_SWITCH_PROMPT,
+    }),
+  ).toHaveCount(1)
   const reloadedSwitch = reloadedFirst.locator(
     '[data-message-role="assistant"]',
     { hasText: OPENAI_SWITCH_MARKER },
@@ -193,6 +198,11 @@ test('switches from Sonnet 5 to Luna and starts a new Luna chat', async ({
     /^open reply with exactly quickstart_op/i,
     secondSessionId,
   )
+  await expect(
+    reloadedSecond.locator('[data-message-role="user"]', {
+      hasText: OPENAI_NEW_CHAT_PROMPT,
+    }),
+  ).toHaveCount(1)
   const reloadedNewChat = reloadedSecond.locator(
     '[data-message-role="assistant"]',
     { hasText: OPENAI_NEW_CHAT_MARKER },
