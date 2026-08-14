@@ -348,6 +348,19 @@ fn responses_usage(event: &Value, state: &mut PartialState) {
     }
 }
 
+fn responses_error_kind(event: &Value, message: &str) -> ErrorKind {
+    let error = event
+        .get("error")
+        .or_else(|| event.pointer("/response/error"));
+    match error {
+        Some(error) => {
+            let envelope = serde_json::json!({ "error": error });
+            classify(None, &envelope.to_string())
+        }
+        None => classify(None, message),
+    }
+}
+
 fn ensure_function_call(state: &mut PartialState, index: usize) -> &mut PartialFunctionCall {
     while state.function_calls.len() <= index {
         state.function_calls.push(PartialFunctionCall::default());
@@ -527,7 +540,7 @@ fn handle_responses_event(
             state.stop_reason = StopReason::Error;
             state.error_message = Some(message.clone());
             let mut error = build_final(state, model);
-            error.error_kind = Some(classify(None, &message));
+            error.error_kind = Some(responses_error_kind(event, &message));
             events.push(AssistantMessageEvent::Error { error });
         }
         _ => {}
@@ -793,6 +806,44 @@ mod tests {
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(1));
+    }
+
+    #[test]
+    fn responses_credit_exhaustion_events_are_permanent() {
+        let message = "You have no credits remaining.";
+        let events = [
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "insufficient_quota",
+                    "code": "credit_balance_exhausted",
+                    "message": message,
+                    "param": null
+                }
+            }),
+            json!({
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {
+                        "code": "credit_balance_exhausted",
+                        "message": message
+                    }
+                }
+            }),
+        ];
+
+        for event in events {
+            let (_, emitted) = run(&[event]);
+            assert_eq!(emitted.len(), 1);
+            match &emitted[0] {
+                AssistantMessageEvent::Error { error } => {
+                    assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+                    assert_eq!(error.error_message.as_deref(), Some(message));
+                }
+                other => panic!("want permanent error frame, got {other:?}"),
+            }
+        }
     }
 
     #[test]
