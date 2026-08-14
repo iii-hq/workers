@@ -121,6 +121,8 @@ rm -f \
   "$artifact_dir/terminal-status.json" \
   "$artifact_dir/first-capability-browser-evidence.json" \
   "$artifact_dir/first-capability-evidence.json" \
+  "$artifact_dir/router-recovery-browser-evidence.json" \
+  "$artifact_dir/presence-reconnect-browser-evidence.json" \
   "$artifact_dir/config.yaml" \
   "$artifact_dir/iii.lock" \
   "$artifact_dir/commands.log" \
@@ -167,13 +169,15 @@ die() {
 
 write_result() {
   local status=$1
-  local browser=null terminal=null first_capability_browser=null first_capability_durable=null
+  local browser=null terminal=null first_capability_browser=null first_capability_durable=null router_recovery=null presence_reconnect=null
   local video=null
   local video_path="$artifact_dir/slack-evidence/quickstart-provider-switch.mp4"
   [[ -f "$artifact_dir/browser-evidence.json" ]] && browser=$(jq -c . "$artifact_dir/browser-evidence.json")
   [[ -f "$artifact_dir/terminal-status.json" ]] && terminal=$(jq -c . "$artifact_dir/terminal-status.json")
   [[ -f "$artifact_dir/first-capability-browser-evidence.json" ]] && first_capability_browser=$(jq -c . "$artifact_dir/first-capability-browser-evidence.json")
   [[ -f "$artifact_dir/first-capability-evidence.json" ]] && first_capability_durable=$(jq -c . "$artifact_dir/first-capability-evidence.json")
+  [[ -f "$artifact_dir/router-recovery-browser-evidence.json" ]] && router_recovery=$(jq -c . "$artifact_dir/router-recovery-browser-evidence.json")
+  [[ -f "$artifact_dir/presence-reconnect-browser-evidence.json" ]] && presence_reconnect=$(jq -c . "$artifact_dir/presence-reconnect-browser-evidence.json")
   if [[ -f "$video_path" ]]; then
     video=$(jq -n \
       --arg path "slack-evidence/quickstart-provider-switch.mp4" \
@@ -196,6 +200,8 @@ write_result() {
     --argjson terminal "$terminal" \
     --argjson first_capability_browser "$first_capability_browser" \
     --argjson first_capability_durable "$first_capability_durable" \
+    --argjson router_recovery "$router_recovery" \
+    --argjson presence_reconnect "$presence_reconnect" \
     --argjson slack_evidence "$video" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     --argjson engine_port "$engine_port" \
@@ -217,6 +223,8 @@ write_result() {
         browser: $first_capability_browser,
         durable: $first_capability_durable
       },
+      router_recovery: $router_recovery,
+      presence_reconnect: $presence_reconnect,
       slack_evidence: $slack_evidence,
       elapsed_ms: $elapsed_ms,
       engine_port: $engine_port
@@ -385,6 +393,9 @@ record_browser_video() {
   local playwright_status video_source
   local output_dir="$artifact_dir/slack-evidence"
   export HARNESS_QUICKSTART_CONSOLE_URL="http://127.0.0.1:$console_port/"
+  export HARNESS_QUICKSTART_III_BIN="$iii_bin"
+  export HARNESS_QUICKSTART_PROJECT_DIR="$project_dir"
+  export HARNESS_QUICKSTART_ENGINE_PORT="$engine_port"
   export NODE_PATH="$repo_root/console/web/node_modules${NODE_PATH:+:$NODE_PATH}"
   set +e
   "$playwright_bin" test \
@@ -406,7 +417,7 @@ record_browser_video() {
   fi
 
   ((playwright_status == 0)) || die "Console quickstart Playwright tests failed"
-  ok "Console provider switch and first capability completed with recorded evidence"
+  ok "Console provider switch, router recovery, and first capability completed with recorded evidence"
 }
 
 wait_for_terminal_turns() {

@@ -14,8 +14,30 @@ describe('worktree presence probe wiring', () => {
   })
 
   it('gates on both presence and the initial probe settling', () => {
-    expect(isWorktreeAvailable({ present: true, loading: false })).toBe(true)
-    expect(isWorktreeAvailable({ present: true, loading: true })).toBe(false)
-    expect(isWorktreeAvailable({ present: false, loading: false })).toBe(false)
+    const refresh = async () => true
+    expect(
+      isWorktreeAvailable({
+        present: true,
+        loading: false,
+        revision: 1,
+        refresh,
+      }),
+    ).toBe(true)
+    expect(
+      isWorktreeAvailable({
+        present: true,
+        loading: true,
+        revision: 1,
+        refresh,
+      }),
+    ).toBe(false)
+    expect(
+      isWorktreeAvailable({
+        present: false,
+        loading: false,
+        revision: 1,
+        refresh,
+      }),
+    ).toBe(false)
   })
 })

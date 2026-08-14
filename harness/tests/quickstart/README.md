@@ -25,6 +25,12 @@ It verifies that:
 - in a separate chat, a user can invoke one real `shell::exec` capability,
   observe its successful Console card and exact output, and recover the same
   conversation after a reload;
+- restarting only the `llm-router` worker changes its engine worker id while
+  the browser document stays mounted, and the model picker recovers without a
+  page reload;
+- when `llm-router` starts while only the browser WebSocket is disconnected,
+  reconnecting the same document re-probes presence and repopulates the model
+  picker without a page reload;
 - the capability call and its exact output are present in the durable session
   transcript; and
 - `config.yaml` and `iii.lock` contain the installed workers.

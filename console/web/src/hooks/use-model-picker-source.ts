@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { onHarnessConfigSaved } from '@/lib/harness-config-events'
-import { getIiiClient } from '@/lib/iii-client'
 import {
   catalogRowsToModelOptions,
   fetchModelsCatalog,
@@ -33,18 +32,23 @@ import type { ModelOption } from '@/types/chat'
 export function useModelPickerSource(
   backendId: string,
   routerAvailable = true,
+  routerRevision = 0,
 ): {
   modelOptions: ModelOption[]
   catalogKeys: string[]
   catalogLoading: boolean
   presentProviders: ProviderListEntry[]
-  refresh: () => Promise<void>
+  refresh: (force?: boolean) => Promise<void>
 } {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [presentProviders, setPresentProviders] = useState<ProviderListEntry[]>(
     [],
   )
   const providerEventVersion = useRef(0)
+  const catalogRequestVersion = useRef(0)
+  const providerRequestVersion = useRef(0)
+  const routerRevisionRef = useRef(routerRevision)
+  routerRevisionRef.current = routerRevision
   // Mirror of `presentProviders` for event handlers: React state updaters may
   // run deferred, so membership checks must not live inside them.
   const providersRef = useRef<ProviderListEntry[]>([])
@@ -55,27 +59,41 @@ export function useModelPickerSource(
     backendId === 'real' && routerAvailable,
   )
 
-  const refresh = useCallback(async () => {
-    if (backendId !== 'real') {
-      setModelOptions([])
-      setCatalogLoading(false)
-      return
-    }
-    if (!routerAvailable) {
-      setModelOptions([])
-      setCatalogLoading(false)
-      return
-    }
-    setCatalogLoading(true)
-    try {
-      const rows = await fetchModelsCatalog()
-      setModelOptions(catalogRowsToModelOptions(rows))
-    } catch {
-      setModelOptions([])
-    } finally {
-      setCatalogLoading(false)
-    }
-  }, [backendId, routerAvailable])
+  const refresh = useCallback(
+    async (force = false) => {
+      const requestVersion = ++catalogRequestVersion.current
+      const revisionAtStart = routerRevision
+      if (backendId !== 'real') {
+        setModelOptions([])
+        setCatalogLoading(false)
+        return
+      }
+      if (!routerAvailable && !force) {
+        setModelOptions([])
+        setCatalogLoading(false)
+        return
+      }
+      setCatalogLoading(true)
+      try {
+        const rows = await fetchModelsCatalog()
+        if (
+          catalogRequestVersion.current === requestVersion &&
+          routerRevisionRef.current === revisionAtStart
+        ) {
+          setModelOptions(catalogRowsToModelOptions(rows))
+        }
+      } catch {
+        // A timeout or a reconnect race is not evidence that the configured
+        // catalogue became empty. Preserve the last good snapshot; a successful
+        // empty response above still clears it authoritatively.
+      } finally {
+        if (catalogRequestVersion.current === requestVersion) {
+          setCatalogLoading(false)
+        }
+      }
+    },
+    [backendId, routerAvailable, routerRevision],
+  )
 
   useEffect(() => {
     void refresh()
@@ -84,6 +102,8 @@ export function useModelPickerSource(
   // Re-read `router::provider::list`, dropping the result if a newer provider
   // event (or a newer snapshot) has advanced the version since we started.
   const refreshProviders = useCallback(async () => {
+    const requestVersion = ++providerRequestVersion.current
+    const revisionAtStart = routerRevision
     if (backendId !== 'real' || !routerAvailable) {
       setPresentProviders([])
       return
@@ -91,15 +111,17 @@ export function useModelPickerSource(
     const snapshotVersion = providerEventVersion.current
     try {
       const providers = await fetchProviderList()
-      if (providerEventVersion.current === snapshotVersion) {
+      if (
+        providerEventVersion.current === snapshotVersion &&
+        providerRequestVersion.current === requestVersion &&
+        routerRevisionRef.current === revisionAtStart
+      ) {
         setPresentProviders(providers)
       }
     } catch {
-      if (providerEventVersion.current === snapshotVersion) {
-        setPresentProviders([])
-      }
+      // Preserve the last authoritative provider snapshot on transport errors.
     }
-  }, [backendId, routerAvailable])
+  }, [backendId, routerAvailable, routerRevision])
 
   // Initial snapshot (re-run when the router (re)appears). Availability flips
   // are applied from `router::provider::changed`; an event for a provider the
@@ -170,29 +192,6 @@ export function useModelPickerSource(
       disposed = true
       if (timer !== null) clearTimeout(timer)
       for (const d of disposers) d()
-    }
-  }, [backendId, routerAvailable, refresh, refreshProviders])
-
-  // A WebSocket drop loses any change events fired while disconnected;
-  // re-pull both reads when the connection comes back.
-  useEffect(() => {
-    if (backendId !== 'real' || !routerAvailable) return
-    let disposed = false
-    let offConn: (() => void) | null = null
-    getIiiClient()
-      .then((client) => {
-        if (disposed) return
-        offConn = client.addConnectionStateListener((state) => {
-          if (state === 'connected') {
-            void refresh()
-            void refreshProviders()
-          }
-        })
-      })
-      .catch(() => {})
-    return () => {
-      disposed = true
-      offConn?.()
     }
   }, [backendId, routerAvailable, refresh, refreshProviders])
 

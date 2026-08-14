@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { z } from 'zod'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { useWorkerLifecycle } from './use-worker-lifecycle'
@@ -9,11 +9,15 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
  * can gate worker-specific UI + RPC on it and never trigger "function not
  * found".
  *
- * Presence is fed by two signals, mirroring the harness probe:
+ * Presence is reconciled from four signals:
  *   1. An initial `engine::workers::list` read on mount.
- *   2. A real-time `worker` add/remove lifecycle trigger, so the UI reacts the
+ *   2. `engine::workers-available`, which covers raw process connections and
+ *      disconnects (including crashes/restarts outside the worker manager).
+ *   3. A real-time `worker` add/remove lifecycle trigger, so the UI reacts the
  *      instant the worker is added or removed — whether from the CLI
  *      (`iii worker add <name>`) or another surface.
+ *   4. Browser WebSocket reconnect, which re-reads the authoritative snapshot
+ *      because events fired during the outage are not replayed.
  *
  * Each consumer MUST pass a unique `watchFnId` so its browser-local handler for
  * the `worker` trigger does not collide with another presence probe's.
@@ -24,6 +28,26 @@ export interface WorkerPresence {
   present: boolean
   /** Initial presence probe in flight. */
   loading: boolean
+  /**
+   * Advances whenever a present worker instance changes or the browser
+   * reconnects. Consumers that own worker-scoped trigger bindings include it
+   * in their effect dependencies so those bindings are recreated even across
+   * a present→present restart.
+   */
+  revision: number
+  /** Authoritatively re-read presence; used by manual recovery controls. */
+  refresh: () => Promise<boolean>
+}
+
+interface WorkerPresenceState {
+  present: boolean
+  loading: boolean
+  revision: number
+}
+
+interface WorkerSnapshot {
+  present: boolean
+  workerId: string | null
 }
 
 const workerEventSchema = z.object({
@@ -61,13 +85,149 @@ function eventMatchesWorker(evt: WorkerEvent, workerName: string): boolean {
 async function checkWorkerPresent(
   client: IiiClient,
   name: string,
-): Promise<boolean> {
-  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
-    'engine::workers::list',
-    {},
-  )
+): Promise<WorkerSnapshot> {
+  const res = await client.trigger<{
+    workers?: Array<{ id?: unknown; name?: unknown }>
+  }>('engine::workers::list', {})
   const workers = Array.isArray(res?.workers) ? res.workers : []
-  return workers.some((w) => w?.name === name)
+  const worker = workers.find((w) => w?.name === name)
+  if (!worker) return { present: false, workerId: null }
+  return {
+    present: true,
+    // Current engines expose an instance id. The name fallback preserves
+    // compatibility with older engines, which can still detect absent→present.
+    workerId: typeof worker.id === 'string' ? worker.id : name,
+  }
+}
+
+export interface WorkerPresenceWatcher {
+  refresh(options?: { forceRevision?: boolean }): Promise<boolean>
+  markAbsent(): void
+  dispose(): void
+}
+
+interface CreateWorkerPresenceWatcherOptions {
+  client: IiiClient
+  workerName: string
+  localFnId: string
+  initial: WorkerPresenceState
+  onChange: (state: WorkerPresenceState) => void
+}
+
+/**
+ * Imperative presence state machine kept outside React so reconnect, worker
+ * catalogue ticks, stale async reads, and cleanup can be tested together.
+ */
+export function createWorkerPresenceWatcher({
+  client,
+  workerName,
+  localFnId,
+  initial,
+  onChange,
+}: CreateWorkerPresenceWatcherOptions): WorkerPresenceWatcher {
+  let state = { ...initial, workerId: null as string | null }
+  let generation = 0
+  let disposed = false
+  let offHandler: (() => void) | undefined
+  let offTrigger: (() => void) | undefined
+  let offConnection: (() => void) | undefined
+
+  const publish = (snapshot: WorkerSnapshot, forceRevision: boolean) => {
+    if (disposed) return
+    const identityChanged =
+      snapshot.present &&
+      (!state.present || state.workerId !== snapshot.workerId)
+    const revision =
+      state.revision +
+      (snapshot.present && (forceRevision || identityChanged) ? 1 : 0)
+    const next = {
+      present: snapshot.present,
+      loading: false,
+      revision,
+      workerId: snapshot.workerId,
+    }
+    const changed =
+      next.present !== state.present ||
+      next.loading !== state.loading ||
+      next.revision !== state.revision ||
+      next.workerId !== state.workerId
+    state = next
+    if (changed) {
+      onChange({
+        present: state.present,
+        loading: state.loading,
+        revision: state.revision,
+      })
+    }
+  }
+
+  const refresh: WorkerPresenceWatcher['refresh'] = async (options = {}) => {
+    const requestGeneration = ++generation
+    try {
+      const snapshot = await checkWorkerPresent(client, workerName)
+      if (!disposed && requestGeneration === generation) {
+        publish(snapshot, options.forceRevision === true)
+      }
+      return snapshot.present
+    } catch {
+      if (!disposed && requestGeneration === generation) {
+        publish({ present: false, workerId: null }, false)
+      }
+      return false
+    }
+  }
+
+  const markAbsent = () => {
+    generation += 1
+    publish({ present: false, workerId: null }, false)
+  }
+
+  // Engine-owned connection signal: unlike the worker-manager `worker`
+  // lifecycle, this fires for raw process crashes/restarts as well as CLI
+  // add/remove operations. Re-read the authoritative list instead of trusting
+  // an event payload shape.
+  try {
+    offHandler = client.on(localFnId, () => {
+      void refresh()
+    })
+    offTrigger = client.registerTrigger({
+      type: 'engine::workers-available',
+      function_id: `${localFnId}::${client.browserId}`,
+      config: {},
+    })
+  } catch {
+    offTrigger?.()
+    offHandler?.()
+    offTrigger = undefined
+    offHandler = undefined
+  }
+
+  // This listener is deliberately active even while the target worker is
+  // absent. Events fired during the WebSocket outage are not replayed, so a
+  // successful reconnect must force both a presence read and consumer
+  // re-subscription.
+  try {
+    offConnection = client.addConnectionStateListener((connectionState) => {
+      if (connectionState === 'connected') {
+        void refresh({ forceRevision: true })
+      }
+    })
+  } catch {
+    offConnection = undefined
+  }
+
+  return {
+    refresh,
+    markAbsent,
+    dispose: () => {
+      if (disposed) return
+      disposed = true
+      generation += 1
+      offConnection?.()
+      offTrigger?.()
+      offHandler?.()
+    },
+  }
 }
 
 export interface UseWorkerPresenceOptions {
@@ -87,8 +247,16 @@ export function useWorkerPresence({
   watchFnId,
   enabled,
 }: UseWorkerPresenceOptions): WorkerPresence {
-  const [present, setPresent] = useState<boolean>(!enabled)
-  const [loading, setLoading] = useState<boolean>(enabled)
+  const [status, setStatus] = useState<WorkerPresenceState>({
+    present: !enabled,
+    loading: enabled,
+    revision: 0,
+  })
+  const watcherRef = useRef<WorkerPresenceWatcher | null>(null)
+  const refreshRef = useRef<() => Promise<boolean>>(async () => !enabled)
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  const refresh = useCallback(() => refreshRef.current(), [])
 
   // Live add/remove so installing or dropping the worker mid-session flips the
   // UI without a reload. `workerName` is a stable literal per consumer, so this
@@ -103,8 +271,11 @@ export function useWorkerPresence({
       ) {
         return
       }
-      if (evt.operation === 'add') setPresent(true)
-      else if (evt.operation === 'remove') setPresent(false)
+      if (evt.operation === 'add') {
+        void watcherRef.current?.refresh({ forceRevision: true })
+      } else if (evt.operation === 'remove') {
+        watcherRef.current?.markAbsent()
+      }
     },
     [workerName],
   )
@@ -116,32 +287,47 @@ export function useWorkerPresence({
     onEvent: handleEvent,
   })
 
-  // One-time presence probe on mount. Live changes arrive through the `worker`
-  // trigger above; no polling.
+  // Initial snapshot plus engine-owned worker-catalogue and browser reconnect
+  // signals. No polling.
   useEffect(() => {
     if (!enabled) {
-      setLoading(false)
-      setPresent(true)
+      watcherRef.current = null
+      refreshRef.current = async () => true
+      setStatus({ present: true, loading: false, revision: 0 })
       return
     }
+
     let cancelled = false
-    void (async () => {
-      const client = await getIiiClient()
-      try {
-        const found = await checkWorkerPresent(client, workerName)
-        if (!cancelled) setPresent(found)
-      } catch {
-        if (!cancelled) setPresent(false)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
+    setStatus({ present: false, loading: true, revision: 0 })
+    void getIiiClient()
+      .then((client) => {
+        if (cancelled) return
+        const watcher = createWorkerPresenceWatcher({
+          client,
+          workerName,
+          localFnId: `${watchFnId}::presence::${instanceId}`,
+          initial: { present: false, loading: true, revision: 0 },
+          onChange: setStatus,
+        })
+        watcherRef.current = watcher
+        refreshRef.current = () => watcher.refresh({ forceRevision: true })
+        void watcher.refresh()
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStatus({ present: false, loading: false, revision: 0 })
+        }
+      })
+
     return () => {
       cancelled = true
+      watcherRef.current?.dispose()
+      watcherRef.current = null
+      refreshRef.current = async () => false
     }
-  }, [enabled, workerName])
+  }, [enabled, instanceId, watchFnId, workerName])
 
-  return useMemo(() => ({ present, loading }), [present, loading])
+  return useMemo(() => ({ ...status, refresh }), [status, refresh])
 }
 
 /**
