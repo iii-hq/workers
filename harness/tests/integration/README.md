@@ -111,8 +111,8 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-all direct scenarios; UI-001 and UI-002 must use `playground`. INT-003 produces
-two terminal turns from one send: generation 1
+all direct scenarios; UI-001 through UI-005 must use `playground`. INT-003
+produces two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,
 so the harness's failed finalize drains the parked row and reseeds a turn to
 react to it. The failed route is deliberate — a park during a *completing*

@@ -140,6 +140,8 @@ function SystemNotice({ message }: { message: SystemMessageType }) {
         : 'border-l-rule text-ink-faint'
   return (
     <article
+      data-message-role="system-notice"
+      data-message-tone={tone}
       className={cn(
         'border-l-2 pl-3 py-1 font-mono text-[12px] uppercase tracking-[0.04em]',
         toneCls,

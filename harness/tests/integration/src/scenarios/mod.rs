@@ -10,6 +10,7 @@ mod engine_restart_recovery;
 mod exactly_once_function;
 mod leaf_denied_control_plane;
 mod multi_turn_traces;
+mod provider_family_errors;
 mod queued_message_edit_unqueue;
 mod reseed_parked_message;
 mod spawn_reuse_guard;
@@ -34,7 +35,7 @@ pub enum ScenarioDriver {
 
 /// Every fixture, in stable slug order.
 pub fn all() -> Vec<ScenarioFixture> {
-    vec![
+    let mut fixtures = vec![
         child_discovery_granted::scenario(),
         condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
@@ -53,7 +54,9 @@ pub fn all() -> Vec<ScenarioFixture> {
         streamed_text::scenario(),
         wake_expiry_notice::scenario(),
         timer_wake::scenario(),
-    ]
+    ];
+    fixtures.extend(provider_family_errors::scenarios());
+    fixtures
 }
 
 #[cfg(test)]
@@ -63,7 +66,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 18);
+        assert_eq!(fixtures.len(), 21);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
