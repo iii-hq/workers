@@ -4,7 +4,7 @@ use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "../../../.github/benchmark-site/"]
+#[folder = "assets/dashboard/"]
 #[exclude = "*.test.cjs"]
 #[exclude = "README.md"]
 #[exclude = "sample-data.js"]
