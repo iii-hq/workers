@@ -74,5 +74,9 @@
   "C218_write_cap_exceeded": {
     "code": "C218",
     "message": "big-create.txt is 16 bytes, which exceeds max_write_bytes (8). Split the content into smaller files or raise max_write_bytes in coder config."
+  },
+  "C221_create_stale_revision": {
+    "code": "C221",
+    "message": "conflict.txt changed since it was read; no bytes were written. Reload it with coder::read-file and retry using the returned revision, or omit expected_revision only after explicitly choosing to overwrite the newer content."
   }
 }

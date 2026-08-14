@@ -10,6 +10,7 @@ import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { getIiiClient } from '@/lib/iii-client'
 import { startUiLoader } from '@/lib/ui-loader'
+import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
 import faviconUrl from './icons/favicon.svg?url'
 import './index.css'
@@ -39,6 +40,10 @@ const bootGlobal: NonNullable<Window['__III_CONSOLE__']> = {
 }
 window.__III_CONSOLE__ = bootGlobal
 
+// The app renders before the asynchronous engine bootstrap settles. Mark the
+// injected-UI slots as loading synchronously so configuration editors do not
+// mistake a not-yet-registered override for a genuinely absent one.
+setUiAssetsStatus('loading')
 getIiiClient()
   .then((client) => {
     bootGlobal.api = buildConsoleApi(client)
@@ -46,6 +51,7 @@ getIiiClient()
     startUiLoader(client, bootGlobal.api)
   })
   .catch((err) => {
+    setUiAssetsStatus('unavailable')
     console.error('[iii-ui] loader not started — engine client failed', err)
   })
 

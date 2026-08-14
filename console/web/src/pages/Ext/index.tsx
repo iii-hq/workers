@@ -53,6 +53,8 @@ interface ExtPageProps {
    * filesystem-shaped pages can follow the chat's folder.
    */
   workingDir?: string | null
+  /** Active chat id for session-scoped reactive pages. */
+  conversationId?: string | null
 }
 
 export function ExtPage({
@@ -62,6 +64,7 @@ export function ExtPage({
   tabId = '',
   onRequestClose,
   workingDir,
+  conversationId,
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
@@ -122,6 +125,7 @@ export function ExtPage({
         tabId={tabId}
         onRequestClose={onRequestClose}
         workingDir={workingDir}
+        conversationId={conversationId}
       />
     </div>
   )

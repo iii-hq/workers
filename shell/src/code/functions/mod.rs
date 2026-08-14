@@ -125,7 +125,10 @@ const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits acro
 const CREATE_FILE_ID: &str = "coder::create-file";
 const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
      \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
-     flags; non-accessible paths return C211. Paths are relative to \
+     flags; writes publish atomically. For a conflict-safe overwrite, pass \
+     the `revision` returned by coder::read-file as `expected_revision`; \
+     stale revisions return C221 without writing. Non-accessible paths \
+     return C211. Paths are relative to \
      the primary allowed root or absolute inside any allowed root \
      (coder::info lists them); for host paths outside the jail use \
      shell::fs::*.";

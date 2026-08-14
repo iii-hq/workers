@@ -1,5 +1,5 @@
 /**
- * Build stub for `@pierre/diffs` (and `/react`), aliased in only by
+ * Build stub for `@pierre/diffs` (and `/react` + `/edit`), aliased in only by
  * `vite.demo.config.ts`.
  *
  * The package pulls all of shiki's grammars, which lands ~13MB of language
@@ -13,6 +13,13 @@ export const DEFAULT_THEMES = { light: 'github-light', dark: 'github-dark' }
 export interface FileContents {
   name: string
   contents: string
+}
+
+/** Keep the demo build free of Pierre's editor chunk as well. */
+export class Editor {}
+
+export function EditProvider({ children }: { children?: React.ReactNode }) {
+  return <>{children}</>
 }
 
 /** The body, monospaced and scrollable, with no tokenizer behind it. */
@@ -33,4 +40,4 @@ export function MultiFileDiff({ newFile }: { newFile: FileContents }) {
   return <PlainFile contents={newFile.contents} />
 }
 
-export default { DEFAULT_THEMES, File, MultiFileDiff }
+export default { DEFAULT_THEMES, EditProvider, Editor, File, MultiFileDiff }

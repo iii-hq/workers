@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 # Validate the published quickstart in an isolated home and project:
-# install iii, boot an empty engine, add harness + console, and probe the
-# resulting function and HTTP surfaces.
+# install iii, boot an empty engine, add harness + console, and complete the
+# first Console conversation with Anthropic Sonnet 5.
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
@@ -17,6 +17,10 @@ engine_port=49134
 wait_seconds=${HARNESS_QUICKSTART_WAIT_SECONDS:-180}
 add_timeout_seconds=${HARNESS_QUICKSTART_ADD_TIMEOUT_SECONDS:-600}
 trace_enabled=${HARNESS_QUICKSTART_TRACE:-0}
+provider_id=anthropic
+model_id=claude-sonnet-5
+response_marker=QUICKSTART_OK
+playwright_bin=${HARNESS_QUICKSTART_PLAYWRIGHT_BIN:-"$repo_root/console/web/node_modules/.bin/playwright"}
 
 if [[ -n "${III_CHANNEL:-}" ]]; then
   echo "III_CHANNEL was split into III_CLI_CHANNEL and III_WORKER_TAG" >&2
@@ -54,12 +58,22 @@ if [[ -n "$release_worker" || -n "$release_version" ]]; then
   }
 fi
 
-for command_name in curl jq; do
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
+  echo "ANTHROPIC_API_KEY is required" >&2
+  exit 2
+}
+
+for command_name in curl jq ffmpeg; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "$command_name is required" >&2
     exit 2
   }
 done
+
+[[ -x "$playwright_bin" ]] || {
+  echo "Playwright is required at $playwright_bin" >&2
+  exit 2
+}
 
 [[ "$wait_seconds" =~ ^[0-9]+$ ]] || {
   echo "HARNESS_QUICKSTART_WAIT_SECONDS must be a positive integer" >&2
@@ -92,10 +106,15 @@ rm -f \
   "$artifact_dir/cli-version.txt" \
   "$artifact_dir/console-status.json" \
   "$artifact_dir/console.html" \
+  "$artifact_dir/model.json" \
+  "$artifact_dir/model-catalog.json" \
+  "$artifact_dir/browser-evidence.json" \
+  "$artifact_dir/terminal-status.json" \
   "$artifact_dir/config.yaml" \
   "$artifact_dir/iii.lock" \
   "$artifact_dir/commands.log" \
   "$log_dir"/*.log
+rm -rf "$artifact_dir/playwright-output" "$artifact_dir/slack-evidence"
 
 trace_log="$artifact_dir/commands.log"
 if [[ "$trace_enabled" == 1 ]]; then
@@ -105,7 +124,7 @@ fi
 export HOME="$quickstart_home"
 export XDG_CONFIG_HOME="$quickstart_home/.config"
 export PATH="$quickstart_home/.local/bin:$quickstart_home/.iii/bin:$PATH"
-unset ANTHROPIC_API_KEY OPENAI_API_KEY ZAI_API_KEY
+unset OPENAI_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY XAI_API_KEY KIMI_API_KEY
 
 engine_pid=""
 iii_bin=""
@@ -137,6 +156,18 @@ die() {
 
 write_result() {
   local status=$1
+  local browser=null terminal=null video=null
+  local video_path="$artifact_dir/slack-evidence/quickstart-sonnet-5.mp4"
+  [[ -f "$artifact_dir/browser-evidence.json" ]] && browser=$(jq -c . "$artifact_dir/browser-evidence.json")
+  [[ -f "$artifact_dir/terminal-status.json" ]] && terminal=$(jq -c . "$artifact_dir/terminal-status.json")
+  if [[ -f "$video_path" ]]; then
+    video=$(jq -n \
+      --arg path "slack-evidence/quickstart-sonnet-5.mp4" \
+      --arg media_type "video/mp4" \
+      --arg sha256 "$(sha256sum "$video_path" | awk '{print $1}')" \
+      --argjson size_bytes "$(stat -c %s "$video_path")" \
+      '{path:$path,media_type:$media_type,sha256:$sha256,size_bytes:$size_bytes}')
+  fi
   jq -n \
     --arg status "$status" \
     --arg reason "$failure_reason" \
@@ -144,6 +175,12 @@ write_result() {
     --arg install_url "$install_url" \
     --arg cli_channel "$cli_channel" \
     --arg worker_tag "$worker_tag" \
+    --arg provider "$provider_id" \
+    --arg model "$model_id" \
+    --arg marker "$response_marker" \
+    --argjson browser "$browser" \
+    --argjson terminal "$terminal" \
+    --argjson slack_evidence "$video" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     --argjson engine_port "$engine_port" \
     '{
@@ -153,6 +190,12 @@ write_result() {
       install_url: $install_url,
       cli_channel: $cli_channel,
       worker_tag: $worker_tag,
+      provider: $provider,
+      model: $model,
+      marker: $marker,
+      browser: $browser,
+      terminal: $terminal,
+      slack_evidence: $slack_evidence,
       elapsed_ms: $elapsed_ms,
       engine_port: $engine_port
     }' >"$artifact_dir/result.json"
@@ -209,6 +252,13 @@ cleanup() {
   stop_managed_workers
   stop_engine
   stop_owned_orphans
+
+  if artifacts_contain_secret; then
+    status=1
+    failure_reason="an artifact contains the Anthropic credential"
+    # Do not leave a secret-bearing file available to the workflow uploader.
+    find "$artifact_dir" -type f -delete
+  fi
 
   if ((status == 0)); then
     write_result passed
@@ -283,6 +333,94 @@ wait_for_functions() {
   die "required functions did not register: $missing"
 }
 
+wait_for_model() {
+  local response attempt
+  log "Waiting for $provider_id/$model_id in the router catalog (up to ${wait_seconds}s)"
+  log_command "iii trigger router::models::get --port $engine_port --json '{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}'"
+  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+    response=$("$iii_bin" trigger router::models::get --port "$engine_port" \
+      --json "{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}" \
+      2>>"$log_dir/model-discovery.log" || true)
+    if jq -e --arg provider "$provider_id" --arg model "$model_id" \
+      '.model.provider == $provider and .model.id == $model' <<<"$response" >/dev/null 2>&1; then
+      printf '%s\n' "$response" >"$artifact_dir/model.json"
+      ok "$provider_id/$model_id available after ${attempt}s"
+      return 0
+    fi
+    if ((attempt > 0 && attempt % 15 == 0)); then
+      log "Still waiting for $provider_id/$model_id"
+    fi
+    sleep 1
+  done
+  "$iii_bin" trigger router::models::list --port "$engine_port" --json '{}' \
+    >"$artifact_dir/model-catalog.json" 2>>"$log_dir/model-discovery.log" || true
+  die "$provider_id/$model_id did not appear in the router catalog"
+}
+
+record_browser_video() {
+  local playwright_status video_source
+  local output_dir="$artifact_dir/slack-evidence"
+  export HARNESS_QUICKSTART_CONSOLE_URL="http://127.0.0.1:$console_port/"
+  export NODE_PATH="$repo_root/console/web/node_modules${NODE_PATH:+:$NODE_PATH}"
+  set +e
+  "$playwright_bin" test \
+    --config "$script_dir/playwright.config.ts" \
+    >"$log_dir/playwright.log" 2>&1
+  playwright_status=$?
+  set -e
+
+  video_source=$(find "$artifact_dir/playwright-output" -type f -name '*.webm' -print -quit 2>/dev/null || true)
+  if [[ -n "$video_source" ]]; then
+    mkdir -p "$output_dir"
+    ffmpeg -hide_banner -loglevel error -y -i "$video_source" \
+      -map_metadata -1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart \
+      "$output_dir/quickstart-sonnet-5.mp4" \
+      >"$log_dir/ffmpeg.log" 2>&1 || die "Playwright video conversion failed"
+  elif ((playwright_status == 0)); then
+    die "Playwright passed without producing a video"
+  fi
+
+  ((playwright_status == 0)) || die "Console first-message Playwright test failed"
+  ok "Console conversation completed and Playwright video recorded"
+}
+
+wait_for_terminal_turn() {
+  local session_id response attempt
+  session_id=$(jq -er '.session_id' "$artifact_dir/browser-evidence.json") \
+    || die "browser evidence has no session id"
+  log "Verifying the durable terminal turn for session $session_id"
+  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<console-session>\"}'"
+  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+    response=$("$iii_bin" trigger harness::status --port "$engine_port" \
+      --json "{\"session_id\":\"$session_id\"}" 2>>"$log_dir/terminal-status.log" || true)
+    if jq -e '.status == "completed" and (.expects_wake // false) == false' \
+      <<<"$response" >/dev/null 2>&1; then
+      printf '%s\n' "$response" >"$artifact_dir/terminal-status.json"
+      ok "turn completed durably after ${attempt}s"
+      return 0
+    fi
+    if jq -e '.status == "failed" or .status == "cancelled"' \
+      <<<"$response" >/dev/null 2>&1; then
+      printf '%s\n' "$response" >"$artifact_dir/terminal-status.json"
+      die "Console turn reached terminal status $(jq -r '.status' <<<"$response")"
+    fi
+    sleep 1
+  done
+  printf '%s\n' "$response" >"$artifact_dir/terminal-status.json"
+  die "Console turn did not reach durable completion"
+}
+
+artifacts_contain_secret() {
+  LC_ALL=C grep -R -a -F -l -- "$ANTHROPIC_API_KEY" "$artifact_dir" >/dev/null 2>&1
+}
+
+assert_secret_safe_artifacts() {
+  if artifacts_contain_secret; then
+    die "an artifact contains the Anthropic credential"
+  fi
+  ok "artifacts do not contain the Anthropic credential"
+}
+
 run_worker_add() {
   log_command "iii worker add $*"
   if command -v timeout >/dev/null 2>&1; then
@@ -306,7 +444,7 @@ start_engine() {
 
 cd "$project_dir"
 
-log "Step 1/7: Install iii from $install_url (channel=$cli_channel)"
+log "Step 1/9: Install iii from $install_url (channel=$cli_channel)"
 log_command "curl -fsSL $install_url -o install.sh"
 curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
   "$install_url" -o "$run_root/install.sh"
@@ -324,16 +462,16 @@ cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
 ok "installed $cli_version"
 
-log "Step 2/7: Start an empty engine"
+log "Step 2/9: Start an empty engine"
 printf 'workers: []\n' >config.yaml
 start_engine
 wait_for_engine
 
-log "Step 3/7: Add harness and Console from worker tag $worker_tag"
+log "Step 3/9: Add harness and Console from worker tag $worker_tag"
 run_worker_add "harness@$worker_tag" "console@$worker_tag" 2>&1 | tee "$log_dir/worker-add.log"
 ok "iii worker add harness console exited successfully"
 
-log "Step 4/7: Apply exact release candidate override"
+log "Step 4/9: Apply exact release candidate override"
 if [[ -n "$release_worker" ]]; then
   run_worker_add "${release_worker}@${release_version}" --force \
     2>&1 | tee "$log_dir/candidate-override.log"
@@ -342,10 +480,13 @@ else
   ok "no release candidate override requested"
 fi
 
-log "Step 5/7: Verify registered functions"
+log "Step 5/9: Verify registered functions"
 wait_for_functions
 
-log "Step 6/7: Verify the Console HTTP surface"
+log "Step 6/9: Verify Sonnet 5 availability"
+wait_for_model
+
+log "Step 7/9: Verify the Console HTTP surface"
 log_command "iii trigger console::status --port $engine_port --json '{}'"
 console_status=$("$iii_bin" trigger console::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
@@ -357,12 +498,18 @@ curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
 ok "Console answered on port $console_port"
 
-log "Step 7/7: Verify generated project files"
+log "Step 8/9: Complete the first conversation through the Console"
+record_browser_video
+wait_for_terminal_turn
+
+log "Step 9/9: Verify generated project files and secret-safe evidence"
 for output in config.yaml iii.lock; do
   [[ -s "$output" ]] || die "worker add did not write $output"
   grep -Eiq 'harness' "$output" || die "$output does not contain harness"
   grep -Eiq 'console' "$output" || die "$output does not contain console"
 done
 ok "config.yaml and iii.lock reference harness + console"
+snapshot_project
+assert_secret_safe_artifacts
 
 log "ALL QUICKSTART ASSERTIONS PASSED ($cli_version, cli=$cli_channel, workers=$worker_tag)"

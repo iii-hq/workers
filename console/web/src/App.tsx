@@ -394,6 +394,7 @@ function ScreenBody({
         onRequestClose={onClose}
         onMissing={onExtMissing}
         workingDir={active?.workingDir ?? null}
+        conversationId={active?.id ?? null}
       />
     )
   }

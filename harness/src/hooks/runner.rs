@@ -89,6 +89,9 @@ impl HookRegistry {
     /// `pre_turn`: veto only. `Err(reason)` ends the turn.
     pub async fn run_pre_turn(&self, record: &TurnRecord, step: u64) -> Result<(), String> {
         for binding in self.pre_turn.ordered() {
+            if !sessions_match(&binding, &record.session_id) {
+                continue;
+            }
             let input = self.envelope(HookPoint::PreTurn, record, step);
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(_) => {}
@@ -472,7 +475,7 @@ pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool 
     globs_match(binding.functions.as_deref(), function_id)
 }
 
-/// Whether a post_turn binding's `sessions` globs match the completing
+/// Whether a pre_turn/post_turn binding's `sessions` globs match the turn's
 /// session (no filter → every session).
 fn sessions_match(binding: &HookBinding, session_id: &str) -> bool {
     globs_match(binding.sessions.as_deref(), session_id)
@@ -645,6 +648,16 @@ mod tests {
             timeout_ms: 5000,
             fail_closed: true,
         }
+    }
+
+    #[test]
+    fn pre_turn_session_scope_uses_the_same_globs_as_post_turn() {
+        let mut scoped = binding("snapshot", 0);
+        scoped.sessions = Some(vec!["console-123".into(), "job-*".into()]);
+
+        assert!(sessions_match(&scoped, "console-123"));
+        assert!(sessions_match(&scoped, "job-9"));
+        assert!(!sessions_match(&scoped, "console-456"));
     }
 
     fn ids(bindings: &[HookBinding]) -> Vec<&str> {
