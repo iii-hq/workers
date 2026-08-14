@@ -16,9 +16,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::clients::RouterClient;
+use crate::clients::{LoadedEntry, RouterClient};
 use crate::error::HarnessError;
 use crate::types::event::Usage;
+use crate::types::message::AgentMessage;
 use crate::types::model::AgentFunction;
 
 pub const CONTEXT_SCOPE: &str = "harness_context";
@@ -135,9 +136,8 @@ pub struct ContextSnapshotV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     /// Running cost of the whole session in USD, accumulated across every
-    /// generation step. `usage.cost_usd` is one step's bill — on providers
-    /// with steep cache discounts the per-step number swings two orders of
-    /// magnitude, so a chip showing it alone reads as a bouncing total.
+    /// generation step. Absent when any completed step did not report a cost:
+    /// a partial sum must not be presented as the whole session's bill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_cost_usd: Option<f64>,
     pub timestamp: i64,
@@ -178,6 +178,31 @@ pub async fn delete(
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
     crate::state::state_delete(iii, CONTEXT_SCOPE, session_id, timeout_ms).await
+}
+
+/// Sum every prior assistant generation on the active transcript plus the
+/// current generation. The deterministic current entry is skipped because a
+/// redelivered step may already have appended or updated it. Any missing price
+/// makes the whole value unknown, matching `harness::metrics` completeness.
+pub(crate) fn session_cost_from_entries(
+    entries: &[LoadedEntry],
+    current_assistant_id: &str,
+    step_cost_usd: Option<f64>,
+) -> Option<f64> {
+    let previous = entries.iter().try_fold(0.0, |total, entry| {
+        if entry.entry_id == current_assistant_id {
+            return Some(total);
+        }
+        let Some(AgentMessage::Assistant(assistant)) = &entry.message else {
+            return Some(total);
+        };
+        assistant
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.cost_usd)
+            .map(|cost| total + cost)
+    })?;
+    step_cost_usd.map(|cost| previous + cost)
 }
 
 /// A cached count and the estimator that answered it. Caching the estimator
@@ -250,7 +275,7 @@ impl Part<'_> {
     }
 }
 
-/// One part's provider-exact token count.
+/// One part's tokenizer-derived token count.
 #[derive(Debug, Default)]
 struct Counted {
     tokens: u64,
@@ -275,7 +300,7 @@ async fn probe_base(router: &RouterClient, model: &str, provider: Option<&str>) 
     Some(base)
 }
 
-/// Provider-exact tokens for one part: count(probe + part) - `base`, cached
+/// Tokenizer-derived tokens for one part: count(probe + part) - `base`, cached
 /// by content. `None` means the provider count failed and the caller must
 /// keep its heuristic numbers.
 async fn counted_delta(
@@ -304,10 +329,10 @@ async fn counted_delta(
     })
 }
 
-/// Replace the snapshot's estimated categories with provider-exact numbers
-/// where they exist: the generation's billed usage is the exact total, the
-/// system prompt and tool schemas are counted once via the provider's
-/// tokenizer (cached by content), and the message window is the remainder.
+/// Reconcile the snapshot against provider usage where it exists: the
+/// generation's billed usage supplies the prompt total, the system prompt and
+/// tool schemas are counted once via the configured tokenizer (cached by
+/// content), and the message window is the remainder.
 /// A rig without a provider counter keeps the heuristic snapshot untouched.
 pub async fn exactify(
     snapshot: &mut ContextSnapshotV1,
@@ -432,5 +457,56 @@ mod tests {
         value["from_the_future"] = serde_json::json!(true);
         let parsed: ContextSnapshotV1 = serde_json::from_value(value).unwrap();
         assert_eq!(parsed, snapshot);
+    }
+
+    #[test]
+    fn session_cost_requires_every_assistant_generation_to_be_known() {
+        let mut assistant = crate::types::message::empty_assistant("p", "m");
+        assistant.usage = Some(Usage {
+            cost_usd: Some(1.37),
+            ..Usage::default()
+        });
+        let mut entries = vec![LoadedEntry {
+            entry_id: "assistant_1".into(),
+            message: Some(AgentMessage::Assistant(assistant)),
+            custom: None,
+        }];
+
+        assert_eq!(
+            session_cost_from_entries(&[], "assistant_current", Some(0.42)),
+            Some(0.42)
+        );
+        assert_eq!(
+            session_cost_from_entries(&entries, "assistant_current", Some(0.42)),
+            Some(1.79)
+        );
+        assert_eq!(
+            session_cost_from_entries(&entries, "assistant_current", None),
+            None
+        );
+
+        let mut current = crate::types::message::empty_assistant("p", "m");
+        current.usage = Some(Usage {
+            cost_usd: Some(99.0),
+            ..Usage::default()
+        });
+        entries.push(LoadedEntry {
+            entry_id: "assistant_current".into(),
+            message: Some(AgentMessage::Assistant(current)),
+            custom: None,
+        });
+        assert_eq!(
+            session_cost_from_entries(&entries, "assistant_current", Some(0.42)),
+            Some(1.79)
+        );
+
+        let Some(AgentMessage::Assistant(assistant)) = &mut entries[0].message else {
+            unreachable!()
+        };
+        assistant.usage.as_mut().unwrap().cost_usd = None;
+        assert_eq!(
+            session_cost_from_entries(&entries, "assistant_current", Some(0.42)),
+            None
+        );
     }
 }

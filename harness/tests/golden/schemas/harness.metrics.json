@@ -54,7 +54,7 @@
             ]
           },
           "session_cost_usd": {
-            "description": "Running cost of the whole session in USD, accumulated across every generation step. `usage.cost_usd` is one step's bill — on providers with steep cache discounts the per-step number swings two orders of magnitude, so a chip showing it alone reads as a bouncing total.",
+            "description": "Running cost of the whole session in USD, accumulated across every generation step. Absent when any completed step did not report a cost: a partial sum must not be presented as the whole session's bill.",
             "format": "double",
             "type": [
               "number",

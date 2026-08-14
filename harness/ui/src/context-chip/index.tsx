@@ -14,10 +14,14 @@ import type { Host } from '@iii-dev/console-ui'
 import { formatCost, formatTokens } from '../lib/format'
 import {
   type ContextSnapshot,
-  type SnapshotUsage,
   isSnapshot,
 } from '../lib/metrics'
 import { TONE_COLOR, toneFor } from '../lib/tone'
+import {
+  accountingProvenance,
+  outputUsagePresentation,
+  promptUsagePresentation,
+} from './presentation'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
@@ -115,28 +119,6 @@ function categories(snapshot: ContextSnapshot): Category[] {
   ]
 }
 
-/**
- * The prompt cache view of the last generation. Providers bill a cache read
- * at a fraction of fresh input and a cache write at a premium, so on a long
- * session the hit rate drives cost more than the window size does. `null`
- * when the provider reported no cache activity at all.
- */
-function cacheSummary(usage: SnapshotUsage | undefined) {
-  const read = usage?.cache_read ?? 0
-  const write = usage?.cache_write ?? 0
-  if (read === 0 && write === 0) return null
-  const prompt = (usage?.input ?? 0) + read + write
-  const hitPct = prompt > 0 ? Math.round((read / prompt) * 100) : 0
-  return {
-    read,
-    write,
-    hitPct,
-    // A cold or broken prefix means the whole prompt is re-billed at the
-    // write premium every turn, which is worth flagging rather than dimming.
-    tone: hitPct >= 70 ? 'ok' : hitPct < 30 ? 'warn' : 'plain',
-  }
-}
-
 interface LegendEntry {
   key: string
   label: string
@@ -229,9 +211,16 @@ function ContextPopover({
     usable > 0 ? Math.round(Math.min(1, snapshot.total / usable) * 100) : 0
   const cats = categories(snapshot)
   const usage = snapshot.usage
-  const hasActuals =
-    usage != null && (usage.input != null || usage.cache_read != null)
-  const cache = cacheSummary(usage)
+  const prompt = promptUsagePresentation(usage)
+  const output = outputUsagePresentation(usage)
+  const cacheTone =
+    prompt?.hitPct == null
+      ? 'plain'
+      : prompt.hitPct >= 70
+        ? 'ok'
+        : prompt.hitPct < 30
+          ? 'warn'
+          : 'plain'
   return (
     <div className="harness-ui-pop" role="dialog" aria-label="context breakdown">
       <div className="harness-ui-pop-head">
@@ -269,44 +258,57 @@ function ContextPopover({
         ))}
       </div>
       <div className="harness-ui-pop-foot">
-        <span>
-          {!snapshot.estimator || snapshot.estimator === 'heuristic'
-            ? `est. ${snapshot.estimator ?? 'unknown'}`
-            : `exact · ${
-                snapshot.estimator === 'provider'
-                  ? 'provider tokenizer'
-                  : snapshot.estimator
-              }`}
-        </span>
-        {hasActuals ? (
+        <span>{accountingProvenance(snapshot)}</span>
+        {prompt ? (
+          <span
+            title={
+              'Fresh tokens missed the prompt cache. Cached tokens were reused. ' +
+              'Cache creation is shown only when the provider reports it.'
+            }
+          >
+            prompt {formatTokens(prompt.total)} total ·{' '}
+            {formatTokens(prompt.fresh)} fresh
+            {prompt.cached != null ? (
+              <> · {formatTokens(prompt.cached)} cached</>
+            ) : null}
+            {prompt.cacheCreation != null ? (
+              <> · {formatTokens(prompt.cacheCreation)} cache creation</>
+            ) : null}
+            {prompt.hitPct != null ? (
+              <>
+                {' · '}
+                <span className="harness-ui-cache-hit" data-tone={cacheTone}>
+                  {prompt.hitPct}% hit
+                </span>
+              </>
+            ) : null}
+          </span>
+        ) : null}
+        {output ? (
           <span>
-            last step {formatTokens(usage?.input ?? 0)} in · output{' '}
-            {formatTokens(usage?.output ?? 0)}
-            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : null}
+            output {formatTokens(output.output)}
+            {output.reasoning != null ? (
+              <>
+                {' · '}reasoning {formatTokens(output.reasoning)} (included in
+                output)
+              </>
+            ) : null}
+            {usage?.cost_usd != null ? (
+              <> · {formatCost(usage.cost_usd)}</>
+            ) : null}
           </span>
         ) : null}
-        {cache ? (
+        {usage ? (
           <span
             title={
-              'cache read is billed at a fraction of fresh input; cache write ' +
-              'carries a premium. Hit rate is the cached share of the prompt.'
+              snapshot.session_cost_usd != null
+                ? 'Every generation step of this session summed.'
+                : 'At least one generation did not report a USD cost, so a partial total is not shown.'
             }
           >
-            cache {formatTokens(cache.read)} read ·{' '}
-            {formatTokens(cache.write)} write ·{' '}
-            <span className="harness-ui-cache-hit" data-tone={cache.tone}>
-              {cache.hitPct}% hit
-            </span>
-          </span>
-        ) : null}
-        {snapshot.session_cost_usd != null ? (
-          <span
-            title={
-              'every generation step of this session summed. The per-step ' +
-              'cost on the line above swings with cache hits; this one only grows.'
-            }
-          >
-            session total {formatCost(snapshot.session_cost_usd)}
+            {snapshot.session_cost_usd != null
+              ? `session total ${formatCost(snapshot.session_cost_usd)}`
+              : 'session cost unavailable'}
           </span>
         ) : null}
       </div>
