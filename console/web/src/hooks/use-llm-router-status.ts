@@ -14,9 +14,9 @@ import {
  */
 
 /** Engine worker name for the llm-router worker. */
-const LLM_ROUTER_WORKER_NAME = 'llm-router'
+export const LLM_ROUTER_WORKER_NAME = 'llm-router'
 /** Base id for the browser-local handler bound to the `worker` trigger. */
-const LLM_ROUTER_WATCH_FN = 'console::llm-router-watch'
+export const LLM_ROUTER_WATCH_FN = 'console::llm-router-watch'
 
 export type LlmRouterStatus = WorkerPresence
 

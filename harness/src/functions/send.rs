@@ -230,14 +230,10 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         // override — those never match the built-in verbatim), ask the router
         // again: if it answers now, upgrade to the provider identity prompt.
         if cfg.provider_identity_prompt
-            && options.system_prompt.as_deref()
-                == Some(
-                    prompt::build_system_prompt(prompt::SystemPromptOpts {
-                        mode: prev.options.mode,
-                        identity: None,
-                    })
-                    .as_str(),
-                )
+            && inherited_prompt_is_pure_fallback(
+                options.system_prompt.as_deref(),
+                prev.options.mode,
+            )
         {
             if let Some(identity) = deps
                 .router()
@@ -684,6 +680,23 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.system_prompt = prev.system_prompt.clone();
 }
 
+/// True when an inherited prompt is byte-for-byte the pure embedded fallback
+/// for `mode` — the signature of a first send that raced a router outage
+/// (the router answered nothing, so `resolve_system_prompt` built the
+/// default with no identity). Caller overrides and enriched prompts never
+/// match the built-in verbatim, so this is safe to use as the re-resolve
+/// trigger on steer.
+fn inherited_prompt_is_pure_fallback(prompt: Option<&str>, mode: Option<Mode>) -> bool {
+    prompt
+        == Some(
+            prompt::build_system_prompt(prompt::SystemPromptOpts {
+                mode,
+                identity: None,
+            })
+            .as_str(),
+        )
+}
+
 /// Default a BRAND-NEW session's working directory (MOT-3897): when the very
 /// first turn arrives without `metadata.fs_scope.root`, scope it to the
 /// configured default (the stack's launch folder). Existing sessions are never
@@ -831,6 +844,41 @@ pub(crate) async fn seed_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The steer-time heal only fires on the exact embedded fallback: a
+    /// session born during a router outage re-resolves, everything a caller
+    /// or provider shaped stays frozen as designed.
+    #[test]
+    fn pure_fallback_prompt_is_detected_for_reresolve() {
+        let fallback = prompt::build_system_prompt(prompt::SystemPromptOpts {
+            mode: None,
+            identity: None,
+        });
+        assert!(inherited_prompt_is_pure_fallback(Some(&fallback), None));
+
+        // A mode-prefixed fallback matches only under the same mode.
+        let ask = prompt::build_system_prompt(prompt::SystemPromptOpts {
+            mode: Some(Mode::Ask),
+            identity: None,
+        });
+        assert!(inherited_prompt_is_pure_fallback(
+            Some(&ask),
+            Some(Mode::Ask)
+        ));
+        assert!(!inherited_prompt_is_pure_fallback(Some(&ask), None));
+
+        // Provider identity, caller override, and disabled prompts never match.
+        let identity = prompt::build_system_prompt(prompt::SystemPromptOpts {
+            mode: None,
+            identity: Some("You are a provider identity."),
+        });
+        assert!(!inherited_prompt_is_pure_fallback(Some(&identity), None));
+        assert!(!inherited_prompt_is_pure_fallback(
+            Some("custom prompt"),
+            None
+        ));
+        assert!(!inherited_prompt_is_pure_fallback(None, None));
+    }
 
     #[test]
     fn string_message_becomes_user_text() {

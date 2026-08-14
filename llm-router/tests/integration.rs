@@ -767,6 +767,88 @@ async fn registration_token_gates_takeover_resolve_and_reconcile() {
     router_iii.shutdown();
 }
 
+/// The operator escape hatch for a token lock-out: a provider that lost its
+/// registration token is rejected forever — until `provider::unregister`
+/// drops the record (and its catalog slice), after which a fresh register
+/// binds a new token.
+#[tokio::test(flavor = "multi_thread")]
+async fn unregister_frees_a_token_locked_provider_and_prunes_its_catalog() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, InitOptions::default());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+
+    // Lost token: re-register without it is the lock-out.
+    let err = call(
+        &provider.iii,
+        "router::provider::register",
+        json!({ "id": "real" }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(remote_code(&err), "router/registration_rejected");
+
+    // Unknown id: ok, nothing removed.
+    let res = call(
+        &provider.iii,
+        "router::provider::unregister",
+        json!({ "id": "missing" }),
+    )
+    .await
+    .expect("unregister answers");
+    assert_eq!(res["removed"], json!(false));
+
+    // The escape hatch: drop the record.
+    let res = call(
+        &provider.iii,
+        "router::provider::unregister",
+        json!({ "id": "real" }),
+    )
+    .await
+    .expect("unregister succeeds");
+    assert_eq!(res["removed"], json!(true));
+
+    // Gone from the provider list, and the static catalog slice is pruned.
+    let list = call(&provider.iii, "router::provider::list", json!({}))
+        .await
+        .expect("list");
+    assert!(
+        !list["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == "real"),
+        "unregistered provider must leave the list"
+    );
+    let model = call(
+        &provider.iii,
+        "router::models::get",
+        json!({ "provider": "real", "id": "live-1" }),
+    )
+    .await
+    .expect("models::get answers");
+    assert!(
+        model.is_null(),
+        "catalog slice must be pruned on unregister, got {model}"
+    );
+
+    // Fresh register without a token now binds cleanly with a NEW token.
+    let res = call(
+        &provider.iii,
+        "router::provider::register",
+        json!({ "id": "real" }),
+    )
+    .await
+    .expect("fresh register succeeds after unregister");
+    let new_token = res["registration_token"].as_str().expect("new token");
+    assert_ne!(new_token, provider.token, "a new token must be minted");
+
+    router_iii.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_precedence_config_over_env_over_none() {
     let engine = engine_or_skip!();
