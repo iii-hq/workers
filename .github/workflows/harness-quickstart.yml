@@ -86,6 +86,7 @@ jobs:
       - name: Run quickstart validator
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
           HARNESS_QUICKSTART_TRACE: '1'
           III_CLI_CHANNEL: ${{ inputs.cli_channel }}

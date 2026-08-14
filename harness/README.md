@@ -31,6 +31,7 @@ run the engine, initialize a project, and start it:
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 export ANTHROPIC_API_KEY='<your-anthropic-api-key>'
+export OPENAI_API_KEY='<your-openai-api-key>'
 iii project init iii-app && cd iii-app
 iii
 ```
@@ -47,8 +48,11 @@ open http://localhost:3113
 ```
 
 Create a session, select **Anthropic → Claude Sonnet 5**, and send your first
-message. The provider reads `ANTHROPIC_API_KEY` from the engine environment, so
-the credential does not need to be pasted into or stored by the Console.
+message. Then select **OpenAI → GPT-5.6 Luna** in the same chat and send another
+message. Create a new chat and send one more message with GPT-5.6 Luna. The
+providers read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the engine
+environment, so credentials do not need to be pasted into or stored by the
+Console.
 
 `iii worker add harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one. During bootstrap, the harness asks the

@@ -14,18 +14,21 @@ It verifies that:
 - the published installer provides a working `iii` CLI;
 - a clean engine starts;
 - the core harness and Console functions register;
-- `ANTHROPIC_API_KEY` exposes exactly `anthropic/claude-sonnet-5`;
+- `ANTHROPIC_API_KEY` exposes exactly `anthropic/claude-sonnet-5` and
+  `OPENAI_API_KEY` exposes exactly `openai/gpt-5.6-luna`;
 - `console::status` and the Console HTTP root respond;
-- a user can select Claude Sonnet 5 and complete the first message through the
-  Console;
-- the successful conversation survives a browser reload and reaches a durable
-  terminal Harness state; and
+- a user can complete a message with Claude Sonnet 5, switch to GPT-5.6 Luna
+  in the same chat, and complete another message without changing sessions;
+- a user can create a new chat and complete a third message with GPT-5.6 Luna;
+- both successful conversations survive a browser reload and reach durable
+  terminal Harness states; and
 - `config.yaml` and `iii.lock` contain the installed workers.
 
 Run it locally with:
 
 ```bash
 export ANTHROPIC_API_KEY='<your-anthropic-api-key>'
+export OPENAI_API_KEY='<your-openai-api-key>'
 make -C harness quickstart-validate
 ```
 
@@ -46,9 +49,9 @@ are omitted.
 
 The CI workflow preserves `result.json`, the generated project files, sanitized
 browser and terminal evidence, raw logs, the command trace, and an MP4 of the
-Console success. It scans every artifact for the literal Anthropic credential
-before upload. Release-triggered runs replace the released worker with its exact
-candidate version and verify it in `iii.lock`.
+Console success. It scans every artifact for the literal Anthropic and OpenAI
+credentials before upload. Release-triggered runs replace the released worker
+with its exact candidate version and verify it in `iii.lock`.
 
 After a successful `deploy_harness`, Release Control dispatches this check as a
 child observation. Its result and MP4 are appended to the release Slack thread,
