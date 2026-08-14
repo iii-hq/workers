@@ -196,26 +196,31 @@ pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) -> bool {
 /// harness would then run the gate N times per call, re-holding on release
 /// (approval deadlock). A failed attempt (harness not up yet) leaves the
 /// flag unset so the next iteration retries; a success is never repeated.
+///
+/// Readiness gates only the completion condition, never the attempt: the
+/// harness being active says nothing about whether THIS worker bound its
+/// hook, so a gate that starts after the harness must still register —
+/// otherwise the gate runs detached.
 pub fn retry_hook_bindings(iii: IIIClient) {
     tokio::spawn(async move {
         let mut pre_bound = false;
         let mut post_bound = false;
         loop {
-            let pre_trigger_ready = trigger_instance_count(&iii, "harness::hook::pre-trigger")
-                .await
-                .is_some_and(|count| count > 0);
-            if !pre_trigger_ready && !pre_bound {
+            if !pre_bound {
                 pre_bound = bind_hook(&iii);
             }
-
-            let post_trigger_ready = trigger_instance_count(&iii, "harness::hook::post-trigger")
-                .await
-                .is_some_and(|count| count > 0);
-            if !post_trigger_ready && !post_bound {
+            if !post_bound {
                 post_bound = bind_filesystem_access_watch_hook(&iii);
             }
 
-            if pre_trigger_ready && post_trigger_ready {
+            let pre_trigger_ready = trigger_instance_count(&iii, "harness::hook::pre-trigger")
+                .await
+                .is_some_and(|count| count > 0);
+            let post_trigger_ready = trigger_instance_count(&iii, "harness::hook::post-trigger")
+                .await
+                .is_some_and(|count| count > 0);
+
+            if pre_bound && post_bound && pre_trigger_ready && post_trigger_ready {
                 tracing::info!("approval-gate hook bindings confirmed");
                 break;
             }
