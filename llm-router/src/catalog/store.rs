@@ -82,4 +82,14 @@ impl CatalogStore {
         let value = serde_json::to_value(&*slices).unwrap_or_default();
         state_set(&self.iii, CATALOG_KEY, value).await
     }
+
+    /// Drop a provider's slice (unregister path) so stale models never route.
+    pub async fn remove_slice(&self, provider: &str) -> Result<(), Error> {
+        let mut slices = self.slices.lock().await; // serialized writer
+        if slices.remove(provider).is_none() {
+            return Ok(());
+        }
+        let value = serde_json::to_value(&*slices).unwrap_or_default();
+        state_set(&self.iii, CATALOG_KEY, value).await
+    }
 }

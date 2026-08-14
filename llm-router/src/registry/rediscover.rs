@@ -27,10 +27,11 @@
 //! deterministic per-provider handler (the same one the fan-out targets), which
 //! makes it both the discovery key and the thing to call.
 
+use crate::registry::store::RegistryStore;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::sync::Arc;
 
 /// The handler suffix that identifies a provider and receives the nudge.
 const READY_HANDLER_SUFFIX: &str = "::on_router_ready";
@@ -86,14 +87,20 @@ fn provider_id_of(function_id: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains("::")).then_some(id)
 }
 
-fn newly_live_provider_ids(known: &mut HashSet<String>, live: Vec<String>) -> Vec<String> {
-    let added = live
-        .iter()
-        .filter(|id| !known.contains(*id))
-        .cloned()
-        .collect();
-    *known = live.into_iter().collect();
-    added
+/// Live providers the router does not currently hold as registered AND
+/// available. A newly live provider has no record; one that missed the ready
+/// fan-out (or whose registry was boot-reset) has a record with
+/// `available=false`. Both need the nudge. Registered-and-up providers are
+/// skipped so routine registration churn never spams healthy providers.
+async fn stale_provider_ids(registry: &RegistryStore, live: Vec<String>) -> Vec<String> {
+    let mut stale = Vec::new();
+    for id in live {
+        let up = registry.get(&id).await.map(|r| r.available).unwrap_or(false);
+        if !up {
+            stale.push(id);
+        }
+    }
+    stale
 }
 
 async fn nudge_provider_ids(iii: &IIIClient, ids: &[String]) {
@@ -120,8 +127,8 @@ pub async fn nudge_live_providers(iii: &IIIClient) -> usize {
 
 /// Coalescing handle for the re-discovery sweep. `engine::functions-available`
 /// fires for every function registration change, including unrelated console
-/// subscriptions. The sweep tracks provider membership and nudges only newly
-/// live providers after the burst goes quiet.
+/// subscriptions. After the burst goes quiet the sweep nudges every live
+/// provider the registry does not hold as available.
 #[derive(Clone)]
 pub struct SweepHandle {
     tx: tokio::sync::mpsc::Sender<()>,
@@ -139,10 +146,9 @@ impl SweepHandle {
 const SWEEP_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Spawn the sweep task and return its handle.
-pub fn spawn_debounced_sweep(iii: IIIClient) -> SweepHandle {
+pub fn spawn_debounced_sweep(iii: IIIClient, registry: Arc<RegistryStore>) -> SweepHandle {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
     tokio::spawn(async move {
-        let mut known = HashSet::new();
         while rx.recv().await.is_some() {
             // Drain the rest of the burst, extending the quiet period each
             // time another request arrives.
@@ -151,12 +157,12 @@ pub fn spawn_debounced_sweep(iii: IIIClient) -> SweepHandle {
                 .is_ok_and(|received| received.is_some())
             {}
             let live = live_provider_ids(&iii).await;
-            let added = newly_live_provider_ids(&mut known, live);
-            let count = added.len();
-            nudge_provider_ids(&iii, &added).await;
+            let stale = stale_provider_ids(&registry, live).await;
+            let count = stale.len();
+            nudge_provider_ids(&iii, &stale).await;
             tracing::debug!(
                 providers = count,
-                "registration change: nudged newly live providers to re-declare"
+                "registration change: nudged live-but-unavailable providers to re-declare"
             );
         }
     });
@@ -190,20 +196,4 @@ mod tests {
         assert_eq!(provider_id_of("provider::a::b::on_router_ready"), None);
     }
 
-    #[test]
-    fn provider_set_diff_only_returns_new_ids() {
-        let mut known = std::collections::HashSet::from(["anthropic".to_string()]);
-
-        assert!(newly_live_provider_ids(&mut known, vec!["anthropic".into()]).is_empty());
-        assert_eq!(
-            newly_live_provider_ids(&mut known, vec!["anthropic".into(), "openai-codex".into()]),
-            vec!["openai-codex"]
-        );
-
-        assert!(newly_live_provider_ids(&mut known, vec!["openai-codex".into()]).is_empty());
-        assert_eq!(
-            newly_live_provider_ids(&mut known, vec!["anthropic".into(), "openai-codex".into()]),
-            vec!["anthropic"]
-        );
-    }
 }

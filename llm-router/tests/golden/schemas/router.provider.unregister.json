@@ -1,0 +1,38 @@
+{
+  "description": "Operator escape hatch: drop a provider's registration record and catalog slice so a provider that lost its registration token can register fresh.",
+  "function_id": "router::provider::unregister",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of `router::provider::unregister` — the operator escape hatch for a provider whose registration token was lost (state wiped on one side): drop the record and its catalog slice so the provider can register fresh.",
+    "properties": {
+      "id": {
+        "description": "Provider id to unbind.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "ProviderUnregisterRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of `router::provider::unregister`.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "removed": {
+        "description": "Whether a record existed and was removed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok",
+      "removed"
+    ],
+    "title": "ProviderUnregisterResponse",
+    "type": "object"
+  }
+}

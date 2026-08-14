@@ -17,7 +17,8 @@ use crate::types::router::{
     ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
     ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
     ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
-    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
+    ProviderResolveRequest, ProviderResolveResponse, ProviderUnregisterRequest,
+    ProviderUnregisterResponse, RouteRequest, RouteResponse, RouterAck,
     SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
     UpdateCredentialResponse,
 };
@@ -82,6 +83,11 @@ pub const ROUTE_DESC: &str = "Read-only routing preview: resolve {model, provide
 pub const PROVIDER_REGISTER_ID: &str = "router::provider::register";
 pub const PROVIDER_REGISTER_DESC: &str = "Provider self-declaration at attach time (token-gated \
      upsert); composes the configuration entry schema and reconciles static models.";
+
+pub const PROVIDER_UNREGISTER_ID: &str = "router::provider::unregister";
+pub const PROVIDER_UNREGISTER_DESC: &str =
+    "Operator escape hatch: drop a provider's registration record and catalog \
+     slice so a provider that lost its registration token can register fresh.";
 
 pub const PROVIDER_RESOLVE_ID: &str = "router::provider::resolve";
 pub const PROVIDER_RESOLVE_DESC: &str =
@@ -167,6 +173,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ProviderRegisterRequest, ProviderRegisterResponse>(
             PROVIDER_REGISTER_ID,
             PROVIDER_REGISTER_DESC,
+        ),
+        spec::<ProviderUnregisterRequest, ProviderUnregisterResponse>(
+            PROVIDER_UNREGISTER_ID,
+            PROVIDER_UNREGISTER_DESC,
         ),
         spec::<ProviderResolveRequest, ProviderResolveResponse>(
             PROVIDER_RESOLVE_ID,

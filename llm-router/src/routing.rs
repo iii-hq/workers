@@ -46,11 +46,15 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     }
 
     // 2. Unique catalog owner; 2+ owners → ambiguous (the router never guesses).
+    // Catalog slices outlive registrations (they persist across provider
+    // departures), so an owner counts only while it is registered — otherwise
+    // a stale slice routes to a provider that `router::chat` will reject.
     let mut owners: Vec<&str> = input
         .catalog
         .iter()
         .filter(|(_, ids)| ids.iter().any(|m| m == &input.model))
         .map(|(p, _)| p.as_str())
+        .filter(|p| registered(p))
         .collect();
     owners.sort_unstable();
     match owners.len() {
@@ -183,6 +187,21 @@ mod tests {
             err.message,
             "ambiguous model shared-model (providers: lmstudio, openai)"
         );
+    }
+
+    #[test]
+    fn step2_stale_catalog_owner_is_skipped_when_unregistered() {
+        let mut input = base();
+        input.model = "local-llama".into();
+        // lmstudio's slice persisted but the provider is gone: never route to it.
+        input.registered_providers = vec!["anthropic".into(), "openai".into()];
+        assert_eq!(
+            decide(&input).unwrap_err().code,
+            RouterCode::NoProviderForModel
+        );
+        // A shared model with one surviving owner routes to that owner.
+        input.model = "shared-model".into();
+        assert_eq!(decide(&input).unwrap(), vec!["openai"]);
     }
 
     #[test]

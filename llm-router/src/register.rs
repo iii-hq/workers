@@ -30,7 +30,7 @@ use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
 use crate::config::state::{new_config_cell, ConfigCell};
 use crate::registry::availability::make_provider_list;
-use crate::registry::register::make_provider_register;
+use crate::registry::register::{make_provider_register, make_provider_unregister};
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::surface;
@@ -206,6 +206,21 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         .metadata(internal_meta()),
     );
     iii.register_function(
+        surface::PROVIDER_UNREGISTER_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_provider_unregister(
+                iii.clone(),
+                registry.clone(),
+                catalog.clone(),
+                entry_lock.clone(),
+                events.clone(),
+            ),
+            invalid_request_from_serde,
+        )
+        .description(surface::PROVIDER_UNREGISTER_DESC)
+        .metadata(internal_meta()),
+    );
+    iii.register_function(
         surface::PROVIDER_RESOLVE_ID,
         RegisterFunction::new_async(make_provider_resolve(config.clone(), registry.clone()))
             .description(surface::PROVIDER_RESOLVE_DESC)
@@ -316,7 +331,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // returning provider is resolvable in seconds instead of minutes.
     {
         let iii_handler = iii.clone();
-        let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
+        let sweep =
+            crate::registry::rediscover::spawn_debounced_sweep(iii_handler, registry.clone());
         iii.register_function(
             surface::ON_FUNCTIONS_CHANGED_ID,
             RegisterFunction::new_async(move |_event: FunctionsChangedEvent| {

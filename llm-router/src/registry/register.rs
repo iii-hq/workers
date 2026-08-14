@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::router::{ProviderRegisterRequest, ProviderRegisterResponse};
+use crate::types::router::{
+    ProviderRegisterRequest, ProviderRegisterResponse, ProviderUnregisterRequest,
+    ProviderUnregisterResponse,
+};
 use futures::future::BoxFuture;
 use iii_sdk::{errors::Error, IIIClient};
 use serde_json::{json, Value};
@@ -137,6 +140,90 @@ pub fn make_provider_register(
                 ok: true,
                 id,
                 registration_token: token,
+            })
+        })
+    }
+}
+
+/// The `router::provider::unregister` iii function — operator escape hatch
+/// for a token lock-out: without it, a provider whose state diverged from the
+/// router's persisted registry ("bound to another worker") could never come
+/// back. Drops the record and its catalog slice, re-composes the entry schema,
+/// and emits provider/model change events so open consoles converge.
+pub fn make_provider_unregister(
+    iii: IIIClient,
+    registry: Arc<RegistryStore>,
+    catalog: Arc<CatalogStore>,
+    entry_lock: EntryWriteLock,
+    events: Arc<RouterEvents>,
+) -> impl Fn(
+    ProviderUnregisterRequest,
+) -> BoxFuture<'static, Result<ProviderUnregisterResponse, Error>>
+       + Send
+       + Sync
+       + 'static {
+    move |input: ProviderUnregisterRequest| {
+        let (iii, registry, catalog, entry_lock, events) = (
+            iii.clone(),
+            registry.clone(),
+            catalog.clone(),
+            entry_lock.clone(),
+            events.clone(),
+        );
+        Box::pin(async move {
+            let id = input.id;
+            if !valid_id(&id) {
+                return Err(RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!("invalid provider id: {id}"),
+                )
+                .into());
+            }
+            let removed = registry.remove(&id).await.map_err(|e| {
+                Error::from(RouterError::new(
+                    RouterCode::InvalidRequest,
+                    format!("registry persist failed: {e}"),
+                ))
+            })?;
+            if !removed {
+                return Ok(ProviderUnregisterResponse {
+                    ok: true,
+                    removed: false,
+                });
+            }
+            catalog.remove_slice(&id).await?;
+
+            {
+                let _guard = entry_lock.lock().await;
+                let mut provider_schemas = BTreeMap::new();
+                for rec in registry.list().await {
+                    let schema = provider_entry_schema(
+                        rec.declaration.config_schema.as_ref(),
+                        &serde_json::to_value(rec.declaration.defaults.clone())
+                            .unwrap_or(Value::Null),
+                        rec.declaration.system_prompt.as_deref(),
+                    );
+                    provider_schemas.insert(rec.declaration.id.clone(), schema);
+                }
+                register_entry(&iii, &provider_schemas).await?;
+            }
+
+            events
+                .emit(
+                    triggers::PROVIDER_CHANGED,
+                    json!({ "provider": id, "op": "unregister" }),
+                )
+                .await;
+            events
+                .emit(
+                    triggers::MODELS_CHANGED,
+                    json!({ "provider": id, "count": 0 }),
+                )
+                .await;
+
+            Ok(ProviderUnregisterResponse {
+                ok: true,
+                removed: true,
             })
         })
     }

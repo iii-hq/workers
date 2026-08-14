@@ -399,6 +399,23 @@ pub struct ProviderRegisterRequest {
     pub token: Option<String>,
 }
 
+/// Input of `router::provider::unregister` — the operator escape hatch for a
+/// provider whose registration token was lost (state wiped on one side): drop
+/// the record and its catalog slice so the provider can register fresh.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUnregisterRequest {
+    /// Provider id to unbind.
+    pub id: String,
+}
+
+/// Output of `router::provider::unregister`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderUnregisterResponse {
+    pub ok: bool,
+    /// Whether a record existed and was removed.
+    pub removed: bool,
+}
+
 /// Input of `router::provider::resolve`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveRequest {
