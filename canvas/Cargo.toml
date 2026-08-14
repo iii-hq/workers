@@ -2,7 +2,7 @@
 
 [package]
 name = "canvas"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Canvas worker for iii — create, edit and render diagrams stored as editable source (mermaid text or excalidraw scenes), drawn live in chat and on a canvas page (canvas::* functions)"
 license = "Apache-2.0"
