@@ -582,8 +582,9 @@ Unknown strings return `{ supported: false }` and match no models.
   [output contract](harness.md#output-contract). This is how one harness drives many models without
   per-model branches.
 - **Budgeting (context-manager)** — `context::assemble` reads `context_window` / `input_limit` /
-  `max_output_tokens` to size the usable window, and `thinking_budgets` to leave room for the
-  reasoning tokens a thinking tier consumes.
+  `max_output_tokens` to size the usable window, `thinking_budgets` to leave room for the
+  reasoning tokens a thinking tier consumes, and `supports_vision` to normalize its cloned
+  model-facing image history before accounting.
 - **Cost (a budget sibling)** — `pricing` lets a spend-tracking worker turn `Usage` into `cost_usd`.
 
 ### Catalog metadata sources

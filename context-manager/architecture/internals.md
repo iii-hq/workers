@@ -18,7 +18,7 @@ in tests.
 | [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connect, **register the config schema (+ optional seed) with the `configuration` worker and fetch the authoritative value** (boot-fatal on failure), build adapters from it, `register_all`, then bind the `configuration` hot-reload trigger; Ctrl+C → `shutdown_async`. |
 | [src/lib.rs](../src/lib.rs) | Module tree only. |
 | [src/types.rs](../src/types.rs) | Wire contracts shared with the agentic family: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `ModelInput`, `ModelLimits`, `Model`, `ThinkingLevel`, `AgentFunction`. Serde renames keep the JSON byte-compatible with the TypeScript spec and session-manager's Rust copy. |
-| [src/config.rs](../src/config.rs) | `WorkerConfig` (10 budget/prune/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
+| [src/config.rs](../src/config.rs) | `WorkerConfig` (11 budget/prune/cap/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
 | [src/configuration.rs](../src/configuration.rs) | The `configuration` worker client: `register_config` (schema + seed), `fetch_config` (authoritative, env-expanded), the `ConfigCell` snapshot + `apply_config`, the `FsLeaseStore` rebuild-and-swap on a `lease_dir` change, and the `context::on-config-change` trigger handler. |
 | [src/error.rs](../src/error.rs) | `ContextError` → `code: message` on the bus (`context/invalid_request`, `context/model_unresolved`, `context/state`). The two spec strings are kept verbatim. |
 | [src/ports.rs](../src/ports.rs) | The four seams: `ModelResolver`, `Summarizer`, `LeaseStore`, `Clock`, plus the `Deps` struct every handler receives. |
@@ -26,8 +26,8 @@ in tests.
 | [src/functions/mod.rs](../src/functions/mod.rs) | Function ids + descriptions, `resolve_model` (the spec's resolution order), the generic typed `register` helper, `register_all`, and the schema `catalog()` (golden-tested). |
 | [src/functions/&lt;verb&gt;.rs](../src/functions) | One file per function: request/response structs (serde + `JsonSchema`, doc comments become schema descriptions) and a `pub async fn handle(deps, req)`. BDD calls these `handle` fns directly, so engine-free tests exercise the exact production path. |
 | [src/core/budget.rs](../src/core/budget.rs) | `ResolvedModel`, the `usable` math, `default_reserved`, `preserve_recent_budget`, `fallback_model`. |
-| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (`chars/4`), `estimator_for_model`, per-role tallies. |
-| [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite). |
+| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (serialized non-image `chars/4` plus 4,096 tokens per image), `estimator_for_model`, per-role tallies. |
+| [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite) and the unconditional per-result cap pass (`cap_results_with_sizes`: head + marker + tail rewrite). |
 | [src/core/selection.rs](../src/core/selection.rs) | Turn partitioning and token-aware verbatim-tail selection with the safe-cut invariant. |
 | [src/core/summary.rs](../src/core/summary.rs) | Summariser prompt construction (template, previous-summary anchoring), `strip_media`, and the `# Conversation summary` system-prompt rendering. |
 | [src/core/lease.rs](../src/core/lease.rs) | Compaction lease acquire/release protocol + the default sha256 lease key. |
@@ -76,45 +76,73 @@ are either steps of it or probes into it. The pipeline, all in
 flowchart TD
   A[resolve model limits] --> B[compute usable budget]
   B --> C["build model-facing view: drop role:custom, record view_to_orig"]
-  C --> D["render system prompt: base + optional previous_summary"]
-  D --> E[count tokens]
-  E --> F{over usable AND allow_prune?}
-  F -->|yes| G[prune verbose function outputs] --> H[recount]
-  F -->|no| H
-  H --> I{still over AND allow_compaction?}
-  I -->|yes| J["try_compact under lease: select tail, summarise head"]
-  I -->|no| K[assemble response]
-  J -->|summary produced| L["replace system prompt with summary, drop head, recount"] --> K
-  J -->|busy / failed / empty| K
+  C --> D[normalize media in cloned view]
+  D --> E["render system prompt: base + optional previous_summary"]
+  E --> F[count tokens]
+  F --> G{max_result_tokens > 0?}
+  G -->|yes| H[cap oversized single results] --> I[recount]
+  G -->|no| I
+  I --> J{allow_prune?}
+  J -->|yes| K[prune aged function outputs] --> L[recount]
+  J -->|no| L
+  L --> M{still over AND allow_compaction?}
+  M -->|yes| N["try_compact under lease: select tail, summarise head"]
+  M -->|no| Q{still over budget?}
+  N -->|summary produced| P["replace system prompt with summary, drop head, recount"] --> Q
+  N -->|busy / failed / empty| Q
+  Q -->|yes| R[emergency-reduce function results] --> S[recount]
+  Q -->|no| T[assemble response]
+  S --> U{still over budget?}
+  U -->|yes| V[return context/overflow]
+  U -->|no| T
 ```
 
 Load-bearing details:
 
-1. **Order is fixed: count → prune → compact.** Prune is cheap (no LLM) and
-   often enough, so it runs first; compaction is the expensive fallback. Each
-   step re-counts, and each is gated on *still being over budget*, so a context
-   that already fits passes through byte-identical with `applied` all-false and
-   no summariser cost (`assemble.feature` "under budget passes through
+1. **Order is fixed: media-normalize → cap → prune → compact.** Media
+   normalization, cap, and prune are all unconditional: they run on every call,
+   no longer gated on being over `usable`, so even a within-budget request can
+   have images replaced, a single oversized result capped, or an aged output
+   pruned. Before accounting, a known catalog model receives image placeholders
+   unless it explicitly declares vision support; a known vision model ages tool
+   images after the next assistant response and user images when a later user
+   turn follows a response. Inline limits and unresolved models keep images.
+   Live images cost the fixed 4,096-token heuristic budget, never their base64
+   payload length. Compaction and emergency
+   reduction are both gated on *still being over budget*; compaction is
+   additionally gated on `allow_compaction` and is the expensive one of the
+   two (an LLM call). Each step re-counts.
+   A request with no media-normalization replacements, nothing large enough to
+   cap, nothing aged enough to prune, and nothing to compact passes through
+   byte-identical —
+   `applied.capped_parts`/`pruned_tokens` at 0, `compacted: false` — with no
+   summariser cost (`assemble.feature` "under budget passes through
    untouched").
-2. **The model-facing view excludes `role: "custom"`.** Custom messages have
+2. **The model-facing view excludes `role: "custom"` and is cloned.** Custom messages have
    no provider wire mapping, so they are filtered out of `working` *before*
    counting (a huge custom entry must not trigger a phantom overflow) and never
    appear in the returned `messages`. `view_to_orig: Vec<usize>` records, for
    each surviving message, its index in the original request array — so
    `tail_start_index` can be reported against the **request** array the caller
    holds, customs included (`invariants.feature` "tail_start_index accounts for
-   excluded custom messages").
-3. **Degradation is best effort and visible, never an error.** A busy lease, a
-   failed/unavailable summariser, or disabled steps all leave the turn alive:
-   the response still returns, `applied.compacted` is false, and
-   `token_count > usable` is the visible signal that the context didn't fit.
-   `assemble` only throws for `messages is required` or `could not resolve
-   model limits` (fallback disabled).
-4. **`applied` is the audit trail.** `{ pruned, pruned_tokens, compacted,
-   summary?, tail_start_index?, tokens_before? }` reports exactly what ran.
-   `summary`/`tail_start_index`/`tokens_before` appear only when
-   `compacted` — `tail_start_index` is `Some(Some(i))` for a real cut and
-   `Some(None)` for "everything summarised", serialised as a number or `null`.
+   excluded custom messages"). Media normalization changes only this clone; the
+   caller's transcript is unchanged.
+3. **Degradation is best effort, but the hard budget check always runs.**
+   A busy lease, a failed/unavailable summariser, or a disabled step
+   (`allow_prune`/`allow_compaction: false`) just skips that pass; emergency
+   reduction (Step 3) is never gated by them and always gets a chance to
+   close the gap. The response returns normally — `token_count <= usable` —
+   once it fits, or `assemble` throws `context/overflow` if it still doesn't.
+   `assemble` throws only for `messages is required`, `could not resolve
+   model limits` (fallback disabled), and `context/overflow`.
+4. **`applied` is the audit trail.** `{ pruned, pruned_tokens, capped_parts,
+   capped_tokens, compacted, summary?, tail_start_index?, tokens_before? }`
+   reports exactly what ran. `capped_parts`/`capped_tokens` are always
+   present (0 when the cap pass found nothing to rewrite), same as
+   `pruned`/`pruned_tokens`. `summary`/`tail_start_index`/`tokens_before`
+   appear only when `compacted` — `tail_start_index` is `Some(Some(i))` for a
+   real cut and `Some(None)` for "everything summarised", serialised as a
+   number or `null`.
 5. **The compaction lease key defaults to a hash of the *request* messages** —
    the same derivation `context::compact` uses — so a caller hitting both
    functions with the same history contends on the same claim.
@@ -158,11 +186,12 @@ tail is "the last little bit kept raw", not a second copy of the window.
 `Estimator` trait with three methods (`message`, `text`, `function`) and a
 `kind()` the response echoes.
 
-- **v1 ships one implementation: `HeuristicEstimator` = serialized-JSON
-  `chars / 4`.** It counts the *full serialized message*, so structure and
-  metadata weigh in roughly as they do on the wire, and it is deterministic and
-  model-independent. `estimator_for_model` ignores the model id today and always
-  returns the heuristic; `count-tokens` reports `estimator: "heuristic"`.
+- **v1 ships one implementation: `HeuristicEstimator` = serialized non-image
+  `chars / 4` plus 4,096 tokens per image.** It counts the serialized message's
+  structure and metadata, but image payload bytes are replaced with a fixed
+  allowance, and it is deterministic and model-independent.
+  `estimator_for_model` ignores the model id today and always returns the
+  heuristic; `count-tokens` reports `estimator: "heuristic"`.
 - The trait is the seam for a real per-model tokenizer later: slot it into
   `estimator_for_model`, return `EstimatorKind::Tokenizer`, and every count —
   budget math, prune sizing, tail selection — picks it up with no caller
@@ -175,9 +204,10 @@ tail is "the last little bit kept raw", not a second copy of the window.
 ## 6. Pruning
 
 [core/prune.rs](../src/core/prune.rs). One pass, newest-to-oldest, that
-rewrites verbose `function_result` outputs to `[output pruned: was ~N tokens]`
-and **never removes anything** — the message, its `function_call_id`, and the
-ordering all survive (the structural invariant providers depend on).
+rewrites verbose `function_result` outputs to `[output of {function_id}
+pruned: was ~N tokens; re-call it if still needed]` and **never removes
+anything** — the message, its `function_call_id`, and the ordering all
+survive (the structural invariant providers depend on).
 
 Eligibility, applied while scanning from the newest message backward:
 
@@ -203,6 +233,53 @@ tiny placeholders, which are under `max_output_chars`, so nothing is verbose
 (`prune.feature` "pruning twice is idempotent"). On the assemble path the same
 `core::prune::prune` runs with config-derived params plus the call's
 `protected_functions`.
+
+The same file also holds the **cap pass** (`cap_results_with_sizes`) — a
+different kind of pass. Prune is policy: age window, `protected_functions`,
+`min_free_tokens` hysteresis. Cap is an unconditional ceiling with no
+exemptions beyond a `details` payload carrying `"status": "denied"` (which
+keeps its `details` even though its `content` is still capped). Any single
+result estimating over `max_result_tokens` (config default `20000`; `0`
+disables the pass) is rewritten to a head + marker + tail view — `[…result
+capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
+arguments if the omitted middle is needed]` — reserving the marker's own
+bytes out of a 90%-of-cap-budget target *before* splitting head/tail, so the
+rewrite is idempotent without a fixpoint loop even at a small cap or a long
+`function_id`. The threshold measures provider-visible text (text blocks joined
+with newlines) plus the fixed 4,096-token allowance for each image. Both
+message-level and inline `function_result` representations are traversed. The
+size memo it updates — and every downstream budget check — measures the whole
+serialized host message, so escape-heavy content (e.g. ANSI-colored shell
+output, where a raw ESC byte serializes as the 6-character `\u001b`) can leave
+a capped result reading above the nominal cap in budget terms, though the hard
+`token_count <= usable` contract still holds because emergency reduction
+re-measures with the same message-level estimate the ledger uses. On the
+assemble path it runs **before** prune
+(`functions/assemble.rs` Step 0): a result that is both oversized and aged is
+capped first and can still be pruned afterward if it's still verbose and old
+enough — the ordering doesn't skip prune's pass, it just means prune's own
+rewrite runs against the already-shrunk capped text instead of the original.
+Like prune and emergency reduction, the rewrite replaces only the result's
+inner `content` vector with a single text block, preserving an inline wrapper
+and its host-message siblings. Images are dropped when their allowance pushes
+the result over the ceiling. When the cap pass and emergency
+reduction both rewrite the same result within one call, the emergency
+reference's `original_estimated_tokens` reports the already-capped size, not
+the true original, though the session transcript still holds the true
+original untouched.
+
+One consequence of prune's eligibility order (above) is worth calling out:
+because the two-user-turn exemption (item 1) is checked — and `continue`s —
+before the window accumulation (item 2) in the same scan, a result sitting
+inside that exempt zone never charges the `protect_recent_tokens` budget at
+all; it is skipped outright, not merely kept despite counting against the
+window. The steady-state floor a long session settles into is therefore
+`exempt zone + protect_recent_tokens + residue` (the tiny already-pruned
+placeholders), and the exempt zone itself is bounded only by results-per-turn
+× the cap, not by any prune knob — in an adversarial case (several capped
+whales landing in one turn) the floor can climb well past 100k. `protect_recent_tokens` is
+the knob that lowers the steady state; `max_result_tokens` bounds a single
+result, not the floor.
 
 ## 7. Compaction — tail selection
 
@@ -391,6 +468,7 @@ the code before the colon is the stable contract. One mapping point:
 | `InvalidRequest` | `context/invalid_request` | `messages` absent/null (`messages is required`); serde-survivable shape problems. |
 | `ModelUnresolved` | `context/model_unresolved` | No inline limits, router can't resolve, fallback disabled (`could not resolve model limits`). |
 | `State` | `context/state` | A filesystem call backing the lease failed (reserved; lease failures normally degrade to busy rather than throw). |
+| `Overflow` | `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction (assemble only). |
 
 `messages is required` and `could not resolve model limits` are kept word-for-word
 because callers match on them (`errors.feature`). Adding a variant means: add
@@ -410,6 +488,7 @@ tail_turns: 2                  # user+assistant pairs kept verbatim by compactio
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
 min_free_tokens: 20000         # skip pruning when it would free less
 max_output_chars: 2000         # outputs at/under this are not "verbose"; also the summariser truncation cap
+max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve
 summarizer_timeout_ms: 320000  # outer budget for one router::chat summariser call
@@ -432,8 +511,9 @@ Boot and reload rules (`main.rs` / `configuration.rs`):
 - A `--config` file is only a SEED for the first registration; an unparseable
   seed WARNS and is skipped (the authoritative value comes from the worker).
 - Every config field is per-call-overridable where the spec allows
-  (`reserved_tokens`, `tail_turns`, the prune thresholds, `lease_key`,
-  `preserve_recent_tokens`); request options take precedence over config.
+  (`reserved_tokens`, `tail_turns`, `max_result_tokens`, the prune thresholds,
+  `lease_key`, `preserve_recent_tokens`); request options take precedence over
+  config.
 - `llm-router` is soft: the worker serves `count-tokens` and `prune` without it;
   only compaction and router-based model resolution degrade.
 
@@ -465,10 +545,10 @@ is one composition of them; the BDD world is another.
   — i.e. the spec's degraded mode (limits fall back, prune/count work, compact
   overflows after a real filesystem lease acquire/release cycle).
 - Unit tests live next to what they pin: budget math in `budget.rs`, the
-  heuristic in `estimate.rs`, prune eligibility in `prune.rs`, the safe-cut
-  matrix in `selection.rs`, prompt construction in `summary.rs`, lease key
-  stability and TTL in `lease.rs`, frame folding in `adapters/router.rs`,
-  config defaults in `config.rs`.
+  heuristic in `estimate.rs`, prune eligibility and the cap pass in
+  `prune.rs`, the safe-cut matrix in `selection.rs`, prompt construction in
+  `summary.rs`, lease key stability and TTL in `lease.rs`, frame folding in
+  `adapters/router.rs`, config defaults in `config.rs`.
 - Convention: every scenario carries a `# Prevents:` comment naming the
   regression it catches.
 
@@ -485,10 +565,11 @@ UPDATE_GOLDENS=1 cargo test --test schemas      # regenerate wire-schema goldens
 
 ## 15. Sharp edges and known limitations
 
-- **The estimator is `chars/4`, not a real tokenizer.** Every budget decision,
-  prune sizing, and tail fit is an *estimate*; `token_count` can differ from
-  what the provider bills. The trait is ready for a per-model tokenizer; until
-  then treat all counts as approximate and keep `reserved` as the cushion.
+- **The estimator is serialized non-image `chars/4` plus 4,096 tokens per image,
+  not a real tokenizer.** Every budget decision, prune sizing, and tail fit is
+  an *estimate*; `token_count` can differ from what the provider bills. The
+  trait is ready for a per-model tokenizer; until then treat all counts as
+  approximate and keep `reserved` as the cushion.
 - **Compaction needs `llm-router`.** Without it, `compact` returns `overflow`
   and `assemble` can prune but not summarise — an over-budget context comes
   back over budget (visibly, via `token_count > usable`). Pure token/prune

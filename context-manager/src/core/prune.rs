@@ -17,10 +17,11 @@
 //!   touched at all. `context::assemble` may subsequently use the
 //!   unconditional emergency pass to enforce its hard budget.
 
-use crate::core::estimate::Estimator;
+use crate::core::estimate::{Estimator, IMAGE_TOKEN_BUDGET};
 use crate::types::{AgentMessage, ContentBlock, Role};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// Recent user turns that are always exempt, independent of the token
 /// window (prior-art constant, not operator-tunable).
@@ -56,19 +57,72 @@ pub struct PruneStats {
     pub scanned_parts: u64,
 }
 
-/// The spec's placeholder shape: `[output pruned: was ~N tokens]`.
-pub fn placeholder(tokens: u64) -> String {
-    format!("[output pruned: was ~{tokens} tokens]")
+/// The placeholder written over a pruned output. Names the source
+/// function and the recovery path (re-call it) — the transcript keeps
+/// the full result, but the model-facing view does not.
+pub fn placeholder(function_id: &str, tokens: u64) -> String {
+    format!("[output of {function_id} pruned: was ~{tokens} tokens; re-call it if still needed]")
 }
 
 fn text_of(blocks: &[ContentBlock]) -> String {
-    let mut out = String::new();
-    for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            out.push_str(text);
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn image_tokens(blocks: &[ContentBlock]) -> u64 {
+    blocks.iter().fold(0, |tokens, block| {
+        let nested = match block {
+            ContentBlock::Image { .. } => IMAGE_TOKEN_BUDGET,
+            ContentBlock::FunctionResult { content, .. } => image_tokens(content),
+            _ => 0,
+        };
+        tokens.saturating_add(nested)
+    })
+}
+
+fn result_tokens(blocks: &[ContentBlock], estimator: &dyn Estimator) -> u64 {
+    estimator
+        .text(&text_of(blocks))
+        .saturating_add(image_tokens(blocks))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResultLocation {
+    Message(usize),
+    Inline { message: usize, block: usize },
+}
+
+impl ResultLocation {
+    fn message(self) -> usize {
+        match self {
+            Self::Message(message) | Self::Inline { message, .. } => message,
         }
     }
-    out
+}
+
+fn set_result_content(
+    messages: &mut [AgentMessage],
+    location: ResultLocation,
+    content: Vec<ContentBlock>,
+) {
+    match location {
+        ResultLocation::Message(message) => messages[message].set_content(content),
+        ResultLocation::Inline { message, block } => {
+            let ContentBlock::FunctionResult {
+                content: current, ..
+            } = &mut messages[message].content_mut()[block]
+            else {
+                unreachable!("result location changed during reduction");
+            };
+            *current = content;
+        }
+    }
 }
 
 /// Rewrite verbose outputs in place. Returns the stats; `messages` is
@@ -101,44 +155,62 @@ fn prune_impl(
     params: &PruneParams,
     estimator: &dyn Estimator,
 ) -> PruneStats {
+    let function_ids = inline_function_ids(messages);
     let mut scanned: u64 = 0;
     let mut window_tokens: u64 = 0;
     let mut user_turns = 0usize;
-    // (message index, estimated tokens of its text content)
-    let mut queue: Vec<(usize, u64)> = Vec::new();
+    let mut queue: Vec<(ResultLocation, u64, String)> = Vec::new();
 
     for idx in (0..messages.len()).rev() {
         let message = &messages[idx];
-        if message.role() == Role::User {
+        if message.role() == Role::User && !message.has_function_result_block() {
             user_turns += 1;
             continue;
         }
         if user_turns < PROTECTED_USER_TURNS {
             continue;
         }
-        let AgentMessage::FunctionResult {
-            function_id,
-            content,
-            ..
-        } = message
-        else {
-            continue;
+        let mut consider = |location: ResultLocation,
+                            function_id: &str,
+                            content: &[ContentBlock]| {
+            if params
+                .protected_functions
+                .iter()
+                .any(|protected| protected == function_id)
+            {
+                return;
+            }
+            let text = text_of(content);
+            let tokens = result_tokens(content, estimator);
+            scanned += 1;
+            window_tokens = window_tokens.saturating_add(tokens);
+            if window_tokens > params.protect_recent_tokens && text.len() > params.max_output_chars
+            {
+                queue.push((location, tokens, function_id.to_owned()));
+            }
         };
-        if params.protected_functions.iter().any(|f| f == function_id) {
-            continue;
-        }
 
-        let text = text_of(content);
-        let tokens = estimator.text(&text);
-        scanned += 1;
-        window_tokens += tokens;
-        if window_tokens <= params.protect_recent_tokens {
-            continue;
+        match message {
+            AgentMessage::FunctionResult {
+                function_id,
+                content,
+                ..
+            } => consider(ResultLocation::Message(idx), function_id, content),
+            _ => {
+                for (block, content_block) in message.content().iter().enumerate().rev() {
+                    let ContentBlock::FunctionResult { content, .. } = content_block else {
+                        continue;
+                    };
+                    let location = ResultLocation::Inline {
+                        message: idx,
+                        block,
+                    };
+                    if let Some(function_id) = function_ids.get(&(idx, block)) {
+                        consider(location, function_id, content);
+                    }
+                }
+            }
         }
-        if text.len() <= params.max_output_chars {
-            continue;
-        }
-        queue.push((idx, tokens));
     }
 
     // Net tokens freed: each pruned output is replaced by a placeholder
@@ -146,7 +218,9 @@ fn prune_impl(
     // size minus that placeholder. Gauge `min_free_tokens` on the net.
     let pruned_tokens: u64 = queue
         .iter()
-        .map(|(_, tokens)| tokens.saturating_sub(estimator.text(&placeholder(*tokens))))
+        .map(|(_, tokens, function_id)| {
+            tokens.saturating_sub(estimator.text(&placeholder(function_id, *tokens)))
+        })
         .sum();
     if pruned_tokens < params.min_free_tokens {
         return PruneStats {
@@ -156,14 +230,19 @@ fn prune_impl(
         };
     }
 
-    for (idx, tokens) in &queue {
-        messages[*idx].set_content(vec![ContentBlock::Text {
-            text: placeholder(*tokens),
-        }]);
+    for (location, tokens, function_id) in &queue {
+        set_result_content(
+            messages,
+            *location,
+            vec![ContentBlock::Text {
+                text: placeholder(function_id, *tokens),
+            }],
+        );
         if let Some(sizes) = sizes.as_deref_mut() {
             // Re-estimate the rewritten message — not freed-token
             // arithmetic — so the memo matches a from-scratch recount.
-            sizes[*idx] = estimator.message(&messages[*idx]);
+            let message = location.message();
+            sizes[message] = estimator.message(&messages[message]);
         }
     }
 
@@ -180,8 +259,8 @@ fn prune_impl(
 /// Unlike [`prune`], this emergency pass has no recent-turn window,
 /// protected-function list, size threshold, or minimum-free guard. It
 /// preserves every message and the call/result identity fields while
-/// replacing both rendered content and opaque details with a bounded,
-/// deterministic reference to the original transcript entry.
+/// replacing rendered content (and message-level opaque details) with a
+/// bounded, deterministic reference to the original transcript entry.
 pub fn emergency_reduce(
     messages: &mut [AgentMessage],
     required_tokens: u64,
@@ -208,44 +287,99 @@ fn emergency_reduce_impl(
     required_tokens: u64,
     estimator: &dyn Estimator,
 ) -> PruneStats {
-    let mut candidates: Vec<(usize, u64)> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| matches!(message, AgentMessage::FunctionResult { .. }))
-        .map(|(idx, message)| (idx, estimator.message(message)))
-        .collect();
+    let function_ids = inline_function_ids(messages);
+    let mut candidates: Vec<(ResultLocation, u64, usize)> = Vec::new();
+    let mut order = 0;
+    for (message_idx, message) in messages.iter().enumerate() {
+        match message {
+            AgentMessage::FunctionResult { .. } => {
+                candidates.push((
+                    ResultLocation::Message(message_idx),
+                    estimator.message(message),
+                    order,
+                ));
+                order += 1;
+            }
+            _ => {
+                for (block_idx, block) in message.content().iter().enumerate() {
+                    if let ContentBlock::FunctionResult { content, .. } = block {
+                        candidates.push((
+                            ResultLocation::Inline {
+                                message: message_idx,
+                                block: block_idx,
+                            },
+                            result_tokens(content, estimator),
+                            order,
+                        ));
+                        order += 1;
+                    }
+                }
+            }
+        }
+    }
 
     // Stable tie-break by transcript order keeps the reduction fully
     // deterministic when multiple results have the same estimate.
-    candidates.sort_by(|(left_idx, left_tokens), (right_idx, right_tokens)| {
-        right_tokens
-            .cmp(left_tokens)
-            .then_with(|| left_idx.cmp(right_idx))
-    });
+    candidates.sort_by(
+        |(_, left_tokens, left_order), (_, right_tokens, right_order)| {
+            right_tokens
+                .cmp(left_tokens)
+                .then_with(|| left_order.cmp(right_order))
+        },
+    );
 
     let mut stats = PruneStats {
         scanned_parts: candidates.len() as u64,
         ..PruneStats::default()
     };
 
-    for (idx, original_tokens) in candidates {
+    for (location, original_tokens, _) in candidates {
         if stats.pruned_tokens >= required_tokens {
             break;
         }
 
-        let replacement = emergency_reference(&messages[idx], original_tokens);
-        let replacement_tokens = estimator.message(&replacement);
-        let freed = original_tokens.saturating_sub(replacement_tokens);
-        if freed == 0 {
-            continue;
-        }
+        match location {
+            ResultLocation::Message(message) => {
+                let replacement = emergency_reference(&messages[message], original_tokens);
+                let replacement_tokens = estimator.message(&replacement);
+                let freed = original_tokens.saturating_sub(replacement_tokens);
+                if freed == 0 {
+                    continue;
+                }
 
-        messages[idx] = replacement;
-        if let Some(sizes) = sizes.as_deref_mut() {
-            sizes[idx] = replacement_tokens;
+                messages[message] = replacement;
+                if let Some(sizes) = sizes.as_deref_mut() {
+                    sizes[message] = replacement_tokens;
+                }
+                stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
+                stats.pruned_parts += 1;
+            }
+            ResultLocation::Inline { message, block } => {
+                let before = sizes
+                    .as_deref()
+                    .map(|sizes| sizes[message])
+                    .unwrap_or_else(|| estimator.message(&messages[message]));
+                let replacement = emergency_inline_reference(
+                    &messages[message].content()[block],
+                    function_ids.get(&(message, block)).map(String::as_str),
+                    original_tokens,
+                );
+                let original =
+                    std::mem::replace(&mut messages[message].content_mut()[block], replacement);
+                let after = estimator.message(&messages[message]);
+                let freed = before.saturating_sub(after);
+                if freed == 0 {
+                    messages[message].content_mut()[block] = original;
+                    continue;
+                }
+
+                if let Some(sizes) = sizes.as_deref_mut() {
+                    sizes[message] = after;
+                }
+                stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
+                stats.pruned_parts += 1;
+            }
         }
-        stats.pruned_tokens = stats.pruned_tokens.saturating_add(freed);
-        stats.pruned_parts += 1;
     }
 
     stats
@@ -294,6 +428,46 @@ fn emergency_reference(message: &AgentMessage, original_tokens: u64) -> AgentMes
     }
 }
 
+fn emergency_inline_reference(
+    block: &ContentBlock,
+    function_id: Option<&str>,
+    original_tokens: u64,
+) -> ContentBlock {
+    let ContentBlock::FunctionResult {
+        function_call_id,
+        content,
+        is_error,
+    } = block
+    else {
+        unreachable!("emergency references are only built for function results");
+    };
+    let serialized = serde_json::to_vec(block).expect("serializing a ContentBlock cannot fail");
+    let sha256 = format!("{:x}", Sha256::digest(&serialized));
+    let mut reference = json!({
+        "kind": "function_result_reference",
+        "function_call_id": function_call_id,
+        "original_bytes": serialized.len(),
+        "original_estimated_tokens": original_tokens,
+        "sha256": sha256,
+        "preview": emergency_preview(content, &Value::Null),
+        "retrieval_hint": EMERGENCY_RETRIEVAL_HINT,
+    });
+    if let Some(function_id) = function_id {
+        reference["function_id"] = json!(function_id);
+    }
+    let rendered = format!(
+        "[function result reduced for context budget] {}",
+        serde_json::to_string(&reference)
+            .expect("serializing a function-result reference cannot fail")
+    );
+
+    ContentBlock::FunctionResult {
+        function_call_id: function_call_id.clone(),
+        content: vec![ContentBlock::Text { text: rendered }],
+        is_error: *is_error,
+    }
+}
+
 fn emergency_preview(content: &[ContentBlock], details: &Value) -> String {
     let text = text_of(content);
     let source = if text.is_empty() {
@@ -307,6 +481,175 @@ fn emergency_preview(content: &[ContentBlock], details: &Value) -> String {
         preview.push('\u{2026}');
     }
     preview
+}
+
+/// Serialized `details` larger than this on a capped result are replaced
+/// with a bounded reference. `details` never crosses the provider wire
+/// (see estimate.rs), so this bounds worker-to-worker payloads, not tokens.
+const MAX_CAPPED_DETAILS_BYTES: usize = 2_048;
+
+/// Stats from the unconditional per-result cap pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapStats {
+    /// Estimated tokens freed (message-estimate delta).
+    pub capped_tokens: u64,
+    /// Number of results rewritten.
+    pub capped_parts: u64,
+}
+
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+fn inline_function_ids(messages: &[AgentMessage]) -> HashMap<(usize, usize), String> {
+    let mut calls: HashMap<&str, &str> = HashMap::new();
+    let mut results = HashMap::new();
+    for (message, row) in messages.iter().enumerate() {
+        for (block, content) in row.content().iter().enumerate() {
+            match content {
+                ContentBlock::FunctionCall {
+                    id, function_id, ..
+                } => {
+                    calls.insert(id, function_id);
+                }
+                ContentBlock::FunctionResult {
+                    function_call_id, ..
+                } => {
+                    if let Some(function_id) = calls.get(function_call_id.as_str()) {
+                        results.insert((message, block), (*function_id).to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    results
+}
+
+fn capped_result_content(
+    content: &[ContentBlock],
+    function_id: Option<&str>,
+    max_result_tokens: u64,
+    estimator: &dyn Estimator,
+) -> Option<(Vec<ContentBlock>, u64)> {
+    let text = text_of(content);
+    let tokens = result_tokens(content, estimator);
+    if tokens <= max_result_tokens {
+        return None;
+    }
+    let function_id = function_id.unwrap_or("the function");
+
+    let full_marker = format!(
+        "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted middle is needed]\n"
+    );
+    let marker = [full_marker.as_str(), "[cap]", "…", ""]
+        .into_iter()
+        .find(|candidate| estimator.text(candidate) <= max_result_tokens)
+        .unwrap_or_default();
+
+    let target_chars = (text.len() as u64) * max_result_tokens * 9 / (tokens * 10);
+    let keep_chars = (target_chars as usize).saturating_sub(marker.len());
+    let head_budget = keep_chars * 6 / 10;
+    let tail_budget = keep_chars - head_budget;
+    let head_end = floor_char_boundary(&text, head_budget);
+    let tail_start =
+        ceil_char_boundary(&text, text.len().saturating_sub(tail_budget)).max(head_end);
+    let capped = format!("{}{}{}", &text[..head_end], marker, &text[tail_start..]);
+
+    Some((vec![ContentBlock::Text { text: capped }], tokens))
+}
+
+/// Unconditionally rewrite any single function result whose content estimates
+/// over `max_result_tokens` to a bounded head + marker + tail view
+/// (context-manager.md § context::assemble). Applies to every result — any
+/// age, protected or not, error or not: it is a generous ceiling, like the
+/// emergency pass, not a policy prune. The rewrite reserves the marker's
+/// own bytes out of a 90%-of-cap budget *before* splitting head/tail, so
+/// head + marker + tail together target 90% of the cap — not 90% plus the
+/// marker on top — and the output re-estimates under the threshold even
+/// for small caps or long `function_id`s: the pass is idempotent without a
+/// fixpoint loop, and deterministic (no call-varying content) so identical
+/// histories assemble byte-identically across calls.
+pub fn cap_results_with_sizes(
+    messages: &mut [AgentMessage],
+    sizes: &mut [u64],
+    max_result_tokens: u64,
+    estimator: &dyn Estimator,
+) -> CapStats {
+    debug_assert_eq!(messages.len(), sizes.len());
+    let function_ids = inline_function_ids(messages);
+    let mut stats = CapStats::default();
+    for idx in 0..messages.len() {
+        let before = sizes[idx];
+        let mut capped_parts = 0;
+        match &mut messages[idx] {
+            AgentMessage::FunctionResult {
+                function_id,
+                content,
+                details,
+                ..
+            } => {
+                if let Some((capped, tokens)) =
+                    capped_result_content(content, Some(function_id), max_result_tokens, estimator)
+                {
+                    *content = capped;
+                    let denied = details.get("status").and_then(Value::as_str) == Some("denied");
+                    if !denied
+                        && serde_json::to_string(&*details)
+                            .map(|s| s.len())
+                            .unwrap_or(0)
+                            > MAX_CAPPED_DETAILS_BYTES
+                    {
+                        *details = json!({
+                            "context_capped": { "original_estimated_tokens": tokens }
+                        });
+                    }
+                    capped_parts = 1;
+                }
+            }
+            message => {
+                for (block_idx, block) in message.content_mut().iter_mut().enumerate() {
+                    let ContentBlock::FunctionResult { content, .. } = block else {
+                        continue;
+                    };
+                    if let Some((capped, _)) = capped_result_content(
+                        content,
+                        function_ids.get(&(idx, block_idx)).map(String::as_str),
+                        max_result_tokens,
+                        estimator,
+                    ) {
+                        *content = capped;
+                        capped_parts += 1;
+                    }
+                }
+            }
+        }
+
+        if capped_parts > 0 {
+            sizes[idx] = estimator.message(&messages[idx]);
+            stats.capped_tokens = stats
+                .capped_tokens
+                .saturating_add(before.saturating_sub(sizes[idx]));
+            stats.capped_parts += capped_parts;
+        }
+    }
+    stats
 }
 
 #[cfg(test)]
@@ -358,17 +701,91 @@ mod tests {
         let stats = prune(&mut messages, &params(), &HeuristicEstimator);
         assert_eq!(stats.pruned_parts, 1);
         // Net of the placeholder written back: 2000 minus the tokens of
-        // "[output pruned: was ~2000 tokens]" (33 chars / 4 = 8).
-        assert_eq!(stats.pruned_tokens, 1_992);
+        // "[output of shell::run pruned: was ~2000 tokens; re-call it if
+        // still needed]" (75 chars / 4 = 18).
+        assert_eq!(stats.pruned_tokens, 1_982);
         // Oldest output replaced...
         assert_eq!(
             messages[1].content(),
             &[ContentBlock::Text {
-                text: placeholder(2_000)
+                text: placeholder("shell::run", 2_000)
             }]
         );
         // ...the one inside the last two user turns untouched.
         assert_eq!(text_of(messages[3].content()).len(), 8_000);
+    }
+
+    #[test]
+    fn prune_resolves_reused_inline_call_ids_positionally() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            { "role": "user", "content": [{ "type": "text", "text": "task" }], "timestamp": 1 },
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "shell::run", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 2
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "x".repeat(8_000) }]
+                }],
+                "timestamp": 3
+            },
+            {
+                "role": "assistant", "content": [{ "type": "text", "text": "used" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 4
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "next" }], "timestamp": 5 },
+            { "role": "user", "content": [{ "type": "text", "text": "done" }], "timestamp": 6 },
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "later::call", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 7
+            }
+        ]))
+        .unwrap();
+        let mut protected_messages = messages.clone();
+        let mut protected_sizes = sizes_of(&protected_messages);
+        let mut protected_params = params();
+        protected_params.protected_functions = vec!["shell::run".into()];
+
+        let protected_stats = prune_with_sizes(
+            &mut protected_messages,
+            &mut protected_sizes,
+            &protected_params,
+            &HeuristicEstimator,
+        );
+
+        assert_eq!(protected_stats.pruned_parts, 0);
+        assert_eq!(protected_messages, messages);
+        let mut sizes = sizes_of(&messages);
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &params(), &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            ..
+        } = &messages[2].content()[0]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert_eq!(
+            text_of(content),
+            "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
+        );
+        assert_eq!(sizes, sizes_of(&messages));
     }
 
     #[test]
@@ -439,7 +856,7 @@ mod tests {
         let stats = prune(&mut messages, &p, &HeuristicEstimator);
         assert_eq!(stats.pruned_parts, 1);
         assert_eq!(text_of(messages[2].content()).len(), 4_000); // newer kept
-        assert!(text_of(messages[1].content()).starts_with("[output pruned"));
+        assert!(text_of(messages[1].content()).starts_with("[output of f pruned"));
     }
 
     #[test]
@@ -496,6 +913,57 @@ mod tests {
             details["context_reference"]["function_id"],
             "protected::lookup"
         );
+    }
+
+    #[test]
+    fn emergency_reduces_inline_results_without_replacing_the_host_message() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "shell::run", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "function_result", "function_call_id": "c1",
+                        "content": [{ "type": "text", "text": "x".repeat(100_000) }]
+                    },
+                    { "type": "text", "text": "keep this sibling" }
+                ],
+                "timestamp": 2
+            }
+        ]))
+        .unwrap();
+        let mut sizes = sizes_of(&messages);
+
+        let stats = emergency_reduce_with_sizes(&mut messages, &mut sizes, 1, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_eq!(messages[1].role(), Role::User);
+        assert_eq!(
+            messages[1].content()[1],
+            ContentBlock::Text {
+                text: "keep this sibling".into()
+            }
+        );
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            ..
+        } = &messages[1].content()[0]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert!(text_of(content).starts_with("[function result reduced"));
+        assert!(text_of(content).contains("\"function_id\":\"shell::run\""));
+        assert_eq!(sizes, sizes_of(&messages));
     }
 
     #[test]
@@ -628,5 +1096,450 @@ mod tests {
         assert_eq!(text_of(messages[0].content()).len(), 4_000);
         assert!(text_of(messages[1].content()).starts_with("[function result reduced"));
         assert_eq!(text_of(messages[2].content()).len(), 20_000);
+    }
+
+    #[test]
+    fn cap_reduces_oversized_result_to_head_marker_tail() {
+        // 200_000 chars ≈ 50_000 tokens; cap at 20_000.
+        let mut messages = vec![result("engine::traces::list", 200_000, 1)];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        assert!(stats.capped_tokens > 0);
+        let text = text_of(messages[0].content());
+        // Rewritten text estimates under the cap (90% target + marker).
+        assert!(HeuristicEstimator.text(&text) <= 20_000);
+        assert!(text.contains(
+            "[…result capped: was ~50000 tokens; middle omitted; re-call engine::traces::list with narrower arguments if the omitted middle is needed]"
+        ));
+        // Head and tail of the original both survive.
+        assert!(text.starts_with('x'));
+        assert!(text.ends_with('x'));
+        // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn cap_preserves_provider_separators_between_text_blocks() {
+        let mut messages = vec![serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c1",
+            "function_id": "shell::run",
+            "content": [
+                { "type": "text", "text": "header" },
+                { "type": "text", "text": "x".repeat(100_000) }
+            ],
+            "timestamp": 1
+        }))
+        .unwrap()];
+        let mut sizes = sizes_of(&messages);
+
+        cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+
+        assert!(text_of(messages[0].content()).starts_with("header\nx"));
+    }
+
+    #[test]
+    fn cap_counts_image_cost_in_the_result_ceiling() {
+        let mut messages = vec![serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c1",
+            "function_id": "browser::screenshots",
+            "content": (0..5).map(|_| json!({
+                "type": "image", "mime": "image/png", "data": "AAAA"
+            })).collect::<Vec<_>>(),
+            "timestamp": 1
+        }))
+        .unwrap()];
+        let mut sizes = sizes_of(&messages);
+
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+
+        assert_eq!(stats.capped_parts, 1);
+        assert!(text_of(messages[0].content()).contains("result capped"));
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn cap_rewrites_oversized_inline_results_without_breaking_pairing() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "shell::run", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "x".repeat(100_000) }]
+                }],
+                "timestamp": 2
+            }
+        ]))
+        .unwrap();
+        let mut sizes = sizes_of(&messages);
+
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+
+        assert_eq!(stats.capped_parts, 1);
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            ..
+        } = &messages[1].content()[0]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert!(text_of(content).contains("re-call shell::run"));
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn cap_skips_results_at_or_under_the_threshold() {
+        let mut messages = vec![result("shell::run", 8_000, 1)]; // ~2000 tokens
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 0);
+        assert_eq!(stats.capped_tokens, 0);
+        assert_eq!(text_of(messages[0].content()).len(), 8_000);
+    }
+
+    #[test]
+    fn cap_skips_result_exactly_at_the_threshold() {
+        // The skip condition is `tokens <= max_result_tokens`: 80_000
+        // chars / 4 == 20_000 tokens exactly, so the boundary itself
+        // must be left untouched, not just values strictly under it.
+        let mut messages = vec![result("engine::traces::list", 80_000, 1)];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 0);
+        assert_eq!(text_of(messages[0].content()).len(), 80_000);
+    }
+
+    #[test]
+    fn cap_is_idempotent_and_deterministic() {
+        let mut once = vec![result("f::g", 200_000, 1)];
+        let mut sizes_once = sizes_of(&once);
+        cap_results_with_sizes(&mut once, &mut sizes_once, 20_000, &HeuristicEstimator);
+        let after_first = text_of(once[0].content());
+
+        // Second pass: under threshold now, untouched.
+        let stats = cap_results_with_sizes(&mut once, &mut sizes_once, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 0);
+        assert_eq!(text_of(once[0].content()), after_first);
+
+        // Same input capped independently yields byte-identical output.
+        let mut twice = vec![result("f::g", 200_000, 1)];
+        let mut sizes_twice = sizes_of(&twice);
+        cap_results_with_sizes(&mut twice, &mut sizes_twice, 20_000, &HeuristicEstimator);
+        assert_eq!(text_of(twice[0].content()), after_first);
+    }
+
+    #[test]
+    fn cap_preserves_pairing_and_message_count() {
+        let mut messages = vec![user("go", 1), result("engine::traces::list", 200_000, 2)];
+        let mut sizes = sizes_of(&messages);
+        let before = messages.len();
+        cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(messages.len(), before);
+        let AgentMessage::FunctionResult {
+            function_call_id,
+            function_id,
+            ..
+        } = &messages[1]
+        else {
+            panic!("message kind changed");
+        };
+        assert_eq!(function_call_id, "c2"); // result() builds call id "c{ts}"
+        assert_eq!(function_id, "engine::traces::list");
+    }
+
+    #[test]
+    fn cap_applies_to_error_results_and_ignores_no_protection_list() {
+        // Cap has no protected-function or is_error exemption by design.
+        let mut message: AgentMessage = serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c9",
+            "function_id": "protected::lookup",
+            "content": [{ "type": "text", "text": "e".repeat(200_000) }],
+            "is_error": true,
+            "timestamp": 9
+        }))
+        .unwrap();
+        let mut sizes = vec![HeuristicEstimator.message(&message)];
+        let stats = cap_results_with_sizes(
+            std::slice::from_mut(&mut message),
+            &mut sizes,
+            20_000,
+            &HeuristicEstimator,
+        );
+        assert_eq!(stats.capped_parts, 1);
+    }
+
+    #[test]
+    fn cap_bounds_oversized_details_but_keeps_denied_envelopes() {
+        let mut oversized: AgentMessage = serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c1",
+            "function_id": "coder::read-file",
+            "content": [{ "type": "text", "text": "y".repeat(200_000) }],
+            "details": { "blob": "z".repeat(10_000) },
+            "is_error": false,
+            "timestamp": 1
+        }))
+        .unwrap();
+        let mut sizes = vec![HeuristicEstimator.message(&oversized)];
+        cap_results_with_sizes(
+            std::slice::from_mut(&mut oversized),
+            &mut sizes,
+            20_000,
+            &HeuristicEstimator,
+        );
+        let AgentMessage::FunctionResult { details, .. } = &oversized else {
+            panic!("kind changed");
+        };
+        assert!(details["context_capped"]["original_estimated_tokens"].is_u64());
+        // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(std::slice::from_ref(&oversized)));
+
+        // A denied envelope's details survive even on an oversized result.
+        let mut denied: AgentMessage = serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c2",
+            "function_id": "state::get",
+            "content": [{ "type": "text", "text": "y".repeat(200_000) }],
+            "details": { "status": "denied", "blob": "z".repeat(10_000) },
+            "is_error": true,
+            "timestamp": 2
+        }))
+        .unwrap();
+        let mut sizes = vec![HeuristicEstimator.message(&denied)];
+        cap_results_with_sizes(
+            std::slice::from_mut(&mut denied),
+            &mut sizes,
+            20_000,
+            &HeuristicEstimator,
+        );
+        let AgentMessage::FunctionResult { details, .. } = &denied else {
+            panic!("kind changed");
+        };
+        assert_eq!(details["status"], "denied");
+        assert_eq!(details["blob"].as_str().unwrap().len(), 10_000);
+        // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(std::slice::from_ref(&denied)));
+    }
+
+    #[test]
+    fn cap_splits_head_sixty_tail_forty_and_respects_char_boundaries() {
+        // Multibyte text: every char is 3 bytes; slicing must not panic.
+        let mut messages = vec![{
+            let text: String = "€".repeat(120_000); // 360_000 bytes ≈ 90_000 tokens
+            serde_json::from_value(json!({
+                "role": "function_result",
+                "function_call_id": "c1",
+                "function_id": "f::g",
+                "content": [{ "type": "text", "text": text }],
+                "timestamp": 1
+            }))
+            .unwrap()
+        }];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        let text = text_of(messages[0].content());
+        assert!(HeuristicEstimator.text(&text) <= 20_000);
+        let marker_start = text.find("\n[…result capped").unwrap();
+        let head = &text[..marker_start];
+        let marker_end = text.find("if the omitted middle is needed]\n").unwrap()
+            + "if the omitted middle is needed]\n".len();
+        let tail = &text[marker_end..];
+        // 60/40 split of the kept budget, within rounding slack.
+        let ratio = head.len() as f64 / (head.len() + tail.len()) as f64;
+        assert!((0.55..=0.65).contains(&ratio), "head ratio was {ratio}");
+    }
+
+    #[test]
+    fn cap_holds_the_threshold_at_a_small_cap() {
+        // Regression: the marker's own byte cost must come out of the kept
+        // budget, or a small cap leaves the rewritten result still over
+        // the threshold (the marker's fixed cost can exceed the 10% margin
+        // once the cap itself is small).
+        let mut messages = vec![result("f::g", 200_000, 1)];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 200, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        let text = text_of(messages[0].content());
+        assert!(HeuristicEstimator.text(&text) <= 200);
+    }
+
+    #[test]
+    fn cap_holds_the_threshold_below_the_full_marker_cost() {
+        let mut messages = vec![result("function::with::a::long::identifier", 200_000, 1)];
+        let mut sizes = sizes_of(&messages);
+
+        cap_results_with_sizes(&mut messages, &mut sizes, 1, &HeuristicEstimator);
+
+        let text = text_of(messages[0].content());
+        assert!(!text.is_empty());
+        assert!(HeuristicEstimator.text(&text) <= 1);
+    }
+
+    #[test]
+    fn cap_holds_the_threshold_with_a_long_function_id_and_is_idempotent() {
+        // A longer function_id makes the marker's fixed cost bigger still;
+        // the budget reservation has to account for it regardless.
+        let mut messages = vec![result(
+            "engine::observability::traces::list-with-a-very-long-descriptive-name",
+            200_000,
+            1,
+        )];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 300, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        let text = text_of(messages[0].content());
+        assert!(HeuristicEstimator.text(&text) <= 300);
+
+        // Idempotent in the same regime that used to break it: a second
+        // pass finds the result already at or under the cap.
+        let second = cap_results_with_sizes(&mut messages, &mut sizes, 300, &HeuristicEstimator);
+        assert_eq!(second.capped_parts, 0);
+    }
+
+    /// Steps one cap+prune replay across 20 turns: each turn appends a
+    /// user message and three mid-size `engine::functions::info` results
+    /// (`mid_chars` each) to the untrimmed raw history; turn `whale_a_turn`
+    /// additionally lands a 340_000-char traces-list whale and turn
+    /// `whale_b_turn` a 300_000-char state::get whale (both sized from the
+    /// evidence session, console-5293cd86…). Every step clones `raw` and
+    /// re-derives cap+prune from the clone with the shipped defaults,
+    /// exactly like `context::assemble` (whose output is never persisted)
+    /// — it never mutates one working vector across steps, or the bound
+    /// would look better than it is. Asserts the worst single-step total
+    /// against the caller's `ceiling` (always a fixed literal at the call
+    /// site) and returns that worst total.
+    fn replay_totals(
+        mid_chars: usize,
+        whale_a_turn: usize,
+        whale_b_turn: usize,
+        ceiling: u64,
+    ) -> u64 {
+        // Read "the shipped defaults" rather than re-typing them, so a
+        // config-default change actually moves this test.
+        let shipped = crate::config::WorkerConfig::default();
+        let defaults = PruneParams {
+            protect_recent_tokens: shipped.protect_recent_tokens,
+            min_free_tokens: shipped.min_free_tokens,
+            max_output_chars: shipped.max_output_chars,
+            protected_functions: vec![],
+        };
+        let mut raw: Vec<AgentMessage> = Vec::new();
+        let mut ts = 0i64;
+        let mut worst_total = 0u64;
+        for turn in 0..20 {
+            ts += 1;
+            raw.push(user(&format!("request {turn}"), ts));
+            for _ in 0..3 {
+                ts += 1;
+                raw.push(result("engine::functions::info", mid_chars, ts));
+            }
+            if turn == whale_a_turn {
+                ts += 1;
+                raw.push(result("engine::traces::list", 340_000, ts));
+            }
+            if turn == whale_b_turn {
+                ts += 1;
+                raw.push(result("state::get", 300_000, ts));
+            }
+
+            // One assemble step: re-derive from raw, never persist.
+            let mut working = raw.clone();
+            let mut sizes = sizes_of(&working);
+            cap_results_with_sizes(
+                &mut working,
+                &mut sizes,
+                shipped.max_result_tokens,
+                &HeuristicEstimator,
+            );
+            prune_with_sizes(&mut working, &mut sizes, &defaults, &HeuristicEstimator);
+            // Message-history subtotal only: real assemble also adds
+            // system-prompt, tool-schema, and request-overhead tokens.
+            let total: u64 = sizes.iter().sum();
+            worst_total = worst_total.max(total);
+        }
+        assert!(
+            worst_total <= ceiling,
+            "steady-state context reached {worst_total} tokens (ceiling {ceiling})"
+        );
+        worst_total
+    }
+
+    /// Worst-case mid-result load, deliberately heavier than the evidence
+    /// session (console-5293cd86…) — NOT a replay of it. Three
+    /// 2_500-token (10_000-char) mid-size results per turn is roughly 5x
+    /// that session's actual non-whale mass (~600 tokens/result; see
+    /// `evidence_session_replay_stays_bounded` below for the real ratio).
+    /// It reuses the evidence session's whale timing and sizes — an
+    /// ~85k-token traces dump at turn 5, an ~75k-token state::get at turn
+    /// 12 — as a stress load on top of that heavier baseline, to prove
+    /// cap+prune hold even above any load actually observed.
+    ///
+    /// This fixture's own untouched raw total (no cap, no prune) reaches
+    /// 313_097 tokens by turn 19; prune alone with no cap still reaches
+    /// 138_594 (the traces whale sits unclipped at ~85k inside the
+    /// always-exempt last-2-turns zone, where prune's window can't reach
+    /// it). With both passes the worst step is turn 13 at 75_653 tokens,
+    /// which decomposes exactly as:
+    /// ```text
+    ///   33_343  last-2-user-turns zone (unconditionally exempt): the
+    ///           just-landed state::get whale capped to 18_041 (~90% of
+    ///           the 20k cap) + 3 same-turn mid results + the prior
+    ///           turn's 3 mid results + 2 user messages
+    /// + 40_799  protect_recent_tokens window: 16 not-yet-aged-out mid
+    ///           results at 2_544 tokens each (message-level estimate;
+    ///           the window's own 40_000-token budget is measured on
+    ///           text-only tokens, 2_500 each, so the same window holds
+    ///           slightly more at the message level) + 5 free-riding
+    ///           user messages the window never charges for
+    /// + 1_511   residue: 1_378 tokens across the 21 placeholders
+    ///           already collapsed above + 133 tokens of aged-region
+    ///           user messages (past both the recent-turn and window
+    ///           zones, never charged against either budget)
+    /// = 75_653.
+    /// ```
+    ///
+    /// 78_000 is a fixed ceiling with headroom over that
+    /// verified 75_653 (for incidental token-count drift from unrelated
+    /// wording changes elsewhere in this file), while staying far below
+    /// both the >100k range that would indicate cap or prune regressing
+    /// and this fixture's own 313_097 raw / 138_594 no-cap figures above.
+    #[test]
+    fn heavy_mid_result_load_stays_bounded() {
+        replay_totals(10_000, 5, 12, 78_000);
+    }
+
+    /// Evidence-session replay (console-5293cd86…): the session's actual
+    /// ratio of mid-size tool output to its two whales — three ~600-token
+    /// (~2_400-char) `engine::functions::info` results per turn, against
+    /// an ~85k-token traces dump at turn 5 and an ~75k-token state::get at
+    /// turn 12, in a 20-turn session (see `heavy_mid_result_load_stays_
+    /// bounded` above for a deliberately heavier stress variant with the
+    /// same whale timing). With the shipped defaults the model-facing
+    /// total stays inside the spec's ~30-50k steady-state band: the mean
+    /// total across turns 5..20 (the first whale lands at turn 5, the
+    /// second only at turn 12, so turns 5-11 run with one whale) measures
+    /// 41_663 tokens — comfortably under the spec's <= 1/3-of-original
+    /// criterion applied to this session's real ~190k peak, and nothing
+    /// like the 75_653 stress figure above. The worst single step is
+    /// 63_392; 66_000 is a fixed ceiling with the same small headroom
+    /// rationale as the stress variant's.
+    #[test]
+    fn evidence_session_replay_stays_bounded() {
+        replay_totals(2_400, 5, 12, 66_000);
     }
 }
