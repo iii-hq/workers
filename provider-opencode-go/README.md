@@ -81,3 +81,7 @@ default `ws://127.0.0.1:49134`, falls back to the `III_URL` environment
 variable), `--manifest` (print the registry manifest and exit), and
 `--config` (accepted but ignored with a warning — provider config comes
 from the `llm-router` configuration entry).
+
+## Credits
+
+Originally contributed by [@faramirezs](https://github.com/faramirezs).
