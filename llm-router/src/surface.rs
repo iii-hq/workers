@@ -18,9 +18,8 @@ use crate::types::router::{
     ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
     ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
     ProviderResolveRequest, ProviderResolveResponse, ProviderUnregisterRequest,
-    ProviderUnregisterResponse, RouteRequest, RouteResponse, RouterAck,
-    SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
-    UpdateCredentialResponse,
+    ProviderUnregisterResponse, RouteRequest, RouteResponse, RouterAck, SystemPromptGetRequest,
+    SystemPromptGetResponse, UpdateCredentialRequest, UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and

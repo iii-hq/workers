@@ -95,7 +95,11 @@ fn provider_id_of(function_id: &str) -> Option<&str> {
 async fn stale_provider_ids(registry: &RegistryStore, live: Vec<String>) -> Vec<String> {
     let mut stale = Vec::new();
     for id in live {
-        let up = registry.get(&id).await.map(|r| r.available).unwrap_or(false);
+        let up = registry
+            .get(&id)
+            .await
+            .map(|r| r.available)
+            .unwrap_or(false);
         if !up {
             stale.push(id);
         }
@@ -195,5 +199,4 @@ mod tests {
         // A nested id would make `provider::<id>::on_router_ready` ambiguous.
         assert_eq!(provider_id_of("provider::a::b::on_router_ready"), None);
     }
-
 }
