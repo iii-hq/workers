@@ -51,6 +51,7 @@ jobs:
       changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
+      provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@v5
@@ -250,6 +251,106 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Provider contracts: real engine + real router + selected provider,
+  # with the vendor HTTP/SSE boundary replaced by a loopback stub. No live
+  # API keys or provider network access. Direct changes stay narrow; shared
+  # router/testkit changes fan out through discover.provider_contract.
+  # ──────────────────────────────────────────────────────────────
+  provider-contract:
+    name: "${{ matrix.provider }}: provider contract"
+    needs: discover
+    if: needs.discover.outputs.provider_contract != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: ${{ fromJSON(needs.discover.outputs.provider_contract) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: provider-contract-${{ matrix.provider }}
+          save-if: false
+          workspaces: crates/provider-integration-testkit -> target
+
+      - name: Install pinned iii engine
+        env:
+          VERSION: '0.21.8'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Run hermetic provider contract
+        env:
+          PROVIDER_CONTRACT_ARTIFACTS_DIR: ${{ github.workspace }}/target/provider-contract/${{ matrix.provider }}
+        run: |
+          set -euo pipefail
+          cargo test \
+            --locked \
+            --manifest-path crates/provider-integration-testkit/Cargo.toml \
+            --features "${{ matrix.provider }}" \
+            tests::provider_contract -- --ignored --exact --nocapture
+
+      - name: Write contract summary
+        if: success()
+        env:
+          PROVIDER: ${{ matrix.provider }}
+        run: |
+          {
+            echo "### $PROVIDER provider contract"
+            echo
+            echo "Passed with the real iii engine, llm-router, and provider against a loopback upstream."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized contract evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: provider-contract-${{ matrix.provider }}
+          path: target/provider-contract/${{ matrix.provider }}/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  provider-contract-gate:
+    name: Provider contract gate
+    needs: [discover, provider-contract]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify affected contracts
+        env:
+          SELECTED: ${{ needs.discover.outputs.provider_contract }}
+          RESULT: ${{ needs.provider-contract.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${SELECTED:-[]}" == "[]" ]]; then
+            echo "No provider contract inputs changed."
+            exit 0
+          fi
+          [[ "$RESULT" == "success" ]] || {
+            echo "::error::affected provider contracts finished with result=$RESULT"
+            exit 1
+          }
 
   # ──────────────────────────────────────────────────────────────
   # Interface boot smoke: build each changed Rust worker from source,

@@ -283,6 +283,7 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["provider-anthropic"]
         assert data["integration_changed"] is False
+        assert data["provider_contract"] == ["provider-anthropic"]
 
     def test_database_change_stays_out_of_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -312,6 +313,38 @@ class TestHarnessSelection:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["provider-openai-codex"]
         assert data["integration_changed"] is False
+        assert data["provider_contract"] == ["provider-openai-codex"]
+
+    def test_provider_docs_change_does_not_run_contract(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "provider-anthropic" / "README.md").write_text("# docs\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "provider docs"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["provider_contract"] == []
+
+    @pytest.mark.parametrize(
+        "shared_path",
+        [
+            "llm-router/src/lib.rs",
+            "crates/provider-integration-testkit/src/lib.rs",
+            ".github/workflows/ci.yml",
+        ],
+    )
+    def test_shared_provider_contract_change_fans_out(self, tmp_path, shared_path):
+        repo = make_repo_with_harness(tmp_path)
+        path = repo / shared_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("changed\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "shared contract"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["provider_contract"] == [
+            "provider-anthropic",
+            "provider-openai-codex",
+        ]
 
     def test_e2e_suite_change_does_not_run_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
