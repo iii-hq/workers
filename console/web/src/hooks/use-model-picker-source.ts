@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { onHarnessConfigSaved } from '@/lib/harness-config-events'
+import { getIiiClient } from '@/lib/iii-client'
 import {
   catalogRowsToModelOptions,
   fetchModelsCatalog,
@@ -23,11 +24,15 @@ import type { ModelOption } from '@/types/chat'
  * current by provider lifecycle events. Catalog refreshes never poll the
  * provider list.
  *
- * `harnessAvailable` gates harness-owned RPCs until the worker is connected.
+ * `routerAvailable` gates the router-owned RPCs on the llm-router worker
+ * being connected — every read here is `router::*`. When it flips false→true
+ * (router installed, restarted, or just slow to boot) every effect below
+ * re-runs, so the picker recovers without a page reload. A WebSocket
+ * reconnect re-pulls both reads for the same reason.
  */
 export function useModelPickerSource(
   backendId: string,
-  harnessAvailable = true,
+  routerAvailable = true,
 ): {
   modelOptions: ModelOption[]
   catalogKeys: string[]
@@ -40,8 +45,14 @@ export function useModelPickerSource(
     [],
   )
   const providerEventVersion = useRef(0)
+  // Mirror of `presentProviders` for event handlers: React state updaters may
+  // run deferred, so membership checks must not live inside them.
+  const providersRef = useRef<ProviderListEntry[]>([])
+  useEffect(() => {
+    providersRef.current = presentProviders
+  }, [presentProviders])
   const [catalogLoading, setCatalogLoading] = useState(
-    backendId === 'real' && harnessAvailable,
+    backendId === 'real' && routerAvailable,
   )
 
   const refresh = useCallback(async () => {
@@ -50,7 +61,7 @@ export function useModelPickerSource(
       setCatalogLoading(false)
       return
     }
-    if (!harnessAvailable) {
+    if (!routerAvailable) {
       setModelOptions([])
       setCatalogLoading(false)
       return
@@ -64,43 +75,46 @@ export function useModelPickerSource(
     } finally {
       setCatalogLoading(false)
     }
-  }, [backendId, harnessAvailable])
+  }, [backendId, routerAvailable])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
-  // One initial snapshot. Subsequent availability changes are applied from
-  // `router::provider::changed`, so model refreshes never re-read this list.
-  useEffect(() => {
-    if (backendId !== 'real' || !harnessAvailable) {
+  // Re-read `router::provider::list`, dropping the result if a newer provider
+  // event (or a newer snapshot) has advanced the version since we started.
+  const refreshProviders = useCallback(async () => {
+    if (backendId !== 'real' || !routerAvailable) {
       setPresentProviders([])
       return
     }
-    let cancelled = false
     const snapshotVersion = providerEventVersion.current
-    void fetchProviderList()
-      .then((providers) => {
-        if (!cancelled && providerEventVersion.current === snapshotVersion) {
-          setPresentProviders(providers)
-        }
-      })
-      .catch(() => {
-        if (!cancelled && providerEventVersion.current === snapshotVersion) {
-          setPresentProviders([])
-        }
-      })
-    return () => {
-      cancelled = true
+    try {
+      const providers = await fetchProviderList()
+      if (providerEventVersion.current === snapshotVersion) {
+        setPresentProviders(providers)
+      }
+    } catch {
+      if (providerEventVersion.current === snapshotVersion) {
+        setPresentProviders([])
+      }
     }
-  }, [backendId, harnessAvailable])
+  }, [backendId, routerAvailable])
 
-  // Live updates: re-pull the catalog when the harness signals a model change
-  // (provider configured/cleared, refresh_models, CLI edits). The harness
+  // Initial snapshot (re-run when the router (re)appears). Availability flips
+  // are applied from `router::provider::changed`; an event for a provider the
+  // snapshot has never seen triggers a full re-read instead, so late-arriving
+  // providers render with their declared display name and capabilities.
+  useEffect(() => {
+    void refreshProviders()
+  }, [refreshProviders])
+
+  // Live updates: re-pull the catalog when the router signals a model change
+  // (provider configured/cleared, refresh_models, CLI edits). The router
   // coalesces bursts; the short trailing debounce here collapses any remaining
   // back-to-back pushes into a single re-read.
   useEffect(() => {
-    if (backendId !== 'real' || !harnessAvailable) return
+    if (backendId !== 'real' || !routerAvailable) return
     let disposed = false
     const disposers: (() => void)[] = []
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -120,25 +134,27 @@ export function useModelPickerSource(
 
     void subscribeProviderChanges(({ provider, op }) => {
       providerEventVersion.current += 1
-      setPresentProviders((current) => {
-        const available = op !== 'unavailable'
-        const existing = current.find((entry) => entry.id === provider)
-        if (existing) {
-          if (existing.available === available) return current
-          return current.map((entry) =>
-            entry.id === provider ? { ...entry, available } : entry,
-          )
-        }
-        return [
-          ...current,
-          {
-            id: provider,
-            display_name: provider,
-            supports_model_listing: true,
-            available,
-          },
-        ]
-      })
+      if (op === 'unregister') {
+        setPresentProviders((current) =>
+          current.filter((entry) => entry.id !== provider),
+        )
+        return
+      }
+      // A provider the snapshot never saw: re-read the list rather than
+      // inventing a degraded entry (raw id as display name, guessed
+      // capabilities).
+      if (!providersRef.current.some((entry) => entry.id === provider)) {
+        void refreshProviders()
+        return
+      }
+      const available = op !== 'unavailable'
+      setPresentProviders((current) =>
+        current.map((entry) =>
+          entry.id === provider && entry.available !== available
+            ? { ...entry, available }
+            : entry,
+        ),
+      )
     }).then((dispose) => {
       if (disposed) dispose()
       else disposers.push(dispose)
@@ -149,14 +165,37 @@ export function useModelPickerSource(
       if (timer !== null) clearTimeout(timer)
       for (const d of disposers) d()
     }
-  }, [backendId, harnessAvailable, refresh])
+  }, [backendId, routerAvailable, refresh, refreshProviders])
+
+  // A WebSocket drop loses any change events fired while disconnected;
+  // re-pull both reads when the connection comes back.
+  useEffect(() => {
+    if (backendId !== 'real' || !routerAvailable) return
+    let disposed = false
+    let offConn: (() => void) | null = null
+    getIiiClient()
+      .then((client) => {
+        if (disposed) return
+        offConn = client.addConnectionStateListener((state) => {
+          if (state === 'connected') {
+            void refresh()
+            void refreshProviders()
+          }
+        })
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      offConn?.()
+    }
+  }, [backendId, routerAvailable, refresh, refreshProviders])
 
   useEffect(() => {
-    if (backendId !== 'real' || !harnessAvailable) return
+    if (backendId !== 'real' || !routerAvailable) return
     return onHarnessConfigSaved(() => {
       void refresh()
     })
-  }, [backendId, harnessAvailable, refresh])
+  }, [backendId, routerAvailable, refresh])
 
   const catalogKeys = useMemo(
     () => modelOptions.map((o) => o.id),

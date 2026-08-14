@@ -15,9 +15,12 @@ import {
 } from '@/hooks/use-conversations'
 import {
   type HarnessStatus,
-  isHarnessAvailable,
   useHarnessStatus,
 } from '@/hooks/use-harness-status'
+import {
+  isLlmRouterAvailable,
+  useLlmRouterStatus,
+} from '@/hooks/use-llm-router-status'
 import { isMemoryAvailable, useMemoryStatus } from '@/hooks/use-memory-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
 import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
@@ -102,7 +105,11 @@ export function ConversationsProvider({
   children,
 }: ConversationsProviderProps) {
   const harnessStatus = useHarnessStatus(backend.id === 'real')
-  const harnessAvailable = isHarnessAvailable(harnessStatus)
+  // The model picker reads router-owned RPCs; gate them on llm-router, not
+  // the harness — the harness being slow or absent must not blank the picker.
+  const routerAvailable = isLlmRouterAvailable(
+    useLlmRouterStatus(backend.id === 'real'),
+  )
   const approvalGateAvailable = isApprovalGateAvailable(
     useApprovalGateStatus(backend.id === 'real'),
   )
@@ -119,7 +126,7 @@ export function ConversationsProvider({
     catalogLoading,
     presentProviders,
     refresh,
-  } = useModelPickerSource(backend.id, harnessAvailable)
+  } = useModelPickerSource(backend.id, routerAvailable)
   // Conversations are backed by the session-manager worker on the real
   // backend; mocks stay in-memory.
   const api = useConversations(
@@ -130,7 +137,7 @@ export function ConversationsProvider({
 
   const [refreshingModels, setRefreshingModels] = useState(false)
   const refreshModels = useCallback(async () => {
-    if (!harnessAvailable) return
+    if (!routerAvailable) return
     setRefreshingModels(true)
     try {
       if (backend.id === 'real') {
@@ -146,7 +153,7 @@ export function ConversationsProvider({
     } finally {
       setRefreshingModels(false)
     }
-  }, [harnessAvailable, refresh, presentProviders])
+  }, [routerAvailable, refresh, presentProviders])
 
   const value: ConversationsContextValue = {
     ...api,

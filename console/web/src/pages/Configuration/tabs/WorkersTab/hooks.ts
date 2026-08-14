@@ -5,9 +5,11 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
 import { getDefaultBackend } from '@/lib/backend'
 import { notifyHarnessConfigSaved } from '@/lib/harness-config-events'
+import { subscribeProviderChanges } from '@/lib/models-catalog'
 import {
   type ConfigurationSchemaView,
   getConfiguration,
@@ -54,11 +56,20 @@ export function useConfigurationsList() {
 const WORKER_REGISTRY_WATCH_FN = 'console::workers-config-watch'
 
 /**
- * Keep the worker configuration list fresh when workers are added or removed
- * out of band — e.g. `iii worker add harness` run in a terminal — purely off
- * the engine's `worker` lifecycle trigger (its push channel). No polling.
- * Each event re-pulls `configuration::list` so a freshly-installed worker's
- * entry appears once it registers.
+ * Keep the worker configuration registry fresh when workers change out of
+ * band — e.g. `iii worker add harness` run in a terminal — purely off the
+ * engine's `worker` lifecycle trigger (its push channel). No polling.
+ *
+ * Invalidation covers the whole `['configuration']` namespace, not just the
+ * list: a worker arriving can re-compose an entry SCHEMA an open editor is
+ * rendering (llm-router recomposes its entry from every provider
+ * declaration), and a schema query that never refetches keeps showing zero
+ * provider cards.
+ *
+ * llm-router's provider registrations don't always ride the `worker`
+ * lifecycle (a provider process restart replays no `add`), so the hook also
+ * listens to `router::provider::changed` and invalidates the llm-router
+ * entry's queries on every provider register/unregister.
  */
 export function useWorkerRegistryReactivity(): void {
   const qc = useQueryClient()
@@ -69,9 +80,31 @@ export function useWorkerRegistryReactivity(): void {
     fnId: WORKER_REGISTRY_WATCH_FN,
     operations: ['add', 'remove'],
     onEvent: () => {
-      qc.invalidateQueries({ queryKey: configurationKeys.list() })
+      qc.invalidateQueries({ queryKey: configurationKeys.all })
     },
   })
+
+  useEffect(() => {
+    if (!enabled) return
+    let disposed = false
+    const disposers: (() => void)[] = []
+    void subscribeProviderChanges(() => {
+      qc.invalidateQueries({ queryKey: configurationKeys.schema('llm-router') })
+      qc.invalidateQueries({
+        queryKey: configurationKeys.rawValue('llm-router'),
+      })
+      qc.invalidateQueries({
+        queryKey: configurationKeys.expandedValue('llm-router'),
+      })
+    }).then((dispose) => {
+      if (disposed) dispose()
+      else disposers.push(dispose)
+    })
+    return () => {
+      disposed = true
+      for (const d of disposers) d()
+    }
+  }, [enabled, qc])
 }
 
 export function useConfigurationSchema(id: string | null | undefined) {
@@ -107,6 +140,11 @@ export function useSetConfiguration(id: string | null | undefined) {
         })
         qc.invalidateQueries({
           queryKey: configurationKeys.expandedValue(targetId),
+        })
+        // A save can change what the entry's schema derives (llm-router
+        // recomposes provider cards from configured credentials).
+        qc.invalidateQueries({
+          queryKey: configurationKeys.schema(targetId),
         })
       }
       qc.invalidateQueries({ queryKey: configurationKeys.list() })
