@@ -12,8 +12,8 @@
  *   teardown)
  * - src/sandbox-family/           — the sandbox::* daemon family cards
  *   (formerly first-party in the console)
- * - src/page/                     — the sandbox fleet page (#/ext/sandbox),
- *   the worker config form, and the session chip
+ * - src/page/                     — the sandbox fleet page (#/ext/sandbox)
+ *   and the session chip
  * - src/lib/shared.tsx            — the frame the op cards share
  *
  * Registrations go through `host` so the loader disposes them on hot reload /
@@ -23,7 +23,7 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { createSandboxCodeRunnerRenderers } from './src/function-trigger-message'
-import { SandboxConfigForm, SandboxPage, createSandboxSessionChip } from './src/page'
+import { SandboxPage, createSandboxSessionChip } from './src/page'
 import { createSandboxFamilyRenderer } from './src/sandbox-family'
 
 export default function setup(host: Host) {
@@ -37,7 +37,6 @@ export default function setup(host: Host) {
       title: 'sandbox',
       render: (props) => <SandboxPage host={host} {...props} />,
     }),
-    host.configForms.register('sandbox-code-runner', SandboxConfigForm),
     host.chat?.registerSessionChip(createSandboxSessionChip(host)),
   ].filter((remove) => remove !== undefined)
 

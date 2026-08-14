@@ -105,8 +105,11 @@ pub fn make_models_supports(
     move |req: ModelsSupportsRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let supported =
-                models_supports(&catalog, &req.provider, &req.id, &req.capability).await;
+            // Same empty-as-unset rule as `get`/`budget`: supports must answer
+            // for every id `get` resolves, or capability gates silently
+            // downgrade (harness output contracts fell to `submit_result`).
+            let provider = (!req.provider.is_empty()).then_some(req.provider.as_str());
+            let supported = models_supports(&catalog, provider, &req.id, &req.capability).await;
             Ok(ModelsSupportsResponse { supported })
         })
     }

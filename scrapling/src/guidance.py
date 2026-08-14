@@ -1,7 +1,9 @@
 """`scrapling::inject-guidance` — a harness `pre_generate` hook that appends the
 scrapling usage guidance to the agent system prompt, only while this worker is
-connected. The binding dies with the worker, so the guidance is presence-gated
-for free: a deployment without scrapling never pays for it.
+connected AND the `scrapling` configuration's `inject_guidance` is on (the
+default; see configuration.py — flips hot-apply by binding/unbinding the
+trigger, no restart). The binding dies with the worker, so the guidance stays
+presence-gated: a deployment without scrapling never pays for it.
 
 The bind is one shot: if the harness is not up yet, the engine parks the
 binding as a pending intent and activates it when the trigger type registers
@@ -13,6 +15,7 @@ Mirrors web/src/functions/inject_guidance.rs + configuration.rs.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 log = logging.getLogger("scrapling.guidance")
@@ -102,28 +105,60 @@ async def inject_guidance(payload: dict[str, Any] | None) -> dict[str, Any]:
     return mutations_for(base if isinstance(base, str) else "")
 
 
-def setup(iii: Any) -> None:
-    """Register the hook function and bind it one-shot. Call once at boot."""
+def register_hook(iii: Any) -> None:
+    """Register the hook FUNCTION unconditionally at boot. Registering it is
+    inert — the guidance reaches prompts only while a trigger binding exists,
+    and :func:`apply` owns that binding. Always-registered is what lets a
+    config flip enable injection without a worker restart."""
     iii.register_function(
         HOOK_ID,
         inject_guidance,
         description=(
             "Internal pre_generate hook: appends scrapling usage guidance to the agent system prompt. "
-            "Bound to harness::hook::pre-generate at worker startup; not called directly."
+            "Bound to harness::hook::pre-generate while inject_guidance is on; not called directly."
         ),
         request_format=PRE_GENERATE_REQUEST,
         response_format=PRE_GENERATE_RESPONSE,
         metadata={"internal": True},
     )
 
-    # on_error fail_open is MANDATORY: pre_generate defaults fail-CLOSED, and a
-    # missing guidance line must never abort a turn.
-    iii.register_trigger(
-        {
-            "type": HOOK_TRIGGER_TYPE,
-            "function_id": HOOK_ID,
-            "config": {"on_error": "fail_open"},
-            "metadata": {"inject_prompt": GUIDANCE},
-        }
-    )
-    log.info("scrapling pre-generate hook bound (guidance injection active)")
+
+class GuidanceState:
+    """The live pre-generate binding, if any. Shared with the configuration
+    change handler so a config flip can bind/unbind at runtime; the lock
+    serialises concurrent `configuration:updated` deliveries."""
+
+    def __init__(self) -> None:
+        self.trigger: Any | None = None
+        self.lock = threading.Lock()
+
+
+def apply(iii: Any, state: GuidanceState, enabled: bool) -> None:
+    """Reconcile the live binding with the configured `inject_guidance`:
+    on → bind once; off → unregister and drop the handle. Idempotent under
+    repeated config events, and a failed bind retries on the next event.
+
+    on_error fail_open is MANDATORY: pre_generate defaults fail-CLOSED, and a
+    missing guidance line must never abort a turn."""
+    with state.lock:
+        if enabled and state.trigger is None:
+            try:
+                state.trigger = iii.register_trigger(
+                    {
+                        "type": HOOK_TRIGGER_TYPE,
+                        "function_id": HOOK_ID,
+                        "config": {"on_error": "fail_open"},
+                        "metadata": {"inject_prompt": GUIDANCE},
+                    }
+                )
+            except Exception as e:  # noqa: BLE001 — a failed bind must not kill the worker
+                log.warning("guidance hook binding failed; continuing without it: %s", e)
+                return
+            log.info("inject_guidance on: appending scrapling guidance to agent system prompts")
+        elif not enabled and state.trigger is not None:
+            trigger, state.trigger = state.trigger, None
+            try:
+                trigger.unregister()
+            except Exception as e:  # noqa: BLE001 — already-gone bindings unregister as a no-op
+                log.warning("guidance hook unregister failed: %s", e)
+            log.info("inject_guidance off: scrapling guidance stays out of agent system prompts")
