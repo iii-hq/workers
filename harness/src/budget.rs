@@ -232,8 +232,10 @@ pub async fn reserve(
         let Some(pricing) = model.and_then(|model| model.pricing) else {
             return Ok(ReserveOutcome::Rejected(BudgetRejection::Unavailable(
                 format!(
-                    "cannot enforce max_cost_usd for model {} because no pricing is configured in \
-                     the model catalog; configure input/output pricing or remove max_cost_usd",
+                    "cannot enforce max_cost_usd for model {}: the model catalog returned no \
+                     pricing (llm-router absent/unreachable, provider not registered yet, or no \
+                     input/output pricing configured); retry once the router is up, configure \
+                     pricing, or remove max_cost_usd",
                     record.options.model
                 ),
             )));

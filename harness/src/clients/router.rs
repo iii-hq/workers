@@ -380,13 +380,19 @@ impl RouterClient {
                 .clone()
                 .or_else(|| terminal_error.clone())
                 .or_else(|| Some("router produced no terminal frame".to_string()));
-            // A dispatch/ack rejection (e.g. provider unavailable) is
-            // authoritative — retrying in-turn cannot help. Only a
-            // frame-less-but-acked stream stays classified transient.
-            m.error_kind = Some(if response_error.is_some() {
-                crate::types::event::ErrorKind::Permanent
-            } else {
-                crate::types::event::ErrorKind::Transient
+            // Topology rejections (router absent, provider not registered
+            // yet, provider marked down) are transient by construction: they
+            // are exactly what a router/provider startup race produces, and
+            // the router's re-discovery heals them within seconds. Killing
+            // the turn permanently for those raced every boot. Other
+            // dispatch/ack rejections stay authoritative — retrying in-turn
+            // cannot help.
+            m.error_kind = Some(match &response_error {
+                Some(msg) if dispatch_error_is_transient(msg) => {
+                    crate::types::event::ErrorKind::Transient
+                }
+                Some(_) => crate::types::event::ErrorKind::Permanent,
+                None => crate::types::event::ErrorKind::Transient,
             });
             m
         });
@@ -766,6 +772,24 @@ fn enrich_streaming_args(
     out
 }
 
+/// Dispatch/ack rejections that describe TOPOLOGY, not the request: the
+/// router function is absent (engine `function_not_found`), the provider is
+/// not (yet) registered, or the provider is marked down. All of these are the
+/// startup/restart race the router's re-discovery repairs; a bounded
+/// transient resume rides it out. A genuinely wrong provider name also
+/// matches "unknown provider" — it burns the bounded resumes and then fails,
+/// which is the acceptable cost of not killing every boot-race turn.
+fn dispatch_error_is_transient(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("function_not_found")
+        || m.contains("function not found")
+        || m.contains("provider_unavailable")
+        // "provider <id> unavailable" — the router's dispatch-time wording.
+        || (m.contains("provider") && m.contains("unavailable"))
+        || m.contains("unknown provider")
+        || m.contains("no provider registered")
+}
+
 fn utf8_tail(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
@@ -782,6 +806,25 @@ mod streaming_args_tests {
     use super::*;
     use crate::types::content::ContentBlock;
     use std::collections::HashMap;
+
+    #[test]
+    fn topology_rejections_are_transient_other_rejections_permanent() {
+        assert!(dispatch_error_is_transient(
+            "Function not found: router::chat"
+        ));
+        assert!(dispatch_error_is_transient("router/function_not_found"));
+        assert!(dispatch_error_is_transient("unknown provider anthropic"));
+        assert!(dispatch_error_is_transient(
+            "provider anthropic unavailable (worker not connected)"
+        ));
+        assert!(dispatch_error_is_transient(
+            "no provider registered for model gpt-5"
+        ));
+        assert!(!dispatch_error_is_transient("invalid request: bad payload"));
+        assert!(!dispatch_error_is_transient(
+            "upstream 401: invalid api key"
+        ));
+    }
 
     #[test]
     fn enrich_injects_tail_only_while_args_are_unparsed() {

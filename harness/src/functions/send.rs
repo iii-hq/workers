@@ -224,6 +224,34 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     );
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
+        // A first send that raced a router outage resolved with the EMBEDDED
+        // fallback, and stickiness would freeze that for the session's life.
+        // When the inherited prompt is exactly the pure fallback (no caller
+        // override — those never match the built-in verbatim), ask the router
+        // again: if it answers now, upgrade to the provider identity prompt.
+        if cfg.provider_identity_prompt
+            && options.system_prompt.as_deref()
+                == Some(
+                    prompt::build_system_prompt(prompt::SystemPromptOpts {
+                        mode: prev.options.mode,
+                        identity: None,
+                    })
+                    .as_str(),
+                )
+        {
+            if let Some(identity) = deps
+                .router()
+                .await
+                .system_prompt_get(options.provider.as_deref())
+                .await
+            {
+                options.system_prompt =
+                    Some(prompt::build_system_prompt(prompt::SystemPromptOpts {
+                        mode: prev.options.mode,
+                        identity: Some(&identity),
+                    }));
+            }
+        }
     }
 
     // Normalise the incoming message and validate its role.
