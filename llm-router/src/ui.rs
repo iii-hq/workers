@@ -36,9 +36,11 @@ fn console_ui() -> ConsoleUi {
         .style(STYLES_PATH, STYLES_CSS)
 }
 
-/// Register the llm-router console UI. Call after the router's functions
-/// are registered. Takes the bare client (what `register_worker` hands
-/// `main`); the shared crate wants an `Arc` for its spawned tasks.
+/// Register the llm-router console UI. Independent of the router's function
+/// surface — call it FIRST at boot so an open console swaps in the custom
+/// config form before the router's slower engine round-trips finish. Takes
+/// the bare client (what `register_worker` hands `main`); the shared crate
+/// wants an `Arc` for its spawned tasks.
 pub fn register(iii: &IIIClient) {
     console_ui().register(&Arc::new(iii.clone()));
 }

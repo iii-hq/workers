@@ -36,6 +36,10 @@ fn main() {
     // project links @iii-dev/console-ui from packages/console-ui).
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
+    // The workspace-linked host-API package the bundle compiles against.
+    println!("cargo:rerun-if-changed=../packages/console-ui/src");
+    // Toggling the skip must re-evaluate the embed, not reuse a cached one.
+    println!("cargo:rerun-if-env-changed=SKIP_UI_BUILD");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ui_dir = manifest_dir.join("ui");
@@ -61,6 +65,14 @@ fn main() {
                 );
             }
         }
+        // Reaching here means dist_is_fresh said NO: the embedded bundle is
+        // older than its sources. Say so loudly — a stale embed ships an old
+        // config UI to every console.
+        println!(
+            "cargo:warning=SKIP_UI_BUILD set but ui/dist is STALE (older than \
+             ui sources); embedding the old bundle — rebuild with \
+             `cd ui && pnpm install && pnpm build`"
+        );
         return;
     }
 
@@ -115,6 +127,12 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
         ui_dir.join("../../pnpm-lock.yaml"),
         ui_dir.join("tsconfig.json"),
     ];
+    // The linked @iii-dev/console-ui package: its types gate `tsc --noEmit`
+    // and its API shape is what the bundle runs against.
+    let linked_pkg_src = ui_dir.join("../../packages/console-ui/src");
+    if linked_pkg_src.exists() && !subtree_older_than(&linked_pkg_src, dist_mtime) {
+        return false;
+    }
     for f in watched_files.iter() {
         if !f.exists() {
             continue;

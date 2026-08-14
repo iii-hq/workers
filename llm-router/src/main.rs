@@ -85,9 +85,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    register_router(iii.clone()).await?;
+    // UI assets first: register_router awaits engine round-trips (state
+    // restore, config reconcile), and every millisecond before the
+    // console:script announcement is a window where an open console paints
+    // the generic schema form instead of this worker's config UI.
     #[cfg(feature = "console-ui")]
     llm_router::ui::register(&iii);
+    register_router(iii.clone()).await?;
     tracing::info!(url = %cli.url, "llm-router registered");
 
     tokio::signal::ctrl_c().await?;
