@@ -79,6 +79,14 @@ pub fn make_provider_register(
             let worker_id = declaration.worker_id.clone();
             let static_models = declaration.models.clone();
             let id = declaration.id.clone();
+
+            // The guard spans registry upsert, schema recomposition, AND the
+            // static catalog write below, so register and unregister can
+            // never interleave their registry/catalog/schema mutations —
+            // an unregister racing this handler cannot end up with a
+            // resurrected catalog slice for a removed record.
+            let _guard = entry_lock.lock().await;
+
             let upserted = registry
                 .upsert(declaration, worker_id, input.token)
                 .await
@@ -86,10 +94,8 @@ pub fn make_provider_register(
             let token = upserted.token;
             let availability_recovered = upserted.availability_recovered;
 
-            // Re-compose the entry schema from every registered declaration —
-            // under the entry write lock so concurrent boots compose.
+            // Re-compose the entry schema from every registered declaration.
             {
-                let _guard = entry_lock.lock().await;
                 let mut provider_schemas = BTreeMap::new();
                 for rec in registry.list().await {
                     let schema = provider_entry_schema(
@@ -179,22 +185,23 @@ pub fn make_provider_unregister(
                 )
                 .into());
             }
+            // One guard across registry removal, catalog pruning, and schema
+            // recomposition so a concurrent register cannot interleave and
+            // resurrect state mid-teardown.
+            let _guard = entry_lock.lock().await;
+
             let removed = registry.remove(&id).await.map_err(|e| {
                 Error::from(RouterError::new(
                     RouterCode::InvalidRequest,
                     format!("registry persist failed: {e}"),
                 ))
             })?;
-            if !removed {
-                return Ok(ProviderUnregisterResponse {
-                    ok: true,
-                    removed: false,
-                });
-            }
-            catalog.remove_slice(&id).await?;
+            // Cleanup runs regardless of `removed`: an earlier unregister
+            // that failed after the registry write left the slice/schema
+            // behind, and the retry (removed=false) must still converge.
+            let slice_removed = catalog.remove_slice(&id).await?;
 
-            {
-                let _guard = entry_lock.lock().await;
+            if removed || slice_removed {
                 let mut provider_schemas = BTreeMap::new();
                 for rec in registry.list().await {
                     let schema = provider_entry_schema(
@@ -208,23 +215,24 @@ pub fn make_provider_unregister(
                 register_entry(&iii, &provider_schemas).await?;
             }
 
-            events
-                .emit(
-                    triggers::PROVIDER_CHANGED,
-                    json!({ "provider": id, "op": "unregister" }),
-                )
-                .await;
-            events
-                .emit(
-                    triggers::MODELS_CHANGED,
-                    json!({ "provider": id, "count": 0 }),
-                )
-                .await;
+            if removed {
+                events
+                    .emit(
+                        triggers::PROVIDER_CHANGED,
+                        json!({ "provider": id, "op": "unregister" }),
+                    )
+                    .await;
+            }
+            if slice_removed {
+                events
+                    .emit(
+                        triggers::MODELS_CHANGED,
+                        json!({ "provider": id, "count": 0 }),
+                    )
+                    .await;
+            }
 
-            Ok(ProviderUnregisterResponse {
-                ok: true,
-                removed: true,
-            })
+            Ok(ProviderUnregisterResponse { ok: true, removed })
         })
     }
 }

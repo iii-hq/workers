@@ -128,10 +128,18 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
         ui_dir.join("tsconfig.json"),
     ];
     // The linked @iii-dev/console-ui package: its types gate `tsc --noEmit`
-    // and its API shape is what the bundle runs against.
+    // and its API shape is what the bundle runs against. Absent is fine
+    // (published-tarball builds); any OTHER metadata error means we cannot
+    // inspect the tree, and this file's policy is conservative — rebuild.
     let linked_pkg_src = ui_dir.join("../../packages/console-ui/src");
-    if linked_pkg_src.exists() && !subtree_older_than(&linked_pkg_src, dist_mtime) {
-        return false;
+    match std::fs::metadata(&linked_pkg_src) {
+        Ok(_) => {
+            if !subtree_older_than(&linked_pkg_src, dist_mtime) {
+                return false;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return false,
     }
     for f in watched_files.iter() {
         if !f.exists() {

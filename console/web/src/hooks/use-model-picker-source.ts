@@ -127,10 +127,13 @@ export function useModelPickerSource(
       }, 150)
     }
 
-    void subscribeModelChanges(onModelsChanged).then((dispose) => {
-      if (disposed) dispose()
-      else disposers.push(dispose)
-    })
+    void subscribeModelChanges(onModelsChanged)
+      .then((dispose) => {
+        if (disposed) dispose()
+        else disposers.push(dispose)
+      })
+      // Setup failure degrades to manual refresh; never an unhandled rejection.
+      .catch(() => {})
 
     void subscribeProviderChanges(({ provider, op }) => {
       providerEventVersion.current += 1
@@ -155,10 +158,13 @@ export function useModelPickerSource(
             : entry,
         ),
       )
-    }).then((dispose) => {
-      if (disposed) dispose()
-      else disposers.push(dispose)
     })
+      .then((dispose) => {
+        if (disposed) dispose()
+        else disposers.push(dispose)
+      })
+      // Setup failure degrades to snapshot re-reads; never an unhandled rejection.
+      .catch(() => {})
 
     return () => {
       disposed = true

@@ -84,12 +84,19 @@ impl CatalogStore {
     }
 
     /// Drop a provider's slice (unregister path) so stale models never route.
-    pub async fn remove_slice(&self, provider: &str) -> Result<(), Error> {
+    /// Returns whether a slice existed. Persist-then-swap: memory only
+    /// changes after the durable write succeeds, so a failed persist leaves
+    /// both in agreement and the retry starts clean.
+    pub async fn remove_slice(&self, provider: &str) -> Result<bool, Error> {
         let mut slices = self.slices.lock().await; // serialized writer
-        if slices.remove(provider).is_none() {
-            return Ok(());
+        if !slices.contains_key(provider) {
+            return Ok(false);
         }
-        let value = serde_json::to_value(&*slices).unwrap_or_default();
-        state_set(&self.iii, CATALOG_KEY, value).await
+        let mut next = slices.clone();
+        next.remove(provider);
+        let value = serde_json::to_value(&next).unwrap_or_default();
+        state_set(&self.iii, CATALOG_KEY, value).await?;
+        *slices = next;
+        Ok(true)
     }
 }

@@ -199,14 +199,19 @@ impl RegistryStore {
 
     /// Operator escape hatch (`router::provider::unregister`): drop a record
     /// so a provider that lost its registration token can register fresh.
-    /// Returns whether a record existed.
+    /// Returns whether a record existed. Persist-then-swap: the live map only
+    /// changes after the durable write succeeds, so a failed persist leaves
+    /// memory and state in agreement and the retry starts clean.
     pub async fn remove(&self, id: &str) -> Result<bool, Error> {
         let mut records = self.records.lock().await; // serialized writer
-        let removed = records.remove(id).is_some();
-        if removed {
-            self.persist(&records).await?;
+        if !records.contains_key(id) {
+            return Ok(false);
         }
-        Ok(removed)
+        let mut next = records.clone();
+        next.remove(id);
+        self.persist(&next).await?;
+        *records = next;
+        Ok(true)
     }
 
     /// Returns true when the flag actually changed (callers emit on change only).

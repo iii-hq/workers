@@ -96,10 +96,14 @@ export function useWorkerRegistryReactivity(): void {
       qc.invalidateQueries({
         queryKey: configurationKeys.expandedValue('llm-router'),
       })
-    }).then((dispose) => {
-      if (disposed) dispose()
-      else disposers.push(dispose)
     })
+      .then((dispose) => {
+        if (disposed) dispose()
+        else disposers.push(dispose)
+      })
+      // Setup failure (engine unreachable) degrades to the lifecycle-driven
+      // invalidation above; never an unhandled rejection.
+      .catch(() => {})
     return () => {
       disposed = true
       for (const d of disposers) d()

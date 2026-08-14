@@ -201,8 +201,11 @@ impl ConsoleUi {
     }
 
     /// Register the content function and one trigger per asset; spawn the
-    /// dev watcher when the watch env var is set. Call once, after the
-    /// worker's regular functions are registered.
+    /// dev watcher when the watch env var is set. Call once at boot — order
+    /// relative to the worker's regular functions is free, and registering
+    /// the UI FIRST is preferred: every moment before the console:script
+    /// announcement is a window where an open console renders its generic
+    /// fallback instead of this worker's injected UI.
     ///
     /// Trigger registration failures are warn-logged, not fatal — injected
     /// UI is an accessory, and the SDK replays surviving registrations on
@@ -390,13 +393,23 @@ impl Served {
 
 /// Keep retrying a failed asset-trigger registration with capped backoff.
 /// The handle can be dropped: unregistration is explicit, never on drop.
+/// No-ops (with a warning) outside a Tokio runtime — `register` is a sync
+/// API and `tokio::spawn` would panic there; behavior then matches the
+/// pre-retry contract of one attempt.
 fn spawn_registration_retry(
     iii: Arc<IIIClient>,
     function_id: String,
     kind: AssetKind,
     path: String,
 ) {
-    tokio::spawn(async move {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::warn!(
+            path,
+            "console ui trigger registration failed outside a tokio runtime; not retrying"
+        );
+        return;
+    };
+    handle.spawn(async move {
         let mut delay = std::time::Duration::from_secs(2);
         loop {
             tokio::time::sleep(delay).await;
