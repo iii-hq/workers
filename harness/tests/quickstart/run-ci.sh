@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 # Validate the published quickstart in an isolated home and project:
 # install iii, boot an empty engine, add harness + console, and complete the
-# first Console conversation with Anthropic Sonnet 5.
+# first Console conversation, switch from Anthropic Sonnet 5 to OpenAI Luna,
+# and start a second Luna conversation.
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
@@ -17,9 +18,9 @@ engine_port=49134
 wait_seconds=${HARNESS_QUICKSTART_WAIT_SECONDS:-180}
 add_timeout_seconds=${HARNESS_QUICKSTART_ADD_TIMEOUT_SECONDS:-600}
 trace_enabled=${HARNESS_QUICKSTART_TRACE:-0}
-provider_id=anthropic
-model_id=claude-sonnet-5
-response_marker=QUICKSTART_OK
+result_provider_id=openai
+result_model_id=gpt-5.6-luna
+result_marker=QUICKSTART_OPENAI_NEW_CHAT_OK
 playwright_bin=${HARNESS_QUICKSTART_PLAYWRIGHT_BIN:-"$repo_root/console/web/node_modules/.bin/playwright"}
 
 if [[ -n "${III_CHANNEL:-}" ]]; then
@@ -60,6 +61,10 @@ fi
 
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
   echo "ANTHROPIC_API_KEY is required" >&2
+  exit 2
+}
+[[ -n "${OPENAI_API_KEY:-}" ]] || {
+  echo "OPENAI_API_KEY is required" >&2
   exit 2
 }
 
@@ -107,6 +112,8 @@ rm -f \
   "$artifact_dir/console-status.json" \
   "$artifact_dir/console.html" \
   "$artifact_dir/model.json" \
+  "$artifact_dir/model-anthropic.json" \
+  "$artifact_dir/model-openai.json" \
   "$artifact_dir/model-catalog.json" \
   "$artifact_dir/browser-evidence.json" \
   "$artifact_dir/terminal-status.json" \
@@ -124,7 +131,7 @@ fi
 export HOME="$quickstart_home"
 export XDG_CONFIG_HOME="$quickstart_home/.config"
 export PATH="$quickstart_home/.local/bin:$quickstart_home/.iii/bin:$PATH"
-unset OPENAI_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY XAI_API_KEY KIMI_API_KEY
+unset ZAI_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY XAI_API_KEY KIMI_API_KEY
 
 engine_pid=""
 iii_bin=""
@@ -157,12 +164,12 @@ die() {
 write_result() {
   local status=$1
   local browser=null terminal=null video=null
-  local video_path="$artifact_dir/slack-evidence/quickstart-sonnet-5.mp4"
+  local video_path="$artifact_dir/slack-evidence/quickstart-provider-switch.mp4"
   [[ -f "$artifact_dir/browser-evidence.json" ]] && browser=$(jq -c . "$artifact_dir/browser-evidence.json")
   [[ -f "$artifact_dir/terminal-status.json" ]] && terminal=$(jq -c . "$artifact_dir/terminal-status.json")
   if [[ -f "$video_path" ]]; then
     video=$(jq -n \
-      --arg path "slack-evidence/quickstart-sonnet-5.mp4" \
+      --arg path "slack-evidence/quickstart-provider-switch.mp4" \
       --arg media_type "video/mp4" \
       --arg sha256 "$(sha256sum "$video_path" | awk '{print $1}')" \
       --argjson size_bytes "$(stat -c %s "$video_path")" \
@@ -175,9 +182,9 @@ write_result() {
     --arg install_url "$install_url" \
     --arg cli_channel "$cli_channel" \
     --arg worker_tag "$worker_tag" \
-    --arg provider "$provider_id" \
-    --arg model "$model_id" \
-    --arg marker "$response_marker" \
+    --arg provider "$result_provider_id" \
+    --arg model "$result_model_id" \
+    --arg marker "$result_marker" \
     --argjson browser "$browser" \
     --argjson terminal "$terminal" \
     --argjson slack_evidence "$video" \
@@ -193,6 +200,8 @@ write_result() {
       provider: $provider,
       model: $model,
       marker: $marker,
+      providers: ["anthropic", "openai"],
+      models: ["claude-sonnet-5", "gpt-5.6-luna"],
       browser: $browser,
       terminal: $terminal,
       slack_evidence: $slack_evidence,
@@ -255,7 +264,7 @@ cleanup() {
 
   if artifacts_contain_secret; then
     status=1
-    failure_reason="an artifact contains the Anthropic credential"
+    failure_reason="an artifact contains a provider credential"
     # Do not leave a secret-bearing file available to the workflow uploader.
     find "$artifact_dir" -type f -delete
   fi
@@ -334,6 +343,7 @@ wait_for_functions() {
 }
 
 wait_for_model() {
+  local provider_id=$1 model_id=$2 output_path=$3
   local response attempt
   log "Waiting for $provider_id/$model_id in the router catalog (up to ${wait_seconds}s)"
   log_command "iii trigger router::models::get --port $engine_port --json '{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}'"
@@ -343,7 +353,7 @@ wait_for_model() {
       2>>"$log_dir/model-discovery.log" || true)
     if jq -e --arg provider "$provider_id" --arg model "$model_id" \
       '.model.provider == $provider and .model.id == $model' <<<"$response" >/dev/null 2>&1; then
-      printf '%s\n' "$response" >"$artifact_dir/model.json"
+      printf '%s\n' "$response" >"$output_path"
       ok "$provider_id/$model_id available after ${attempt}s"
       return 0
     fi
@@ -374,51 +384,72 @@ record_browser_video() {
     mkdir -p "$output_dir"
     ffmpeg -hide_banner -loglevel error -y -i "$video_source" \
       -map_metadata -1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart \
-      "$output_dir/quickstart-sonnet-5.mp4" \
+      "$output_dir/quickstart-provider-switch.mp4" \
       >"$log_dir/ffmpeg.log" 2>&1 || die "Playwright video conversion failed"
   elif ((playwright_status == 0)); then
     die "Playwright passed without producing a video"
   fi
 
-  ((playwright_status == 0)) || die "Console first-message Playwright test failed"
-  ok "Console conversation completed and Playwright video recorded"
+  ((playwright_status == 0)) || die "Console provider-switch Playwright test failed"
+  ok "Console provider switch completed and Playwright video recorded"
 }
 
-wait_for_terminal_turn() {
-  local session_id response attempt
-  session_id=$(jq -er '.session_id' "$artifact_dir/browser-evidence.json") \
-    || die "browser evidence has no session id"
-  log "Verifying the durable terminal turn for session $session_id"
+wait_for_terminal_turns() {
+  local session_id response attempt completed statuses='[]'
+  local -a session_ids
+  mapfile -t session_ids < <(
+    jq -er '.sessions | map(.session_id) | unique | .[]' \
+      "$artifact_dir/browser-evidence.json"
+  ) || die "browser evidence has no session ids"
+  ((${#session_ids[@]} == 2)) \
+    || die "browser evidence must contain exactly two unique session ids"
+
   log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<console-session>\"}'"
-  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger harness::status --port "$engine_port" \
-      --json "{\"session_id\":\"$session_id\"}" 2>>"$log_dir/terminal-status.log" || true)
-    if jq -e '.status == "completed" and (.expects_wake // false) == false' \
-      <<<"$response" >/dev/null 2>&1; then
-      printf '%s\n' "$response" >"$artifact_dir/terminal-status.json"
-      ok "turn completed durably after ${attempt}s"
-      return 0
-    fi
-    if jq -e '.status == "failed" or .status == "cancelled"' \
-      <<<"$response" >/dev/null 2>&1; then
-      printf '%s\n' "$response" >"$artifact_dir/terminal-status.json"
-      die "Console turn reached terminal status $(jq -r '.status' <<<"$response")"
-    fi
-    sleep 1
+  for session_id in "${session_ids[@]}"; do
+    log "Verifying the durable terminal turn for session $session_id"
+    response=''
+    completed=0
+    for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+      response=$("$iii_bin" trigger harness::status --port "$engine_port" \
+        --json "{\"session_id\":\"$session_id\"}" 2>>"$log_dir/terminal-status.log" || true)
+      if jq -e '.status == "completed" and (.expects_wake // false) == false' \
+        <<<"$response" >/dev/null 2>&1; then
+        statuses=$(jq -c \
+          --arg session_id "$session_id" \
+          --argjson status "$response" \
+          '. + [{session_id:$session_id,status:$status}]' <<<"$statuses")
+        ok "session $session_id completed durably after ${attempt}s"
+        completed=1
+        break
+      fi
+      if jq -e '.status == "failed" or .status == "cancelled"' \
+        <<<"$response" >/dev/null 2>&1; then
+        die "Console session $session_id reached terminal status $(jq -r '.status' <<<"$response")"
+      fi
+      sleep 1
+    done
+    ((completed == 1)) \
+      || die "Console session $session_id did not reach durable completion"
   done
-  printf '%s\n' "$response" >"$artifact_dir/terminal-status.json"
-  die "Console turn did not reach durable completion"
+  jq -n --argjson sessions "$statuses" \
+    '{schema_version:2,sessions:$sessions}' >"$artifact_dir/terminal-status.json"
 }
 
 artifacts_contain_secret() {
-  LC_ALL=C grep -R -a -F -l -- "$ANTHROPIC_API_KEY" "$artifact_dir" >/dev/null 2>&1
+  local credential
+  for credential in "$ANTHROPIC_API_KEY" "$OPENAI_API_KEY"; do
+    if LC_ALL=C grep -R -a -F -l -- "$credential" "$artifact_dir" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 assert_secret_safe_artifacts() {
   if artifacts_contain_secret; then
-    die "an artifact contains the Anthropic credential"
+    die "an artifact contains a provider credential"
   fi
-  ok "artifacts do not contain the Anthropic credential"
+  ok "artifacts do not contain provider credentials"
 }
 
 run_worker_add() {
@@ -483,8 +514,9 @@ fi
 log "Step 5/9: Verify registered functions"
 wait_for_functions
 
-log "Step 6/9: Verify Sonnet 5 availability"
-wait_for_model
+log "Step 6/9: Verify Sonnet 5 and Luna availability"
+wait_for_model anthropic claude-sonnet-5 "$artifact_dir/model-anthropic.json"
+wait_for_model openai gpt-5.6-luna "$artifact_dir/model-openai.json"
 
 log "Step 7/9: Verify the Console HTTP surface"
 log_command "iii trigger console::status --port $engine_port --json '{}'"
@@ -498,9 +530,9 @@ curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
 ok "Console answered on port $console_port"
 
-log "Step 8/9: Complete the first conversation through the Console"
+log "Step 8/9: Switch providers and start a new Luna conversation"
 record_browser_video
-wait_for_terminal_turn
+wait_for_terminal_turns
 
 log "Step 9/9: Verify generated project files and secret-safe evidence"
 for output in config.yaml iii.lock; do
