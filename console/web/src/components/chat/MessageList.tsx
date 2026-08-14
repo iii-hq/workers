@@ -1,9 +1,12 @@
+import { ChevronRight } from 'lucide-react'
 import {
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
 import {
@@ -21,6 +24,11 @@ import { triggerFiredName } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
+import {
+  collapsedFunctionTriggerCalls,
+  functionTriggerGroups,
+  type MessageListRow,
+} from './function-trigger-groups'
 import { Message } from './Message'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -200,6 +208,7 @@ export function MessageList({
     () => functionTriggersByAssistant(messages),
     [messages],
   )
+  const rows = useMemo(() => functionTriggerGroups(messages), [messages])
   const registrations = useMemo(
     () => resolveRegistrations(messages, triggersById),
     [messages, triggersById],
@@ -292,7 +301,39 @@ export function MessageList({
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
       <div className="mx-auto max-w-[720px] flex flex-col gap-y-8">
         {header}
-        {messages.map((m, i) => {
+        {rows.map((row, i) => {
+          if (row.kind === 'function-trigger-group') {
+            return (
+              <FunctionTriggerGroup
+                key={row.id}
+                row={row}
+                renderers={renderers}
+                defaultOpenCalls={defaultOpenCalls}
+                onResolveApproval={onResolveApproval}
+                onAlwaysAllow={onAlwaysAllow}
+                onResolveFilesystemAccess={onResolveFilesystemAccess}
+                onManageFilesystemAccess={onManageFilesystemAccess}
+                workingDir={workingDir}
+                summaryCopyText={
+                  row.summary
+                    ? (() => {
+                        const calls = fcallsByAssistant.get(row.summary.id)
+                        return calls?.length
+                          ? () =>
+                              assistantCopyText(
+                                row.summary?.content ?? '',
+                                calls,
+                                redactFor,
+                              )
+                          : row.summary.content
+                      })()
+                    : undefined
+                }
+              />
+            )
+          }
+
+          const m = row.message
           // Assistant turns copy their prose plus the calls that follow them;
           // the thunk defers building that string until the copy click. Left
           // undefined when the turn has nothing to copy (no prose, no calls)
@@ -303,16 +344,13 @@ export function MessageList({
             m.role === 'assistant' && (m.content || calls?.length)
               ? () => assistantCopyText(m.content, calls ?? [], redactFor)
               : undefined
-          // A call that directly follows another call belongs to the same
-          // burst of agent activity — pull it up against its predecessor so
-          // the run reads as one tight stack instead of scattered boxes.
-          // Trigger-fired notices share the card language and ride along.
-          // (Safe as a conditional wrapper: a message's predecessor is fixed
-          // at insert time, so `tight` never flips on an existing node.)
-          const callLike = (x: MessageType | undefined) =>
-            x?.role === 'function-trigger' ||
-            (x?.role === 'system' && x.kind === 'trigger-fired')
-          const tight = callLike(m) && callLike(messages[i - 1])
+          // Consecutive trigger-fired notices share the same compact visual
+          // language as call groups, so keep those system rows close too.
+          const triggerFired = (x: MessageListRow | undefined) =>
+            x?.kind === 'message' &&
+            x.message.role === 'system' &&
+            x.message.kind === 'trigger-fired'
+          const tight = triggerFired(row) && triggerFired(rows[i - 1])
           const node = (
             <Message
               key={m.id}
@@ -328,7 +366,7 @@ export function MessageList({
             />
           )
           return tight ? (
-            <div key={m.id} className="-mt-[26px]">
+            <div key={m.id} className="-mt-6.5">
               {node}
             </div>
           ) : (
@@ -343,6 +381,107 @@ export function MessageList({
         <div ref={bottomRef} />
       </div>
     </div>
+  )
+}
+
+interface FunctionTriggerGroupProps {
+  row: Extract<MessageListRow, { kind: 'function-trigger-group' }>
+  renderers: ReturnType<typeof useFunctionTriggerRenderers>
+  defaultOpenCalls?: boolean
+  summaryCopyText?: string | (() => string)
+  onResolveApproval?: MessageListProps['onResolveApproval']
+  onAlwaysAllow?: MessageListProps['onAlwaysAllow']
+  onResolveFilesystemAccess?: MessageListProps['onResolveFilesystemAccess']
+  onManageFilesystemAccess?: MessageListProps['onManageFilesystemAccess']
+  workingDir?: string | null
+}
+
+/**
+ * A sequence of agent calls reads as one phase. Collapsed groups keep the
+ * latest call plus any rich-display, approval, or live call visible; expanding
+ * restores every call in chronological order. The assistant's intermediate
+ * prose stays normal prose after the stack and doubles as the batch summary.
+ */
+function FunctionTriggerGroup({
+  row,
+  renderers,
+  defaultOpenCalls,
+  summaryCopyText,
+  onResolveApproval,
+  onAlwaysAllow,
+  onResolveFilesystemAccess,
+  onManageFilesystemAccess,
+  workingDir,
+}: FunctionTriggerGroupProps) {
+  const [expanded, setExpanded] = useState(!!defaultOpenCalls)
+  const contentId = useId()
+  const collapsedCalls = collapsedFunctionTriggerCalls(row.calls, (call) =>
+    renderers.some(
+      (renderer) =>
+        renderer.metadata?.display === true &&
+        renderer.isMatch(call.functionId),
+    ),
+  )
+  const hiddenCount = row.calls.length - collapsedCalls.length
+  const visibleCalls = expanded ? row.calls : collapsedCalls
+  const canCollapse = hiddenCount > 0
+
+  return (
+    <section
+      className="flex flex-col gap-y-8"
+      data-function-trigger-group=""
+      data-function-trigger-count={row.calls.length}
+    >
+      <div className="flex flex-col gap-y-8">
+        {canCollapse ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={contentId}
+            onClick={() => setExpanded((value) => !value)}
+            className="group relative flex w-fit cursor-pointer items-center gap-2 font-mono text-base text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-[0.8125rem]"
+          >
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
+            />
+            <ChevronRight
+              aria-hidden="true"
+              className={cn(
+                'size-5 shrink-0 transition-transform duration-150 motion-reduce:transition-none sm:size-4',
+                expanded && 'rotate-90',
+              )}
+            />
+            <span className="tabular-nums">{row.calls.length} triggers</span>
+            <span className="text-ink-ghost">
+              · {expanded ? 'show latest' : 'show all'}
+            </span>
+          </button>
+        ) : null}
+        <div
+          id={contentId}
+          className={cn('flex flex-col gap-y-8', canCollapse && '-mt-6.5')}
+          data-function-trigger-group-calls=""
+        >
+          {visibleCalls.map((call, index) => (
+            <div key={call.id} className={cn(index > 0 && '-mt-6.5')}>
+              <Message
+                message={call}
+                defaultOpenCalls={defaultOpenCalls}
+                onResolveApproval={onResolveApproval}
+                onAlwaysAllow={onAlwaysAllow}
+                onResolveFilesystemAccess={onResolveFilesystemAccess}
+                onManageFilesystemAccess={onManageFilesystemAccess}
+                workingDir={workingDir}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+      {row.summary ? (
+        <Message message={row.summary} copyText={summaryCopyText} />
+      ) : null}
+    </section>
   )
 }
 

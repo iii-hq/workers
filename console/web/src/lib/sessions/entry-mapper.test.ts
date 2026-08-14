@@ -26,13 +26,17 @@ function userItem(
 function assistantItem(
   entryId: string,
   content: Extract<AgentMessage, { role: 'assistant' }>['content'],
+  stopReason: Extract<
+    AgentMessage,
+    { role: 'assistant' }
+  >['stop_reason'] = 'end',
 ): TranscriptItem {
   return {
     entry_id: entryId,
     message: {
       role: 'assistant',
       content,
-      stop_reason: 'end',
+      stop_reason: stopReason,
       model: 'm',
       provider: 'p',
       timestamp: 2,
@@ -67,6 +71,26 @@ describe('entrySegments', () => {
       id: 'msg-1-user-0',
       role: 'user',
       content: 'hello',
+    })
+  })
+
+  it('preserves the assistant stop reason for progress grouping', () => {
+    const [msg] = entrySegments(
+      assistantItem(
+        'msg-2-assistant-0',
+        [
+          {
+            type: 'text',
+            text: 'The scan found two matches; next I will edit.',
+          },
+        ],
+        'function_call',
+      ),
+    )
+
+    expect(msg).toMatchObject({
+      role: 'assistant',
+      stopReason: 'function_call',
     })
   })
 

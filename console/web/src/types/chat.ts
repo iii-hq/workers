@@ -94,6 +94,12 @@ export interface AssistantMessage extends BaseMessage {
   mode?: Mode
   streaming?: boolean
   /**
+   * Why the provider ended this assistant entry. `function_call` marks an
+   * intermediate update that continues into tools; `end` marks the turn's
+   * final prose. Older/local fixtures may omit it.
+   */
+  stopReason?: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
+  /**
    * What the memory worker fed this turn (from the entry origin's hook
    * annotations): the bank, how many memories were injected, and their
    * ids so the chip can fetch details on demand.

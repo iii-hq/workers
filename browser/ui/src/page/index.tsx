@@ -20,17 +20,12 @@
  * SessionView), so a narrow pane parked on the list streams nothing.
  */
 
-import {
-  Button,
-  type Host,
-  PageHeader,
-  type PageRenderProps,
-  PageShell,
-} from '@iii-dev/console-ui'
+import { Button, type Host, PageHeader, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import type { ComponentType } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage, startBrowserSession } from '../lib/browser'
+import { errorMessage, readBrowserDoctor, startBrowserSession } from '../lib/browser'
 import { Plus } from '../lib/icons'
-import { GlobeIcon, LivePill, RefreshButton } from '../lib/widgets'
+import { GlobeIcon, LivePill, RefreshButton, useContainerNarrow } from '../lib/widgets'
 import { SessionRail } from './SessionRail'
 import { SessionView } from './SessionView'
 import { useBrowserSessionsLive } from './useBrowserSessionsLive'
@@ -39,44 +34,35 @@ import { useBrowserSessionsLive } from './useBrowserSessionsLive'
  * session-list ⇄ workspace flow. */
 const NARROW_BELOW = 720
 
-/** Observe the page body's own width. Returns a callback ref to put on the
- * body row plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none) are ignored so a hidden page keeps its last
- * real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
-}
-
 export function BrowserPage({
   host,
   panelSide = 'left',
   tabId = '',
   onRequestClose,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const { sessions, loading, error, live, refresh } = useBrowserSessionsLive(
-    host,
-    true,
-  )
+  const [configOpen, setConfigOpen] = useState(false)
+  const ConfigurationDialog = host.components.WorkerConfigurationDialog as
+    | ComponentType<{
+        configurationId: string | null
+        onClose: () => void
+      }>
+    | undefined
+  const { sessions, loading, error, live, refresh } = useBrowserSessionsLive(host, true)
+  const [chromiumVersion, setChromiumVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void readBrowserDoctor(host.iii)
+      .then((doctor) => {
+        if (!cancelled) setChromiumVersion(doctor?.chromium_version ?? null)
+      })
+      .catch(() => {
+        // Version is useful context, not a requirement for operating a session.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host])
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
@@ -105,10 +91,7 @@ export function BrowserPage({
     })
   }, [loading, sessions])
 
-  const selected = useMemo(
-    () => sessions.find((s) => s.session_id === selectedId) ?? null,
-    [sessions, selectedId],
-  )
+  const selected = useMemo(() => sessions.find((s) => s.session_id === selectedId) ?? null, [sessions, selectedId])
 
   // The drilled-into session can die underneath us (stopped from chat or
   // another tab): drill back out to the list rather than silently showing
@@ -154,9 +137,18 @@ export function BrowserPage({
     <PageShell className="br-ui-shell">
       <PageHeader
         icon={<GlobeIcon />}
-        title="browser"
+        title="Browser"
         description="live Chromium sessions you can watch and drive"
-        actions={<LivePill live={live} />}
+        actions={
+          <div className="br-ui-header-actions">
+            <LivePill live={live} />
+            {ConfigurationDialog ? (
+              <Button variant="ghost" size="sm" onClick={() => setConfigOpen(true)}>
+                Configure
+              </Button>
+            ) : null}
+          </div>
+        }
         onClose={onRequestClose}
       />
 
@@ -172,46 +164,30 @@ export function BrowserPage({
         </div>
       ) : null}
 
-      <div
-        className={`br-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
-        ref={rootRef}
-      >
+      <div className={`br-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`} ref={rootRef}>
         {railVisible ? (
           <aside className="br-ui-rail" aria-label="session list">
             <div className="br-ui-rail-top">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void handleNewSession()}
-                disabled={starting}
-              >
-                <Plus size={14} aria-hidden />
-                {starting ? 'starting...' : 'new session'}
-              </Button>
-              {startError ? (
-                <p className="br-ui-rail-err">{startError}</p>
-              ) : null}
+              <div className="br-ui-rail-intro">
+                <div className="br-ui-rail-intro-copy">
+                  <h2>Sessions</h2>
+                  <p>Active local and attached browsers.</p>
+                </div>
+                <Button variant="primary" size="sm" onClick={() => void handleNewSession()} disabled={starting}>
+                  <Plus size={14} aria-hidden />
+                  {starting ? 'Starting...' : 'New session'}
+                </Button>
+              </div>
+              {startError ? <p className="br-ui-rail-err">{startError}</p> : null}
             </div>
             <header className="br-ui-col-head">
-              <span className="label">sessions</span>
+              <span className="label">active now</span>
               <span className="spacer" />
-              {loading && sessions.length === 0 ? null : (
-                <span className="count">{sessions.length}</span>
-              )}
-              <RefreshButton
-                onClick={refresh}
-                label="refresh sessions"
-                disabled={loading}
-                spinning={loading}
-              />
+              {loading && sessions.length === 0 ? null : <span className="count">{sessions.length}</span>}
+              <RefreshButton onClick={refresh} label="refresh sessions" disabled={loading} spinning={loading} />
             </header>
             <div className="br-ui-rail-scroll">
-              <SessionRail
-                sessions={sessions}
-                selectedId={selectedId}
-                loading={loading}
-                onSelect={openSession}
-              />
+              <SessionRail sessions={sessions} selectedId={selectedId} loading={loading} onSelect={openSession} />
             </div>
           </aside>
         ) : null}
@@ -224,6 +200,7 @@ export function BrowserPage({
               key={selected.session_id}
               host={host}
               session={selected}
+              chromiumVersion={chromiumVersion}
               enabled
               narrow={narrow}
               tabId={tabId}
@@ -238,17 +215,19 @@ export function BrowserPage({
             <section className="br-ui-stage" aria-label="session workspace">
               <div className="br-ui-hero">
                 <GlobeIcon className="br-ui-hero-icon" />
-                <h2 className="br-ui-hero-title">no browser sessions</h2>
+                <h2 className="br-ui-hero-title">No browser sessions</h2>
                 <p className="br-ui-hero-body">
-                  sessions started by agents appear here automatically. start
-                  one yourself with new session, or ask an agent to call
-                  browser::sessions::start.
+                  Sessions started by agents appear here automatically. Start one from the session rail, or ask an agent
+                  to call <code>browser::sessions::start</code>.
                 </p>
               </div>
             </section>
           )
         ) : null}
       </div>
+      {ConfigurationDialog ? (
+        <ConfigurationDialog configurationId={configOpen ? 'browser' : null} onClose={() => setConfigOpen(false)} />
+      ) : null}
     </PageShell>
   )
 }

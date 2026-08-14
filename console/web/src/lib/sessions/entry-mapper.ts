@@ -562,6 +562,7 @@ function assistantSegments(
           role: 'assistant',
           content: block.text,
           model: message.model,
+          stopReason: message.stop_reason,
           createdAt: message.timestamp,
         })
         break
