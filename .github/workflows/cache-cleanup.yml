@@ -24,7 +24,17 @@ jobs:
         run: |
           set -euo pipefail
           ref="refs/pull/$PR_NUMBER/merge"
-          mapfile -t ids < <(gh api "repos/$REPOSITORY/actions/caches" -f ref="$ref" -F per_page=100 --paginate --jq '.actions_caches[].id')
+          cache_ids="$(
+            gh api --method GET "repos/$REPOSITORY/actions/caches" \
+              -f ref="$ref" \
+              -F per_page=100 \
+              --paginate \
+              --jq '.actions_caches[].id'
+          )"
+          ids=()
+          if [[ -n "$cache_ids" ]]; then
+            mapfile -t ids <<<"$cache_ids"
+          fi
           for id in "${ids[@]}"; do
             gh api --method DELETE "repos/$REPOSITORY/actions/caches/$id"
           done
