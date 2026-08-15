@@ -6,6 +6,7 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
+    llm_router_integration        : bool, must the live llm-router suite run
     provider_contract            : providers whose hermetic contract must run
     crates                        : shared crates/<name> dirs with source changes
     any                           : bool, any worker or crate change
@@ -64,6 +65,15 @@ INTEGRATION_EXCLUDED_PREFIXES = (
     "harness/tests/e2e/",
     "harness/tests/quickstart/",
 )
+
+# The llm-router owns a separate real-engine lifecycle suite. Keep this gate
+# independent from Harness Integration: that stack intentionally substitutes a
+# ScriptedRouter and therefore cannot validate router transport/lifecycle bugs.
+LLM_ROUTER_INTEGRATION_WORKERS = {"llm-router"}
+LLM_ROUTER_INTEGRATION_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
+}
 
 # Hermetic provider contracts run the real engine, llm-router, and selected
 # provider against a loopback HTTP/SSE upstream. Direct provider changes stay
@@ -275,6 +285,13 @@ def main(argv: list[str] | None = None) -> int:
         INTEGRATION_INFRA_PATHS,
         INTEGRATION_EXCLUDED_PREFIXES,
     )
+    llm_router_integration = suite_changed(
+        files,
+        forced,
+        LLM_ROUTER_INTEGRATION_WORKERS,
+        LLM_ROUTER_INTEGRATION_INFRA_PATHS,
+        (),
+    )
     provider_contract = provider_contract_selection(files, workers)
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
@@ -289,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_changed": source_changed,
         "by_language": by_language,
         "integration_changed": integration_changed,
+        "llm_router_integration": llm_router_integration,
         "provider_contract": provider_contract,
         "crates": changed_crates,
     }
@@ -304,6 +322,10 @@ def main(argv: list[str] | None = None) -> int:
                 f.write(f"{lang}={json.dumps(by_language[lang])}\n")
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
+            )
+            f.write(
+                "llm_router_integration="
+                f"{'true' if llm_router_integration else 'false'}\n"
             )
             f.write(f"provider_contract={json.dumps(provider_contract)}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
