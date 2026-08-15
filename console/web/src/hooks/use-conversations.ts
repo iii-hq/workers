@@ -304,12 +304,20 @@ export function appendMessageToConversation(
   now = Date.now(),
 ): Conversation {
   const existingIndex = c.messages.findIndex((item) => item.id === message.id)
+  const existing = existingIndex === -1 ? undefined : c.messages[existingIndex]
+  const preservesDurableNotice =
+    existing?.role === 'system' &&
+    message.role === 'system' &&
+    message.provisional === true &&
+    existing.provisional !== true
   const messages =
     existingIndex === -1
       ? [...c.messages, message]
-      : c.messages.map((item, index) =>
-          index === existingIndex ? message : item,
-        )
+      : preservesDurableNotice
+        ? c.messages
+        : c.messages.map((item, index) =>
+            index === existingIndex ? message : item,
+          )
   const next: Conversation = {
     ...c,
     messages,

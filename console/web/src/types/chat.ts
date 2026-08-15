@@ -199,6 +199,12 @@ export interface SystemMessage extends BaseMessage {
   content: string
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction' | 'trigger-fired'
+  /**
+   * Live-only fallback for a durable transcript entry with the same id.
+   * It may fill a delivery gap, but must never replace the transcript-backed
+   * message when lifecycle and transcript events arrive out of order.
+   */
+  provisional?: boolean
   summaryText?: string
   tokensBefore?: number
   /** Present on `kind: 'trigger-fired'`. */

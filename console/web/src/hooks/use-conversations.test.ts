@@ -305,6 +305,7 @@ describe('appendMessageToConversation', () => {
             kind: 'notice',
             tone: 'error',
             content: 'response failed',
+            provisional: true,
             createdAt: 3_000,
           },
         ],
@@ -324,6 +325,40 @@ describe('appendMessageToConversation', () => {
       id: 'e_t-1_error',
       content: 'turn failed [llm.transient] — exact reason',
     })
+    expect(next.messages[0]).not.toHaveProperty('provisional')
+  })
+
+  it('does not overwrite a durable lifecycle notice with a late live fallback', () => {
+    const next = appendMessageToConversation(
+      conversation({
+        messages: [
+          {
+            id: 'e_t-1_error',
+            role: 'system',
+            kind: 'notice',
+            tone: 'error',
+            content: 'turn failed [llm.permanent] — exact reason',
+            createdAt: 3_000,
+          },
+        ],
+      }),
+      {
+        id: 'e_t-1_error',
+        role: 'system',
+        kind: 'notice',
+        tone: 'error',
+        content: 'response failed: fallback reason',
+        provisional: true,
+        createdAt: 3_100,
+      },
+    )
+
+    expect(next.messages).toHaveLength(1)
+    expect(next.messages[0]).toMatchObject({
+      id: 'e_t-1_error',
+      content: 'turn failed [llm.permanent] — exact reason',
+    })
+    expect(next.messages[0]).not.toHaveProperty('provisional')
   })
 })
 
