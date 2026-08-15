@@ -109,8 +109,8 @@ fi
 
 # 2. Build the worker (unless --no-build)
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  echo "[run-tests] cargo build --release (database worker)"
-  (cd "$WORKER_SRC" && cargo build --release --bin database)
+  echo "[run-tests] cargo build --locked --release (database worker)"
+  (cd "$WORKER_SRC" && cargo build --locked --release --bin database)
 fi
 if [[ ! -x "$WORKER_BIN_TARGET" ]]; then
   echo "[run-tests] FATAL: worker binary missing at $WORKER_BIN_TARGET — run without --no-build" >&2
@@ -190,7 +190,7 @@ if [[ "$WITH_CARGO_TEST" -eq 1 ]]; then
     cd "$WORKER_SRC" && \
     TEST_POSTGRES_URL="postgres://iii:iii@127.0.0.1:55432/iii_test" \
     TEST_MYSQL_URL="mysql://iii:iii@127.0.0.1:53306/iii_test" \
-    cargo test --all-features
+    cargo test --locked --all-features
   )
 fi
 
