@@ -166,8 +166,11 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    configuration::bind_hook(&iii);
-    configuration::bind_filesystem_access_watch_hook(&iii);
+    // Hook bindings go through `retry_hook_bindings` alone — it registers
+    // each hook at most once (the engine's instance count can lag a
+    // successful registration; a direct bind here plus the loop's first
+    // iteration would stack duplicate gate instances, which re-hold on
+    // release and deadlock approval).
     configuration::retry_hook_bindings(iii.as_ref().clone());
 
     // These two carry no config and are never re-bound — best-effort only.

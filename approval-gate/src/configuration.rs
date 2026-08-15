@@ -118,7 +118,8 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
 }
 
 /// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
-pub fn bind_hook(iii: &IIIClient) {
+/// Returns `true` when the engine accepted the registration.
+pub fn bind_hook(iii: &IIIClient) -> bool {
     match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "harness::hook::pre-trigger".to_string(),
         function_id: "approval::gate".to_string(),
@@ -129,17 +130,23 @@ pub fn bind_hook(iii: &IIIClient) {
         }),
         metadata: None,
     }) {
-        Ok(_) => tracing::info!(
-            trigger_type = "harness::hook::pre-trigger",
-            function_id = "approval::gate",
-            "trigger binding requested"
-        ),
-        Err(e) => tracing::warn!(
-            trigger_type = "harness::hook::pre-trigger",
-            function_id = "approval::gate",
-            error = %e,
-            "trigger binding failed (sibling absent?)"
-        ),
+        Ok(_) => {
+            tracing::info!(
+                trigger_type = "harness::hook::pre-trigger",
+                function_id = "approval::gate",
+                "trigger binding requested"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                trigger_type = "harness::hook::pre-trigger",
+                function_id = "approval::gate",
+                error = %e,
+                "trigger binding failed (sibling absent?)"
+            );
+            false
+        }
     }
 }
 
@@ -147,7 +154,8 @@ pub fn bind_hook(iii: &IIIClient) {
 /// `approval::filesystem-access-watch` at worker startup — beside `bind_hook`, same
 /// best-effort discipline (a standalone deployment without the harness
 /// still boots; a missing binding surfaces as a log, never an `Err` here).
-pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
+/// Returns `true` when the engine accepted the registration.
+pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) -> bool {
     match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "harness::hook::post-trigger".to_string(),
         function_id: "approval::filesystem-access-watch".to_string(),
@@ -158,41 +166,61 @@ pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
         }),
         metadata: None,
     }) {
-        Ok(_) => tracing::info!(
-            trigger_type = "harness::hook::post-trigger",
-            function_id = "approval::filesystem-access-watch",
-            "trigger binding requested"
-        ),
-        Err(e) => tracing::warn!(
-            trigger_type = "harness::hook::post-trigger",
-            function_id = "approval::filesystem-access-watch",
-            error = %e,
-            "trigger binding failed (sibling absent?)"
-        ),
+        Ok(_) => {
+            tracing::info!(
+                trigger_type = "harness::hook::post-trigger",
+                function_id = "approval::filesystem-access-watch",
+                "trigger binding requested"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                trigger_type = "harness::hook::post-trigger",
+                function_id = "approval::filesystem-access-watch",
+                error = %e,
+                "trigger binding failed (sibling absent?)"
+            );
+            false
+        }
     }
 }
 
 /// Retry hook bindings until the harness has registered the hook trigger
 /// types. Approval-gate may start before harness; a one-shot registration in
 /// that order fails asynchronously and silently leaves the gate detached.
+///
+/// Each hook is registered AT MOST ONCE per startup (on the first successful
+/// attempt): the engine's instance count can lag a successful registration,
+/// and re-binding on a lagging count stacks duplicate hook instances — the
+/// harness would then run the gate N times per call, re-holding on release
+/// (approval deadlock). A failed attempt (harness not up yet) leaves the
+/// flag unset so the next iteration retries; a success is never repeated.
+///
+/// Readiness gates only the completion condition, never the attempt: the
+/// harness being active says nothing about whether THIS worker bound its
+/// hook, so a gate that starts after the harness must still register —
+/// otherwise the gate runs detached.
 pub fn retry_hook_bindings(iii: IIIClient) {
     tokio::spawn(async move {
+        let mut pre_bound = false;
+        let mut post_bound = false;
         loop {
+            if !pre_bound {
+                pre_bound = bind_hook(&iii);
+            }
+            if !post_bound {
+                post_bound = bind_filesystem_access_watch_hook(&iii);
+            }
+
             let pre_trigger_ready = trigger_instance_count(&iii, "harness::hook::pre-trigger")
                 .await
                 .is_some_and(|count| count > 0);
-            if !pre_trigger_ready {
-                bind_hook(&iii);
-            }
-
             let post_trigger_ready = trigger_instance_count(&iii, "harness::hook::post-trigger")
                 .await
                 .is_some_and(|count| count > 0);
-            if !post_trigger_ready {
-                bind_filesystem_access_watch_hook(&iii);
-            }
 
-            if pre_trigger_ready && post_trigger_ready {
+            if pre_bound && post_bound && pre_trigger_ready && post_trigger_ready {
                 tracing::info!("approval-gate hook bindings confirmed");
                 break;
             }
