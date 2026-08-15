@@ -53,6 +53,7 @@ jobs:
       changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
+      llm_router_integration: ${{ steps.bucket.outputs.llm_router_integration }}
       provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
@@ -266,6 +267,60 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # llm-router lifecycle contract: unlike the regular Rust job, this always
+  # supplies the pinned engine and therefore cannot silently self-skip the
+  # real-bus registration, streaming, cancellation, and restart scenarios.
+  # ──────────────────────────────────────────────────────────────
+  llm-router-integration:
+    name: "llm-router: live engine integration"
+    needs: discover
+    if: needs.discover.outputs.llm_router_integration == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: llm-router-integration
+          save-if: false
+          workspaces: llm-router -> target
+
+      - name: Install pinned iii engine
+        env:
+          VERSION: '0.22.1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Run real-engine router lifecycle suite
+        run: |
+          set -euo pipefail
+          [[ -x "$III_ENGINE_BIN" ]] || { echo "::error::III_ENGINE_BIN is unavailable"; exit 3; }
+          cargo test \
+            --locked \
+            --manifest-path llm-router/Cargo.toml \
+            --no-default-features \
+            --test integration \
+            -- --nocapture --test-threads=1
 
   # ──────────────────────────────────────────────────────────────
   # Provider contracts: real engine + real router + selected provider,

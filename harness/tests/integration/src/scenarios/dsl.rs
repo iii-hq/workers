@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use super::{ScenarioDriver, VerifyFn};
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
-    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorShape,
+    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
     RouterChatResponse, StopReason, Usage,
 };
 use crate::types::probe::ControlledTargetV1;
@@ -239,10 +239,8 @@ impl Scenario {
         self
     }
 
-    /// Declare each terminal turn's status, in completion order, when not
-    /// every turn completes (e.g. a failed turn whose finalize drain reseeds a
-    /// completing follow-on turn). The last turn must complete: the floor's
-    /// durable-status check has no meaning for a run that ends failed.
+    /// Declare each terminal turn's status, in completion order, including a
+    /// run whose final durable outcome is failed or cancelled.
     pub(super) fn terminal_turn_statuses<'a>(
         mut self,
         statuses: impl IntoIterator<Item = &'a str>,
@@ -744,6 +742,12 @@ enum ResponseKind {
     FunctionCalls {
         calls: Vec<(String, String, Value)>,
     },
+    TerminalError {
+        text: String,
+        chunks: Vec<String>,
+        message: String,
+        kind: ErrorKind,
+    },
 }
 
 impl Response {
@@ -769,6 +773,31 @@ impl Response {
     pub(super) fn text(text: &str, input_tokens: u64, output_tokens: u64) -> Self {
         Self {
             kind: ResponseKind::Text(text.to_string()),
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
+    /// Stream a partial text response through keepalive noise, then terminate
+    /// with the router's authoritative error frame and failed RPC response.
+    pub(super) fn terminal_error_after_text<I, S>(
+        text: &str,
+        chunks: I,
+        message: &str,
+        kind: ErrorKind,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            kind: ResponseKind::TerminalError {
+                text: text.to_string(),
+                chunks: chunks.into_iter().map(Into::into).collect(),
+                message: message.to_string(),
+                kind,
+            },
             usage: usage(input_tokens, output_tokens),
         }
     }
@@ -837,10 +866,12 @@ impl Response {
     ) -> (Vec<AssistantMessageEvent>, RouterChatResponse) {
         let usage = self.usage;
         let timestamp = i64::try_from(ordinal).expect("generation ordinal fits i64");
-        let (frames, stop_reason) = match self.kind {
+        let (frames, stop_reason, ok, error) = match self.kind {
             ResponseKind::StreamedText { text, chunks } => (
                 streamed_text_frames(&text, &chunks, &usage, model, timestamp),
                 StopReason::End,
+                true,
+                None,
             ),
             ResponseKind::Text(text) => (
                 vec![AssistantMessageEvent::Done {
@@ -853,6 +884,8 @@ impl Response {
                     ),
                 }],
                 StopReason::End,
+                true,
+                None,
             ),
             ResponseKind::FunctionCall {
                 call_id,
@@ -873,6 +906,8 @@ impl Response {
                     ),
                 }],
                 StopReason::FunctionCall,
+                true,
+                None,
             ),
             ResponseKind::FunctionCalls { calls } => (
                 vec![AssistantMessageEvent::Done {
@@ -892,15 +927,31 @@ impl Response {
                     ),
                 }],
                 StopReason::FunctionCall,
+                true,
+                None,
+            ),
+            ResponseKind::TerminalError {
+                text,
+                chunks,
+                message,
+                kind,
+            } => (
+                streamed_error_frames(&text, &chunks, &message, kind, &usage, model, timestamp),
+                StopReason::Error,
+                false,
+                Some(ErrorShape {
+                    code: error_kind_code(kind).to_string(),
+                    message,
+                }),
             ),
         };
         let response = RouterChatResponse {
-            ok: true,
+            ok,
             provider: model.provider.clone(),
             model: model.id.clone(),
             stop_reason: Some(stop_reason),
             usage: Some(usage),
-            error: None,
+            error,
         };
         (frames, response)
     }
@@ -1118,6 +1169,88 @@ fn streamed_text_frames(
     frames
 }
 
+fn streamed_error_frames(
+    text: &str,
+    chunks: &[String],
+    message: &str,
+    kind: ErrorKind,
+    usage: &Usage,
+    model: &ModelFixtureV1,
+    timestamp: i64,
+) -> Vec<AssistantMessageEvent> {
+    let mut error = assistant_message(
+        vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        StopReason::Error,
+        Some(usage.clone()),
+        model,
+        timestamp,
+    );
+    error.error_message = Some(message.to_string());
+    error.error_kind = Some(kind);
+
+    let mut frames = vec![
+        AssistantMessageEvent::Start {
+            partial: assistant_message(Vec::new(), StopReason::End, None, model, timestamp),
+        },
+        AssistantMessageEvent::TextStart {
+            partial: assistant_message(
+                vec![ContentBlock::Text {
+                    text: String::new(),
+                }],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+    ];
+    for (index, delta) in chunks.iter().cloned().enumerate() {
+        frames.push(AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta,
+        });
+        if index + 1 < chunks.len() {
+            frames.push(AssistantMessageEvent::Ping);
+        }
+    }
+    frames.extend([
+        AssistantMessageEvent::TextEnd {
+            partial: assistant_message(
+                vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::Usage {
+            usage: usage.clone(),
+        },
+        AssistantMessageEvent::Stop {
+            stop_reason: StopReason::Error,
+            error_message: Some(message.to_string()),
+            error_kind: Some(kind),
+        },
+        AssistantMessageEvent::Ping,
+        AssistantMessageEvent::Error { error },
+    ]);
+    frames
+}
+
+fn error_kind_code(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::AuthExpired => "auth_expired",
+        ErrorKind::RateLimited => "rate_limited",
+        ErrorKind::ContextOverflow => "context_overflow",
+        ErrorKind::Transient => "transient",
+        ErrorKind::Permanent => "permanent",
+    }
+}
+
 fn system_prompt(allowed_functions: &[String]) -> String {
     let base = DEFAULT_SYSTEM_PROMPT
         .strip_suffix('\n')
@@ -1150,6 +1283,50 @@ mod tests {
         assert_eq!(frames.iter().filter(|frame| frame.is_terminal()).count(), 1);
         assert!(frames.last().unwrap().is_terminal());
         assert_eq!(response.stop_reason, Some(StopReason::End));
+    }
+
+    #[test]
+    fn adversarial_terminal_error_keeps_partial_and_has_one_terminal_frame() {
+        let model = Model::scripted("fixture-model");
+        let (frames, response) = Response::terminal_error_after_text(
+            "partial answer",
+            ["partial ", "answer"],
+            "provider disappeared after content",
+            ErrorKind::Permanent,
+            5,
+            2,
+        )
+        .compile(&model, 1);
+
+        assert_eq!(frames.iter().filter(|frame| frame.is_terminal()).count(), 1);
+        assert!(
+            frames
+                .iter()
+                .filter(|frame| matches!(frame, AssistantMessageEvent::Ping))
+                .count()
+                >= 2
+        );
+        let Some(AssistantMessageEvent::Error { error }) = frames.last() else {
+            panic!("terminal frame must be error")
+        };
+        assert_eq!(error.stop_reason, StopReason::Error);
+        assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+        assert_eq!(
+            error.error_message.as_deref(),
+            Some("provider disappeared after content")
+        );
+        assert_eq!(
+            error.content,
+            vec![ContentBlock::Text {
+                text: "partial answer".to_string()
+            }]
+        );
+        assert!(!response.ok);
+        assert_eq!(response.stop_reason, Some(StopReason::Error));
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("permanent")
+        );
     }
 
     #[test]

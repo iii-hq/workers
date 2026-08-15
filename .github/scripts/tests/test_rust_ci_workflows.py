@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import tomllib
 
 import yaml
@@ -26,8 +27,9 @@ def test_rust_toolchain_is_pinned_to_the_last_verified_stable() -> None:
     assert toolchain["toolchain"]["channel"] == "1.97.1"
 
     bodies = "\n".join(path.read_text() for path in WORKFLOWS.glob("*.yml"))
-    assert "dtolnay/rust-toolchain@stable" not in bodies
-    assert bodies.count("dtolnay/rust-toolchain@1.97.1") == 13
+    workflow_toolchains = re.findall(r"dtolnay/rust-toolchain@([^\s]+)", bodies)
+    assert workflow_toolchains
+    assert set(workflow_toolchains) == {"1.97.1"}
 
 
 def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
@@ -108,7 +110,7 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     steps = audit["jobs"]["audit"]["steps"]
     install = named_step(steps, "Install cargo-audit")
     run = named_step(steps, "Audit Rust lockfiles")["run"]
-    assert install["uses"] == "taiki-e/install-action@v2.79.11"
+    assert install["uses"] == "taiki-e/install-action@v2.85.13"
     assert install["with"]["tool"] == "cargo-audit@0.22.2"
     assert "git diff --name-only -z" in run
     assert "find . -name Cargo.lock" in run
