@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -61,10 +63,20 @@ jobs:
       - name: Compute base ref
         id: base
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
-          echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_ref="${PR_BASE_REF:-main}"
+            git fetch --no-tags --depth=1 origin "$base_ref"
+            echo "ref=origin/$base_ref" >> "$GITHUB_OUTPUT"
+          elif [[ "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && ! "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            echo "ref=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD^" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Bucket changed workers
         id: bucket
@@ -81,7 +93,7 @@ jobs:
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
     needs: discover
-    if: needs.discover.outputs.changed_workers != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -131,14 +143,16 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: worker-${{ matrix.worker }}
-          save-if: false
+          # PRs restore the trusted default-branch cache but never publish a
+          # branch-scoped copy. The push after merge advances the canonical key.
+          save-if: ${{ github.event_name == 'push' }}
           workspaces: ${{ matrix.worker }} -> target
 
       # Workers and their direct local Rust dependencies can embed a frontend
@@ -206,10 +220,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
   # ──────────────────────────────────────────────────────────────
   # Shared Rust crates (crates/*): lint + test. Workers link these by
@@ -235,22 +249,23 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name == 'push' }}
           workspaces: crates/${{ matrix.crate }} -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
   # ──────────────────────────────────────────────────────────────
   # Provider contracts: real engine + real router + selected provider,
@@ -274,7 +289,7 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -368,7 +383,7 @@ jobs:
   interface-smoke:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
-    if: needs.discover.outputs.rust != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -405,7 +420,7 @@ jobs:
         if: steps.optout.outputs.skip != 'true'
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         if: steps.optout.outputs.skip != 'true'
 
       - uses: Swatinem/rust-cache@v2
@@ -449,7 +464,7 @@ jobs:
       - name: Build worker binary
         if: steps.optout.outputs.skip != 'true'
         working-directory: ${{ matrix.worker }}
-        run: cargo build
+        run: cargo build --locked
 
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
@@ -584,9 +599,9 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
-  # Harness integration tests (non-required). Pull requests only run
-  # the complete live stack when an integration input changed. The
-  # default branch and daily cache warmer run it unconditionally.
+  # Harness integration tests (non-required). Pull requests and the
+  # trusted push after merge run the complete live stack only when an
+  # integration input changed; only the trusted push advances caches.
   # ──────────────────────────────────────────────────────────────
   harness-integration:
     needs: discover
@@ -596,7 +611,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/_harness-integration.yml
     with:
-      save-cache: false
+      save-cache: ${{ github.event_name == 'push' }}
 
   # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test

@@ -48,7 +48,7 @@ jobs:
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache cargo registry & build
         uses: Swatinem/rust-cache@v2
