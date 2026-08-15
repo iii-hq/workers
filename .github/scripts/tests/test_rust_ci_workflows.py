@@ -110,7 +110,7 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     steps = audit["jobs"]["audit"]["steps"]
     install = named_step(steps, "Install cargo-audit")
     run = named_step(steps, "Audit Rust lockfiles")["run"]
-    assert install["uses"] == "taiki-e/install-action@v2.79.11"
+    assert install["uses"] == "taiki-e/install-action@v2.85.13"
     assert install["with"]["tool"] == "cargo-audit@0.22.2"
     assert "git diff --name-only -z" in run
     assert "find . -name Cargo.lock" in run
