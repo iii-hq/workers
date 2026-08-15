@@ -31,6 +31,9 @@ No provider key or network access is required.
 | INT-021 | `router-midstream-terminal-error` | direct | partial content and keepalive noise followed by one permanent router error preserve the partial, fail exactly once, and leave no pending work |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
+| UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
+| UI-004 | `console-openai-chat-error` | playground | an OpenAI Chat Completions permanent provider failure is shown and the chat recovers |
+| UI-005 | `console-openai-responses-error` | playground | an OpenAI Responses permanent provider failure is shown and the chat recovers |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,
@@ -112,8 +115,8 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-all direct scenarios; UI-001 and UI-002 must use `playground`. INT-003 produces
-two terminal turns from one send: generation 1
+all direct scenarios; UI-001 through UI-005 must use `playground`. INT-003
+produces two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,
 so the harness's failed finalize drains the parked row and reseeds a turn to
 react to it. The failed route is deliberate — a park during a *completing*

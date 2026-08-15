@@ -71,11 +71,8 @@ export interface HarnessStack {
   finish(): Promise<PlaygroundResult>
 }
 
-interface FixtureOptions {
-  scenario: string
-}
-
 interface FixtureValues {
+  scenario: string
   stack: HarnessStack
 }
 
@@ -186,8 +183,8 @@ function armCompletion(
   })
 }
 
-export const test = base.extend<FixtureValues, FixtureOptions>({
-  scenario: ['', { scope: 'worker', option: true }],
+export const test = base.extend<FixtureValues>({
+  scenario: ['', { option: true }],
   stack: async ({ scenario }, use, testInfo) => {
     if (!scenario) throw new Error('test.use({ scenario }) is required')
     const artifactsRoot = path.resolve(
