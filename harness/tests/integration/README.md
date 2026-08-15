@@ -28,8 +28,12 @@ No provider key or network access is required.
 | INT-018 | `spawn-reuse-guard` | direct | an in-turn spawn into an existing session owned by another parent is refused naming the owner (no hijack turn ever starts); re-spawning its own child appends the new task to the retained transcript and reports `reused: true` |
 | INT-019 | `condition-failure-notice` | direct | a binding whose condition ERRORS on a fire wakes its owner with an actionable `[notification]` (once per binding) instead of starving silently; the skip record still lands and the binding stays armed |
 | INT-020 | `child-discovery-granted` | direct | a child narrowed to its work functions can still dispatch the mandatory `engine::functions::list`/`::info` round (the discovery union); its native toolset stays the work functions only |
+| INT-021 | `router-midstream-terminal-error` | direct | partial content and keepalive noise followed by one permanent router error preserve the partial, fail exactly once, and leave no pending work |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
+| UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
+| UI-004 | `console-openai-chat-error` | playground | an OpenAI Chat Completions permanent provider failure is shown and the chat recovers |
+| UI-005 | `console-openai-responses-error` | playground | an OpenAI Responses permanent provider failure is shown and the chat recovers |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,

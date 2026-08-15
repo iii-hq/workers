@@ -120,8 +120,8 @@ mkdir -p "$ROOT_DIR/reports" "$RUN_ROOT/data" "$(dirname "$WORKER_BIN_LINK")"
 
 # 1. Build the worker (unless --no-build)
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  echo "[run-tests] cargo build --release (shell worker)"
-  (cd "$WORKER_SRC" && cargo build --release --bin shell)
+  echo "[run-tests] cargo build --locked --release (shell worker)"
+  (cd "$WORKER_SRC" && cargo build --locked --release --bin shell)
 fi
 if [[ ! -x "$WORKER_BIN_TARGET" ]]; then
   echo "[run-tests] FATAL: worker binary missing at $WORKER_BIN_TARGET — run without --no-build" >&2
@@ -197,7 +197,7 @@ echo "[run-tests] engine listening"
 if [[ "$SUITE" == jailed ]]; then
   (cd "$WORKER_SRC" && \
     env III_ENGINE_WS_URL=ws://127.0.0.1:49134 \
-    cargo test --test bdd -- --tags @live)
+    cargo test --locked --test bdd -- --tags @live)
 fi
 
 # 8. Launch the harness as a host node process
