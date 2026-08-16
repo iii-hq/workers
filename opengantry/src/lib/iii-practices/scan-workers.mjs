@@ -155,7 +155,39 @@ export function resolveStringExpr(node, constMap) {
 
 export function readWorkerExempt(workerDir) {
   const pkgPath = path.join(workerDir, 'package.json');
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  let pkg;
+  try {
+    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  } catch (e) {
+    return {
+      ok: false,
+      findings: [
+        {
+          rule_id: 'exempt/config',
+          file: `${path.basename(workerDir)}/package.json`,
+          line: 1,
+          message: `invalid package.json: ${e.message}`,
+        },
+      ],
+      exempt: new Set(),
+      logs: [],
+    };
+  }
+  if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) {
+    return {
+      ok: false,
+      findings: [
+        {
+          rule_id: 'exempt/config',
+          file: `${path.basename(workerDir)}/package.json`,
+          line: 1,
+          message: 'package.json root must be a JSON object',
+        },
+      ],
+      exempt: new Set(),
+      logs: [],
+    };
+  }
   const raw = pkg.iii_architecture?.exempt;
   if (raw == null) return { ok: true, exempt: new Set(), logs: [] };
   if (!Array.isArray(raw)) {

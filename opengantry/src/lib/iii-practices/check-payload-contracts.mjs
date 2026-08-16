@@ -81,6 +81,15 @@ function validateSchemaFile(Ajv, schemaPath, relSchema, findings) {
     });
     return;
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    findings.push({
+      rule_id: 'payload/schema-parse',
+      file: relSchema,
+      line: 1,
+      message: 'schema root must be a JSON object',
+    });
+    return;
+  }
   if (raw.$schema !== 'http://json-schema.org/draft-07/schema#') {
     findings.push({
       rule_id: 'payload/schema-draft',
@@ -101,6 +110,17 @@ function validateSchemaFile(Ajv, schemaPath, relSchema, findings) {
     });
   }
   walkSchemaObject(raw, '$', findings, relSchema);
+}
+
+function isRegisterTriggerTypeCall(node) {
+  const c = node.callee;
+  if (c.type === 'MemberExpression' && !c.computed && c.property.type === 'Identifier') {
+    return c.property.name === 'registerTriggerType';
+  }
+  if (c.type === 'Identifier') {
+    return c.name === 'registerTriggerType';
+  }
+  return false;
 }
 
 function isRegisterFunctionCall(node) {
@@ -157,6 +177,15 @@ export async function checkPayloadContracts(scanRoot) {
 
       walk.simple(parsed.ast, {
         CallExpression(node) {
+          if (isRegisterTriggerTypeCall(node) && node.arguments.length < 2) {
+            findings.push({
+              rule_id: 'runtime/register-trigger-type',
+              file: rel,
+              line: node.loc?.start?.line ?? 1,
+              message:
+                'registerTriggerType requires a trigger-type handler with registerTrigger and unregisterTrigger',
+            });
+          }
           if (!isRegisterFunctionCall(node)) return;
           const idArg = node.arguments[0];
           const resolved = resolveStringExpr(idArg, constMap);

@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   PARSE_EXTS,
@@ -50,6 +49,7 @@ function lhsIsGlobalOrProcess(node) {
 function pathLooksAllowed(str, _workerDir) {
   if (typeof str !== 'string') return false;
   const norm = str.replace(/\\/g, '/');
+  if (norm.split('/').includes('..')) return false;
   if (norm.includes('.gitagent/') || norm.endsWith('.gitagent') || norm.includes('/.gitagent/')) {
     return true;
   }
@@ -71,16 +71,6 @@ export async function checkDurableState(scanRoot) {
     logs.push(...exemptResult.logs);
     const exempt = exemptResult.exempt;
     const skipBags = exempt.has('durable-state/module-bags');
-    const workerHasGitagentLiteral = walkFiles(workerDir, { skipTests: true }).some((f) => {
-      if (!PARSE_EXTS.has(path.extname(f))) return false;
-      const t = fs.readFileSync(f, 'utf8');
-      return (
-        t.includes('".gitagent"') ||
-        t.includes("'.gitagent'") ||
-        t.includes('".runtime"') ||
-        t.includes("'.runtime'")
-      );
-    });
 
     for (const file of walkFiles(workerDir, { skipTests: true })) {
       if (!PARSE_EXTS.has(path.extname(file))) continue;
@@ -140,23 +130,11 @@ export async function checkDurableState(scanRoot) {
         },
         CallExpression(node) {
           if (!isFsWriteCallee(node.callee)) return;
-          function literalsIn(n, acc = []) {
-            if (!n || typeof n !== 'object') return acc;
-            if (n.type === 'Literal' && typeof n.value === 'string') acc.push(n.value);
-            for (const v of Object.values(n)) {
-              if (v && typeof v === 'object') {
-                if (Array.isArray(v)) {
-                  for (const x of v) literalsIn(x, acc);
-                } else if (v.type) literalsIn(v, acc);
-              }
-            }
-            return acc;
-          }
-          const lits = literalsIn(node);
           const arg0 = node.arguments[0];
           const allowed =
-            lits.some((s) => pathLooksAllowed(s, workerDir)) ||
-            (workerHasGitagentLiteral && arg0 && arg0.type !== 'Literal');
+            arg0?.type === 'Literal' &&
+            typeof arg0.value === 'string' &&
+            pathLooksAllowed(arg0.value, workerDir);
           if (!allowed) {
             findings.push({
               rule_id: 'durable-state/fs-writes',

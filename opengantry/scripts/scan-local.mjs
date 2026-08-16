@@ -20,7 +20,15 @@ try {
   process.exit(2);
 }
 
-const { workers: httpAllowlist } = loadHttpConnectorAllowlist(resolveRepoRoot());
+let httpAllowlist;
+try {
+  ({ workers: httpAllowlist } = loadHttpConnectorAllowlist(resolveRepoRoot()));
+} catch (e) {
+  console.error(
+    `FATAL: EXIT 2 — scanner could not run; this is NOT an architecture violation. ${e.message}`,
+  );
+  process.exit(2);
+}
 const { findings, logs } = await scanLocalWorkers(repoRoot, { httpAllowlist });
 for (const line of logs) console.log(line);
 if (findings.length) {

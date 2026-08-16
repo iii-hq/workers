@@ -45,6 +45,11 @@ export function loadHttpConnectorAllowlist(repoRoot) {
     err.code = 'INVALID_ALLOWLIST';
     throw err;
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const err = new Error(`invalid allowlist: root must be a JSON object (${allowlistPath})`);
+    err.code = 'INVALID_ALLOWLIST';
+    throw err;
+  }
   const list = raw.http_connector_workers;
   if (!Array.isArray(list)) {
     const err = new Error(

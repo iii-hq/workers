@@ -10,7 +10,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "_": {
+        "verdict_token": {
+          "type": "string"
+        },
+        "branch": {
           "type": "string"
         }
       }
@@ -19,7 +22,25 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "_": {
+        "msn_id": {
+          "type": "string"
+        },
+        "holder_id": {
+          "type": "string"
+        },
+        "repo_root": {
+          "type": "string"
+        },
+        "worktree_path": {
+          "type": "string"
+        },
+        "mission_rel_path": {
+          "type": "string"
+        },
+        "mission_rel": {
+          "type": "string"
+        },
+        "verdict_token": {
           "type": "string"
         }
       }

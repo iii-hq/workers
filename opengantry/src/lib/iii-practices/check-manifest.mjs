@@ -10,7 +10,11 @@ function yamlScalar(text, key) {
 }
 
 function hasTags(text) {
-  return /^tags:\s*\[/m.test(text) || /^tags:\s*$/m.test(text) || /^tags:\s*\n\s+-/m.test(text);
+  if (/^tags:\s*\[\s*\]/m.test(text)) return false;
+  if (/^tags:\s*\n\s+-\s*\S/m.test(text)) return true;
+  if (/^tags:\s*\[\s*['"]?\S/m.test(text)) return true;
+  if (/^tags:\s*$/m.test(text)) return false;
+  return false;
 }
 
 function hasScriptsStart(text) {

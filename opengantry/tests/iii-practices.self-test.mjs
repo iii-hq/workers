@@ -230,6 +230,82 @@ scripts:
     });
   }
 
+  {
+    const fx = materializeFixture('compliant');
+    writeManifest(fx, 'good');
+    fx.write(
+      'good/schemas/good__ping.json',
+      JSON.stringify({
+        $schema: 'http://json-schema.org/draft-07/schema#',
+        type: 'object',
+        additionalProperties: false,
+        properties: { _: { type: 'string' } },
+      }),
+    );
+    fx.write(
+      'good/src/index.js',
+      `worker.registerFunction('good::ping', async () => ({ ok: true }), {
+  request_format: loadSchema('good__ping.json'),
+  response_format: loadSchema('good__ping.json'),
+});
+`,
+    );
+    const { findings } = await scanWorkersTree(fx.workers, opts);
+    cases.push({
+      name: 'compliant-worker',
+      ok: findings.length === 0,
+    });
+  }
+
+  {
+    const fx = materializeFixture('path-traversal');
+    writeManifest(fx, 'leaky');
+    fx.write(
+      'leaky/src/index.js',
+      "import fs from 'node:fs';\nfs.writeFileSync('.gitagent/../../tmp/evil', 'x');\n",
+    );
+    const { findings } = await scanWorkersTree(fx.workers, opts);
+    cases.push({
+      name: 'path-traversal-write',
+      ok: findings.some((f) => f.rule_id === 'durable-state/fs-writes'),
+    });
+  }
+
+  {
+    const fx = materializeFixture('trigger-type');
+    writeManifest(fx, 'bad-trigger');
+    fx.write('bad-trigger/src/index.js', "worker.registerTriggerType({ id: 'x::y' });\n");
+    const { findings } = await scanWorkersTree(fx.workers, opts);
+    cases.push({
+      name: 'register-trigger-type-arity',
+      ok: findings.some((f) => f.rule_id === 'runtime/register-trigger-type'),
+    });
+  }
+
+  {
+    const fx = materializeFixture('empty-tags');
+    fx.write('notags/package.json', JSON.stringify({ name: 'notags', private: true, type: 'module' }));
+    fx.write(
+      'notags/iii.worker.yaml',
+      `iii: v1
+name: notags
+language: javascript
+deploy: bundle
+manifest: package.json
+tags: []
+scripts:
+  start: node ./index.mjs
+`,
+    );
+    fx.write('notags/skills/SKILL.md', '# notags\n');
+    fx.write('notags/tests/smoke.test.js', 'export const ok = 1;\n');
+    const { findings } = await scanWorkersTree(fx.workers, opts);
+    cases.push({
+      name: 'empty-tags',
+      ok: findings.some((f) => f.rule_id === 'manifest/tags'),
+    });
+  }
+
   let failed = 0;
   for (const c of cases) {
     if (!c.ok) {

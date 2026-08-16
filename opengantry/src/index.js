@@ -7,9 +7,11 @@ import {
 } from '@jeger-ai/opengantry/kernel';
 
 import { createMiddlewareHandler, isReservedGovernanceFunctionId } from './lib/middleware.js';
+import { getGovernanceBundle } from './lib/governance-context.js';
+import { LeaseStore } from './lib/lease-store.js';
+import { defaultLeaseStorePath, resolveVerifyRepoRoot } from './lib/repo-path.js';
 import { VerifyCoalescer } from './lib/verify-coalescer.js';
 import { opengantryWorkerOptions } from './lib/worker-init.js';
-import { resolveVerifyRepoRoot } from './lib/repo-path.js';
 import { loadSchema } from './lib/function-formats.js';
 import { scanLocalWorkers, practicesFailedPayload } from './lib/iii-practices/scan.mjs';
 import { resolveRepoRoot, loadHttpConnectorAllowlist } from './lib/iii-practices/allowlist.mjs';
@@ -56,8 +58,35 @@ async function startWorker() {
     'gantry::verify',
     async (data) => {
       const repoRoot = data?.repo_root;
-      const key = `${repoRoot}:${data?.msn_id ?? ''}`;
-      return state.coalescer.run(key, () => runVerify(data));
+      const key = JSON.stringify({
+        repo_root: repoRoot ?? '',
+        msn_id: data?.msn_id ?? '',
+        mission_rel_path: data?.mission_rel_path ?? '',
+        options: data?.options ?? null,
+      });
+      const result = await state.coalescer.run(key, () => runVerify(data));
+      if (result?.status === 'passed' && data?.msn_id && data?.mission_rel_path && repoRoot) {
+        if (!state.leaseStores.has(repoRoot)) {
+          state.leaseStores.set(repoRoot, new LeaseStore(defaultLeaseStorePath(repoRoot)));
+        }
+        const leases = state.leaseStores.get(repoRoot);
+        if (leases && !leases.corrupted) {
+          const lease = leases.get(data.msn_id) ?? {
+            msn_id: data.msn_id,
+            branch: `gxt/${data.msn_id.toLowerCase()}`,
+            state: 'active',
+            session_refs: {},
+          };
+          lease.mission_rel = data.mission_rel_path;
+          leases.upsert(lease);
+        }
+        try {
+          getGovernanceBundle(state, repoRoot, data.mission_rel_path);
+        } catch {
+          /* scope bind is best-effort; middleware surfaces load errors */
+        }
+      }
+      return result;
     },
     {
       request_format: loadSchema('gantry__verify.json'),
@@ -104,10 +133,16 @@ async function startWorker() {
     },
   );
 
-  worker.registerTriggerType({
-    id: 'gantry::verdict',
-    description: 'Emitted when gantry verify completes',
-  });
+  worker.registerTriggerType(
+    {
+      id: 'gantry::verdict',
+      description: 'Emitted when gantry verify completes',
+    },
+    {
+      registerTrigger() {},
+      unregisterTrigger() {},
+    },
+  );
 
   console.log(`opengantry worker registered (verify, middleware, RBAC hooks) → ${url}`);
 }

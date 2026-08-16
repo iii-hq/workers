@@ -13,6 +13,7 @@ export class LeaseStore {
   constructor(storePath) {
     this.storePath = storePath;
     this.leases = new Map();
+    this.corrupted = false;
     this.load();
   }
 
@@ -20,21 +21,30 @@ export class LeaseStore {
     if (!fs.existsSync(this.storePath)) return;
     try {
       const raw = JSON.parse(fs.readFileSync(this.storePath, 'utf8'));
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        this.corrupted = true;
+        return;
+      }
       for (const row of raw.leases ?? []) {
+        if (!row?.msn_id) {
+          this.corrupted = true;
+          return;
+        }
         this.leases.set(row.msn_id, row);
       }
     } catch {
-      /* empty */
+      this.corrupted = true;
     }
   }
 
   persist() {
+    if (this.corrupted) return;
     const dir = path.dirname(this.storePath);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      this.storePath,
-      JSON.stringify({ leases: [...this.leases.values()] }, null, 2),
-    );
+    const tmp = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
+    const body = JSON.stringify({ leases: [...this.leases.values()] }, null, 2);
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, this.storePath);
   }
 
   get(msnId) {
@@ -42,6 +52,7 @@ export class LeaseStore {
   }
 
   upsert(lease) {
+    if (this.corrupted) return;
     this.leases.set(lease.msn_id, lease);
     this.persist();
   }

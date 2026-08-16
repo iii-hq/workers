@@ -47,7 +47,21 @@ export async function scanLocalWorkers(repoRoot, options = {}) {
       logs: [],
     };
   }
-  return scanWorkersTree(scanRoot, options);
+  try {
+    return await scanWorkersTree(scanRoot, options);
+  } catch (e) {
+    return {
+      findings: [
+        {
+          rule_id: 'scan/unreadable',
+          file: 'workers',
+          line: 1,
+          message: `local workers/ scan aborted: ${e.message}`,
+        },
+      ],
+      logs: [],
+    };
+  }
 }
 
 export function practicesFailedPayload(findings) {

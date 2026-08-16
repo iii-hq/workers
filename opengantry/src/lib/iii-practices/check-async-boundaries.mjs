@@ -50,8 +50,8 @@ function functionHasHttpPragma(fnNode, comments) {
   const start = fnNode.start ?? fnNode.body?.start ?? 0;
   const leading = comments.filter((c) => c.block && c.end <= start).sort((a, b) => b.end - a.end);
   for (const c of leading) {
-    if (c.text.includes(HTTP_PRAGMA)) return true;
     if (start - c.end > 80) break;
+    if (c.text.includes(HTTP_PRAGMA)) return true;
   }
   return false;
 }
