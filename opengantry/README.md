@@ -1,6 +1,6 @@
 # opengantry
 
-OpenGantry governance on the iii bus: scan your project's local `workers/` tree against iii bundle practices, then run `gantry::verify` on the git repo before promote-class calls go through. Wire `gantry::middleware` on the governed listener so agents cannot bypass verify.
+OpenGantry gates promote-class calls on the iii bus. Install the worker, wire `gantry::middleware` on your governed listener, and agents cannot merge, deploy, or publish until a prior `gantry::verify` pass mints a verdict token.
 
 ## Install
 
@@ -16,44 +16,44 @@ npx skills add iii-hq/workers --skill opengantry
 
 ## Quickstart
 
-`iii worker add` registers the worker and starts a libkrun sandbox. That sandbox only mounts the worker bundle at `/workspace`, so it cannot read your host git repo. To verify a host `repo_root`, stop the sandbox and run the extracted bundle as a **host process** (verified on iii 0.22.0):
+From zero to a fail-closed promote on the governed port:
 
 ```bash
 iii worker add opengantry
-iii worker stop -y opengantry
-
-export III_URL=ws://127.0.0.1:49134
-export OTEL_ENABLED=false
-cd ~/.iii/workers-bundle/opengantry
-node ./index.mjs
+iii   # starts the engine + worker
 ```
 
-In another terminal, initialize OpenGantry in the repo you want governed, then call verify with an absolute `repo_root`:
-
-```bash
-gantry init
-```
+Add the governed listener block from [Configuration](#configuration) to `~/.iii/config.yaml`, restart `iii`, then call any promote-class function on the governed port:
 
 ```js
 import { registerWorker } from 'iii-sdk';
 
-const iii = registerWorker('ws://127.0.0.1:49134', { workerName: 'caller' });
+const iii = registerWorker('ws://127.0.0.1:49135', { workerName: 'demo' });
 
 const result = await iii.trigger({
-  function_id: 'gantry::verify',
-  payload: {
-    repo_root: '/absolute/path/to/your/repo',
+  function_id: 'myapp::deploy',
+  payload: { branch: 'main' },
+  context: {
     msn_id: 'MSN-0001',
-    mission_rel_path: '.gitagent/missions/MSN-0001.yaml',
+    worktree_path: '/path/to/repo',
   },
 });
 
 console.log(result);
 ```
 
-`gantry::verify` scans `<repo_root>/workers` first. Findings fail verify even when the GXT mission gate would pass.
+Without a verdict token from `gantry::verify`, the middleware returns:
 
-After every engine restart, the sandbox worker respawns from `config.yaml`. Run `iii worker stop -y opengantry` again before starting the host process so triggers are not routed to the sandbox.
+```json
+{
+  "status": "failed",
+  "findings": [
+    { "failed_gate": "gate", "resolution_hint": "promote refused: no valid verdict token" }
+  ]
+}
+```
+
+Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry::verify` for the active mission, then retry the promote call with the verdict token in `context` or `payload`.
 
 ## Configuration
 
@@ -74,14 +74,4 @@ workers:
         on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
 ```
 
-`repo_root` / `worktree_path` must be absolute. Leases live at `<repo>/.gitagent/leases.json`.
-
-## Functions
-
-| Function | Purpose |
-| --- | --- |
-| `gantry::verify` | Scan local `workers/`, then `verifyMission` |
-| `gantry::middleware` | Governed-port gate; promote-class needs a prior verify pass |
-| `gantry::on-function-registration` | Block `gantry::*` squatting |
-| `gantry::on-trigger-registration` | Block triggers bound to `gantry::` |
-| `gantry::on-trigger-type-registration` | Always denied |
+`worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`.
