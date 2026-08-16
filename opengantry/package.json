@@ -1,0 +1,36 @@
+{
+  "name": "opengantry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenGantry governance worker for iii: local workers/ scan plus gantry::verify.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "iii_architecture": {
+    "exempt": [
+      "durable-state/module-bags"
+    ]
+  },
+  "scripts": {
+    "start": "node ./index.mjs",
+    "test": "node --test tests/middleware.test.mjs && node tests/iii-practices.self-test.mjs",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
+  },
+  "dependencies": {
+    "@jeger-ai/opengantry": "^3.2.3",
+    "acorn": "8.14.1",
+    "acorn-walk": "8.3.4",
+    "ajv": "8.20.0",
+    "iii-sdk": "^0.22.1",
+    "typescript": "^5.7.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "esbuild": "^0.25.0"
+  }
+}

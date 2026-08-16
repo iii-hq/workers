@@ -1,0 +1,14 @@
+iii: v1
+name: opengantry
+language: javascript
+deploy: bundle
+manifest: package.json
+tags:
+  - governance
+  - verify
+  - policy
+  - gxt
+  - opengantry
+description: OpenGantry governance for iii. Scans local workers/ then runs gantry verify before promote-class calls.
+scripts:
+  start: node ./index.mjs

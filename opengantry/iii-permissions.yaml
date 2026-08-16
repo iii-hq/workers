@@ -1,0 +1,9 @@
+# Agent permissions for the opengantry worker.
+# First-match-wins. Registration hooks are bus-internal and must not be
+# agent-callable. gantry::verify and gantry::middleware stay at needs_approval.
+version: 1
+
+rules:
+  - "!gantry::on-function-registration"
+  - "!gantry::on-trigger-registration"
+  - "!gantry::on-trigger-type-registration"
