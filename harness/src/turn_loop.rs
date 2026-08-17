@@ -1997,16 +1997,49 @@ async fn append_function_result(
         is_error: data.is_error,
         timestamp: AgentMessage::now_ms(),
     });
-    session
-        .append(
-            &record.session_id,
-            &message,
-            Some(entry_id),
-            None,
-            Some(origin),
-        )
-        .await
-        .map(|_| ())
+    // The engine can reconnect this worker before session-manager has replayed
+    // `session::append`. Keep the per-session step lock while the dependency
+    // catches up: this append is idempotent on `entry_id`, and retaining the
+    // lock prevents a restart-redelivered copy of the same step from
+    // regenerating against the still-triggered call checkpoint.
+    const ATTEMPTS: u32 = 10;
+    const BACKOFF_MS: u64 = 250;
+    for attempt in 1..=ATTEMPTS {
+        match session
+            .append(
+                &record.session_id,
+                &message,
+                Some(entry_id),
+                None,
+                Some(origin),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if attempt < ATTEMPTS && retryable_function_result_append_error(&error) => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    turn_id = %record.turn_id,
+                    call_id = %call.id,
+                    attempt,
+                    error = %error,
+                    "function result append raced dependency registration; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(BACKOFF_MS)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded function result append loop always returns")
+}
+
+fn retryable_function_result_append_error(error: &HarnessError) -> bool {
+    let HarnessError::Dependency(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.starts_with("session::append:")
+        && (message.contains("function_not_found") || message.contains("not connected"))
 }
 
 async fn append_interrupted(
@@ -2616,7 +2649,11 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{cancel_requested, count_model_visible, transient_resume_allowed};
+    use super::{
+        cancel_requested, count_model_visible, retryable_function_result_append_error,
+        transient_resume_allowed,
+    };
+    use crate::error::HarnessError;
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
@@ -3009,5 +3046,28 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
+    }
+
+    #[test]
+    fn function_result_append_retries_only_dependency_registration_races() {
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency(
+                "session::append: remote error (function_not_found): Function not found".into(),
+            )
+        ));
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: iii is not connected".into())
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: invalid message".into())
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Dependency(
+                "context::assemble: remote error (function_not_found): Function not found".into(),
+            )
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Internal("session::append: function_not_found".into())
+        ));
     }
 }
