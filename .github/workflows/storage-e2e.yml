@@ -47,14 +47,14 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: storage
 
       - name: Build worker
-        run: cargo build --release --bin storage
+        run: cargo build --locked --release --bin storage
         working-directory: storage
 
       - name: Install iii engine
@@ -92,7 +92,7 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
 
       - uses: Swatinem/rust-cache@v2
         with:

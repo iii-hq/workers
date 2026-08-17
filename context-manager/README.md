@@ -53,7 +53,8 @@ async fn main() -> anyhow::Result<()> {
     }).await?;
 
     // -> { system_prompt, messages, token_count, usable, model_resolved,
-    //      applied: { pruned, pruned_tokens, compacted, summary?, tail_start_index? } }
+    //      applied: { pruned, pruned_tokens, capped_parts, capped_tokens,
+    //                 compacted, summary?, tail_start_index? } }
     println!("{result:#?}");
     Ok(())
 }
@@ -67,6 +68,21 @@ system prompt under `# Conversation summary`, and any further compaction
 *updates* it instead of starting over. Callers that skip persistence stay
 correct at the cost of one summariser call per over-budget request.
 
+Before token accounting, `context::assemble` normalizes images in its cloned
+model-facing view. A known catalog model receives placeholders unless it
+explicitly declares vision support. For a known vision model, tool images age
+after the next assistant response and user images age when a later user turn
+begins after a response. Inline limits and unresolved models keep images. Live
+images cost a fixed 4,096-token heuristic budget; base64 bytes are never counted
+as text. The caller's transcript is unchanged.
+
+Before pruning or compaction runs, assemble unconditionally caps any message-level
+or inline function result over `max_result_tokens` (default 20000; 0 disables the
+pass) to a bounded `[…result capped: was ~N tokens; middle omitted; re-call
+{function_id} with narrower arguments if the omitted middle is needed]` head+tail
+view. Text uses provider-visible newline separators and each image costs the fixed
+4,096-token allowance — see Configuration below.
+
 Every successful `context::assemble` response satisfies `token_count <= usable`.
 Callers should include the complete `tools` array and set
 `options.request_overhead_tokens` for response-format and provider-specific request
@@ -77,9 +93,9 @@ with `context/overflow`; callers must not issue a provider request in that case.
 
 The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace verbose function outputs
-with `[output pruned: was ~N tokens]` placeholders, no LLM involved), and
-`context::compact` (summarise the head, keep a recent tail verbatim — returns
-`ok | busy | empty | overflow`).
+with `[output of {function_id} pruned: was ~N tokens; re-call it if still
+needed]` placeholders, no LLM involved), and `context::compact` (summarise the
+head, keep a recent tail verbatim — returns `ok | busy | empty | overflow`).
 
 ## Configuration
 
@@ -90,6 +106,7 @@ tail_turns: 2                  # user+assistant pairs kept verbatim by compactio
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
 min_free_tokens: 20000         # skip pruning when it would free less
 max_output_chars: 2000         # outputs at or under this size are never pruned
+max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve
 summarizer_timeout_ms: 320000  # outer budget for one router::chat summariser call

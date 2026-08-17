@@ -1453,6 +1453,10 @@ export function ChatView({
                 kind: 'notice',
                 content: noticeContent,
                 tone: event.reason === 'error' ? 'error' : 'warn',
+                // The transcript owns the authoritative lifecycle notice under
+                // this id. Trigger delivery is unordered, so a late live
+                // fallback may fill a gap but must not overwrite that record.
+                provisional: true,
                 createdAt: Date.now(),
               }
               onAppendMessage(conversationId, notice)

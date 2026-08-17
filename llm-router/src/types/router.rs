@@ -164,8 +164,9 @@ pub struct SystemPromptGetResponse {
     pub system_prompt: Option<String>,
 }
 
-/// registration_token: spec adaptation — the engine exposes no caller identity,
-/// so identity binding is a bearer token; only its sha256 hash is persisted.
+/// `registration_token` is the provider ownership credential; only its sha256
+/// hash is persisted. Engine caller metadata is not an authorization identity
+/// because worker names are self-reported.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderRegisterResponse {
     pub ok: bool,

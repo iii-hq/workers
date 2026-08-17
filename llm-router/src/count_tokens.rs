@@ -106,10 +106,19 @@ pub fn make_count_tokens(
             let config = snapshot(&config);
             let heuristics = config.settings().routing_heuristics.clone();
             let default_provider = config.settings().default_provider.clone();
+            let providers = registry.list().await;
             let candidates = decide(&DecideInput {
                 model: model.clone(),
                 provider: req.provider,
-                registered_providers: registry.ids().await,
+                registered_providers: providers
+                    .iter()
+                    .map(|record| record.declaration.id.clone())
+                    .collect(),
+                available_providers: providers
+                    .iter()
+                    .filter(|record| record.available)
+                    .map(|record| record.declaration.id.clone())
+                    .collect(),
                 catalog: catalog.model_ids().await,
                 heuristics,
                 default_provider,

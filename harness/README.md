@@ -25,11 +25,13 @@ alongside it for the full loop.
 
 ## Quickstart
 
-Install the engine, init a project, start it, then add harness and the
-console from a second terminal in the same folder:
+Install the engine, export the Anthropic credential in the terminal that will
+run the engine, initialize a project, and start it:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+export ANTHROPIC_API_KEY='<your-anthropic-api-key>'
+export OPENAI_API_KEY='<your-openai-api-key>'
 iii project init iii-app && cd iii-app
 iii
 ```
@@ -45,14 +47,12 @@ iii worker add harness console
 open http://localhost:3113
 ```
 
-Add a model key from the console: open the model picker and use **configure
-Anthropic** / **configure OpenAI** to paste a key. It is stored in the
-`llm-router` worker config and the model catalog populates within seconds.
-Until a provider is configured the picker is empty and chat will not generate.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/iii-hq/workers/main/harness/docs/images/configure-a-provider.webp" alt="Configure a provider key in the iii console" width="100%">
-</p>
+Create a session, select **Anthropic → Claude Sonnet 5**, and send your first
+message. Then select **OpenAI → GPT-5.6 Luna** in the same chat and send another
+message. Create a new chat and send one more message with GPT-5.6 Luna. The
+providers read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the engine
+environment, so credentials do not need to be pasted into or stored by the
+Console.
 
 `iii worker add harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one. During bootstrap, the harness asks the

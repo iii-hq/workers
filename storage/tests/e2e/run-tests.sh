@@ -180,8 +180,8 @@ fi
 
 # 2. Build the worker (unless --no-build)
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  echo "[run-tests] cargo build --release (storage worker)"
-  (cd "$WORKER_SRC" && cargo build --release --bin storage)
+  echo "[run-tests] cargo build --locked --release (storage worker)"
+  (cd "$WORKER_SRC" && cargo build --locked --release --bin storage)
 fi
 if [[ ! -x "$WORKER_BIN_TARGET" ]]; then
   echo "[run-tests] FATAL: worker binary missing at $WORKER_BIN_TARGET — run without --no-build" >&2

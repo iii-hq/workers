@@ -6,6 +6,8 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
+    llm_router_integration        : bool, must the live llm-router suite run
+    provider_contract            : providers whose hermetic contract must run
     crates                        : shared crates/<name> dirs with source changes
     any                           : bool, any worker or crate change
 """
@@ -64,6 +66,38 @@ INTEGRATION_EXCLUDED_PREFIXES = (
     "harness/tests/quickstart/",
 )
 
+# The llm-router owns a separate real-engine lifecycle suite. Keep this gate
+# independent from Harness Integration: that stack intentionally substitutes a
+# ScriptedRouter and therefore cannot validate router transport/lifecycle bugs.
+LLM_ROUTER_INTEGRATION_WORKERS = {"llm-router"}
+LLM_ROUTER_INTEGRATION_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
+}
+
+# Hermetic provider contracts run the real engine, llm-router, and selected
+# provider against a loopback HTTP/SSE upstream. Direct provider changes stay
+# narrow; shared router/testkit/CI changes fan out to every supported provider.
+PROVIDER_CONTRACT_WORKERS = {
+    "provider-anthropic",
+    "provider-claude-code",
+    "provider-deepseek",
+    "provider-kimi",
+    "provider-openai",
+    "provider-openai-codex",
+    "provider-openrouter",
+    "provider-xai",
+    "provider-zai",
+}
+PROVIDER_CONTRACT_SHARED_PREFIXES = (
+    "llm-router/",
+    "crates/provider-integration-testkit/",
+)
+PROVIDER_CONTRACT_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
+}
+
 # Shared Rust crates live under crates/<name>/ (no iii.worker.yaml — not
 # workers). A source change there (1) reports the crate in the `crates`
 # bucket so ci.yml's crate lint+test job runs it, and (2) fans out to every
@@ -91,6 +125,29 @@ def is_integration_doc(rel: str) -> bool:
 
 def is_crate_metadata(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, g) for g in CRATE_METADATA_GLOBS)
+
+
+def provider_contract_selection(files: list[str], workers: set[str]) -> list[str]:
+    supported = PROVIDER_CONTRACT_WORKERS & workers
+    shared_changed = any(
+        path in PROVIDER_CONTRACT_INFRA_PATHS
+        or (
+            path.startswith(PROVIDER_CONTRACT_SHARED_PREFIXES)
+            and not is_integration_doc(path)
+        )
+        for path in files
+    )
+    if shared_changed:
+        return sorted(supported)
+
+    selected = set()
+    for path in files:
+        parts = path.split("/", 1)
+        if len(parts) != 2 or parts[0] not in supported:
+            continue
+        if not is_integration_doc(parts[1]):
+            selected.add(parts[0])
+    return sorted(selected)
 
 
 def suite_changed(
@@ -228,6 +285,14 @@ def main(argv: list[str] | None = None) -> int:
         INTEGRATION_INFRA_PATHS,
         INTEGRATION_EXCLUDED_PREFIXES,
     )
+    llm_router_integration = suite_changed(
+        files,
+        forced,
+        LLM_ROUTER_INTEGRATION_WORKERS,
+        LLM_ROUTER_INTEGRATION_INFRA_PATHS,
+        (),
+    )
+    provider_contract = provider_contract_selection(files, workers)
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(repo_root / w)
@@ -241,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         "source_changed": source_changed,
         "by_language": by_language,
         "integration_changed": integration_changed,
+        "llm_router_integration": llm_router_integration,
+        "provider_contract": provider_contract,
         "crates": changed_crates,
     }
     print(json.dumps(payload))
@@ -256,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
             )
+            f.write(
+                "llm_router_integration="
+                f"{'true' if llm_router_integration else 'false'}\n"
+            )
+            f.write(f"provider_contract={json.dumps(provider_contract)}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 

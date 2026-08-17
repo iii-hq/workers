@@ -284,6 +284,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn http_429_credit_balance_exhausted_is_permanent() {
+        let url = stub(
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"You have no credits remaining.\",\"type\":\"insufficient_quota\",\"code\":\"credit_balance_exhausted\"}}",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+            }
+            other => panic!("want permanent error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn builder_error_surfaces_its_source_not_just_builder_error() {
         // A header value with a newline is an invalid HeaderValue → reqwest
         // raises a builder error before connecting. The frame must name the

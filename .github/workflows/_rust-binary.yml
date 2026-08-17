@@ -247,7 +247,7 @@ jobs:
           esac
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: ${{ matrix.target }}
 
@@ -334,6 +334,7 @@ jobs:
           tar: unix
           zip: windows
           checksum: sha256
+          locked: true
           manifest-path: ${{ inputs.manifest_path }}
           token: ${{ github.token }}
           dry-run: false

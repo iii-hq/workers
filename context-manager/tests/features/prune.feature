@@ -5,9 +5,11 @@ Feature: context::prune — placeholder verbose function outputs
   invariants): walk function_result content newest to oldest, freeing
   outputs outside a protected token window. Prune REPLACES, never
   removes — the block, the message, and the function_call_id linkage
-  all survive; placeholders carry the freed size
-  (`[output pruned: was ~N tokens]`). The most recent two user turns
-  are always exempt (prior-art guard, independent of the window).
+  all survive; placeholders name the source function and the freed
+  size, and point back at the recovery path
+  (`[output of {function_id} pruned: was ~N tokens; re-call it if
+  still needed]`). The most recent two user turns are always exempt
+  (prior-art guard, independent of the window).
 
   Background:
     Given a user message "investigate the failure"
@@ -27,7 +29,7 @@ Feature: context::prune — placeholder verbose function outputs
       """
     Then the call succeeds
     And the response field "pruned_parts" is 1
-    And the response field "pruned_tokens" is 1992
+    And the response field "pruned_tokens" is 1982
     And the response messages have as many messages as the request
     And every response message keeps its function_call_id
     And call/result pairing is intact in the response messages
@@ -39,7 +41,7 @@ Feature: context::prune — placeholder verbose function outputs
       """
       { "protect_recent_tokens": 100, "min_free_tokens": 1, "max_output_chars": 100 }
       """
-    Then response message 2 text is "[output pruned: was ~2000 tokens]"
+    Then response message 2 text is "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
 
   # Prevents: destroying context for a marginal win — freeing less than
   # min_free_tokens must leave the history completely untouched.
@@ -82,7 +84,7 @@ Feature: context::prune — placeholder verbose function outputs
     Then the call succeeds
     And the response field "pruned_parts" is 1
     And response message 7 text has 360 chars
-    And response message 2 text is "[output pruned: was ~2000 tokens]"
+    And response message 2 text is "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
 
   # Prevents: pruning cheap outputs for cosmetic gains — an output at
   # or under max_output_chars is not "verbose" and stays, even outside

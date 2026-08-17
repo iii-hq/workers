@@ -9,6 +9,7 @@ packages:
   - packages/*
   - console/web
   - console/ui
+  - context-manager/ui
   - browser/ui
   - web/ui
   - canvas/ui

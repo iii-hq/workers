@@ -83,7 +83,7 @@ jobs:
           ref: ${{ steps.lock.outputs.revision }}
           path: target/integration-engine-src
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: ${{ inputs.coverage && 'llvm-tools' || '' }}
 
@@ -98,22 +98,27 @@ jobs:
           package-manager-cache: false
           node-version: 22
 
-      - name: Restore engine build
+      # The engine source is immutable at the locked revision. Cache the final
+      # executable, not its multi-gigabyte target directory, so a hit can skip
+      # Cargo entirely instead of merely making the unconditional rebuild less
+      # cold.
+      - name: Restore pinned engine binary
         id: engine-cache
         uses: actions/cache/restore@v4
         with:
-          path: target/integration-engine-src/target
-          key: integration-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
+          path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
+          key: integration-engine-bin-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('harness/tests/integration/engine.lock') }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
 
       - name: Build pinned engine
+        if: steps.engine-cache.outputs.cache-hit != 'true'
         working-directory: target/integration-engine-src
-        run: cargo build --locked --release -p ${{ steps.lock.outputs.package }}
+        run: cargo build --locked --release --timings -p ${{ steps.lock.outputs.package }}
 
-      - name: Save engine build
+      - name: Save pinned engine binary
         if: inputs.save-cache && steps.engine-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: target/integration-engine-src/target
+          path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
           key: ${{ steps.engine-cache.outputs.cache-primary-key }}
 
       - name: Record engine digest
@@ -141,9 +146,10 @@ jobs:
             iii-directory -> target
             state -> target
             console -> target
+            database -> target
 
       - name: Integration crate unit tests
-        run: cargo test --manifest-path harness/Cargo.toml -p harness-integration
+        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-integration
 
       - name: Validate integration scenarios
         run: make -C harness integration-validate
@@ -156,7 +162,10 @@ jobs:
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: make -C harness integration-test III_BIN="${{ steps.engine.outputs.bin }}"
+        run: >-
+          make -C harness integration-test
+          III_BIN="${{ steps.engine.outputs.bin }}"
+          CARGO_BUILD_FLAGS="--locked --timings"
 
       - name: Install Console web dependencies
         working-directory: console/web
@@ -170,7 +179,7 @@ jobs:
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: cargo build --release --manifest-path console/Cargo.toml
+        run: cargo build --locked --release --timings --manifest-path console/Cargo.toml
 
       - name: Install Playwright Chromium
         working-directory: console/web
@@ -260,6 +269,17 @@ jobs:
             echo "| pinned engine | ${ENGINE_HIT:-false} | $SAVE_CACHE |"
             echo "| integration Rust | see rust-cache log | $SAVE_CACHE |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Rust build timings
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-integration-rust-timings
+          path: |
+            */target/cargo-timings/*.html
+            target/integration-engine-src/target/cargo-timings/*.html
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Upload compact results
         if: always()

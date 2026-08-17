@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -51,6 +53,8 @@ jobs:
       changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
+      llm_router_integration: ${{ steps.bucket.outputs.llm_router_integration }}
+      provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@v5
@@ -60,10 +64,20 @@ jobs:
       - name: Compute base ref
         id: base
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
-          echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_ref="${PR_BASE_REF:-main}"
+            git fetch --no-tags --depth=1 origin "$base_ref"
+            echo "ref=origin/$base_ref" >> "$GITHUB_OUTPUT"
+          elif [[ "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && ! "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            echo "ref=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD^" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Bucket changed workers
         id: bucket
@@ -80,7 +94,7 @@ jobs:
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
     needs: discover
-    if: needs.discover.outputs.changed_workers != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -130,14 +144,16 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: worker-${{ matrix.worker }}
-          save-if: false
+          # PRs restore the trusted default-branch cache but never publish a
+          # branch-scoped copy. The push after merge advances the canonical key.
+          save-if: ${{ github.event_name == 'push' }}
           workspaces: ${{ matrix.worker }} -> target
 
       # Workers and their direct local Rust dependencies can embed a frontend
@@ -205,10 +221,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
   # ──────────────────────────────────────────────────────────────
   # Shared Rust crates (crates/*): lint + test. Workers link these by
@@ -234,22 +250,177 @@ jobs:
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name == 'push' }}
           workspaces: crates/${{ matrix.crate }} -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # llm-router lifecycle contract: unlike the regular Rust job, this always
+  # supplies the pinned engine and therefore cannot silently self-skip the
+  # real-bus registration, streaming, cancellation, and restart scenarios.
+  # ──────────────────────────────────────────────────────────────
+  llm-router-integration:
+    name: "llm-router: live engine integration"
+    needs: discover
+    if: needs.discover.outputs.llm_router_integration == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: llm-router-integration
+          save-if: false
+          workspaces: llm-router -> target
+
+      - name: Install pinned iii engine
+        env:
+          VERSION: '0.22.1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Run real-engine router lifecycle suite
+        run: |
+          set -euo pipefail
+          [[ -x "$III_ENGINE_BIN" ]] || { echo "::error::III_ENGINE_BIN is unavailable"; exit 3; }
+          cargo test \
+            --locked \
+            --manifest-path llm-router/Cargo.toml \
+            --no-default-features \
+            --test integration \
+            -- --nocapture --test-threads=1
+
+  # ──────────────────────────────────────────────────────────────
+  # Provider contracts: real engine + real router + selected provider,
+  # with the vendor HTTP/SSE boundary replaced by a loopback stub. No live
+  # API keys or provider network access. Direct changes stay narrow; shared
+  # router/testkit changes fan out through discover.provider_contract.
+  # ──────────────────────────────────────────────────────────────
+  provider-contract:
+    name: "${{ matrix.provider }}: provider contract"
+    needs: discover
+    if: needs.discover.outputs.provider_contract != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: ${{ fromJSON(needs.discover.outputs.provider_contract) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: provider-contract-${{ matrix.provider }}
+          save-if: false
+          workspaces: crates/provider-integration-testkit -> target
+
+      - name: Install pinned iii engine
+        env:
+          VERSION: '0.21.8'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Run hermetic provider contract
+        env:
+          PROVIDER_CONTRACT_ARTIFACTS_DIR: ${{ github.workspace }}/target/provider-contract/${{ matrix.provider }}
+        run: |
+          set -euo pipefail
+          cargo test \
+            --locked \
+            --manifest-path crates/provider-integration-testkit/Cargo.toml \
+            --features "${{ matrix.provider }}" \
+            tests::provider_contract -- --ignored --exact --nocapture
+
+      - name: Write contract summary
+        if: success()
+        env:
+          PROVIDER: ${{ matrix.provider }}
+        run: |
+          {
+            echo "### $PROVIDER provider contract"
+            echo
+            echo "Passed with the real iii engine, llm-router, and provider against a loopback upstream."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized contract evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: provider-contract-${{ matrix.provider }}
+          path: target/provider-contract/${{ matrix.provider }}/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  provider-contract-gate:
+    name: Provider contract gate
+    needs: [discover, provider-contract]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify affected contracts
+        env:
+          SELECTED: ${{ needs.discover.outputs.provider_contract }}
+          RESULT: ${{ needs.provider-contract.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${SELECTED:-[]}" == "[]" ]]; then
+            echo "No provider contract inputs changed."
+            exit 0
+          fi
+          [[ "$RESULT" == "success" ]] || {
+            echo "::error::affected provider contracts finished with result=$RESULT"
+            exit 1
+          }
 
   # ──────────────────────────────────────────────────────────────
   # Interface boot smoke: build each changed Rust worker from source,
@@ -267,7 +438,7 @@ jobs:
   interface-smoke:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
-    if: needs.discover.outputs.rust != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -304,7 +475,7 @@ jobs:
         if: steps.optout.outputs.skip != 'true'
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         if: steps.optout.outputs.skip != 'true'
 
       - uses: Swatinem/rust-cache@v2
@@ -348,7 +519,7 @@ jobs:
       - name: Build worker binary
         if: steps.optout.outputs.skip != 'true'
         working-directory: ${{ matrix.worker }}
-        run: cargo build
+        run: cargo build --locked
 
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
@@ -483,9 +654,9 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
-  # Harness integration tests (non-required). Pull requests only run
-  # the complete live stack when an integration input changed. The
-  # default branch and daily cache warmer run it unconditionally.
+  # Harness integration tests (non-required). Pull requests and the
+  # trusted push after merge run the complete live stack only when an
+  # integration input changed; only the trusted push advances caches.
   # ──────────────────────────────────────────────────────────────
   harness-integration:
     needs: discover
@@ -495,7 +666,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/_harness-integration.yml
     with:
-      save-cache: false
+      save-cache: ${{ github.event_name == 'push' }}
 
   # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test

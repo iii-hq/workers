@@ -229,7 +229,7 @@ jobs:
 
               worker_log="worker-$WORKER.log"
               pushd "$WORKER" >/dev/null
-              cargo_args=(run)
+              cargo_args=(run --locked)
               if [[ -n "${BIN:-}" ]]; then
                 cargo_args+=(--bin "$BIN")
               fi

@@ -26,6 +26,7 @@ pub fn build_manifest() -> ModuleManifest {
             "protect_recent_tokens": 40_000,
             "min_free_tokens": 20_000,
             "max_output_chars": 2_000,
+            "max_result_tokens": 20_000,
             "lease_ttl_secs": 300,
             "allow_fallback_limits": true,
             "summarizer_timeout_ms": 320_000,

@@ -96,6 +96,23 @@ async fn function_result_text(
     }));
 }
 
+#[given(
+    regex = r#"^a function result for call "([^"]+)" from "([^"]+)" containing an image of (\d+) chars$"#
+)]
+async fn function_result_image(
+    world: &mut ContextWorld,
+    call_id: String,
+    function_id: String,
+    chars: usize,
+) {
+    let ts = world.tick();
+    world.messages.push(json!({
+        "role": "function_result", "function_call_id": call_id, "function_id": function_id,
+        "content": [{ "type": "image", "mime": "image/png", "data": "A".repeat(chars) }],
+        "details": {}, "is_error": false, "timestamp": ts
+    }));
+}
+
 #[given(regex = r#"^a custom message of type "([^"]+)"$"#)]
 async fn custom_message(world: &mut ContextWorld, custom_type: String) {
     let ts = world.tick();
