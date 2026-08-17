@@ -261,13 +261,15 @@ fn try_create_one(
     }
     let before = atomic_write(
         abs,
-        &spec.path,
         bytes,
-        mode,
-        spec.overwrite,
-        spec.expected_revision.as_deref(),
-        cfg.max_read_bytes,
-        journal.is_some(),
+        AtomicWriteOptions {
+            wire_path: &spec.path,
+            mode,
+            overwrite: spec.overwrite,
+            expected_revision: spec.expected_revision.as_deref(),
+            max_read_bytes: cfg.max_read_bytes,
+            capture_before: journal.is_some(),
+        },
     )?;
     let change_id = before.and_then(|before| {
         journal
@@ -389,19 +391,31 @@ impl Drop for TempGuard {
     }
 }
 
+struct AtomicWriteOptions<'a> {
+    wire_path: &'a str,
+    mode: u32,
+    overwrite: bool,
+    expected_revision: Option<&'a str>,
+    max_read_bytes: u64,
+    capture_before: bool,
+}
+
 /// Publish a complete file through a permissioned sibling temp and rename.
 /// The original remains intact if writing, syncing, chmod, or the optimistic
 /// recheck fails. Sibling placement guarantees rename stays on one filesystem.
 fn atomic_write(
     target: &Path,
-    wire_path: &str,
     bytes: &[u8],
-    mode: u32,
-    overwrite: bool,
-    expected_revision: Option<&str>,
-    max_read_bytes: u64,
-    capture_before: bool,
+    options: AtomicWriteOptions<'_>,
 ) -> Result<Option<Vec<u8>>, CoderError> {
+    let AtomicWriteOptions {
+        wire_path,
+        mode,
+        overwrite,
+        expected_revision,
+        max_read_bytes,
+        capture_before,
+    } = options;
     let parent = target
         .parent()
         .ok_or_else(|| CoderError::Io(format!("{wire_path}: target has no parent directory")))?;

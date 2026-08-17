@@ -41,7 +41,8 @@ export type Phase = 'idle' | 'typing' | 'streaming' | 'done'
 
 /** How long the finished turn stays up before the loop restarts. */
 const HOLD_MS = 14000
-const TYPE_MS_PER_CHAR = 42
+/** Fast: the prompt is the preamble, the run is what the reader came for. */
+const TYPE_MS_PER_CHAR = 18
 /** Repaint cadence while a span is still open, so its bar grows. */
 const PENDING_TICK_MS = 120
 /** The gate releases itself if nobody clicks approve. */

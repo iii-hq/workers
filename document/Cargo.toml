@@ -1,0 +1,36 @@
+[workspace]
+
+[package]
+name = "document"
+version = "0.1.1-experimental"
+edition = "2021"
+description = "Document worker for iii — convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF to markdown on the machine, detect the format from the bytes, and pull out embedded images (document::* functions)"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "document"
+path = "src/lib.rs"
+
+[[bin]]
+name = "document"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.21.6"
+# The converter. Pure Rust, no system libraries, no subprocess, no network.
+anydoc = "=0.1.9"
+base64 = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

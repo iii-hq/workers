@@ -1,0 +1,441 @@
+{
+  "description": "Convert a Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV or PDF document to markdown, preserving headings, lists, links and tables. The format is detected from the bytes. Responses are capped; pass max_chars 0 to take the whole document. For a PDF prefer pdf::classify first, which reports which pages need OCR.",
+  "function_id": "document::to-markdown",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Format": {
+        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "oneOf": [
+          {
+            "description": "Binary Word 97-2003 (`.doc`).",
+            "enum": [
+              "doc"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "WordprocessingML (`.docx`, `.docm`).",
+            "enum": [
+              "docx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Text (`.odt`).",
+            "enum": [
+              "odt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rich Text Format (`.rtf`).",
+            "enum": [
+              "rtf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Binary PowerPoint 97-2003 (`.ppt`, `.pps`, `.pot`).",
+            "enum": [
+              "ppt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PresentationML (`.pptx`, `.pptm`, `.ppsx`, `.ppsm`).",
+            "enum": [
+              "pptx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Presentation (`.odp`).",
+            "enum": [
+              "odp"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Excel workbooks in every container (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`).",
+            "enum": [
+              "excel"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Spreadsheet (`.ods`).",
+            "enum": [
+              "ods"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Delimiter-separated text (`.csv`).",
+            "enum": [
+              "csv"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "EPUB 2 and 3 (`.epub`).",
+            "enum": [
+              "epub"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Portable Document Format (`.pdf`).",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell and pdf workers take.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the document comes from. Exactly one of `path` and `bytes_base64` must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded document bytes, for a document with no path — an attachment held in memory. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "file_name": {
+        "default": null,
+        "description": "Original file name for inline bytes, used only to recognise a format the content cannot name. A `.csv` needs this; nothing else does. Ignored when `path` is set, which carries its own name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Format"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Force a format instead of detecting one. Only needed when the content carries no signature and the file name is absent or wrong."
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "max_chars": {
+        "default": null,
+        "description": "Characters to return before truncating. Omit for the configured default; `0` returns the whole document.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the document. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Body": {
+        "description": "A body that may have been shortened to fit one response, and the numbers a caller needs to decide what to do about it.\n\nThe cap is what keeps a long document from flooding a model's context. A caller that genuinely wants the whole thing asks for `max_chars: 0`, which is the shape a worker-to-worker pipeline uses to move a document without it passing through anyone's context. Same shape the pdf worker returns, so a caller handling both reads one field set.",
+        "properties": {
+          "chars": {
+            "description": "Characters returned in `text`.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "preview": {
+            "description": "Leading characters of the content. Present only when the body was truncated, so a caller can see the shape of what it did not get without re-reading the start of `text`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The markdown, shortened to the effective character cap.",
+            "type": "string"
+          },
+          "total_chars": {
+            "description": "Characters the document actually holds. Equal to `chars` when nothing was dropped.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "`true` when `text` stops short of the document. Ask again with `max_chars: 0` to take everything.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chars",
+          "text",
+          "total_chars",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "DetectedFrom": {
+        "description": "How the format was arrived at, weakest claim last.",
+        "oneOf": [
+          {
+            "description": "The caller named it, and the bytes were not consulted.",
+            "enum": [
+              "requested"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The signature the format's specification designates (PDF header, RTF open group, OLE stream names, ZIP package mimetype).",
+            "enum": [
+              "content"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The file extension only. CSV carries no signature, so this is the only way it is ever recognised; for any other format it means the content did not match anything known.",
+            "enum": [
+              "extension"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Family": {
+        "description": "What the document is, rather than which program wrote it.\n\nA caller routing a mixed bag of attachments cares that a file is a spreadsheet, not that it is `.ods` rather than `.xlsx`.",
+        "oneOf": [
+          {
+            "description": "Prose: Word, OpenDocument Text, RTF.",
+            "enum": [
+              "prose"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rows and columns: Excel, OpenDocument Spreadsheet, CSV.",
+            "enum": [
+              "spreadsheet"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Slides: PowerPoint, OpenDocument Presentation.",
+            "enum": [
+              "presentation"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A book: EPUB.",
+            "enum": [
+              "book"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PDF, which is its own family because it is the one format with a dedicated worker and a page-level OCR decision.",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Format": {
+        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "oneOf": [
+          {
+            "description": "Binary Word 97-2003 (`.doc`).",
+            "enum": [
+              "doc"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "WordprocessingML (`.docx`, `.docm`).",
+            "enum": [
+              "docx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Text (`.odt`).",
+            "enum": [
+              "odt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rich Text Format (`.rtf`).",
+            "enum": [
+              "rtf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Binary PowerPoint 97-2003 (`.ppt`, `.pps`, `.pot`).",
+            "enum": [
+              "ppt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PresentationML (`.pptx`, `.pptm`, `.ppsx`, `.ppsm`).",
+            "enum": [
+              "pptx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Presentation (`.odp`).",
+            "enum": [
+              "odp"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Excel workbooks in every container (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`).",
+            "enum": [
+              "excel"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Spreadsheet (`.ods`).",
+            "enum": [
+              "ods"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Delimiter-separated text (`.csv`).",
+            "enum": [
+              "csv"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "EPUB 2 and 3 (`.epub`).",
+            "enum": [
+              "epub"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Portable Document Format (`.pdf`).",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "asset_count": {
+        "description": "Embedded images and objects the document carries. Their bytes are not here — call `document::extract-assets` for those — but the count says whether a deck's content is pictures rather than text, which markdown alone would not reveal.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "body": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Body"
+          }
+        ],
+        "description": "The markdown, capped per `max_chars`."
+      },
+      "detected_from": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DetectedFrom"
+          }
+        ],
+        "description": "How the format was arrived at."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the conversion.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "family": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Family"
+          }
+        ],
+        "description": "What the document is: prose, a spreadsheet, a presentation, a book, a PDF."
+      },
+      "format": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Format"
+          }
+        ],
+        "description": "The format that was converted."
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "asset_count",
+      "body",
+      "detected_from",
+      "elapsed_ms",
+      "family",
+      "format",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

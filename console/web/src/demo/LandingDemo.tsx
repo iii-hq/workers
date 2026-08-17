@@ -408,16 +408,18 @@ function DemoChrome({
         replay
       </button>
       {/* Embedded only: the host page listens for iii-demo-close and scrolls
-          the console away. Inverted so the way out is unmissable. */}
+          the console away. Red, the loudest thing in the frame, because a
+          reader who wants out should not have to look for it. The exact red
+          and its text color are in demo.css. */}
       {window.self !== window.top && (
         <button
           type="button"
           onClick={() =>
             window.parent?.postMessage({ type: 'iii-demo-close' }, '*')
           }
-          className="flex items-center gap-1.5 bg-ink px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-bg transition-opacity hover:opacity-80"
+          className="demo-close flex items-center gap-1.5 px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] transition-opacity hover:opacity-80"
         >
-          close <span className="opacity-60">esc</span>
+          close <span className="opacity-70">esc</span>
         </button>
       )}
     </div>

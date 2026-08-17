@@ -6,9 +6,8 @@ import {
   expandPdfAttachments,
   isPdfAttachment,
   MAX_PDFS_PER_SEND,
-  summaryLabel,
   TO_MARKDOWN_FUNCTION_ID,
-} from './pdf-attachments'
+} from './pdf'
 
 function pdf(name = 'report.pdf', bytes = 'hello'): Attachment {
   return {
@@ -255,17 +254,10 @@ describe('expandPdfAttachments', () => {
     const { read } = await expandPdfAttachments([pdf()], fn)
 
     expect(read).toHaveLength(1)
-    expect(read[0]).toMatchObject({
+    expect(read[0]).toEqual({
       id: 'report.pdf',
-      pages: 8,
-      chars: 5932,
-      elapsedMs: 87,
-      needsOcr: false,
-      truncated: false,
+      label: 'report.pdf · 8 pages · 5,932 chars · 87 ms',
     })
-    expect(summaryLabel('report.pdf', read[0])).toBe(
-      'report.pdf · 8 pages · 5,932 chars · 87 ms',
-    )
   })
 
   it('summarizes a scan as unreadable rather than as zero characters', async () => {
@@ -279,11 +271,7 @@ describe('expandPdfAttachments', () => {
 
     const { read } = await expandPdfAttachments([pdf()], fn)
 
-    expect(read[0].needsOcr).toBe(true)
-    expect(read[0].chars).toBeUndefined()
-    expect(summaryLabel('scan.pdf', read[0])).toBe(
-      'scan.pdf · 3 pages · no readable text · 9 ms',
-    )
+    expect(read[0].label).toBe('report.pdf · 3 pages · no readable text · 9 ms')
   })
 
   it('marks a truncated extract so the count is not read as the whole document', async () => {
@@ -298,8 +286,7 @@ describe('expandPdfAttachments', () => {
 
     const { read } = await expandPdfAttachments([pdf()], fn)
 
-    expect(read[0].truncated).toBe(true)
-    expect(summaryLabel('big.pdf', read[0])).toContain('900,000+ chars')
+    expect(read[0].label).toContain('900,000+ chars')
   })
 
   it('escapes quotes in a file name rather than breaking the header', async () => {

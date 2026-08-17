@@ -12,6 +12,12 @@ export interface ModelOption {
   label: string
   contextWindow?: number
   supportsThinking?: boolean
+  /**
+   * Whether the model reads images. `undefined` means the router did not say —
+   * an older catalog, or a model it has no row for — and callers treat that as
+   * "assume it can" rather than refusing to send a picture on missing metadata.
+   */
+  supportsVision?: boolean
   reasoningEfforts?: ReasoningEffortOption[]
 }
 

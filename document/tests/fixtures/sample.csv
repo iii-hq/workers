@@ -1,0 +1,3 @@
+scenario,jobs_per_second
+echo,21480
+fanout,2184

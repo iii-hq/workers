@@ -321,10 +321,14 @@ function textOf(blocks: ContentBlock[]): string {
 
 /**
  * Split a user message's blocks into visible text and attachment chips.
- * `<attached-file …>` blocks are console-authored `#file(...)` mention
- * expansions — rendering their full content in the user bubble would dump
- * whole files into the chat, so they collapse to chips instead (failure
+ * `<attached-file …>` blocks are console-authored `#file(...)` mention and
+ * document expansions — rendering their full content in the user bubble would
+ * dump whole files into the chat, so they collapse to chips instead (failure
  * placeholders keep the error visible in the chip name).
+ *
+ * An image block is the picture itself, sent to a vision model. It becomes a
+ * chip carrying its own thumbnail: without this a conversation reloaded from
+ * history shows the question and no sign that a screenshot went with it.
  */
 function splitUserContent(blocks: ContentBlock[]): {
   text: string
@@ -332,7 +336,22 @@ function splitUserContent(blocks: ContentBlock[]): {
 } {
   let text = ''
   const attachments: Attachment[] = []
+  let imageIndex = 0
   for (const block of blocks) {
+    if (block.type === 'image') {
+      imageIndex += 1
+      const mime = block.mime || 'image/png'
+      attachments.push({
+        id: `image-${imageIndex}`,
+        name: `image ${imageIndex}`,
+        // Base64 inflates by a third; the original byte count is what a
+        // person recognises, so report that rather than the encoded length.
+        size: Math.floor((block.data?.length ?? 0) * 0.75),
+        type: mime,
+        dataUrl: block.data ? `data:${mime};base64,${block.data}` : undefined,
+      })
+      continue
+    }
     if (block.type !== 'text') continue
     const header = parseAttachedFileHeader(block.text)
     if (header) {

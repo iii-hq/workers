@@ -205,6 +205,14 @@ pub struct UpdateFileResult {
     pub error: Option<WireError>,
 }
 
+struct AppliedUpdate {
+    applied: u32,
+    new_line_count: u64,
+    echoes: Vec<OpEcho>,
+    echoes_truncated: bool,
+    change_id: Option<String>,
+}
+
 #[allow(dead_code)] // Public compatibility path used by integration callers without UI journaling.
 pub async fn handle(
     resolver: Arc<PathResolver>,
@@ -277,14 +285,14 @@ fn update_one(
     };
     let wire_path = abs.display().to_string();
     match try_update_one(cfg, journal, &abs, spec) {
-        Ok((applied, new_line_count, echoes, echoes_truncated, change_id)) => UpdateFileResult {
+        Ok(applied) => UpdateFileResult {
             path: wire_path,
             success: true,
-            applied,
-            new_line_count,
-            echoes,
-            echoes_truncated,
-            change_id,
+            applied: applied.applied,
+            new_line_count: applied.new_line_count,
+            echoes: applied.echoes,
+            echoes_truncated: applied.echoes_truncated,
+            change_id: applied.change_id,
             error: None,
         },
         Err(e) => UpdateFileResult {
@@ -312,7 +320,7 @@ fn try_update_one(
     journal: Option<&ChangeJournal>,
     abs: &Path,
     spec: UpdateFileSpec,
-) -> Result<(u32, u64, Vec<OpEcho>, bool, Option<String>), CoderError> {
+) -> Result<AppliedUpdate, CoderError> {
     // NotFound is intercepted with the wire path in scope so the C211
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
@@ -374,13 +382,13 @@ fn try_update_one(
     // applied after it, then extracting from the FINAL body.
     let (echoes, echoes_truncated) = build_echoes(&anchors, &events, &final_lines);
 
-    Ok((
-        spec.ops.len() as u32,
-        final_lines.len() as u64,
+    Ok(AppliedUpdate {
+        applied: spec.ops.len() as u32,
+        new_line_count: final_lines.len() as u64,
         echoes,
         echoes_truncated,
         change_id,
-    ))
+    })
 }
 
 // ---------------------------------------------------------------------------

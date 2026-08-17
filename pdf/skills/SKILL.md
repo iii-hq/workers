@@ -49,7 +49,10 @@ pays for it. Reach for it when one appears.
 
 - Nothing here rasterizes a page, so nothing here can OCR. Scanned and
   image-based documents are classified and routed, never read. Image content
-  is reported as a placeholder with a real box and no pixels.
+  is reported as a placeholder with a real box and no pixels. `document::ocr`
+  is where routed pages go when the `document` worker is installed: it renders
+  them and reads them with a vision model, so it costs money per page. Hand it
+  the `pages_needing_ocr` this worker named rather than the whole file.
 - `suspected_garbled_text` in `ocr_reasons` means the text layer decodes to
   nonsense. Do not trust the extraction, whatever `document_type` says.
 - Responses are capped. `truncated: true` with a much larger `total_chars`

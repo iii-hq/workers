@@ -7,6 +7,7 @@ import {
 import { ArrowUp, Loader2, MoreHorizontal, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
+import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
@@ -26,6 +27,7 @@ import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
 import { nextHistoryTarget } from './queue-history'
+import { useFileDrop } from './use-file-drop'
 
 export interface ComposerSubmitPayload {
   text: string
@@ -301,6 +303,24 @@ export function Composer({
     setAttachments((current) => current.filter((a) => a.id !== id))
   }, [])
 
+  const attachFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return
+      handleAttach(await attachmentsFromFiles(files))
+    },
+    [handleAttach],
+  )
+
+  // The drop zone is the whole chat pane, claimed in the capture phase — see
+  // `use-file-drop`. A drop onto the transcript, where people actually let go
+  // of a screenshot, lands here too, and the editor never gets to eat it.
+  const shell = useRef<HTMLDivElement>(null)
+  const dragging = useFileDrop({
+    anchorRef: shell,
+    disabled: Boolean(inputDisabled),
+    onFiles: (files) => void attachFiles(files),
+  })
+
   const renderActionButton = () =>
     isStreaming &&
     !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
@@ -335,7 +355,19 @@ export function Composer({
     )
 
   return (
-    <div className="rounded-xl bg-panel-raised shadow-raised">
+    <div
+      ref={shell}
+      className={cn(
+        'rounded-xl bg-panel-raised shadow-raised transition-shadow',
+        dragging && 'ring-2 ring-rule-focus',
+      )}
+    >
+      {dragging ? (
+        <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">
+          drop to attach
+        </div>
+      ) : null}
+
       {attachments.length > 0 ? (
         <div className="flex flex-wrap gap-2 p-3 border-b border-rule-2">
           {attachments.map((a) => (
