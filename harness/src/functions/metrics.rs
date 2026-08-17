@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::clients::session::LoadedEntry;
 use crate::context_snapshot::ContextSnapshotV1;
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -42,6 +43,9 @@ pub struct SessionUsageTotalsV1 {
     pub turns: u64,
     pub function_calls: u64,
     pub function_call_errors: u64,
+    /// Durable context compaction records across the active paths of the
+    /// root session and all descendants.
+    pub context_compactions: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +70,8 @@ pub struct SessionUsageV1 {
     pub turns: u64,
     pub function_calls: u64,
     pub function_call_errors: u64,
+    /// Durable context compaction records on this session's active path.
+    pub context_compactions: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,10 +172,8 @@ pub async fn handle(
         let entries = session.messages_strict(&node.session_id).await?;
         let mut current = UsageAccumulator::default();
         for entry in entries {
-            if let Some(message) = entry.message.as_ref() {
-                current.observe(message);
-                total.observe(message);
-            }
+            current.observe_entry(&entry);
+            total.observe_entry(&entry);
         }
         // The turn record usually carries the session's latest snapshot for
         // free. A freshly seeded turn has not generated yet, so its record has
@@ -325,6 +329,7 @@ struct UsageAccumulator {
     turns: u64,
     function_calls: u64,
     function_call_errors: u64,
+    context_compactions: u64,
     input: OptionalU64Sum,
     output: OptionalU64Sum,
     cache_read: OptionalU64Sum,
@@ -334,6 +339,19 @@ struct UsageAccumulator {
 }
 
 impl UsageAccumulator {
+    fn observe_entry(&mut self, entry: &LoadedEntry) {
+        if entry
+            .custom
+            .as_ref()
+            .is_some_and(|custom| custom.custom_type == "compaction")
+        {
+            self.context_compactions = self.context_compactions.saturating_add(1);
+        }
+        if let Some(message) = entry.message.as_ref() {
+            self.observe(message);
+        }
+    }
+
     fn observe(&mut self, message: &AgentMessage) {
         match message {
             AgentMessage::Assistant(assistant) => {
@@ -374,6 +392,7 @@ impl UsageAccumulator {
             turns: self.turns,
             function_calls: self.function_calls,
             function_call_errors: self.function_call_errors,
+            context_compactions: self.context_compactions,
             input_tokens: self.input.finish(),
             output_tokens: self.output.finish(),
             cache_read_tokens: self.cache_read.finish(),
@@ -390,6 +409,7 @@ impl UsageAccumulator {
             turns: self.turns,
             function_calls: self.function_calls,
             function_call_errors: self.function_call_errors,
+            context_compactions: self.context_compactions,
             input_tokens: self.input.finish(),
             output_tokens: self.output.finish(),
             cache_read_tokens: self.cache_read.finish(),
@@ -453,6 +473,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::clients::session::LoadedCustom;
     use crate::types::turn::TurnStatus;
 
     fn message(value: serde_json::Value) -> AgentMessage {
@@ -466,6 +487,41 @@ mod tests {
             parent_turn_id: None,
             depth,
         }
+    }
+
+    fn custom_entry(custom_type: &str) -> LoadedEntry {
+        LoadedEntry {
+            entry_id: format!("entry-{custom_type}"),
+            message: None,
+            custom: Some(LoadedCustom {
+                custom_type: custom_type.into(),
+                data: json!({}),
+            }),
+        }
+    }
+
+    #[test]
+    fn counts_only_durable_context_compactions() {
+        let mut root = UsageAccumulator::default();
+        let mut total = UsageAccumulator::default();
+        for entry in [
+            custom_entry("compaction"),
+            custom_entry("checkpoint"),
+            custom_entry("compaction"),
+        ] {
+            root.observe_entry(&entry);
+            total.observe_entry(&entry);
+        }
+        let root = root.finish_session(&session("root", None, 0), None);
+        assert_eq!(root.context_compactions, 2);
+
+        let mut child = UsageAccumulator::default();
+        let entry = custom_entry("compaction");
+        child.observe_entry(&entry);
+        total.observe_entry(&entry);
+        let child = child.finish_session(&session("child", Some("root"), 1), None);
+        assert_eq!(child.context_compactions, 1);
+        assert_eq!(total.finish_totals(2).context_compactions, 3);
     }
 
     #[test]
@@ -499,6 +555,7 @@ mod tests {
         assert_eq!(totals.turns, 1);
         assert_eq!(totals.function_calls, 1);
         assert_eq!(totals.function_call_errors, 1);
+        assert_eq!(totals.context_compactions, 0);
         assert_eq!(totals.input_tokens, Some(10));
         assert_eq!(totals.output_tokens, Some(2));
         assert_eq!(totals.cost_usd, Some(0.1));
