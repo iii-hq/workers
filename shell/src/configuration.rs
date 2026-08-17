@@ -274,9 +274,12 @@ fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii, false)
-        .await?
-        .ok_or_else(|| format!("configuration `{config_entry}` not found", config_entry = config_id()))
+    try_get_config_value(iii, false).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
@@ -383,6 +386,7 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

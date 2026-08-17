@@ -151,6 +151,7 @@ pub fn register_config_trigger(
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

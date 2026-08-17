@@ -241,6 +241,7 @@ pub async fn start_injectable_ui_sync(iii: &Arc<IIIClient>, control: UiControl) 
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         tracing::warn!(
             error = %e,

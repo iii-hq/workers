@@ -81,6 +81,7 @@ async fn register_request_body_echo_backend(
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger for request-body echo backend");
 }

@@ -209,6 +209,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         config: json!({}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     });
 
     tokio::spawn(declare_and_refresh(

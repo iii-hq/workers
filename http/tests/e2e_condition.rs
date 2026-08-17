@@ -59,6 +59,7 @@ async fn register_counting_backend_with_condition(
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger with condition");
 }

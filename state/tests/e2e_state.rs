@@ -378,6 +378,7 @@ async fn state_trigger_fires_with_event_payload() {
         config: json!({"scope": scope}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
@@ -490,6 +491,7 @@ async fn condition_false_blocks_null_passes() {
         config: json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register false-condition trigger");
     iii.register_trigger(RegisterTriggerInput {
@@ -498,6 +500,7 @@ async fn condition_false_blocks_null_passes() {
         config: json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register null-condition trigger");
     wait_for_trigger_count(&boot.triggers, 2).await;
@@ -559,6 +562,7 @@ async fn max_value_bytes_rejects_oversized_set() {
         config: json!({"scope": scope}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
@@ -750,6 +754,8 @@ async fn claim_namespace_lifecycle() {
         function_id: "e2e::on_private".to_string(),
         config: json!({"scope": private_scope}),
         metadata: None,
+        namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register trigger on the private scope");
     wait_for_trigger_count(&boot.triggers, 1).await;

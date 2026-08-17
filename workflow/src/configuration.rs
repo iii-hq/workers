@@ -67,9 +67,12 @@ pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
 /// Read the live `workflow` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
 pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
-    let value = try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{config_entry}` not found", config_entry = config_id()))?;
+    let value = try_get_config_value(iii).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
         return Ok(WorkerConfig::default());
@@ -121,6 +124,7 @@ fn bind(
         config,
         metadata,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
@@ -274,6 +278,7 @@ pub fn register_config_trigger(
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

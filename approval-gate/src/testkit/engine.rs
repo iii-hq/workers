@@ -460,6 +460,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         config: json!({}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("bind pending_created");
     iii.register_trigger(RegisterTriggerInput {
@@ -468,6 +469,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         config: json!({}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("bind pending_resolved");
 

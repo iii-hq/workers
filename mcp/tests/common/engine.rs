@@ -107,6 +107,7 @@ async fn register_bridge(iii: &Arc<IIIClient>) {
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         eprintln!(
             "[warn] mcp BDD harness failed to register HTTP trigger at {api_path}: {e}; \

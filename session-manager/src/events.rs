@@ -993,6 +993,7 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
         config: serde_json::json!({}),
         metadata: None,
         namespace: remote.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(relay = %relay_id, "attached to the main instance's event feed"),
         Err(e) => tracing::warn!(

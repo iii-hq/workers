@@ -952,6 +952,7 @@ async fn register_post_turn_hook(
             config,
             metadata: None,
             namespace: deps.iii.namespace(),
+            trigger_namespace: None,
         })
         .map_err(|e| {
             HarnessError::InvalidRequest(format!("post-turn hook registration failed: {e}"))

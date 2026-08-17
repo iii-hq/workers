@@ -139,6 +139,7 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

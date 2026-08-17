@@ -35,7 +35,6 @@ use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::surface;
 use crate::triggers::RouterEvents;
-use crate::types::errors::invalid_request_from_serde;
 use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};
 
 /// `metadata.internal = true` keeps a registration out of the default
@@ -259,6 +258,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
         metadata: None,
     namespace: iii.namespace(),
+    trigger_namespace: None,
     })?;
 
     // Close the boot race between the initial fetch and trigger binding by
@@ -329,6 +329,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             function_id: surface::ON_FUNCTIONS_CHANGED_ID.into(),
             config: json!({}),
             metadata: None,
+            namespace: iii.namespace(),
+            trigger_namespace: None,
         }) {
             // Best-effort: without it providers still recover on their own
             // timer, exactly as before this binding existed.

@@ -707,6 +707,7 @@ fn register_event_subscriber(
         // Resolve the trigger's target in this worker's namespace so it matches
         // where the function was registered (None => engine default).
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(t) => Some(t),
         Err(e) => {

@@ -62,7 +62,10 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<CronConfig, String> {
     match try_get_config_value(iii).await? {
         Some(value) if !value.is_null() => CronConfig::from_json(&value),
         _ => {
-            tracing::info!("no `{config_entry}` configuration value stored; using built-in default", config_entry = config_id());
+            tracing::info!(
+                "no `{config_entry}` configuration value stored; using built-in default",
+                config_entry = config_id()
+            );
             Ok(CronConfig::default())
         }
     }
@@ -115,6 +118,7 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, parts: BootParts) -> Result
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

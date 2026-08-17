@@ -203,6 +203,7 @@ mod tests {
             function_id: "app::on-change".into(),
             config: serde_json::json!({ "db": db }),
             metadata: None,
+            namespace: None,
         }
     }
 

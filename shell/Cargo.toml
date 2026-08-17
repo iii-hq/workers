@@ -11,8 +11,8 @@ name = "shell"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.8"
-iii-helpers = "=0.22.1-alpha.8"
+iii-sdk = "=0.23.0-rc.1"
+iii-helpers = "=0.23.0-rc.1"
 iii-console-ui = { path = "../crates/console-ui" }
 # Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
 notify = "8"

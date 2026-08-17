@@ -51,6 +51,7 @@ fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -
         config,
         metadata: Some(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
@@ -158,6 +159,7 @@ pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<()
         config: json!({ "configuration_id": config_id(), "event_types": ["configuration:updated"] }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

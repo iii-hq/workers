@@ -212,6 +212,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         config: json!({}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     });
 
     // Boot declare, off the boot path (a missing router must not block boot).

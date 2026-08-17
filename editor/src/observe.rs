@@ -231,6 +231,7 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(function_id = HOOK_FN_ID, "file-change observer bound"),
         Err(e) => tracing::warn!(

@@ -88,6 +88,7 @@ async fn main() -> Result<()> {
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(
             function_id = functions::FUNCTION_ID,

@@ -306,6 +306,7 @@ fn setup_auto_download(
                 }),
                 metadata: None,
                 namespace: iii_sub.namespace(),
+                trigger_namespace: None,
             });
             match result {
                 Ok(_) => {

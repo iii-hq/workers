@@ -72,9 +72,12 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{config_entry}` not found", config_entry = config_id()))
+    try_get_config_value(iii).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 /// `Ok(None)` = the entry does not exist. A successful reply MUST carry
@@ -136,6 +139,7 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

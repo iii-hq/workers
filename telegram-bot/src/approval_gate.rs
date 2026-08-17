@@ -124,6 +124,7 @@ pub fn start_watch(
                 }),
                 metadata: None,
                 namespace: iii.namespace(),
+                trigger_namespace: None,
             }) {
                 Ok(_) => {
                     tracing::info!("subscribed to worker trigger for approval-gate presence");

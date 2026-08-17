@@ -75,7 +75,12 @@ async fn fetch_config_with_timeout(
 ) -> Result<WorkerConfig, String> {
     let value = try_get_config_value(iii, timeout_ms)
         .await?
-        .ok_or_else(|| format!("configuration `{config_entry}` not found", config_entry = config_id()))?;
+        .ok_or_else(|| {
+            format!(
+                "configuration `{config_entry}` not found",
+                config_entry = config_id()
+            )
+        })?;
     if value.is_null() {
         tracing::info!("no configuration value found; using built-in default configuration");
         return Ok(WorkerConfig::default());
@@ -156,6 +161,7 @@ pub fn register_config_trigger(
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

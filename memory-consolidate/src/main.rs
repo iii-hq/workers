@@ -89,6 +89,7 @@ fn bind_schedule(iii: Arc<IIIClient>, deps: Arc<Deps>) {
                 config: serde_json::json!({ "expression": CRON_EXPRESSION }),
                 metadata: None,
                 namespace: iii.namespace(),
+                trigger_namespace: None,
             }) {
                 Ok(_) => {
                     tracing::info!(expression = CRON_EXPRESSION, "cron heartbeat bound");
@@ -202,6 +203,7 @@ async fn main() -> Result<()> {
             config: serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
             metadata: None,
             namespace: iii.namespace(),
+            trigger_namespace: None,
         }) {
             tracing::debug!(error = %e, function_id = spec.function_id, "http trigger registration failed");
         }

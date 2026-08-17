@@ -271,6 +271,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         config: json!({}),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(
             trigger_type = FUNCTIONS_TRIGGER_TYPE,

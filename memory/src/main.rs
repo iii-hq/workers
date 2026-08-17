@@ -81,6 +81,7 @@ fn bind_best_effort(
         config,
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     });
     match res {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
@@ -243,6 +244,7 @@ async fn main() -> Result<()> {
             config: json!({ "api_path": api_path, "http_method": "POST" }),
             metadata: None,
             namespace: iii.namespace(),
+            trigger_namespace: None,
         }) {
             Ok(_) => tracing::debug!(
                 function_id = spec.function_id,

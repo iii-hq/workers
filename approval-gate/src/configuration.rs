@@ -114,9 +114,12 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{config_entry}` not found", config_entry = config_id()))
+    try_get_config_value(iii).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 /// Returns `Ok(None)` when the entry does not exist. The engine's
@@ -147,6 +150,7 @@ pub fn bind_hook(iii: &IIIClient) {
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::pre-trigger",
@@ -177,6 +181,7 @@ pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::post-trigger",
@@ -283,6 +288,7 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

@@ -44,6 +44,7 @@ pub async fn register_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_me
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger");
 }
@@ -91,6 +92,7 @@ pub async fn register_trace_capturing_backend(
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger");
 
@@ -124,6 +126,7 @@ pub async fn register_removable_echo_backend(
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger")
 }
@@ -167,6 +170,7 @@ pub async fn register_echo_backend_with_middleware(
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger with middleware");
 }
@@ -255,6 +259,7 @@ pub async fn register_echo_backend_with_condition(
         }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger with condition");
 }
@@ -307,6 +312,7 @@ pub async fn register_slow_backend(
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger");
 }
@@ -340,6 +346,7 @@ pub async fn register_sleep_backend(
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger");
 }
@@ -368,6 +375,7 @@ pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, htt
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
         namespace: iii.namespace(),
+        trigger_namespace: None,
     })
     .expect("register http trigger");
 }

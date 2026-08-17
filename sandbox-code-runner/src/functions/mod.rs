@@ -171,6 +171,7 @@ pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
             "inject_prompt": inject_guidance::CODE_RUNNER_GUIDANCE
         })),
         namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!(
             "sandbox-code-runner pre-generate hook bound (guidance injection active)"

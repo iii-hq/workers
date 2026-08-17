@@ -452,6 +452,8 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
         function_id: "provider::real::on_router_ready".into(),
         config: json!({}),
         metadata: None,
+        namespace: iii.namespace(),
+        trigger_namespace: None,
     });
 
     // declare (with a short retry in case the router is still booting)
@@ -1263,6 +1265,7 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
             config: json!({}),
             metadata: None,
             namespace: probe.namespace(),
+            trigger_namespace: None,
         })
         .expect("router::models::changed trigger registered");
 

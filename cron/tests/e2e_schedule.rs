@@ -47,6 +47,7 @@ async fn cron_trigger_fires_bound_function_with_parity_payload() {
             config: serde_json::json!({"expression": "*/1 * * * * *"}),
             metadata: None,
             namespace: iii.namespace(),
+            trigger_namespace: None,
         })
         .expect("trigger registration");
 
