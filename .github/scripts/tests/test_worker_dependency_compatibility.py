@@ -1,6 +1,7 @@
 """Regression tests for shared worker dependency ranges."""
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -36,3 +37,23 @@ def test_harness_llm_stack_uses_shared_state_range() -> None:
 
     for worker in ("llm-router", *providers):
         assert dependencies(worker)["state"] == expected
+
+
+def test_provider_lockfiles_track_llm_router_version() -> None:
+    router_manifest = tomllib.loads(
+        (REPO_ROOT / "llm-router" / "Cargo.toml").read_text(encoding="utf-8"),
+    )
+    expected = router_manifest["package"]["version"]
+
+    for lockfile in sorted(REPO_ROOT.glob("provider-*/Cargo.lock")):
+        lock = tomllib.loads(lockfile.read_text(encoding="utf-8"))
+        locked_versions = [
+            package["version"]
+            for package in lock["package"]
+            if package["name"] == "llm-router"
+        ]
+        if locked_versions:
+            assert locked_versions == [expected], (
+                f"{lockfile.relative_to(REPO_ROOT)} pins llm-router "
+                f"{locked_versions}, expected {expected}"
+            )
