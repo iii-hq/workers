@@ -142,6 +142,14 @@ export interface ChatStreamOptions {
    * backends ignore this.
    */
   attachedBlocks?: string[]
+  /**
+   * Image content blocks appended after the text on the outgoing user message
+   * — an attached, dropped or pasted picture, sent as a picture rather than as
+   * prose about one. The real backend forwards them as
+   * `ContentBlock::Image { mime, data }`, which the Anthropic and OpenAI
+   * providers map onto their own image shapes. Mock backends ignore this.
+   */
+  attachedImages?: import('./harness-send').HarnessImageBlock[]
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
@@ -300,7 +308,10 @@ export interface ChatBackend {
     sessionId: string,
     entryId: string,
     prompt: string,
-    opts?: { attachedBlocks?: string[] },
+    opts?: {
+      attachedBlocks?: string[]
+      attachedImages?: import('./harness-send').HarnessImageBlock[]
+    },
   ): Promise<void>
   /**
    * Subscribe to `harness::message-queued` for a session: fires when any

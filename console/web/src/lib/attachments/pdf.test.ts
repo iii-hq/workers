@@ -8,7 +8,7 @@ import {
   MAX_PDFS_PER_SEND,
   summaryLabel,
   TO_MARKDOWN_FUNCTION_ID,
-} from './pdf-attachments'
+} from './pdf'
 
 function pdf(name = 'report.pdf', bytes = 'hello'): Attachment {
   return {

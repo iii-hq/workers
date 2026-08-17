@@ -111,6 +111,36 @@ describe('entrySegments', () => {
     expect((msg as { content: string }).content).not.toContain('fn main')
   })
 
+  /* A pasted screenshot IS the message's content for a vision model. Dropping
+     the block on the way in would leave a reloaded conversation showing the
+     question with no sign a picture went with it. */
+  it('turns image blocks into chips that keep their thumbnail', () => {
+    const item: TranscriptItem = {
+      entry_id: 'msg-3-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is wrong with this screen?' },
+          { type: 'image', mime: 'image/png', data: 'AAAA' },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: 'what is wrong with this screen?',
+      attachments: [
+        {
+          id: 'image-1',
+          name: 'image 1',
+          type: 'image/png',
+          dataUrl: 'data:image/png;base64,AAAA',
+        },
+      ],
+    })
+  })
+
   it('marks only trusted notification user entries', () => {
     expect(
       entrySegments(userItem('e-1', 'normal', { notification: false }))[0],

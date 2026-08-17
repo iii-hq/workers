@@ -16,6 +16,7 @@ packages:
   - code-runner/ui
   - computer/ui
   - database/ui
+  - document/ui
   - editor/ui
   - eval/ui
   - harness/ui

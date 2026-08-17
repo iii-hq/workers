@@ -1,0 +1,250 @@
+/**
+ * Every rule is scoped under [data-iii-ui="document"].
+ *
+ * Injected CSS is unlayered, so one unscoped selector silently beats the
+ * console's own fully-layered styles across the whole document. Colors come
+ * from the console's design tokens, so both themes work without a media query.
+ */
+
+[data-iii-ui='document'] .document-ui {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  max-width: 64rem;
+  margin: 0 auto;
+}
+
+[data-iii-ui='document'] .document-ui__head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+[data-iii-ui='document'] .document-ui__title {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--color-ink);
+  margin: 0;
+}
+
+[data-iii-ui='document'] .document-ui__lede {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin: 0;
+  max-width: 46rem;
+}
+
+[data-iii-ui='document'] .document-ui__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.25rem 1.5rem;
+  border: 1px dashed var(--color-rule);
+  border-radius: 0.5rem;
+  background: var(--color-panel);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+[data-iii-ui='document'] .document-ui__drop--over {
+  border-color: var(--color-accent);
+  background: var(--color-paper-2);
+}
+
+/* Once a document is loaded the zone becomes a one-line bar: still a drop
+   target, no longer the centre of the page. */
+[data-iii-ui='document'] .document-ui__drop--compact {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.75rem;
+  border-style: solid;
+  border-color: var(--color-rule-2);
+}
+
+[data-iii-ui='document'] .document-ui__drop-label {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+[data-iii-ui='document'] .document-ui__drop-file {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='document'] .document-ui__drop-hint {
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+[data-iii-ui='document'] .document-ui__file {
+  display: none;
+}
+
+[data-iii-ui='document'] .document-ui__result {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+[data-iii-ui='document'] .document-ui__verdict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+[data-iii-ui='document'] .document-ui__verdict-meaning {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+}
+
+[data-iii-ui='document'] .document-ui__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+[data-iii-ui='document'] .document-ui__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 0.375rem;
+  background: var(--color-panel);
+}
+
+[data-iii-ui='document'] .document-ui__stat-label {
+  color: var(--color-ink-ghost);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+[data-iii-ui='document'] .document-ui__stat-value {
+  color: var(--color-ink);
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+[data-iii-ui='document'] .document-ui__tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+[data-iii-ui='document'] .document-ui__pane {
+  max-height: 34rem;
+  overflow: auto;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 0.375rem;
+  padding: 1rem;
+  background: var(--color-bg);
+}
+
+/* The shared Monaco editor grows with its content, so the pane scrolls. */
+[data-iii-ui='document'] .document-ui__editor {
+  min-height: 20rem;
+  width: 100%;
+}
+
+[data-iii-ui='document'] .document-ui__timing {
+  color: var(--color-ink-ghost);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+[data-iii-ui='document'] .document-ui__assets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+[data-iii-ui='document'] .document-ui__asset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 0.375rem;
+  background: var(--color-panel);
+}
+
+[data-iii-ui='document'] .document-ui__asset-img {
+  width: 100%;
+  height: 8rem;
+  object-fit: contain;
+  background: var(--color-bg);
+  border-radius: 0.25rem;
+}
+
+[data-iii-ui='document'] .document-ui__asset-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 8rem;
+  padding: 0.5rem;
+  text-align: center;
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  background: var(--color-bg);
+  border-radius: 0.25rem;
+}
+
+[data-iii-ui='document'] .document-ui__asset-meta {
+  color: var(--color-ink-ghost);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The chat and trace renderer for document::* calls. */
+
+[data-iii-ui='document'] .document-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+[data-iii-ui='document'] .document-trigger__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='document'] .document-trigger__file {
+  color: var(--color-ink);
+  font-size: 0.85rem;
+}
+
+[data-iii-ui='document'] .document-trigger__meta {
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui='document'] .document-trigger__line {
+  color: var(--color-ink-faint);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0;
+}

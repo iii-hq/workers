@@ -18,6 +18,14 @@
 
 import { getIiiClient } from '@/lib/iii-client'
 import type { Attachment } from '@/types/chat'
+import {
+  ATTACHED_FILE_PREFIX,
+  type AttachmentFailure,
+  describeWorkerFailure,
+  escapeAttr,
+  failureBlock,
+  fileToBase64,
+} from './shared'
 
 export const CLASSIFY_FUNCTION_ID = 'pdf::classify'
 export const TO_MARKDOWN_FUNCTION_ID = 'pdf::to-markdown'
@@ -39,12 +47,7 @@ export const MAX_MARKDOWN_CHARS = 20_000
  */
 export const MAX_PDF_BYTES = 64 * 1024 * 1024
 
-const ATTACHED_FILE_PREFIX = '<attached-file '
-
-export interface PdfExpansionFailure {
-  name: string
-  reason: string
-}
+export type PdfExpansionFailure = AttachmentFailure
 
 /**
  * What one document turned into, for the chip on the sent message.
@@ -108,22 +111,6 @@ type TriggerFn = (
   functionId: string,
   payload: Record<string, unknown>,
 ) => Promise<unknown>
-
-/**
- * Base64 without building one enormous argument list.
- *
- * `String.fromCharCode(...bytes)` overflows the call stack somewhere around a
- * megabyte, which is a small PDF. Chunking keeps it linear and bounded.
- */
-async function fileToBase64(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  const CHUNK = 0x8000
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
-  }
-  return btoa(binary)
-}
 
 /**
  * Read every attached PDF through the `pdf` worker and format the blocks.
@@ -312,30 +299,6 @@ function scannedBlock(
   )
 }
 
-function failureBlock(name: string, reason: string): string {
-  return `${ATTACHED_FILE_PREFIX}path="${escapeAttr(name)}" error="${escapeAttr(reason)}" />`
-}
-
-/**
- * The one failure worth naming precisely: the worker is not installed. Anything
- * else surfaces as-is, trimmed.
- */
 function describeFailure(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err)
-  if (/not registered|NOT_FOUND|function .* not found/i.test(message)) {
-    return 'the pdf worker is not running — install it with `iii worker add pdf`'
-  }
-  return message.length > 160 ? `${message.slice(0, 157)}…` : message
-}
-
-/**
- * `>` has to be escaped as well as `&` and `"`. The header is parsed by finding
- * the first `>`, so a file name containing one would cut the header short and
- * lose every attribute after it.
- */
-function escapeAttr(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('>', '&gt;')
+  return describeWorkerFailure(err, 'pdf')
 }

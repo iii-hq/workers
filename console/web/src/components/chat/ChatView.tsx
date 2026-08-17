@@ -23,9 +23,13 @@ import {
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
+import { expandAttachments, hasExpandableAttachments } from '@/lib/attachments'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
-import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import {
+  type HarnessImageBlock,
+  predictedUserEntryId,
+} from '@/lib/backend/harness-send'
 import { serialRefresh } from '@/lib/backend/serial-refresh'
 import {
   mergeFiredTriggers,
@@ -41,11 +45,6 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import {
-  expandPdfAttachments,
-  isPdfAttachment,
-  summaryLabel,
-} from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
@@ -580,17 +579,19 @@ export function ChatView({
             ).blocks
           }
         }
-        // Same expansion as the live send path: a queued message's PDFs have
-        // to reach the agent as markdown too, or editing a queued message
-        // would silently drop the document it carried.
+        // Same expansion as the live send path: a queued message's documents
+        // and pictures have to reach the agent too, or editing a queued
+        // message would silently drop what it carried.
+        let attachedImages: HarnessImageBlock[] | undefined
         if (
           backend.id === 'real' &&
-          payload.attachments.some(isPdfAttachment)
+          hasExpandableAttachments(payload.attachments)
         ) {
-          const expanded = await expandPdfAttachments(payload.attachments)
+          const expanded = await expandAttachments(payload.attachments)
           if (expanded.blocks.length > 0) {
             attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
+          if (expanded.images.length > 0) attachedImages = expanded.images
           // Same reporting as the live send path. Staying silent here would let
           // an edited queued message lose its document with no explanation.
           for (const failure of expanded.failures) {
@@ -608,7 +609,9 @@ export function ChatView({
             conversationId,
             id,
             payload.text,
-            attachedBlocks ? { attachedBlocks } : undefined,
+            attachedBlocks || attachedImages
+              ? { attachedBlocks, attachedImages }
+              : undefined,
           )
         } catch (err) {
           onAppendMessage(
@@ -1156,30 +1159,37 @@ export function ChatView({
         }
       }
 
-      // A PDF is not text: read as bytes it reaches the model as noise, so the
-      // `pdf` worker converts it on this machine and the markdown is appended
-      // as another attachment block. Failures never block the send — an
-      // unreadable document becomes a placeholder block plus a warn notice, so
-      // the model knows it was handed something it could not read.
-      if (backend.id === 'real' && payload.attachments.some(isPdfAttachment)) {
-        const expanded = await expandPdfAttachments(payload.attachments)
+      // Attachments are not text. A PDF or an office document read as bytes
+      // reaches the model as noise, and an image reaches it as nothing at all,
+      // so each kind is expanded on this machine first: documents into
+      // `<attached-file …>` markdown blocks, pictures into image content
+      // blocks. Failures never block the send — an unreadable attachment
+      // becomes a placeholder block plus a warn notice, so the model knows it
+      // was handed something that could not be read.
+      let attachedImages: HarnessImageBlock[] | undefined
+      if (
+        backend.id === 'real' &&
+        hasExpandableAttachments(payload.attachments)
+      ) {
+        const expanded = await expandAttachments(payload.attachments)
         if (expanded.blocks.length > 0) {
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
         }
-        // Relabel the chip with what the worker made of the document. The
-        // expansion runs before the model is called, so it never shows up as a
-        // function call — without this a person has no way to tell the PDF was
-        // read at all.
+        if (expanded.images.length > 0) attachedImages = expanded.images
+        // Relabel the chip with what the expansion made of each attachment.
+        // It runs before the model is called, so it never shows up as a
+        // function call — without this a person has no way to tell the
+        // document was read at all.
         if (expanded.read.length > 0 && !willQueue) {
-          const byId = new Map(expanded.read.map((r) => [r.id, r]))
+          const byId = new Map(expanded.read.map((r) => [r.id, r.label]))
           onPatchMessage(conversationId, userMsg.id, {
             // `file` is dropped here as well as relabelled. It has done its job
             // by now, and keeping it would hold the whole document in memory
             // for as long as the conversation stays open.
             attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
               void file
-              const summary = byId.get(a.id)
-              return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
+              const label = byId.get(a.id)
+              return label ? { ...a, name: label } : a
             }),
           })
         }
@@ -1215,6 +1225,9 @@ export function ChatView({
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
+                : {}),
+              ...(attachedImages && attachedImages.length > 0
+                ? { attachedImages }
                 : {}),
             },
           )
@@ -1263,6 +1276,9 @@ export function ChatView({
             approvalEventsExternallyManaged: true,
             ...(attachedBlocks && attachedBlocks.length > 0
               ? { attachedBlocks }
+              : {}),
+            ...(attachedImages && attachedImages.length > 0
+              ? { attachedImages }
               : {}),
           },
         )) {

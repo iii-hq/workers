@@ -1,0 +1,178 @@
+# document
+
+Read office documents on the machine, with no conversion service and no API
+key. This worker takes a Word, PowerPoint, Excel, OpenDocument, RTF, EPUB or CSV
+file and returns markdown that keeps its headings, lists, tables and notes, in
+single-digit milliseconds for a typical document. It identifies a file from its
+bytes rather than trusting its name, so a mislabelled attachment still converts.
+And it hands back the images markdown cannot carry, which is what a deck of
+diagrams actually holds. Nothing is uploaded, and a long document is capped
+rather than dumped, so a report does not swallow the context an agent needed for
+the answer.
+
+It ships a console page too. Drop a document in and see exactly what the agent
+sees: the detected format, the markdown, and the images inside.
+
+## Install
+
+```bash
+iii worker add document
+```
+
+## Quickstart
+
+```rust
+use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::protocol::TriggerRequest;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let markdown = iii.trigger(TriggerRequest {
+        function_id: "document::to-markdown".into(),
+        payload: json!({ "path": "/tmp/quarterly.docx" }),
+        action: None,
+        timeout_ms: Some(60_000),
+    }).await?;
+    // { "format": "docx", "family": "prose", "detected_from": "content",
+    //   "body": { "text": "# Quarterly Notes\n…", "chars": 5693,
+    //             "total_chars": 5693, "truncated": false },
+    //   "asset_count": 0, "elapsed_ms": 4, … }
+
+    println!("{markdown:#?}");
+    Ok(())
+}
+```
+
+A document with no path goes in as `bytes_base64` instead — the shape a composer
+attachment takes. Add `file_name` with it: a CSV carries no signature of its
+own, and without a name it cannot be recognised.
+
+## Formats
+
+| Format | Extensions |
+|---|---|
+| Word | `.doc`, `.docx`, `.docm` |
+| PowerPoint | `.ppt`, `.pps`, `.pot`, `.pptx`, `.pptm`, `.ppsx`, `.ppsm` |
+| Excel | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` |
+| OpenDocument | `.odt`, `.ods`, `.odp` |
+| Rich Text | `.rtf` |
+| EPUB | `.epub` |
+| CSV | `.csv` |
+| PDF | `.pdf` (text-based; see below) |
+
+Container variants collapse onto one name: `.docm` is `docx`, `.xlsb` is
+`excel`. A caller matches on the format, never on the extension it happened to
+send.
+
+### PDFs
+
+A text-based PDF converts here, which makes this worker a complete answer for a
+mixed pile of attachments on its own. When the [`pdf`](../pdf) worker is
+installed it is the better route for them: it classifies scanned versus
+text-based and names the individual pages that need OCR, where this worker can
+only convert or fail.
+
+## Detect before you convert
+
+`document::detect` reads the signature in the first bytes of a file and answers
+in microseconds. It exists for the case where something arrives and nobody knows
+what it is.
+
+```json
+{
+  "format": "pptx",
+  "family": "presentation",
+  "detected_from": "content",
+  "convertible": true,
+  "has_assets": true,
+  "size_bytes": 184320,
+  "source": "roadmap.pptx",
+  "elapsed_ms": 0
+}
+```
+
+`detected_from` is the field worth reading. `content` means the bytes named the
+format, which is the strong answer. `extension` means they did not, and only the
+file name suggested it — expected for a CSV, and a reason for suspicion on
+anything else. A `format` of `null` is an answer too: this is not a document
+this worker reads, not a document that is broken.
+
+## The images markdown drops
+
+Markdown renders an embedded image as its alt text. For prose that is right. For
+a deck built out of diagrams it throws away the content and leaves a page of
+titles, which reads as a document that had little to say.
+
+`document::to-markdown` reports `asset_count` so that case is visible, and
+`document::extract-assets` returns the bytes:
+
+```json
+{
+  "format": "pptx",
+  "assets": [
+    {
+      "index": 0,
+      "media_type": "image/png",
+      "origin_part": "ppt/media/image1.png",
+      "size_bytes": 48211,
+      "bytes_base64": "iVBORw0KGgo…"
+    }
+  ],
+  "total_count": 1,
+  "truncated": false
+}
+```
+
+Two ceilings apply, and both report what they dropped rather than trimming
+silently. `max_assets` bounds how many come back. `max_asset_bytes` bounds one
+payload: a larger asset is still listed with its type and size, with `omitted:
+"too_large"` saying why its bytes are absent. `include_bytes: false` inventories
+a document without moving anything.
+
+## Response caps
+
+Every text-bearing response is capped and says so. `truncated: true` with a
+`total_chars` far above `chars` means you are holding a fragment. `max_chars: 0`
+takes the whole document, and belongs in a pipeline moving a document to
+storage rather than in a call whose result lands in a conversation.
+
+## Configuration
+
+Configuration lives in the `configuration` worker under the id `document` and
+every field hot-reloads. Nothing here needs a restart.
+
+```yaml
+max_input_bytes: 67108864   # largest document accepted, before parsing
+max_chars: 40000            # default cap on returned markdown
+preview_chars: 600          # leading characters shown alongside a capped body
+max_assets: 24              # assets returned in one response
+max_asset_bytes: 8388608    # largest single asset returned with its bytes
+```
+
+A per-call `max_assets` narrows this ceiling and cannot raise it: the limit
+bounds one response, and a caller asking for a thousand images is the case it
+exists for.
+
+Defaults live in [`src/config.rs`](src/config.rs).
+
+## Called on demand
+
+This worker registers no harness hook and injects nothing into any prompt. A
+conversation that never touches a document never pays for it, and there is no
+per-turn cost to having it installed. An agent finds it the ordinary way,
+through the function registry and [`skills/SKILL.md`](skills/SKILL.md); a person
+finds it through the console page.
+
+## What this worker does not do
+
+It does not OCR. A scanned document holds pictures of text, and nothing here
+turns pixels into characters; the images come back as bytes and a vision model
+is the next step.
+
+It does not write documents. Conversion is one way, into markdown.
+
+It cannot open an encrypted document. There is no password parameter, because
+there is nothing behind it that could decrypt one.

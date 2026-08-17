@@ -1,0 +1,298 @@
+{
+  "description": "Identify a document's format from its bytes (falling back to the file name for CSV, which carries no signature), and report which family it belongs to and whether this worker can convert it. Microseconds, and no conversion.",
+  "function_id": "document::detect",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell and pdf workers take.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the document comes from. Exactly one of `path` and `bytes_base64` must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded document bytes, for a document with no path — an attachment held in memory. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "file_name": {
+        "default": null,
+        "description": "Original file name for inline bytes, used only to recognise a format the content cannot name. A `.csv` needs this; nothing else does. Ignored when `path` is set, which carries its own name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the document. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DetectedFrom": {
+        "description": "How the format was arrived at, weakest claim last.",
+        "oneOf": [
+          {
+            "description": "The caller named it, and the bytes were not consulted.",
+            "enum": [
+              "requested"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The signature the format's specification designates (PDF header, RTF open group, OLE stream names, ZIP package mimetype).",
+            "enum": [
+              "content"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The file extension only. CSV carries no signature, so this is the only way it is ever recognised; for any other format it means the content did not match anything known.",
+            "enum": [
+              "extension"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Family": {
+        "description": "What the document is, rather than which program wrote it.\n\nA caller routing a mixed bag of attachments cares that a file is a spreadsheet, not that it is `.ods` rather than `.xlsx`.",
+        "oneOf": [
+          {
+            "description": "Prose: Word, OpenDocument Text, RTF.",
+            "enum": [
+              "prose"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rows and columns: Excel, OpenDocument Spreadsheet, CSV.",
+            "enum": [
+              "spreadsheet"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Slides: PowerPoint, OpenDocument Presentation.",
+            "enum": [
+              "presentation"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A book: EPUB.",
+            "enum": [
+              "book"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PDF, which is its own family because it is the one format with a dedicated worker and a page-level OCR decision.",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Format": {
+        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "oneOf": [
+          {
+            "description": "Binary Word 97-2003 (`.doc`).",
+            "enum": [
+              "doc"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "WordprocessingML (`.docx`, `.docm`).",
+            "enum": [
+              "docx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Text (`.odt`).",
+            "enum": [
+              "odt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rich Text Format (`.rtf`).",
+            "enum": [
+              "rtf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Binary PowerPoint 97-2003 (`.ppt`, `.pps`, `.pot`).",
+            "enum": [
+              "ppt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PresentationML (`.pptx`, `.pptm`, `.ppsx`, `.ppsm`).",
+            "enum": [
+              "pptx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Presentation (`.odp`).",
+            "enum": [
+              "odp"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Excel workbooks in every container (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`).",
+            "enum": [
+              "excel"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Spreadsheet (`.ods`).",
+            "enum": [
+              "ods"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Delimiter-separated text (`.csv`).",
+            "enum": [
+              "csv"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "EPUB 2 and 3 (`.epub`).",
+            "enum": [
+              "epub"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Portable Document Format (`.pdf`).",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "convertible": {
+        "description": "`true` when `document::to-markdown` can convert this file.",
+        "type": "boolean"
+      },
+      "detected_from": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DetectedFrom"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "How the format was arrived at. `extension` is the weaker claim: the content matched nothing known, and only the file name suggested this."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the detection.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "family": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Family"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What the document is: prose, a spreadsheet, a presentation, a book, a PDF. Absent when the format is unknown."
+      },
+      "format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Format"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The format, or `null` when nothing recognised it. A null means the file is not one of the formats this worker reads — an image, an archive, a plain text file — not that it is broken."
+      },
+      "has_assets": {
+        "description": "`true` when the format carries embedded assets `document::extract-assets` can pull out. A PDF converts straight to markdown and has none here.",
+        "type": "boolean"
+      },
+      "size_bytes": {
+        "description": "Size of the document in bytes.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document that arrived without one.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "convertible",
+      "elapsed_ms",
+      "has_assets",
+      "size_bytes",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}
