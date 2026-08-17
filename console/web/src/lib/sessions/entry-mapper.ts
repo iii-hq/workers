@@ -30,6 +30,7 @@ import type {
   FunctionTriggerMessage,
   Message,
   SystemMessage,
+  SystemNoticeTechnicalDetails,
   TriggerFiredData,
   UserMessage,
 } from '@/types/chat'
@@ -165,6 +166,35 @@ function lifecycleNotice(
 
   if (customType === ERROR_CUSTOM_TYPE) {
     const code = typeof d.code === 'string' ? d.code : undefined
+    const errorClass = typeof d.class === 'string' ? d.class : undefined
+    const detail =
+      typeof d.detail === 'string'
+        ? d.detail
+        : typeof d.reason === 'string'
+          ? d.reason
+          : typeof d.message === 'string'
+            ? d.message
+            : undefined
+    const provider = typeof d.provider === 'string' ? d.provider : undefined
+    const model = typeof d.model === 'string' ? d.model : undefined
+    const technicalDetails: SystemNoticeTechnicalDetails = {
+      code,
+      class: errorClass,
+      detail,
+      provider,
+      model,
+    }
+    const hasTechnicalDetails = Object.values(technicalDetails).some(Boolean)
+    const nextActions = Array.isArray(d.next_actions)
+      ? d.next_actions.filter(
+          (action): action is string =>
+            typeof action === 'string' && action.trim().length > 0,
+        )
+      : []
+    const publicSummary =
+      typeof d.summary === 'string'
+        ? d.summary
+        : 'The response could not be completed.'
     const partial = d.partial_result_available === true
     const recovery =
       d.recovery && typeof d.recovery === 'object'
@@ -177,20 +207,22 @@ function lifecycleNotice(
         ? recovery.max_attempts
         : undefined
     const parts = [
-      `turn failed${code ? ` [${code}]` : ''}${summary ? ` — ${summary}` : ''}`,
+      publicSummary,
       partial
-        ? 'partial output above was preserved and may be incomplete'
+        ? 'A partial response was preserved in this conversation and may be incomplete.'
         : undefined,
       attempted > 0
-        ? `recovery exhausted (${attempted}/${maxAttempts ?? attempted})`
+        ? `Automatic recovery stopped after ${attempted} of ${maxAttempts ?? attempted} attempts.`
         : undefined,
     ].filter((part): part is string => Boolean(part))
     return {
       id: entryId,
       role: 'system',
       kind: 'notice',
-      content: parts.join(' · '),
+      content: parts.join(' '),
       tone: 'error',
+      ...(nextActions.length > 0 ? { nextActions } : {}),
+      ...(hasTechnicalDetails ? { technicalDetails } : {}),
       createdAt,
     }
   }
