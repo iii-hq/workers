@@ -60,6 +60,11 @@ interface UiLoaderOptions {
   importModule?: (url: string) => Promise<{ default?: SetupFn }>
 }
 
+export interface ConversationAdapter {
+  selectConversation(sessionId: string): void
+  composerModel(conversationId?: string | null): string | null
+}
+
 /**
  * The scope wrapper every injected render mounts inside: `data-iii-ui`
  * carries the first segment of the script's path (worker CSS compiles
@@ -100,6 +105,7 @@ export function ExtErrorChip({ path, error }: { path: string; error: Error }) {
 
 function makeHost(
   api: ConsoleApi,
+  conversationAdapter: ConversationAdapter,
   path: string,
   cleanups: Array<() => void>,
 ): Host {
@@ -183,6 +189,12 @@ function makeHost(
           }),
         )
       },
+      selectConversation(sessionId) {
+        conversationAdapter.selectConversation(sessionId)
+      },
+      composerModel(conversationId) {
+        return conversationAdapter.composerModel(conversationId)
+      },
     },
   }
 }
@@ -195,6 +207,7 @@ function makeHost(
 export function startUiLoader(
   client: IiiClient,
   api: ConsoleApi,
+  conversationAdapter: ConversationAdapter,
   options: UiLoaderOptions = {},
 ): () => void {
   const loaded = new Map<string, Loaded>()
@@ -245,7 +258,7 @@ export function startUiLoader(
       if (typeof mod.default !== 'function') {
         throw new Error('no default setup() export')
       }
-      const host = makeHost(api, path, cleanups)
+      const host = makeHost(api, conversationAdapter, path, cleanups)
       const teardown = await mod.default(host)
       if (typeof teardown === 'function') cleanups.push(teardown)
       loaded.set(path, { kind: 'script', path, hash, cleanups })

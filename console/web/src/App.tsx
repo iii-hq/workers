@@ -26,6 +26,7 @@ import {
 } from '@/hooks/use-workspace-tabs'
 import {
   ConversationsProvider,
+  type InjectableUiRuntime,
   useConversationsCtx,
 } from '@/lib/conversations-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
@@ -46,7 +47,11 @@ import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PanelSide } from '@/types/injectable-ui'
 
-export function App() {
+export function App({
+  injectableUiRuntime,
+}: {
+  injectableUiRuntime?: Promise<InjectableUiRuntime>
+}) {
   const [theme, setTheme] = useTheme()
   const [view, setView] = useHashRoute()
   const extPageId = useExtPageRoute()
@@ -162,7 +167,7 @@ export function App() {
   }, [])
 
   return (
-    <ConversationsProvider>
+    <ConversationsProvider injectableUiRuntime={injectableUiRuntime}>
       <Sheet>
         <Header
           workspace={workspace}

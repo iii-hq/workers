@@ -244,6 +244,10 @@ export interface Host {
   chat: {
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
+    /** Jump the sidebar to this session. Feature-detect on older consoles. */
+    selectConversation?(sessionId: string): void
+    /** Live composer model for a conversation, including unsaved drafts. */
+    composerModel?(conversationId?: string | null): string | null
   }
 }
 
