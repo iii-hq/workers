@@ -259,6 +259,26 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
           workspaces: crates/${{ matrix.crate }} -> target
 
+      # The testkit enables every provider feature, including the Codex
+      # provider's bundled UI, so make that build dependency available before
+      # Cargo reaches provider-openai-codex/build.rs.
+      - name: Setup pnpm (provider testkit UI)
+        if: matrix.crate == 'provider-integration-testkit'
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (provider testkit UI)
+        if: matrix.crate == 'provider-integration-testkit'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build provider testkit UI
+        if: matrix.crate == 'provider-integration-testkit'
+        working-directory: provider-openai-codex/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
