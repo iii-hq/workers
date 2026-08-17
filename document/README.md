@@ -123,11 +123,14 @@ titles, which reads as a document that had little to say.
 }
 ```
 
-Two ceilings apply, and both report what they dropped rather than trimming
-silently. `max_assets` bounds how many come back. `max_asset_bytes` bounds one
-payload: a larger asset is still listed with its type and size, with `omitted:
-"too_large"` saying why its bytes are absent. `include_bytes: false` inventories
-a document without moving anything.
+Three ceilings apply, and all of them report what they dropped rather than
+trimming silently. `max_assets` bounds how many come back. `max_asset_bytes`
+bounds one payload, and `max_assets_total_bytes` bounds the response as a whole,
+because two dozen assets each just under the per-asset limit still add up to a
+quarter of a gigabyte once base64 inflates them. An asset left out either way is
+still listed with its type and size, with `omitted` saying which ceiling it hit
+(`too_large` or `budget_spent`), so a caller can ask for it on its own.
+`include_bytes: false` inventories a document without moving anything.
 
 ## Reading a scan
 
@@ -204,6 +207,7 @@ max_chars: 40000            # default cap on returned markdown
 preview_chars: 600          # leading characters shown alongside a capped body
 max_assets: 24              # assets returned in one response
 max_asset_bytes: 8388608    # largest single asset returned with its bytes
+max_assets_total_bytes: 33554432  # total asset payload one response may carry
 ocr_model:                  # vision model document::ocr reads with; unset = every call chooses
 max_ocr_pages: 20           # pages one document::ocr call transcribes
 ocr_timeout_ms: 120000      # budget for one render or one model read

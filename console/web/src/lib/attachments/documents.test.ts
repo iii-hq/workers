@@ -135,7 +135,8 @@ describe('expandDocumentAttachments', () => {
       [doc('deck.pptx')],
       pictures,
     )
-    expect(withPictures.blocks[0]).toContain('Do not call it empty')
+    expect(withPictures.blocks[0]).toContain('NOT included in this message')
+    expect(withPictures.blocks[0]).toContain('Do not call the document empty')
 
     const blank = vi.fn().mockResolvedValue(
       converted({

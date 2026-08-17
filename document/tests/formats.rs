@@ -198,6 +198,35 @@ fn an_oversized_asset_is_listed_without_its_bytes() {
     assert_eq!(asset.media_type, "image/png");
 }
 
+/// The per-asset ceiling does not bound a response on its own: a couple of dozen
+/// assets each just under it still add up to a payload nobody asked for. The
+/// total budget stops the encoding while still listing what exists.
+#[test]
+fn the_response_budget_stops_encoding_but_not_listing() {
+    let cfg = WorkerConfig {
+        max_assets_total_bytes: 1,
+        ..WorkerConfig::default()
+    };
+    let response = assets::handle(
+        assets::Request {
+            source: source("sample.pptx"),
+            format: None,
+            max_assets: None,
+            media_type_prefix: None,
+            include_bytes: true,
+        },
+        &cfg,
+    )
+    .expect("extraction succeeds");
+
+    let asset = &response.assets[0];
+    assert!(asset.bytes_base64.is_none());
+    assert_eq!(asset.omitted, Some("budget_spent"));
+    // Still announced, with everything a caller needs to fetch it alone.
+    assert_eq!(asset.media_type, "image/png");
+    assert!(asset.size_bytes > 0);
+}
+
 /// Detection runs on the bytes, so a package format is recognised without its
 /// name — which is the case for a file pasted into a composer.
 #[test]

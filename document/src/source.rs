@@ -101,18 +101,44 @@ impl DocumentSource {
         scope: Option<&FsScope>,
         cfg: &WorkerConfig,
     ) -> Result<Vec<u8>, String> {
+        use std::io::Read as _;
+
         // Resolve before checking. A path is only inside the jail once symlinks
-        // and `..` are gone, and `metadata` would follow a symlink out of it.
+        // and `..` are gone, and a check that follows a symlink checks the wrong
+        // file.
         let resolved = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
         if let Some(scope) = scope {
             authorize(&resolved, scope)?;
         }
-        let meta = std::fs::metadata(&resolved).map_err(|e| format!("{path}: {e}"))?;
+
+        // Everything after this point works on ONE open handle. Checking the
+        // path, then checking it again for size, then opening it a third time to
+        // read leaves two windows: a file swapped for a symlink between the
+        // authorization and the read discloses a file outside the scope, and one
+        // that grows between the size check and the read walks past
+        // `max_input_bytes`. The handle is the same file for all three.
+        let file = std::fs::File::open(&resolved).map_err(|e| format!("{path}: {e}"))?;
+        let meta = file.metadata().map_err(|e| format!("{path}: {e}"))?;
         if !meta.is_file() {
             return Err(format!("{path}: not a file"));
         }
         check_size(meta.len(), cfg)?;
-        std::fs::read(&resolved).map_err(|e| format!("{path}: {e}"))
+
+        // Bounded regardless of what the metadata claimed: `take` is what makes
+        // the ceiling hold for a file being appended to right now, and for the
+        // special files whose reported length is a fiction.
+        let ceiling = if cfg.max_input_bytes > 0 {
+            cfg.max_input_bytes
+        } else {
+            u64::MAX
+        };
+        let mut bytes = Vec::with_capacity(meta.len().min(1 << 20) as usize);
+        let read = file
+            .take(ceiling.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("{path}: {e}"))?;
+        check_size(read as u64, cfg)?;
+        Ok(bytes)
     }
 
     fn decode(encoded: &str, cfg: &WorkerConfig) -> Result<Vec<u8>, String> {
@@ -287,6 +313,39 @@ mod tests {
         };
         let err = src.load(&cfg()).expect_err("malformed");
         assert!(err.contains("not valid base64"), "{err}");
+    }
+
+    /// The ceiling has to hold against the file itself, not only against what
+    /// its metadata claimed a moment earlier.
+    #[test]
+    fn a_file_over_the_ceiling_is_refused_on_the_bytes_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("big.csv");
+        std::fs::write(&path, vec![b'a'; 4096]).expect("write");
+
+        let cfg = WorkerConfig {
+            max_input_bytes: 128,
+            ..WorkerConfig::default()
+        };
+        let source = DocumentSource {
+            path: Some(path.to_string_lossy().to_string()),
+            ..DocumentSource::default()
+        };
+        let err = source.load(&cfg).expect_err("over the ceiling");
+        assert!(err.contains("max_input_bytes"), "{err}");
+    }
+
+    #[test]
+    fn a_file_inside_the_ceiling_reads_whole() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("rows.csv");
+        std::fs::write(&path, b"a,b\n1,2\n").expect("write");
+
+        let source = DocumentSource {
+            path: Some(path.to_string_lossy().to_string()),
+            ..DocumentSource::default()
+        };
+        assert_eq!(source.load(&cfg()).expect("reads"), b"a,b\n1,2\n");
     }
 
     #[test]

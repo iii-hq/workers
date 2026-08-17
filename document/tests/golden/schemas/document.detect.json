@@ -271,7 +271,7 @@
         "description": "The format, or `null` when nothing recognised it. A null means the file is not one of the formats this worker reads — an image, an archive, a plain text file — not that it is broken."
       },
       "has_assets": {
-        "description": "`true` when the format carries embedded assets `document::extract-assets` can pull out. A PDF converts straight to markdown and has none here.",
+        "description": "`true` when the format can carry embedded assets for `document::extract-assets` to pull out. False for a PDF, which converts straight to markdown without a document model, and for a CSV, which is rows of text with nowhere to put a picture. A caller routing on this should not spend a call to be told a spreadsheet has no images.",
         "type": "boolean"
       },
       "size_bytes": {

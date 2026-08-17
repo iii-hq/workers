@@ -1201,16 +1201,19 @@ export function ChatView({
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
         }
         if (expanded.images.length > 0) attachedImages = expanded.images
-        // Relabel the chip with what the expansion made of each attachment.
-        // It runs before the model is called, so it never shows up as a
-        // function call — without this a person has no way to tell the
-        // document was read at all.
-        if (expanded.read.length > 0 && !willQueue) {
+        // Drop the source bytes and relabel the chip with what the expansion
+        // made of each attachment. The relabel runs before the model is called,
+        // so it never shows up as a function call — without it a person has no
+        // way to tell the document was read at all.
+        //
+        // The `file` removal is NOT conditional on anything having been read:
+        // an attachment that failed, or an image refused for a model that
+        // cannot see, has finished its job too, and keeping its bytes would
+        // hold the whole file in memory for as long as the conversation stays
+        // open. Only the label depends on a matching entry.
+        if (!willQueue) {
           const byId = new Map(expanded.read.map((r) => [r.id, r.label]))
           onPatchMessage(conversationId, userMsg.id, {
-            // `file` is dropped here as well as relabelled. It has done its job
-            // by now, and keeping it would hold the whole document in memory
-            // for as long as the conversation stays open.
             attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
               void file
               const label = byId.get(a.id)

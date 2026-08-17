@@ -215,7 +215,7 @@
             "type": "string"
           },
           "omitted": {
-            "description": "Why the payload is absent, when it is: `not_requested` or `too_large`.",
+            "description": "Why the payload is absent, when it is: `not_requested`, `too_large` (this asset alone is over the per-asset ceiling), or `budget_spent` (the response's total byte budget went on earlier assets — ask for this one on its own).",
             "type": [
               "string",
               "null"

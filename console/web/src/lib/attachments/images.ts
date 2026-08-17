@@ -125,6 +125,67 @@ export function needsDownscale(file: { size: number }): boolean {
 }
 
 /**
+ * The pixel dimensions in an image's own header, without decoding it.
+ *
+ * Bytes are a poor proxy for size: a screenshot of a mostly-flat UI compresses
+ * to a few hundred kilobytes at eight thousand pixels wide, sails under the
+ * byte ceiling, and then costs a fortune in tokens for detail no model uses.
+ * Reading the header is cheap enough to do for every image and needs no canvas,
+ * which keeps the decision testable.
+ *
+ * `null` for a format not parsed here — the byte ceiling stays the backstop.
+ */
+export function dimensionsOf(
+  bytes: Uint8Array,
+): { width: number; height: number } | null {
+  // Read the integers by hand rather than through a DataView: a Uint8Array's
+  // buffer may be a SharedArrayBuffer as far as the types are concerned, and
+  // these are four fields in three formats.
+  const u16 = (at: number) => (bytes[at] << 8) | bytes[at + 1]
+  const u16le = (at: number) => bytes[at] | (bytes[at + 1] << 8)
+  const u32 = (at: number) =>
+    bytes[at] * 0x1000000 +
+    ((bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3])
+
+  // PNG: IHDR is always the first chunk, width and height at a fixed offset.
+  if (bytes.length > 24 && bytes[0] === 0x89 && bytes[1] === 0x50) {
+    return { width: u32(16), height: u32(20) }
+  }
+
+  // GIF: little-endian, straight after the signature.
+  if (bytes.length > 10 && bytes[0] === 0x47 && bytes[1] === 0x49) {
+    return { width: u16le(6), height: u16le(8) }
+  }
+
+  // JPEG: walk the segment chain to the start-of-frame, which is the only
+  // marker carrying the dimensions.
+  if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) return null
+      const marker = bytes[offset + 1]
+      // SOF0-SOF15, minus the four that are not frame headers.
+      const isFrame =
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      if (isFrame) return { height: u16(offset + 5), width: u16(offset + 7) }
+      offset += 2 + u16(offset + 2)
+    }
+  }
+
+  return null
+}
+
+/** Whether an image is larger than the long-edge ceiling. */
+export function exceedsEdge(bytes: Uint8Array, edge = MAX_IMAGE_EDGE): boolean {
+  const size = dimensionsOf(bytes)
+  return size !== null && Math.max(size.width, size.height) > edge
+}
+
+/**
  * Re-encode an oversized image at the long-edge ceiling.
  *
  * Everything runs in the browser: the bytes are already here, and a round trip
@@ -201,10 +262,16 @@ export async function expandImageAttachments(
     }
 
     const unreadableFormat = !SUPPORTED_IMAGE_MIME.has(mime)
-    const tooLarge = needsDownscale(file)
-    // One re-encode covers both problems: it lands on JPEG at the long-edge
-    // ceiling, which is a format every model reads and a size every model
-    // takes.
+    // Both ceilings matter, and neither implies the other: a photograph busts
+    // the byte limit at a sane resolution, while a flat-coloured screenshot
+    // eight thousand pixels wide compresses under it and still costs tokens for
+    // detail no model uses.
+    const tooLarge =
+      needsDownscale(file) ||
+      exceedsEdge(new Uint8Array(await file.arrayBuffer()))
+    // One re-encode covers all three problems: it lands on JPEG at the
+    // long-edge ceiling, which is a format every model reads and a size every
+    // model takes.
     const converted =
       unreadableFormat || tooLarge ? await downscale(file) : null
 
@@ -213,7 +280,7 @@ export async function expandImageAttachments(
         attachment,
         unreadableFormat
           ? `${mime} is not a format a model can read, and this browser could not convert it`
-          : `${formatBytes(attachment.size)} is over the ${formatBytes(MAX_IMAGE_BYTES)} limit and it could not be resized here`,
+          : `${formatBytes(attachment.size)} or ${MAX_IMAGE_EDGE}px is over the limit for one image and it could not be resized here`,
       )
       continue
     }

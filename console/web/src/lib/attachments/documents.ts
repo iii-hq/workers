@@ -217,7 +217,7 @@ async function expandOne(
   if (text.trim().length === 0) {
     notes.push(
       assets > 0
-        ? 'This document holds no text an agent can read — its content is the images above. Do not call it empty.'
+        ? `This document holds no text an agent can read: its content is ${assets} embedded image${assets === 1 ? '' : 's'}, which are NOT included in this message. Call document::extract-assets for them, or document::ocr to have them transcribed. Do not call the document empty.`
         : 'This document converted to nothing: it holds no text and no images.',
     )
   }

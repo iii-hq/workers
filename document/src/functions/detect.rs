@@ -44,8 +44,11 @@ pub struct Response {
     /// `true` when `document::to-markdown` can convert this file.
     pub convertible: bool,
 
-    /// `true` when the format carries embedded assets `document::extract-assets`
-    /// can pull out. A PDF converts straight to markdown and has none here.
+    /// `true` when the format can carry embedded assets for
+    /// `document::extract-assets` to pull out. False for a PDF, which converts
+    /// straight to markdown without a document model, and for a CSV, which is
+    /// rows of text with nowhere to put a picture. A caller routing on this
+    /// should not spend a call to be told a spreadsheet has no images.
     pub has_assets: bool,
 
     /// Size of the document in bytes.
@@ -70,7 +73,7 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
         family: resolved.map(|(format, _)| format.family()),
         detected_from: resolved.map(|(_, how)| how),
         convertible: resolved.is_some(),
-        has_assets: resolved.is_some_and(|(format, _)| format.has_document_model()),
+        has_assets: resolved.is_some_and(|(format, _)| format.carries_assets()),
         size_bytes: bytes.len() as u64,
         source: req.source.label(),
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -103,6 +106,16 @@ mod tests {
         assert_eq!(response.detected_from, Some(DetectedFrom::Content));
         assert!(response.convertible);
         // A PDF has no document model, so it has no assets to extract here.
+        assert!(!response.has_assets);
+    }
+
+    /// A CSV parses into a model, but rows of text cannot hold a picture.
+    /// Reporting `has_assets` for one sends a caller off to fetch an empty list.
+    #[test]
+    fn a_csv_reports_no_assets() {
+        let response = detect(b"name,total\nrohit,3\n", Some("rows.csv"));
+        assert_eq!(response.format, Some(Format::Csv));
+        assert!(response.convertible);
         assert!(!response.has_assets);
     }
 

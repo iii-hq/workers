@@ -45,6 +45,16 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_asset_bytes")]
     pub max_asset_bytes: u64,
 
+    /// Total bytes of asset payload one `document::extract-assets` response may
+    /// carry.
+    ///
+    /// The per-asset ceiling alone is not a bound on the response: 24 assets of
+    /// 8 MiB each is roughly a quarter of a gigabyte once base64 inflates it,
+    /// which is not a response any caller wanted. Encoding stops when this
+    /// budget is spent and the response says it was truncated.
+    #[serde(default = "default_max_assets_total_bytes")]
+    pub max_assets_total_bytes: u64,
+
     /// Vision model `document::ocr` reads pages with when a call names none.
     /// Unset means every call has to choose, which is the safer default for a
     /// function that spends money per page.
@@ -101,6 +111,10 @@ fn default_max_asset_bytes() -> u64 {
     8 * 1024 * 1024
 }
 
+fn default_max_assets_total_bytes() -> u64 {
+    32 * 1024 * 1024
+}
+
 fn default_max_ocr_pages() -> usize {
     20
 }
@@ -125,6 +139,7 @@ impl Default for WorkerConfig {
             preview_chars: default_preview_chars(),
             max_assets: default_max_assets(),
             max_asset_bytes: default_max_asset_bytes(),
+            max_assets_total_bytes: default_max_assets_total_bytes(),
             ocr_model: None,
             max_ocr_pages: default_max_ocr_pages(),
             ocr_timeout_ms: default_ocr_timeout_ms(),
@@ -163,6 +178,13 @@ impl WorkerConfig {
         if self.max_asset_bytes == 0 {
             return Err(
                 "max_asset_bytes must be at least 1; a ceiling of 0 drops the bytes of every asset"
+                    .to_string(),
+            );
+        }
+        if self.max_assets_total_bytes == 0 {
+            return Err(
+                "max_assets_total_bytes must be at least 1; a budget of 0 returns every asset \
+                 without its bytes while reporting success"
                     .to_string(),
             );
         }
@@ -221,13 +243,17 @@ impl WorkerConfig {
         requested.unwrap_or(self.max_chars)
     }
 
-    /// Effective asset ceiling for one response: a per-call request is honoured
-    /// only when it asks for FEWER than the configured ceiling. A call cannot
-    /// lift an operator's limit.
+    /// Effective asset ceiling for one response: a per-call request narrows the
+    /// configured ceiling and can never lift it.
+    ///
+    /// `Some(0)` means zero, not "use the default". The schema documents the
+    /// field as narrowing, so quietly widening a request for none into a
+    /// request for all of them hands back bytes the caller asked not to
+    /// receive; `null` is how a caller says it has no opinion.
     pub fn effective_max_assets(&self, requested: Option<usize>) -> usize {
         match requested {
-            Some(n) if n > 0 => n.min(self.max_assets),
-            _ => self.max_assets,
+            Some(n) => n.min(self.max_assets),
+            None => self.max_assets,
         }
     }
 }
@@ -352,7 +378,8 @@ mod tests {
         assert_eq!(cfg.effective_max_assets(None), 5);
         assert_eq!(cfg.effective_max_assets(Some(2)), 2);
         assert_eq!(cfg.effective_max_assets(Some(500)), 5);
-        assert_eq!(cfg.effective_max_assets(Some(0)), 5);
+        // Zero is an answer, not an absent opinion.
+        assert_eq!(cfg.effective_max_assets(Some(0)), 0);
     }
 
     #[test]

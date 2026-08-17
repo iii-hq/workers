@@ -69,20 +69,25 @@ export function useFileDrop({
     // so a boolean flickers the highlight off over every control in the pane.
     let depth = 0
 
+    // A file drag is consumed whether or not the composer will accept it.
+    // Returning early while disabled leaves the browser's own handling in
+    // place, and the browser's handling of a dropped PDF is to navigate to it:
+    // the console is replaced by a document viewer and the conversation is
+    // gone. Disabled means "do not attach", not "let the page eat itself".
     const handleDragEnter = (e: DragEvent) => {
-      if (disabledRef.current || !carriesFiles(e)) return
+      if (!carriesFiles(e)) return
       e.preventDefault()
+      if (disabledRef.current) return
       depth += 1
       setDragging(true)
     }
 
     const handleDragOver = (e: DragEvent) => {
-      if (disabledRef.current || !carriesFiles(e)) return
-      // Without a prevented `dragover` the browser never fires `drop` at all,
-      // and navigates to the file instead — replacing the console with a PDF
-      // viewer and losing the conversation.
+      if (!carriesFiles(e)) return
+      // Without a prevented `dragover` the browser never fires `drop` at all.
       e.preventDefault()
       e.stopPropagation()
+      if (disabledRef.current) return
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
 
@@ -93,11 +98,12 @@ export function useFileDrop({
     }
 
     const handleDrop = (e: DragEvent) => {
-      if (disabledRef.current || !carriesFiles(e)) return
+      if (!carriesFiles(e)) return
       e.preventDefault()
       e.stopPropagation()
       depth = 0
       setDragging(false)
+      if (disabledRef.current) return
       const files = Array.from(e.dataTransfer?.files ?? [])
       if (files.length > 0) onFilesRef.current(files)
     }
@@ -106,11 +112,11 @@ export function useFileDrop({
     // from a file manager carries only its name as text — which would land in
     // the message beside its own chip. Consume the paste in both cases.
     const handlePaste = (e: ClipboardEvent) => {
-      if (disabledRef.current) return
       const files = Array.from(e.clipboardData?.files ?? [])
       if (files.length === 0) return
       e.preventDefault()
       e.stopPropagation()
+      if (disabledRef.current) return
       onFilesRef.current(files)
     }
 

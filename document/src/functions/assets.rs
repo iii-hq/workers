@@ -77,7 +77,10 @@ pub struct Asset {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_base64: Option<String>,
 
-    /// Why the payload is absent, when it is: `not_requested` or `too_large`.
+    /// Why the payload is absent, when it is: `not_requested`, `too_large`
+    /// (this asset alone is over the per-asset ceiling), or `budget_spent` (the
+    /// response's total byte budget went on earlier assets — ask for this one
+    /// on its own).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub omitted: Option<&'static str>,
 }
@@ -140,6 +143,13 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
 
     let ceiling = cfg.effective_max_assets(req.max_assets);
     let total_count = matching.len();
+
+    // Two budgets, because the per-asset one alone does not bound a response:
+    // two dozen assets each just under the individual ceiling still add up to a
+    // payload nobody asked for. Spending the total stops the ENCODING, not the
+    // listing — every asset still comes back with its type and size, so the
+    // caller sees what exists and can ask for it directly.
+    let mut spent: u64 = 0;
     let assets = matching
         .into_iter()
         .take(ceiling)
@@ -149,7 +159,10 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
                 (None, Some("not_requested"))
             } else if size_bytes > cfg.max_asset_bytes {
                 (None, Some("too_large"))
+            } else if spent.saturating_add(size_bytes) > cfg.max_assets_total_bytes {
+                (None, Some("budget_spent"))
             } else {
+                spent = spent.saturating_add(size_bytes);
                 (Some(BASE64.encode(&asset.bytes)), None)
             };
             Asset {

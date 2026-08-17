@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { Attachment } from '@/types/chat'
 import {
+  dimensionsOf,
+  exceedsEdge,
   expandImageAttachments,
   fitWithin,
   imageMimeOf,
@@ -54,6 +56,53 @@ describe('fitWithin', () => {
   })
 })
 
+/** A PNG header carrying the given dimensions and nothing else of substance. */
+function pngHeader(width: number, height: number): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(new ArrayBuffer(32))
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const be = (at: number, value: number) => {
+    bytes[at] = (value >>> 24) & 0xff
+    bytes[at + 1] = (value >>> 16) & 0xff
+    bytes[at + 2] = (value >>> 8) & 0xff
+    bytes[at + 3] = value & 0xff
+  }
+  be(16, width)
+  be(20, height)
+  return bytes
+}
+
+describe('dimensionsOf', () => {
+  it('reads a PNG header without decoding the image', () => {
+    expect(dimensionsOf(pngHeader(8000, 1200))).toEqual({
+      width: 8000,
+      height: 1200,
+    })
+  })
+
+  it('reads a JPEG start-of-frame past its other segments', () => {
+    // SOI, an APP0 segment to skip, then SOF0 carrying 4000x3000.
+    const bytes = new Uint8Array([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11,
+      0x08, 0x0b, 0xb8, 0x0f, 0xa0, 0x03, 0x01, 0x22, 0x00,
+    ])
+    expect(dimensionsOf(bytes)).toEqual({ width: 4000, height: 3000 })
+  })
+
+  it('says nothing for a format it does not parse', () => {
+    expect(dimensionsOf(new Uint8Array([0x00, 0x01, 0x02, 0x03]))).toBeNull()
+  })
+})
+
+describe('exceedsEdge', () => {
+  /* Bytes are a poor proxy for pixels: a flat-coloured screenshot compresses to
+     almost nothing at eight thousand pixels wide, and every one of those pixels
+     is billed. */
+  it('catches a tiny file with enormous dimensions', () => {
+    expect(exceedsEdge(pngHeader(8000, 1200))).toBe(true)
+    expect(exceedsEdge(pngHeader(1200, 800))).toBe(false)
+  })
+})
+
 describe('needsDownscale', () => {
   it('triggers on the byte ceiling', () => {
     expect(needsDownscale({ size: MAX_IMAGE_BYTES + 1 })).toBe(true)
@@ -100,6 +149,28 @@ describe('expandImageAttachments', () => {
 
     expect(downscale).toHaveBeenCalled()
     expect(result.images[0].mime).toBe('image/jpeg')
+    expect(result.read[0].label).toContain('resized')
+  })
+
+  /* The regression this closes: a highly compressed image sailed under the
+     byte ceiling and was sent at full resolution. */
+  it('downscales a small file whose pixels are over the edge ceiling', async () => {
+    const downscale = vi.fn().mockResolvedValue({
+      blob: new Blob([new Uint8Array(32)]),
+      mime: 'image/jpeg',
+    })
+    const header = pngHeader(8000, 1200)
+    const attachment: Attachment = {
+      id: 'wide.png',
+      name: 'wide.png',
+      size: header.length,
+      type: 'image/png',
+      file: new File([header], 'wide.png', { type: 'image/png' }),
+    }
+    const result = await expandImageAttachments([attachment], downscale)
+
+    expect(downscale).toHaveBeenCalledTimes(1)
+    expect(result.images).toHaveLength(1)
     expect(result.read[0].label).toContain('resized')
   })
 
