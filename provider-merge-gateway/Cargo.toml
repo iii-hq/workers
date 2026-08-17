@@ -1,0 +1,39 @@
+[workspace]
+
+# 0.3.x: the provider-merge-gateway/v0.1.0–v0.2.1 tags belong to the retired
+# bundled Node provider; this lineage starts above them so Create Tag never
+# collides.
+[package]
+name = "provider-merge-gateway"
+version = "1.2.2"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Merge Gateway provider worker behind llm-router (OpenAI-compatible surface)."
+
+[[bin]]
+name = "provider-merge-gateway"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+llm-router = { path = "../llm-router", default-features = false }
+# Must match llm-router's pin (one iii-sdk per graph). 0.21.5 brings the
+# live span-start push: `provider::merge-gateway::stream` renders while streaming.
+iii-sdk = "=0.21.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Must stay on the same schemars major as iii-sdk so the derived
+# request/response schemas match what the SDK emits at registration.
+schemars = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
