@@ -1,6 +1,39 @@
 /** Small shared UI pieces + inline icons for the browser page. */
 
 import { StatusDot } from '@iii-dev/console-ui'
+import { useCallback, useRef, useState } from 'react'
+
+/**
+ * Container-driven responsive state for injected surfaces. The Console can
+ * place worker UI inside panes of any width, so viewport media queries are
+ * not a reliable signal for either the page or the configuration editor.
+ */
+export function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+  const [narrow, setNarrow] = useState(false)
+  const observerRef = useRef<ResizeObserver | null>(null)
+  const ref = useCallback(
+    (node: HTMLDivElement | null) => {
+      observerRef.current?.disconnect()
+      observerRef.current = null
+      if (!node) return
+
+      const width = node.getBoundingClientRect().width
+      if (width > 0) setNarrow(width < threshold)
+
+      const observer = new ResizeObserver((entries) => {
+        const next = entries[0]?.contentRect.width
+        if (typeof next === 'number' && next > 0) {
+          setNarrow(next < threshold)
+        }
+      })
+      observer.observe(node)
+      observerRef.current = observer
+    },
+    [threshold],
+  )
+
+  return [ref, narrow]
+}
 
 /** Header live / polling indicator for the session feed. */
 export function LivePill({ live }: { live: boolean }) {
@@ -20,21 +53,9 @@ export function LivePill({ live }: { live: boolean }) {
 }
 
 /** Narrow-mode drill-out affordance (session list ← workspace). */
-export function BackButton({
-  onClick,
-  label,
-}: {
-  onClick: () => void
-  label: string
-}) {
+export function BackButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <button
-      type="button"
-      className="br-ui-back"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
+    <button type="button" className="br-ui-back" onClick={onClick} aria-label={label} title={label}>
       <ChevronLeftIcon className="br-ui-back-icon" />
     </button>
   )
@@ -61,9 +82,7 @@ export function RefreshButton({
       title={label}
       disabled={disabled}
     >
-      <RotateIcon
-        className={`br-ui-iconbtn-icon${spinning ? ' br-ui-spin' : ''}`}
-      />
+      <RotateIcon className={`br-ui-iconbtn-icon${spinning ? ' br-ui-spin' : ''}`} />
     </button>
   )
 }

@@ -8,9 +8,11 @@
 
 import { useMemo, useSyncExternalStore } from 'react'
 import type {
+  ConfigFormLayout,
   ConfigFormProps,
   FunctionTriggerRenderer,
   PageRegistration,
+  ProviderConfigFormProps,
   SessionChipRegistration,
   SessionTurnSummaryRegistration,
 } from '@/types/injectable-ui'
@@ -33,6 +35,17 @@ export interface RegisteredConfigForm {
   configurationId: string
   /** Pre-wrapped by the loader (scope element + ErrorBoundary). */
   component: React.ComponentType<ConfigFormProps>
+  /** Host-owned layout for the form region. */
+  layout: ConfigFormLayout
+  scope: string
+  path: string
+}
+
+export interface RegisteredProviderConfigForm {
+  /** Exact llm-router provider id this form overrides. */
+  providerId: string
+  /** Pre-wrapped by the loader (scope element + ErrorBoundary). */
+  component: React.ComponentType<ProviderConfigFormProps>
   scope: string
   path: string
 }
@@ -113,6 +126,7 @@ export type UiAssetsStatus = 'loading' | 'ready' | 'unavailable'
 const pagesStore = createStore<RegisteredPage>()
 const renderersStore = createStore<RegisteredRenderer>()
 const configFormsStore = createStore<RegisteredConfigForm>()
+const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
 const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
@@ -149,6 +163,22 @@ export function registerExtConfigForm(entry: RegisteredConfigForm): () => void {
     )
   }
   return configFormsStore.add(entry)
+}
+
+/** Duplicate provider id: last registration wins in lookups. */
+export function registerExtProviderConfigForm(
+  entry: RegisteredProviderConfigForm,
+): () => void {
+  const duplicate = providerConfigFormsStore
+    .get()
+    .find((form) => form.providerId === entry.providerId)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate provider config-form override for '${entry.providerId}' — ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return providerConfigFormsStore.add(entry)
 }
 
 /** Duplicate chip id: last registration wins in `useExtSessionChips`. */
@@ -201,6 +231,17 @@ export function getExtConfigForm(
   const forms = configFormsStore.get()
   for (let i = forms.length - 1; i >= 0; i--) {
     if (forms[i].configurationId === configurationId) return forms[i]
+  }
+  return undefined
+}
+
+/** The injected form override for one model provider (last wins). */
+export function getExtProviderConfigForm(
+  providerId: string,
+): RegisteredProviderConfigForm | undefined {
+  const forms = providerConfigFormsStore.get()
+  for (let i = forms.length - 1; i >= 0; i--) {
+    if (forms[i].providerId === providerId) return forms[i]
   }
   return undefined
 }
@@ -295,6 +336,21 @@ export function useExtConfigForm(
   )
   for (let i = forms.length - 1; i >= 0; i--) {
     if (forms[i].configurationId === configurationId) return forms[i]
+  }
+  return undefined
+}
+
+/** The injected form override for one model provider (last wins). */
+export function useExtProviderConfigForm(
+  providerId: string,
+): RegisteredProviderConfigForm | undefined {
+  const forms = useSyncExternalStore(
+    providerConfigFormsStore.subscribe,
+    providerConfigFormsStore.get,
+    () => EMPTY,
+  )
+  for (let i = forms.length - 1; i >= 0; i--) {
+    if (forms[i].providerId === providerId) return forms[i]
   }
   return undefined
 }

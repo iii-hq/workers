@@ -53,6 +53,15 @@ jobs:
         with:
           workspaces: storage
 
+      - name: Setup pnpm (for storage UI build.rs)
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (for storage UI build.rs)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
       - name: Build worker
         run: cargo build --locked --release --bin storage
         working-directory: storage
@@ -98,16 +107,19 @@ jobs:
         with:
           workspaces: storage
 
+      - name: Setup pnpm (for storage UI build.rs)
+        uses: pnpm/action-setup@v5
+
       - uses: actions/setup-node@v5
         with:
           # setup-node v5 auto-caches when package.json declares packageManager.
           # This step never cached; the repository is already over its cache budget.
           package-manager-cache: false
-          node-version: '20'
           # No cache: harness has no committed package-lock.json (run-tests.sh
           # generates one via `npm install` at first run). setup-node@v4 with
           # `cache: 'npm'` against a missing lockfile is a hard failure, not a
           # warning. ~10s slower per run; revisit if we ever commit a lockfile.
+          node-version: '22'
 
       - name: Install iii engine
         run: |

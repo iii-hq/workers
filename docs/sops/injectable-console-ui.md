@@ -82,6 +82,7 @@ export default function setup(host: Host) {
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
   host.configForms.register('state', StateConfigForm)
+  host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
   // optional: return a teardown fn; the loader runs it on dispose
 }
 ```
@@ -104,7 +105,8 @@ Plain CSS, **every rule scoped under your worker's wrapper attribute**:
 The console mounts every injected render inside
 `<div data-iii-ui="<first path segment>" style="display:contents">`, so
 scoped rules apply to your UI and nothing else. Use the console's design
-tokens (`--color-bg`, `--color-ink`, `--color-ink-faint`, `--color-ink-ghost`,
+tokens (`--font-code`, `--color-bg`, `--color-ink`, `--color-ink-faint`,
+`--color-muted-foreground`, `--color-ink-ghost`,
 `--color-accent`, `--color-accent-fg`, `--color-alert`, `--color-ok`,
 `--color-warn`, `--color-panel`, `--color-paper-2`, `--color-ring`,
 `--color-rule`, `--color-rule-2`; also exported as `tokens` from
@@ -266,6 +268,9 @@ valid and simply ignores them:
   column; a single-column tab detaches back to the attach affordance).
   Wire it to `PageHeader`'s `onClose` — every page header carries the
   standard ✕. Absent when the page renders outside a closable pane.
+- `panelContext`: the latest ephemeral event sent to this page through
+  `host.panels.open()`. Its monotonic `id` changes for every click, including
+  repeated identical payloads; `context` is worker-defined JSON.
 
 #### The page chrome — MANDATORY layout for pages
 
@@ -298,6 +303,46 @@ own its body but MUST keep `PageShell` + `PageHeader`. The shell
 explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
 composition.
 
+### `host.panels.open({ pageId, context })`
+
+Open contextual worker content beside chat without teaching the console what
+that content means:
+
+```tsx
+function ScreenshotResult({ host, screenshotId }: Props) {
+  return (
+    <button
+      onClick={() =>
+        host.panels?.open({
+          pageId: 'browser',
+          context: { type: 'screenshot', screenshotId },
+        })
+      }
+    >
+      inspect screenshot
+    </button>
+  )
+}
+
+function BrowserPage({ panelContext }: PageRenderProps) {
+  useEffect(() => {
+    if (panelContext) showContext(panelContext.context)
+  }, [panelContext?.id])
+  // …
+}
+```
+
+The console owns placement: it reuses and activates an already-mounted page;
+otherwise it fills an empty column or inserts the page beside chat. It never
+replaces an existing pane. If the active tab is full, it creates a fresh
+chat + context split. The console stores context before mounting the page, so
+the first render receives the event that opened it.
+
+Context is JSON-only and ephemeral: it is not persisted with workspace tabs.
+Use opaque ids for large or sensitive bodies and let the page fetch the data
+from its worker on demand. Feature-detect `host.panels` when a worker bundle
+must remain compatible with older consoles.
+
 ### `host.functionTriggers.register(renderer)`
 
 Custom rendering for function-trigger messages in chat and traces:
@@ -310,6 +355,7 @@ interface FunctionTriggerRenderer {
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
+  metadata?: { display?: boolean }
   redactRaw?(value: unknown): unknown
 }
 ```
@@ -322,6 +368,19 @@ so you can override built-in rendering for your worker's functions. Return
 function ids) and let errors and everything else keep the default cards.
 Renderer callbacks are fenced: a throwing `isMatch` counts as no-match, a
 throwing `tryRender` degrades to an error chip, never a broken feed.
+
+`FunctionTriggerMessage.description` is the short user-facing action supplied
+by the harness `agent_trigger` wrapper. The host shows it in the collapsed
+activity row and reveals the concrete function id when the row is expanded;
+historic messages without it retain the function-id fallback.
+
+Set `metadata: { display: true }` when a successful custom result is a
+first-class chat artifact (file-change summaries, screenshots, images). The
+host keeps that winning renderer's non-null node visible while the raw
+request/response remain collapsed. Metadata is tied to the renderer that
+actually produced the node: a focused renderer can return `null` for errors
+or unsupported output and safely fall through to a general renderer. Do not
+mark ordinary terminal/status cards for display.
 
 #### `redactRaw` — your card is not the only exit
 
@@ -371,6 +430,33 @@ interface ConfigFormProps {
 The form is render-level only: dirty tracking, validation, save/reset and the
 SaveBar stay host-owned. You draw the fields and call `onChange`.
 
+### `host.providerConfigForms.register(providerId, component)`
+
+Replace the provider editor opened from the chat model picker (exact
+`llm-router` provider id; last registration wins). This is the preferred
+surface for provider-owned authentication nuances such as OAuth, a device
+flow, or importing a login from a companion app. Feature-detect it when a
+worker must support older consoles: `host.providerConfigForms?.register`.
+
+```ts
+interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+```
+
+The console still owns the authoritative `llm-router.providers[providerId]`
+slice, schema validation, dirty guard, save/reset, and model refresh. The
+provider owns only the form body and may call its own login/refresh functions
+through `host.iii`. Never render a plaintext API-key field: tell operators to
+use the provider's declared environment variable instead.
+
 ### `host.chat.registerSessionChip({ id, render })`
 
 A small per-session status chip in the chat header's right cluster (beside
@@ -397,6 +483,7 @@ Feature-detect on older consoles: `host.chat?.registerSessionChip`.
 | Surface | What it is |
 |---|---|
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
+| `host.panels` | Optional compatibility-gated contextual navigation: `open({ pageId, context })` places/reuses a registered page beside chat and sends it JSON context. |
 | shared components | The curated, pre-styled component library: `AnsiText`, `Badge`, `Button`, `Dialog`(+`Trigger/Close/Content/Title/Description`), `DropdownMenu`(+parts), `EmptyState`, `ErrorBoundary`, `FileDiff`, `Input`, `PageShell`/`PageHeader`/`PageBody`/`PageSidebar`/`PageMain` (the mandatory page chrome — see the pages section), `Select`, `Skeleton`, `StatusDot`, `StatusPanel`, `Tabs`(+parts), `TerminalCommandLine`, `TerminalStream`, `Tooltip`(+parts), `CodeEditor`, `CodeHighlight`, `JsonHighlight`, `Markdown`, `MarkdownPreview`. Import them by name from `@iii-dev/console-ui` (typed props); `host.components` carries the same objects as an untyped record. `CodeEditor` is **Monaco** — the console's one code editor, global by contract: every editing surface uses it (see the build-footgun note above; never ship your own). `FileDiff` is the console's one **file-diff** surface under the same contract — pass two full file bodies (`{ name, contents }` each) and the console computes and renders the themed diff; never bundle a diff renderer. The **terminal atoms** are shared under the same contract: `AnsiText` (ANSI SGR colors mapped onto the design tokens — red→alert, green→ok, yellow→warn, blue/cyan/magenta→accent, bold→semibold; extended-color params consumed, other CSI/OSC stripped), `TerminalStream` (labeled stdout/stderr pane, whitespace preserved, clamped behind an `expand · N lines` toggle, `tone="err"` tints warn), and `TerminalCommandLine` (the `$ command` header with chips and a copy affordance) — never bundle an ANSI parser or carry private terminal-rendering copies in a worker asset. For richer components, copy the pattern into your worker — small duplication across workers is the accepted cost; `@iii-dev/console-ui` is deliberately the only versioned contract. |
 | `host.useTheme()` | `'light' \| 'dark'`, reactive. Extensions follow the theme, never set it. |
 | `host.path` | Your script's asset path. |

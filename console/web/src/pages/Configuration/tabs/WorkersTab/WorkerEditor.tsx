@@ -107,6 +107,7 @@ export function WorkerEditor({
   // A root-level ('') validation error can't attach to any field; surface it
   // near the save bar so a disabled Save button always has a visible reason.
   const rootError = displayErrors.get('')
+  const fullForm = formOverride?.layout === 'full'
 
   // Bubble dirty changes up so the page shell can gate navigation.
   useEffect(() => {
@@ -196,7 +197,12 @@ export function WorkerEditor({
       aria-label={`configuration ${entry.id}`}
     >
       <EditorHeader entry={entry} dirty={dirty} onBack={onBack} />
-      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+      <div
+        className={cn(
+          'flex flex-1 min-h-0 min-w-0 flex-col',
+          fullForm ? 'overflow-hidden' : 'overflow-y-auto',
+        )}
+      >
         {valueQuery.isLoading ? <EditorLoading /> : null}
         {valueQuery.isError ? (
           <EditorError
@@ -210,7 +216,14 @@ export function WorkerEditor({
             <EditorLoading />
           ) : formOverride ? (
             <>
-              <div className="mx-auto max-w-3xl w-full px-6 py-8">
+              <div
+                className={cn(
+                  'w-full min-w-0',
+                  fullForm
+                    ? 'flex flex-1 min-h-0 flex-col'
+                    : 'mx-auto max-w-3xl px-6 py-8',
+                )}
+              >
                 <formOverride.component
                   id={entry.id}
                   schema={isObjectSchema(entry.schema) ? entry.schema : null}
@@ -220,7 +233,16 @@ export function WorkerEditor({
                   focusField={fieldPathFromHash(entry.id)?.map(String)}
                 />
                 {rootError ? (
-                  <p className={cn(wt.bodySm, 'text-alert mt-4')} role="alert">
+                  <p
+                    className={cn(
+                      wt.bodySm,
+                      'text-alert',
+                      fullForm
+                        ? 'shrink-0 border-t border-edge px-4 py-3'
+                        : 'mt-4',
+                    )}
+                    role="alert"
+                  >
                     {rootError}
                   </p>
                 ) : null}

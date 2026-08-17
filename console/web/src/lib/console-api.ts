@@ -118,9 +118,12 @@ export const components: ConsoleApi['components'] = {
 
 /** Token names mirroring `index.css`'s `@theme` block (documentation aid). */
 const tokens: readonly string[] = [
+  '--font-code',
   '--color-bg',
   '--color-ink',
   '--color-ink-faint',
+  '--color-muted-foreground',
+  '--color-trigger-running',
   '--color-ink-ghost',
   '--color-accent',
   '--color-accent-fg',

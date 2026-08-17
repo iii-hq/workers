@@ -26,13 +26,17 @@ function userItem(
 function assistantItem(
   entryId: string,
   content: Extract<AgentMessage, { role: 'assistant' }>['content'],
+  stopReason: Extract<
+    AgentMessage,
+    { role: 'assistant' }
+  >['stop_reason'] = 'end',
 ): TranscriptItem {
   return {
     entry_id: entryId,
     message: {
       role: 'assistant',
       content,
-      stop_reason: 'end',
+      stop_reason: stopReason,
       model: 'm',
       provider: 'p',
       timestamp: 2,
@@ -67,6 +71,26 @@ describe('entrySegments', () => {
       id: 'msg-1-user-0',
       role: 'user',
       content: 'hello',
+    })
+  })
+
+  it('preserves the assistant stop reason for progress grouping', () => {
+    const [msg] = entrySegments(
+      assistantItem(
+        'msg-2-assistant-0',
+        [
+          {
+            type: 'text',
+            text: 'The scan found two matches; next I will edit.',
+          },
+        ],
+        'function_call',
+      ),
+    )
+
+    expect(msg).toMatchObject({
+      role: 'assistant',
+      stopReason: 'function_call',
     })
   })
 
@@ -258,7 +282,11 @@ describe('entrySegments', () => {
           type: 'function_call',
           id: 'fc-1',
           function_id: 'agent_trigger',
-          arguments: { function: 'shell::run', payload: { command: 'ls' } },
+          arguments: {
+            function: 'shell::run',
+            description: 'Listing project files',
+            payload: { command: 'ls' },
+          },
         },
       ]),
       'sess-1',
@@ -270,6 +298,7 @@ describe('entrySegments', () => {
     ])
     expect(segments[2]).toMatchObject({
       functionId: 'shell::run',
+      description: 'Listing project files',
       input: { command: 'ls' },
       functionTriggerId: 'fc-1',
       sessionId: 'sess-1',
@@ -280,10 +309,10 @@ describe('entrySegments', () => {
     expect(entrySegments(assistantItem('e-a', []))).toEqual([])
   })
 
-  // Mid-stream, the harness rides the raw in-flight args tail on
-  // `_streaming` beside the salvaged fields — the request pane shows the
-  // command forming instead of `empty` for the whole stream.
-  it('surfaces the streaming arguments tail while wrapper args form', () => {
+  // Mid-stream, the harness exposes the router's bounded identity preview
+  // beside the raw tail. The row can render the action before valid JSON has
+  // reached the closing delimiters without parsing JSON in the harness.
+  it('surfaces partial wrapper identity while args form', () => {
     const withTarget = entrySegments(
       assistantItem('e-a', [
         {
@@ -291,14 +320,17 @@ describe('entrySegments', () => {
           id: 'fc-1',
           function_id: 'agent_trigger',
           arguments: {
-            function: 'state::set',
+            function: 'state::se',
+            description: 'Updating arti',
+            _partial: true,
             _streaming: '"payload":{"value":"grow',
           },
         },
       ]),
     )[0]
     expect(withTarget).toMatchObject({
-      functionId: 'state::set',
+      functionId: 'state::se',
+      description: 'Updating arti',
       input: { _streaming: '"payload":{"value":"grow' },
     })
     expect(withTarget).not.toMatchObject({ unresolvedTarget: true })

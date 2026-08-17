@@ -12,9 +12,11 @@
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import type { IiiClient } from '@/lib/iii-client'
+import { requestPanelOpen } from '@/lib/panel-context'
 import {
   registerExtConfigForm,
   registerExtPage,
+  registerExtProviderConfigForm,
   registerExtRenderer,
   registerExtSessionChip,
   registerExtSessionTurnSummary,
@@ -24,6 +26,7 @@ import type {
   ConfigFormProps,
   ConsoleApi,
   Host,
+  ProviderConfigFormProps,
   SessionChipProps,
   SessionTurnSummaryProps,
   SetupFn,
@@ -135,15 +138,38 @@ function makeHost(
         return track(registerExtRenderer({ renderer, scope, path }))
       },
     },
+    panels: {
+      open(request) {
+        requestPanelOpen(request)
+      },
+    },
     configForms: {
-      register(configurationId, component) {
+      register(configurationId, component, options) {
         const Form = component
         return track(
           registerExtConfigForm({
             configurationId,
+            layout: options?.layout ?? 'contained',
             scope,
             path,
             component: (props: ConfigFormProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Form {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+    },
+    providerConfigForms: {
+      register(providerId, component) {
+        const Form = component
+        return track(
+          registerExtProviderConfigForm({
+            providerId,
+            scope,
+            path,
+            component: (props: ProviderConfigFormProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Form {...props} />
               </ScopedExtension>

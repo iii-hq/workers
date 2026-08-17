@@ -142,6 +142,7 @@ fn every_identity_prompt_teaches_the_live_surface() {
     {
         let name = label(&path);
         let body = std::fs::read_to_string(&path).expect("prompt is readable");
+        let normalized = body.replace('\n', " ");
         assert!(
             body.contains("engine::register_trigger"),
             "{name} never mentions the callback primitive"
@@ -153,6 +154,30 @@ fn every_identity_prompt_teaches_the_live_surface() {
         assert!(
             body.contains("orchestrator: true"),
             "{name} never mentions the leaf default's escape hatch"
+        );
+        assert!(
+            normalized.contains("materially new investigative or action phase"),
+            "{name} never asks for a user-visible update when a new phase starts"
+        );
+        assert!(
+            normalized.contains("One update may cover any number of related function calls"),
+            "{name} asks for progress without allowing one update to cover a call batch"
+        );
+        assert!(
+            normalized.contains("lead with its concrete result"),
+            "{name} never asks an update to report the preceding phase's result"
+        );
+        assert!(
+            normalized.contains("summary of that whole batch"),
+            "{name} does not connect the progress result to the completed call batch"
+        );
+        assert!(
+            normalized.contains("still needs its concise `description`"),
+            "{name} does not preserve the per-call activity description"
+        );
+        assert!(
+            normalized.contains("For the ordinary text contract, use normal assistant text"),
+            "{name} does not preserve the final answer after progress updates"
         );
         assert!(
             !body.contains(r#"function_id: "harness::spawn""#),

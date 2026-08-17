@@ -16,12 +16,11 @@ import type { ModelOption } from '@/types/chat'
  *
  * Models come exclusively from providers, so on the real backend a
  * successful-but-empty catalog yields an empty option list (the picker then
- * shows present-but-unconfigured providers as gear groups). When the engine is
+ * shows present-but-unconfigured providers as setup rows). When the engine is
  * unreachable (catalog fetch throws) the list stays empty.
  *
- * `presentProviders` is seeded by one `router::provider::list` read, then kept
- * current by provider lifecycle events. Catalog refreshes never poll the
- * provider list.
+ * `presentProviders` is seeded by `router::provider::list`, then kept current
+ * by provider/model/configuration events. There is no polling.
  *
  * `harnessAvailable` gates harness-owned RPCs until the worker is connected.
  */
@@ -110,6 +109,9 @@ export function useModelPickerSource(
       timer = setTimeout(() => {
         timer = null
         void refresh()
+        void fetchProviderList()
+          .then(setPresentProviders)
+          .catch(() => undefined)
       }, 150)
     }
 
@@ -135,6 +137,7 @@ export function useModelPickerSource(
             id: provider,
             display_name: provider,
             supports_model_listing: true,
+            credential_env_var: undefined,
             available,
           },
         ]
@@ -155,6 +158,9 @@ export function useModelPickerSource(
     if (backendId !== 'real' || !harnessAvailable) return
     return onHarnessConfigSaved(() => {
       void refresh()
+      void fetchProviderList()
+        .then(setPresentProviders)
+        .catch(() => undefined)
     })
   }, [backendId, harnessAvailable, refresh])
 

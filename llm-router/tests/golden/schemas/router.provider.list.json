@@ -18,6 +18,13 @@
           "configured": {
             "type": "boolean"
           },
+          "credential_env_var": {
+            "description": "Environment variable declared by API-key providers. `None` means the provider owns authentication (OAuth, local app login, device flow).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "display_name": {
             "type": "string"
           },

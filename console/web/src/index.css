@@ -16,6 +16,12 @@
   --font-mono:
     "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
     Consolas, "Liberation Mono", "Courier New", monospace;
+  /* Code is deliberately distinct from mono UI chrome. Monaco is a system
+     font on macOS; the remaining entries preserve a native mono fallback on
+     platforms where it is unavailable. */
+  --font-code:
+    Monaco, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   --font-geist-mono:
     "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
@@ -38,6 +44,8 @@
   /* ── Ink ramp ──────────────────────────────────────────────────────── */
   --color-ink: #0a0a0a;
   --color-ink-faint: #6b6865;
+  --color-muted-foreground: #6b6865;
+  --color-trigger-running: #57534f;
   --color-ink-ghost: #a3a09c;
   --color-ink-disabled: #b8b4ae;
 
@@ -117,7 +125,7 @@
 }
 
 [data-theme="dark"] {
-    color-scheme: dark;
+  color-scheme: dark;
   /* Neutral grays derived from black — no blue cast in the base ramp. The
      component fills (surface*) are white-alpha so a step reads identically
      over any base layer; the ONLY chromatic surface is surface-selected,
@@ -141,6 +149,10 @@
   --color-surface-active: rgba(255, 255, 255, 0.12);
   --color-ink: #ededed;
   --color-ink-faint: #a6a6a6;
+  /* Compact agent activity stays secondary, but remains comfortably legible
+     against the near-black chat canvas. */
+  --color-muted-foreground: #b8b8b8;
+  --color-trigger-running: #a6a6a6;
   --color-ink-ghost: #6f6f6f;
   --color-ink-disabled: #4d4d4d;
   --color-rule: transparent;
@@ -202,7 +214,7 @@
      here; disabled buttons keep the default and `cursor-not-allowed`
      utilities still win. */
   button:not(:disabled),
-  [role='button']:not([aria-disabled='true']) {
+  [role="button"]:not([aria-disabled="true"]) {
     cursor: pointer;
   }
 
@@ -219,6 +231,7 @@
   }
 
   .font-mono,
+  .font-code,
   pre,
   code {
     font-feature-settings:
@@ -227,9 +240,14 @@
       "calt" 0,
       "dlig" 0;
   }
+
+  pre,
+  code {
+    font-family: var(--font-code);
+  }
 }
 
-/* Configuration uses Inter for UI chrome; Chivo Mono only on code surfaces. */
+/* Configuration uses Inter for UI chrome; Monaco only on code surfaces. */
 .configuration-surface {
   font-family: var(--font-sans);
 }
@@ -241,12 +259,16 @@
 .configuration-surface pre,
 .configuration-surface pre.font-mono,
 .configuration-surface code,
+.configuration-surface code.font-mono {
+  font-family: var(--font-code);
+}
+
 .configuration-surface [data-keep-mono],
 .configuration-surface [data-keep-mono] .font-mono {
   font-family: var(--font-mono);
 }
 
-/* Chat uses Inter for UI chrome; Chivo Mono only on code/terminal surfaces. */
+/* Chat uses Inter for UI chrome; Monaco only on semantic code surfaces. */
 .chat-surface {
   font-family: var(--font-sans);
 }
@@ -258,24 +280,34 @@
 .chat-surface pre,
 .chat-surface pre.font-mono,
 .chat-surface code,
+.chat-surface code.font-mono {
+  font-family: var(--font-code);
+}
+
 .chat-surface [data-keep-mono],
 .chat-surface [data-keep-mono] .font-mono {
   font-family: var(--font-mono);
 }
 
-/* Function-trigger cards use Geist Mono throughout (overrides chat-surface sans remap). */
+/* Function-trigger chrome uses Geist Mono; request/response code uses Monaco. */
 .function-trigger-surface,
 .function-trigger-surface .font-mono,
-.function-trigger-surface pre,
-.function-trigger-surface code,
 .chat-surface .function-trigger-surface,
 .chat-surface .function-trigger-surface .font-mono,
-.chat-surface .function-trigger-surface pre,
-.chat-surface .function-trigger-surface pre.font-mono,
-.chat-surface .function-trigger-surface code,
 .chat-surface .function-trigger-surface [data-keep-mono],
 .chat-surface .function-trigger-surface [data-keep-mono] .font-mono {
   font-family: var(--font-geist-mono);
+}
+
+.function-trigger-surface pre,
+.function-trigger-surface pre.font-mono,
+.function-trigger-surface code,
+.function-trigger-surface code.font-mono,
+.chat-surface .function-trigger-surface pre,
+.chat-surface .function-trigger-surface pre.font-mono,
+.chat-surface .function-trigger-surface code,
+.chat-surface .function-trigger-surface code.font-mono {
+  font-family: var(--font-code);
 }
 
 @keyframes pulse-dot {
@@ -412,6 +444,28 @@
   animation: thinking-shimmer 2.4s linear infinite;
 }
 
+/* A quieter shimmer for an in-flight function description. Its resting tone
+   sits one step below muted foreground while the sweep supplies the motion. */
+@utility function-trigger-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-trigger-running) 0%,
+    color-mix(in oklab, var(--color-trigger-running) 68%, var(--color-ink)) 50%,
+    var(--color-trigger-running) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    background-image: none;
+    color: var(--color-trigger-running);
+    animation: none;
+  }
+}
+
 @utility deal-shadow {
   box-shadow:
     -2px 0 0 var(--color-rule),
@@ -504,11 +558,11 @@
 /* lexical editor surface — keep it boring so it inherits the rest of the system */
 .composer-editor {
   outline: none;
-  min-height: 56px;
+  min-height: 96px;
   max-height: 240px;
   overflow-y: auto;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.7;
   color: var(--color-ink);
 }
@@ -517,8 +571,22 @@
   pointer-events: none;
   position: absolute;
   inset: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.7;
   color: var(--color-ink-ghost);
   user-select: none;
+}
+
+@media (min-width: 640px) {
+  .composer-editor,
+  .composer-placeholder {
+    font-size: 14px;
+  }
+
+  .composer-editor {
+    min-height: 56px;
+  }
 }
 
 /* single-line lexical input used by the worker configuration form for

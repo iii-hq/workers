@@ -69,6 +69,7 @@ pub fn build_code_cells(cfg: &ShellConfig) -> Result<CodeCells, String> {
     Ok(CodeCells {
         config: Arc::new(RwLock::new(code_cfg)),
         resolver: Arc::new(RwLock::new(resolver)),
+        changes: Default::default(),
     })
 }
 

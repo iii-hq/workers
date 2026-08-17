@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  type BrowserClickOptions,
-  type BrowserPickHint,
-  elementLabel,
-} from '../lib/browser'
+import { type BrowserClickOptions, type BrowserPickHint, elementLabel } from '../lib/browser'
 import { cn } from '../lib/cn'
 import type { LiveFrame } from './useLiveFrames'
 
@@ -51,6 +47,35 @@ interface HintDisplay {
   dims: string
 }
 
+interface RenderedImageRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * `object-fit: contain` paints the screenshot inside the image element's
+ * content box and can leave horizontal or vertical letterboxing. DOM APIs
+ * only expose the element box, so derive the centered painted rect from the
+ * frame dimensions before translating pointer coordinates.
+ */
+function renderedImageRect(img: HTMLImageElement, frameWidth: number, frameHeight: number): RenderedImageRect | null {
+  if (frameWidth <= 0 || frameHeight <= 0) return null
+  const box = img.getBoundingClientRect()
+  if (box.width <= 0 || box.height <= 0) return null
+
+  const scale = Math.min(box.width / frameWidth, box.height / frameHeight)
+  const width = frameWidth * scale
+  const height = frameHeight * scale
+  return {
+    left: box.left + (box.width - width) / 2,
+    top: box.top + (box.height - height) / 2,
+    width,
+    height,
+  }
+}
+
 interface ViewportProps {
   frame: LiveFrame | null
   loading: boolean
@@ -87,25 +112,22 @@ export function Viewport({
   onScrollAtRef.current = onScrollAt
 
   /** Client point -> page-viewport point, null outside the rendered image. */
-  const mapToPage = useCallback(
-    (clientX: number, clientY: number): { x: number; y: number } | null => {
-      const current = frameRef.current
-      const img = imgRef.current
-      if (!current || !img || current.width <= 0 || current.height <= 0) {
-        return null
-      }
-      const rect = img.getBoundingClientRect()
-      if (rect.width <= 0 || rect.height <= 0) return null
-      const relX = (clientX - rect.left) / rect.width
-      const relY = (clientY - rect.top) / rect.height
-      if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
-      return {
-        x: Math.round(relX * current.width),
-        y: Math.round(relY * current.height),
-      }
-    },
-    [],
-  )
+  const mapToPage = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    const current = frameRef.current
+    const img = imgRef.current
+    if (!current || !img || current.width <= 0 || current.height <= 0) {
+      return null
+    }
+    const rect = renderedImageRect(img, current.width, current.height)
+    if (!rect) return null
+    const relX = (clientX - rect.left) / rect.width
+    const relY = (clientY - rect.top) / rect.height
+    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
+    return {
+      x: Math.min(current.width - 1, Math.round(relX * current.width)),
+      y: Math.min(current.height - 1, Math.round(relY * current.height)),
+    }
+  }, [])
 
   // Single vs double click: a first click waits out the double-click window
   // so a dblclick can replace it with one click_count:2 act. Pick mode skips
@@ -269,9 +291,9 @@ export function Viewport({
             setHint(null)
             return
           }
-          const imgRect = img.getBoundingClientRect()
+          const imgRect = renderedImageRect(img, current.width, current.height)
           const surfaceRect = surface.getBoundingClientRect()
-          if (imgRect.width <= 0 || imgRect.height <= 0) {
+          if (!imgRect) {
             setHint(null)
             return
           }
@@ -329,11 +351,7 @@ export function Viewport({
         />
       ) : (
         <p className="br-ui-vp-empty">
-          {error
-            ? `live view failed: ${error}`
-            : loading
-              ? 'waiting for the first frame...'
-              : 'no frame yet'}
+          {error ? `live view failed: ${error}` : loading ? 'waiting for the first frame...' : 'no frame yet'}
         </p>
       )}
       {hint ? (
@@ -347,12 +365,7 @@ export function Viewport({
             height: hint.height,
           }}
         >
-          <span
-            className={cn(
-              'br-ui-vp-hint-label',
-              hint.top >= 22 ? 'above' : 'below',
-            )}
-          >
+          <span className={cn('br-ui-vp-hint-label', hint.top >= 22 ? 'above' : 'below')}>
             <span className="br-ui-vp-hint-tag">{hint.label}</span>
             <span className="br-ui-vp-hint-dims">{hint.dims}</span>
           </span>

@@ -29,12 +29,7 @@ function hostOf(url: string): string {
   }
 }
 
-export function SessionRail({
-  sessions,
-  selectedId,
-  loading,
-  onSelect,
-}: SessionRailProps) {
+export function SessionRail({ sessions, selectedId, loading, onSelect }: SessionRailProps) {
   if (sessions.length === 0) {
     if (loading) {
       return (
@@ -51,10 +46,7 @@ export function SessionRail({
     return (
       <div className="br-ui-rail-empty">
         <p>No sessions yet.</p>
-        <p className="dim">
-          Sessions started by agents appear in this list live; new session
-          starts one now.
-        </p>
+        <p className="dim">Sessions started by agents appear in this list live; new session starts one now.</p>
       </div>
     )
   }
@@ -77,13 +69,13 @@ export function SessionRail({
                 <span className="br-ui-rail-title">
                   {session.title?.trim() || hostOf(session.url) || 'about:blank'}
                 </span>
+                <span className="br-ui-rail-mode">{session.headless ? 'headless' : 'headful'}</span>
               </span>
               <span className="br-ui-rail-url">{session.url}</span>
               <span className="br-ui-rail-meta">
-                <span className="br-ui-num">{session.session_id}</span>
-                <span>·</span>
-                <span>{session.headless ? 'headless' : 'headful'}</span>
-                <span>·</span>
+                <span className="br-ui-rail-status-dot" aria-hidden />
+                <span>live</span>
+                <span className="br-ui-rail-meta-separator">·</span>
                 <span>{formatMtime(Math.floor(session.last_used_ms / 1000))}</span>
               </span>
             </button>

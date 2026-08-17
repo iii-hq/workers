@@ -26,6 +26,7 @@ import {
   type BrowserPickedEvent,
   type BrowserSessionInfo,
   clickBrowserAt,
+  controlBrowserHistory,
   errorMessage,
   formatPickedElement,
   hintBrowserPick,
@@ -42,8 +43,9 @@ import {
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
-import { Crosshair, Square, X } from '../lib/icons'
-import { BackButton } from '../lib/widgets'
+import { formatMtime } from '../lib/format'
+import { Crosshair, ExternalLink, Globe, RefreshCw, X } from '../lib/icons'
+import { BackButton, ChevronLeftIcon } from '../lib/widgets'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
 import { useLiveFrames } from './useLiveFrames'
@@ -87,6 +89,7 @@ function hostOf(url: string): string {
 interface SessionViewProps {
   host: Host
   session: BrowserSessionInfo
+  chromiumVersion: string | null
   enabled: boolean
   narrow: boolean
   /** Stable workspace-tab id — namespaces persisted UI state. */
@@ -99,6 +102,7 @@ interface SessionViewProps {
 export function SessionView({
   host,
   session,
+  chromiumVersion,
   enabled,
   narrow,
   tabId,
@@ -117,9 +121,22 @@ export function SessionView({
   const [dockPane, setDockPaneState] = useState<FeedPane>(() =>
     readStored(dockStoreKey) === 'network' ? 'network' : 'console',
   )
+  const dockCollapsedStoreKey = `browser-ui:${tabId || 'page'}:dock-collapsed`
+  const [dockCollapsed, setDockCollapsedState] = useState(() => readStored(dockCollapsedStoreKey) === 'true')
   const setDockPane = (pane: FeedPane) => {
     setDockPaneState(pane)
     writeStored(dockStoreKey, pane)
+    if (dockCollapsed) {
+      setDockCollapsedState(false)
+      writeStored(dockCollapsedStoreKey, 'false')
+    }
+  }
+  const toggleDock = () => {
+    setDockCollapsedState((current) => {
+      const next = !current
+      writeStored(dockCollapsedStoreKey, String(next))
+      return next
+    })
   }
 
   // The screencast subscription is gated on the viewport actually being
@@ -147,7 +164,6 @@ export function SessionView({
     lastSessionUrlRef.current = session.url
     if (!urlFocusedRef.current) setUrlDraft(session.url)
   }, [session.url])
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset the draft when the selected session changes, not when its url does
   useEffect(() => {
     setUrlDraft(session.url)
     lastSessionUrlRef.current = session.url
@@ -164,6 +180,23 @@ export function SessionView({
       onSessionsRefresh()
     })
   }, [host, urlDraft, sessionId, runAction, onSessionsRefresh])
+
+  const handleHistory = useCallback(
+    (action: 'back' | 'forward' | 'reload') => {
+      void runAction(async () => {
+        const result = await controlBrowserHistory(host.iii, sessionId, action)
+        if (result?.url) setUrlDraft(result.url)
+        onSessionsRefresh()
+      })
+    },
+    [host, sessionId, runAction, onSessionsRefresh],
+  )
+
+  const openCurrentPage = useCallback(() => {
+    let url = urlDraft.trim() || session.url
+    if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = `https://${url}`
+    if (url) window.open(url, '_blank', 'noopener,noreferrer')
+  }, [session.url, urlDraft])
 
   // Pick-to-clipboard. The worker auto-exits inspect mode after one pick, so
   // a received event only flips local state; explicit toggles and unmounts
@@ -219,9 +252,7 @@ export function SessionView({
       setLastPicked(evt)
       // No composer slot in injected UI: copy the summary for the user to
       // paste into chat.
-      void navigator.clipboard
-        ?.writeText(formatPickedElement(evt))
-        .catch(() => {})
+      void navigator.clipboard?.writeText(formatPickedElement(evt)).catch(() => {})
       setPicking(false)
     },
   })
@@ -310,33 +341,37 @@ export function SessionView({
     })
   }, [host, sessionId, runAction, onSessionsRefresh, onStopped])
 
-  const displayName =
-    session.title?.trim() || hostOf(session.url) || 'about:blank'
-  const feedPane: FeedPane = narrow
-    ? narrowPane === 'network'
-      ? 'network'
-      : 'console'
-    : dockPane
+  const displayName = session.title?.trim() || hostOf(session.url) || 'about:blank'
+  const feedPane: FeedPane = narrow ? (narrowPane === 'network' ? 'network' : 'console') : dockPane
+  const browserMajor = chromiumVersion?.match(/\d+/)?.[0]
+  const browserLabel = browserMajor ? `Chromium ${browserMajor}` : null
 
   return (
-    <section
-      className="br-ui-stage"
-      aria-label={`browser session ${sessionId}`}
-    >
+    <section className="br-ui-stage" aria-label={`browser session ${sessionId}`}>
       <header className="br-ui-doc-head">
-        {narrow ? (
-          <BackButton onClick={onBack} label="back to session list" />
-        ) : null}
+        {narrow ? <BackButton onClick={onBack} label="back to session list" /> : null}
         <div className="br-ui-doc-identity">
-          <span className="br-ui-doc-name" title={`${sessionId} · ${session.url}`}>
-            <span className="txt">{displayName}</span>
-          </span>
-          {!narrow ? (
-            <span className="br-ui-doc-crumb">
-              {sessionId} · {session.headless ? 'headless' : 'headful'} ·{' '}
-              {session.url}
+          <div className="br-ui-doc-title-row">
+            <span className="br-ui-doc-name" title={`${sessionId} · ${session.url}`}>
+              <span className="txt">{displayName}</span>
             </span>
-          ) : null}
+            <span className="br-ui-doc-badge">{session.headless ? 'headless' : 'headful'}</span>
+            {!narrow && browserLabel ? <span className="br-ui-doc-badge">{browserLabel}</span> : null}
+          </div>
+          <span className="br-ui-doc-crumb">
+            <span className="br-ui-doc-url">{session.url}</span>
+            <span aria-hidden>·</span>
+            <span className="br-ui-doc-live">
+              <span className="br-ui-live-dot" aria-hidden />
+              live
+            </span>
+            {!narrow ? (
+              <>
+                <span aria-hidden>·</span>
+                <span>started {formatMtime(Math.floor(session.created_ms / 1000))}</span>
+              </>
+            ) : null}
+          </span>
         </div>
         <div className="br-ui-doc-actions">
           <button
@@ -351,49 +386,20 @@ export function SessionView({
             className={cn('br-ui-pick-btn', picking && 'is-on')}
           >
             <Crosshair size={13} aria-hidden />
-            {picking ? 'picking...' : 'pick element'}
+            {picking ? 'Inspecting...' : 'Inspect'}
           </button>
-          <Button variant="ghost" size="sm" onClick={handleStop}>
-            <Square size={12} aria-hidden />
-            stop
+          <Button variant="ghost" size="sm" className="br-ui-stop-btn" onClick={handleStop}>
+            Stop session
           </Button>
         </div>
       </header>
 
-      <div className="br-ui-toolbar">
-        <Input
-          value={urlDraft}
-          onChange={setUrlDraft}
-          preserveCase
-          placeholder="https://localhost:3000"
-          aria-label="page url"
-          onFocus={() => {
-            urlFocusedRef.current = true
-          }}
-          onBlur={() => {
-            urlFocusedRef.current = false
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submitUrl()
-          }}
-          className="br-ui-url-input"
-        />
-        <Button variant="pill" size="sm" onClick={submitUrl}>
-          go
-        </Button>
-      </div>
-
       {lastPicked ? (
         <div className="br-ui-picked">
           <span className="br-ui-picked-label">picked</span>
-          <span
-            className="br-ui-picked-chip"
-            title={lastPicked.element.outer_html}
-          >
+          <span className="br-ui-picked-chip" title={lastPicked.element.outer_html}>
             <span className="br-ui-picked-ref">{lastPicked.element.ref}</span>
-            <span className="br-ui-truncate">
-              {pickedSelector(lastPicked.element)}
-            </span>
+            <span className="br-ui-truncate">{pickedSelector(lastPicked.element)}</span>
             <button
               type="button"
               onClick={() => setLastPicked(null)}
@@ -410,11 +416,7 @@ export function SessionView({
       {actionError ? (
         <div className="br-ui-banner alert" role="alert">
           <span>{actionError}</span>
-          <button
-            type="button"
-            className="br-ui-linkish quiet"
-            onClick={() => setActionError(null)}
-          >
+          <button type="button" className="br-ui-linkish quiet" onClick={() => setActionError(null)}>
             dismiss
           </button>
         </div>
@@ -432,7 +434,7 @@ export function SessionView({
                 aria-pressed={narrowPane === pane}
                 onClick={() => setNarrowPane(pane)}
               >
-                {pane}
+                {pane === 'console' ? 'Console' : pane === 'network' ? 'Network' : 'Viewport'}
               </button>
             ))}
           </div>
@@ -441,18 +443,87 @@ export function SessionView({
 
       {viewportShown ? (
         <div className="br-ui-stage-body">
-          <Viewport
-            frame={live.frame}
-            loading={live.loading}
-            error={live.error}
-            picking={picking}
-            onClickAt={handleClickAt}
-            onPickAt={handlePickAt}
-            onScrollAt={handleScrollAt}
-            onTextInput={handleTextInput}
-            onPressKey={handlePressKey}
-            requestHint={requestHint}
-          />
+          <div className="br-ui-browser-frame">
+            <form
+              className="br-ui-toolbar"
+              onSubmit={(event) => {
+                event.preventDefault()
+                submitUrl()
+              }}
+            >
+              <fieldset className="br-ui-history-controls" aria-label="browser history controls">
+                <button
+                  type="button"
+                  className="br-ui-chrome-btn"
+                  onClick={() => handleHistory('back')}
+                  title="back"
+                  aria-label="back"
+                >
+                  <ChevronLeftIcon className="br-ui-chrome-icon" />
+                </button>
+                <button
+                  type="button"
+                  className="br-ui-chrome-btn"
+                  onClick={() => handleHistory('forward')}
+                  title="forward"
+                  aria-label="forward"
+                >
+                  <ChevronLeftIcon className="br-ui-chrome-icon is-forward" />
+                </button>
+                <button
+                  type="button"
+                  className="br-ui-chrome-btn"
+                  onClick={() => handleHistory('reload')}
+                  title="reload"
+                  aria-label="reload"
+                >
+                  <RefreshCw size={16} aria-hidden />
+                </button>
+              </fieldset>
+              <div className="br-ui-address">
+                <Globe size={14} aria-hidden className="br-ui-address-icon" />
+                <Input
+                  name="browser-url"
+                  value={urlDraft}
+                  onChange={setUrlDraft}
+                  preserveCase
+                  placeholder="https://localhost:3000"
+                  aria-label="page url"
+                  onFocus={() => {
+                    urlFocusedRef.current = true
+                  }}
+                  onBlur={() => {
+                    urlFocusedRef.current = false
+                  }}
+                  className="br-ui-url-input"
+                />
+              </div>
+              <button
+                type="button"
+                className="br-ui-chrome-btn"
+                onClick={openCurrentPage}
+                title="open page in a new tab"
+                aria-label="open page in a new tab"
+              >
+                <ExternalLink size={17} aria-hidden />
+              </button>
+              <button type="submit" className="br-ui-address-submit" tabIndex={-1}>
+                navigate to address
+              </button>
+            </form>
+            <Viewport
+              frame={live.frame}
+              loading={live.loading}
+              error={live.error}
+              picking={picking}
+              onClickAt={handleClickAt}
+              onPickAt={handlePickAt}
+              onScrollAt={handleScrollAt}
+              onTextInput={handleTextInput}
+              onPressKey={handlePressKey}
+              requestHint={requestHint}
+            />
+          </div>
         </div>
       ) : (
         <div className="br-ui-pane-fill">
@@ -465,7 +536,7 @@ export function SessionView({
       )}
 
       {!narrow ? (
-        <div className="br-ui-dock">
+        <div className={`br-ui-dock${dockCollapsed ? ' collapsed' : ''}`}>
           <div className="br-ui-dock-head">
             {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the row */}
             <div className="br-ui-seg" role="group" aria-label="session feeds">
@@ -477,51 +548,63 @@ export function SessionView({
                   aria-pressed={dockPane === pane}
                   onClick={() => setDockPane(pane)}
                 >
-                  {pane}
+                  {pane === 'console' ? 'Console' : 'Network'}
                 </button>
               ))}
             </div>
+            <button
+              type="button"
+              className="br-ui-dock-toggle"
+              aria-expanded={!dockCollapsed}
+              aria-label={dockCollapsed ? 'show developer tools' : 'hide developer tools'}
+              title={dockCollapsed ? 'show developer tools' : 'hide developer tools'}
+              onClick={toggleDock}
+            >
+              {dockCollapsed ? (
+                <>
+                  <span>Show developer tools</span>
+                  <ChevronLeftIcon className="br-ui-dock-toggle-icon" />
+                </>
+              ) : (
+                <X size={15} aria-hidden />
+              )}
+            </button>
           </div>
-          <div className="br-ui-dock-body">
-            {dockPane === 'console' ? (
-              <ConsolePanel
-                host={host}
-                sessionId={sessionId}
-                enabled={enabled}
-              />
-            ) : (
-              <NetworkPanel
-                host={host}
-                sessionId={sessionId}
-                enabled={enabled}
-              />
-            )}
-          </div>
+          {!dockCollapsed ? (
+            <div className="br-ui-dock-body">
+              {dockPane === 'console' ? (
+                <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
+              ) : (
+                <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
       <footer className="br-ui-statusbar">
-        <span className="fact">{sessionId}</span>
         {live.frame ? (
           <span className="fact">
-            {live.frame.width}x{live.frame.height}
+            Viewport: {live.frame.width}×{live.frame.height}
           </span>
-        ) : null}
-        <span className="fact">
-          {session.headless ? 'headless' : 'headful'}
+        ) : (
+          <span className="fact">Viewport: —</span>
+        )}
+        <span className="fact">{session.headless ? 'Headless' : 'Headful'}</span>
+        {browserLabel ? <span className="fact">{browserLabel}</span> : null}
+        <span className="fact live">
+          <span className="br-ui-live-dot" aria-hidden />
+          live
         </span>
         <span className="spacer" />
         {viewportShown ? (
           picking ? (
-            <span className="fact hint">
-              pick mode: click an element to copy it — esc cancels
-            </span>
+            <span className="fact hint">pick mode: click an element to copy it — esc cancels</span>
           ) : (
             <>
-              <span className="fact hint">
-                click to focus — clicks, scroll and typing forward to the page
-              </span>
-              <span className="fact hint">shift+esc leaves the surface</span>
+              <span className="fact hint">Click to focus</span>
+              <span className="fact hint">Scroll or type to interact</span>
+              <span className="fact hint">Shift+Esc to release</span>
             </>
           )
         ) : null}

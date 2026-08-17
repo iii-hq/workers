@@ -259,6 +259,26 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
           workspaces: crates/${{ matrix.crate }} -> target
 
+      # The testkit enables every provider feature, including the Codex
+      # provider's bundled UI, so make that build dependency available before
+      # Cargo reaches provider-openai-codex/build.rs.
+      - name: Setup pnpm (provider testkit UI)
+        if: matrix.crate == 'provider-integration-testkit'
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (provider testkit UI)
+        if: matrix.crate == 'provider-integration-testkit'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build provider testkit UI
+        if: matrix.crate == 'provider-integration-testkit'
+        working-directory: provider-openai-codex/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -351,6 +371,26 @@ jobs:
           shared-key: provider-contract-${{ matrix.provider }}
           save-if: false
           workspaces: crates/provider-integration-testkit -> target
+
+      # provider-openai-codex embeds a small console UI. The integration
+      # testkit enables every provider feature in its Rust gate, so build the
+      # UI before Cargo reaches that provider's build.rs.
+      - name: Setup pnpm (providers with bundled UI)
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (providers with bundled UI)
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build provider UI
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+        working-directory: ${{ matrix.provider }}/ui
+        run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Install pinned iii engine
         env:
@@ -487,15 +527,16 @@ jobs:
 
       # Workers that embed a Vite SPA into the binary (e.g. console) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
-      # short-circuits it — mirrors the `rust` job above.
+      # short-circuits it — mirrors the `rust` job above. provider-opencode-go
+      # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         uses: pnpm/action-setup@v5
         # version comes from the repo-root package.json `packageManager`
         # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -505,7 +546,7 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         run: |
           set -euo pipefail
           for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
@@ -513,6 +554,9 @@ jobs:
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi
           done
+          if [[ "${{ matrix.worker }}" == "provider-opencode-go" ]]; then
+            (cd llm-router/ui && pnpm install --frozen-lockfile && pnpm build)
+          fi
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (`_rust-binary.yml` builds default features).

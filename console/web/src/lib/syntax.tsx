@@ -136,7 +136,7 @@ interface JsonHighlightProps {
 
 /**
  * Renders a JSON payload as a `<pre><code>` block with Prism-driven token
- * coloring. The chrome (`bg-bg`, `font-mono`, `text-[12.5px]/[1.55]`) mirrors
+ * coloring. The chrome (`bg-bg`, `font-code`, `text-[12.5px]/[1.55]`) mirrors
  * the existing fenced code block in the assistant Markdown so a highlighted
  * pane sits side-by-side with a plain `<pre>` without a visual seam.
  */
@@ -152,7 +152,7 @@ interface CodeHighlightProps {
 
 /**
  * Generic Prism-driven highlight sibling to `JsonHighlight`. Same
- * `bg-bg / font-mono / text-[12.5px]` chrome, same `syntaxTheme` token
+ * `bg-bg / font-code / text-[12.5px]` chrome, same `syntaxTheme` token
  * palette (so multi-language blocks visually compose with JSON blocks
  * in the same surface). Unknown languages render as plain text without
  * crashing; the language id passes straight to Prism.
@@ -173,7 +173,7 @@ export function CodeHighlight({
       {({ tokens, getLineProps, getTokenProps, className: hlClass, style }) => (
         <pre
           className={cn(
-            'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55]',
+            'bg-bg overflow-x-auto px-3 py-2 font-code text-[12.5px] leading-[1.55]',
             wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
             hlClass,
             className,
@@ -208,7 +208,7 @@ export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
       {({ tokens, getLineProps, getTokenProps, className: hlClass, style }) => (
         <pre
           className={cn(
-            'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55]',
+            'bg-bg overflow-x-auto px-3 py-2 font-code text-[12.5px] leading-[1.55]',
             wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
             hlClass,
             className,

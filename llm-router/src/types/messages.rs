@@ -145,10 +145,10 @@ pub fn reorder_displaced_results(messages: &[AgentMessage]) -> Vec<&AgentMessage
 /// a non-object `tool_use.input` is a hard Anthropic 400 once the turn is
 /// replayed (sessions switch providers). Two-step recovery:
 ///
-/// 1. Salvage the complete leading fields of a partial object — a call cut
-///    mid-stream (`{"function":"state::set","payload":{"key":`) keeps its
-///    known prefix (`{"function":"state::set"}`), so long-streaming calls
-///    stay identifiable in UIs instead of rendering as an anonymous `{}`.
+/// 1. Incrementally reconstruct the partial object — a call cut mid-string
+///    (`{"function":"state::se`) already exposes `state::se`, and completed
+///    fields plus open nested containers remain available. Long-streaming
+///    calls therefore stay identifiable instead of rendering as anonymous.
 ///    The salvaged object is stamped `"_partial": true` so dispatch layers
 ///    can refuse to execute partial intent (a truncated call must surface a
 ///    teachable error, not run with whatever fields happened to complete).
@@ -163,48 +163,24 @@ pub fn degraded_arguments(args_json: &str) -> serde_json::Value {
     serde_json::json!({ "_raw": utf8_head(args_json, 2048) })
 }
 
-/// The complete leading fields of a partial JSON object string, if any.
-/// Scans only the first 4KB (a partial is rebuilt per stream event, so this
-/// must stay O(head); leading fields live in the prefix), cutting at
-/// top-level commas and taking the longest prefix that parses once closed.
+/// The observable fields of a partial JSON object string, if any. This public
+/// helper keeps its historical name for provider compatibility; unlike the
+/// old comma-cutting implementation it also returns the string/container that
+/// is currently being streamed. Provider snapshots rebuild this value often,
+/// so only inspect the first 4 KiB; the stateful router/harness paths consume
+/// the full stream once, chunk by chunk.
 pub fn salvage_leading_object_fields(
     args: &str,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let head = utf8_head(args, 4096);
-    let bytes = head.as_bytes();
-    let (mut depth, mut in_str, mut esc, mut started) = (0usize, false, false, false);
-    let mut cuts: Vec<usize> = Vec::new();
-    for (i, &b) in bytes.iter().enumerate() {
-        if esc {
-            esc = false;
-            continue;
-        }
-        match b {
-            b'\\' if in_str => esc = true,
-            b'"' => in_str = !in_str,
-            _ if in_str => {}
-            b'{' | b'[' => {
-                depth += 1;
-                started = true;
-            }
-            b'}' | b']' => depth = depth.saturating_sub(1),
-            b',' if depth == 1 => cuts.push(i),
-            _ => {}
-        }
+    let mut stream = crate::json_stream::JsonStream::new();
+    // Even after malformed input, completed fields before the error are safe
+    // to display. Dispatch still refuses them because degraded_arguments adds
+    // `_partial`; the original bytes remain in `_raw` when nothing survived.
+    let _ = stream.write(utf8_head(args, 4096));
+    match stream.snapshot()?.value {
+        serde_json::Value::Object(map) if !map.is_empty() => Some(map),
+        _ => None,
     }
-    if !started {
-        return None;
-    }
-    // Longest salvageable prefix wins; candidates are few (top-level commas).
-    for &cut in cuts.iter().rev() {
-        let candidate = format!("{}}}", &head[..cut]);
-        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&candidate) {
-            if !map.is_empty() {
-                return Some(map);
-            }
-        }
-    }
-    None
 }
 
 fn utf8_head(s: &str, max: usize) -> &str {
@@ -228,24 +204,49 @@ mod tests {
         // partial so it renders but never executes.
         assert_eq!(
             degraded_arguments(r#"{"function":"state::set","payload":{"key":"art"#),
-            serde_json::json!({ "function": "state::set", "_partial": true })
+            serde_json::json!({
+                "function": "state::set",
+                "payload": { "key": "art" },
+                "_partial": true
+            })
         );
-        // Longest complete prefix wins, nested commas/strings don't cut.
+        // Nested complete fields and the deepest open string all survive.
         assert_eq!(
             degraded_arguments(
                 r#"{"function":"a::b","payload":{"x":"1,2","y":[3,4]},"extra":{"cut":"#
             ),
-            serde_json::json!({ "function": "a::b", "payload": { "x": "1,2", "y": [3, 4] }, "_partial": true })
+            serde_json::json!({
+                "function": "a::b",
+                "payload": { "x": "1,2", "y": [3, 4] },
+                "extra": {},
+                "_partial": true
+            })
         );
-        // Nothing salvageable (no complete top-level field yet, or not JSON):
-        // the raw text survives as evidence, always inside an object.
+        // An open string is observable before its closing quote.
         assert_eq!(
             degraded_arguments(r#"{"function":"state::se"#),
-            serde_json::json!({ "_raw": r#"{"function":"state::se"# })
+            serde_json::json!({ "function": "state::se", "_partial": true })
         );
+        // Nothing salvageable (no key/value yet, or not JSON): the raw text
+        // survives as evidence, always inside an object.
         assert_eq!(
             degraded_arguments("{'key': 'v'}"),
             serde_json::json!({ "_raw": "{'key': 'v'}" })
+        );
+    }
+
+    #[test]
+    fn degraded_arguments_exposes_an_open_description_and_payload() {
+        assert_eq!(
+            degraded_arguments(
+                r#"{"function":"state::set","description":"Updating arti","payload":{"scope":"wor"#
+            ),
+            serde_json::json!({
+                "function": "state::set",
+                "description": "Updating arti",
+                "payload": { "scope": "wor" },
+                "_partial": true
+            })
         );
     }
     use crate::types::events::StopReason;
