@@ -21,6 +21,7 @@ use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
+use document::bus::EngineBus;
 use document::config::WorkerConfig;
 use document::configuration::ConfigCell;
 use document::{configuration, functions, manifest};
@@ -127,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    functions::register_all(&iii, &cell);
+    functions::register_all(&iii, &cell, Arc::new(EngineBus::new(iii.clone())));
 
     configuration::register_config_trigger(&iii, cell.clone())
         .map_err(|e| anyhow::anyhow!("configuration trigger registration failed: {e}"))?;

@@ -1,19 +1,26 @@
-//! The worker's public surface: three functions over one converter.
+//! The worker's public surface: four functions over one converter.
 //!
-//! Every handler is synchronous CPU work over an owned buffer, so each one runs
-//! on a blocking thread rather than on the async runtime. Conversion is fast —
-//! single-digit milliseconds for a typical document — but a large workbook is
-//! long enough to stall the executor and every other call sharing it.
+//! Three of the handlers are synchronous CPU work over an owned buffer, so each
+//! runs on a blocking thread rather than on the async runtime. Conversion is
+//! fast — single-digit milliseconds for a typical document — but a large
+//! workbook is long enough to stall the executor and every other call sharing
+//! it.
+//!
+//! `document::ocr` is the exception and registers differently: it spends its
+//! time waiting on other workers rather than on this machine's CPU, so it stays
+//! async and takes a [`Bus`] instead of a thread.
 
 pub mod assets;
 pub mod detect;
 pub mod markdown;
+pub mod ocr;
 
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 
+use crate::bus::Bus;
 use crate::configuration::ConfigCell;
 
 /// One entry of the wire surface: what a caller sees for one function.
@@ -52,6 +59,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<detect::Request, detect::Response>(detect::ID, detect::DESC),
         spec::<markdown::Request, markdown::Response>(markdown::ID, markdown::DESC),
         spec::<assets::Request, assets::Response>(assets::ID, assets::DESC),
+        spec::<ocr::Request, ocr::Response>(ocr::ID, ocr::DESC),
     ]
 }
 
@@ -80,10 +88,26 @@ macro_rules! register_blocking {
     }};
 }
 
-pub fn register_all(iii: &Arc<IIIClient>, cell: &ConfigCell) {
+pub fn register_all(iii: &Arc<IIIClient>, cell: &ConfigCell, bus: Arc<dyn Bus>) {
     register_blocking!(iii, cell, detect);
     register_blocking!(iii, cell, markdown);
     register_blocking!(iii, cell, assets);
+
+    // OCR waits on the browser and on a model rather than on this machine, so
+    // it stays on the async runtime: a blocking thread would sit idle for the
+    // whole call and there are only so many of them.
+    let cell = cell.clone();
+    iii.register_function(
+        ocr::ID,
+        RegisterFunction::new_async(move |req: ocr::Request| {
+            let (cell, bus) = (cell.clone(), bus.clone());
+            async move {
+                let cfg = cell.read().await.clone();
+                ocr::handle(req, cfg, bus).await.map_err(Error::Handler)
+            }
+        })
+        .description(ocr::DESC),
+    );
 }
 
 #[cfg(test)]
@@ -99,6 +123,7 @@ mod tests {
                 "document::detect",
                 "document::to-markdown",
                 "document::extract-assets",
+                "document::ocr",
             ]
         );
     }

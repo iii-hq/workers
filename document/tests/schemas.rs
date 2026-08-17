@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the three `document::*` functions.
+//! Wire-schema snapshots for the four `document::*` functions.
 //!
 //! `document::functions::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived request and
@@ -34,7 +34,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
 /// The catalog must cover exactly the registered functions, in registration
 /// order (kept in lockstep with `register_all`).
 #[test]
-fn catalog_lists_all_three_functions_in_registration_order() {
+fn catalog_lists_all_four_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
@@ -42,6 +42,7 @@ fn catalog_lists_all_three_functions_in_registration_order() {
             "document::detect",
             "document::to-markdown",
             "document::extract-assets",
+            "document::ocr",
         ]
     );
 }

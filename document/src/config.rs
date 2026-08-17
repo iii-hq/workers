@@ -44,6 +44,41 @@ pub struct WorkerConfig {
     /// a response nobody can use.
     #[serde(default = "default_max_asset_bytes")]
     pub max_asset_bytes: u64,
+
+    /// Vision model `document::ocr` reads pages with when a call names none.
+    /// Unset means every call has to choose, which is the safer default for a
+    /// function that spends money per page.
+    #[serde(default)]
+    pub ocr_model: Option<String>,
+
+    /// Pages `document::ocr` transcribes in one call. The ceiling is a spend
+    /// limit, not a technical one: a caller that passes `pages` decides for
+    /// itself, and a caller that does not should not accidentally read a
+    /// four-hundred-page scan.
+    #[serde(default = "default_max_ocr_pages")]
+    pub max_ocr_pages: usize,
+
+    /// Budget for one bus call `document::ocr` makes — rendering a page or
+    /// reading it. Rendering starts a browser and a vision model on a long page
+    /// is slow, so this is generous next to the other limits here.
+    #[serde(default = "default_ocr_timeout_ms")]
+    pub ocr_timeout_ms: u64,
+
+    /// Milliseconds to let a rendered page paint before it is captured.
+    ///
+    /// `browser::navigate` returns on the load event, which for a PDF fires
+    /// when the viewer has loaded — not when it has drawn the page. Capturing
+    /// on that signal alone photographs an empty viewer, and the model dutifully
+    /// reports a blank image.
+    #[serde(default = "default_render_settle_ms")]
+    pub ocr_render_settle_ms: u64,
+
+    /// Cache page transcriptions in the `state` worker, keyed by document
+    /// content and page. Re-reading the same scan then costs nothing. Turn it
+    /// off for a rig with no `state` worker, or when transcriptions should
+    /// never be persisted.
+    #[serde(default = "default_true")]
+    pub ocr_cache: bool,
 }
 
 fn default_max_input_bytes() -> u64 {
@@ -66,6 +101,22 @@ fn default_max_asset_bytes() -> u64 {
     8 * 1024 * 1024
 }
 
+fn default_max_ocr_pages() -> usize {
+    20
+}
+
+fn default_ocr_timeout_ms() -> u64 {
+    120_000
+}
+
+fn default_render_settle_ms() -> u64 {
+    2_000
+}
+
+fn default_true() -> bool {
+    true
+}
+
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
@@ -74,6 +125,11 @@ impl Default for WorkerConfig {
             preview_chars: default_preview_chars(),
             max_assets: default_max_assets(),
             max_asset_bytes: default_max_asset_bytes(),
+            ocr_model: None,
+            max_ocr_pages: default_max_ocr_pages(),
+            ocr_timeout_ms: default_ocr_timeout_ms(),
+            ocr_render_settle_ms: default_render_settle_ms(),
+            ocr_cache: default_true(),
         }
     }
 }
@@ -107,6 +163,13 @@ impl WorkerConfig {
         if self.max_asset_bytes == 0 {
             return Err(
                 "max_asset_bytes must be at least 1; a ceiling of 0 drops the bytes of every asset"
+                    .to_string(),
+            );
+        }
+        if self.max_ocr_pages == 0 {
+            return Err(
+                "max_ocr_pages must be at least 1; a ceiling of 0 makes document::ocr transcribe \
+                 nothing while reporting success"
                     .to_string(),
             );
         }

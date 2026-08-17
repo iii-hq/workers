@@ -42,12 +42,17 @@ pays for it. Reach for it when one appears.
 - A PDF: prefer `pdf::classify` and `pdf::to-markdown` when the `pdf` worker is
   installed — it reports which pages are scans and need OCR. This worker
   converts text-based PDFs too, as a fallback.
+- A document that came back with no text, or one classified as a scan: say so
+  and offer `document::ocr` rather than running it unasked. It costs money per
+  page. When you do run it, pass the `pages` that `pdf::classify` named.
 
 ## Boundaries
 
-- Nothing here does OCR. A scanned PDF, or a document whose content is
-  photographs of text, converts to nothing; the images come back as bytes and a
-  vision model is the next step.
+- `document::ocr` is the only function here that spends money, and the only one
+  that needs other workers: `browser` to render a PDF's pages, and a vision
+  model through llm-router. Both are optional installs; a call that needs one
+  it cannot reach says which. Rendering a PDF needs `path`, not
+  `bytes_base64`.
 - Nothing here writes documents. Conversion is one-way, to markdown.
 - Responses are capped. `truncated: true` with a much larger `total_chars`
   means you hold a fragment and must not answer from it. `max_chars: 0` lifts
@@ -75,3 +80,6 @@ pays for it. Reach for it when one appears.
   embedded images it could not carry.
 - `document::extract-assets` — the embedded images and objects as base64,
   filtered by media type, capped per response and per asset.
+- `document::ocr` — transcribe a document that holds no readable text: a
+  scanned PDF, a photographed page, a deck built out of pictures. Renders the
+  pages and reads them with a vision model.
