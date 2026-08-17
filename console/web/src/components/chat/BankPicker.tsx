@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Select } from '@/components/ui/Select'
+import { SheetOptionList } from '@/components/ui/SheetNavigation'
 import { listBanks, type MemoryBank } from '@/lib/memory'
 
 /**
@@ -21,7 +22,7 @@ interface BankPickerProps {
 
 const AUTO = '(auto)'
 
-export function BankPicker({ value, onChange, disabled }: BankPickerProps) {
+function useBankOptions(value: string | null, conciseLabels: boolean) {
   const [banks, setBanks] = useState<MemoryBank[]>([])
 
   useEffect(() => {
@@ -36,29 +37,32 @@ export function BankPicker({ value, onChange, disabled }: BankPickerProps) {
     }
   }, [])
 
-  const known = banks.some((b) => b.name === value)
-  const options = [
+  const known = banks.some((bank) => bank.name === value)
+  return [
     {
       value: AUTO,
-      label: 'memory: auto',
+      label: conciseLabels ? 'Auto' : 'memory: auto',
       title: "use the memory worker's default bank",
     },
-    ...banks.map((b) => ({
-      value: b.name,
-      label: `memory: ${b.name}`,
-      title: `${b.memories} memories · ${b.rules} rules — rules + recalled memories from this bank feed every turn`,
+    ...banks.map((bank) => ({
+      value: bank.name,
+      label: conciseLabels ? bank.name : `memory: ${bank.name}`,
+      title: `${bank.memories} memories · ${bank.rules} rules — rules + recalled memories from this bank feed every turn`,
     })),
-    // A bank set elsewhere (CLI, another client) that we haven't listed.
     ...(value && !known
       ? [
           {
             value,
-            label: `memory: ${value}`,
+            label: conciseLabels ? value : `memory: ${value}`,
             title: 'set outside this console',
           },
         ]
       : []),
   ]
+}
+
+export function BankPicker({ value, onChange, disabled }: BankPickerProps) {
+  const options = useBankOptions(value, false)
 
   return (
     <Select<string>
@@ -68,6 +72,36 @@ export function BankPicker({ value, onChange, disabled }: BankPickerProps) {
       aria-label="memory bank"
       className="min-w-[96px] max-w-[160px]"
       options={options}
+    />
+  )
+}
+
+interface BankPickerPanelProps {
+  value: string | null
+  onChange: (next: string | null) => void
+  disabled?: boolean
+  className?: string
+}
+
+/** Inline memory-bank choices for an existing navigable sheet. */
+export function BankPickerPanel({
+  value,
+  onChange,
+  disabled,
+  className,
+}: BankPickerPanelProps) {
+  const options = useBankOptions(value, true)
+  return (
+    <SheetOptionList
+      value={value ?? AUTO}
+      disabled={disabled}
+      className={className}
+      onChange={(next) => onChange(next === AUTO ? null : next)}
+      options={options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        description: option.title,
+      }))}
     />
   )
 }

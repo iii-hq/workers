@@ -1,8 +1,8 @@
 // Trigger dispatch assertions. Each case drains buffered events first to
 // avoid contamination from prior puts/deletes that arrived asynchronously.
 //
-// Rustfs delivers webhooks within ~100ms of the underlying mutation. The
-// SQS path (S3 backend → MinIO webhook → bridge → ElasticMQ → worker
+// The local backend dispatches events directly after a mutation. The SQS
+// path (S3 backend → MinIO webhook → bridge → ElasticMQ → worker
 // SQS poller, 1-second long-poll) adds a few seconds of latency, so we
 // pick a 10s window that's generous headroom for both. If the window
 // expires without a match, the case fails with a useful message rather

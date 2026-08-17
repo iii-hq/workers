@@ -1,31 +1,153 @@
-//! Integration with the `configuration` worker — register, fetch, and hot-reload
-//! the `storage` configuration entry.
+//! Integration with the `configuration` worker — registration, authoritative
+//! reads, and transactional live application of every storage setting.
 
 use crate::backend::factory::{self, LocalBackendCtx};
+use crate::backend::local::LocalRuntime;
 use crate::backend::Backend;
-use crate::config::{Topology, WorkerConfig};
+use crate::config::{BucketConfig, WorkerConfig};
 use crate::handlers::AppState;
+use crate::triggers::dispatcher::EngineDispatcher;
+use crate::triggers::handler::WiredBuckets;
+use crate::triggers::pollers::{cf_queue, pubsub, sqs};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 pub const CONFIG_ID: &str = "storage";
 const CONFIG_FN_ID: &str = "storage::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
-/// Register the `storage` configuration schema with the configuration worker.
-/// When `seed` is present, its value is installed as `initial_value`. Otherwise,
-/// the built-in default is seeded only when no stored value exists yet.
+/// The live resources that configuration can replace: native-local service and
+/// listener, cloud notification pollers, and the trigger registration wiring
+/// set. `apply_lock` serializes the complete fetch → prepare → publish flow so
+/// rapid edits cannot land out of order.
+pub struct StorageRuntime {
+    local: Arc<LocalRuntime>,
+    dispatcher: Arc<EngineDispatcher>,
+    wired_buckets: WiredBuckets,
+    pollers: Mutex<Vec<JoinHandle<()>>>,
+    apply_lock: Mutex<()>,
+}
+
+impl StorageRuntime {
+    pub fn new(
+        dispatcher: Arc<EngineDispatcher>,
+        state: &AppState,
+        wired_buckets: WiredBuckets,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            local: Arc::new(LocalRuntime::new(
+                dispatcher.clone(),
+                state.reconfigure_gate.clone(),
+            )),
+            dispatcher,
+            wired_buckets,
+            pollers: Mutex::new(Vec::new()),
+            apply_lock: Mutex::new(()),
+        })
+    }
+
+    /// Apply a known-good snapshot (used at boot and by unit tests). Every
+    /// fallible prerequisite is resolved before the short publish phase.
+    pub async fn apply_config(&self, state: &AppState, cfg: WorkerConfig) -> Result<(), String> {
+        let _apply = self.apply_lock.lock().await;
+        self.prepare_and_publish(state, cfg).await
+    }
+
+    /// Re-fetch and apply the authoritative stored value while holding the
+    /// serialization lock end-to-end. The trigger payload is intentionally not
+    /// trusted because the function is discoverable on the bus.
+    async fn reload_authoritative(&self, iii: &IIIClient, state: &AppState) -> Result<(), String> {
+        let _apply = self.apply_lock.lock().await;
+        let cfg = fetch_config(iii).await?;
+        self.prepare_and_publish(state, cfg).await
+    }
+
+    async fn prepare_and_publish(&self, state: &AppState, cfg: WorkerConfig) -> Result<(), String> {
+        let needs_local = cfg
+            .buckets
+            .values()
+            .any(|bucket| matches!(bucket, BucketConfig::Local(_)));
+        let local_update = self
+            .local
+            .prepare_update(cfg.providers.local.as_ref(), needs_local)
+            .await
+            .map_err(|error| format!("preparing native local storage: {error}"))?;
+        let new_backends = build_backends(&cfg, local_update.context()).await?;
+        let prepared_pollers = prepare_pollers(&cfg).await?;
+        let new_wired_buckets = configured_wired_buckets(&cfg);
+
+        // Requests and signed HTTP handlers take the read side only while
+        // selecting an Arc-backed generation. Holding the write side here makes
+        // the multi-resource publication atomic from their perspective.
+        let _publish = state.reconfigure_gate.write().await;
+        self.local.commit(local_update).await;
+        *state.backends.write().await = new_backends;
+        *self.wired_buckets.write().await = new_wired_buckets;
+
+        let mut running_pollers = self.pollers.lock().await;
+        for handle in running_pollers.drain(..) {
+            handle.abort();
+        }
+        *running_pollers = prepared_pollers
+            .into_iter()
+            .map(|poller| poller.spawn(self.dispatcher.clone()))
+            .collect();
+        drop(running_pollers);
+
+        if let Some(addr) = self.local.current_addr().await {
+            tracing::info!(address = %addr, "native local storage HTTP server ready");
+        }
+        let notification_sources = self.pollers.lock().await.len();
+        tracing::info!(
+            buckets = cfg.buckets.len(),
+            notification_sources,
+            "storage configuration applied live"
+        );
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        let _apply = self.apply_lock.lock().await;
+        for handle in self.pollers.lock().await.drain(..) {
+            handle.abort();
+        }
+        self.local.shutdown().await;
+    }
+}
+
+enum PreparedPoller {
+    Sqs(sqs::SqsPoller),
+    Pubsub(pubsub::PubsubPoller, gcloud_pubsub::client::Client),
+    CfQueue(cf_queue::CfQueuePoller),
+}
+
+impl PreparedPoller {
+    fn spawn(self, dispatcher: Arc<EngineDispatcher>) -> JoinHandle<()> {
+        match self {
+            Self::Sqs(poller) => tokio::spawn(sqs::run_loop(poller, dispatcher)),
+            Self::Pubsub(poller, client) => {
+                tokio::spawn(pubsub::run_loop(poller, client, dispatcher))
+            }
+            Self::CfQueue(poller) => tokio::spawn(cf_queue::run_loop(poller, dispatcher)),
+        }
+    }
+}
+
+/// Register the `storage` schema. A seed is an initial value only; once the
+/// configuration exists, the configuration worker remains authoritative.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Storage",
-        "description": "Object storage buckets across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend.",
+        "description": "Object storage buckets across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend.",
         "schema": WorkerConfig::json_schema(),
     });
     if let Some(seed) = seed {
@@ -37,7 +159,8 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     Ok(())
 }
 
-/// Read the live `storage` configuration (env-expanded by the configuration worker).
+/// Read the live storage configuration (already env-expanded by the
+/// configuration worker).
 pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     let value = get_config_value(iii).await?;
     if value.is_null() {
@@ -61,102 +184,184 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
-/// Returns `Ok(None)` when the entry does not exist (`NOT_FOUND`).
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
-        Err(e) => Err(e),
+        Err(error) if error.contains("NOT_FOUND") => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
-/// Build object-storage backends for every configured bucket. `local_ctx` is the
-/// running rustfs sidecar context (port + ephemeral credentials); it must be
-/// `Some` whenever the config declares a `provider: local` bucket, otherwise the
-/// local backend build fails. On hot-reload the boot-time `local_ctx` is reused —
-/// the sidecar is never respawned.
+/// Build every configured backend against a prepared local generation. This is
+/// intentionally separate from publication so a failed provider setup leaves
+/// the currently-running map untouched.
 pub async fn build_backends(
     cfg: &WorkerConfig,
     local_ctx: Option<&LocalBackendCtx>,
 ) -> Result<HashMap<String, Arc<dyn Backend>>, String> {
     let mut backends = HashMap::new();
     for (name, bucket_cfg) in &cfg.buckets {
-        let b = factory::build(name, bucket_cfg, &cfg.providers, local_ctx)
+        let backend = factory::build(name, bucket_cfg, &cfg.providers, local_ctx)
             .await
-            .map_err(|e| format!("building backend `{name}`: {e}"))?;
-        tracing::info!(bucket = %name, provider = b.provider(), "backend ready");
-        backends.insert(name.clone(), b);
+            .map_err(|error| format!("building backend `{name}`: {error}"))?;
+        tracing::info!(bucket = %name, provider = backend.provider(), "backend ready");
+        backends.insert(name.clone(), backend);
     }
     Ok(backends)
 }
 
-/// Decide whether a freshly-fetched config can be hot-applied. Returns the
-/// config when its topology matches the boot-time topology (only
-/// backend-connection settings changed), or an error describing the
-/// topology change that requires a worker restart.
-fn reloadable(cfg: WorkerConfig, boot_topology: &Topology) -> Result<WorkerConfig, String> {
-    if cfg.topology() != *boot_topology {
-        return Err(
-            "configuration change alters bucket/notification topology (bucket add/remove, \
-             provider, underlying-bucket, notification-source, or local data-dir)"
-                .to_string(),
-        );
+fn configured_wired_buckets(cfg: &WorkerConfig) -> HashSet<String> {
+    cfg.buckets
+        .iter()
+        .filter_map(|(name, bucket)| {
+            let wired = match bucket {
+                BucketConfig::S3(value) => value.notifications.is_some(),
+                BucketConfig::Gcs(value) => value.notifications.is_some(),
+                BucketConfig::R2(value) => value.notifications.is_some(),
+                BucketConfig::Local(_) => true,
+            };
+            wired.then(|| name.clone())
+        })
+        .collect()
+}
+
+async fn prepare_pollers(cfg: &WorkerConfig) -> Result<Vec<PreparedPoller>, String> {
+    let mut sqs_queues: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut pubsub_subs: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut cf_queues: HashMap<(String, String, String), HashMap<String, String>> = HashMap::new();
+    let mut sqs_regions: HashMap<String, String> = HashMap::new();
+
+    for (name, bucket) in &cfg.buckets {
+        match bucket {
+            BucketConfig::S3(value) => {
+                if let Some(notification) = &value.notifications {
+                    let underlying = value.bucket.clone().unwrap_or_else(|| name.clone());
+                    sqs_queues
+                        .entry(notification.sqs_queue_url.clone())
+                        .or_default()
+                        .insert(underlying, name.clone());
+                    sqs_regions
+                        .entry(notification.sqs_queue_url.clone())
+                        .or_insert_with(|| value.region.clone());
+                }
+            }
+            BucketConfig::Gcs(value) => {
+                if let Some(notification) = &value.notifications {
+                    let underlying = value.bucket.clone().unwrap_or_else(|| name.clone());
+                    pubsub_subs
+                        .entry(notification.pubsub_subscription.clone())
+                        .or_default()
+                        .insert(underlying, name.clone());
+                }
+            }
+            BucketConfig::R2(value) => {
+                if let Some(notification) = &value.notifications {
+                    let underlying = value.bucket.clone().unwrap_or_else(|| name.clone());
+                    cf_queues
+                        .entry((
+                            value.account_id.clone(),
+                            notification.queue_id.clone(),
+                            notification.api_token.clone(),
+                        ))
+                        .or_default()
+                        .insert(underlying, name.clone());
+                }
+            }
+            BucketConfig::Local(_) => {}
+        }
     }
-    Ok(cfg)
+
+    let mut prepared = Vec::new();
+    for (queue_url, reverse) in sqs_queues {
+        let region = sqs_regions
+            .get(&queue_url)
+            .cloned()
+            .unwrap_or_else(|| "us-east-1".to_string());
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region))
+            .load()
+            .await;
+        prepared.push(PreparedPoller::Sqs(sqs::SqsPoller::new(
+            aws_sdk_sqs::Client::new(&sdk_config),
+            queue_url,
+            Arc::new(reverse),
+        )));
+    }
+
+    for (subscription, reverse) in pubsub_subs {
+        let client_config = gcloud_pubsub::client::ClientConfig::default()
+            .with_auth()
+            .await
+            .map_err(|error| format!("Pub/Sub auth for `{subscription}`: {error}"))?;
+        let client = gcloud_pubsub::client::Client::new(client_config)
+            .await
+            .map_err(|error| format!("Pub/Sub client for `{subscription}`: {error}"))?;
+        prepared.push(PreparedPoller::Pubsub(
+            pubsub::PubsubPoller::new(subscription, Arc::new(reverse)),
+            client,
+        ));
+    }
+
+    for ((account_id, queue_id, api_token), reverse) in cf_queues {
+        cf_queue::probe_auth(&account_id, &queue_id, &api_token)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Cloudflare queue auth for `{queue_id}`: {}",
+                    error.to_wire_string()
+                )
+            })?;
+        prepared.push(PreparedPoller::CfQueue(cf_queue::CfQueuePoller::new(
+            account_id,
+            queue_id,
+            api_token,
+            Arc::new(reverse),
+        )));
+    }
+    Ok(prepared)
 }
 
-/// Rebuild the backend map from `cfg` and hot-swap it under the write lock. The
-/// rustfs sidecar, webhook receiver, and notification pollers are NOT touched —
-/// adding/removing a local bucket or changing a notifications source requires a
-/// worker restart. A failed rebuild leaves the running backends untouched.
-pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), String> {
-    let new_backends = build_backends(&cfg, state.local_ctx.as_ref()).await?;
-    let mut backends_guard = state.backends.write().await;
-    *backends_guard = new_backends;
-    Ok(())
-}
-
-/// Internal `storage::on-config-change` trigger payload. The handler re-fetches
-/// the authoritative configuration, so this carries only the (advisory)
-/// configuration id; a struct (not `Value`) keeps the request schema concrete
-/// and unknown fields are ignored.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
-    /// Configuration id that changed (advisory; the handler re-fetches the value).
     #[serde(default)]
     pub id: Option<String>,
 }
 
-/// Ack returned by the internal `storage::on-config-change` handler.
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration` trigger.
-///
-/// `boot_topology` is the bucket/notification topology captured at startup; any
-/// reload that would change it is refused (those require a worker restart).
 pub fn register_config_trigger(
     iii: &IIIClient,
     state: AppState,
-    boot_topology: Topology,
+    runtime: Arc<StorageRuntime>,
 ) -> Result<(), Error> {
-    let st = state.clone();
+    let state_for_handler = state.clone();
+    let runtime_for_handler = runtime.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
-            let st = st.clone();
+            let state = state_for_handler.clone();
+            let runtime = runtime_for_handler.clone();
             let engine = engine.clone();
-            let boot_topology = boot_topology.clone();
             async move {
-                on_config_change(&engine, &st, &boot_topology).await;
-                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
+                let result = runtime.reload_authoritative(&engine, &state).await;
+                match &result {
+                    Ok(()) => tracing::info!("storage configuration reloaded without restart"),
+                    Err(error) => tracing::error!(
+                        error = %error,
+                        "storage configuration reload failed; keeping previous runtime"
+                    ),
+                }
+                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse {
+                    ok: result.is_ok(),
+                })
             }
         })
         .description(
-            "Internal: rebuild storage backends from the authoritative configuration when it changes.",
+            "Internal: transactionally apply the authoritative storage configuration without restarting the worker.",
         ),
     );
 
@@ -172,52 +377,12 @@ pub fn register_config_trigger(
     Ok(())
 }
 
-/// Reload backends from the AUTHORITATIVE configuration.
-///
-/// The caller-supplied trigger payload is intentionally ignored:
-/// `storage::on-config-change` is a discoverable bus function, so trusting
-/// `payload.new_value` would let any caller inject arbitrary backend config
-/// (redirecting writes or wiping backends) without updating persisted state.
-/// Instead we re-fetch the stored value via `configuration::get`. A
-/// topology-changing update is refused (it requires a restart).
-async fn on_config_change(iii: &IIIClient, state: &AppState, boot_topology: &Topology) {
-    let cfg = match fetch_config(iii).await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "config-change: failed to fetch authoritative configuration; keeping previous backends"
-            );
-            return;
-        }
-    };
-    let cfg = match reloadable(cfg, boot_topology) {
-        Ok(cfg) => cfg,
-        Err(reason) => {
-            tracing::warn!(
-                reason = %reason,
-                "config-change refused: topology change requires a worker restart; keeping previous backends"
-            );
-            return;
-        }
-    };
-    match apply_config(state, cfg).await {
-        Ok(()) => tracing::info!(
-            "storage backends reloaded after configuration change (topology unchanged; only backend connection settings updated)"
-        ),
-        Err(e) => tracing::error!(
-            error = %e,
-            "failed to rebuild backends after configuration change; keeping previous backends"
-        ),
-    }
-}
-
 async fn trigger_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    let mut last_err = String::new();
+    let mut last_error = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
             .trigger(TriggerRequest {
@@ -228,14 +393,14 @@ async fn trigger_with_retry(
             })
             .await
         {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                last_err = e.to_string();
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = error.to_string();
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(
                         function_id,
                         attempt,
-                        error = %last_err,
+                        error = %last_error,
                         "configuration RPC failed; retrying"
                     );
                     tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
@@ -244,30 +409,127 @@ async fn trigger_with_retry(
         }
     }
     Err(format!(
-        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
+        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_error}"
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WorkerConfig;
+    use crate::error::StorageError;
+    use crate::triggers::registry::TriggerRegistry;
+    use iii_sdk::IIIClient;
+    use tokio::sync::RwLock;
 
-    fn cfg(yaml: &str) -> WorkerConfig {
-        WorkerConfig::from_yaml(yaml).unwrap()
+    #[test]
+    fn live_configuration_accepts_zero_buckets() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert!(cfg.buckets.is_empty());
     }
 
     #[test]
-    fn reloadable_allows_credential_only_change() {
-        let boot = cfg("buckets:\n  up:\n    provider: r2\n    account_id: a\n    access_key_id: k1\n    secret_access_key: s1\n");
-        let next = cfg("buckets:\n  up:\n    provider: r2\n    account_id: a\n    access_key_id: k2\n    secret_access_key: s2\n");
-        assert!(reloadable(next, &boot.topology()).is_ok());
+    fn wired_bucket_projection_tracks_live_sources() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({
+            "buckets": {
+                "local": { "provider": "local" },
+                "cold": { "provider": "s3", "region": "us-east-1" },
+                "events": {
+                    "provider": "s3",
+                    "region": "us-east-1",
+                    "notifications": { "sqs_queue_url": "https://sqs.test/q" }
+                }
+            }
+        }))
+        .unwrap();
+        let wired = configured_wired_buckets(&cfg);
+        assert!(wired.contains("local"));
+        assert!(wired.contains("events"));
+        assert!(!wired.contains("cold"));
     }
 
-    #[test]
-    fn reloadable_refuses_topology_change() {
-        let boot = cfg("buckets:\n  up:\n    provider: s3\n    region: us-east-1\n");
-        let next = cfg("buckets:\n  up:\n    provider: s3\n    region: us-east-1\n  added:\n    provider: s3\n    region: us-east-1\n");
-        assert!(reloadable(next, &boot.topology()).is_err());
+    #[tokio::test]
+    async fn runtime_applies_bucket_add_remove_and_listener_changes_live() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(HashMap::new());
+        let wired = Arc::new(RwLock::new(HashSet::new()));
+        let dispatcher = Arc::new(EngineDispatcher::new(
+            IIIClient::new("ws://127.0.0.1:1"),
+            Arc::new(TriggerRegistry::new()),
+        ));
+        let runtime = StorageRuntime::new(dispatcher, &state, wired.clone());
+        let configured = WorkerConfig::from_json(&serde_json::json!({
+            "providers": {
+                "local": {
+                    "data_dir": data_dir.path().to_string_lossy(),
+                    "http": { "bind_address": "127.0.0.1:0" }
+                }
+            },
+            "buckets": { "scratch": { "provider": "local" } }
+        }))
+        .unwrap();
+        runtime.apply_config(&state, configured).await.unwrap();
+        assert_eq!(state.backend("scratch").await.unwrap().provider(), "local");
+        assert!(wired.read().await.contains("scratch"));
+        assert!(runtime.local.current_addr().await.is_some());
+
+        runtime
+            .apply_config(
+                &state,
+                WorkerConfig::from_json(&serde_json::json!({})).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            state.backend("scratch").await,
+            Err(StorageError::UnknownBucket { .. })
+        ));
+        assert!(wired.read().await.is_empty());
+        assert!(runtime.local.current_addr().await.is_none());
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_listener_rebind_preserves_the_published_runtime() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(HashMap::new());
+        let wired = Arc::new(RwLock::new(HashSet::new()));
+        let dispatcher = Arc::new(EngineDispatcher::new(
+            IIIClient::new("ws://127.0.0.1:1"),
+            Arc::new(TriggerRegistry::new()),
+        ));
+        let runtime = StorageRuntime::new(dispatcher, &state, wired);
+        let initial = WorkerConfig::from_json(&serde_json::json!({
+            "providers": {
+                "local": {
+                    "data_dir": data_dir.path().to_string_lossy(),
+                    "http": { "bind_address": "127.0.0.1:0" }
+                }
+            },
+            "buckets": { "scratch": { "provider": "local" } }
+        }))
+        .unwrap();
+        runtime.apply_config(&state, initial).await.unwrap();
+        let original_addr = runtime.local.current_addr().await;
+
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let occupied_addr = occupied.local_addr().unwrap();
+        let rejected = WorkerConfig::from_json(&serde_json::json!({
+            "providers": {
+                "local": {
+                    "data_dir": data_dir.path().to_string_lossy(),
+                    "http": { "bind_address": occupied_addr.to_string() }
+                }
+            },
+            "buckets": { "replacement": { "provider": "local" } }
+        }))
+        .unwrap();
+        assert!(runtime.apply_config(&state, rejected).await.is_err());
+        assert!(state.backend("scratch").await.is_ok());
+        assert!(matches!(
+            state.backend("replacement").await,
+            Err(StorageError::UnknownBucket { .. })
+        ));
+        assert_eq!(runtime.local.current_addr().await, original_addr);
+        runtime.shutdown().await;
     }
 }

@@ -105,8 +105,8 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 - **`@`-mentions** — fuzzy-search every function registered against the engine
 - **`/compact` slash command** — summarises conversation history via the `context-manager` worker's `context::compact`, then persists a `compaction` custom session entry; the durable transcript is untouched — the marker renders from that entry and the summary anchors future turns
 - **Attachments** — multi-file picker with text/image previews
-- **Function calls** — running / pending / error cards, consecutive calls grouped, with **approve/deny** gating for pending approvals (`approval::resolve`)
-- **Streaming** — abortable mid-flight; thinking shimmer; collapsible thought messages
+- **Function calls** — running / pending / error cards; consecutive calls collapse to the latest and expand as one tight stack, while rich code/screenshot displays, approvals, and live calls stay visible; intermediate agent prose summarizes the completed batch; pending approvals use **approve/deny** gating (`approval::resolve`)
+- **Streaming** — abortable mid-flight; live thought stream removed from the DOM on completion
 - **Markdown** — GFM, code blocks with [prism-react-renderer](https://github.com/FormidableLabs/prism-react-renderer), syntax-highlighted JSON inputs and outputs
 - **Conversation sidebar** — create, inline rename, delete, auto-title from the first message
 - **Context-usage meter** — token estimate with warn / danger thresholds and a `/compact` nudge
@@ -235,8 +235,11 @@ disposes the old module and re-imports the new one. Injected scripts default-
 export `setup(host)` and register through `host.pages` (whole pages at
 `#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
-built-in id overrides it), and `host.configForms` (replace the workers-tab
-form region for one configuration id; dirty/save/reset stay host-owned).
+built-in id overrides it; `metadata.display` promotes the winning renderer's
+rich result into the collapsed chat flow), and `host.configForms` (replace the workers-tab
+form region for one configuration id; dirty/save/reset stay host-owned). A
+configuration form can opt into `{ layout: 'full' }` to receive the entire
+available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under
 `data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
 loadable assets. The `state` worker's `ui/` directory is the working

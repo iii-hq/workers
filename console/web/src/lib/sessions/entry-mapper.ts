@@ -245,38 +245,63 @@ function unwrapFunctionTrigger(
 ): {
   functionId: string
   input: unknown
+  description?: string
   unresolvedTarget?: boolean
 } {
   if (block.function_id === 'agent_trigger') {
     if (block.arguments && typeof block.arguments === 'object') {
       const args = block.arguments as {
         function?: unknown
+        description?: unknown
         payload?: unknown
         _streaming?: unknown
       }
-      // Mid-stream, the harness rides the raw in-flight arguments tail on
-      // `_streaming` (providers degrade the incomplete JSON itself), so the
-      // command can be watched forming in the request pane.
+      // Mid-stream, the harness supplies both incrementally reconstructed
+      // fields and a bounded raw tail. Preserve the structured payload for
+      // the request pane while `_streaming` keeps its live-state treatment.
       const streaming =
         typeof args._streaming === 'string' ? args._streaming : undefined
+      const description =
+        typeof args.description === 'string' &&
+        args.description.trim().length > 0
+          ? args.description.trim()
+          : undefined
       if (typeof args.function === 'string' && args.function.length > 0) {
         if (streaming !== undefined) {
-          return { functionId: args.function, input: { _streaming: streaming } }
+          const input =
+            args.payload &&
+            typeof args.payload === 'object' &&
+            !Array.isArray(args.payload)
+              ? {
+                  ...(args.payload as Record<string, unknown>),
+                  _streaming: streaming,
+                }
+              : { _streaming: streaming }
+          return {
+            functionId: args.function,
+            input,
+            description,
+          }
         }
-        return { functionId: args.function, input: args.payload ?? {} }
+        return {
+          functionId: args.function,
+          input: args.payload ?? {},
+          description,
+        }
       }
       if (streaming !== undefined) {
         return {
           functionId: block.function_id,
           input: { _streaming: streaming },
+          description,
           unresolvedTarget: true,
         }
       }
     }
-    // The target is unknown while the wrapper's arguments are still
-    // streaming (providers degrade partial JSON to `{}`). Flag it so the UI
-    // can render a placeholder instead of the literal `agent_trigger`; the
-    // next snapshot self-corrects once the arguments finish streaming.
+    // Before the incremental parser has observed a non-empty target (or for
+    // malformed provider output), render a placeholder instead of the literal
+    // `agent_trigger`; the next snapshot self-corrects as soon as a value is
+    // available.
     return {
       functionId: block.function_id,
       input: block.arguments,
@@ -556,16 +581,18 @@ function assistantSegments(
           role: 'assistant',
           content: block.text,
           model: message.model,
+          stopReason: message.stop_reason,
           createdAt: message.timestamp,
         })
         break
       case 'function_call': {
-        const { functionId, input, unresolvedTarget } =
+        const { functionId, input, description, unresolvedTarget } =
           unwrapFunctionTrigger(block)
         const msg: FunctionTriggerMessage = {
           id,
           role: 'function-trigger',
           functionId,
+          description,
           input,
           unresolvedTarget,
           functionTriggerId: block.id,

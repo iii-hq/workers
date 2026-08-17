@@ -277,14 +277,10 @@ export class Runner {
       }
       await new Promise((r) => setTimeout(r, READY_PROBE_INTERVAL_MS));
     }
-    // `Function not found` is the most common timeout cause: the storage
-    // worker connected to the engine but exited before registering its RPCs
-    // — almost always because rustfs is missing (see the worker's
-    // LOCAL_BACKEND_BIN_NOT_FOUND error). Surface a hint instead of just
-    // dumping the raw error so users don't have to grep `iii worker logs`.
+    // Surface a useful worker-log hint instead of only the raw readiness error.
     const lastMsg = (lastErr as any)?.message ?? String(lastErr);
     const hint = lastMsg.includes('Function not found')
-      ? '\n  hint: storage may have exited before registering RPCs. Run `iii worker logs storage` to inspect; LOCAL_BACKEND_BIN_NOT_FOUND means rustfs is missing — set $RUSTFS_BIN or install rustfs on $PATH.'
+      ? '\n  hint: storage may have exited before registering RPCs. Run `iii worker logs storage` to inspect its startup error.'
       : '';
     throw new Error(
       `storage worker did not become ready within ${READY_TIMEOUT_MS}ms; last error: ${lastMsg}${hint}`,
@@ -480,7 +476,7 @@ export class Runner {
     // 3. Trigger dispatch suite (per-provider). Skip providers whose RPC
     // probe failed (downProviders) or whose trigger plumbing didn't echo
     // a probe event (triggerlessProviders). The local provider always
-    // probes successfully because rustfs's webhook is in-process.
+    // probes successfully because native-local dispatch is in-process.
     await this.probeTriggerPaths(triggerProviders.filter((p) => !downProviders.has(p)));
     for (const c of buildTriggerCases(triggerProviders)) {
       if (!accept(c)) continue;

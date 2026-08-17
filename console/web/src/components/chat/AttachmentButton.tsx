@@ -34,11 +34,11 @@ export function AttachmentButton({
         title="attach files"
         onClick={() => inputRef.current?.click()}
         className={cn(
-          'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink transition-colors disabled:opacity-40 disabled:pointer-events-none',
+          'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40',
           className,
         )}
       >
-        <Paperclip size={16} aria-hidden />
+        <Paperclip className="size-4 shrink-0" aria-hidden />
       </button>
       <input
         ref={inputRef}

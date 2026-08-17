@@ -104,6 +104,10 @@ async fn main() -> Result<()> {
     let shared = cfg.into_shared();
     functions::register_all(&iii, &shared);
 
+    // The web worker owns its rich chat presentation (notably viewable image
+    // responses) through the console's injectable UI contract.
+    web::ui::register(&iii);
+
     // Bind the harness pre-generate hook (web::inject-guidance). One shot: the engine
     // parks the binding until the harness registers the trigger type (recoverable
     // triggers, iii #1962). Presence-gated: the guidance is injected only while this
@@ -118,7 +122,9 @@ async fn main() -> Result<()> {
     )
     .context("registering configuration change trigger")?;
 
-    tracing::info!("web ready: web::fetch + guidance injection + configuration hot-reload");
+    tracing::info!(
+        "web ready: web::fetch + injectable console UI + guidance injection + configuration hot-reload"
+    );
     tokio::signal::ctrl_c().await?;
     tracing::info!("web shutting down");
     iii.shutdown_async().await;

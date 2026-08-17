@@ -14,6 +14,7 @@
 //! offloaded via `spawn_blocking` so a large traversal cannot stall the shared
 //! tokio runtime that also dispatches `shell::exec`/jobs/config-reload.
 
+pub mod change_journal;
 pub mod config;
 pub mod error;
 pub mod functions;

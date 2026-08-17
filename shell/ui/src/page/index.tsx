@@ -59,6 +59,7 @@ import {
   currentReviewDirtyPaths,
   refreshCleanEditorCacheEntry,
 } from './editor-cache'
+import { ChangeDiffPane } from './ChangeDiffPane'
 import { FilesTab } from './FilesTab'
 import {
   type GitChange,
@@ -94,6 +95,7 @@ import {
   runReviewTransition,
 } from './ReviewPane'
 import { SearchTab } from './SearchTab'
+import { parseShellPanelContext } from './panel-context'
 import {
   activateTab,
   basename,
@@ -226,6 +228,7 @@ export function ShellExplorerPage({
   tabId,
   onRequestClose,
   workingDir,
+  panelContext,
   conversationId,
 }: { host: Host } & PageRenderProps) {
   const theme = host.useTheme()
@@ -344,6 +347,12 @@ export function ShellExplorerPage({
       completedAtMs: observedReview.completedAtMs,
     }
   }
+  const [contextDiff, setContextDiff] = useState<{
+    eventId: number
+    changeId: string
+    path: string
+    canViewFile: boolean
+  } | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
   const reviewEditBackupsRef = useRef<Map<string, ReviewEditBackup>>(new Map())
   const reviewDirtyPathsRef = useRef(reviewDirtyPaths)
@@ -844,6 +853,7 @@ export function ShellExplorerPage({
   const openReviewEntry = useCallback((entry: ReviewEntry) => {
     if (!reviewSaveBarrier.canTransition()) return false
     diffRequestRef.current += 1
+    setContextDiff(null)
     setTabs((state) => openPreview(state, entry.path))
     setDiff(diffForReviewEntry(entry))
     setReviewRefreshEpoch((value) => value + 1)
@@ -1312,6 +1322,7 @@ export function ShellExplorerPage({
 
   // ── open/close/pin actions ──
   const previewFile = useCallback((relPath: string) => {
+    setContextDiff(null)
     if (!confirmDiscardReviewEdits()) return
     diffRequestRef.current += 1
     setDiff(null)
@@ -1336,6 +1347,7 @@ export function ShellExplorerPage({
       }
       if (!confirmDiscardReviewEdits()) return
       diffRequestRef.current += 1
+      setContextDiff(null)
       setDiff(null)
       setTabs((s) => openPinned(s, relPath))
     },
@@ -1485,6 +1497,7 @@ export function ShellExplorerPage({
       setTabs(EMPTY_TABS)
       setExpanded([])
       setDiff(null)
+      setContextDiff(null)
       setReviewEntries(new Map())
       scopeEntriesRef.current = new Map()
       setScopeEntries(new Map())
@@ -1699,6 +1712,7 @@ export function ShellExplorerPage({
       pendingOpenRetryRef.current = 0
       setPendingOpenError(null)
       diffRequestRef.current += 1
+      setContextDiff(null)
       setDiff(null)
       setTabs((s) => openPinned(s, abs.slice(prefix.length)))
     } else if (abs !== root) {
@@ -1787,6 +1801,64 @@ export function ShellExplorerPage({
     },
     [],
   )
+
+  const openContextFile = useCallback(
+    (path: string): boolean => {
+      if (!reviewSaveBarrier.canTransition() || root === null) return false
+      setContextDiff(null)
+      setSideTab('files')
+      setCollapsed(false)
+
+      if (!path.startsWith('/')) {
+        diffRequestRef.current += 1
+        setDiff(null)
+        setTabs((state) => openPinned(state, path))
+        return true
+      }
+
+      // Reuse the PR's validated deep-link pipeline for contextual panel
+      // requests. It safely re-roots when the file lives outside the current
+      // workspace and preserves the same retry/error behavior.
+      if (rootRef.current !== null) rootResolveSeqRef.current += 1
+      pendingOpenCaptureSeqRef.current += 1
+      pendingOpenRef.current = path
+      pendingOpenRootRequestRef.current = null
+      pendingOpenWaitingForRetryRef.current = false
+      pendingOpenRetryRef.current = 0
+      setPendingOpenError(null)
+      if (pendingOpenRetryTimerRef.current !== null) {
+        window.clearTimeout(pendingOpenRetryTimerRef.current)
+        pendingOpenRetryTimerRef.current = null
+      }
+      setOpenBump((value) => value + 1)
+      return true
+    },
+    [reviewSaveBarrier, root],
+  )
+
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseShellPanelContext(panelContext.context)
+    if (!context) return
+    // A newly mounted shell page receives the context before its persisted
+    // root necessarily resolves. Leave file events unapplied until the safe
+    // open pipeline can accept them.
+    if (context.type === 'file') {
+      if (!openContextFile(context.path)) return
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    if (!confirmDiscardReviewEdits()) return
+    appliedContextRef.current = panelContext.id
+    setDiff(null)
+    setContextDiff({
+      eventId: panelContext.id,
+      changeId: context.changeId,
+      path: context.path,
+      canViewFile: context.canViewFile,
+    })
+  }, [confirmDiscardReviewEdits, openContextFile, panelContext])
 
   const onSaved = useCallback(() => {
     refreshGit()
@@ -2143,7 +2215,10 @@ export function ShellExplorerPage({
           {diff === null && tabs.tabs.length > 0 ? (
             <div className="shui-editor-tabs" role="tablist">
               {tabs.tabs.map((tab) => {
-                const active = diff === null && tab.path === tabs.active
+                const active =
+                  diff === null &&
+                  contextDiff === null &&
+                  tab.path === tabs.active
                 return (
                   <div key={tab.path} className={`shui-etab${active ? ' active' : ''}${tab.pinned ? '' : ' preview'}`}>
                     <button
@@ -2155,6 +2230,7 @@ export function ShellExplorerPage({
                       onClick={() =>
                         runReviewTransition(reviewSaveBarrier, () => {
                           diffRequestRef.current += 1
+                          setContextDiff(null)
                           setDiff(null)
                           setTabs((s) => activateTab(s, tab.path))
                         })
@@ -2183,7 +2259,16 @@ export function ShellExplorerPage({
             </div>
           ) : null}
 
-          {diff !== null ? (
+          {contextDiff !== null ? (
+            <ChangeDiffPane
+              key={contextDiff.eventId}
+              host={host}
+              changeId={contextDiff.changeId}
+              path={contextDiff.path}
+              canViewFile={contextDiff.canViewFile}
+              onViewFile={openContextFile}
+            />
+          ) : diff !== null ? (
             <ReviewPane
               host={host}
               root={root}

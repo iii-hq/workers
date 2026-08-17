@@ -60,7 +60,6 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     fn state_with(
         resp: Option<Result<BackendHeadResp, BackendError>>,
@@ -69,13 +68,7 @@ mod tests {
         m.responses.lock().unwrap().head = resp;
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), m.clone() as Arc<dyn Backend>);
-        (
-            AppState {
-                backends: Arc::new(RwLock::new(map)),
-                local_ctx: None,
-            },
-            m,
-        )
+        (AppState::new(map), m)
     }
 
     fn req(v: serde_json::Value) -> HeadReq {

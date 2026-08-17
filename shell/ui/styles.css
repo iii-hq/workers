@@ -1421,3 +1421,228 @@
     transition: none;
   }
 }
+
+/* Contextual file-change cards retained from the console improvements. */
+[data-iii-ui="shell"] .shui-view-file-btn {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  padding: 4px 9px 4px 7px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-view-file-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-view-file-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-view-file-btn svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+/* ── prominent file-change artifact (coder::* chat calls) ──────────── */
+
+[data-iii-ui="shell"] .shui-file-changes {
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-file-changes-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-file-changes-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-file-changes-title-group {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-file-changes-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-file-changes-totals,
+[data-iii-ui="shell"] .shui-file-change-stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-file-changes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="shell"] .shui-file-change-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-file-change-path {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] button.shui-file-change-path {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+[data-iii-ui="shell"] button.shui-file-change-path:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+[data-iii-ui="shell"] button.shui-file-change-path:focus-visible,
+[data-iii-ui="shell"] .shui-file-change-view:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-file-change-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+[data-iii-ui="shell"] .shui-file-change-view {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  padding: 4px 8px 4px 6px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-file-change-view:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-file-change-view svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+[data-iii-ui="shell"] .shui-file-changes .is-added {
+  color: var(--color-ok);
+}
+[data-iii-ui="shell"] .shui-file-changes .is-deleted,
+[data-iii-ui="shell"] .shui-file-changes .is-failed {
+  /* Small diff counters need AA contrast in both themes: mixing toward ink
+     darkens alert on light surfaces and lightens it on dark surfaces. */
+  color: color-mix(in oklab, var(--color-alert) 70%, var(--color-ink));
+}
+[data-iii-ui="shell"] .shui-file-changes .is-created,
+[data-iii-ui="shell"] .shui-file-changes .is-updated,
+[data-iii-ui="shell"] .shui-file-changes .is-unchanged,
+[data-iii-ui="shell"] .shui-file-changes .is-running {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-file-changes-more {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: var(--color-paper-2);
+  padding: 7px 12px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+[data-iii-ui="shell"] .shui-file-changes-more:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-file-changes-more:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-file-changes-more svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms ease;
+}
+[data-iii-ui="shell"] .shui-file-changes-more svg.is-expanded {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 520px) {
+  [data-iii-ui="shell"] .shui-view-file-btn {
+    min-height: 48px;
+  }
+  [data-iii-ui="shell"] .shui-file-changes-title-group {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-row {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-actions {
+    gap: 6px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-view {
+    min-width: 48px;
+    min-height: 48px;
+    justify-content: center;
+    padding: 0;
+  }
+  [data-iii-ui="shell"] .shui-file-change-view span {
+    display: none;
+  }
+}

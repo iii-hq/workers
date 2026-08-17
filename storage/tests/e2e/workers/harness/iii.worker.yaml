@@ -4,4 +4,4 @@ language: typescript
 deploy: host
 manifest: package.json
 entry: src/worker.ts
-description: Self-asserting smoke harness for storage. Drives putObject / getObject / deleteObject / presignUrl and asserts object-created / object-deleted trigger dispatches over the local rustfs backend.
+description: Self-asserting smoke harness for storage. Drives putObject / getObject / deleteObject / presignUrl and asserts object-created / object-deleted trigger dispatches over native local storage.

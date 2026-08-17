@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Select } from '@/components/ui/Select'
+import { SheetOptionList } from '@/components/ui/SheetNavigation'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import { FullModeConfirmDialog } from './FullModeConfirmDialog'
 
@@ -69,5 +70,51 @@ export function PermissionModePicker({
         scope="conversation"
       />
     </>
+  )
+}
+
+interface PermissionModePickerPanelProps {
+  value: PermissionMode
+  onChange: (next: PermissionMode) => void
+  onRequestFull: () => void
+  disabled?: boolean
+  className?: string
+}
+
+/** Inline permission choices for an existing navigable sheet. */
+export function PermissionModePickerPanel({
+  value,
+  onChange,
+  onRequestFull,
+  disabled,
+  className,
+}: PermissionModePickerPanelProps) {
+  return (
+    <SheetOptionList
+      value={value}
+      disabled={disabled}
+      className={className}
+      onChange={(next) => {
+        if (next === 'full') onRequestFull()
+        else onChange(next)
+      }}
+      options={[
+        {
+          value: 'manual',
+          label: 'Manual',
+          description: 'Ask before every function runs.',
+        },
+        {
+          value: 'auto',
+          label: 'Auto',
+          description: 'Run configured safe functions automatically.',
+        },
+        {
+          value: 'full',
+          label: 'Full',
+          description: 'Run every function without asking.',
+        },
+      ]}
+    />
   )
 }

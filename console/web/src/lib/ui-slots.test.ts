@@ -5,10 +5,16 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { RegisteredConfigForm, RegisteredSessionChip } from './ui-slots'
+import type {
+  RegisteredConfigForm,
+  RegisteredProviderConfigForm,
+  RegisteredSessionChip,
+} from './ui-slots'
 import {
+  getExtProviderConfigForm,
   getExtSessionChips,
   isExtConfigFormPending,
+  registerExtProviderConfigForm,
   registerExtSessionChip,
 } from './ui-slots'
 
@@ -53,5 +59,29 @@ describe('config form slot readiness', () => {
     expect(isExtConfigFormPending('loading', form)).toBe(false)
     expect(isExtConfigFormPending('ready', undefined)).toBe(false)
     expect(isExtConfigFormPending('unavailable', undefined)).toBe(false)
+  })
+})
+
+describe('provider config form slot', () => {
+  function form(path: string): RegisteredProviderConfigForm {
+    return {
+      providerId: 'openai-codex',
+      path,
+      scope: path.split('/')[0],
+      component: () => null,
+    }
+  }
+
+  it('uses the latest provider-owned form and restores the shadowed one', () => {
+    const offA = registerExtProviderConfigForm(form('first/page.js'))
+    const offB = registerExtProviderConfigForm(form('second/page.js'))
+
+    expect(getExtProviderConfigForm('openai-codex')?.path).toBe(
+      'second/page.js',
+    )
+    offB()
+    expect(getExtProviderConfigForm('openai-codex')?.path).toBe('first/page.js')
+    offA()
+    expect(getExtProviderConfigForm('openai-codex')).toBeUndefined()
   })
 })

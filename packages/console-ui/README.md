@@ -26,6 +26,26 @@ copying types around:
 import { Button, EmptyState, type Host } from '@iii-dev/console-ui'
 ```
 
+Function-trigger renderers receive the harness's optional user-facing
+`message.description`. A renderer can declare `metadata: { display: true }`
+to keep a successful rich artifact (for example a screenshot or file-change
+summary) visible in the chat flow; return `null` for unsupported/error shapes
+to fall through to the next renderer.
+
+Renderers can also open their worker's registered page with contextual JSON:
+
+```tsx
+host.panels?.open({
+  pageId: 'shell',
+  context: { type: 'file', path: '/repo/src/app.ts' },
+})
+```
+
+The host reuses an existing page or places it beside chat, and delivers a
+`panelContext` event to the page's `PageRenderProps`. Use the event `id` to
+react to repeated clicks. Context is ephemeral; fetch large bodies from the
+worker by opaque id.
+
 and keep it external in the build (alongside the react specifiers):
 
 ```js
