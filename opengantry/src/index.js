@@ -4,6 +4,7 @@ import {
   mintVerdictToken,
   verifyVerdictToken,
   isPromoteClassFunctionId,
+  buildVerdictExpectedClaims,
 } from '@jeger-ai/opengantry/kernel';
 
 import { createMiddlewareHandler, isReservedGovernanceFunctionId } from './lib/middleware.js';
@@ -75,9 +76,14 @@ async function startWorker() {
             msn_id: data.msn_id,
             branch: `gxt/${data.msn_id.toLowerCase()}`,
             state: 'active',
-            session_refs: {},
+            session_refs: Object.create(null),
           };
           lease.mission_rel = data.mission_rel_path;
+          try {
+            lease.verdict_expected = buildVerdictExpectedClaims(repoRoot, data.mission_rel_path);
+          } catch (e) {
+            console.warn(`opengantry: verdict bind skipped after verify pass: ${e.message}`);
+          }
           leases.upsert(lease);
         }
         try {
@@ -122,16 +128,10 @@ async function startWorker() {
     },
   );
 
-  worker.registerFunction(
-    'gantry::on-trigger-type-registration',
-    async () => {
-      throw new Error('trigger type registration denied');
-    },
-    {
-      request_format: loadSchema('gantry__on-trigger-type-registration.json'),
-      response_format: loadSchema('gantry__on-trigger-type-registration.response.json'),
-    },
-  );
+  worker.registerFunction('gantry::on-trigger-type-registration', async () => ({ denied: true }), {
+    request_format: loadSchema('gantry__on-trigger-type-registration.json'),
+    response_format: loadSchema('gantry__on-trigger-type-registration.response.json'),
+  });
 
   worker.registerTriggerType(
     {

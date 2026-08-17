@@ -32,7 +32,7 @@ function ensureLease(leases, msnId, worktreePath, missionRel) {
       msn_id: msnId,
       branch: worktreePath ?? `gxt/${msnId.toLowerCase()}`,
       state: LEASE_STATES.active,
-      session_refs: {},
+      session_refs: Object.create(null),
       mission_rel: missionRel,
     };
     leases.upsert(lease);
@@ -85,7 +85,15 @@ export function createMiddlewareHandler(state) {
 
     if (isPromoteClassFunctionId(function_id)) {
       const token = context?.verdict_token ?? payload?.verdict_token;
-      if (!token || !verifyPromoteVerdictToken({ token, msnId, repoRoot })) {
+      if (
+        !token ||
+        !verifyPromoteVerdictToken({
+          token,
+          msnId,
+          repoRoot,
+          boundExpected: lease?.verdict_expected,
+        })
+      ) {
         return {
           status: 'failed',
           findings: [

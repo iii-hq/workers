@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@jeger-ai/opengantry':
-        specifier: ^3.2.3
-        version: 3.2.3
+        specifier: file:../../opengantry
+        version: file:../../opengantry
       acorn:
         specifier: 8.14.1
         version: 8.14.1
@@ -260,8 +260,8 @@ packages:
   '@iii-dev/helpers@0.22.1':
     resolution: {integrity: sha512-/lI2hOr7Y1mHll3e2bu3hrekgA1S0VRRSD/gk61kvEZGGFfNIbbpO8rhog1bnSzEqfiPGV5XQUT8ZI4Ie+BEDg==}
 
-  '@jeger-ai/opengantry@3.2.3':
-    resolution: {integrity: sha512-CpoCp/CTRfIttMbDCRANpmVnlUrgmdCVaZuKThY5WUAA5TDtPMkIUzkBW8nSX1gxmFDWrqV5wuTY5tV7XTIcnQ==}
+  '@jeger-ai/opengantry@file:../../opengantry':
+    resolution: {directory: ../../opengantry, type: directory}
     engines: {node: '>=24'}
     hasBin: true
 
@@ -994,7 +994,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@jeger-ai/opengantry@3.2.3':
+  '@jeger-ai/opengantry@file:../../opengantry':
     dependencies:
       '@clack/prompts': 0.10.1
       '@modelcontextprotocol/sdk': 1.30.0(zod@3.25.76)

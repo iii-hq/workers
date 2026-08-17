@@ -284,7 +284,10 @@ scripts:
 
   {
     const fx = materializeFixture('empty-tags');
-    fx.write('notags/package.json', JSON.stringify({ name: 'notags', private: true, type: 'module' }));
+    fx.write(
+      'notags/package.json',
+      JSON.stringify({ name: 'notags', private: true, type: 'module' }),
+    );
     fx.write(
       'notags/iii.worker.yaml',
       `iii: v1

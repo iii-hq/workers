@@ -34,7 +34,14 @@ export function resolveVerifyRepoRoot(repoRoot) {
 }
 
 export function defaultLeaseStorePath(repoRoot) {
+  const root = path.resolve(repoRoot);
+  const defaultPath = path.join(root, '.gitagent', 'leases.json');
   const override = process.env.GANTRY_III_LEASE_STORE?.trim();
-  if (override) return override;
-  return path.join(repoRoot, '.gitagent', 'leases.json');
+  if (!override) return defaultPath;
+  const resolved = path.resolve(override);
+  const rel = path.relative(path.join(root, '.gitagent'), resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('opengantry: GANTRY_III_LEASE_STORE must resolve under <repo>/.gitagent/');
+  }
+  return resolved;
 }

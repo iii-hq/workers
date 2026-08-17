@@ -16,13 +16,13 @@
   },
   "scripts": {
     "start": "node ./index.mjs",
-    "test": "node --test tests/middleware.test.mjs && node tests/iii-practices.self-test.mjs",
+    "test": "node --test tests/middleware.test.mjs tests/lease-store.test.mjs && node tests/iii-practices.self-test.mjs",
     "build:bundle": "node scripts/build-bundle.mjs",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },
   "dependencies": {
-    "@jeger-ai/opengantry": "^3.2.3",
+    "@jeger-ai/opengantry": "^3.2.4",
     "acorn": "8.14.1",
     "acorn-walk": "8.3.4",
     "ajv": "8.20.0",
