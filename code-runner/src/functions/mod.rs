@@ -151,6 +151,8 @@ pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
         function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
         config: serde_json::json!({ "on_error": "fail_open" }),
         metadata: None,
+        namespace: iii.namespace(),
+        trigger_namespace: None,
     }) {
         Ok(_) => tracing::info!("code-runner pre-generate hook bound"),
         Err(e) => tracing::warn!(error = %e, "guidance hook binding failed; continuing without it"),

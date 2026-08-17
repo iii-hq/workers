@@ -112,6 +112,8 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         function_id: CONFIG_FN_ID.to_string(),
         config: json!({ "configuration_id": CONFIG_ID, "event_types": ["configuration:updated"] }),
         metadata: None,
+        namespace: iii.namespace(),
+        trigger_namespace: None,
     })?;
     Ok(())
 }

@@ -69,13 +69,18 @@ impl IIIEngine {
 /// unit tests stayed green, because the fake took a bare `Value` and never
 /// deserialized at all. Only the field rename onto the SDK struct belongs
 /// here, because only that names an SDK type.
-fn guest_trigger_input(input: Value) -> Result<RegisterTriggerInput, String> {
+fn guest_trigger_input(
+    input: Value,
+    namespace: Option<String>,
+) -> Result<RegisterTriggerInput, String> {
     let guest = parse_guest_trigger(input)?;
     Ok(RegisterTriggerInput {
         trigger_type: guest.r#type,
         function_id: guest.function_id,
         config: guest.config,
         metadata: guest.metadata,
+        namespace,
+        trigger_namespace: None,
     })
 }
 
@@ -148,7 +153,7 @@ impl Engine for IIIEngine {
         let triggers = self.triggers.clone();
         Box::pin(async move {
             let trigger = iii
-                .register_trigger(guest_trigger_input(input)?)
+                .register_trigger(guest_trigger_input(input, iii.namespace())?)
                 .map_err(|e| e.to_string())?;
             let id = uuid::Uuid::new_v4().to_string();
             triggers.lock().unwrap().insert(id.clone(), trigger);
@@ -271,17 +276,22 @@ mod tests {
     /// sdk's `RegisterTriggerInput`, whose field is `trigger_type`.
     #[test]
     fn a_guest_registration_translates_node_type_onto_the_rust_trigger_type() {
-        let input = guest_trigger_input(json!({
-            "type": "app::mytype",
-            "function_id": "app::react",
-            "config": { "key": "k" },
-            "metadata": { "note": "n" },
-        }))
+        let input = guest_trigger_input(
+            json!({
+                "type": "app::mytype",
+                "function_id": "app::react",
+                "config": { "key": "k" },
+                "metadata": { "note": "n" },
+            }),
+            Some("test-namespace".to_string()),
+        )
         .unwrap();
         assert_eq!(input.trigger_type, "app::mytype");
         assert_eq!(input.function_id, "app::react");
         assert_eq!(input.config, json!({ "key": "k" }));
         assert_eq!(input.metadata, Some(json!({ "note": "n" })));
+        assert_eq!(input.namespace.as_deref(), Some("test-namespace"));
+        assert_eq!(input.trigger_namespace, None);
     }
 
     /// `metadata` is the only optional field; everything else is required, and
@@ -290,8 +300,8 @@ mod tests {
     /// `trigger_type`, a field their sdk does not have.
     #[test]
     fn a_guest_registration_reports_a_missing_field_by_its_guest_name() {
-        let err =
-            guest_trigger_input(json!({ "function_id": "app::react", "config": {} })).unwrap_err();
+        let err = guest_trigger_input(json!({ "function_id": "app::react", "config": {} }), None)
+            .unwrap_err();
         assert!(
             err.contains("invalid trigger registration") && err.contains("`type`"),
             "a missing type must be named as `type`, got: {err}"
@@ -306,11 +316,14 @@ mod tests {
     /// `type` this is a missing field, whatever else it carries.
     #[test]
     fn a_guest_registration_does_not_accept_the_rust_spelling() {
-        assert!(guest_trigger_input(json!({
-            "trigger_type": "app::mytype",
-            "function_id": "app::react",
-            "config": {},
-        }))
+        assert!(guest_trigger_input(
+            json!({
+                "trigger_type": "app::mytype",
+                "function_id": "app::react",
+                "config": {},
+            }),
+            None,
+        )
         .is_err());
     }
 
