@@ -158,10 +158,17 @@ browser:
   max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
   idle_stop_ms: 300000      # stop sessions idle this long; 0 disables
   screenshot_quality: 60    # JPEG quality 1-100
-  allowed_schemes: [http, https]
+  allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
   allow_attach: false       # true = allow sessions::attach into a running browser's real profile
 ```
+
+`file` is on the default scheme list so a local document can be opened and
+rendered, which is how `document::ocr` gets pixels out of a scanned PDF. It is
+worth knowing what that permits: navigation is not checked against a session's
+filesystem scope the way the workers that read files directly are, so anything
+that can reach `browser::navigate` can open any file this process can read.
+Narrow the list on a shared machine.
 
 ## Custom trigger types
 

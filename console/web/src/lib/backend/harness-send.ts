@@ -77,13 +77,28 @@ export interface HarnessTextBlock {
 }
 
 /**
+ * An image content block on a structured user message — wire-identical to the
+ * harness's `ContentBlock::Image` (`harness/src/types/content.rs`), which the
+ * Anthropic and OpenAI providers map onto their own image shapes. `data` is
+ * base64 without a data-URL prefix.
+ */
+export interface HarnessImageBlock {
+  type: 'image'
+  mime: string
+  data: string
+}
+
+export type HarnessContentBlock = HarnessTextBlock | HarnessImageBlock
+
+/**
  * The structured form of `harness::send`'s `message` (MessageInput::Message
  * with `role: user`). The console uses it when a send carries `#file(...)`
- * attachment blocks; plain sends keep the string-sugar form.
+ * attachment blocks or an attached image; plain sends keep the string-sugar
+ * form.
  */
 export interface HarnessUserMessage {
   role: 'user'
-  content: HarnessTextBlock[]
+  content: HarnessContentBlock[]
   timestamp: number
 }
 

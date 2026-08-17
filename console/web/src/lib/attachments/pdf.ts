@@ -16,8 +16,19 @@
  * to the model than an empty one. Failures never block the send.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
 import type { Attachment } from '@/types/chat'
+import {
+  ATTACHED_FILE_PREFIX,
+  type AttachmentFailure,
+  type AttachmentReadSummary,
+  describeWorkerFailure,
+  escapeAttr,
+  failureBlock,
+  fileToBase64,
+  reportDropped,
+  type TriggerFn,
+  triggerOr,
+} from './shared'
 
 export const CLASSIFY_FUNCTION_ID = 'pdf::classify'
 export const TO_MARKDOWN_FUNCTION_ID = 'pdf::to-markdown'
@@ -39,21 +50,16 @@ export const MAX_MARKDOWN_CHARS = 20_000
  */
 export const MAX_PDF_BYTES = 64 * 1024 * 1024
 
-const ATTACHED_FILE_PREFIX = '<attached-file '
-
-export interface PdfExpansionFailure {
-  name: string
-  reason: string
-}
+export type PdfExpansionFailure = AttachmentFailure
 
 /**
- * What one document turned into, for the chip on the sent message.
+ * What one document turned into, on the way to its chip label.
  *
  * Without this the composer chip reads "report.pdf 32kb" whether the document
  * was parsed, skipped or failed, which leaves a person with no way to tell
  * that the PDF reached the agent at all.
  */
-export interface PdfReadSummary {
+interface PdfReadSummary {
   /** Attachment id, so the caller can match this back to its chip. */
   id: string
   pages: number
@@ -69,7 +75,7 @@ export interface ExpandedPdfs {
   /** One `<attached-file …>` block per expanded document, in input order. */
   blocks: string[]
   /** One entry per document actually read, for the message chips. */
-  read: PdfReadSummary[]
+  read: AttachmentReadSummary[]
   failures: PdfExpansionFailure[]
 }
 
@@ -104,27 +110,6 @@ interface MarkdownWire {
   elapsed_ms?: number
 }
 
-type TriggerFn = (
-  functionId: string,
-  payload: Record<string, unknown>,
-) => Promise<unknown>
-
-/**
- * Base64 without building one enormous argument list.
- *
- * `String.fromCharCode(...bytes)` overflows the call stack somewhere around a
- * megabyte, which is a small PDF. Chunking keeps it linear and bounded.
- */
-async function fileToBase64(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  const CHUNK = 0x8000
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
-  }
-  return btoa(binary)
-}
-
 /**
  * Read every attached PDF through the `pdf` worker and format the blocks.
  *
@@ -140,15 +125,10 @@ export async function expandPdfAttachments(
   const pdfs = attachments.filter((a) => isPdfAttachment(a) && a.file)
   if (pdfs.length === 0) return { blocks: [], read: [], failures: [] }
 
-  const call =
-    trigger ??
-    (async (functionId: string, payload: Record<string, unknown>) => {
-      const client = await getIiiClient()
-      return client.trigger(functionId, payload)
-    })
+  const call = triggerOr(trigger)
 
   const blocks: string[] = []
-  const read: PdfReadSummary[] = []
+  const read: AttachmentReadSummary[] = []
   const failures: PdfExpansionFailure[] = []
 
   for (const attachment of pdfs.slice(0, MAX_PDFS_PER_SEND)) {
@@ -162,7 +142,10 @@ export async function expandPdfAttachments(
     try {
       const outcome = await expandOne(attachment, call)
       blocks.push(outcome.block)
-      read.push(outcome.summary)
+      read.push({
+        id: attachment.id,
+        label: summaryLabel(attachment.name, outcome.summary),
+      })
     } catch (err) {
       const reason = describeFailure(err)
       blocks.push(failureBlock(attachment.name, reason))
@@ -170,11 +153,11 @@ export async function expandPdfAttachments(
     }
   }
 
-  for (const dropped of pdfs.slice(MAX_PDFS_PER_SEND)) {
-    const reason = `only ${MAX_PDFS_PER_SEND} PDFs are read per message`
-    blocks.push(failureBlock(dropped.name, reason))
-    failures.push({ name: dropped.name, reason })
-  }
+  reportDropped(
+    pdfs.slice(MAX_PDFS_PER_SEND),
+    `only ${MAX_PDFS_PER_SEND} PDFs are read per message`,
+    { blocks, failures },
+  )
 
   return { blocks, read, failures }
 }
@@ -275,7 +258,7 @@ async function expandOne(
  * was read at all, because the expansion happens before the model is called and
  * so never appears as a function call in the transcript.
  */
-export function summaryLabel(name: string, summary: PdfReadSummary): string {
+function summaryLabel(name: string, summary: PdfReadSummary): string {
   const parts = [`${summary.pages} page${summary.pages === 1 ? '' : 's'}`]
   if (summary.needsOcr && summary.chars === undefined) {
     parts.push('no readable text')
@@ -312,30 +295,6 @@ function scannedBlock(
   )
 }
 
-function failureBlock(name: string, reason: string): string {
-  return `${ATTACHED_FILE_PREFIX}path="${escapeAttr(name)}" error="${escapeAttr(reason)}" />`
-}
-
-/**
- * The one failure worth naming precisely: the worker is not installed. Anything
- * else surfaces as-is, trimmed.
- */
 function describeFailure(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err)
-  if (/not registered|NOT_FOUND|function .* not found/i.test(message)) {
-    return 'the pdf worker is not running — install it with `iii worker add pdf`'
-  }
-  return message.length > 160 ? `${message.slice(0, 157)}…` : message
-}
-
-/**
- * `>` has to be escaped as well as `&` and `"`. The header is parsed by finding
- * the first `>`, so a file name containing one would cut the header short and
- * lose every attribute after it.
- */
-function escapeAttr(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('>', '&gt;')
+  return describeWorkerFailure(err, 'pdf')
 }

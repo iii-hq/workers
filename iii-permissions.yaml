@@ -195,6 +195,10 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # document: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!document::on-config-change'
+
   # canvas: internal target. The hot-reload hook follows the same pattern as
   # the other on-config-change denies.
   - '!canvas::on-config-change'
@@ -348,6 +352,20 @@ rules:
   - pdf::extract-text
   - pdf::extract-items
   - pdf::extract-regions
+
+  # document: same reasoning as pdf. Every function listed is a pure read of a
+  # file the agent could already reach through the filesystem scope, and reaching
+  # an office document any other way returns compressed noise. Nothing here
+  # writes, spends, or leaves the machine, and each response is capped by the
+  # worker's own configuration.
+  #
+  # `document::ocr` is deliberately absent: it renders pages and reads them with
+  # a vision model, so it spends money per page. It stays behind an approval,
+  # which is also what keeps an agent from transcribing a four-hundred-page scan
+  # because a document happened to be attached.
+  - document::detect
+  - document::to-markdown
+  - document::extract-assets
 
   # canvas: every function touches only the worker's own store (state scope
   # "canvas"), sources are size-capped by its configuration, and nothing here

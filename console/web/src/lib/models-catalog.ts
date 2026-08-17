@@ -9,6 +9,8 @@ export interface CatalogModelRow {
   display_name: string
   context_window?: number
   supports_thinking?: boolean
+  /** Absent when the router says nothing about it — see `ModelOption`. */
+  supports_vision?: boolean
   reasoning_efforts?: ReasoningEffortOption[]
 }
 
@@ -55,6 +57,8 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
         : undefined
     const supports_thinking =
       typeof o.supports_thinking === 'boolean' ? o.supports_thinking : undefined
+    const supports_vision =
+      typeof o.supports_vision === 'boolean' ? o.supports_vision : undefined
     const reasoning_efforts = parseReasoningEfforts(o.reasoning_efforts)
     if (!id || !provider) continue
     out.push({
@@ -63,6 +67,7 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
       display_name,
       context_window,
       supports_thinking,
+      supports_vision,
       reasoning_efforts,
     })
   }
@@ -80,6 +85,10 @@ export function catalogRowsToModelOptions(
     label: m.display_name.toLowerCase(),
     contextWindow: m.context_window,
     supportsThinking: m.supports_thinking === true,
+    // Kept tri-state, unlike `supportsThinking`: "the router did not say" has
+    // to stay distinguishable from "no", or every model on an older catalog
+    // would refuse images.
+    supportsVision: m.supports_vision,
     reasoningEfforts: m.reasoning_efforts,
   }))
 }
