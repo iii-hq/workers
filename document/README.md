@@ -16,6 +16,17 @@ the answer.
 iii worker add document
 ```
 
+Reading a scanned document also needs something to turn its pages into pixels
+and something to read them, neither of which ships here:
+
+```bash
+iii worker add browser
+```
+
+With [browser](https://github.com/iii-hq/workers/tree/main/browser) installed and a vision model configured through
+[llm-router](https://github.com/iii-hq/workers/tree/main/llm-router), `document::ocr` transcribes scans. Every other
+function works without both.
+
 ## Quickstart
 
 ```rust
@@ -67,7 +78,7 @@ send.
 ### PDFs
 
 A text-based PDF converts here, which makes this worker a complete answer for a
-mixed pile of attachments on its own. When the [`pdf`](../pdf) worker is
+mixed pile of attachments on its own. When the [`pdf`](https://github.com/iii-hq/workers/tree/main/pdf) worker is
 installed it is the better route for them: it classifies scanned versus
 text-based and names the individual pages that need OCR, where this worker can
 only convert or fail.
@@ -149,7 +160,7 @@ pixels. `document::ocr` renders those pages and reads them with a vision model.
 ```
 
 Three inputs, one answer. An image goes straight to the model. A PDF is
-rendered a page at a time by the [`browser`](../browser) worker, which is the
+rendered a page at a time by the [`browser`](https://github.com/iii-hq/workers/tree/main/browser) worker, which is the
 only thing that turns a page into pixels. An office document whose text came
 back empty has its embedded images pulled out and read the same way.
 

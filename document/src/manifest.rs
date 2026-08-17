@@ -18,8 +18,9 @@ pub struct ModuleManifest {
 
 pub const DESCRIPTION: &str =
     "Convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF documents to markdown \
-     on this machine: detect the format from the bytes, convert with structure intact, and pull \
-     out the images embedded in them.";
+     on this machine: detect the format from the bytes, convert with structure intact, pull out \
+     the images embedded in them, and transcribe a scan by rendering its pages and reading them \
+     with a vision model.";
 
 pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
