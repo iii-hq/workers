@@ -9,26 +9,14 @@ importers:
   .:
     dependencies:
       '@jeger-ai/opengantry':
-        specifier: file:../../opengantry
-        version: file:../../opengantry
-      acorn:
-        specifier: 8.14.1
-        version: 8.14.1
-      acorn-walk:
-        specifier: 8.3.4
-        version: 8.3.4
-      ajv:
-        specifier: 8.20.0
-        version: 8.20.0
+        specifier: ^3.2.5
+        version: 3.2.5
       iii-sdk:
         specifier: ^0.22.1
         version: 0.22.1
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      yaml:
-        specifier: ^2.8.1
-        version: 2.9.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@biomejs/biome':
         specifier: 2.4.10
@@ -263,8 +251,8 @@ packages:
   '@iii-dev/helpers@0.22.1':
     resolution: {integrity: sha512-/lI2hOr7Y1mHll3e2bu3hrekgA1S0VRRSD/gk61kvEZGGFfNIbbpO8rhog1bnSzEqfiPGV5XQUT8ZI4Ie+BEDg==}
 
-  '@jeger-ai/opengantry@file:../../opengantry':
-    resolution: {directory: ../../opengantry, type: directory}
+  '@jeger-ai/opengantry@3.2.5':
+    resolution: {integrity: sha512-mM9HjNUgbh1sm+q/fNrM2DTfspXyQOzHJg2ZOjjwNAGYbdF24CkOJZX6J7OOggLpB65O112pUT62XXjY9XJHzg==}
     engines: {node: '>=24'}
     hasBin: true
 
@@ -401,10 +389,6 @@ packages:
     resolution: {integrity: sha512-n02Vykv5uA3eHGM/Z2dQrcD56kL8TyDb2p1+0P83PClMnC/nc+anbQRhIOWnSq4Ke/KvDPrY3C9hDtC/A3eHnQ==}
     peerDependencies:
       acorn: ^8
-
-  acorn-walk@8.3.4:
-    resolution: {integrity: sha512-ueEepnujpqee2o5aIYnvHU6C0A42MNdsIDeqy5BydrkuC5R1ZuUFnm27EeFJGoEHJQgn3uleRvmTXaJgfXbt4g==}
-    engines: {node: '>=0.4.0'}
 
   acorn@8.14.1:
     resolution: {integrity: sha512-OvQ/2pUDKmgfCg++xsTX1wGxfTaszcHVcTctW4UJB4hibJx2HXxxO5UmVgyjMa+ZDsiaf5wWLXYpRWMmBI0QHg==}
@@ -799,11 +783,6 @@ packages:
     resolution: {integrity: sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA==}
     engines: {node: '>= 18'}
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
-    engines: {node: '>=14.17'}
-    hasBin: true
-
   undici-types@8.3.0:
     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
 
@@ -847,6 +826,9 @@ packages:
 
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
 
@@ -997,7 +979,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@jeger-ai/opengantry@file:../../opengantry':
+  '@jeger-ai/opengantry@3.2.5':
     dependencies:
       '@clack/prompts': 0.10.1
       '@modelcontextprotocol/sdk': 1.30.0(zod@3.25.76)
@@ -1152,10 +1134,6 @@ snapshots:
       negotiator: 1.0.0
 
   acorn-import-attributes@1.9.5(acorn@8.14.1):
-    dependencies:
-      acorn: 8.14.1
-
-  acorn-walk@8.3.4:
     dependencies:
       acorn: 8.14.1
 
@@ -1610,8 +1588,6 @@ snapshots:
       media-typer: 1.1.1
       mime-types: 3.0.2
 
-  typescript@5.9.3: {}
-
   undici-types@8.3.0: {}
 
   unpipe@1.0.0: {}
@@ -1633,3 +1609,5 @@ snapshots:
       zod: 3.25.76
 
   zod@3.25.76: {}
+
+  zod@4.4.3: {}

@@ -1,6 +1,35 @@
 # opengantry
 
-OpenGantry gates promote-class calls on the iii bus. Install the worker, wire `gantry::middleware` on your governed listener, and agents cannot merge, deploy, or publish until a prior `gantry::verify` pass mints a verdict token.
+iii can already run an agent unattended. It cannot yet let one **ship** unattended — any agent on the bus can call a merge, deploy, or publish function.
+
+- **`approval-gate`** holds what a human should decide.
+- **`opengantry`** blocks what a machine can already prove is unsafe.
+
+The proof is the repo's own gates: the build and test commands that already exist, plus a declared edit scope. Pass them and you get a signed verdict token bound to that exact mission revision; edit the work order afterwards and the token stops matching.
+
+**Net effect:** unattended agents, without accepting an unattended `git push`.
+
+## How it works
+
+1. Agent calls `gantry::verify` with an absolute `repo_root` and active mission — OpenGantry runs the repo's gate command and mints a verdict token.
+2. Agent calls a promote-class function on a governed listener with that token in `context` or `payload`.
+3. `gantry::middleware` recomputes verdict claims at promote time and forwards the call only when the token matches the current mission revision. Otherwise it throws `GantryDenied` (fail-closed).
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Listener as Governed listener
+    participant Gantry as opengantry
+    participant Target as Target function
+    Agent->>Gantry: gantry::verify (repo_root, mission)
+    Gantry->>Gantry: run the repo's own gates
+    Gantry-->>Agent: verdict token, bound to mission revision
+    Agent->>Listener: myapp::deploy (+ verdict token)
+    Listener->>Gantry: middleware_function_id intercept
+    Gantry->>Gantry: recompute claims, compare token
+    Gantry->>Target: forward when valid
+    Gantry-->>Agent: GantryDenied when not
+```
 
 ## Install
 
@@ -48,7 +77,9 @@ Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry
 
 ## Configuration
 
-On the governed listener, wire middleware and RBAC hooks (replace `session::auth` with your IdP worker):
+Wire `gantry::middleware` and the RBAC registration hooks on your governed listener. Replace `session::auth` with your IdP worker.
+
+**Engine RBAC listener** (`iii-worker-manager` in `~/.iii/config.yaml`):
 
 ```yaml
 workers:
@@ -65,16 +96,8 @@ workers:
         on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
 ```
 
+**In-repo proxy** ([`rbac-proxy`](../rbac-proxy/)): same `middleware_function_id` and `rbac.*` keys, configured via the `configuration` worker under id `rbac-proxy` (see that worker's README).
+
 `worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`.
 
-## Development
-
-```bash
-npm install
-npm test          # unit tests (middleware, lease, verify-promote)
-npm run demo      # offline harness
-npm run loadtest  # concurrency smoke
-pnpm run build:bundle
-```
-
-`gantry::verify` runs kernel `verifyMission` only. Architecture lint lives in the OpenGantry examples tree (`run-iii-architecture.mjs`).
+`gantry::verify` runs kernel `verifyMission` only — the repo's declared `gate_command` and mission scope, not a separate scanner.

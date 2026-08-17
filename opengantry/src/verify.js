@@ -1,25 +1,31 @@
 import { verifyMission } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from './denied.js';
-import { getGovernanceBundle, getLeaseStore } from './middleware.js';
+import { getGovernanceBundle, getLeaseStore } from './stores.js';
 import { resolveVerifyRepoRoot } from './repo-path.js';
+
+/** Thrown when verify coalescer is at maxInFlight capacity. */
+export class VerifyCoalescerSaturationError extends Error {
+  constructor() {
+    super('verify queue saturated');
+    this.name = 'VerifyCoalescerSaturationError';
+    this.code = 'GXT_VERIFY_SATURATED';
+  }
+}
 
 /** Single-flight verify coalescing keyed by caller-supplied cache key. */
 export class VerifyCoalescer {
   constructor() {
     this.inFlight = new Map();
-    this.maxQueue = 32;
+    this.maxInFlight = 32;
   }
 
   async run(key, fn) {
     if (this.inFlight.has(key)) {
       return this.inFlight.get(key);
     }
-    if (this.inFlight.size >= this.maxQueue) {
-      return {
-        status: 'failed',
-        error_code: 'GXT_VERIFY_SATURATED',
-      };
+    if (this.inFlight.size >= this.maxInFlight) {
+      throw new VerifyCoalescerSaturationError();
     }
     const promise = fn().finally(() => {
       this.inFlight.delete(key);
@@ -27,15 +33,6 @@ export class VerifyCoalescer {
     this.inFlight.set(key, promise);
     return promise;
   }
-}
-
-export function createWorkerState() {
-  return {
-    leaseStores: undefined,
-    governance: undefined,
-    coalescer: new VerifyCoalescer(),
-    forwardTrigger: async (function_id, payload) => ({ ok: true, function_id, payload }),
-  };
 }
 
 function verifySaturatedPayload() {
@@ -64,23 +61,21 @@ function verifyBindFailedPayload(hint) {
   };
 }
 
-export function onVerifyPassed(state, data) {
-  const repoRoot = data?.repo_root;
-  if (!data?.msn_id || !data?.mission_rel_path || !repoRoot) return;
-  const resolved = resolveVerifyRepoRoot(repoRoot);
-  const leases = getLeaseStore(state, resolved);
+export async function onVerifyPassed(deps, data) {
+  const resolved = resolveVerifyRepoRoot(data.repo_root);
+  const leases = getLeaseStore(deps, resolved);
   if (leases.corrupted) {
     throw new GantryDenied(
       'LEASE_STORE_CORRUPTED',
       'lease store corrupted; repair .gitagent/leases.json before verify bind',
     );
   }
-  const bound = leases.bindMissionRel(data.msn_id, data.mission_rel_path);
+  const bound = await leases.bindMissionRel(data.msn_id, data.mission_rel_path);
   if (!bound) {
     throw new GantryDenied('LEASE_BIND_FAILED', 'failed to bind mission on lease store');
   }
   try {
-    getGovernanceBundle(state, resolved, data.mission_rel_path);
+    getGovernanceBundle(deps, resolved, data.mission_rel_path);
   } catch {
     /* scope bind is best-effort; middleware surfaces load errors */
   }
@@ -95,7 +90,7 @@ export async function runVerify(data) {
   });
 }
 
-export function createVerifyHandler(state) {
+export function createVerifyHandler(deps) {
   return async function gantryVerify(data) {
     const repoRoot = data?.repo_root;
     const key = JSON.stringify({
@@ -104,14 +99,18 @@ export function createVerifyHandler(state) {
       mission_rel_path: data?.mission_rel_path ?? '',
       options: data?.options ?? null,
     });
-    const coalescer = state.coalescer;
-    const result = await coalescer.run(key, () => runVerify(data));
-    if (result?.error_code === 'GXT_VERIFY_SATURATED') {
-      return verifySaturatedPayload();
+    let result;
+    try {
+      result = await deps.coalescer.run(key, () => runVerify(data));
+    } catch (e) {
+      if (e instanceof VerifyCoalescerSaturationError) {
+        return verifySaturatedPayload();
+      }
+      throw e;
     }
     if (result?.status === 'passed' && data?.msn_id && data?.mission_rel_path && repoRoot) {
       try {
-        onVerifyPassed(state, data);
+        await onVerifyPassed(deps, data);
       } catch (e) {
         const hint =
           e instanceof GantryDenied ? e.hint : e instanceof Error ? e.message : String(e);

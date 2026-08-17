@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -50,15 +49,10 @@ function validateLeaseRow(row) {
   return true;
 }
 
-function sleepPoll(ms) {
-  if (process.platform === 'win32') {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      /* spin — windows fallback */
-    }
-    return;
-  }
-  spawnSync('sleep', [String(Math.max(0.001, ms / 1000))], { stdio: 'ignore' });
+function sleepMs(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function lockHolderPid(lockPath) {
@@ -94,7 +88,7 @@ function clearStaleLock(lockPath) {
   }
 }
 
-function withStoreLock(storePath, fn) {
+async function withStoreLock(storePath, fn) {
   const lockPath = `${storePath}.lock`;
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const deadline = Date.now() + LOCK_WAIT_MS;
@@ -113,7 +107,7 @@ function withStoreLock(storePath, fn) {
       if (Date.now() >= deadline) {
         throw new GantryDenied('LEASE_LOCK_TIMEOUT', 'lease store lock timeout');
       }
-      sleepPoll(LOCK_POLL_MS);
+      await sleepMs(LOCK_POLL_MS);
     }
   }
   try {
@@ -195,7 +189,7 @@ export class LeaseStore {
     return true;
   }
 
-  mutate(apply) {
+  async mutate(apply) {
     if (this.corrupted) return false;
     return withStoreLock(this.storePath, () => {
       this.load();
@@ -215,7 +209,7 @@ export class LeaseStore {
     return row ? structuredClone(row) : undefined;
   }
 
-  upsert(lease) {
+  async upsert(lease) {
     if (this.corrupted) return false;
     const row = sanitizeRow(lease);
     return this.mutate((map) => {
@@ -224,7 +218,7 @@ export class LeaseStore {
     });
   }
 
-  bindMissionRel(msnId, missionRel) {
+  async bindMissionRel(msnId, missionRel) {
     if (this.corrupted) return false;
     return this.mutate((map) => {
       const existing = map.get(msnId);
@@ -240,7 +234,7 @@ export class LeaseStore {
     });
   }
 
-  transition(msnId, from, to) {
+  async transition(msnId, from, to) {
     if (this.corrupted) return false;
     return this.mutate((map) => {
       const row = map.get(msnId);
@@ -250,10 +244,10 @@ export class LeaseStore {
     });
   }
 
-  acquireSession(msnId, holderId) {
+  async acquireSession(msnId, holderId) {
     if (this.corrupted || DANGEROUS_HOLDER_IDS.has(holderId)) return null;
     let snapshot;
-    const ok = this.mutate((map) => {
+    const ok = await this.mutate((map) => {
       const row = map.get(msnId);
       if (!row) return false;
       const session_refs = normalizeSessionRefs(row.session_refs);
@@ -267,10 +261,10 @@ export class LeaseStore {
     return ok ? snapshot : null;
   }
 
-  releaseSession(msnId, holderId) {
+  async releaseSession(msnId, holderId) {
     if (this.corrupted) return null;
     let snapshot;
-    const ok = this.mutate((map) => {
+    const ok = await this.mutate((map) => {
       const row = map.get(msnId);
       if (!row?.session_refs || !Object.hasOwn(row.session_refs, holderId)) {
         snapshot = row ? structuredClone(row) : null;

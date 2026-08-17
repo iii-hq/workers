@@ -7,89 +7,74 @@ import { test } from 'node:test';
 import { mintVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from '../src/denied.js';
-import { createMiddlewareHandler } from '../src/middleware.js';
-import { LEASE_STATES, LeaseStore } from '../src/lease-store.js';
+import { LEASE_STATES } from '../src/lease-store.js';
 import { defaultLeaseStorePath } from '../src/repo-path.js';
-import { writeKeyring, writeMiniGantryRepo } from './helpers/mini-repo.mjs';
+import { createGantryRuntime } from '../src/runtime.js';
+import { writeMiniGantryRepo } from './helpers/mini-repo.mjs';
+import { withKeyring } from './helpers/with-keyring.mjs';
 
 test('middleware throws on promote without mission binding', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-'));
-  const state = {
-    leaseStores: new Map(),
+  const runtime = createGantryRuntime({
     forwardTrigger: async (fid, payload) => ({ ok: true, fid, payload }),
-  };
-  const middleware = createMiddlewareHandler(state);
+  });
   await assert.rejects(
     () =>
-      middleware({
+      runtime.middleware({
         function_id: 'src::promote',
         payload: {},
         context: { msn_id: 'MSN-0175', worktree_path: repoRoot },
       }),
     (err) => err instanceof GantryDenied && err.code === 'VERDICT_TOKEN_MISSING',
+    'promote without verdict token should be denied',
   );
 });
 
 test('middleware throws when token does not match current mission revision', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-stale-'));
   const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-kr-'));
-  const keyring = writeKeyring(krDir);
   const { missionRel, msnId } = writeMiniGantryRepo(repoRoot);
   const claims = verdictClaimsFor(repoRoot, missionRel);
-  const token = mintVerdictToken({ ...claims, keyringPath: keyring });
-  fs.appendFileSync(path.join(repoRoot, missionRel), '\n# edited\n');
-  const prevKeyring = process.env.GANTRY_VERDICT_KEYRING;
-  process.env.GANTRY_VERDICT_KEYRING = keyring;
-  const leases = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  leases.bindMissionRel(msnId, missionRel);
-  const state = {
-    leaseStores: new Map([[repoRoot, leases]]),
-    forwardTrigger: async () => ({ ok: true }),
-  };
-  try {
-    const middleware = createMiddlewareHandler(state);
+  await withKeyring(krDir, async (keyring) => {
+    const token = mintVerdictToken({ ...claims, keyringPath: keyring });
+    fs.appendFileSync(path.join(repoRoot, missionRel), '\n# edited\n');
+    const runtime = createGantryRuntime({
+      forwardTrigger: async () => ({ ok: true }),
+    });
+    const leases = runtime.leaseStoreFor(repoRoot);
+    await leases.bindMissionRel(msnId, missionRel);
     await assert.rejects(
       () =>
-        middleware({
+        runtime.middleware({
           function_id: 'src::promote',
           payload: {},
           context: { msn_id: msnId, worktree_path: repoRoot, verdict_token: token },
         }),
       (err) => err instanceof GantryDenied && err.code === 'VERDICT_TOKEN_INVALID',
+      'stale verdict token should be rejected after mission edit',
     );
-  } finally {
-    if (prevKeyring === undefined) delete process.env.GANTRY_VERDICT_KEYRING;
-    else process.env.GANTRY_VERDICT_KEYRING = prevKeyring;
-  }
+  });
 });
 
 test('middleware allows promote with valid token and mission_rel', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-ok-'));
   const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-kr2-'));
-  const keyring = writeKeyring(krDir);
   const { missionRel, msnId } = writeMiniGantryRepo(repoRoot);
   const claims = verdictClaimsFor(repoRoot, missionRel);
-  const token = mintVerdictToken({ ...claims, keyringPath: keyring });
-  const prevKeyring = process.env.GANTRY_VERDICT_KEYRING;
-  process.env.GANTRY_VERDICT_KEYRING = keyring;
-  const leases = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  leases.bindMissionRel(msnId, missionRel);
-  const state = {
-    leaseStores: new Map([[repoRoot, leases]]),
-    forwardTrigger: async (fid, payload) => ({ ok: true, fid, payload }),
-  };
-  try {
-    const middleware = createMiddlewareHandler(state);
-    const result = await middleware({
+  await withKeyring(krDir, async (keyring) => {
+    const token = mintVerdictToken({ ...claims, keyringPath: keyring });
+    const runtime = createGantryRuntime({
+      forwardTrigger: async (fid, payload) => ({ ok: true, fid, payload }),
+    });
+    const leases = runtime.leaseStoreFor(repoRoot);
+    await leases.bindMissionRel(msnId, missionRel);
+    const result = await runtime.middleware({
       function_id: 'src::promote',
       payload: { branch: 'main' },
       context: { msn_id: msnId, worktree_path: repoRoot, verdict_token: token },
     });
-    assert.equal(result.ok, true);
-  } finally {
-    if (prevKeyring === undefined) delete process.env.GANTRY_VERDICT_KEYRING;
-    else process.env.GANTRY_VERDICT_KEYRING = prevKeyring;
-  }
+    assert.equal(result.ok, true, 'valid verdict token should allow promote');
+  });
 });
 
 test('middleware throws on corrupted lease store', async () => {
@@ -97,57 +82,48 @@ test('middleware throws on corrupted lease store', async () => {
   const storePath = defaultLeaseStorePath(repoRoot);
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(storePath, '{"leases": null}');
-  const leases = new LeaseStore(storePath);
-  const state = {
-    leaseStores: new Map([[repoRoot, leases]]),
+  const runtime = createGantryRuntime({
     forwardTrigger: async () => ({ ok: true }),
-  };
-  const middleware = createMiddlewareHandler(state);
+  });
   await assert.rejects(
     () =>
-      middleware({
+      runtime.middleware({
         function_id: 'math::add',
         payload: {},
         context: { msn_id: 'MSN-1', worktree_path: repoRoot, holder_id: 'h1' },
       }),
     (err) => err instanceof GantryDenied && err.code === 'LEASE_STORE_CORRUPTED',
+    'corrupted lease store should deny middleware',
   );
 });
 
 test('middleware denies promote when lease is tombstoned', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-tomb-'));
   const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-tomb-kr-'));
-  const keyring = writeKeyring(krDir);
   const { missionRel, msnId } = writeMiniGantryRepo(repoRoot);
   const claims = verdictClaimsFor(repoRoot, missionRel);
-  const token = mintVerdictToken({ ...claims, keyringPath: keyring });
-  const prevKeyring = process.env.GANTRY_VERDICT_KEYRING;
-  process.env.GANTRY_VERDICT_KEYRING = keyring;
-  const leases = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  leases.bindMissionRel(msnId, missionRel);
-  leases.upsert({
-    msn_id: msnId,
-    state: LEASE_STATES.tombstoned,
-    session_refs: Object.create(null),
-    mission_rel: missionRel,
-  });
-  const state = {
-    leaseStores: new Map([[repoRoot, leases]]),
-    forwardTrigger: async () => ({ ok: true }),
-  };
-  try {
-    const middleware = createMiddlewareHandler(state);
+  await withKeyring(krDir, async (keyring) => {
+    const token = mintVerdictToken({ ...claims, keyringPath: keyring });
+    const runtime = createGantryRuntime({
+      forwardTrigger: async () => ({ ok: true }),
+    });
+    const leases = runtime.leaseStoreFor(repoRoot);
+    await leases.bindMissionRel(msnId, missionRel);
+    await leases.upsert({
+      msn_id: msnId,
+      state: LEASE_STATES.tombstoned,
+      session_refs: Object.create(null),
+      mission_rel: missionRel,
+    });
     await assert.rejects(
       () =>
-        middleware({
+        runtime.middleware({
           function_id: 'src::promote',
           payload: {},
           context: { msn_id: msnId, worktree_path: repoRoot, verdict_token: token },
         }),
       (err) => err instanceof GantryDenied && err.code === 'LEASE_NOT_PROMOTABLE',
+      'tombstoned lease should block promote',
     );
-  } finally {
-    if (prevKeyring === undefined) delete process.env.GANTRY_VERDICT_KEYRING;
-    else process.env.GANTRY_VERDICT_KEYRING = prevKeyring;
-  }
+  });
 });

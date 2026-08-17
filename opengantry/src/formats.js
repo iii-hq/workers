@@ -11,7 +11,7 @@ const MiddlewarePayloadSchema = z
     verdict_token: z.string().optional(),
     branch: z.string().optional(),
   })
-  .strict();
+  .passthrough();
 
 const MiddlewareContextSchema = z
   .object({
@@ -23,7 +23,7 @@ const MiddlewareContextSchema = z
     mission_rel: z.string().optional(),
     verdict_token: z.string().optional(),
   })
-  .strict();
+  .passthrough();
 
 export const MiddlewareRequestSchema = z
   .object({

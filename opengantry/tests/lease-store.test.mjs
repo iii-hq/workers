@@ -12,7 +12,11 @@ test('lease store rejects path outside .gitagent', () => {
   const prev = process.env.GANTRY_III_LEASE_STORE;
   process.env.GANTRY_III_LEASE_STORE = '/tmp/evil-leases.json';
   try {
-    assert.throws(() => defaultLeaseStorePath(repoRoot), /must resolve under/);
+    assert.throws(
+      () => defaultLeaseStorePath(repoRoot),
+      /must resolve under/,
+      'lease store override outside .gitagent should throw',
+    );
   } finally {
     if (prev === undefined) delete process.env.GANTRY_III_LEASE_STORE;
     else process.env.GANTRY_III_LEASE_STORE = prev;
@@ -25,8 +29,8 @@ test('corrupted lease store blocks get', () => {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(storePath, '{"leases": null}');
   const store = new LeaseStore(storePath);
-  assert.equal(store.corrupted, true);
-  assert.equal(store.get('MSN-0001'), undefined);
+  assert.equal(store.corrupted, true, 'invalid leases array should mark store corrupted');
+  assert.equal(store.get('MSN-0001'), undefined, 'corrupted store should return no leases');
 });
 
 test('unknown lease state marks corrupted on load', () => {
@@ -40,7 +44,7 @@ test('unknown lease state marks corrupted on load', () => {
     }),
   );
   const store = new LeaseStore(storePath);
-  assert.equal(store.corrupted, true);
+  assert.equal(store.corrupted, true, 'unknown lease state should mark store corrupted');
 });
 
 test('missing lease state marks corrupted on load', () => {
@@ -54,89 +58,121 @@ test('missing lease state marks corrupted on load', () => {
     }),
   );
   const store = new LeaseStore(storePath);
-  assert.equal(store.corrupted, true);
+  assert.equal(store.corrupted, true, 'missing lease state should mark store corrupted');
 });
 
-test('lease file is written with restrictive permissions', () => {
+test('lease file is written with restrictive permissions', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-mode-'));
   const storePath = defaultLeaseStorePath(repoRoot);
   const store = new LeaseStore(storePath);
-  store.upsert({
+  await store.upsert({
     msn_id: 'MSN-0004',
     state: LEASE_STATES.active,
     session_refs: Object.create(null),
   });
   const mode = fs.statSync(storePath).mode & 0o777;
-  assert.equal(mode, 0o600);
+  assert.equal(mode, 0o600, 'lease file should be written with mode 0600');
 });
 
-test('get returns clone — caller mutation does not affect store', () => {
+test('get returns clone — caller mutation does not affect store', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-clone-'));
   const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  store.upsert({
+  await store.upsert({
     msn_id: 'MSN-0001',
     state: LEASE_STATES.active,
     session_refs: Object.create(null),
   });
   const lease = store.get('MSN-0001');
   lease.state = LEASE_STATES.tombstoned;
-  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.active);
+  assert.equal(
+    store.get('MSN-0001')?.state,
+    LEASE_STATES.active,
+    'mutating get() result should not affect stored lease',
+  );
 });
 
-test('transition rejects stale from-state', () => {
+test('transition rejects stale from-state', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-cas-'));
   const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  store.upsert({
+  await store.upsert({
     msn_id: 'MSN-0001',
     state: LEASE_STATES.active,
     session_refs: Object.create(null),
   });
-  assert.equal(store.transition('MSN-0001', LEASE_STATES.promoting, LEASE_STATES.active), false);
-  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.active);
+  assert.equal(
+    await store.transition('MSN-0001', LEASE_STATES.promoting, LEASE_STATES.active),
+    false,
+    'transition from wrong state should fail',
+  );
+  assert.equal(
+    store.get('MSN-0001')?.state,
+    LEASE_STATES.active,
+    'failed transition should not change state',
+  );
 });
 
-test('tombstone survives late promoting→active transition', () => {
+test('tombstone survives late promoting→active transition', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-tomb-'));
   const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  store.upsert({
+  await store.upsert({
     msn_id: 'MSN-0001',
     state: LEASE_STATES.promoting,
     session_refs: Object.create(null),
   });
-  store.acquireSession('MSN-0001', 'holder-a');
-  store.releaseSession('MSN-0001', 'holder-a');
-  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.tombstoned);
-  assert.equal(store.transition('MSN-0001', LEASE_STATES.promoting, LEASE_STATES.active), false);
-  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.tombstoned);
+  await store.acquireSession('MSN-0001', 'holder-a');
+  await store.releaseSession('MSN-0001', 'holder-a');
+  assert.equal(
+    store.get('MSN-0001')?.state,
+    LEASE_STATES.tombstoned,
+    'release during promote should tombstone',
+  );
+  assert.equal(
+    await store.transition('MSN-0001', LEASE_STATES.promoting, LEASE_STATES.active),
+    false,
+    'late promoting→active transition should fail on tombstoned lease',
+  );
+  assert.equal(
+    store.get('MSN-0001')?.state,
+    LEASE_STATES.tombstoned,
+    'tombstone state should survive failed transition',
+  );
 });
 
-test('constructor holderId does not break session counting', () => {
+test('constructor holderId does not break session counting', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-proto-'));
   const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
-  store.upsert({
+  await store.upsert({
     msn_id: 'MSN-0001',
     state: 'active',
     session_refs: Object.create(null),
   });
-  const afterCtor = store.acquireSession('MSN-0001', 'constructor');
-  assert.equal(afterCtor, null);
-  store.acquireSession('MSN-0001', 'holder-a');
-  store.releaseSession('MSN-0001', 'holder-a');
+  const afterCtor = await store.acquireSession('MSN-0001', 'constructor');
+  assert.equal(afterCtor, null, 'dangerous holder id constructor should be rejected');
+  await store.acquireSession('MSN-0001', 'holder-a');
+  await store.releaseSession('MSN-0001', 'holder-a');
   const lease = store.get('MSN-0001');
-  assert.equal(Object.keys(lease.session_refs ?? {}).length, 0);
+  assert.equal(
+    Object.keys(lease.session_refs ?? {}).length,
+    0,
+    'session refs should be empty after release',
+  );
 });
 
-test('atomic persist survives reload', () => {
+test('atomic persist survives reload', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-persist-'));
   const storePath = defaultLeaseStorePath(repoRoot);
   const store = new LeaseStore(storePath);
-  store.upsert({
+  await store.upsert({
     msn_id: 'MSN-0002',
     state: 'active',
     session_refs: Object.create(null),
   });
   const reloaded = new LeaseStore(storePath);
-  assert.equal(reloaded.get('MSN-0002')?.msn_id, 'MSN-0002');
+  assert.equal(
+    reloaded.get('MSN-0002')?.msn_id,
+    'MSN-0002',
+    'persisted lease should survive reload',
+  );
 });
 
 test('verdict_expected stripped from persisted lease rows', () => {
@@ -158,5 +194,5 @@ test('verdict_expected stripped from persisted lease rows', () => {
   );
   const store = new LeaseStore(storePath);
   const lease = store.get('MSN-0003');
-  assert.equal(lease.verdict_expected, undefined);
+  assert.equal(lease.verdict_expected, undefined, 'verdict_expected should be stripped on load');
 });

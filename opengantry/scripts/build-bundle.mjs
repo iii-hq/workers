@@ -2,7 +2,6 @@
 
 /**
  * Single-file ESM bundle (`dist/bundle/index.mjs`) for registry publish.
- * typescript stays external so the uncompressed bundle stays under iii's cap.
  */
 
 import { copyFile, readFile } from 'node:fs/promises';
@@ -40,6 +39,7 @@ await build({
   target: 'node22',
   format: 'esm',
   outfile: join(root, 'dist/bundle/index.mjs'),
+  minify: true,
   legalComments: 'none',
   external: ['fsevents'],
   banner: {

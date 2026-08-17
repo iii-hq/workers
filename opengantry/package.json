@@ -6,14 +6,12 @@
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22"
   },
   "packageManager": "pnpm@10.18.2",
   "scripts": {
     "start": "node ./index.mjs",
-    "demo": "node ./demo.mjs",
-    "loadtest": "node ./loadtest.mjs",
-    "test": "node --test tests/middleware.test.mjs tests/lease-store.test.mjs tests/verify-promote.e2e.test.mjs",
+    "test": "node --test",
     "build:bundle": "node scripts/build-bundle.mjs",
     "verify:sandbox": "node scripts/verify-sandbox-boot.mjs",
     "lint": "biome check .",
@@ -27,5 +25,10 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
     "esbuild": "^0.25.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

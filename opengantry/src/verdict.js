@@ -10,30 +10,39 @@ export function defaultVerdictKeyringPath(repoRoot) {
   return path.join(repoRoot, '.config/gantry/pepper-keyring.json');
 }
 
-function mapClaimsError(e) {
+/** Maps kernel throw sites to GantryDenied codes (kernel exports no error codes). */
+const KERNEL_CODE_TO_DENIED = {
+  ORG_ID_MISSING: { code: 'ORG_ID_MISSING', hint: 'org_id not configured' },
+  ORG_EXPORT_CONFIG_MISSING: { code: 'ORG_ID_MISSING', hint: 'org_id not configured' },
+  MISSION_NO_GATE: { code: 'MISSION_NO_GATE', hint: 'mission has no gate' },
+  MISSION_MSN_MISSING: { code: 'MISSION_MSN_MISSING', hint: 'mission msn_id missing' },
+  ENOENT: { code: 'MISSION_NOT_FOUND', hint: 'mission file not found' },
+};
+
+const KERNEL_MESSAGE_PATTERNS = [
+  {
+    match: (msg) =>
+      msg.includes('GXT_MISSION_SCHEMA_INVALID') || msg.includes('schema validation failed'),
+    code: 'MISSION_SCHEMA_INVALID',
+  },
+  { match: (msg) => msg.includes('missing MISSION schema'), code: 'MISSION_SCHEMA_MISSING' },
+];
+
+function claimsDenial(e) {
   if (e && typeof e === 'object' && 'code' in e) {
-    const code = String(e.code);
-    if (code === 'ORG_ID_MISSING' || code === 'ORG_EXPORT_CONFIG_MISSING') {
-      throw new GantryDenied('ORG_ID_MISSING', e.message ?? 'org_id not configured');
+    const kernelCode = String(e.code);
+    const mapped = KERNEL_CODE_TO_DENIED[kernelCode];
+    if (mapped) {
+      return new GantryDenied(mapped.code, e.message ?? mapped.hint);
     }
-    if (code === 'MISSION_NO_GATE') {
-      throw new GantryDenied('MISSION_NO_GATE', e.message ?? 'mission has no gate');
-    }
-    if (code === 'MISSION_MSN_MISSING') {
-      throw new GantryDenied('MISSION_MSN_MISSING', e.message ?? 'mission msn_id missing');
-    }
-  }
-  if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') {
-    throw new GantryDenied('MISSION_NOT_FOUND', 'mission file not found');
   }
   const msg = e instanceof Error ? e.message : String(e);
-  if (msg.includes('GXT_MISSION_SCHEMA_INVALID') || msg.includes('schema validation failed')) {
-    throw new GantryDenied('MISSION_SCHEMA_INVALID', msg);
+  for (const { match, code } of KERNEL_MESSAGE_PATTERNS) {
+    if (match(msg)) {
+      return new GantryDenied(code, msg);
+    }
   }
-  if (msg.includes('missing MISSION schema')) {
-    throw new GantryDenied('MISSION_SCHEMA_MISSING', msg);
-  }
-  throw new GantryDenied('VERDICT_CLAIMS_FAILED', msg);
+  return new GantryDenied('VERDICT_CLAIMS_FAILED', msg);
 }
 
 /** Recompute claims at promote time and verify token — throws GantryDenied on failure. */
@@ -51,7 +60,7 @@ export function verifyPromoteVerdictToken({ token, msnId, repoRoot, missionRel }
   try {
     expected = verdictClaimsFor(repoRoot, missionRel);
   } catch (e) {
-    mapClaimsError(e);
+    throw claimsDenial(e);
   }
   if (msnId && expected.msn_id !== msnId) {
     throw new GantryDenied('MSN_MISMATCH', `token msn_id does not match context ${msnId}`);
