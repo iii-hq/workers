@@ -175,8 +175,23 @@ export function buildFunctionCases(providers: readonly Provider[]): TestCase[] {
       const r = await ctx.call('storage::presignUrl', {
         bucket: ctx.bucket, key, method: 'GET', expires_in_seconds: 60,
       });
-      assertTruthy(typeof r.url === 'string' && r.url.startsWith('http'), `url not http: ${r.url}`);
-      assertTruthy(r.url.includes(key), `url missing key: ${r.url}`);
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(r.url);
+      } catch (error) {
+        throw new Error(`url not parseable: ${r.url} (${(error as Error).message})`);
+      }
+      assertTruthy(
+        parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:',
+        `url not http: ${r.url}`,
+      );
+      if (ctx.provider === 'local') {
+        // Local signed transfers keep the object key inside the opaque token;
+        // this avoids leaking or mis-encoding keys in the public URL.
+        assertTruthy(parsedUrl.searchParams.has('token'), `url missing token: ${r.url}`);
+      } else {
+        assertTruthy(r.url.includes(key), `url missing key: ${r.url}`);
+      }
       const expiresAt = Date.parse(r.expires_at);
       assertTruthy(Number.isFinite(expiresAt), `expires_at not parseable: ${r.expires_at}`);
       assertTruthy(expiresAt > Date.now(), `expires_at in past: ${r.expires_at}`);
