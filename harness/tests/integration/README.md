@@ -29,11 +29,14 @@ No provider key or network access is required.
 | INT-019 | `condition-failure-notice` | direct | a binding whose condition ERRORS on a fire wakes its owner with an actionable `[notification]` (once per binding) instead of starving silently; the skip record still lands and the binding stays armed |
 | INT-020 | `child-discovery-granted` | direct | a child narrowed to its work functions can still dispatch the mandatory `engine::functions::list`/`::info` round (the discovery union); its native toolset stays the work functions only |
 | INT-021 | `router-midstream-terminal-error` | direct | partial content and keepalive noise followed by one permanent router error preserve the partial, fail exactly once, and leave no pending work |
+| INT-022 | `idempotency-key-collision` | direct | distinct idempotency keys whose punctuation previously collapsed retain two durable user messages and turns |
+| INT-023 | `function-call-id-collision` | direct | distinct function-call ids whose punctuation previously collapsed retain both executed function results |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
 | UI-004 | `console-openai-chat-error` | playground | an OpenAI Chat Completions permanent provider failure is shown and the chat recovers |
 | UI-005 | `console-openai-responses-error` | playground | an OpenAI Responses permanent provider failure is shown and the chat recovers |
+| UI-SEC-001 | `adversarial-content-rendering` | playground | hostile-looking user, model, function-argument, and function-result content remains inert across persistence, rendering, and reload |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,
@@ -115,8 +118,9 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-all direct scenarios; UI-001 through UI-005 must use `playground`. INT-003
-produces two terminal turns from one send: generation 1
+all direct scenarios; UI-001 through UI-005 and UI-SEC-001 must use
+`playground`. INT-003 produces
+two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,
 so the harness's failed finalize drains the parked row and reseeds a turn to
 react to it. The failed route is deliberate — a park during a *completing*

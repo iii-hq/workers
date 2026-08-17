@@ -53,16 +53,23 @@ pub struct CompiledPolicy {
 impl CompiledPolicy {
     pub fn from(policy: Option<&FunctionPolicy>) -> Self {
         match policy {
-            Some(p) => CompiledPolicy {
-                allow: build_set(&p.allow),
-                deny: build_set(&p.deny),
-                allow_empty: p.allow.is_empty(),
+            Some(p) => match (build_set(&p.allow), build_set(&p.deny)) {
+                (Some(allow), Some(deny)) => CompiledPolicy {
+                    allow,
+                    deny,
+                    allow_empty: p.allow.is_empty(),
+                },
+                _ => CompiledPolicy::deny_all(),
             },
-            None => CompiledPolicy {
-                allow: GlobSet::empty(),
-                deny: GlobSet::empty(),
-                allow_empty: true,
-            },
+            None => CompiledPolicy::deny_all(),
+        }
+    }
+
+    fn deny_all() -> Self {
+        CompiledPolicy {
+            allow: GlobSet::empty(),
+            deny: GlobSet::empty(),
+            allow_empty: true,
         }
     }
 
@@ -159,16 +166,25 @@ pub(crate) fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
     })
 }
 
-fn build_set(patterns: &[String]) -> GlobSet {
+fn build_set(patterns: &[String]) -> Option<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
-        if let Ok(glob) = Glob::new(p) {
-            builder.add(glob);
-        } else {
-            tracing::warn!(pattern = %p, "ignoring invalid function glob");
+        let glob = match Glob::new(p) {
+            Ok(glob) => glob,
+            Err(error) => {
+                tracing::warn!(pattern = %p, error = %error, "rejecting policy with invalid function glob");
+                return None;
+            }
+        };
+        builder.add(glob);
+    }
+    match builder.build() {
+        Ok(set) => Some(set),
+        Err(error) => {
+            tracing::warn!(error = %error, "rejecting policy whose function globs did not compile");
+            None
         }
     }
-    builder.build().unwrap_or_else(|_| GlobSet::empty())
 }
 
 /// The single `agent_trigger` schema attached by default — the model triggers
@@ -394,6 +410,15 @@ mod tests {
         let p = CompiledPolicy::from(Some(&policy(&["*"], &["shell::*"])));
         assert!(p.allows("fs::read"));
         assert!(!p.allows("shell::run"));
+    }
+
+    #[test]
+    fn malformed_policy_globs_fail_closed() {
+        let malformed_allow = CompiledPolicy::from(Some(&policy(&["["], &[])));
+        assert!(!malformed_allow.allows("shell::run"));
+
+        let malformed_deny = CompiledPolicy::from(Some(&policy(&["*"], &["["])));
+        assert!(!malformed_deny.allows("shell::run"));
     }
 
     #[test]

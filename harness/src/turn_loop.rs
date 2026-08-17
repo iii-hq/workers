@@ -229,8 +229,8 @@ pub async fn run_step(
             None => return Ok(skipped(&payload.session_id)),
         };
 
-    // Stale guards: wrong turn or an old step is acked and dropped.
-    if record.turn_id != payload.turn_id || payload.step < record.step {
+    // Stale guards: wrong turn or any non-current step is acked and dropped.
+    if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
         return Ok(skipped(&payload.session_id));
     }
     if record.status.is_terminal() {
@@ -1261,6 +1261,15 @@ pub async fn run_step(
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+fn turn_step_matches(
+    record_turn_id: &str,
+    record_step: u64,
+    payload_turn_id: &str,
+    payload_step: u64,
+) -> bool {
+    record_turn_id == payload_turn_id && payload_step == record_step
 }
 
 /// Whether model-visible messages are parked in the session's queue
@@ -2614,10 +2623,20 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{cancel_requested, count_model_visible, transient_resume_allowed};
+    use super::{
+        cancel_requested, count_model_visible, transient_resume_allowed, turn_step_matches,
+    };
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+
+    #[test]
+    fn only_the_exact_current_turn_step_is_executable() {
+        assert!(!turn_step_matches("t_current", 4, "t_stale", 4));
+        assert!(!turn_step_matches("t_current", 4, "t_current", 3));
+        assert!(turn_step_matches("t_current", 4, "t_current", 4));
+        assert!(!turn_step_matches("t_current", 4, "t_current", 5));
+    }
 
     fn queued(message: AgentMessage) -> crate::state::QueuedMessage {
         crate::state::QueuedMessage {
