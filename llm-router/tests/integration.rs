@@ -55,6 +55,17 @@ fn free_port() -> u16 {
         .port()
 }
 
+fn test_init_options() -> InitOptions {
+    static NEXT_WORKER_ID: AtomicU64 = AtomicU64::new(1);
+    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, Ordering::Relaxed);
+    metadata.name = format!("{}-test-{worker_id}", metadata.name);
+    InitOptions {
+        metadata: Some(metadata),
+        ..InitOptions::default()
+    }
+}
+
 /// Bare engine mirroring CI's interface-boot smoke (`workers: []`): builtin
 /// daemons only — no `iii-state`, no `iii-pubsub`. Port pinned through
 /// iii-worker-manager so parallel tests don't collide on the default port.
@@ -133,7 +144,7 @@ async fn spawn_engine_with(
         .expect("spawn engine");
 
     let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, InitOptions::default());
+    let probe = register_worker(&url, test_init_options());
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let ready = probe
@@ -221,7 +232,7 @@ async fn call_until(
 /// numbered write. Used to prove router stores do not publish uncommitted
 /// in-memory state when persistence rejects a mutation.
 async fn start_flaky_state(url: &str, fail_on_set_call: u64) -> (IIIClient, Arc<AtomicU64>) {
-    let iii = register_worker(url, InitOptions::default());
+    let iii = register_worker(url, test_init_options());
     let values = Arc::new(std::sync::Mutex::new(HashMap::<String, Value>::new()));
     let get_values = values.clone();
     iii.register_function(
@@ -317,7 +328,7 @@ fn live_provider_declaration(opts: &ProviderOptions, token: Option<String>) -> V
 /// A live provider worker on its own connection: registers
 /// provider::real::stream (+ refresh_models) and declares itself.
 async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
-    let iii = register_worker(url, InitOptions::default());
+    let iii = register_worker(url, test_init_options());
     let write_failed = Arc::new(AtomicBool::new(false));
     let fail_at_ms = Arc::new(AtomicU64::new(0));
     let stream_calls = Arc::new(AtomicU64::new(0));
@@ -515,13 +526,13 @@ async fn consumer_channel(
 async fn end_to_end_relay_over_a_live_engine() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
     let _provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
 
     let res = consumer
@@ -578,13 +589,13 @@ async fn end_to_end_relay_over_a_live_engine() {
 async fn route_previews_the_same_provider_chat_executes() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
     let _provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
 
     // catalog-owner routing: live-1 sits in provider "real"'s static slice.
     let route = call(&consumer, "router::route", json!({ "model": "live-1" }))
@@ -627,7 +638,7 @@ async fn route_previews_the_same_provider_chat_executes() {
 async fn consumer_cancellation_propagates_to_the_provider() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -640,7 +651,7 @@ async fn consumer_cancellation_propagates_to_the_provider() {
     )
     .await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let channel = iii_sdk::helpers::create_channel(&consumer, None)
         .await
         .expect("channel");
@@ -697,12 +708,12 @@ async fn consumer_cancellation_propagates_to_the_provider() {
 async fn registry_survives_a_router_restart_and_token_stays_bound() {
     let engine = engine_or_skip!();
 
-    let first = register_worker(&engine.url, InitOptions::default());
+    let first = register_worker(&engine.url, test_init_options());
     register_router(first.clone()).await.expect("router boots");
     let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
     first.shutdown(); // "crash" the router connection
 
-    let second = register_worker(&engine.url, InitOptions::default());
+    let second = register_worker(&engine.url, test_init_options());
     register_router(second.clone())
         .await
         .expect("router reboots");
@@ -739,13 +750,13 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
 async fn system_prompt_get_resolves_declared_override_unset_and_default_provider() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
 
     // a provider that declares an identity prompt (registry only; no stream fn needed)
-    let provider_iii = register_worker(&engine.url, InitOptions::default());
+    let provider_iii = register_worker(&engine.url, test_init_options());
     call(
         &provider_iii,
         "router::provider::register",
@@ -825,7 +836,7 @@ async fn system_prompt_get_resolves_declared_override_unset_and_default_provider
 async fn registration_token_gates_takeover_resolve_and_reconcile() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -877,7 +888,7 @@ async fn resolve_precedence_config_over_env_over_none() {
     let env_var = "LLM_ROUTER_IT_RESOLVE_KEY";
     std::env::remove_var(env_var);
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -942,7 +953,7 @@ async fn resolve_precedence_config_over_env_over_none() {
 async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -1022,7 +1033,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
 async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -1035,7 +1046,7 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
     )
     .await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let chat = {
         let consumer = consumer.clone();
@@ -1092,7 +1103,7 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
     let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
     let provider = start_live_provider(
         &engine.url,
@@ -1103,7 +1114,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
     )
     .await;
 
-    let first_consumer = register_worker(&engine.url, InitOptions::default());
+    let first_consumer = register_worker(&engine.url, test_init_options());
     let (first_ref, first_frames, first_pump) = consumer_channel(&first_consumer).await;
     let first_chat = {
         let consumer = first_consumer.clone();
@@ -1130,7 +1141,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
     }
     assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
 
-    let second_consumer = register_worker(&engine.url, InitOptions::default());
+    let second_consumer = register_worker(&engine.url, test_init_options());
     let (second_ref, second_frames, second_pump) = consumer_channel(&second_consumer).await;
     let duplicate = second_consumer
         .trigger(TriggerRequest {
@@ -1203,7 +1214,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
 async fn update_credential_persists_and_resolves_back() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -1238,14 +1249,14 @@ async fn update_credential_persists_and_resolves_back() {
 async fn models_changed_event_reaches_a_trigger_subscriber() {
     let engine = engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
 
     // Probe worker bound to the router-owned trigger type (README § Events):
     // the handler must receive the raw payload, no envelope.
-    let probe = register_worker(&engine.url, InitOptions::default());
+    let probe = register_worker(&engine.url, test_init_options());
     let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let sink = received.clone();
     probe.register_function(
@@ -1315,7 +1326,7 @@ async fn router_boots_its_interface_against_a_bare_engine() {
     // state worker and come up with an empty registry/catalog.
     let engine = bare_engine_or_skip!();
 
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots without iii-state");
@@ -1352,7 +1363,7 @@ async fn router_boots_its_interface_against_a_bare_engine() {
 async fn failed_registry_write_rolls_back_and_retry_can_bind_without_a_token() {
     let engine = bare_engine_or_skip!();
     let (state, set_calls) = start_flaky_state(&engine.url, 1).await;
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
 
     let first = call(
@@ -1399,7 +1410,7 @@ async fn assert_static_registration_failure_is_atomic(
 ) {
     let engine = bare_engine_or_skip!();
     let (state, set_calls) = start_flaky_state(&engine.url, fail_on_set_call).await;
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
 
     let provider_id = format!("atomic-static-{fail_on_set_call}");
@@ -1443,7 +1454,7 @@ async fn assert_static_registration_failure_is_atomic(
     // fail-on-2 case this specifically proves the durable catalog candidate
     // was compensated after the registry commit failed.
     router.shutdown();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone())
         .await
         .expect("router reboots");
@@ -1513,12 +1524,12 @@ async fn failed_registry_after_static_catalog_rolls_back_before_retry() {
 #[tokio::test(flavor = "multi_thread")]
 async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_down() {
     let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
 
     let entered = Arc::new(tokio::sync::Semaphore::new(0));
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let provider = register_worker(&engine.url, InitOptions::default());
+    let provider = register_worker(&engine.url, test_init_options());
     let handler_entered = entered.clone();
     let handler_release = release.clone();
     provider.register_function(
@@ -1559,7 +1570,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
         .expect("registration token")
         .to_string();
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let chat = {
         let consumer = consumer.clone();
@@ -1642,10 +1653,10 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
 #[tokio::test(flavor = "multi_thread")]
 async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
 
-    let provider = register_worker(&engine.url, InitOptions::default());
+    let provider = register_worker(&engine.url, test_init_options());
     provider.register_function(
         "provider::coded-error::stream",
         RegisterFunction::new_async(|_input: Value| async move {
@@ -1672,7 +1683,7 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     .await
     .expect("provider registers");
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
         .trigger(TriggerRequest {
@@ -1718,16 +1729,16 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
 #[tokio::test(flavor = "multi_thread")]
 async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
     let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
     let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
 
     // Mint the consumer channel before adversarially shadowing the engine's
     // channel factory. The chat pipeline must turn the later internal factory
     // failure into a terminal frame on this already-valid caller channel.
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
-    let saboteur = register_worker(&engine.url, InitOptions::default());
+    let saboteur = register_worker(&engine.url, test_init_options());
     saboteur.register_function(
         "engine::channels::create",
         RegisterFunction::new_async(|_input: Value| async move {
@@ -1801,7 +1812,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
 #[tokio::test(flavor = "multi_thread")]
 async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
     let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
     call(
         &router,
@@ -1819,7 +1830,7 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
     .await
     .expect("declaration accepted");
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let err = consumer
         .trigger(TriggerRequest {
@@ -1877,7 +1888,7 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
 #[tokio::test(flavor = "multi_thread")]
 async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone()).await.expect("router boots");
     let provider = start_live_provider(
         &engine.url,
@@ -1905,7 +1916,7 @@ async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     .expect("settings update");
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let started = Instant::now();
     let response = consumer
@@ -1947,7 +1958,7 @@ async fn complete_fails_fast_when_the_provider_worker_is_gone() {
     // worker is gone emits a terminal error and returns a typed Err. The
     // internal channel drain must still race the pipeline and answer promptly.
     let engine = engine_or_skip!();
-    let router_iii = register_worker(&engine.url, InitOptions::default());
+    let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
@@ -1961,7 +1972,7 @@ async fn complete_fails_fast_when_the_provider_worker_is_gone() {
     .await
     .expect("declaration accepted");
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let started = Instant::now();
     let err = call(
         &consumer,

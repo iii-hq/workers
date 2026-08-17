@@ -35,8 +35,8 @@ futures-util = "0.3"
 rand = "0.8"
 hex = "0.4"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1"
-aws-sdk-sqs = "1"
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1"
 aws-sigv4 = "1"
 aws-smithy-runtime-api = "1"

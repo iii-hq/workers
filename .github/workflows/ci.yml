@@ -295,7 +295,7 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.22.1'
+          VERSION: '0.23.0-rc.1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -354,7 +354,7 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.21.8'
+          VERSION: '0.23.0-rc.1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -526,9 +526,8 @@ jobs:
         env:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
-          # with the workers' iii-sdk protocol line. 0.21.8 includes
-          # recoverable triggers required by workers that bind before providers.
-          VERSION: '0.21.8'
+          # with the workers' iii-sdk protocol line.
+          VERSION: '0.23.0-rc.1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail

@@ -86,8 +86,19 @@ impl Drop for Engine {
     }
 }
 
+pub(crate) fn test_init_options() -> InitOptions {
+    static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    metadata.name = format!("{}-test-{worker_id}", metadata.name);
+    InitOptions {
+        metadata: Some(metadata),
+        ..InitOptions::default()
+    }
+}
+
 async fn wait_for_engine(url: &str) -> anyhow::Result<()> {
-    let probe = register_worker(url, InitOptions::default());
+    let probe = register_worker(url, test_init_options());
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if call(&probe, "engine::workers::list", json!({}))

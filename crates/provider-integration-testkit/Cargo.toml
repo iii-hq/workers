@@ -23,7 +23,7 @@ provider-zai = ["dep:provider-zai"]
 [dependencies]
 anyhow = "1"
 axum = "0.8"
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.23.0-rc.1"
 llm-router = { path = "../../llm-router", default-features = false }
 provider-anthropic = { path = "../../provider-anthropic", optional = true }
 provider-claude-code = { path = "../../provider-claude-code", optional = true }

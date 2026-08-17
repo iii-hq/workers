@@ -38,7 +38,7 @@ base64 = "0.22"
 # build with the computer-server backend only.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 enigo = "0.3"
-xcap = "0.4"
+xcap = "0.9"
 image = "0.25"
 
 [dev-dependencies]
