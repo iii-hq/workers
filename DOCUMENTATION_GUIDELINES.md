@@ -4,10 +4,10 @@ This guide describes how to author a worker's skill doc so agents know **when**
 and **why** to use a worker without duplicating what the engine already exposes
 as structured API reference.
 
-Each worker ships one file:
+Workers may optionally ship a canonical overview file:
 
 ```text
-engine/src/workers/<worker>/skills/SKILL.md
+<worker>/skills/SKILL.md
 ```
 
 The file is lean on purpose. Inputs, outputs, JSON schemas, and worked examples
@@ -16,10 +16,10 @@ live in the API reference — agents fetch them with `iii list functions` and
 intent, lists what's available, and covers trigger binding when the worker emits
 events.
 
-## SKILL.md structure
+## Recommended SKILL.md structure
 
-Every worker `SKILL.md` has YAML frontmatter and four body sections (the last
-one only when the worker exposes a trigger type).
+When present, a worker `SKILL.md` has YAML frontmatter and four body sections
+(the last one only when the worker exposes a trigger type).
 
 ### Frontmatter
 
