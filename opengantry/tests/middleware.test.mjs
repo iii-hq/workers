@@ -8,7 +8,7 @@ import { mintVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel'
 
 import { GantryDenied } from '../src/denied.js';
 import { createMiddlewareHandler } from '../src/middleware.js';
-import { LeaseStore } from '../src/lease-store.js';
+import { LEASE_STATES, LeaseStore } from '../src/lease-store.js';
 import { defaultLeaseStorePath } from '../src/repo-path.js';
 import { writeKeyring, writeMiniGantryRepo } from './helpers/mini-repo.mjs';
 
@@ -112,4 +112,42 @@ test('middleware throws on corrupted lease store', async () => {
       }),
     (err) => err instanceof GantryDenied && err.code === 'LEASE_STORE_CORRUPTED',
   );
+});
+
+test('middleware denies promote when lease is tombstoned', async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-tomb-'));
+  const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-tomb-kr-'));
+  const keyring = writeKeyring(krDir);
+  const { missionRel, msnId } = writeMiniGantryRepo(repoRoot);
+  const claims = verdictClaimsFor(repoRoot, missionRel);
+  const token = mintVerdictToken({ ...claims, keyringPath: keyring });
+  const prevKeyring = process.env.GANTRY_VERDICT_KEYRING;
+  process.env.GANTRY_VERDICT_KEYRING = keyring;
+  const leases = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  leases.bindMissionRel(msnId, missionRel);
+  leases.upsert({
+    msn_id: msnId,
+    state: LEASE_STATES.tombstoned,
+    session_refs: Object.create(null),
+    mission_rel: missionRel,
+  });
+  const state = {
+    leaseStores: new Map([[repoRoot, leases]]),
+    forwardTrigger: async () => ({ ok: true }),
+  };
+  try {
+    const middleware = createMiddlewareHandler(state);
+    await assert.rejects(
+      () =>
+        middleware({
+          function_id: 'src::promote',
+          payload: {},
+          context: { msn_id: msnId, worktree_path: repoRoot, verdict_token: token },
+        }),
+      (err) => err instanceof GantryDenied && err.code === 'LEASE_NOT_PROMOTABLE',
+    );
+  } finally {
+    if (prevKeyring === undefined) delete process.env.GANTRY_VERDICT_KEYRING;
+    else process.env.GANTRY_VERDICT_KEYRING = prevKeyring;
+  }
 });

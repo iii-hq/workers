@@ -19,7 +19,7 @@ function resolveMissionSchemaSrc() {
 
 export function writeMiniGantryRepo(
   dir,
-  { msnId = 'MSN-0175', missionRel = '.gitagent/missions/MSN-0175.yaml' } = {},
+  { msnId = 'MSN-0175', missionRel = '.gitagent/missions/MSN-0175.yaml', orgId = 'demo-org' } = {},
 ) {
   const schemaSrc = resolveMissionSchemaSrc();
   fs.mkdirSync(path.join(dir, '.gitagent', 'planner'), { recursive: true });
@@ -54,18 +54,16 @@ trace_rows: []
   );
   fs.writeFileSync(
     path.join(dir, '.gitagent', 'foreman', 'ORG.export.local'),
-    JSON.stringify({ org_id: 'demo-org', pepper: 'demo-pepper' }),
+    JSON.stringify({ org_id: orgId, pepper: `${orgId}-pepper` }),
     { mode: 0o600 },
   );
   return { missionRel, msnId };
 }
 
-export function writeKeyring(dir) {
+export function writeKeyring(dir, { orgId = 'demo-org', pepper = 'demo-pepper' } = {}) {
   const keyring = path.join(dir, 'pepper-keyring.json');
-  fs.writeFileSync(
-    keyring,
-    JSON.stringify([{ org_id: 'demo-org', pepper_version: 1, pepper: 'demo-pepper' }]),
-    { mode: 0o600 },
-  );
+  fs.writeFileSync(keyring, JSON.stringify([{ org_id: orgId, pepper_version: 1, pepper }]), {
+    mode: 0o600,
+  });
   return keyring;
 }

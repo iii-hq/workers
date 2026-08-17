@@ -69,8 +69,15 @@ export function onVerifyPassed(state, data) {
   if (!data?.msn_id || !data?.mission_rel_path || !repoRoot) return;
   const resolved = resolveVerifyRepoRoot(repoRoot);
   const leases = getLeaseStore(state, resolved);
-  if (!leases.corrupted) {
-    leases.bindMissionRel(data.msn_id, data.mission_rel_path);
+  if (leases.corrupted) {
+    throw new GantryDenied(
+      'LEASE_STORE_CORRUPTED',
+      'lease store corrupted; repair .gitagent/leases.json before verify bind',
+    );
+  }
+  const bound = leases.bindMissionRel(data.msn_id, data.mission_rel_path);
+  if (!bound) {
+    throw new GantryDenied('LEASE_BIND_FAILED', 'failed to bind mission on lease store');
   }
   try {
     getGovernanceBundle(state, resolved, data.mission_rel_path);

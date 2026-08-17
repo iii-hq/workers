@@ -9,7 +9,7 @@ required:
   - skill_key
   - gate_command
 allOf:
-  - anyOf:
+  - oneOf:
       - required: [msn_id]
       - required: [msnId]
   - if:

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -5,7 +6,9 @@ import { GantryDenied } from './denied.js';
 
 const DANGEROUS_HOLDER_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 const LOCK_WAIT_MS = 5000;
-const LOCK_POLL_MS = 10;
+const LOCK_POLL_MS = 50;
+const LOCK_STALE_MS = 30_000;
+const LEASE_FILE_MODE = 0o600;
 
 const LEASE_STATES = {
   active: 'active',
@@ -47,10 +50,47 @@ function validateLeaseRow(row) {
   return true;
 }
 
-function sleepSync(ms) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    /* spin */
+function sleepPoll(ms) {
+  if (process.platform === 'win32') {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      /* spin — windows fallback */
+    }
+    return;
+  }
+  spawnSync('sleep', [String(Math.max(0.001, ms / 1000))], { stdio: 'ignore' });
+}
+
+function lockHolderPid(lockPath) {
+  try {
+    const raw = fs.readFileSync(lockPath, 'utf8').trim();
+    const pid = Number(raw);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearStaleLock(lockPath) {
+  try {
+    const stat = fs.statSync(lockPath);
+    const pid = lockHolderPid(lockPath);
+    const staleByTime = Date.now() - stat.mtimeMs > LOCK_STALE_MS;
+    const staleByPid = pid != null && !isPidAlive(pid);
+    if (staleByTime || staleByPid) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch {
+    /* ignore */
   }
 }
 
@@ -69,10 +109,11 @@ function withStoreLock(storePath, fn) {
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
+      clearStaleLock(lockPath);
       if (Date.now() >= deadline) {
         throw new GantryDenied('LEASE_LOCK_TIMEOUT', 'lease store lock timeout');
       }
-      sleepSync(LOCK_POLL_MS);
+      sleepPoll(LOCK_POLL_MS);
     }
   }
   try {
@@ -136,12 +177,13 @@ export class LeaseStore {
 
   persistMapUnlocked(map) {
     const dir = path.dirname(this.storePath);
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
     const body = JSON.stringify({ leases: [...map.values()] }, null, 2);
     try {
-      fs.writeFileSync(tmp, body);
+      fs.writeFileSync(tmp, body, { mode: LEASE_FILE_MODE });
       fs.renameSync(tmp, this.storePath);
+      fs.chmodSync(this.storePath, LEASE_FILE_MODE);
     } catch (e) {
       try {
         fs.unlinkSync(tmp);
@@ -174,6 +216,7 @@ export class LeaseStore {
   }
 
   upsert(lease) {
+    if (this.corrupted) return false;
     const row = sanitizeRow(lease);
     return this.mutate((map) => {
       map.set(row.msn_id, row);
@@ -182,6 +225,7 @@ export class LeaseStore {
   }
 
   bindMissionRel(msnId, missionRel) {
+    if (this.corrupted) return false;
     return this.mutate((map) => {
       const existing = map.get(msnId);
       if (existing?.mission_rel) return true;
@@ -197,6 +241,7 @@ export class LeaseStore {
   }
 
   transition(msnId, from, to) {
+    if (this.corrupted) return false;
     return this.mutate((map) => {
       const row = map.get(msnId);
       if (!row || row.state !== from) return false;

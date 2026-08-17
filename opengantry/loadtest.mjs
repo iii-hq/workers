@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { mintVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel';
 
@@ -13,67 +12,27 @@ import { VerifyCoalescer } from './src/verify.js';
 import { createMiddlewareHandler } from './src/middleware.js';
 import { LeaseStore } from './src/lease-store.js';
 import { defaultLeaseStorePath } from './src/repo-path.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OPENGANTRY_ROOT = path.resolve(__dirname, '../../opengantry');
+import { writeKeyring, writeMiniGantryRepo } from './tests/helpers/mini-repo.mjs';
 
 const N = 50;
 const latencies = [];
 
-function writeMiniRepo(repoRoot) {
-  const schemaSrc = path.join(OPENGANTRY_ROOT, '.gitagent/planner/MISSION.schema.yaml');
-  fs.mkdirSync(path.join(repoRoot, '.gitagent/planner'), { recursive: true });
-  fs.copyFileSync(schemaSrc, path.join(repoRoot, '.gitagent/planner/MISSION.schema.yaml'));
-  fs.mkdirSync(path.join(repoRoot, '.gitagent/foreman'), { recursive: true });
-  fs.mkdirSync(path.join(repoRoot, '.gitagent/missions'), { recursive: true });
-  const missionRel = '.gitagent/missions/MSN-9001.yaml';
-  fs.writeFileSync(
-    path.join(repoRoot, missionRel),
-    'msn_id: MSN-9001\nskill_key: gantry\ngate_command: npm test\ntrace_rows: []\n',
-  );
-  fs.writeFileSync(
-    path.join(repoRoot, '.gitagent/foreman/MANIFEST.json'),
-    JSON.stringify({
-      schema_version: '0.5.0',
-      skills: {
-        gantry: {
-          desc: 't',
-          trust_threshold: 'Tier-2',
-          tmvc_roots: ['src/'],
-          forbidden_zones: [],
-          gate_commands: ['npm test'],
-        },
-      },
-      path_risks: {},
-      risk_keywords: [],
-      perimeter_protected: [],
-    }),
-  );
-  fs.writeFileSync(
-    path.join(repoRoot, '.gitagent/foreman/ORG.export.local'),
-    JSON.stringify({ org_id: 'load-org' }),
-    { mode: 0o600 },
-  );
-  return missionRel;
-}
-
 async function runLoad() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-load-repo-'));
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-load-'));
-  const keyring = path.join(dir, 'pepper-keyring.json');
-  fs.writeFileSync(
-    keyring,
-    JSON.stringify([{ org_id: 'load-org', pepper_version: 1, pepper: 'load-pepper' }]),
-    { mode: 0o600 },
-  );
-  const missionRel = writeMiniRepo(repoRoot);
+  const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-load-'));
+  const keyring = writeKeyring(krDir, { orgId: 'load-org', pepper: 'load-pepper' });
+  const { missionRel, msnId } = writeMiniGantryRepo(repoRoot, {
+    msnId: 'MSN-9001',
+    missionRel: '.gitagent/missions/MSN-9001.yaml',
+    orgId: 'load-org',
+  });
   const expected = verdictClaimsFor(repoRoot, missionRel);
   const token = mintVerdictToken({ ...expected, keyringPath: keyring });
   const prevKeyring = process.env.GANTRY_VERDICT_KEYRING;
   process.env.GANTRY_VERDICT_KEYRING = keyring;
   const storePath = defaultLeaseStorePath(repoRoot);
   const leases = new LeaseStore(storePath);
-  leases.bindMissionRel('MSN-9001', missionRel);
+  leases.bindMissionRel(msnId, missionRel);
   const state = {
     leaseStores: new Map([[repoRoot, leases]]),
     forwardTrigger: async (fid) => ({ ok: true, fid }),
@@ -85,22 +44,28 @@ async function runLoad() {
     const tasks = Array.from({ length: N }, (_, i) => async () => {
       const start = performance.now();
       const result = await middleware({
-        function_id: i % 5 === 0 ? 'src::promote' : `src/work-${i}`,
+        function_id: `src::work-${i}`,
         payload: { i },
-        context:
-          i % 5 === 0
-            ? {
-                msn_id: 'MSN-9001',
-                worktree_path: repoRoot,
-                verdict_token: token,
-              }
-            : { msn_id: 'MSN-9001', worktree_path: repoRoot, mission_rel_path: missionRel },
+        context: { msn_id: msnId, worktree_path: repoRoot, mission_rel_path: missionRel },
       });
       latencies.push(performance.now() - start);
       assert.equal(result.ok, true);
     });
 
     await Promise.all(tasks.map((t) => t()));
+
+    const promoteStart = performance.now();
+    const promoteResult = await middleware({
+      function_id: 'src::promote',
+      payload: {},
+      context: {
+        msn_id: msnId,
+        worktree_path: repoRoot,
+        verdict_token: token,
+      },
+    });
+    latencies.push(performance.now() - promoteStart);
+    assert.equal(promoteResult.ok, true);
 
     let verifyRuns = 0;
     await Promise.all(

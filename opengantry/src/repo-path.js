@@ -33,6 +33,21 @@ export function resolveVerifyRepoRoot(repoRoot) {
   return repoRoot;
 }
 
+function assertResolvedUnderGitagent(repoRoot, targetPath) {
+  const root = path.resolve(repoRoot);
+  const gitagentDir = path.join(root, '.gitagent');
+  fs.mkdirSync(gitagentDir, { recursive: true });
+  const realGitagent = fs.realpathSync(gitagentDir);
+  const resolved = path.resolve(targetPath);
+  const parent = path.dirname(resolved);
+  fs.mkdirSync(parent, { recursive: true });
+  const realParent = fs.realpathSync(parent);
+  const rel = path.relative(realGitagent, realParent);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('opengantry: GANTRY_III_LEASE_STORE must resolve under <repo>/.gitagent/');
+  }
+}
+
 export function defaultLeaseStorePath(repoRoot) {
   const root = path.resolve(repoRoot);
   const defaultPath = path.join(root, '.gitagent', 'leases.json');
@@ -43,5 +58,6 @@ export function defaultLeaseStorePath(repoRoot) {
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error('opengantry: GANTRY_III_LEASE_STORE must resolve under <repo>/.gitagent/');
   }
+  assertResolvedUnderGitagent(root, resolved);
   return resolved;
 }

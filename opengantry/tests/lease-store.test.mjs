@@ -43,6 +43,33 @@ test('unknown lease state marks corrupted on load', () => {
   assert.equal(store.corrupted, true);
 });
 
+test('missing lease state marks corrupted on load', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-nostate-'));
+  const storePath = defaultLeaseStorePath(repoRoot);
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(
+    storePath,
+    JSON.stringify({
+      leases: [{ msn_id: 'MSN-0001', session_refs: {} }],
+    }),
+  );
+  const store = new LeaseStore(storePath);
+  assert.equal(store.corrupted, true);
+});
+
+test('lease file is written with restrictive permissions', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-mode-'));
+  const storePath = defaultLeaseStorePath(repoRoot);
+  const store = new LeaseStore(storePath);
+  store.upsert({
+    msn_id: 'MSN-0004',
+    state: LEASE_STATES.active,
+    session_refs: Object.create(null),
+  });
+  const mode = fs.statSync(storePath).mode & 0o777;
+  assert.equal(mode, 0o600);
+});
+
 test('get returns clone — caller mutation does not affect store', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-clone-'));
   const store = new LeaseStore(defaultLeaseStorePath(repoRoot));

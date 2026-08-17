@@ -80,6 +80,24 @@ test('mission edited after mint denies promote', async () => {
   }
 });
 
+test('onVerifyPassed throws when lease store is corrupted', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-vp-corrupt-'));
+  const { missionRel, msnId } = writeMiniGantryRepo(repoRoot);
+  const storePath = path.join(repoRoot, '.gitagent', 'leases.json');
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(storePath, '{"leases": null}');
+  const state = createWorkerState();
+  assert.throws(
+    () =>
+      onVerifyPassed(state, {
+        repo_root: repoRoot,
+        msn_id: msnId,
+        mission_rel_path: missionRel,
+      }),
+    (err) => err instanceof GantryDenied && err.code === 'LEASE_STORE_CORRUPTED',
+  );
+});
+
 test('missing org config denies promote', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-vp-org-'));
   const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-vp-kr3-'));

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import {
   evaluateFunctionScope,
   isPromoteClassFunctionId,
@@ -39,13 +42,27 @@ class BoundedMap {
   }
 }
 
-function governanceCacheKey(repoRoot, missionRel) {
-  return `${repoRoot}\0${missionRel}`;
+function governanceRevision(repoRoot, missionRel) {
+  const paths = [
+    path.join(repoRoot, missionRel),
+    path.join(repoRoot, '.gitagent/foreman/MANIFEST.json'),
+  ];
+  return paths
+    .map((p) => {
+      try {
+        const stat = fs.statSync(p);
+        return `${p}:${stat.mtimeMs}:${stat.size}`;
+      } catch {
+        return `${p}:missing`;
+      }
+    })
+    .join('|');
 }
 
 export function getGovernanceBundle(state, repoRoot, missionRel) {
   state.governance ??= new BoundedMap(32);
-  const key = governanceCacheKey(repoRoot, missionRel);
+  const rev = governanceRevision(repoRoot, missionRel);
+  const key = `${repoRoot}\0${missionRel}\0${rev}`;
   if (!state.governance.has(key)) {
     state.governance.set(key, loadGovernanceBundle(repoRoot, missionRel));
   }
@@ -102,49 +119,63 @@ export function createMiddlewareHandler(state) {
     const msnId = context?.msn_id;
     const holderId = context?.holder_id;
     const missionRel = context?.mission_rel_path ?? context?.mission_rel;
+    let sessionHeld = false;
 
-    if (msnId && holderId) {
-      ensureLease(leases, msnId, context?.worktree_path ?? context?.repo_root, missionRel);
-      leases.acquireSession(msnId, holderId);
-    }
-
-    const lease = msnId ? leases.get(msnId) : null;
-
-    if (lease?.state === LEASE_STATES.dirty_rewritten && isPromoteClassFunctionId(function_id)) {
-      throw new GantryDenied('LINEAGE_DIRTY', 'lineage dirty; re-verify required');
-    }
-
-    if (isPromoteClassFunctionId(function_id)) {
-      const token = context?.verdict_token ?? payload?.verdict_token;
-      verifyPromoteVerdictToken({
-        token,
-        msnId,
-        repoRoot,
-        missionRel: lease?.mission_rel ?? missionRel,
-      });
-      if (msnId) {
-        leases.transition(msnId, LEASE_STATES.active, LEASE_STATES.promoting);
+    try {
+      if (msnId && holderId) {
+        ensureLease(leases, msnId, context?.worktree_path ?? context?.repo_root, missionRel);
+        leases.acquireSession(msnId, holderId);
+        sessionHeld = true;
       }
-    }
 
-    const boundMissionRel = lease?.mission_rel ?? missionRel;
-    if (msnId && boundMissionRel) {
-      try {
-        const { manifest, mission } = getGovernanceBundle(state, repoRoot, boundMissionRel);
-        const scope = evaluateFunctionScope(manifest, mission, function_id);
-        if (!scope.ok) {
-          throw new GantryDenied('SCOPE_VIOLATION', scope.message ?? 'scope violation');
+      const lease = msnId ? leases.get(msnId) : null;
+
+      if (lease?.state === LEASE_STATES.dirty_rewritten && isPromoteClassFunctionId(function_id)) {
+        throw new GantryDenied('LINEAGE_DIRTY', 'lineage dirty; re-verify required');
+      }
+
+      if (isPromoteClassFunctionId(function_id)) {
+        const token = context?.verdict_token ?? payload?.verdict_token;
+        verifyPromoteVerdictToken({
+          token,
+          msnId,
+          repoRoot,
+          missionRel: lease?.mission_rel ?? missionRel,
+        });
+        if (msnId) {
+          const claimed = leases.transition(msnId, LEASE_STATES.active, LEASE_STATES.promoting);
+          if (!claimed) {
+            throw new GantryDenied(
+              'LEASE_NOT_PROMOTABLE',
+              'lease is not in active state; re-verify required',
+            );
+          }
         }
-      } catch (e) {
-        if (e instanceof GantryDenied) throw e;
-        throw new GantryDenied('SCOPE_LOAD_FAILED', `mission scope load failed: ${e.message}`);
+      }
+
+      const boundMissionRel = lease?.mission_rel ?? missionRel;
+      if (msnId && boundMissionRel) {
+        try {
+          const { manifest, mission } = getGovernanceBundle(state, repoRoot, boundMissionRel);
+          const scope = evaluateFunctionScope(manifest, mission, function_id);
+          if (!scope.ok) {
+            throw new GantryDenied('SCOPE_VIOLATION', scope.message ?? 'scope violation');
+          }
+        } catch (e) {
+          if (e instanceof GantryDenied) throw e;
+          throw new GantryDenied('SCOPE_LOAD_FAILED', `mission scope load failed: ${e.message}`);
+        }
+      }
+
+      const result = await state.forwardTrigger(function_id, payload);
+      if (msnId) {
+        leases.transition(msnId, LEASE_STATES.promoting, LEASE_STATES.active);
+      }
+      return result;
+    } finally {
+      if (msnId && holderId && sessionHeld) {
+        leases.releaseSession(msnId, holderId);
       }
     }
-
-    const result = await state.forwardTrigger(function_id, payload);
-    if (msnId) {
-      leases.transition(msnId, LEASE_STATES.promoting, LEASE_STATES.active);
-    }
-    return result;
   };
 }

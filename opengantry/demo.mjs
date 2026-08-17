@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   mintVerdictToken,
@@ -16,49 +15,10 @@ import { LeaseStore, LEASE_STATES } from './src/lease-store.js';
 import { createMiddlewareHandler, isReservedGovernanceFunctionId } from './src/middleware.js';
 import { VerifyCoalescer } from './src/verify.js';
 import { defaultLeaseStorePath, resolveVerifyRepoRoot } from './src/repo-path.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OPENGANTRY_ROOT = path.resolve(__dirname, '../../opengantry');
+import { writeKeyring, writeMiniGantryRepo } from './tests/helpers/mini-repo.mjs';
 
 function pass(label) {
   console.log(`PASS ${label}`);
-}
-
-function writeMiniGantryRepo(repoRoot) {
-  const schemaSrc = path.join(OPENGANTRY_ROOT, '.gitagent/planner/MISSION.schema.yaml');
-  fs.mkdirSync(path.join(repoRoot, '.gitagent/planner'), { recursive: true });
-  fs.copyFileSync(schemaSrc, path.join(repoRoot, '.gitagent/planner/MISSION.schema.yaml'));
-  fs.mkdirSync(path.join(repoRoot, '.gitagent/foreman'), { recursive: true });
-  fs.mkdirSync(path.join(repoRoot, '.gitagent/missions'), { recursive: true });
-  const missionRel = '.gitagent/missions/MSN-0155.yaml';
-  fs.writeFileSync(
-    path.join(repoRoot, missionRel),
-    'msn_id: MSN-0155\nskill_key: gantry\ngate_command: npm test\ntrace_rows: []\n',
-  );
-  fs.writeFileSync(
-    path.join(repoRoot, '.gitagent/foreman/MANIFEST.json'),
-    JSON.stringify({
-      schema_version: '0.5.0',
-      skills: {
-        gantry: {
-          desc: 't',
-          trust_threshold: 'Tier-2',
-          tmvc_roots: ['src/'],
-          forbidden_zones: [],
-          gate_commands: ['npm test'],
-        },
-      },
-      path_risks: {},
-      risk_keywords: [],
-      perimeter_protected: [],
-    }),
-  );
-  fs.writeFileSync(
-    path.join(repoRoot, '.gitagent/foreman/ORG.export.local'),
-    JSON.stringify({ org_id: 'demo-org' }),
-    { mode: 0o600 },
-  );
-  return missionRel;
 }
 
 function testKernelExports() {
@@ -70,12 +30,7 @@ function testKernelExports() {
 
 function testVerdictTokenRoundTrip() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-demo-vt-'));
-  const keyring = path.join(dir, 'pepper-keyring.json');
-  fs.writeFileSync(
-    keyring,
-    JSON.stringify([{ org_id: 'demo-org', pepper_version: 1, pepper: 'demo-pepper' }]),
-    { mode: 0o600 },
-  );
+  const keyring = writeKeyring(dir);
   const expected = {
     msn_id: 'MSN-0155',
     mission_sha256: 'sha',
@@ -115,21 +70,19 @@ async function testMiddlewarePromoteDenied() {
 
 async function testMiddlewarePromoteAllowed() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-demo-repo2-'));
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-demo-vt2-'));
-  const keyring = path.join(dir, 'pepper-keyring.json');
-  fs.writeFileSync(
-    keyring,
-    JSON.stringify([{ org_id: 'demo-org', pepper_version: 1, pepper: 'demo-pepper' }]),
-    { mode: 0o600 },
-  );
-  const missionRel = writeMiniGantryRepo(repoRoot);
+  const krDir = fs.mkdtempSync(path.join(os.tmpdir(), 'og-demo-vt2-'));
+  const keyring = writeKeyring(krDir);
+  const { missionRel, msnId } = writeMiniGantryRepo(repoRoot, {
+    msnId: 'MSN-0155',
+    missionRel: '.gitagent/missions/MSN-0155.yaml',
+  });
   const expected = verdictClaimsFor(repoRoot, missionRel);
   const token = mintVerdictToken({ ...expected, keyringPath: keyring });
   const prevKeyring = process.env.GANTRY_VERDICT_KEYRING;
   process.env.GANTRY_VERDICT_KEYRING = keyring;
   const storePath = defaultLeaseStorePath(repoRoot);
   const leases = new LeaseStore(storePath);
-  leases.bindMissionRel('MSN-0155', missionRel);
+  leases.bindMissionRel(msnId, missionRel);
   const state = {
     leaseStores: new Map([[repoRoot, leases]]),
     forwardTrigger: async (fid, payload) => ({ ok: true, fid, payload }),
@@ -140,7 +93,7 @@ async function testMiddlewarePromoteAllowed() {
       function_id: 'src::promote',
       payload: { branch: 'gxt/msn-0155' },
       context: {
-        msn_id: 'MSN-0155',
+        msn_id: msnId,
         worktree_path: repoRoot,
         verdict_token: token,
       },
@@ -188,7 +141,10 @@ function testDurableLeaseStorePath() {
 
 function testVerifyRequiresAbsoluteRepoRoot() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-demo-abs-'));
-  writeMiniGantryRepo(repoRoot);
+  writeMiniGantryRepo(repoRoot, {
+    msnId: 'MSN-0155',
+    missionRel: '.gitagent/missions/MSN-0155.yaml',
+  });
   assert.throws(() => resolveVerifyRepoRoot('target-repo'), /repo_root must be an absolute path/);
   assert.throws(() => resolveVerifyRepoRoot(undefined), /repo_root required/);
   assert.equal(resolveVerifyRepoRoot(repoRoot), repoRoot);
