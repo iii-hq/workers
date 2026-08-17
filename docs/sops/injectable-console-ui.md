@@ -82,6 +82,7 @@ export default function setup(host: Host) {
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
   host.configForms.register('state', StateConfigForm)
+  host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
   // optional: return a teardown fn; the loader runs it on dispose
 }
 ```
@@ -428,6 +429,33 @@ interface ConfigFormProps {
 
 The form is render-level only: dirty tracking, validation, save/reset and the
 SaveBar stay host-owned. You draw the fields and call `onChange`.
+
+### `host.providerConfigForms.register(providerId, component)`
+
+Replace the provider editor opened from the chat model picker (exact
+`llm-router` provider id; last registration wins). This is the preferred
+surface for provider-owned authentication nuances such as OAuth, a device
+flow, or importing a login from a companion app. Feature-detect it when a
+worker must support older consoles: `host.providerConfigForms?.register`.
+
+```ts
+interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+```
+
+The console still owns the authoritative `llm-router.providers[providerId]`
+slice, schema validation, dirty guard, save/reset, and model refresh. The
+provider owns only the form body and may call its own login/refresh functions
+through `host.iii`. Never render a plaintext API-key field: tell operators to
+use the provider's declared environment variable instead.
 
 ### `host.chat.registerSessionChip({ id, render })`
 

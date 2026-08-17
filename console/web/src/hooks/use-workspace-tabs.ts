@@ -94,7 +94,7 @@ export interface UseWorkspaceTabsReturn {
   attachScreen: (id: string, column: number, screen: TabScreen) => void
   /** Blank a column's screen (column stays, shows the attach affordance). */
   detachScreen: (id: string, column: number) => void
-  /** Grow the tab by one empty column on that side (≤ MAX_COLUMNS). */
+  /** Grow the tab by one empty column on that side (up to the safety ceiling). */
   addColumn: (id: string, side: 'left' | 'right') => void
   /** Drop one column (the last one never goes). */
   removeColumn: (id: string, column: number) => void

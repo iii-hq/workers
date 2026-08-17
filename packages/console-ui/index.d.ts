@@ -211,6 +211,18 @@ export interface ConfigFormRegistrationOptions {
   layout?: ConfigFormLayout
 }
 
+/** Provider-owned editor rendered inside the chat model picker. */
+export interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+
 /**
  * Props a session chip receives from the chat host. Chips fetch their own
  * data through `host.iii`; the host only identifies the session and what
@@ -283,6 +295,13 @@ export interface Host {
       options?: ConfigFormRegistrationOptions,
     ): () => void
   }
+  /** Optional on consoles that predate provider-specific configuration UI. */
+  providerConfigForms?: {
+    register(
+      providerId: string,
+      component: React.ComponentType<ProviderConfigFormProps>,
+    ): () => void
+  }
   /**
    * Optional: absent on consoles that predate session chips. Feature-detect
    * with `host.chat?.registerSessionChip` — newer slot namespaces are always
@@ -291,9 +310,7 @@ export interface Host {
   chat?: {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
-    registerTurnSummary?(
-      summary: SessionTurnSummaryRegistration,
-    ): () => void
+    registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
   }
 }
 
@@ -484,8 +501,7 @@ export declare const Input: React.ComponentType<
    PageHeader renders the standard ✕ when `onClose` is present — wire it
    to `PageRenderProps.onRequestClose`. */
 
-export interface PageShellProps
-  extends React.HTMLAttributes<HTMLDivElement> {}
+export interface PageShellProps extends React.HTMLAttributes<HTMLDivElement> {}
 /** The pane's root column — fills the pane, `--color-panel` background. */
 export declare const PageShell: React.ComponentType<PageShellProps>
 

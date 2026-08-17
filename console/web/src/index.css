@@ -125,7 +125,7 @@
 }
 
 [data-theme="dark"] {
-    color-scheme: dark;
+  color-scheme: dark;
   /* Neutral grays derived from black — no blue cast in the base ramp. The
      component fills (surface*) are white-alpha so a step reads identically
      over any base layer; the ONLY chromatic surface is surface-selected,
@@ -214,7 +214,7 @@
      here; disabled buttons keep the default and `cursor-not-allowed`
      utilities still win. */
   button:not(:disabled),
-  [role='button']:not([aria-disabled='true']) {
+  [role="button"]:not([aria-disabled="true"]) {
     cursor: pointer;
   }
 
@@ -558,11 +558,11 @@
 /* lexical editor surface — keep it boring so it inherits the rest of the system */
 .composer-editor {
   outline: none;
-  min-height: 56px;
+  min-height: 96px;
   max-height: 240px;
   overflow-y: auto;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.7;
   color: var(--color-ink);
 }
@@ -571,8 +571,22 @@
   pointer-events: none;
   position: absolute;
   inset: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.7;
   color: var(--color-ink-ghost);
   user-select: none;
+}
+
+@media (min-width: 640px) {
+  .composer-editor,
+  .composer-placeholder {
+    font-size: 14px;
+  }
+
+  .composer-editor {
+    min-height: 56px;
+  }
 }
 
 /* single-line lexical input used by the worker configuration form for

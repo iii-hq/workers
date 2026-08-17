@@ -73,7 +73,7 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        'flex items-center gap-2.5 h-11 px-3 shrink-0 whitespace-nowrap',
+        'flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap px-3 sm:h-11',
         'bg-panel-raised border-b border-edge',
         className,
       )}
@@ -109,9 +109,13 @@ export function PageHeader({
           type="button"
           onClick={onClose}
           aria-label="close panel"
-          className="shrink-0 flex items-center justify-center size-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
         >
-          <X aria-hidden className="size-4" />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <X aria-hidden className="size-4 shrink-0" />
         </button>
       ) : null}
     </header>

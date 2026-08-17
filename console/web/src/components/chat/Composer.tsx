@@ -4,7 +4,7 @@ import {
   $getRoot,
   type LexicalEditor,
 } from 'lexical'
-import { ArrowUp, Loader2, Square } from 'lucide-react'
+import { ArrowUp, Loader2, MoreHorizontal, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
@@ -20,6 +20,7 @@ import type {
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
 import { BankPicker } from './BankPicker'
+import { ChatSettingsSheet } from './ChatSettingsSheet'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
@@ -33,8 +34,7 @@ export interface ComposerSubmitPayload {
 
 /** Round icon action button (send / queue / stop) at the composer's edge. */
 const actionButtonClass = cn(
-  'inline-flex size-9 items-center justify-center rounded-full',
-  'transition-colors duration-150',
+  'inline-flex size-12 items-center justify-center rounded-full sm:size-9',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
   'disabled:pointer-events-none disabled:opacity-40',
 )
@@ -50,6 +50,8 @@ interface ComposerProps {
   model: ModelId | null
   modelOptions: ModelOption[]
   catalogLoading?: boolean
+  /** Increment to open the visible model picker from an external CTA. */
+  modelPickerOpenRequest?: number
   /**
    * Per-conversation permission mode (manual / auto / full). Owned by
    * the backend `approval_settings` scope; ChatView passes the loaded
@@ -147,6 +149,7 @@ export function Composer({
   model,
   modelOptions,
   catalogLoading,
+  modelPickerOpenRequest,
   permissionMode,
   permissionModeLoading,
   showPermissionMode = true,
@@ -185,6 +188,7 @@ export function Composer({
     initialAttachments ?? [],
   )
   const [clearToken, setClearToken] = useState(0)
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
   const textRef = useRef(initialContent ? '' : (initialText ?? ''))
   /* Boolean mirror of "the editor holds text": the action button swaps on
      the empty↔non-empty transition, and state updates for an unchanged
@@ -297,6 +301,39 @@ export function Composer({
     setAttachments((current) => current.filter((a) => a.id !== id))
   }, [])
 
+  const renderActionButton = () =>
+    isStreaming &&
+    !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
+      <button
+        type="button"
+        onClick={onStop}
+        disabled={stopping}
+        aria-label={stopping ? 'stopping' : 'stop generating'}
+        className={cn(actionButtonClass, actionReadyClass)}
+      >
+        {stopping ? (
+          <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
+        ) : (
+          <Square aria-hidden className="size-4 shrink-0 fill-current" />
+        )}
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={handleSubmit}
+        disabled={blocked}
+        aria-label={isStreaming ? 'queue message' : 'send message'}
+        className={cn(
+          actionButtonClass,
+          hasText || attachments.length > 0
+            ? actionReadyClass
+            : actionIdleClass,
+        )}
+      >
+        <ArrowUp aria-hidden className="size-4 shrink-0" />
+      </button>
+    )
+
   return (
     <div className="rounded-xl bg-panel-raised shadow-raised">
       {attachments.length > 0 ? (
@@ -310,6 +347,33 @@ export function Composer({
           ))}
         </div>
       ) : null}
+
+      <div className="flex min-h-14 min-w-0 items-center gap-2 px-2 pt-1 sm:hidden">
+        {showWorkingDir && onWorkingDirChange ? (
+          <DirectoryPicker
+            value={workingDir ?? null}
+            onChange={onWorkingDirChange}
+            locked={workingDirLocked}
+            disabled={optionsDisabled}
+            externalError={workingDirError}
+            defaultDir={defaultWorkingDir}
+            worktrees={worktreePicker}
+            className="min-w-0 flex-1 [&>button]:w-full"
+          />
+        ) : (
+          <span className="min-w-0 flex-1 truncate px-3 font-sans text-base font-medium text-ink">
+            Chat settings
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setMobileSettingsOpen(true)}
+          aria-label="chat settings"
+          className="flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+        >
+          <MoreHorizontal className="size-5" aria-hidden />
+        </button>
+      </div>
 
       <div className="px-1 pt-1">
         <LexicalShell
@@ -337,7 +401,28 @@ export function Composer({
         />
       </div>
 
-      <div className="flex min-w-0 items-center gap-2 px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2 px-2 pb-2 sm:hidden">
+        <AttachmentButton
+          onAttach={handleAttach}
+          disabled={inputDisabled}
+          className="size-12 shrink-0"
+        />
+        <ModelPicker
+          value={model}
+          options={modelOptions}
+          openRequest={modelPickerOpenRequest}
+          thinkingLevel={thinkingLevel}
+          onChange={onModelChange}
+          onThinkingLevelChange={onThinkingLevelChange}
+          disabled={optionsDisabled}
+          loading={catalogLoading}
+          showRefresh={false}
+          className="min-w-0 flex-1 bg-surface"
+        />
+        {renderActionButton()}
+      </div>
+
+      <div className="hidden min-w-0 flex-col gap-2 px-3 pb-2 sm:flex lg:flex-row lg:items-center">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <ModePicker
             value={mode}
@@ -373,58 +458,57 @@ export function Composer({
           <ModelPicker
             value={model}
             options={modelOptions}
+            openRequest={modelPickerOpenRequest}
             thinkingLevel={thinkingLevel}
             onChange={onModelChange}
             onThinkingLevelChange={onThinkingLevelChange}
             disabled={optionsDisabled}
             loading={catalogLoading}
-            className="min-w-0 flex-1"
+            className="min-w-0 flex-1 max-lg:order-first max-lg:min-w-40"
           />
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1 self-end">
           <AttachmentButton
             onAttach={handleAttach}
             disabled={inputDisabled}
-            className="size-9"
+            className="size-12 sm:size-9"
           />
           {/* ONE action button. Mid-stream the slot shows Stop, but the moment
               the composer holds queueable content (text or attachments) it
               flips to send — the editor advertises "queue a message…", and the
               click must queue it, not kill the turn. */}
-          {isStreaming &&
-          !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
-            <button
-              type="button"
-              onClick={onStop}
-              disabled={stopping}
-              aria-label={stopping ? 'stopping' : 'stop generating'}
-              className={cn(actionButtonClass, actionReadyClass)}
-            >
-              {stopping ? (
-                <Loader2 size={16} aria-hidden className="animate-spin" />
-              ) : (
-                <Square size={16} aria-hidden className="fill-current" />
-              )}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={blocked}
-              aria-label={isStreaming ? 'queue message' : 'send message'}
-              className={cn(
-                actionButtonClass,
-                hasText || attachments.length > 0
-                  ? actionReadyClass
-                  : actionIdleClass,
-              )}
-            >
-              <ArrowUp size={20} aria-hidden />
-            </button>
-          )}
+          {renderActionButton()}
         </div>
       </div>
+
+      <ChatSettingsSheet
+        open={mobileSettingsOpen}
+        onOpenChange={setMobileSettingsOpen}
+        mode={mode}
+        model={model}
+        modelOptions={modelOptions}
+        catalogLoading={catalogLoading}
+        permissionMode={permissionMode}
+        permissionModeLoading={permissionModeLoading}
+        showPermissionMode={showPermissionMode}
+        thinkingLevel={thinkingLevel}
+        showWorkingDir={showWorkingDir}
+        workingDir={workingDir}
+        showMemoryBank={showMemoryBank}
+        memoryBank={memoryBank}
+        workingDirLocked={workingDirLocked}
+        workingDirError={workingDirError}
+        defaultWorkingDir={defaultWorkingDir}
+        worktreePicker={worktreePicker}
+        disabled={optionsDisabled}
+        onModeChange={onModeChange}
+        onModelChange={onModelChange}
+        onMemoryBankChange={onMemoryBankChange}
+        onWorkingDirChange={onWorkingDirChange}
+        onThinkingLevelChange={onThinkingLevelChange}
+        onPermissionModeChange={onPermissionModeChange}
+      />
     </div>
   )
 }

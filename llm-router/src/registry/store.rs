@@ -161,13 +161,23 @@ impl RegistryStore {
         let raw_token = token.unwrap_or_else(|| Uuid::new_v4().to_string());
         let recovered = availability_recovered(existing);
         let record = build_record(existing, declaration, worker_id, &raw_token);
-        records.insert(record.declaration.id.clone(), record.clone());
-        self.persist(&records).await.map_err(|e| {
+
+        // Persist a candidate snapshot before publishing it in memory. During a
+        // concurrent stack boot the provider can reach the router before the
+        // state worker has registered `state::set`. If we mutate `records`
+        // first, that transient failure leaves behind only the token hash while
+        // the raw token never reaches the provider; every retry is then rejected
+        // as a takeover. Keeping the live map untouched makes the provider's
+        // normal backoff retry safe once state becomes available.
+        let mut next = records.clone();
+        next.insert(record.declaration.id.clone(), record.clone());
+        self.persist(&next).await.map_err(|e| {
             RouterError::new(
                 RouterCode::InvalidRequest,
                 format!("registry persist failed: {e}"),
             )
         })?;
+        *records = next;
         Ok(Upserted {
             record,
             token: raw_token,

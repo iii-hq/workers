@@ -153,24 +153,32 @@ export function ConversationSidebar({
 
   if (collapsed) {
     return (
-      <aside className="w-9 shrink-0 flex flex-col items-center bg-sidebar gap-1 py-2">
+      <aside className="flex w-9 shrink-0 flex-col items-center gap-1 bg-sidebar py-2">
         <button
           type="button"
           onClick={onToggleCollapsed}
           aria-label="expand conversations"
           title="expand conversations"
-          className="flex items-center justify-center size-7 text-ink-faint hover:text-ink transition-colors"
+          className="relative flex size-7 items-center justify-center text-ink-faint hover:text-ink"
         >
-          <PanelLeftOpen className="size-4" />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <PanelLeftOpen className="size-4 shrink-0" aria-hidden />
         </button>
         <button
           type="button"
           onClick={onCreate}
           aria-label="new chat"
           title="new chat"
-          className="flex items-center justify-center size-7 text-ink-faint hover:text-accent transition-colors"
+          className="relative flex size-7 items-center justify-center text-ink-faint hover:text-accent"
         >
-          <Plus className="size-4" />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <Plus className="size-4 shrink-0" aria-hidden />
         </button>
       </aside>
     )
@@ -189,15 +197,13 @@ export function ConversationSidebar({
         <div className="px-3 py-3 flex items-center gap-2">
           <Button
             type="button"
-            variant="terminal"
-            size="sm"
-            className="flex-1 justify-start"
+            variant="primary"
+            size="md"
+            className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
             onClick={onCreate}
           >
-            <span aria-hidden className="text-accent">
-              $
-            </span>
-            new chat
+            <Plus className="size-4 shrink-0" aria-hidden />
+            New chat
           </Button>
           {onToggleCollapsed ? (
             <button
@@ -205,36 +211,41 @@ export function ConversationSidebar({
               onClick={onToggleCollapsed}
               aria-label="collapse conversations"
               title="collapse conversations"
-              className="flex items-center justify-center size-7 text-ink-faint hover:text-ink transition-colors flex-shrink-0"
+              className="relative flex size-10 shrink-0 items-center justify-center text-ink-faint hover:text-ink sm:size-7"
             >
-              <PanelLeftClose className="size-4" />
+              <span
+                className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                aria-hidden="true"
+              />
+              <PanelLeftClose className="size-4 shrink-0" aria-hidden />
             </button>
           ) : null}
         </div>
 
-        <div className="px-3 py-2 space-y-2">
-          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
-            conversations
-          </div>
+        <div className="space-y-2 px-3 py-2">
+          <h2 className="font-sans text-base font-medium text-ink sm:text-sm">
+            Conversations
+          </h2>
           <Input
+            name="conversation-search"
             type="search"
             value={query}
             onChange={setQuery}
-            placeholder="search"
+            placeholder="Search conversations"
             aria-label="search conversations"
-            className="h-7 text-[12px]"
+            className="h-12 font-sans text-base normal-case sm:h-9 sm:text-sm"
             onKeyDown={(e) => {
               if (e.key === 'Escape') setQuery('')
             }}
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2 py-1 space-y-px">
+        <div className="flex-1 space-y-px overflow-y-auto px-2 py-1">
           {rows.length === 0 ? (
-            <div className="px-3 py-6 font-mono text-[12px] text-ink-ghost lowercase">
+            <div className="px-3 py-6 font-sans text-base text-ink-ghost sm:text-sm">
               {query.trim()
-                ? 'no matches.'
-                : 'no conversations yet. start one above.'}
+                ? 'No matches.'
+                : 'No conversations yet. Start one above.'}
             </div>
           ) : (
             rows.map(({ conversation: c, depth, hasChildren }) => (
@@ -242,6 +253,7 @@ export function ConversationSidebar({
                 key={c.id}
                 conversation={c}
                 active={c.id === activeId}
+                narrow={narrow}
                 depth={depth}
                 hasChildren={hasChildren}
                 treeCollapsed={collapsedNodes.has(c.id)}

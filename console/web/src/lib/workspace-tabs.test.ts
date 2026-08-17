@@ -42,8 +42,15 @@ describe('parseWorkspaceTabs', () => {
           { id: 't6', columns: 3, screens: ['traces', 'chat', 'workers'] },
           { id: 't7', columns: 2, screens: ['chat', 'traces'], sizes: [1, 3] },
           { id: 'bad-screen', screens: ['nonsense'] },
-          { id: 'bad-four', screens: ['traces', 'chat', 'workers', 'memory'] },
-          { id: 'bad-columns', columns: 4, screens: ['traces'] },
+          {
+            id: 'bad-too-many-screens',
+            screens: Array.from({ length: MAX_COLUMNS + 1 }, () => 'traces'),
+          },
+          {
+            id: 'bad-columns',
+            columns: MAX_COLUMNS + 1,
+            screens: ['traces'],
+          },
           { id: 'bad-sizes', screens: ['traces'], sizes: [0, -1] },
           { screens: ['traces'] },
         ],
@@ -210,10 +217,14 @@ describe('withColumnAdded / withColumnRemoved', () => {
     expect(three.sizes?.map((s) => Math.round(s * 100))).toEqual([50, 17, 33])
   })
 
-  it('caps at MAX_COLUMNS and never removes the last column', () => {
-    const three = withColumnAdded(withColumnAdded(base, 'right'), 'right')
-    expect(tabColumns(three)).toBe(3)
-    expect(withColumnAdded(three, 'right')).toBe(three)
+  it('grows beyond three panels, caps at the safety ceiling, and never removes the last column', () => {
+    let many = base
+    for (let index = 1; index < MAX_COLUMNS; index += 1) {
+      many = withColumnAdded(many, 'right')
+    }
+    expect(tabColumns(many)).toBe(MAX_COLUMNS)
+    expect(many.screens).toHaveLength(MAX_COLUMNS)
+    expect(withColumnAdded(many, 'right')).toBe(many)
     expect(withColumnRemoved(base, 0)).toBe(base)
   })
 
@@ -226,11 +237,14 @@ describe('withColumnAdded / withColumnRemoved', () => {
     expect(total).toBeCloseTo(1)
   })
 
-  it('round-trips through the validator (3 columns + sizes)', () => {
-    const three = withColumnAdded(withColumnAdded(base, 'right'), 'left')
-    const parsed = parseWorkspaceTabs({ workspace: { tabs: [three] } })
+  it('round-trips through the validator with more than three columns', () => {
+    const four = withColumnAdded(
+      withColumnAdded(withColumnAdded(base, 'right'), 'left'),
+      'right',
+    )
+    const parsed = parseWorkspaceTabs({ workspace: { tabs: [four] } })
     expect(parsed).toHaveLength(1)
-    expect(tabColumns(parsed[0])).toBe(3)
+    expect(tabColumns(parsed[0])).toBe(4)
   })
 })
 
@@ -266,10 +280,17 @@ describe('withScreenOpenedBeside', () => {
     }
     expect(withScreenOpenedBeside(existing, 'ext:shell')).toBe(existing)
 
+    const fullScreens = [
+      CHAT_SCREEN,
+      ...Array.from(
+        { length: MAX_COLUMNS - 1 },
+        (_, index) => `ext:full-${index}`,
+      ),
+    ]
     const full: WorkspaceTab = {
       id: 'b',
       columns: MAX_COLUMNS,
-      screens: [CHAT_SCREEN, 'traces', 'workers'],
+      screens: fullScreens,
     }
     expect(withScreenOpenedBeside(full, 'ext:shell')).toBeNull()
   })
@@ -298,12 +319,19 @@ describe('withWorkspaceScreenOpened', () => {
     )
     expect(open.tabs[0].screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
 
+    const fullScreens = [
+      CHAT_SCREEN,
+      ...Array.from(
+        { length: MAX_COLUMNS - 1 },
+        (_, index) => `ext:full-${index}`,
+      ),
+    ]
     const full = withWorkspaceScreenOpened(
       [
         {
           id: 'full',
           columns: MAX_COLUMNS,
-          screens: [CHAT_SCREEN, 'traces', 'workers'],
+          screens: fullScreens,
         },
       ],
       'full',

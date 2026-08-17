@@ -16,6 +16,7 @@ import { requestPanelOpen } from '@/lib/panel-context'
 import {
   registerExtConfigForm,
   registerExtPage,
+  registerExtProviderConfigForm,
   registerExtRenderer,
   registerExtSessionChip,
   registerExtSessionTurnSummary,
@@ -25,6 +26,7 @@ import type {
   ConfigFormProps,
   ConsoleApi,
   Host,
+  ProviderConfigFormProps,
   SessionChipProps,
   SessionTurnSummaryProps,
   SetupFn,
@@ -151,6 +153,23 @@ function makeHost(
             scope,
             path,
             component: (props: ConfigFormProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Form {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+    },
+    providerConfigForms: {
+      register(providerId, component) {
+        const Form = component
+        return track(
+          registerExtProviderConfigForm({
+            providerId,
+            scope,
+            path,
+            component: (props: ProviderConfigFormProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Form {...props} />
               </ScopedExtension>

@@ -66,6 +66,8 @@ interface MessageListProps {
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
+  /** Open the model/provider picker from the empty provider state. */
+  onConfigureProvider?: () => void
   workingDir?: string | null
   /**
    * Render every function-call card (and group) already expanded. Off in the
@@ -196,6 +198,7 @@ export function MessageList({
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
+  onConfigureProvider,
   workingDir,
   defaultOpenCalls,
   triggersById,
@@ -292,14 +295,19 @@ export function MessageList({
   }, [messages])
 
   if (messages.length === 0 && !header) {
-    return <EmptyState {...resolveEmptyState(ctx, density)} />
+    return (
+      <EmptyState {...resolveEmptyState(ctx, density, onConfigureProvider)} />
+    )
   }
 
-  const listPad = density === 'dock' ? 'px-4 py-6' : 'px-9 py-8'
+  const listPad =
+    density === 'dock'
+      ? 'px-3 py-5 sm:px-4 sm:py-6'
+      : 'px-3 py-5 sm:px-6 sm:py-7 lg:px-9 lg:py-8'
 
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
-      <div className="mx-auto max-w-[720px] flex flex-col gap-y-8">
+      <div className="mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8">
         {header}
         {rows.map((row, i) => {
           if (row.kind === 'function-trigger-group') {
@@ -495,6 +503,7 @@ type ChatCtx = ReturnType<typeof useConversationsCtxOptional>
 function resolveEmptyState(
   ctx: ChatCtx,
   density: 'route' | 'dock',
+  onConfigureProvider?: () => void,
 ): EmptyStateProps {
   if (!ctx) return { variant: 'ready', density }
 
@@ -506,9 +515,7 @@ function resolveEmptyState(
     errorMessage: harnessStatus.error,
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,
-    onConfigureProvider: () => {
-      window.location.hash = '#/workers/configuration/llm-router'
-    },
+    onConfigureProvider,
     /* The system prompt is chosen here and nowhere else. It persists on the
        conversation record, so it survives this view being keyed away and
        back on a chat-tab switch. */

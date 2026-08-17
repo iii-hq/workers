@@ -1,9 +1,5 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
+import { cn } from '@/lib/utils'
 
 interface FullModeConfirmDialogProps {
   open: boolean
@@ -17,47 +13,73 @@ interface FullModeConfirmDialogProps {
   scope?: 'conversation' | 'default'
 }
 
+interface FullModeConfirmContentProps {
+  onCancel: () => void
+  onConfirm: () => void
+  scope?: 'conversation' | 'default'
+  className?: string
+}
+
+/** Shared warning body for modal and in-sheet confirmation flows. */
+export function FullModeConfirmContent({
+  onCancel,
+  onConfirm,
+  scope = 'conversation',
+  className,
+}: FullModeConfirmContentProps) {
+  const target =
+    scope === 'default' ? 'every new conversation' : 'this conversation'
+  return (
+    <div className={cn('font-sans', className)}>
+      <p className="text-base leading-relaxed text-ink">
+        Full permissions let the agent run any function in {target} without
+        asking — including writing files, executing shell commands, sending
+        messages, and reading secrets.
+      </p>
+      <p className="mt-2 text-base leading-relaxed text-ink-faint">
+        You can revert from the banner at the top of the chat at any time.
+      </p>
+      <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="min-h-12 rounded-sm px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:min-h-9 sm:font-mono sm:text-[12px]"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          className="min-h-12 rounded-sm bg-ink px-3 font-sans text-base text-bg hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:min-h-9 sm:font-mono sm:text-[12px]"
+        >
+          Enable full
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function FullModeConfirmDialog({
   open,
   onOpenChange,
   onConfirm,
   scope = 'conversation',
 }: FullModeConfirmDialogProps) {
-  const target =
-    scope === 'default' ? 'every new conversation' : 'this conversation'
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogTitle className="text-[14px]">
           enable full permissions
         </DialogTitle>
-        <DialogDescription className="mt-3 text-ink">
-          full permissions let the agent run any function in {target} without
-          asking — including writing files, executing shell commands, sending
-          messages, and reading secrets.
-        </DialogDescription>
-        <DialogDescription className="mt-2 text-ink-faint">
-          you can revert from the banner at the top of the chat at any time.
-        </DialogDescription>
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
-            className="font-mono text-[12px] px-3 py-1 border border-rule text-ink-faint hover:text-ink hover:border-ink transition-colors"
-          >
-            cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onConfirm()
-              onOpenChange(false)
-            }}
-            className="font-mono text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
-          >
-            enable full
-          </button>
-        </div>
+        <FullModeConfirmContent
+          scope={scope}
+          className="mt-3"
+          onCancel={() => onOpenChange(false)}
+          onConfirm={() => {
+            onConfirm()
+            onOpenChange(false)
+          }}
+        />
       </DialogContent>
     </Dialog>
   )

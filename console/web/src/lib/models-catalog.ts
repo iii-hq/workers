@@ -196,6 +196,10 @@ export interface ProviderListEntry {
   id: string
   display_name: string
   supports_model_listing: boolean
+  /** API-key env var declared by the provider; absent for provider-owned auth. */
+  credential_env_var?: string
+  /** Whether the router currently has the credentials/settings it needs. */
+  configured?: boolean
   /**
    * The provider WORKER is loaded/connected. `false` = the router knows the
    * provider (its models may still sit in the catalog) but dispatching to it
@@ -228,6 +232,12 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
       id,
       display_name: typeof o.display_name === 'string' ? o.display_name : id,
       supports_model_listing: o.supports_model_listing === true,
+      credential_env_var:
+        typeof o.credential_env_var === 'string'
+          ? o.credential_env_var
+          : undefined,
+      // Absent on older routers; picker consumers fall back to catalog rows.
+      configured: typeof o.configured === 'boolean' ? o.configured : undefined,
       // Absent on older routers — treat as available (previous behavior).
       available: o.available !== false,
     })

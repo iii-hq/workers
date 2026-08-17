@@ -1,6 +1,6 @@
 /**
  * Workspace tabs — the header's closable tab strip. Each tab shows one or
- * two SCREENS side by side; a screen is any routed page (`traces`,
+ * more SCREENS; a screen is any routed page (`traces`,
  * `workers`, …), a worker-injected page (`ext:<page-id>`), or the chat
  * view (`chat`).
  *
@@ -17,8 +17,8 @@ import type { View } from '@/hooks/use-hash-route'
 /** `chat`, a routed first-party view, or `ext:<page-id>`. */
 export type TabScreen = string
 
-/** Split ceiling — the edge-add affordance hides once a tab hits it. */
-export const MAX_COLUMNS = 3
+/** Defensive persistence ceiling; the UI no longer has a three-panel cap. */
+export const MAX_COLUMNS = 64
 
 export interface WorkspaceTab {
   id: string

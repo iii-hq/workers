@@ -219,6 +219,22 @@ export interface ConfigFormRegistrationOptions {
 }
 
 /**
+ * Props for a provider-specific editor inside the chat model picker. Provider
+ * workers own authentication nuances while the console keeps the router
+ * slice, validation, dirty tracking, and save/reset lifecycle authoritative.
+ */
+export interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+
+/**
  * Props a session chip receives from the chat host. Chips fetch their own
  * data through `host.iii`; the host only identifies the session and what
  * it already knows about the resolved model.
@@ -287,6 +303,12 @@ export interface Host {
       configurationId: string,
       component: React.ComponentType<ConfigFormProps>,
       options?: ConfigFormRegistrationOptions,
+    ): () => void
+  }
+  providerConfigForms: {
+    register(
+      providerId: string,
+      component: React.ComponentType<ProviderConfigFormProps>,
     ): () => void
   }
   chat: {

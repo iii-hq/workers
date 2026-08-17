@@ -1,4 +1,4 @@
-import { ArrowLeft, Copy, Folder } from 'lucide-react'
+import { ArrowLeft, Folder } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
@@ -36,7 +36,6 @@ import type {
   CompactResult,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
-import { copyTextToClipboard } from '@/lib/clipboard'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
@@ -82,7 +81,6 @@ import {
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
-import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
 import {
@@ -194,6 +192,12 @@ export function ChatView({
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
     DEFAULT_THINKING_LEVEL,
   )
+  const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<
+    number | undefined
+  >(undefined)
+  const handleOpenModelPicker = useCallback(() => {
+    setModelPickerOpenRequest((current) => (current ?? 0) + 1)
+  }, [])
   /* Lives on the conversation record, not in local state: the interactive
      picker is on the new-session screen, so a reset on a tab switch (ChatPanel
      keys this view by conversation id) would be invisible — no control is left
@@ -201,7 +205,6 @@ export function ChatView({
   const effectiveSystemPrompt =
     conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
-  const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
   const conversationsCtx = useConversationsCtxOptional()
   const harnessBlocked = conversationsCtx
@@ -953,18 +956,6 @@ export function ChatView({
     }
   }, [backend, announcer, filesystemGrants])
 
-  const handleCopySessionId = useCallback(() => {
-    // Through the helper, not navigator.clipboard directly: over
-    // `http://<LAN-IP>` the page is not a secure context and the async
-    // clipboard API is undefined — the raw call made this button a no-op
-    // exactly where trace-correlation happens.
-    void copyTextToClipboard(sessionId).then((ok) => {
-      if (!ok) return
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
-  }, [sessionId])
-
   const ensureSession = conversationsCtx?.ensureSession
 
   // Composer draft persistence: the live text is recorded per conversation
@@ -1619,8 +1610,10 @@ export function ChatView({
 
   const isDock = density === 'dock'
   const compact = isDock || onBack !== undefined
-  const headerPad = compact ? 'px-4' : 'px-9'
-  const footerPad = compact ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+  const headerPad = compact ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
+  const footerPad = compact
+    ? 'px-3 pb-3 pt-2 sm:px-4 sm:pb-4'
+    : 'px-3 pb-3 pt-2 sm:px-6 sm:pb-5 lg:px-9 lg:pb-6'
 
   // Resolve the working directory to its managed worktree (badge), and keep
   // it fresh across landed / land-blocked events.
@@ -1746,13 +1739,12 @@ export function ChatView({
         className={headerPad}
         onClose={onRequestClose}
         actions={
-          <div className="flex items-center gap-2.5 font-mono text-[11px] uppercase tracking-[0.06em]">
-            {/* Read-outs and actions share ONE surface. This system draws no
+          <div className="flex items-center gap-1.5 font-sans text-sm">
+            {/* Header read-outs share ONE surface. This system draws no
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
-                gives every control inside it a full-height hit box, which
-                bare 11px text runs did not have. */}
-            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+                keeps the related session metadata visually together. */}
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 max-lg:hidden">
               {sessionChips}
               {hasInjectedContextChip ? null : (
                 <ContextUsage
@@ -1760,42 +1752,6 @@ export function ChatView({
                   contextWindow={contextWindow}
                 />
               )}
-              {/* Session-id copy. The full id used to sit in the header's
-                  left run, where `truncate min-w-0` let it collapse to
-                  nothing in narrow panes and `isDock` hid it outright — the
-                  exact layouts where you're correlating traces. A copy
-                  control doesn't need the whole 40-char id on screen: show
-                  the distinguishing first group, copy the full thing. The
-                  copy glyph carries the affordance, so no tooltip — only the
-                  system-prompt and status read-outs have one. */}
-              <button
-                type="button"
-                onClick={handleCopySessionId}
-                aria-label={
-                  copied
-                    ? `copied ${sessionId}`
-                    : `copy session id ${sessionId}`
-                }
-                className="flex self-stretch items-center gap-1 text-ink-faint hover:text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                <Copy className="size-3 flex-shrink-0" aria-hidden />
-                <span
-                  className={cn(
-                    'normal-case tracking-normal tabular-nums',
-                    copied && 'text-accent',
-                  )}
-                >
-                  {copied
-                    ? 'copied'
-                    : sessionId.replace(/^console-/, '').slice(0, 8)}
-                </span>
-              </button>
-              <ExportSessionButton
-                conversation={conversation}
-                onExported={(filename) =>
-                  announcer.announce(`session exported as ${filename}`)
-                }
-              />
             </div>
             {/* Status sits OUTSIDE the group — it is state, not a control.
                 The dot alone carries it (green ready, pulsing accent
@@ -1805,7 +1761,7 @@ export function ChatView({
                 target without letting an error widen the header. */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <div className="flex self-stretch items-center px-1">
+                <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 lg:self-stretch lg:size-auto lg:px-1">
                   <StatusDot
                     tone={
                       conversation.status === 'error'
@@ -1836,26 +1792,25 @@ export function ChatView({
           </div>
         }
       >
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
           {onBack ? (
             <button
               type="button"
               onClick={onBack}
               aria-label="back to conversations"
               title="back to conversations"
-              className="flex items-center justify-center size-7 -ml-1.5 flex-shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
             >
-              <ArrowLeft aria-hidden className="size-4" />
+              <span
+                className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                aria-hidden="true"
+              />
+              <ArrowLeft aria-hidden className="size-4 shrink-0" />
             </button>
           ) : null}
-          <span className="text-accent flex-shrink-0" aria-hidden>
-            $
-          </span>
-          <span className="text-ink truncate min-w-0">{effectiveModel}</span>
-          <span className="text-ink-ghost flex-shrink-0">·</span>
-          <span className="text-ink-faint flex-shrink-0">
-            {conversation.mode}
-          </span>
+          <span className="shrink-0 font-medium text-ink">Chat</span>
+          <span className="shrink-0 text-ink-ghost">·</span>
+          <span className="min-w-0 truncate">{effectiveModel}</span>
         </div>
       </PageHeader>
 
@@ -1879,6 +1834,7 @@ export function ChatView({
         onAlwaysAllow={handleAlwaysAllow}
         onResolveFilesystemAccess={handleFilesystemResolve}
         onManageFilesystemAccess={handleManageFilesystemAccess}
+        onConfigureProvider={handleOpenModelPicker}
         workingDir={conversation.workingDir ?? null}
         triggersById={triggersById}
       />
@@ -1887,21 +1843,21 @@ export function ChatView({
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
           {workingDirEnabled ? (
-            <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
+            <div className="mb-1 hidden flex-wrap items-center gap-1.5 px-1 text-ink-faint sm:flex sm:text-[11px]">
               {worktreeInfo ? (
                 // Managed worktree: branch + id + dirty/ahead + lifecycle
                 // replace the raw path chip (path stays as the tooltip).
                 <WorktreeBadge worktree={worktreeInfo} className="min-w-0" />
               ) : (
                 <>
-                  <Folder size={12} className="shrink-0" aria-hidden />
+                  <Folder className="size-4 shrink-0" aria-hidden />
                   {conversation.workingDir ? (
                     <span
                       // dir=rtl keeps the trailing (most-distinguishing) path
                       // segment visible when truncated in the narrow dock.
                       dir="rtl"
                       className={cn(
-                        'truncate text-left font-mono',
+                        'min-w-0 flex-1 truncate text-left font-mono',
                         workingDirError && 'text-warn',
                       )}
                       title={workingDirError ?? conversation.workingDir}
@@ -1909,7 +1865,7 @@ export function ChatView({
                       {conversation.workingDir}
                     </span>
                   ) : (
-                    <span className="lowercase text-ink-ghost">
+                    <span className="min-w-0 flex-1 lowercase text-ink-ghost">
                       no working directory — using default workspace
                     </span>
                   )}
@@ -1923,7 +1879,7 @@ export function ChatView({
                     ? 'Access is limited to this workspace until you approve another folder.'
                     : 'The working directory sets where commands start; shell configuration controls access.'
                 }
-                className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
+                className="min-h-12 basis-full text-left text-ink-ghost hover:text-ink sm:ml-auto sm:min-h-0 sm:basis-auto"
               >
                 access: {approvalEnabled ? 'workspace' : 'shell defaults'}
                 {approvalEnabled && filesystemGrants.grants.length > 0
@@ -1953,7 +1909,7 @@ export function ChatView({
                 .map((row) => (
                   <div
                     key={row.id}
-                    className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0"
+                    className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
                   >
                     <span className="min-w-0 flex-1 truncate">{row.text}</span>
                     <span className="shrink-0 lowercase text-ink-ghost">
@@ -1966,7 +1922,7 @@ export function ChatView({
               {backend.editQueued &&
               queuedDrafts.length > 0 &&
               !drainingQueue ? (
-                <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
+                <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost max-sm:hidden">
                   {browsedQueuedId
                     ? '↑ / ↓ cycle · enter saves in place · empty + enter removes'
                     : 'press ↑ in the composer to edit queued messages'}
@@ -1987,6 +1943,7 @@ export function ChatView({
             model={effectiveModel}
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
+            modelPickerOpenRequest={modelPickerOpenRequest}
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}

@@ -201,6 +201,7 @@ export default function setup(host: Host) {
   // Register other slots only when their implementations exist.
   // host.functionTriggers.register(createMyTriggerRenderer(host))
   // host.configForms.register('mywork', MyConfigForm)
+  // host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
 }
 ```
 
@@ -431,6 +432,7 @@ the nav. Its `render` receives:
 |---|---|
 | `host.functionTriggers` | Custom chat/trace renderers. Match only the worker's function ids and return `null` to fall through. `message.description` is the harness's short activity label. Set renderer `metadata: { display: true }` only for successful rich artifacts that should remain visible while raw details are collapsed; the hint applies to the renderer that returned the winning node. If raw data contains secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
 | `host.configForms` | Replace one configuration form. Render fields and call `onChange`; the host retains dirty tracking, validation, save, and reset. Honor `focusField`. Pass `{ layout: 'full' }` as the third `register` argument only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
+| `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the chat model picker. Use it for provider-owned OAuth, device flow, or companion-app login. The host retains the provider slice, schema validation, dirty guard, save/reset, and model refresh; the component receives `{ providerId, schema, value, onChange, errors, configured, available, modelCount }`. Feature-detect for older consoles. Never solicit plaintext API keys here—direct operators to the provider's declared environment variable. |
 | `host.chat?` | Optional session-chip slot. Feature-detect it for older consoles. |
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
 | `host.components` / `host.path` | Runtime component record and the current script asset path. |

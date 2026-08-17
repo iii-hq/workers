@@ -14,6 +14,8 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::register::register_router;
+use llm_router::registry::store::RegistryStore;
+use llm_router::types::router::ProviderDeclaration;
 use serde_json::{json, Value};
 
 // ── engine bootstrap ────────────────────────────────────────────────────────
@@ -1130,6 +1132,48 @@ async fn router_boots_its_interface_against_a_bare_engine() {
     );
 
     router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_registry_persist_does_not_poison_provider_retries() {
+    // Bundle workers start concurrently. A provider may declare itself after
+    // the router is ready but before the state worker exposes `state::set`.
+    // Both attempts below must fail for that transient dependency only; the
+    // first must not leave a token hash that turns the second into a takeover.
+    let engine = bare_engine_or_skip!();
+    let iii = register_worker(&engine.url, InitOptions::default());
+    let registry = RegistryStore::new(iii.clone());
+    let declaration: ProviderDeclaration =
+        serde_json::from_value(json!({ "id": "late-state" })).unwrap();
+
+    for attempt in 1..=2 {
+        let error = match registry
+            .upsert(
+                declaration.clone(),
+                Some("provider-late-state".into()),
+                None,
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("state persistence is unavailable on the bare engine"),
+        };
+        assert_eq!(
+            error.code,
+            llm_router::types::errors::RouterCode::InvalidRequest,
+            "attempt {attempt} must remain retryable, got: {error}"
+        );
+        assert!(
+            error.message.contains("registry persist failed"),
+            "attempt {attempt} failed for an unexpected reason: {error}"
+        );
+        assert!(
+            registry.ids().await.is_empty(),
+            "failed persistence must not publish a provider binding"
+        );
+    }
+
+    iii.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

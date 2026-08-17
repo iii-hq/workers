@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { PageHeader } from '@/components/ui/PageChrome'
-import { Prompt } from '@/components/ui/Prompt'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSidebarWidth } from '@/hooks/use-sidebar-width'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { ChatView } from './ChatView'
@@ -20,10 +20,12 @@ const SIDEBAR_COLLAPSED_KEY = 'iii-chat-sidebar-collapsed'
 /**
  * Container width (px) below which the panel collapses to the drill-in
  * session-list ⇄ chat flow (same pattern as the directory worker's page).
- * Tuned so half-screen workspace columns (~620px) keep the inline
- * sidebar; only genuinely narrow panes and phone viewports drill in.
+ * Keeps split workspace columns useful while still collapsing genuinely
+ * narrow containers. Phone viewports are handled separately so this logic
+ * stays aligned with Tailwind's `sm` breakpoint.
  */
 const NARROW_BELOW = 560
+const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
 
 function loadSidebarCollapsed(): boolean {
   if (typeof window === 'undefined') return false
@@ -46,10 +48,9 @@ function persistSidebarCollapsed(value: boolean): void {
 /**
  * The chat surface: conversation sidebar + active chat.
  *
- * Layout adapts to the width the panel HAS (a ResizeObserver on its own
- * root, not a viewport media query — the console can host it in panes of
- * any size). Under NARROW_BELOW px it becomes a drill-in flow: the
- * session list is its own full-width page, opening a conversation swaps
+ * Layout adapts both to the panel width (the console can host it in panes)
+ * and to the phone breakpoint used by the surrounding UI. In narrow mode,
+ * the session list is its own full-width page; opening a conversation swaps
  * it for the chat with a ← back button. The view defaults to the chat so
  * squeezing a pane mid-conversation never yanks the operator to the list.
  */
@@ -88,10 +89,18 @@ export function ChatPanel({
     setSidebarCollapsed((v) => !v)
   }, [])
 
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
+  const mobileViewport = useMediaQuery(MOBILE_VIEWPORT_QUERY)
+  const narrow = containerNarrow || mobileViewport
   // Which page the narrow flow shows. Only consulted while narrow; kept
   // across resizes so widening and re-squeezing lands where you left off.
   const [narrowView, setNarrowView] = useState<'list' | 'chat'>('chat')
+
+  // Header-level actions can create/select a conversation outside this
+  // component. On phones, follow that new active id into the chat page.
+  useEffect(() => {
+    if (mobileViewport && activeId) setNarrowView('chat')
+  }, [activeId, mobileViewport])
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -152,10 +161,10 @@ export function ChatPanel({
         />
       ) : !narrow ? (
         <section className="flex-1 flex flex-col min-w-0 min-h-0">
-          <PageHeader title="chat" onClose={onRequestClose} />
+          <PageHeader title="Chat" onClose={onRequestClose} />
           <div className="flex-1 flex items-center justify-center">
-            <div className="font-mono text-[13px] text-ink-faint lowercase">
-              <Prompt symbol="$">no conversation selected.</Prompt>
+            <div className="font-sans text-base text-ink-faint">
+              No conversation selected.
             </div>
           </div>
         </section>
