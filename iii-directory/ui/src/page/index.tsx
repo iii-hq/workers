@@ -92,6 +92,13 @@ const promptsAdapter: BrowserAdapter = {
     const out = await host.iii.trigger<{ name: string }>('directory::prompts::update', { name, content })
     return out.name ?? name
   },
+  async create(host, name, content) {
+    const out = await host.iii.trigger<{ name: string }>('directory::prompts::create', { name, content })
+    return out.name ?? name
+  },
+  async remove(host, name) {
+    await host.iii.trigger('directory::prompts::delete', { name })
+  },
 }
 
 const systemPromptsAdapter: BrowserAdapter = {

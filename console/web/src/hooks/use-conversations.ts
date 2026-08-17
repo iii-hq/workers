@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
+  type SystemPromptAddon,
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
 import { getIiiClient } from '@/lib/iii-client'
@@ -116,11 +117,23 @@ function isMode(v: unknown): v is Mode {
 function encodeSystemPrompt(
   s: SystemPromptState | undefined,
 ): Record<string, unknown> | undefined {
-  if (!s || s.choice === 'default') return undefined
+  if (!s) return undefined
+  const addons = (s.addons ?? []).map(({ kind, name, body }) => ({
+    kind,
+    name,
+    body,
+  }))
+  if (s.choice === 'default' && addons.length === 0) return undefined
   return {
-    choice: s.choice === 'custom' ? 'custom' : { named: s.choice.named },
+    choice:
+      s.choice === 'default'
+        ? 'default'
+        : s.choice === 'custom'
+          ? 'custom'
+          : { named: s.choice.named },
     strategy: s.strategy,
     named_body: s.namedBody,
+    ...(addons.length > 0 ? { addons } : {}),
   }
 }
 
@@ -128,10 +141,10 @@ function encodeSystemPrompt(
  * Decode `metadata.system_prompt` defensively — it is untrusted wire JSON,
  * and an unreadable value must degrade to the default rather than throw.
  *
- * ponytail: only the `{named}` choice round-trips. `custom` cannot reach
- * here today because the sole writer is the new-session picker, which
- * renders no `custom…` row; extend this if another surface ever persists a
- * free-text choice.
+ * ponytail: only the `{named}` and `default`-with-addons shapes round-trip.
+ * `custom` cannot reach here today because the sole writer is the
+ * new-session picker, which renders no `custom…` row; extend this if
+ * another surface ever persists a free-text choice.
  */
 function decodeSystemPrompt(v: unknown): SystemPromptState {
   if (typeof v !== 'object' || v === null) return DEFAULT_SYSTEM_PROMPT_STATE
@@ -143,12 +156,24 @@ function decodeSystemPrompt(v: unknown): SystemPromptState {
     typeof (choice as Record<string, unknown>).named === 'string'
       ? ((choice as Record<string, unknown>).named as string)
       : null
-  if (!named) return DEFAULT_SYSTEM_PROMPT_STATE
+  const addons: SystemPromptAddon[] = Array.isArray(md.addons)
+    ? (md.addons as unknown[]).flatMap((a): SystemPromptAddon[] => {
+        if (typeof a !== 'object' || a === null) return []
+        const r = a as Record<string, unknown>
+        return (r.kind === 'prompt' || r.kind === 'skill') &&
+          typeof r.name === 'string' &&
+          typeof r.body === 'string'
+          ? [{ kind: r.kind, name: r.name, body: r.body }]
+          : []
+      })
+    : []
+  if (!named && addons.length === 0) return DEFAULT_SYSTEM_PROMPT_STATE
   return {
-    choice: { named },
+    choice: named ? { named } : 'default',
     strategy: md.strategy === 'override' ? 'override' : 'enrich',
-    namedBody: typeof md.named_body === 'string' ? md.named_body : '',
+    namedBody: named && typeof md.named_body === 'string' ? md.named_body : '',
     customText: '',
+    addons,
   }
 }
 

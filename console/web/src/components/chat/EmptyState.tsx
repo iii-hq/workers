@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
+import { SessionAddonsPicker } from './SessionAddonsPicker'
 import { StrategyToggle, SystemPromptPicker } from './SystemPromptPicker'
 import type { SystemPromptState } from './system-prompt-selection'
 
@@ -184,9 +185,21 @@ function ReadyBody({
               onChange={onSystemPromptChange}
             />
           </div>
+          <div className="flex flex-col gap-1.5">
+            <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
+              optionally add skills to the system prompt:
+            </p>
+            <SessionAddonsPicker
+              value={systemPrompt}
+              onChange={onSystemPromptChange}
+              className="min-w-0"
+            />
+          </div>
           <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
             {systemPrompt.choice === 'default'
-              ? "default uses the provider's built-in prompt"
+              ? systemPrompt.addons.length > 0
+                ? 'selected skills are added to the built-in prompt'
+                : "default uses the provider's built-in prompt"
               : systemPrompt.strategy === 'enrich'
                 ? 'enrich adds this prompt to the built-in prompt'
                 : 'replace uses this prompt instead of the built-in prompt'}

@@ -6,9 +6,14 @@
  * Wire source: `iii-directory/src/functions/*.rs`
  *   - skills.rs        — directory::skills::list / get / index
  *   - download.rs      — directory::skills::download (+ _from_registry / _from_repo)
- *   - update.rs        — directory::skills::update / directory::prompts::update
- *   - prompts.rs       — directory::prompts::list / get
+ *   - update.rs        — directory::skills::update, directory::prompts::update /
+ *                        create and the directory::system-prompts::* mirrors
+ *   - prompts.rs       — directory::prompts::list / get + system-prompts mirrors
  *   - registry.rs      — directory::registry::workers::list / info
+ *
+ * The two `::delete` ids are deliberately absent: their `{ name }` in/out
+ * shape has no dedicated view, and the console's generic JSON card is the
+ * right rendering for a delete confirmation.
  */
 import { z } from 'zod'
 import { unwrapEnvelope } from '../lib/envelope'
@@ -24,6 +29,11 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::prompts::list',
   'directory::prompts::get',
   'directory::prompts::update',
+  'directory::prompts::create',
+  'directory::system-prompts::list',
+  'directory::system-prompts::get',
+  'directory::system-prompts::update',
+  'directory::system-prompts::create',
   'directory::registry::workers::list',
   'directory::registry::workers::info',
 ] as const

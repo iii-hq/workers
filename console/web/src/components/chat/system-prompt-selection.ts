@@ -1,5 +1,6 @@
 /**
- * Pure state for the chat system-prompt picker. `SystemPromptPicker.tsx`
+ * Pure state for the chat system-prompt picker and the prompt/skill addon
+ * pickers (`SessionAddonsPicker.tsx`). `SystemPromptPicker.tsx`
  * renders it on the new-session screen; the chosen value is stored on
  * `Conversation.systemPrompt` (see `use-conversations`), and `ChatView` maps
  * it onto `ChatStreamOptions.systemPrompt` via `selectionForSend` — the
@@ -21,6 +22,17 @@ export type PromptStrategy = 'enrich' | 'override'
 /** What the select shows: provider default, a named fs prompt, or free text. */
 export type SystemPromptChoice = 'default' | 'custom' | { named: string }
 
+/** One pre-selected directory prompt or skill whose body is appended to the
+ * session's system prompt (welcome-screen "prompts"/"skills" pickers). */
+export interface SystemPromptAddon {
+  kind: 'prompt' | 'skill'
+  /** Prompt name (`directory::prompts::*`) or skill id (`directory::skills::*`). */
+  name: string
+  /** Body resolved at selection time, frozen server-side on the first send —
+   * same contract as `namedBody`. */
+  body: string
+}
+
 export interface SystemPromptState {
   choice: SystemPromptChoice
   strategy: PromptStrategy
@@ -30,6 +42,7 @@ export interface SystemPromptState {
   namedBody: string
   /** Custom textarea content; kept while switching choices. */
   customText: string
+  addons: SystemPromptAddon[]
 }
 
 export const DEFAULT_SYSTEM_PROMPT_STATE: SystemPromptState = {
@@ -37,16 +50,28 @@ export const DEFAULT_SYSTEM_PROMPT_STATE: SystemPromptState = {
   strategy: 'enrich',
   namedBody: '',
   customText: '',
+  addons: [],
 }
 
 /** Map picker state to the per-send selection; null = send no prompt fields. */
 export function toSelection(
   s: SystemPromptState,
 ): SystemPromptSelection | null {
-  if (s.choice === 'default') return null
-  const body = s.choice === 'custom' ? s.customText : s.namedBody
-  if (!body.trim()) return null
-  return { body, strategy: s.strategy }
+  const base =
+    s.choice === 'default'
+      ? ''
+      : s.choice === 'custom'
+        ? s.customText
+        : s.namedBody
+  const parts = [base, ...s.addons.map((a) => a.body)].filter((p) => p.trim())
+  if (parts.length === 0) return null
+  return {
+    body: parts.join('\n\n'),
+    /* Addons on top of a blank base (default choice, or a named/custom body
+       that resolved empty) must never wipe the built-in prompt away, so a
+       blank base always ships as enrich. */
+    strategy: base.trim() ? s.strategy : 'enrich',
+  }
 }
 
 /**
