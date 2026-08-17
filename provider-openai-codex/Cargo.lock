@@ -996,7 +996,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-router"
-version = "1.4.2"
+version = "1.4.7"
 dependencies = [
  "async-trait",
  "clap",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -1283,6 +1283,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",

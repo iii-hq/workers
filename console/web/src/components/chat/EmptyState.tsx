@@ -6,6 +6,8 @@ import { Prompt } from '@/components/ui/Prompt'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
+import { StrategyToggle, SystemPromptPicker } from './SystemPromptPicker'
+import type { SystemPromptState } from './system-prompt-selection'
 
 /**
  * The chat empty state, as a small set of presentational variants:
@@ -42,6 +44,13 @@ export interface EmptyStateProps {
   onRetryInstall?: () => void
   /** `no-provider` CTA (defaults to opening the harness configuration). */
   onConfigureProvider?: () => void
+  /**
+   * `ready` system-prompt control. This screen is where the choice is made —
+   * once the chat has messages the composer only shows it read-only. Omitted
+   * (e.g. Storybook without a provider) renders no control at all.
+   */
+  systemPrompt?: SystemPromptState
+  onSystemPromptChange?: (next: SystemPromptState) => void
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii worker add harness'
@@ -59,19 +68,31 @@ export function EmptyState({
   onInstallHarness,
   onRetryInstall,
   onConfigureProvider,
+  systemPrompt,
+  onSystemPromptChange,
 }: EmptyStateProps) {
   const emptyPad = density === 'dock' ? 'px-4' : 'px-9'
   const eyebrow =
     variant === 'ready' || variant === 'no-provider' ? 'new session' : 'setup'
 
   return (
-    <div className={cn('flex-1 flex items-center justify-center', emptyPad)}>
-      <div className="max-w-[520px] w-full flex flex-col gap-6">
+    <div
+      className={cn(
+        'flex-1 min-h-0 overflow-y-auto flex justify-center',
+        emptyPad,
+      )}
+    >
+      <div className="my-auto max-w-[520px] w-full flex flex-col gap-6">
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           <Prompt symbol="$">{eyebrow}</Prompt>
         </div>
 
-        {variant === 'ready' ? <ReadyBody /> : null}
+        {variant === 'ready' ? (
+          <ReadyBody
+            systemPrompt={systemPrompt}
+            onSystemPromptChange={onSystemPromptChange}
+          />
+        ) : null}
         {variant === 'no-provider' ? (
           <NoProviderBody onConfigureProvider={onConfigureProvider} />
         ) : null}
@@ -99,7 +120,13 @@ const EXPLORE_FUNCTIONS = [
   { id: 'engine::triggers::list', hint: 'discover trigger types' },
 ] as const
 
-function ReadyBody() {
+function ReadyBody({
+  systemPrompt,
+  onSystemPromptChange,
+}: {
+  systemPrompt?: SystemPromptState
+  onSystemPromptChange?: (next: SystemPromptState) => void
+}) {
   return (
     <>
       <h1 className={HEADING_CLASS}>welcome to iii! 👋</h1>
@@ -129,6 +156,46 @@ function ReadyBody() {
         need help? ask away. the agent will discover apis on the fly and show
         you what's possible.
       </p>
+      {/* Last, after the orientation arc: a compact preflight closest to the
+          composer that starts and locks the session. */}
+      {systemPrompt && onSystemPromptChange ? (
+        <section
+          aria-labelledby="session-system-prompt"
+          className="rounded-sm bg-surface p-4 flex flex-col gap-3"
+        >
+          <div className="flex flex-col gap-1">
+            <h2
+              id="session-system-prompt"
+              className="font-mono text-[13px] font-semibold text-ink lowercase"
+            >
+              system prompt
+            </h2>
+            <p className="font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">
+              choose the instructions the agent follows in this session.
+            </p>
+          </div>
+          <div className="flex items-start gap-2">
+            <SystemPromptPicker
+              value={systemPrompt}
+              onChange={onSystemPromptChange}
+              allowCustom={false}
+              className="min-w-0 flex-1"
+            />
+            <StrategyToggle
+              value={systemPrompt}
+              onChange={onSystemPromptChange}
+            />
+          </div>
+          <p className="font-mono text-[11px] leading-[1.5] text-ink-faint lowercase">
+            {systemPrompt.choice === 'default'
+              ? "default uses the provider's built-in prompt"
+              : systemPrompt.strategy === 'enrich'
+                ? 'enrich adds this prompt to the built-in prompt'
+                : 'replace uses this prompt instead of the built-in prompt'}
+            {' · locked after your first message'}
+          </p>
+        </section>
+      ) : null}
     </>
   )
 }

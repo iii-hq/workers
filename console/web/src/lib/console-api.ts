@@ -10,6 +10,7 @@
  * observe a null `api`.
  */
 
+import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { CodeEditor } from '@/components/ui/CodeEditor'
@@ -46,6 +47,8 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
+import { TerminalStream } from '@/components/ui/TerminalStream'
 import {
   Tooltip,
   TooltipContent,
@@ -65,6 +68,7 @@ import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
  * component-names manifest (the shim's export list).
  */
 export const components: ConsoleApi['components'] = {
+  AnsiText,
   Badge,
   Button,
   Dialog,
@@ -96,6 +100,8 @@ export const components: ConsoleApi['components'] = {
   TabsList,
   TabsTrigger,
   TabsContent,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipTrigger,
   TooltipContent,

@@ -250,9 +250,30 @@ fn write_response(
             .map_err(|e| format!("invalid skill path {:?}: {e}", skill.path))?;
         let dest = dest_root.join(&rel);
         write_file_atomic(&dest, skill.content.as_bytes())?;
-        result
-            .skills_written
-            .push(rel.to_string_lossy().replace('\\', "/"));
+
+        // The registry calls every entry in `skills[]` a "skill", but a path
+        // carrying a `prompts/` or `system-prompts/` segment is scanned (and
+        // must be reported, so the right `on-change` fires) as that kind
+        // instead — the same three-way rule `git.rs::copy_recursive` applies
+        // to a cloned repo's tree. Same asymmetry as there too: prompt-ish
+        // buckets get the bare file stem, the skills bucket gets the path.
+        match crate::fs_source::classify_rel_path(&rel) {
+            crate::fs_source::SourceKind::SystemPrompt
+                if rel.extension().is_some_and(|e| e == "md") =>
+            {
+                if let Some(stem) = super::git::stem_of(&rel) {
+                    result.system_prompts_written.push(stem);
+                }
+            }
+            crate::fs_source::SourceKind::Prompt if rel.extension().is_some_and(|e| e == "md") => {
+                if let Some(stem) = super::git::stem_of(&rel) {
+                    result.prompts_written.push(stem);
+                }
+            }
+            _ => result
+                .skills_written
+                .push(rel.to_string_lossy().replace('\\', "/")),
+        }
     }
 
     for prompt in response.prompts {
@@ -392,6 +413,42 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("resend/prompts/send-email.md")).unwrap();
         assert!(prompt.starts_with("---\n"));
         assert!(prompt.contains("Body."));
+    }
+
+    #[test]
+    fn write_response_classifies_system_prompt_path_in_skills_array() {
+        // The registry response only has ONE array for markdown files —
+        // `skills[]` — so a bundle that ships a system prompt lists it there
+        // too, at a path under `system-prompts/`. It must still land in
+        // `system_prompts_written` (and fire `system-prompts::on-change`,
+        // not `skills::on-change`), exactly like `git.rs::copy_recursive`
+        // classifies a cloned repo's tree.
+        let tmp = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("resend".into()),
+            version: Some("1.2.3".into()),
+            skills: vec![
+                SkillEntry {
+                    path: "index.md".into(),
+                    content: "# resend\n".into(),
+                },
+                SkillEntry {
+                    path: "system-prompts/reviewer.md".into(),
+                    content: "---\ndescription: reviews PRs\n---\nBody.\n".into(),
+                },
+            ],
+            prompts: vec![],
+        };
+        let result = write_response("resend", response, tmp.path()).unwrap();
+        assert_eq!(result.skills_written, vec!["index.md".to_string()]);
+        assert_eq!(result.system_prompts_written, vec!["reviewer".to_string()]);
+        assert!(result.prompts_written.is_empty());
+
+        // Still lands on disk at the path the registry sent — only the
+        // REPORTED bucket (and thus which on-change trigger fires) changes.
+        let sys =
+            std::fs::read_to_string(tmp.path().join("resend/system-prompts/reviewer.md")).unwrap();
+        assert!(sys.contains("Body."));
     }
 
     #[test]

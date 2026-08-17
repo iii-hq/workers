@@ -7,6 +7,7 @@ export const components = api.components
 export const useTheme = api.useTheme
 export const tokens = api.tokens
 export const {
+  AnsiText,
   Badge,
   Button,
   CodeEditor,
@@ -43,6 +44,8 @@ export const {
   TabsContent,
   TabsList,
   TabsTrigger,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipContent,
   TooltipTrigger,

@@ -324,6 +324,44 @@
   padding: 12px 12px 8px;
   flex-shrink: 0;
 }
+/* Full-width so it reads as an action for the whole collection, not a row. */
+[data-iii-ui="iii-directory"] .dir-ui-new-btn {
+  justify-content: flex-start;
+  width: 100%;
+  height: 38px;
+  padding: 4px 8px 4px 6px;
+  gap: 9px;
+  border: 1px solid var(--color-accent-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-ui-new-btn:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-muted);
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-new-mark {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+[data-iii-ui="iii-directory"] .dir-ui-new-icon {
+  width: 14px;
+  height: 14px;
+}
 [data-iii-ui="iii-directory"] .dir-ui-count {
   padding: 0 2px;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -356,6 +394,9 @@
   border: 0;
   background: transparent;
   height: 26px;
+  /* Fixed height, so a wrapped label overflows its own box instead of
+     growing it — keep every label on one line. */
+  white-space: nowrap;
   padding: 0 12px;
   border-radius: 4px;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -671,6 +712,13 @@
   gap: 8px;
   margin-left: auto;
 }
+[data-iii-ui="iii-directory"] .dir-ui-delete-btn {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-delete-btn:hover:not(:disabled) {
+  background: var(--color-alert-muted);
+  color: var(--color-alert);
+}
 [data-iii-ui="iii-directory"] .dir-ui-save-note {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
@@ -770,6 +818,10 @@
   min-width: 0;
   overflow: auto;
 }
+[data-iii-ui="iii-directory"] .dir-ui-pane.editor {
+  display: flex;
+  flex-direction: column;
+}
 [data-iii-ui="iii-directory"] .dir-ui-doc-body.dragging .dir-ui-pane {
   pointer-events: none;
 }
@@ -783,8 +835,108 @@
   .dir-ui-pane.editor {
   display: none;
 }
+
+/* Structured frontmatter: the two fields people edit belong in real form
+   controls. Any remaining advanced YAML stays in the markdown source below. */
+[data-iii-ui="iii-directory"] .dir-ui-edit-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.4fr) minmax(280px, 1fr);
+  gap: 12px;
+  padding: 14px 16px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"]
+  .dir-ui-doc-body.mode-split
+  .dir-ui-edit-fields,
+[data-iii-ui="iii-directory"]
+  .dir-ui-browser.narrow
+  .dir-ui-edit-fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-label {
+  min-height: 12px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-hint {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-input {
+  height: 36px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--color-surface);
+  padding: 9px 12px;
+  font-family: var(--font-sans, ui-sans-serif, sans-serif);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-ink);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    background-color 150ms ease;
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-textarea::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-input::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-textarea:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-ui-edit-textarea:focus {
+  outline: none;
+  border-color: var(--color-rule-focus);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+[data-iii-ui="iii-directory"] .dir-ui-source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  padding: 7px 16px;
+  flex-shrink: 0;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-edge);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="iii-directory"] .dir-ui-code {
-  min-height: 100%;
+  min-height: 240px;
+  flex: 1;
 }
 
 [data-iii-ui="iii-directory"] .dir-ui-divider {
@@ -1100,4 +1252,189 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* ── session chip: the chat header's system-prompt read-out ──────────────
+   The console's header cluster already sets mono / 11px / uppercase /
+   tracking on its container, so the chip inherits those and only declares
+   what it adds. Muted like the sibling readouts (CTX, EXPORT), with ink on
+   hover to signal it opens something.
+
+   `align-self: stretch` matters: the cluster is a fixed-height filled group,
+   and without it the hit box is the 11px glyph run — under the 24px floor in
+   WCAG 2.2 SC 2.5.8. Stretching costs no pixels and buys the whole row. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-chip {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-chip:hover {
+  color: var(--color-ink);
+}
+/* The console's own controls focus with this ring; an injected chip that
+   invented its own would make one tab pass look like three widgets. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-chip:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* A prompt name is data, not chrome: keep the author's casing, and cap it so
+   `staging-review-v2-with-the-long-name` can't push the header around. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-name {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  letter-spacing: normal;
+}
+/* Content, so it carries the row's ink — unlike the caret below, which is
+   chrome. Two ghost glyphs in a row would read as one smudge. Slightly
+   larger than the caret because it means something. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-strategy {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: inherit;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-caret {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  color: var(--color-ink-ghost);
+}
+/* ── the dialog is a column with ONE scroll region ─────────────────────
+   The Dialog primitive scrolls its whole content (overflow-y auto), which
+   let the title, description and the ✕ scroll off-screen on a long prompt,
+   and the per-body 38vh caps stacked up to three nested scrollbars in
+   enrich. Instead: pin the header, scroll the document. */
+/* COMPOUND selector (no space): the data-iii-ui attribute is declared ON
+   DialogContent itself (the portal re-scope), so the stylesheet's usual
+   descendant form would match every child but silently never this
+   element. */
+[data-iii-ui="iii-directory"].dir-ui-sysprompt-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-scroll {
+  margin-top: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  /* Never a horizontal bar on the dialog itself: `overflow-y: auto` forces
+     overflow-x to auto too, so any 1px-wide straggler grows a scrollbar.
+     Wide content (code blocks) scrolls inside its own container. */
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+/* ── part header: role · name · size, with a copy affordance ──────────
+   Sticky inside the scroll region, so a long document always says which
+   half you are reading. Opaque panel-raised background: the text scrolls
+   underneath it. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-parthead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 6px;
+  background: var(--color-panel-raised);
+}
+/* ink-faint (5.1:1), not ink-ghost (2.4:1 — under the AA floor at this
+   size). An h3, not a p: the two halves are the dialog's real structure,
+   and they should exist in the SR outline that the prompt's own headings
+   otherwise dominate. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-part {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+/* Only the ROLE word carries the label treatment. A prompt filename and a
+   provider id are data: uppercasing would misreport them (pt-BR → PT-BR),
+   the exact casing rule the chip itself follows. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-partrole {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-partmeta {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-copy {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  flex: none;
+  padding: 2px 4px;
+  /* Bleed the hit area left and vertically only — a right bleed pushes
+     4px past the scroll region's edge and grew it a horizontal bar. */
+  margin: -2px 0 -2px -4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-copy:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-copy:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-copy[data-copied] {
+  color: var(--color-accent);
+}
+
+/* Reserved height keeps the centered dialog still while the preview resolves. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-loading {
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+/* Raw text is deliberate: this surface explains what reaches the model, so
+   Markdown syntax and mention tokens must remain visible rather than render. */
+[data-iii-ui="iii-directory"] .dir-ui-sysprompt-body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-ink);
 }

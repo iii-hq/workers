@@ -12,8 +12,12 @@ export interface CoderInfo {
   primary_root: string
 }
 
+export interface WorkspaceValidateResponse {
+  path: string
+}
+
 export interface TreeTruncation {
-  /** "per_folder_limit" | "max_depth" | "default_exclude". */
+  /** "per_folder_limit" | "max_depth" | "default_exclude" | "max_nodes". */
   reason: string
   shown: number
   total?: number | null
@@ -46,12 +50,21 @@ export interface ReadFileResponse {
   /** Unix permission bits, lower 9 bits of st_mode. */
   mode?: number | null
   mtime?: number | null
+  /** Opaque exact-content identity for conflict-safe whole-file saves. */
+  revision?: string | null
+}
+
+export interface BatchReadFileResult extends ReadFileResponse {
+  path: string
+  success: boolean
 }
 
 export interface CreateFileResult {
   path: string
   success: boolean
   bytes_written: number
+  /** Opaque identity of the exact bytes written. */
+  revision?: string | null
   error?: { code: string; message: string } | null
 }
 
@@ -66,7 +79,8 @@ export interface ContentMatch {
 
 export interface SearchResponse {
   content_matches: ContentMatch[]
-  path_matches: { path: string }[]
+  /** `kind` distinguishes folder name-matches from file ones. */
+  path_matches: { path: string; kind?: 'file' | 'dir' }[]
   truncated: boolean
 }
 
@@ -74,14 +88,32 @@ export function coderInfo(host: Host): Promise<CoderInfo> {
   return host.iii.trigger<CoderInfo>('coder::info', {})
 }
 
-export function coderTree(host: Host, path: string): Promise<TreeResponse> {
+/** Resolve a user/chat-selected directory to the worker's canonical path.
+    This keeps `/tmp` and `/private/tmp` aliases identical to the watcher. */
+export function workspaceValidate(
+  host: Host,
+  path: string,
+): Promise<WorkspaceValidateResponse> {
+  return host.iii.trigger<WorkspaceValidateResponse>('shell::workspace::validate', { path })
+}
+
+export function coderTree(
+  host: Host,
+  path: string,
+  includeHidden: boolean,
+): Promise<TreeResponse> {
   return host.iii.trigger<TreeResponse>('coder::tree', {
     path,
     // Deep enough for real repos; the worker's per-folder limit and
     // output budget still bound the response (truncated stubs carry
     // hints the Files tab surfaces).
     max_depth: 25,
+    // The worker default (50) fills with dot entries in home-shaped
+    // folders — byte order sorts them first. 500 matches the editor
+    // worker's browse call.
+    per_folder_limit: 500,
     use_default_excludes: true,
+    include_hidden: includeHidden,
   })
 }
 
@@ -92,6 +124,52 @@ export function coderReadFile(
   return host.iii.trigger<ReadFileResponse>('coder::read-file', { path })
 }
 
+/** Best-effort batch snapshot used to capture pre-change baselines for a
+    live review burst. Individual failures (deleted/binary/oversized)
+    remain isolated to their entry. */
+export async function coderReadFiles(
+  host: Host,
+  paths: readonly string[],
+): Promise<BatchReadFileResult[]> {
+  if (paths.length === 0) return []
+  const out = await host.iii.trigger<{ results?: BatchReadFileResult[] }>(
+    'coder::read-file',
+    { paths },
+  )
+  return out.results ?? []
+}
+
+/** Existence/metadata probe for a watcher burst. Unlike full reads this
+    remains reliable for binary and oversized files. */
+export async function coderStatFiles(
+  host: Host,
+  paths: readonly string[],
+): Promise<BatchReadFileResult[]> {
+  if (paths.length === 0) return []
+  const out = await host.iii.trigger<{ results?: BatchReadFileResult[] }>(
+    'coder::read-file',
+    { paths: paths.map((path) => ({ path, stat: true })) },
+  )
+  return out.results ?? []
+}
+
+/** Exact bytes, base64-encoded — the image-preview read. The override
+    lifts the 128 KiB text budget to a preview-sized ceiling (the base64
+    string lives in the per-tab cache plus a data: URL — an unbounded
+    read would hold two copies of an arbitrarily large file); the worker
+    clamps further to its max_read_bytes cap, and oversized files still
+    fail loud (C218). */
+export function coderReadFileBase64(
+  host: Host,
+  path: string,
+): Promise<ReadFileResponse> {
+  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+    path,
+    encoding: 'base64',
+    max_output_bytes: 16_000_000,
+  })
+}
+
 /** Whole-file save. `mode` (from a prior read) keeps permission bits —
     create-file would otherwise reset them to the 0644 default. */
 export async function coderWriteFile(
@@ -99,6 +177,7 @@ export async function coderWriteFile(
   path: string,
   content: string,
   mode?: number | null,
+  expectedRevision?: string | null,
 ): Promise<CreateFileResult> {
   const out = await host.iii.trigger<{ results: CreateFileResult[] }>(
     'coder::create-file',
@@ -109,6 +188,9 @@ export async function coderWriteFile(
           content,
           overwrite: true,
           ...(mode != null ? { mode: `0${mode.toString(8)}` } : {}),
+          ...(expectedRevision != null
+            ? { expected_revision: expectedRevision }
+            : {}),
         },
       ],
     },

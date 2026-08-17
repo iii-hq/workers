@@ -1,6 +1,11 @@
+import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useExtConfigForm } from '@/lib/ui-slots'
+import {
+  isExtConfigFormPending,
+  useExtConfigForm,
+  useUiAssetsStatus,
+} from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import type { ConfigurationSchemaView, JsonValue } from './api'
 import { isDirty } from './dirty'
@@ -17,6 +22,11 @@ import { wt } from './typography'
 interface WorkerEditorProps {
   entry: ConfigurationSchemaView
   onDirtyChange: (dirty: boolean) => void
+  /**
+   * Drill-out affordance for the narrow (one-pane-at-a-time) flow: when
+   * set, the header renders a ← back button that returns to the list.
+   */
+  onBack?: () => void
 }
 
 /**
@@ -40,12 +50,21 @@ interface WorkerEditorProps {
  * can intercept tab switches and worker selection with the same
  * `useUnsavedGuard` instance that owns the `beforeunload` listener.
  */
-export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
+export function WorkerEditor({
+  entry,
+  onDirtyChange,
+  onBack,
+}: WorkerEditorProps) {
   const valueQuery = useConfigurationValue(entry.id)
   const setMutation = useSetConfiguration(entry.id)
   // Injectable-UI configForms slot: a worker-registered form replaces the
   // FORM REGION only — the save lifecycle below stays host-owned either way.
   const formOverride = useExtConfigForm(entry.id)
+  const uiAssetsStatus = useUiAssetsStatus()
+  const isFormOverrideLoading = isExtConfigFormPending(
+    uiAssetsStatus,
+    formOverride,
+  )
 
   const [draft, setDraft] = useState<JsonValue | undefined>(undefined)
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
@@ -173,10 +192,10 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
 
   return (
     <section
-      className="flex-1 flex flex-col min-h-0 min-w-0"
+      className="flex-1 flex flex-col min-h-0 min-w-0 bg-panel"
       aria-label={`configuration ${entry.id}`}
     >
-      <EditorHeader entry={entry} />
+      <EditorHeader entry={entry} dirty={dirty} onBack={onBack} />
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
         {valueQuery.isLoading ? <EditorLoading /> : null}
         {valueQuery.isError ? (
@@ -187,7 +206,9 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
           />
         ) : null}
         {!valueQuery.isLoading && !valueQuery.isError && draft !== undefined ? (
-          formOverride ? (
+          isFormOverrideLoading ? (
+            <EditorLoading />
+          ) : formOverride ? (
             <>
               <div className="mx-auto max-w-3xl w-full px-6 py-8">
                 <formOverride.component
@@ -247,22 +268,62 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
   )
 }
 
-function EditorHeader({ entry }: { entry: ConfigurationSchemaView }) {
+/**
+ * The workspace's raised top bar — identity (name, dirty dot, id crumb,
+ * description) plus the drill-out back button in the narrow flow. Also
+ * composed by the Storybook harness, so keep it presentational.
+ */
+export function EditorHeader({
+  entry,
+  dirty = false,
+  onBack,
+}: {
+  entry: ConfigurationSchemaView
+  dirty?: boolean
+  onBack?: () => void
+}) {
   return (
-    <header className="px-6 py-4 border-b border-rule shrink-0">
-      <div className="flex items-baseline gap-3">
-        <h2
-          className={cn(wt.heading, 'text-ink capitalize tracking-[-0.01em]')}
+    <header className="flex items-center gap-2 min-h-12 px-4 py-2.5 shrink-0 bg-panel-raised border-b border-edge">
+      {onBack ? (
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="back to worker list"
+          className="flex items-center justify-center size-8 -ml-1.5 shrink-0 rounded-md text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
         >
-          {entry.name || entry.id}
-        </h2>
-        <span className={cn(wt.caption, 'text-ink-ghost')}>{entry.id}</span>
-      </div>
-      {entry.description ? (
-        <p className={cn(wt.bodySm, 'text-ink-faint mt-1 max-w-2xl')}>
-          {entry.description}
-        </p>
+          <ArrowLeft className="size-4" aria-hidden />
+        </button>
       ) : null}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <h2
+            className={cn(
+              wt.body,
+              'font-semibold text-ink lowercase tracking-[-0.01em] truncate',
+            )}
+          >
+            {entry.name || entry.id}
+          </h2>
+          {dirty ? (
+            <span
+              className="size-[7px] rounded-full bg-accent shrink-0"
+              title="unsaved changes"
+              aria-hidden
+            />
+          ) : null}
+          <span className="font-mono text-[12px] text-ink-ghost truncate">
+            {entry.id}
+          </span>
+        </div>
+        {entry.description ? (
+          <p
+            className={cn(wt.caption, 'text-ink-faint mt-0.5 truncate')}
+            title={entry.description}
+          >
+            {entry.description}
+          </p>
+        ) : null}
+      </div>
     </header>
   )
 }

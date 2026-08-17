@@ -29,7 +29,7 @@ pub fn selection_row_style() -> Style {
 
 pub fn group_header_style(group: WorkerGroup) -> Style {
     match group {
-        WorkerGroup::HarnessStack => Style::default().fg(Color::Cyan),
+        WorkerGroup::Stack => Style::default().fg(Color::Cyan),
         WorkerGroup::Other => muted_cell_style(),
     }
 }

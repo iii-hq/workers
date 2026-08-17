@@ -88,25 +88,22 @@ def test_engine_builtins_are_not_release_targets() -> None:
             {"name": "iii-stream"},
         ],
         worker_name="harness",
-        functions=[],
         baseline_workers_json={"workers": [{"name": "iii-worker-ops"}]},
     )
     assert target == {"harness"}
 
 
-def test_builtin_only_diff_falls_back_to_name_match() -> None:
-    """When the baseline diff contains nothing but engine builtins, resolution
-    falls through to matching the released worker by name."""
+def test_builtin_only_diff_uses_exact_worker_name() -> None:
+    """When the baseline diff contains only engine builtins, use exact identity."""
     from build_publish_payload import _resolve_target_worker_names
 
     target = _resolve_target_worker_names(
         workers=[
             {"name": "iii-worker-ops"},
             {"name": "iii-stream"},
-            {"name": "harness", "functions": ["harness::send"]},
+            {"name": "harness"},
         ],
         worker_name="harness",
-        functions=[],
         baseline_workers_json={
             "workers": [{"name": "iii-worker-ops"}, {"name": "harness"}]
         },

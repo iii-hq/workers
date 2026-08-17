@@ -5,8 +5,8 @@ deploy: binary
 manifest: Cargo.toml
 license: Apache-2.0
 bin: eval
-tags: [evaluation, benchmark, prompt, system-prompt, ab-test]
-description: Compare prompt or system-prompt variants on the same model using durable harness runs and correctness-first reports.
+tags: [evaluation, benchmark, sessions, metrics, prompt, system-prompt]
+description: Compare live objective metrics for 2-5 root sessions; retain durable prompt experiments as an advanced surface.
 
 dependencies:
   state: "^0.21.3"

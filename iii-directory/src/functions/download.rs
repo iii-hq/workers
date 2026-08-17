@@ -86,6 +86,7 @@ struct DownloadOutput {
     namespace: String,
     skills_written: Vec<String>,
     prompts_written: Vec<String>,
+    system_prompts_written: Vec<String>,
     source: Value,
 }
 
@@ -122,13 +123,22 @@ async fn run_and_fan_out(
     cfg: &SkillsConfig,
     skills_subs: &SubscriberSet,
     prompts_subs: &SubscriberSet,
+    system_prompts_subs: &SubscriberSet,
     input: DownloadInput,
 ) -> Result<DownloadOutput, Error> {
     let classified = classify_input(input).map_err(Error::Handler)?;
     let result = run_download(cfg, &classified)
         .await
         .map_err(Error::Handler)?;
-    fan_out(iii, skills_subs, prompts_subs, &classified, &result).await;
+    fan_out(
+        iii,
+        skills_subs,
+        prompts_subs,
+        system_prompts_subs,
+        &classified,
+        &result,
+    )
+    .await;
     Ok(build_output(&classified, result))
 }
 
@@ -141,6 +151,7 @@ fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &sup
     let cfg_inner = cfg.clone();
     let skills_subs = subscribers.skills.clone();
     let prompts_subs = subscribers.prompts.clone();
+    let system_prompts_subs = subscribers.system_prompts.clone();
     iii.register_function(
         "directory::skills::download",
         RegisterFunction::new_async(move |req: DownloadInput| {
@@ -148,7 +159,18 @@ fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &sup
             let cfg = cfg_inner.load_full();
             let skills_subs = skills_subs.clone();
             let prompts_subs = prompts_subs.clone();
-            async move { run_and_fan_out(&iii, &cfg, &skills_subs, &prompts_subs, req).await }
+            let system_prompts_subs = system_prompts_subs.clone();
+            async move {
+                run_and_fan_out(
+                    &iii,
+                    &cfg,
+                    &skills_subs,
+                    &prompts_subs,
+                    &system_prompts_subs,
+                    req,
+                )
+                .await
+            }
         })
         .description(
             "Download skills + prompts into skills_folder from EITHER source. Prefer the \
@@ -175,6 +197,7 @@ fn register_download_from_registry(
     let cfg_inner = cfg.clone();
     let skills_subs = subscribers.skills.clone();
     let prompts_subs = subscribers.prompts.clone();
+    let system_prompts_subs = subscribers.system_prompts.clone();
     iii.register_function(
         "directory::skills::download_from_registry",
         RegisterFunction::new_async(move |req: RegistryDownloadInput| {
@@ -182,6 +205,7 @@ fn register_download_from_registry(
             let cfg = cfg_inner.load_full();
             let skills_subs = skills_subs.clone();
             let prompts_subs = prompts_subs.clone();
+            let system_prompts_subs = system_prompts_subs.clone();
             async move {
                 let input = DownloadInput {
                     worker: Some(req.worker),
@@ -189,7 +213,15 @@ fn register_download_from_registry(
                     tag: req.tag,
                     ..Default::default()
                 };
-                run_and_fan_out(&iii, &cfg, &skills_subs, &prompts_subs, input).await
+                run_and_fan_out(
+                    &iii,
+                    &cfg,
+                    &skills_subs,
+                    &prompts_subs,
+                    &system_prompts_subs,
+                    input,
+                )
+                .await
             }
         })
         .description(
@@ -216,6 +248,7 @@ fn register_download_from_repo(
     let cfg_inner = cfg.clone();
     let skills_subs = subscribers.skills.clone();
     let prompts_subs = subscribers.prompts.clone();
+    let system_prompts_subs = subscribers.system_prompts.clone();
     iii.register_function(
         "directory::skills::download_from_repo",
         RegisterFunction::new_async(move |req: RepoDownloadInput| {
@@ -223,6 +256,7 @@ fn register_download_from_repo(
             let cfg = cfg_inner.load_full();
             let skills_subs = skills_subs.clone();
             let prompts_subs = prompts_subs.clone();
+            let system_prompts_subs = system_prompts_subs.clone();
             async move {
                 let input = DownloadInput {
                     repo: Some(req.repo),
@@ -230,7 +264,15 @@ fn register_download_from_repo(
                     branch: req.branch,
                     ..Default::default()
                 };
-                run_and_fan_out(&iii, &cfg, &skills_subs, &prompts_subs, input).await
+                run_and_fan_out(
+                    &iii,
+                    &cfg,
+                    &skills_subs,
+                    &prompts_subs,
+                    &system_prompts_subs,
+                    input,
+                )
+                .await
             }
         })
         .description(
@@ -361,17 +403,20 @@ fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> Downloa
         namespace: result.namespace,
         skills_written: result.skills_written,
         prompts_written: result.prompts_written,
+        system_prompts_written: result.system_prompts_written,
         source,
     }
 }
 
 /// Fan out to subscribers. We fire `skills::on-change` only when at
-/// least one skill was written (and likewise for prompts) so noisy
-/// no-op downloads don't churn MCP `notifications/list_changed`.
+/// least one skill was written (and likewise for prompts / system
+/// prompts) so noisy no-op downloads don't churn MCP
+/// `notifications/list_changed`.
 async fn fan_out(
     iii: &IIIClient,
     skills_subs: &SubscriberSet,
     prompts_subs: &SubscriberSet,
+    system_prompts_subs: &SubscriberSet,
     classified: &ClassifiedInput,
     result: &DownloadResult,
 ) {
@@ -387,7 +432,10 @@ async fn fan_out(
         trigger_types::dispatch(iii, skills_subs, payload.clone()).await;
     }
     if !result.prompts_written.is_empty() {
-        trigger_types::dispatch(iii, prompts_subs, payload).await;
+        trigger_types::dispatch(iii, prompts_subs, payload.clone()).await;
+    }
+    if !result.system_prompts_written.is_empty() {
+        trigger_types::dispatch(iii, system_prompts_subs, payload).await;
     }
 }
 
@@ -486,6 +534,7 @@ pub async fn download_worker_skills(
                 worker,
                 skills = result.skills_written.len(),
                 prompts = result.prompts_written.len(),
+                system_prompts = result.system_prompts_written.len(),
                 "auto-downloaded worker skills"
             );
             write_completion_marker(&folder, worker, spec)?;
@@ -780,6 +829,19 @@ mod tests {
         assert_eq!(out.source["repo"], "https://github.com/x/y");
         assert_eq!(out.source["skill"], "foo");
         assert_eq!(out.source["branch"], "main");
+    }
+
+    #[test]
+    fn build_output_includes_system_prompts_written() {
+        let mut result = DownloadResult::new("foo");
+        result.system_prompts_written.push("sys".into());
+        let classified = ClassifiedInput::Repo {
+            repo: "https://github.com/x/y".into(),
+            skill: "foo".into(),
+            branch: "main".into(),
+        };
+        let out = build_output(&classified, result);
+        assert_eq!(out.system_prompts_written, vec!["sys".to_string()]);
     }
 
     #[test]

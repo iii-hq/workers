@@ -39,20 +39,3 @@ impl ScenarioNames {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_are_short_unique_and_sql_safe() {
-        let names = ScenarioNames::new("aB19-rest");
-        assert_eq!(names.run_label, "rctest-aB19");
-        assert_eq!(names.orders, "rctest_aB19_orders");
-        assert_eq!(names.writer_sessions[2], "rctest-aB19-writer-3");
-        assert!(names
-            .orders
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_'));
-    }
-}

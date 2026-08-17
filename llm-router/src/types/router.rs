@@ -25,6 +25,8 @@ pub struct ChatRequest {
     pub writer_ref: StreamChannelRef, // direction "write"; the caller's channel
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>, // router::abort correlation; generated when omitted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>, // stable conversation identity for provider affinity
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -159,8 +161,9 @@ pub struct SystemPromptGetResponse {
     pub system_prompt: Option<String>,
 }
 
-/// registration_token: spec adaptation — the engine exposes no caller identity,
-/// so identity binding is a bearer token; only its sha256 hash is persisted.
+/// `registration_token` is the provider ownership credential; only its sha256
+/// hash is persisted. Engine caller metadata is not an authorization identity
+/// because worker names are self-reported.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderRegisterResponse {
     pub ok: bool,
@@ -450,6 +453,19 @@ pub struct ConfigChangedEvent {
     /// Configuration id that changed (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+}
+
+/// Advisory function-registry change event delivered to
+/// `router::on_functions_changed`. The handler ignores event values and
+/// re-fetches the authoritative registry before nudging live providers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionsChangedEvent {
+    /// Engine event tag (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// Worker whose registered functions changed (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
 }
 
 /// Generic acknowledgement returned by trigger-bound handlers whose result is

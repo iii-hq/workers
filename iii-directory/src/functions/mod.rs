@@ -31,12 +31,14 @@ use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source::{self, SourceKind};
 use crate::trigger_types::{RegisteredTriggerTypes, SubscriberSet};
 
-/// Pair of subscriber sets passed into `download::register` so the
-/// download function can fan out to both `directory::skills::on-change`
-/// and `directory::prompts::on-change` after a successful pull.
+/// Trio of subscriber sets passed into `download::register` and
+/// `update::register` so those functions can fan out to
+/// `directory::skills::on-change`, `directory::prompts::on-change`, and
+/// `directory::system-prompts::on-change` after a successful write.
 pub struct Subscribers {
     pub skills: SubscriberSet,
     pub prompts: SubscriberSet,
+    pub system_prompts: SubscriberSet,
 }
 
 impl From<&RegisteredTriggerTypes> for Subscribers {
@@ -44,6 +46,7 @@ impl From<&RegisteredTriggerTypes> for Subscribers {
         Self {
             skills: t.skills.clone(),
             prompts: t.prompts.clone(),
+            system_prompts: t.system_prompts.clone(),
         }
     }
 }
@@ -65,7 +68,8 @@ pub fn register_all(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         2 directory::prompts::* reads (list + get), 2 updates (skills + prompts), \
+         1 skills update, 4 directory::prompts::* (list + get + create + update), \
+         4 directory::system-prompts::* (list + get + create + update), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );
@@ -87,7 +91,8 @@ pub fn register_all_with_cache(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         2 directory::prompts::* reads (list + get), 2 updates (skills + prompts), \
+         1 skills update, 4 directory::prompts::* (list + get + create + update), \
+         4 directory::system-prompts::* (list + get + create + update), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );
@@ -99,7 +104,10 @@ pub fn register_all_with_cache(
 pub fn log_fs_health(cfg: &SkillsConfig) {
     let folder = cfg.resolved_skills_folder();
     let (skills, skill_skipped) = fs_source::scan_skills(&folder);
-    let (prompts, prompt_skipped) = fs_source::scan_prompts(&folder);
+    let (prompts, prompt_skipped) =
+        fs_source::scan_prompts(&folder, fs_source::PromptKind::Command);
+    let (system_prompts, system_prompt_skipped) =
+        fs_source::scan_prompts(&folder, fs_source::PromptKind::System);
 
     for s in &skills {
         tracing::info!(
@@ -115,12 +123,24 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
             "loaded fs-backed prompt"
         );
     }
+    for p in &system_prompts {
+        tracing::info!(
+            name = %p.name,
+            path = %p.abs_path.display(),
+            "loaded fs-backed system prompt"
+        );
+    }
 
-    let total_skipped = skill_skipped.len() + prompt_skipped.len();
-    for s in skill_skipped.iter().chain(prompt_skipped.iter()) {
+    let total_skipped = skill_skipped.len() + prompt_skipped.len() + system_prompt_skipped.len();
+    for s in skill_skipped
+        .iter()
+        .chain(prompt_skipped.iter())
+        .chain(system_prompt_skipped.iter())
+    {
         let kind = match s.kind {
             SourceKind::Skill => "skill",
             SourceKind::Prompt => "prompt",
+            SourceKind::SystemPrompt => "system prompt",
         };
         tracing::warn!(
             kind,
@@ -133,6 +153,7 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
     tracing::info!(
         skills = skills.len(),
         prompts = prompts.len(),
+        system_prompts = system_prompts.len(),
         skipped = total_skipped,
         skills_folder = %folder.display(),
         "fs source scan complete"

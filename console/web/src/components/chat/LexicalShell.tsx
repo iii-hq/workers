@@ -37,7 +37,7 @@ interface LexicalShellProps {
 
 const baseConfig = {
   namespace: 'iii-chat',
-  /* no theme classes — surface inherits Geist from <body> */
+  /* no theme classes — surface inherits Inter from <body> */
   theme: {},
   /* Decorator nodes must be registered up-front so importJSON/restore work. */
   nodes: [FunctionMentionNode, FileMentionNode],

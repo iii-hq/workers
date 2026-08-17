@@ -15,6 +15,8 @@ interface SearchTabProps {
   onPreviewFile: (relPath: string) => void
   /** Double click — open pinned. */
   onPinFile: (relPath: string) => void
+  /** Click on a FOLDER match — expand + scroll to it in the files tab. */
+  onRevealFolder: (relPath: string) => void
 }
 
 export function SearchTab({
@@ -22,6 +24,7 @@ export function SearchTab({
   root,
   onPreviewFile,
   onPinFile,
+  onRevealFolder,
 }: SearchTabProps) {
   const [query, setQuery] = useState('')
   const [regex, setRegex] = useState(false)
@@ -66,7 +69,7 @@ export function SearchTab({
         <Input
           value={query}
           onChange={setQuery}
-          placeholder="search files…"
+          placeholder="search files & folders…"
           preserveCase
           aria-label="search query"
         />
@@ -104,6 +107,7 @@ export function SearchTab({
           ignoreCase={ignoreCase}
           onPreviewFile={onPreviewFile}
           onPinFile={onPinFile}
+          onRevealFolder={onRevealFolder}
         />
       ) : null}
     </div>
@@ -118,6 +122,7 @@ function SearchResults({
   ignoreCase,
   onPreviewFile,
   onPinFile,
+  onRevealFolder,
 }: {
   result: SearchResponse
   root: string
@@ -126,11 +131,14 @@ function SearchResults({
   ignoreCase: boolean
   onPreviewFile: (relPath: string) => void
   onPinFile: (relPath: string) => void
+  onRevealFolder: (relPath: string) => void
 }) {
   const { content_matches, path_matches, truncated } = result
   if (content_matches.length === 0 && path_matches.length === 0) {
     return <div className="shui-side-note">· no matches</div>
   }
+  const folderMatches = path_matches.filter((m) => m.kind === 'dir')
+  const fileMatches = path_matches.filter((m) => m.kind !== 'dir')
   return (
     <div className="shui-search-results">
       {truncated ? (
@@ -139,10 +147,30 @@ function SearchResults({
         </div>
       ) : null}
 
-      {path_matches.length > 0 ? (
+      {folderMatches.length > 0 ? (
+        <>
+          <div className="shui-side-note head">folders</div>
+          {folderMatches.map((m) => {
+            const rel = relativeTo(root, m.path)
+            return (
+              <button
+                key={m.path}
+                type="button"
+                className="shui-search-row"
+                onClick={() => onRevealFolder(rel)}
+                title={`reveal ${rel} in files`}
+              >
+                <span className="loc">{rel}/</span>
+              </button>
+            )
+          })}
+        </>
+      ) : null}
+
+      {fileMatches.length > 0 ? (
         <>
           <div className="shui-side-note head">files</div>
-          {path_matches.map((m) => {
+          {fileMatches.map((m) => {
             const rel = relativeTo(root, m.path)
             return (
               <button

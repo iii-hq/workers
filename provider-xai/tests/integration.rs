@@ -373,7 +373,7 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     assert_eq!(res["ok"], true, "chat response: {res}");
     assert_eq!(res["provider"], "xai");
     assert_eq!(res["stop_reason"], "end");
-    // the router filled cost_usd from the curated pricing (12 in + 2 out)
+    // the router filled cost_usd from the curated pricing (8 in + 4 cached + 2 out)
     assert!(
         res["usage"]["cost_usd"].as_f64().is_some_and(|c| c > 0.0),
         "cost filled: {res}"

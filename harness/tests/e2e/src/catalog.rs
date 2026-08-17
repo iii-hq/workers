@@ -14,9 +14,10 @@ struct ModelsListResponse {
     models: Vec<CatalogModel>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CatalogModel {
     provider: String,
+    #[serde(rename(serialize = "model", deserialize = "id"))]
     id: String,
 }
 
@@ -83,5 +84,13 @@ openai-codex  codex/gpt-5.6-sol
     #[test]
     fn summary_handles_an_empty_catalog() {
         assert_eq!(summary(&[]), "No models found.\n");
+    }
+
+    #[test]
+    fn serializes_the_dashboard_model_contract() {
+        assert_eq!(
+            serde_json::to_value(model("zai", "glm-5.2")).unwrap(),
+            serde_json::json!({ "provider": "zai", "model": "glm-5.2" })
+        );
     }
 }

@@ -218,7 +218,7 @@ mod tests {
         );
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
-                assert_eq!(message.usage.as_ref().unwrap().input, Some(12));
+                assert_eq!(message.usage.as_ref().unwrap().input, Some(8));
                 assert_eq!(message.usage.as_ref().unwrap().output, Some(2));
                 assert_eq!(message.usage.as_ref().unwrap().cache_read, Some(4));
                 assert_eq!(message.native_stop_reason.as_deref(), Some("stop"));

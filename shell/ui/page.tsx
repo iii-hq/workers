@@ -20,15 +20,19 @@
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { createShellTriggerRenderer } from './src/function-trigger'
 import { ShellExplorerPage } from './src/page'
+import { ShellTurnSummary } from './src/page/ShellTurnSummary'
 
 export default function setup(host: Host) {
   host.pages.register({
     id: 'shell',
     title: 'shell',
-    render: ({ panelSide, tabId }: PageRenderProps) => (
-      <ShellExplorerPage host={host} panelSide={panelSide} tabId={tabId} />
-    ),
+    render: (props: PageRenderProps) => <ShellExplorerPage host={host} {...props} />,
   })
 
   host.functionTriggers.register(createShellTriggerRenderer())
+
+  host.chat?.registerTurnSummary?.({
+    id: 'shell-last-turn',
+    render: ShellTurnSummary,
+  })
 }

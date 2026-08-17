@@ -1,4 +1,4 @@
-use iii_directory::fs_source::{scan_prompts, scan_skills};
+use iii_directory::fs_source::{scan_prompts, scan_skills, PromptKind};
 use iii_directory::sources::registry::{download, VersionSpec};
 
 #[tokio::main]
@@ -23,7 +23,7 @@ async fn main() -> Result<(), String> {
     println!("  prompts_written  = {:?}", result.prompts_written);
 
     let (skills, skill_skipped) = scan_skills(skills_folder);
-    let (prompts, prompt_skipped) = scan_prompts(skills_folder);
+    let (prompts, prompt_skipped) = scan_prompts(skills_folder, PromptKind::Command);
 
     println!("\n[scan_skills]");
     for s in &skills {
@@ -36,7 +36,7 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    println!("\n[scan_prompts]");
+    println!("\n[scan_prompts: command]");
     for p in &prompts {
         println!("  name={:<30} path={}", p.name, p.abs_path.display());
     }

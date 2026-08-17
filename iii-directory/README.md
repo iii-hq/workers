@@ -3,28 +3,34 @@
 Workers registry HTTP proxy and filesystem-backed skill + prompt
 reader for the [iii engine](https://github.com/iii-hq/iii). Every
 public function sits under a single `directory::*` namespace, split
-into three sub-namespaces (all MCP-agnostic):
+into four sub-namespaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). `title` prefers the YAML frontmatter `title:` over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. | Orientation: "when and why to use my worker's tools" |
-| **Prompts** (`directory::prompts::*`) | Static prompt templates listed by `directory::prompts::list` and read by `directory::prompts::get` | Parametric command templates the *user* invokes |
+| **Prompts** (`directory::prompts::*`) | Command templates listed by `directory::prompts::list`, read by `get`, authored by `create`, edited by `update`. Stored under any `prompts/` path segment; `create` writes `<skills_folder>/prompts/<name>.md`. | Parametric command templates the *user* invokes |
+| **System prompts** (`directory::system-prompts::*`) | Identity prompts with the same four verbs and the same response shapes as Prompts — including the `prompts` field name on `list`. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Engine introspection (functions / triggers / registered triggers /
 workers) is served by the engine natively at
 `engine::functions::*`, `engine::triggers::*`,
-`engine::registered-triggers::*`, and `engine::workers::*`. Earlier
-versions of this crate wrapped those calls under `directory::engine::*`
-helpers; the wrappers have been removed — call the engine ids
-directly.
+`engine::registered-triggers::*`, and `engine::workers::*`. Call the
+engine ids directly. One wrapper survives for callers that can only
+reach the `directory::` namespace: `directory::engine::functions::info`
+proxies a single function's schema (see its row below).
 
 Skills and prompts are sourced from a single configured folder on disk
-(`skills_folder`). The only write path is the
-**`directory::skills::download`** function, which pulls markdown into
-`skills_folder` from either the
-[workers registry](https://workers.iii.dev) or a GitHub repo. Once
-downloaded, files belong to the developer — edit them however you want.
+(`skills_folder`). Writes are the **`directory::skills::download*`**
+functions, which pull markdown into `skills_folder` from either the
+[workers registry](https://workers.iii.dev) or a GitHub repo, plus the
+per-kind single-file editors — `directory::skills::update`,
+`directory::prompts::{create,update}` and
+`directory::system-prompts::{create,update}`. Once downloaded, files
+belong to the developer — edit them however you want, in the editor of
+your choice: a change made directly on disk fires the matching
+`on-change` with `op: "external"` (see [Custom trigger
+types](#custom-trigger-types)).
 
 `directory::registry::workers::*` and the engine's `engine::workers::*`
 share the core `name` / `description` / `version` fields so a parser
@@ -122,6 +128,14 @@ immediately. Topology changes (`skills_folder` / `local_skills_folder` /
 `auto_download`) are refused with a "restart required" log; the previous
 configuration is kept until the worker restarts.
 
+Both folder settings are also watch roots, and the watcher creates each one at
+boot if it is missing (so a fresh install is watched rather than silently
+unwatched until the next restart). `local_skills_folder` defaults to the
+CWD-relative `./.iii/skills`, so expect an empty `.iii/skills` directory to
+appear in whatever working directory the engine launches the worker from. An
+empty local root shadows nothing. Because both are restart-required, the watch
+roots are fixed for the process lifetime.
+
 ---
 
 ## Quickstart: download some skills
@@ -148,13 +162,16 @@ iii trigger --function-id=directory::skills::download \
   }'
 ```
 
-The response is `{ namespace, skills_written, prompts_written, source }`
-where `skills_written` and `prompts_written` are arrays of relative
-paths / prompt names that were materialised in this run.
+The response is
+`{ namespace, skills_written, prompts_written, system_prompts_written, source }`
+where `skills_written`, `prompts_written`, and `system_prompts_written`
+are arrays of relative paths / prompt names that were materialised in
+this run.
 
 After every successful download the worker fires the
-`directory::skills::on-change` and/or `directory::prompts::on-change`
-trigger types so that subscribers like the [`mcp`](https://github.com/iii-hq/workers/tree/main/mcp) worker can
+`directory::skills::on-change`, `directory::prompts::on-change`,
+and/or `directory::system-prompts::on-change` trigger types so that
+subscribers like the [`mcp`](https://github.com/iii-hq/workers/tree/main/mcp) worker can
 forward MCP `notifications/list_changed` to their clients.
 
 ---
@@ -169,9 +186,15 @@ skills_folder/
     index.md                   # → iii://<namespace>/index
     contacts.md                # → iii://<namespace>/contacts
     emails/send-email.md       # → iii://<namespace>/emails/send-email
-    prompts/                   # ← magic marker for prompts
+    prompts/                   # ← magic marker for command templates
       send-email.md            # ← MCP slash-command (needs YAML frontmatter)
       triage.md
+    system-prompts/            # ← magic marker for system prompts
+      reviewer.md              # ← identity prompt (needs YAML frontmatter)
+  prompts/                     # top level works too — the marker is the
+    quick-note.md              #   segment, not its depth
+  system-prompts/              # ← where system-prompts::create writes
+    pirate.md
 ```
 
 A few rules:
@@ -186,7 +209,24 @@ A few rules:
 - **Prompts** live under any `*/prompts/*.md` path. They must start with
   a YAML frontmatter block declaring at least `description`; `name`
   is optional and overrides the file-stem default.
-- Files anywhere else (i.e. *not* in a `prompts/` segment) are skills.
+- **System prompts** live under any `*/system-prompts/*.md` path, with
+  the same frontmatter rule as prompts (`description` required, `name`
+  optional). A path carrying both a `prompts` and a `system-prompts`
+  segment, in either order, is a system prompt — `system-prompts` wins
+  precedence so every path classifies as exactly one kind.
+- **What a system prompt can do, by design.** The console's chat picker
+  can send a selected system prompt with
+  `system_prompt_strategy: "override"`, which replaces the harness's
+  built-in identity prompt with that file's body verbatim. Files reach
+  `system-prompts/` either by local authoring or via
+  `directory::skills::download` from a git repo or the registry, so a
+  downloaded bundle can supply one. This is an accepted property, not a
+  hole: it takes a deliberate selection in the UI, the same UI already
+  accepts arbitrary typed text, and the operator owns `skills_folder`.
+  Worth knowing before you point `skills_folder` at a directory other
+  people can write to.
+- Files anywhere else (i.e. *not* in a `prompts/` or `system-prompts/`
+  segment) are skills.
 
 The download function namespaces by source:
 
@@ -220,7 +260,7 @@ tree-shaped picker iterate `list` rows themselves and indent by
 
 ## Functions
 
-Thirteen functions, all under `directory::*`. All registrations are
+Eighteen functions, all under `directory::*`. All registrations are
 namespace-clean; this worker is intentionally agnostic to MCP and any
 other adapter.
 
@@ -228,7 +268,9 @@ other adapter.
 
 | Function ID | Description |
 |---|---|
-| `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?\|tag?}` (defaults `tag=latest`). |
+| `directory::skills::download` | Pull markdown into `skills_folder`. Flexible alias accepting either source set: `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?\|tag?}` (defaults `tag=latest`). Prefer the two explicit forms below so the source is unambiguous. |
+| `directory::skills::download_from_repo` | Repo-only form: `{repo, skill, branch?}`. Copies one skill folder out of a GitHub repo, classifying each written file as a skill, a command template (`prompts/`), or a system prompt (`system-prompts/`). |
+| `directory::skills::download_from_registry` | Registry-only form: `{worker, version?\|tag?}`. Installs a published worker's bundle from `api.workers.iii.dev`. |
 | `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, type, description, bytes, modified_at }` per row. `title` prefers the YAML frontmatter `title:` over the body H1, `type` is lifted from frontmatter `type:` (`null` when absent), and `description` is the first paragraph of the body — so consumers can render a picker without a follow-up `get` per row. |
 | `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body`. Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw` — the round-trip form `update` takes. |
 | `directory::skills::update` | Overwrite one EXISTING skill file with new full-file content: `{ id, content }` where `content` is the edited `raw` from `get { raw: true }`. Validated against the read invariants (size cap, non-empty body after frontmatter); atomic write; fans out `directory::skills::on-change` with `op: "update"`. Never creates files. |
@@ -241,12 +283,30 @@ other adapter.
 | `directory::prompts::list` | Metadata-only listing of every fs-backed prompt. |
 | `directory::prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw`. |
 | `directory::prompts::update` | Overwrite one EXISTING prompt file with new full-file content: `{ name, content }`. The frontmatter must keep a non-empty `description` (and a valid `name` when declared) — the same rules the scanner enforces. Atomic write; fans out `directory::prompts::on-change` with `op: "update"`. Returns the prompt's effective name after the write. |
+| `directory::prompts::create` | Create a NEW command-template prompt file at `<skills_folder>/prompts/<name>.md` from full-file content: `{ name, content }`, where `content` is the FULL file including frontmatter. The frontmatter must carry a non-empty `description` (and a `name` matching the request, when declared) — the same rules `update` enforces. Refuses a `name` that already exists anywhere in the merged command-prompt scan, and a target path that already exists on disk even if the scanner would skip it. Atomic write; fans out `directory::prompts::on-change` with `op: "create"`. Returns `{ name, description, bytes, modified_at }`. |
 
-### Engine introspection (native)
+### `directory::system-prompts::*` (filesystem reader + editor)
 
-Engine introspection is no longer wrapped here. Call the engine's
-native ids directly — every one takes the same filters
-(`prefix`, `search`, `worker`, `include_internal` where applicable):
+| Function ID | Description |
+|---|---|
+| `directory::system-prompts::list` | Metadata-only listing of every fs-backed system prompt. |
+| `directory::system-prompts::get` | Fetch one system prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw`. |
+| `directory::system-prompts::update` | Overwrite one EXISTING system prompt file with new full-file content: `{ name, content }`. The frontmatter must keep a non-empty `description` (and a valid `name` when declared) — the same rules the scanner enforces. Atomic write; fans out `directory::system-prompts::on-change` with `op: "update"`. Returns the system prompt's effective name after the write. |
+| `directory::system-prompts::create` | Create a NEW system prompt file at `<skills_folder>/system-prompts/<name>.md` from full-file content: `{ name, content }`, where `content` is the FULL file including frontmatter. The frontmatter must carry a non-empty `description` (and a `name` matching the request, when declared) — the same rules `update` enforces. Refuses a `name` that already exists anywhere in the merged system-prompt scan, and a target path that already exists on disk even if the scanner would skip it. Atomic write; fans out `directory::system-prompts::on-change` with `op: "create"`. Returns `{ name, description, bytes, modified_at }`. |
+| `directory::system-prompts::delete` | Permanently remove one EXISTING system prompt file by `{ name }`. Resolves against the same merged scan as `list`/`get`, fans out `directory::system-prompts::on-change` with `op: "delete"`, and returns `{ name }`. |
+
+### Engine introspection (native, plus one wrapper)
+
+Engine introspection is served natively; call these ids directly — every
+one takes the same filters (`prefix`, `search`, `worker`,
+`include_internal` where applicable). One wrapper is kept for callers
+whose policy only admits the `directory::` namespace:
+
+| Function ID | Description |
+|---|---|
+| `directory::engine::functions::info` | Thin proxy to `engine::functions::info` for a single `function_id`: request/response schemas, metadata, and registered triggers. The one `directory::engine::*` helper that still exists — reach for it only when you cannot call `engine::*` directly. |
+
+The native ids:
 
 | Function ID | Description |
 |---|---|
@@ -279,11 +339,24 @@ There is **no** `directory::skills::register` /
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, or a `directory::skills::update` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "namespace": "<ns>", "id": "<id>" }` |
-| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file, or a `directory::prompts::update` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "name": "<name>" }` |
+| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "namespace": "<ns>", "id": "<id>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
+| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file, a `directory::prompts::update`, a `directory::prompts::create`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "name": "<name>" }`; create: `{ "op": "create", "name": "<name>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
+| `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
 
 Dispatches are fire-and-forget (Void), so the write path doesn't
 block on downstream latency.
+
+The `external` op comes from a filesystem watch over the two skills roots. It is
+a doorbell, not a ledger: every read re-scans disk, so a missed event costs a
+stale open view until the next call, never data. A burst coalesces into one event
+per kind, and this worker's own writes are suppressed — a `create` or `update`
+sends its precise op and never an extra `external`.
+
+**Loop hazard for subscribers.** Suppression covers writes made *through this
+worker*. A subscriber that reacts to `{ "op": "external" }` by writing `.md`
+files under `skills_folder` by some other route — a shell or coder worker, a
+script — is not suppressed and will re-trigger itself. Either write through
+`directory::*::update` / `create`, or make the reaction idempotent and gated.
 
 ---
 

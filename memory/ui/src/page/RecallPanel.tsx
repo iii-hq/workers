@@ -71,15 +71,15 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
   const maxScore = result?.memories[0]?.score || 1
 
   return (
-    <div className="mem-stack">
-      <p className="mem-hint">
+    <div className="mem-ui-stack">
+      <p className="mem-ui-hint">
         the whole turn, before it happens: type what someone would ask in chat
         and see everything memory hands that turn — the rules going into the
         system prompt (budgets and truncation applied) and the exact memories
         appended, in order. same code the live hook runs.
       </p>
       <form
-        className="mem-row"
+        className="mem-ui-row"
         onSubmit={(e) => {
           e.preventDefault()
           void run(query)
@@ -91,14 +91,14 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
           preserveCase
           placeholder="ask like a chat user would — e.g. when do I publish?"
           aria-label="turn preview query"
-          className="mem-flex1"
+          className="mem-ui-flex1"
         />
         <Button
           type="submit"
           variant="primary"
           size="sm"
           disabled={!query.trim() || running}
-          className="mem-gap1"
+          className="mem-ui-gap1"
         >
           <Search size={14} aria-hidden />
           preview turn
@@ -106,8 +106,8 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
       </form>
 
       {result === null && !error ? (
-        <div className="mem-row wrap">
-          <span className="mem-caption">try</span>
+        <div className="mem-ui-row wrap">
+          <span className="mem-ui-caption">try</span>
           {examples.map((example) => (
             <button
               key={example}
@@ -116,7 +116,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                 setQuery(example)
                 void run(example)
               }}
-              className="mem-tagbtn"
+              className="mem-ui-tagbtn"
             >
               {example}
             </button>
@@ -124,31 +124,31 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
         </div>
       ) : null}
 
-      {error ? <p className="mem-error-text">{error}</p> : null}
+      {error ? <p className="mem-ui-error-text">{error}</p> : null}
 
       {result !== null && !error ? (
-        <div className="mem-stack">
-          <div className="mem-prompt">
+        <div className="mem-ui-stack">
+          <div className="mem-ui-prompt">
             <button
               type="button"
               onClick={() => setShowPrompt((v) => !v)}
-              className="mem-prompt-head"
+              className="mem-ui-prompt-head"
             >
               {showPrompt ? (
                 <ChevronDown size={14} style={ghost} aria-hidden />
               ) : (
                 <ChevronRight size={14} style={ghost} aria-hidden />
               )}
-              <span className="mem-prompt-label">
+              <span className="mem-ui-prompt-label">
                 system prompt gets: {result.rules} rule
                 {result.rules === 1 ? '' : 's'}
                 {result.rulesTruncated ? ' · over budget, truncated' : ''}
               </span>
-              <span className="mem-spacer" />
-              <span className="mem-subhint">every turn, guaranteed</span>
+              <span className="mem-ui-spacer" />
+              <span className="mem-ui-subhint">every turn, guaranteed</span>
             </button>
             {showPrompt ? (
-              <pre className="mem-prompt-body">
+              <pre className="mem-ui-prompt-body">
                 {result.systemPromptSection.trim()}
               </pre>
             ) : null}
@@ -160,34 +160,34 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
               description="nothing in this bank matches this question and nothing is strong enough for the ambient floor. the rules above still land."
             />
           ) : (
-            <div className="mem-stack tight">
-              <span className="mem-subhint">
+            <div className="mem-ui-stack tight">
+              <span className="mem-ui-subhint">
                 appended to the turn ({result.memories.length}, in order) ·
                 retrieval: {result.retrieval || 'bm25-entity'}
               </span>
-              <ul className="mem-fact-list">
+              <ul className="mem-ui-fact-list">
                 {result.memories.map(({ memory, score }) => (
-                  <li key={memory.id} className="mem-recall-item">
-                    <div className="mem-row">
+                  <li key={memory.id} className="mem-ui-recall-item">
+                    <div className="mem-ui-row">
                       <span
-                        className={`mem-scorebar${score > 0 ? ' on' : ''}`}
+                        className={`mem-ui-scorebar${score > 0 ? ' on' : ''}`}
                         style={{
                           width: `${Math.max(4, Math.round((score / maxScore) * 64))}px`,
                         }}
                         aria-hidden
                       />
-                      <span className="mem-score">
+                      <span className="mem-ui-score">
                         {score > 0 ? score.toFixed(2) : 'ambient'}
                       </span>
                       {memory.pinned ? (
                         <Badge variant="accent">pinned</Badge>
                       ) : null}
                     </div>
-                    <p className="mem-fact-text">{memory.text}</p>
+                    <p className="mem-ui-fact-text">{memory.text}</p>
                   </li>
                 ))}
               </ul>
-              <p className="mem-subhint">
+              <p className="mem-ui-subhint">
                 "ambient" = didn't match the question, but strong enough that
                 every turn gets it (pinned and most-seen memories)
               </p>

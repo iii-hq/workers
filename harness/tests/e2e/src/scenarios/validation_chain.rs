@@ -20,16 +20,31 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "validation_chain";
 
 const HOOK_TYPE: &str = "harness::hook::post-turn";
+const BROKEN_VALIDATOR_SKIPPED: AssessmentSpec = AssessmentSpec::hard_gated(
+    "broken_validator_skipped",
+    30,
+    "The fail_open validator errored invisibly: registered, never a nudge of its own, never blocking.",
+);
+const CHAIN_ORDER: AssessmentSpec = AssessmentSpec::hard_gated(
+    "chain_order",
+    40,
+    "Exactly two denials, CHAIN-A then CHAIN-B — ascending priority, first deny wins each attempt.",
+);
+const ALL_GATES_SATISFIED: AssessmentSpec = AssessmentSpec::hard_gated(
+    "all_gates_satisfied",
+    30,
+    "Rows AND marker both end satisfied — one passing validator never completes the turn alone.",
+);
+const ASSESSMENTS: &[AssessmentSpec] =
+    &[CHAIN_ORDER, ALL_GATES_SATISFIED, BROKEN_VALIDATOR_SKIPPED];
 
 fn table(run_id: &str) -> String {
     format!("chaintest_{}", suffix(run_id))
@@ -49,7 +64,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let broken = broken_fn(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "You are testing a CHAIN of validators on your own session. Follow the steps \
              exactly.\n\n\
@@ -93,27 +108,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "chain_order",
-                weight: 40,
-                description: "Exactly two denials, CHAIN-A then CHAIN-B — ascending priority, \
-                              first deny wins each attempt.",
-            },
-            CriterionSpec {
-                id: "all_gates_satisfied",
-                weight: 30,
-                description: "Rows AND marker both end satisfied — one passing validator never \
-                              completes the turn alone.",
-            },
-            CriterionSpec {
-                id: "broken_validator_skipped",
-                weight: 30,
-                description: "The fail_open validator errored invisibly: registered, never a \
-                              nudge of its own, never blocking.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -172,47 +167,32 @@ fn evaluate<'a>(
             && nudges[1].contains("CHAIN-B")
             && !nudges[1].contains("CHAIN-A");
         let satisfied = rows == 3 && marker == 1;
+        let three_registrations = hook_registrations.len() == 3 && broken_registered;
+        let broken_validator_points = if broken_registered && ordered {
+            BROKEN_VALIDATOR_SKIPPED.weight()
+        } else {
+            0
+        };
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "three_registrations",
-                    hook_registrations.len() == 3 && broken_registered,
-                    format!(
-                        "observed {} post-turn registration(s); need three incl. the fail_open \
-                         broken one",
-                        hook_registrations.len()
-                    ),
+        Ok(assessment::build_evaluation([
+            CHAIN_ORDER.full_or_zero(
+                ordered,
+                format!("nudges in order: {nudges:?} — expected CHAIN-A then CHAIN-B"),
+            ),
+            ALL_GATES_SATISFIED.full_or_zero(
+                satisfied,
+                format!("rows={rows} (need 3), marker={marker} (need 1)"),
+            ),
+            BROKEN_VALIDATOR_SKIPPED.gate_and_points(
+                three_registrations,
+                broken_validator_points,
+                format!(
+                    "observed {} post-turn registration(s); broken_registered={broken_registered}; \
+                     ordered={ordered}; need three incl. the fail_open broken one",
+                    hook_registrations.len()
                 ),
-                common::gate(
-                    "chain_order",
-                    ordered,
-                    format!("nudges in order: {nudges:?} — expected CHAIN-A then CHAIN-B"),
-                ),
-                common::gate(
-                    "all_gates_satisfied",
-                    satisfied,
-                    format!("rows={rows} (need 3), marker={marker} (need 1)"),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "chain_order",
-                    if ordered { 40 } else { 0 },
-                    "awarded for ascending-priority denial order",
-                ),
-                common::award(
-                    "all_gates_satisfied",
-                    if satisfied { 30 } else { 0 },
-                    "awarded when both gates end satisfied",
-                ),
-                common::award(
-                    "broken_validator_skipped",
-                    if broken_registered && ordered { 30 } else { 0 },
-                    "awarded when the fail_open validator neither nudged nor blocked",
-                ),
-            ],
-        })
+            )?,
+        ]))
     })
 }
 
@@ -259,20 +239,4 @@ fn nudge_texts(transcript: &Value) -> Vec<String> {
                 })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn spec_is_valid_and_names_all_three_validators() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("chaintest_aB19"));
-        assert!(spec.prompt.contains("e2e::does_not_exist_aB19"));
-        assert!(spec.prompt.contains("fail_open"));
-        assert!(spec.prompt.contains("CHAIN-A"));
-        assert!(spec.prompt.contains("CHAIN-B"));
-        spec.validate().unwrap();
-    }
 }

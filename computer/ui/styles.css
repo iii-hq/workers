@@ -1,27 +1,324 @@
 /*
- * Styles for the computer worker's injected console UI. Shipped as its own
+ * The computer worker's console stylesheet, shipped as its own
  * `console:style` asset (computer/styles.css) — the console mounts it as a
- * <link> and link-swaps it on change.
+ * <link> and link-swaps it on change. EVERY rule is scoped under
+ * [data-iii-ui="computer"], the wrapper the console mounts around every
+ * injected render (page and chat card alike); unscoped rules would beat the
+ * console's layered CSS document-wide (injected sheets are unlayered).
+ * Keyframe names are global: keep the cp-ui- prefix. Colors come from the
+ * console's design tokens, so light/dark theming is free.
  *
- * EVERY rule is scoped under [data-iii-ui="computer"] — the wrapper the
- * console mounts around every injected render (page, chat card alike).
- * Unscoped rules would beat the console's layered CSS document-wide (injected
- * sheets are unlayered). Keyframe names are global: keep the cp-ui- prefix.
- * Colors come from the console's design tokens, so light/dark theming is free.
+ * The page follows the console redesign's surface + typography roles:
+ *
+ *   navigation  --color-sidebar         the session rail (start form + list)
+ *   workspace   --color-panel           the desktop stage
+ *   raised      --color-panel-raised    workspace header, status bar
+ *   states      --color-surface-*       hover / selected washes
+ *   edges       --color-edge            hairline separation
+ *
+ *   sans (--font-sans)  interface text: banners, empty states, hints
+ *   mono (--font-mono)  technical values: session ids, endpoints,
+ *                       resolutions, counts, and the status bar
  */
 
-[data-iii-ui="computer"] .cp-ui-page,
-[data-iii-ui="computer"] .cp-ui-call {
-  font-family: var(--font-mono, ui-monospace, monospace);
+/* ── the page (#/ext/computer): application shell ───────────────────── */
+
+[data-iii-ui="computer"] .cp-ui-shell {
+  min-height: 360px;
   color: var(--color-ink);
-  box-sizing: border-box;
-}
-[data-iii-ui="computer"] .cp-ui-page *,
-[data-iii-ui="computer"] .cp-ui-page *::before,
-[data-iii-ui="computer"] .cp-ui-page *::after {
-  box-sizing: border-box;
+  font-family: var(--font-sans, system-ui, sans-serif);
 }
 
+/* live / polling indicator (header actions) */
+[data-iii-ui="computer"] .cp-ui-live {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  white-space: nowrap;
+}
+[data-iii-ui="computer"] .cp-ui-live .dot {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="computer"] .cp-ui-live.is-live .dot {
+  color: var(--color-ok);
+  animation: cp-ui-live-pulse 2.4s ease-in-out infinite;
+}
+@keyframes cp-ui-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* status banners sit directly under the header, near what they describe */
+[data-iii-ui="computer"] .cp-ui-banner {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 16px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="computer"] .cp-ui-banner.warn {
+  background: var(--color-warn-muted);
+}
+[data-iii-ui="computer"] .cp-ui-banner.alert {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui="computer"] .cp-ui-banner > span {
+  word-break: break-word;
+}
+[data-iii-ui="computer"] .cp-ui-linkish {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+[data-iii-ui="computer"] .cp-ui-linkish:hover {
+  color: var(--color-accent-hover);
+}
+[data-iii-ui="computer"] .cp-ui-linkish:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ── browser: rail + desktop stage ──────────────────────────────────── */
+
+[data-iii-ui="computer"] .cp-ui-browser {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+/* Right-column pane: mirror so navigation hugs the pane's outer edge. */
+[data-iii-ui="computer"] .cp-ui-browser.right {
+  flex-direction: row-reverse;
+}
+
+/* ── navigation rail ────────────────────────────────────────────────── */
+
+[data-iii-ui="computer"] .cp-ui-rail {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-edge);
+}
+[data-iii-ui="computer"] .cp-ui-browser.right .cp-ui-rail {
+  border-right: 0;
+  border-left: 1px solid var(--color-edge);
+}
+/* Narrow is CONTAINER width (< 720px, the page's own ResizeObserver), not
+   the viewport: one pane at a time — the JSX renders either the rail or
+   the opened desktop. */
+[data-iii-ui="computer"] .cp-ui-browser.narrow .cp-ui-rail {
+  width: 100%;
+  border-right: 0;
+  border-left: 0;
+}
+
+/* start-session form, pinned above the list in both layout modes */
+[data-iii-ui="computer"] .cp-ui-rail-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="computer"] .cp-ui-rail-caption {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-start {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+[data-iii-ui="computer"] .cp-ui-start-mode,
+[data-iii-ui="computer"] .cp-ui-start-field {
+  width: 100%;
+  min-width: 0;
+}
+
+[data-iii-ui="computer"] .cp-ui-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 10px 6px 14px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="computer"] .cp-ui-col-head .label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-col-head .spacer {
+  flex: 1;
+}
+[data-iii-ui="computer"] .cp-ui-col-head .count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="computer"] .cp-ui-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 12px;
+}
+
+/* session rows — pick + stop share the row; the wash spans both */
+[data-iii-ui="computer"] .cp-ui-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+[data-iii-ui="computer"] .cp-ui-rail-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 7px 6px 7px 14px;
+  border-radius: 6px;
+}
+[data-iii-ui="computer"] .cp-ui-rail-row:hover {
+  background: var(--color-surface-hover);
+}
+/* Selection = wash + accent indicator + stronger id, not color alone. */
+[data-iii-ui="computer"] .cp-ui-rail-row.active {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="computer"] .cp-ui-rail-row.active::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+[data-iii-ui="computer"] .cp-ui-rail-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+[data-iii-ui="computer"] .cp-ui-rail-pick:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+[data-iii-ui="computer"] .cp-ui-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="computer"] .cp-ui-rail-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-rail-row.active .cp-ui-rail-id {
+  font-weight: 600;
+}
+[data-iii-ui="computer"] .cp-ui-rail-meta {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="computer"] .cp-ui-rail-stop {
+  flex-shrink: 0;
+}
+/* Touch-sized targets in the drill-in flow. */
+[data-iii-ui="computer"] .cp-ui-browser.narrow .cp-ui-rail-row {
+  min-height: 44px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+/* rail empty / loading */
+[data-iii-ui="computer"] .cp-ui-rail-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 20px 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-rail-empty p {
+  margin: 0;
+}
+[data-iii-ui="computer"] .cp-ui-rail-empty .dim {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-rail-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 10px;
+}
+[data-iii-ui="computer"] .cp-ui-skel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+[data-iii-ui="computer"] .cp-ui-skel-row .bar {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  animation: cp-ui-pulse 1.6s ease-in-out infinite;
+}
 @keyframes cp-ui-pulse {
   0%,
   100% {
@@ -31,174 +328,133 @@
     opacity: 0.4;
   }
 }
-
-/* --- page shell ------------------------------------------------------ */
-[data-iii-ui="computer"] .cp-ui-page {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
+[data-iii-ui="computer"] .bar.w40 {
+  width: 40%;
 }
-[data-iii-ui="computer"] .cp-ui-page-head {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--color-rule);
+[data-iii-ui="computer"] .bar.w60 {
+  width: 60%;
 }
-[data-iii-ui="computer"] .cp-ui-page-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
+[data-iii-ui="computer"] .bar.w70 {
+  width: 70%;
 }
-[data-iii-ui="computer"] .cp-ui-page-name {
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
+[data-iii-ui="computer"] .bar.w75 {
+  width: 75%;
 }
-[data-iii-ui="computer"] .cp-ui-page-sub {
-  font-size: 11px;
-  color: var(--color-ink-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+[data-iii-ui="computer"] .bar.w85 {
+  width: 85%;
 }
-[data-iii-ui="computer"] .cp-ui-page-error {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0;
-  padding: 8px 24px;
-  font-size: 11px;
-  color: var(--color-alert);
-  border-bottom: 1px solid var(--color-rule);
-}
-[data-iii-ui="computer"] .cp-ui-page-body {
-  flex: 1;
-  display: flex;
-  min-height: 0;
+[data-iii-ui="computer"] .bar.w90 {
+  width: 90%;
 }
 
-/* --- start control --------------------------------------------------- */
-[data-iii-ui="computer"] .cp-ui-start {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-[data-iii-ui="computer"] .cp-ui-start-mode {
-  min-width: 150px;
-}
-[data-iii-ui="computer"] .cp-ui-start-field {
-  min-width: 190px;
-}
+/* ── desktop stage (workspace) ──────────────────────────────────────── */
 
-/* --- session rail ---------------------------------------------------- */
-[data-iii-ui="computer"] .cp-ui-rail {
-  flex-shrink: 0;
-  width: 260px;
-  border-right: 1px solid var(--color-rule);
-  overflow-y: auto;
-  padding: 8px;
-}
-[data-iii-ui="computer"] .cp-ui-rail-empty {
-  margin: 12px 8px;
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="computer"] .cp-ui-rail-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-[data-iii-ui="computer"] .cp-ui-rail-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 2px 4px 2px 0;
-}
-[data-iii-ui="computer"] .cp-ui-rail-row.is-selected {
-  border-color: var(--color-accent);
-  background: var(--color-panel);
-}
-[data-iii-ui="computer"] .cp-ui-rail-pick {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 6px 8px;
-  background: none;
-  border: 0;
-  text-align: left;
-  cursor: pointer;
-  color: inherit;
-  font: inherit;
-}
-[data-iii-ui="computer"] .cp-ui-rail-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-[data-iii-ui="computer"] .cp-ui-rail-id {
-  font-size: 12px;
-  font-weight: 500;
-}
-[data-iii-ui="computer"] .cp-ui-rail-meta {
-  font-size: 10px;
-  color: var(--color-ink-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-[data-iii-ui="computer"] .cp-ui-rail-stop {
-  flex-shrink: 0;
-}
-
-/* --- stage + viewport ------------------------------------------------ */
 [data-iii-ui="computer"] .cp-ui-stage {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 24px 12px;
-  overflow: hidden;
+  background: var(--color-panel);
 }
-[data-iii-ui="computer"] .cp-ui-stage-hint {
+
+/* workspace header — session identity, stable while frames stream */
+[data-iii-ui="computer"] .cp-ui-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 44px;
+  padding: 6px 16px;
   flex-shrink: 0;
-  margin: 0;
-  font-size: 10px;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="computer"] .cp-ui-doc-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="computer"] .cp-ui-doc-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+/* The text needs its own box — ellipsis doesn't reach into a flex row. */
+[data-iii-ui="computer"] .cp-ui-doc-name .txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="computer"] .cp-ui-doc-crumb {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
   color: var(--color-ink-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* back affordance (drill-in flow) */
+[data-iii-ui="computer"] .cp-ui-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="computer"] .cp-ui-back:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="computer"] .cp-ui-back:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="computer"] .cp-ui-back-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* the viewport pane — the live surface fills it, letterboxed */
+[data-iii-ui="computer"] .cp-ui-stage-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  padding: 12px 16px;
+}
+[data-iii-ui="computer"] .cp-ui-browser.narrow .cp-ui-stage-body {
+  padding: 8px;
 }
 [data-iii-ui="computer"] .cp-ui-vp {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-paper-2);
-  border: 1px solid var(--color-rule);
+  background: var(--color-surface);
+  border: 1px solid var(--color-edge);
   border-radius: 6px;
   overflow: hidden;
   outline: none;
 }
 [data-iii-ui="computer"] .cp-ui-vp:focus-visible {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 1px var(--color-ring);
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
 [data-iii-ui="computer"] .cp-ui-vp-img {
   max-width: 100%;
@@ -209,12 +465,83 @@
 }
 [data-iii-ui="computer"] .cp-ui-vp-empty {
   margin: 0;
+  padding: 0 16px;
+  text-align: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   color: var(--color-ink-ghost);
 }
 
-/* --- chat cards ------------------------------------------------------ */
+/* status bar — coordinate space + how input reaches the desktop */
+[data-iii-ui="computer"] .cp-ui-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 26px;
+  padding: 4px 16px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-top: 1px solid var(--color-edge);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="computer"] .cp-ui-statusbar .fact {
+  white-space: nowrap;
+}
+[data-iii-ui="computer"] .cp-ui-statusbar .fact.hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="computer"] .cp-ui-statusbar .spacer {
+  flex: 1;
+}
+
+/* workspace empty state — teaches the next action, not the absence */
+[data-iii-ui="computer"] .cp-ui-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 24px;
+  text-align: center;
+}
+[data-iii-ui="computer"] .cp-ui-hero-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink-ghost);
+  margin-bottom: 8px;
+}
+[data-iii-ui="computer"] .cp-ui-hero-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-hero-body {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="computer"] .cp-ui-live.is-live .dot,
+  [data-iii-ui="computer"] .cp-ui-skel-row .bar {
+    animation: none;
+  }
+}
+
+/* ── chat cards (function-trigger views) ────────────────────────────── */
 [data-iii-ui="computer"] .cp-ui-call {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -225,6 +552,12 @@
   align-items: center;
   gap: 10px;
   color: var(--color-ink-faint);
+}
+/* Referenced by the card TSX; the look is inherited — declared so the
+   class inventory stays complete. */
+[data-iii-ui="computer"] .cp-ui-call-session,
+[data-iii-ui="computer"] .cp-ui-kv-val {
+  color: inherit;
 }
 [data-iii-ui="computer"] .cp-ui-call-sid {
   color: var(--color-ink);

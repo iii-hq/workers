@@ -13,12 +13,13 @@
 use crate::chat::chat::{ChatCall, ChatFnInput};
 use crate::types::router::{
     AbortRequest, AbortResponse, ChatResponse, CompleteResponse, ConfigChangedEvent,
-    ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest, ModelGetResponse, ModelsListRequest,
-    ModelsListResponse, ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest,
-    ModelsSupportsResponse, ProviderListRequest, ProviderListResponse, ProviderRegisterRequest,
-    ProviderRegisterResponse, ProviderResolveRequest, ProviderResolveResponse, RouteRequest,
-    RouteResponse, RouterAck, SystemPromptGetRequest, SystemPromptGetResponse,
-    UpdateCredentialRequest, UpdateCredentialResponse,
+    FunctionsChangedEvent, ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest,
+    ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
+    ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
+    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
+    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
+    SystemPromptGetRequest, SystemPromptGetResponse, UpdateCredentialRequest,
+    UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
@@ -93,6 +94,12 @@ pub const UPDATE_CREDENTIAL_DESC: &str = "OAuth write-back: store a provider cre
 pub const MODELS_RECONCILE_ID: &str = "router::models::reconcile";
 pub const MODELS_RECONCILE_DESC: &str =
     "Replace a provider's catalog slice — the only catalog write path (token-gated).";
+
+pub const ON_FUNCTIONS_CHANGED_ID: &str = "router::on_functions_changed";
+pub const ON_FUNCTIONS_CHANGED_DESC: &str =
+    "Internal: a worker's function registrations changed — re-discover live \
+     providers and nudge them to re-declare, so a provider that reconnected \
+     is resolvable again without waiting for its own catalog timer.";
 
 pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
@@ -174,5 +181,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
             MODELS_RECONCILE_DESC,
         ),
         spec::<ConfigChangedEvent, RouterAck>(ON_CONFIG_CHANGED_ID, ON_CONFIG_CHANGED_DESC),
+        spec::<FunctionsChangedEvent, RouterAck>(
+            ON_FUNCTIONS_CHANGED_ID,
+            ON_FUNCTIONS_CHANGED_DESC,
+        ),
     ]
 }

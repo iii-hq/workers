@@ -1,70 +1,53 @@
 /*
- * Styles for the worktree worker's injected console UI. Shipped as its own
+ * The worktree worker's console stylesheet, shipped as its own
  * `console:style` asset (worktree/styles.css) — the console mounts it as a
- * <link> and link-swaps it on change.
+ * <link> and link-swaps it on change, styles-before-scripts on boot.
  *
  * EVERY rule is scoped under [data-iii-ui="worktree"] — the wrapper the
- * console mounts around every injected render. Unscoped rules would beat the
- * console's layered CSS document-wide (injected sheets are unlayered).
- * Keyframe names are global: keep the wt-ui- prefix. Colors come from the
- * console's design tokens so light/dark theming is free.
+ * console mounts around every injected render. Unscoped rules would beat
+ * the console's layered CSS document-wide (injected sheets are unlayered).
+ * Keyframe names ARE global: keep the wt-ui- prefix. Colors come from the
+ * console's design tokens, so light/dark theming is free.
+ *
+ * The page follows the console redesign's surface + typography roles:
+ *
+ *   workspace   --color-panel           the graph canvas (the hero)
+ *   navigation  --color-sidebar         the worktree detail column
+ *   raised      --color-panel-raised    headers, repo anchor nodes
+ *   states      --color-surface-*       node cards + hover/selected washes
+ *   edges       --color-edge            hairlines and graph edges
+ *
+ *   sans (--font-sans)  interface text: empty states, error panels
+ *   mono (--font-mono)  technical values: branches, ids, paths, shas,
+ *                       counts, lifecycle words — most of this page
  */
 
-[data-iii-ui="worktree"] .wt-page {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  box-sizing: border-box;
-  font-family: var(--font-mono, ui-monospace, monospace);
+/* ── the page (#/ext/worktree): application shell ─────────────────────
+   The root + top bar are the shared page chrome (PageShell/PageHeader
+   from @iii-dev/console-ui); this class only layers the page's
+   typography defaults on top. */
+
+[data-iii-ui="worktree"] .wt-ui-shell {
+  min-height: 360px;
   color: var(--color-ink);
-}
-[data-iii-ui="worktree"] .wt-page *,
-[data-iii-ui="worktree"] .wt-page *::before,
-[data-iii-ui="worktree"] .wt-page *::after {
-  box-sizing: border-box;
+  font-family: var(--font-sans, system-ui, sans-serif);
 }
 
-/* --- header ---------------------------------------------------------- */
-[data-iii-ui="worktree"] .wt-head {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--color-rule);
-}
-[data-iii-ui="worktree"] .wt-title {
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  text-transform: lowercase;
-  color: var(--color-ink);
-}
-[data-iii-ui="worktree"] .wt-sub {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  margin-top: 2px;
-  text-transform: lowercase;
-}
-[data-iii-ui="worktree"] .wt-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-[data-iii-ui="worktree"] .wt-liveness {
+/* header widgets (the PageHeader actions slot) */
+[data-iii-ui="worktree"] .wt-ui-liveness {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-right: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
-  text-transform: lowercase;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="worktree"] .wt-ui-refresh-icon {
   color: var(--color-ink-faint);
 }
-[data-iii-ui="worktree"] .wt-refresh-icon {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="worktree"] .wt-refresh-icon.spin {
+[data-iii-ui="worktree"] .wt-ui-refresh-icon.spin {
   animation: wt-ui-spin 1s linear infinite;
 }
 @keyframes wt-ui-spin {
@@ -73,62 +56,118 @@
   }
 }
 
-/* --- body split: canvas + detail ------------------------------------- */
-[data-iii-ui="worktree"] .wt-body {
+/* ── body: graph canvas + detail column ─────────────────────────────── */
+
+[data-iii-ui="worktree"] .wt-ui-body {
   flex: 1;
-  min-height: 0;
   display: flex;
-}
-[data-iii-ui="worktree"] .wt-canvas {
-  flex: 1;
+  min-height: 0;
   min-width: 0;
-  overflow: auto;
-  padding: 16px 24px;
+  width: 100%;
+}
+/* Graph geometry is computed in px (layout.ts) with padding + 1px borders
+   riding on top — border-box keeps the numbers 1:1. */
+[data-iii-ui="worktree"] .wt-ui-body,
+[data-iii-ui="worktree"] .wt-ui-body *,
+[data-iii-ui="worktree"] .wt-ui-body *::before,
+[data-iii-ui="worktree"] .wt-ui-body *::after {
+  box-sizing: border-box;
+}
+/* Right-column pane: mirror the row so the graph hero keeps the pane's
+   outer edge and the detail column sits toward the split divider. */
+[data-iii-ui="worktree"] .wt-ui-body.right {
+  flex-direction: row-reverse;
 }
 
-/* --- graph ----------------------------------------------------------- */
-[data-iii-ui="worktree"] .wt-graph {
-  position: relative;
+/* the graph canvas — the workspace hero; scrolls in both axes */
+[data-iii-ui="worktree"] .wt-ui-canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px;
+  background: var(--color-panel);
 }
-[data-iii-ui="worktree"] .wt-graph-svg {
+
+/* first-load skeleton bars */
+[data-iii-ui="worktree"] .wt-ui-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 2px;
+  max-width: 420px;
+}
+[data-iii-ui="worktree"] .wt-ui-skel .bar {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  animation: wt-ui-pulse 1.6s ease-in-out infinite;
+}
+@keyframes wt-ui-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+[data-iii-ui="worktree"] .bar.w40 {
+  width: 40%;
+}
+[data-iii-ui="worktree"] .bar.w60 {
+  width: 60%;
+}
+[data-iii-ui="worktree"] .bar.w75 {
+  width: 75%;
+}
+
+/* ── graph: absolutely-positioned repo/worktree nodes over one SVG of
+      orthogonal edges (geometry from layout.ts, rendered 1:1) ────────── */
+
+[data-iii-ui="worktree"] .wt-ui-graph {
+  position: relative;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="worktree"] .wt-ui-graph-svg {
   position: absolute;
   inset: 0;
 }
-[data-iii-ui="worktree"] .wt-edge {
+[data-iii-ui="worktree"] .wt-ui-edge {
   fill: none;
-  stroke: var(--color-rule);
+  stroke: var(--color-edge);
 }
-[data-iii-ui="worktree"] .wt-edge.selected {
+[data-iii-ui="worktree"] .wt-ui-edge.selected {
   stroke: var(--color-accent);
 }
-[data-iii-ui="worktree"] .wt-edge-label {
+[data-iii-ui="worktree"] .wt-ui-edge-label {
   fill: var(--color-ink-ghost);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 10px;
-  text-transform: lowercase;
 }
 
-/* --- repo node ------------------------------------------------------- */
-[data-iii-ui="worktree"] .wt-repo {
+/* repo anchor node */
+[data-iii-ui="worktree"] .wt-ui-repo {
   position: absolute;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 2px;
   padding: 0 12px;
-  border: 1px solid var(--color-rule);
-  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
 }
-[data-iii-ui="worktree"] .wt-repo-name {
+[data-iii-ui="worktree"] .wt-ui-repo-name {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   font-weight: 600;
-  text-transform: lowercase;
   color: var(--color-ink);
 }
-[data-iii-ui="worktree"] .wt-repo-path {
+[data-iii-ui="worktree"] .wt-ui-repo-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -136,8 +175,8 @@
   color: var(--color-ink-ghost);
 }
 
-/* --- worktree node --------------------------------------------------- */
-[data-iii-ui="worktree"] .wt-node {
+/* worktree node card — the whole card is the button */
+[data-iii-ui="worktree"] .wt-ui-node {
   position: absolute;
   display: flex;
   flex-direction: column;
@@ -145,193 +184,280 @@
   gap: 4px;
   padding: 0 12px;
   text-align: left;
-  border: 1px solid var(--color-rule);
-  background: var(--color-bg);
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
   color: var(--color-ink);
   font-family: inherit;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
 }
-[data-iii-ui="worktree"] .wt-node:hover {
-  background: var(--color-panel);
+[data-iii-ui="worktree"] .wt-ui-node:hover {
+  background: var(--color-surface-hover);
 }
-[data-iii-ui="worktree"] .wt-node.selected {
-  border-left: 2px solid var(--color-accent);
-  background: var(--color-panel);
+[data-iii-ui="worktree"] .wt-ui-node:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
-[data-iii-ui="worktree"] .wt-node-branch {
+/* Selection = wash + accent indicator + stronger branch, not color alone. */
+[data-iii-ui="worktree"] .wt-ui-node.selected {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="worktree"] .wt-ui-node.selected::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+[data-iii-ui="worktree"] .wt-ui-node.selected .wt-ui-branch {
+  font-weight: 600;
+}
+[data-iii-ui="worktree"] .wt-ui-node-branch {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
   font-size: 12px;
 }
-[data-iii-ui="worktree"] .wt-node-id {
+[data-iii-ui="worktree"] .wt-ui-branch {
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-ui-node-id {
   flex-shrink: 0;
   font-size: 10px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="worktree"] .wt-dirty {
+[data-iii-ui="worktree"] .wt-ui-dirty {
   flex-shrink: 0;
   color: var(--color-warn);
 }
-[data-iii-ui="worktree"] .wt-ahead {
+[data-iii-ui="worktree"] .wt-ui-ahead {
   flex-shrink: 0;
   font-size: 10px;
   color: var(--color-ink-faint);
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="worktree"] .wt-node-meta {
+[data-iii-ui="worktree"] .wt-ui-node-meta {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 8px;
   font-size: 10px;
-  text-transform: lowercase;
 }
-[data-iii-ui="worktree"] .wt-lifecycle {
+[data-iii-ui="worktree"] .wt-ui-lifecycle {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-[data-iii-ui="worktree"] .wt-session {
+[data-iii-ui="worktree"] .wt-ui-session {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: 0 4px;
-  border: 1px solid var(--color-rule-2);
+  border: 1px solid var(--color-edge);
+  border-radius: 3px;
   color: var(--color-ink-ghost);
 }
 
-/* --- detail panel ---------------------------------------------------- */
-[data-iii-ui="worktree"] .wt-detail {
+/* ── detail column: sidebar surface beside the graph (wide) or the
+      drilled-in pane (narrow) ──────────────────────────────────────── */
+
+[data-iii-ui="worktree"] .wt-ui-detail {
   display: flex;
   flex-direction: column;
   width: 300px;
   flex-shrink: 0;
-  overflow-y: auto;
-  border-left: 1px solid var(--color-rule);
-  background: var(--color-bg);
+  min-height: 0;
+  border-left: 1px solid var(--color-edge);
+  background: var(--color-sidebar);
+  font-family: var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="worktree"] .wt-detail-head {
+[data-iii-ui="worktree"] .wt-ui-body.right .wt-ui-detail {
+  border-left: 0;
+  border-right: 1px solid var(--color-edge);
+}
+/* Narrow is CONTAINER width (< 860px, the body's own ResizeObserver), not
+   the viewport: one pane at a time — the JSX renders either the graph or
+   the selected worktree's detail. */
+[data-iii-ui="worktree"] .wt-ui-body.narrow .wt-ui-detail {
+  width: 100%;
+  border-left: 0;
+  border-right: 0;
+}
+
+/* detail header — raised, stable while the body scrolls */
+[data-iii-ui="worktree"] .wt-ui-detail-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--color-rule);
-  background: var(--color-panel);
+  min-height: 40px;
+  padding: 6px 8px 6px 14px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="worktree"] .wt-detail-title {
+[data-iii-ui="worktree"] .wt-ui-body.narrow .wt-ui-detail-head {
+  padding-left: 8px;
+}
+[data-iii-ui="worktree"] .wt-ui-detail-title {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
-  text-transform: lowercase;
   color: var(--color-ink);
 }
-[data-iii-ui="worktree"] .wt-detail-close {
+[data-iii-ui="worktree"] .wt-ui-detail-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
-  appearance: none;
-  background: transparent;
   border: 0;
+  border-radius: 6px;
+  background: transparent;
   padding: 0;
   cursor: pointer;
   color: var(--color-ink-ghost);
-  transition: color 0.12s;
 }
-[data-iii-ui="worktree"] .wt-detail-close:hover {
+[data-iii-ui="worktree"] .wt-ui-detail-close:hover {
   color: var(--color-ink);
+  background: var(--color-surface-hover);
 }
-[data-iii-ui="worktree"] .wt-detail-body > * {
-  border-top: 1px solid var(--color-rule-2);
+[data-iii-ui="worktree"] .wt-ui-detail-close:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
-[data-iii-ui="worktree"] .wt-detail-body > *:first-child {
+
+/* back affordance (drill-in flow) */
+[data-iii-ui="worktree"] .wt-ui-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="worktree"] .wt-ui-back:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="worktree"] .wt-ui-back:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+/* detail body — hairline-separated field rows, own scroll */
+[data-iii-ui="worktree"] .wt-ui-detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+[data-iii-ui="worktree"] .wt-ui-detail-body > * {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="worktree"] .wt-ui-detail-body > *:first-child {
   border-top: 0;
 }
 
-[data-iii-ui="worktree"] .wt-row {
+[data-iii-ui="worktree"] .wt-ui-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 8px 14px;
 }
-[data-iii-ui="worktree"] .wt-row-label {
+[data-iii-ui="worktree"] .wt-ui-row-label {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="worktree"] .wt-row-value {
+[data-iii-ui="worktree"] .wt-ui-row-value {
   min-width: 0;
   word-break: break-all;
   font-size: 12px;
   color: var(--color-ink);
 }
-[data-iii-ui="worktree"] .wt-inline-tone {
+[data-iii-ui="worktree"] .wt-ui-inline-tone {
   margin-left: 8px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  text-transform: lowercase;
 }
-[data-iii-ui="worktree"] .wt-path {
+[data-iii-ui="worktree"] .wt-ui-path {
   display: flex;
   align-items: flex-start;
   gap: 6px;
 }
-[data-iii-ui="worktree"] .wt-path-val {
+[data-iii-ui="worktree"] .wt-ui-path-val {
   min-width: 0;
   flex: 1;
   word-break: break-all;
 }
-[data-iii-ui="worktree"] .wt-copy {
+[data-iii-ui="worktree"] .wt-ui-copy {
   margin-top: 2px;
   flex-shrink: 0;
   appearance: none;
   background: transparent;
   border: 0;
-  padding: 0;
+  border-radius: 4px;
+  padding: 2px;
   cursor: pointer;
   color: var(--color-ink-ghost);
-  transition: color 0.12s;
+  transition: color 120ms ease;
 }
-[data-iii-ui="worktree"] .wt-copy:hover {
+[data-iii-ui="worktree"] .wt-ui-copy:hover {
   color: var(--color-ink);
 }
-[data-iii-ui="worktree"] .wt-sha {
+[data-iii-ui="worktree"] .wt-ui-copy:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="worktree"] .wt-ui-sha {
   margin-left: 8px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="worktree"] .wt-tabular {
+[data-iii-ui="worktree"] .wt-ui-tabular {
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="worktree"] .wt-note {
+[data-iii-ui="worktree"] .wt-ui-note {
   margin-left: 8px;
   font-size: 11px;
-  text-transform: lowercase;
   color: var(--color-ink-ghost);
 }
-[data-iii-ui="worktree"] .wt-integrated {
+[data-iii-ui="worktree"] .wt-ui-integrated {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--color-ink);
 }
 
-[data-iii-ui="worktree"] .wt-status {
+[data-iii-ui="worktree"] .wt-ui-status {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px 14px;
 }
-[data-iii-ui="worktree"] .wt-status-grid {
+[data-iii-ui="worktree"] .wt-ui-status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 12px;
@@ -340,55 +466,59 @@
   font-size: 11px;
   color: var(--color-ink);
 }
-[data-iii-ui="worktree"] .wt-status-dt {
+[data-iii-ui="worktree"] .wt-ui-status-dt {
   color: var(--color-ink-faint);
-  text-transform: lowercase;
 }
-[data-iii-ui="worktree"] .wt-status-dd {
+[data-iii-ui="worktree"] .wt-ui-status-dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="worktree"] .wt-diffstat {
+[data-iii-ui="worktree"] .wt-ui-diffstat {
   margin-top: 4px;
   font-size: 11px;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="worktree"] .wt-head-sha {
+[data-iii-ui="worktree"] .wt-ui-head-sha {
   font-size: 11px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
 
-/* --- shared helpers -------------------------------------------------- */
-[data-iii-ui="worktree"] .wt-truncate {
+/* ── shared helpers ─────────────────────────────────────────────────── */
+
+[data-iii-ui="worktree"] .wt-ui-truncate {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="worktree"] .wt-ink {
-  color: var(--color-ink);
-}
-[data-iii-ui="worktree"] .wt-icon-faint {
+[data-iii-ui="worktree"] .wt-ui-icon-faint {
   flex-shrink: 0;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="worktree"] .wt-icon-ghost {
+[data-iii-ui="worktree"] .wt-ui-icon-ghost {
   flex-shrink: 0;
   color: var(--color-ink-ghost);
 }
-[data-iii-ui="worktree"] .wt-accent {
+[data-iii-ui="worktree"] .wt-ui-accent {
   color: var(--color-accent);
 }
-[data-iii-ui="worktree"] .wt-tone-ink {
+[data-iii-ui="worktree"] .wt-ui-tone-ink {
   color: var(--color-ink-faint);
 }
-[data-iii-ui="worktree"] .wt-tone-accent {
+[data-iii-ui="worktree"] .wt-ui-tone-accent {
   color: var(--color-accent);
 }
-[data-iii-ui="worktree"] .wt-tone-warn {
+[data-iii-ui="worktree"] .wt-ui-tone-warn {
   color: var(--color-warn);
 }
-[data-iii-ui="worktree"] .wt-tone-alert {
+[data-iii-ui="worktree"] .wt-ui-tone-alert {
   color: var(--color-alert);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="worktree"] .wt-ui-refresh-icon.spin,
+  [data-iii-ui="worktree"] .wt-ui-skel .bar {
+    animation: none;
+  }
 }

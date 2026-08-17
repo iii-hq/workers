@@ -19,6 +19,7 @@
 
 import { useEffect, useRef } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
 import { useExtPages } from '@/lib/ui-slots'
 import type { PanelSide } from '@/types/injectable-ui'
@@ -47,6 +48,13 @@ interface ExtPageProps {
    * Absent when rendered outside a closable pane.
    */
   onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory — forwarded live so
+   * filesystem-shaped pages can follow the chat's folder.
+   */
+  workingDir?: string | null
+  /** Active chat id for session-scoped reactive pages. */
+  conversationId?: string | null
 }
 
 export function ExtPage({
@@ -55,6 +63,8 @@ export function ExtPage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  workingDir,
+  conversationId,
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
@@ -87,16 +97,23 @@ export function ExtPage({
 
   if (!page) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <EmptyState
-          title="extension page not loaded"
-          description={
-            pageId
-              ? `no worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
-              : 'missing extension page id.'
-          }
+      <PageShell aria-label={pageId ?? 'extension page'}>
+        <PageHeader
+          title={pageId ?? 'extension'}
+          description="waiting for worker"
+          onClose={onRequestClose}
         />
-      </div>
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState
+            title="extension page not loaded"
+            description={
+              pageId
+                ? `no worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
+                : 'missing extension page id.'
+            }
+          />
+        </div>
+      </PageShell>
     )
   }
 
@@ -107,6 +124,8 @@ export function ExtPage({
         panelSide={panelSide}
         tabId={tabId}
         onRequestClose={onRequestClose}
+        workingDir={workingDir}
+        conversationId={conversationId}
       />
     </div>
   )

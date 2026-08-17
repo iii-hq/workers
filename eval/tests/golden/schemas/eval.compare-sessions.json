@@ -1,0 +1,990 @@
+{
+  "function_id": "eval::compare-sessions",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "The only input needed to compare sessions. The caller is responsible for choosing sessions that are meaningful to compare; the worker only checks shape and root identity.",
+    "properties": {
+      "baseline_session_id": {
+        "type": "string"
+      },
+      "session_ids": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 5,
+        "minItems": 2,
+        "type": "array"
+      }
+    },
+    "required": [
+      "baseline_session_id",
+      "session_ids"
+    ],
+    "title": "CompareSessionsRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContextSnapshotV1": {
+        "description": "One generation's context accounting. `free = usable - total`, floored at zero: once provider usage lands, `total` is what was billed, which can exceed the `usable` budget the window was fit into — that budget was derived before the generation from an estimate.",
+        "properties": {
+          "categories": {
+            "$ref": "#/definitions/SnapshotCategoriesV1"
+          },
+          "compacted": {
+            "type": "boolean"
+          },
+          "effective_max_output_tokens": {
+            "description": "Output allocation `usable` was derived against.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "estimator": {
+            "description": "Which estimator produced the numbers (`heuristic` until the context-manager resolves a real tokenizer). Absent when the context-manager predates the breakdown response.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "free": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "summarized_head_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Final request estimate: categories plus post-assembly growth.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "usable": {
+            "description": "The input budget the window was fit into.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Actual provider usage for this generation, stamped after the terminal frame; absent when the provider returned none (or the generation never completed)."
+          }
+        },
+        "required": [
+          "categories",
+          "compacted",
+          "effective_max_output_tokens",
+          "free",
+          "model",
+          "session_id",
+          "step",
+          "timestamp",
+          "total",
+          "turn_id",
+          "usable"
+        ],
+        "type": "object"
+      },
+      "MetricDeltaV1": {
+        "properties": {
+          "absolute": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "percent": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ObjectiveSummaryV1": {
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "compacted_sessions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "context_free_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "context_occupancy": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "context_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "context_usable_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_per_generation_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "descendants": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "function_error_rate": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "generations": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "subject_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tokens_per_generation": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "trace_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "trace_duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SessionComparisonItemV1": {
+        "properties": {
+          "deltas": {
+            "additionalProperties": {
+              "$ref": "#/definitions/MetricDeltaV1"
+            },
+            "default": {},
+            "description": "One entry per objective numeric metric. A missing value is represented by null in either delta field, never by zero.",
+            "type": "object"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lifecycle": {
+            "$ref": "#/definitions/SessionLifecycleV1"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SessionMetricsResponseV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "$ref": "#/definitions/SessionMetaProjectionV1"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ObjectiveSummaryV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "lifecycle",
+          "session"
+        ],
+        "type": "object"
+      },
+      "SessionLifecycleV1": {
+        "properties": {
+          "complete": {
+            "description": "Null means the metrics read was unavailable.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "expects_wake": {
+            "description": "Null means the status read was unavailable.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "result_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_status": {
+            "$ref": "#/definitions/SessionStatusV1"
+          },
+          "terminal": {
+            "description": "Null means `harness::status` did not provide a turn record.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TurnStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "partial",
+          "session_status"
+        ],
+        "type": "object"
+      },
+      "SessionMetaProjectionV1": {
+        "properties": {
+          "created_at": {
+            "default": 0,
+            "format": "int64",
+            "type": "integer"
+          },
+          "description": {
+            "default": "",
+            "type": "string"
+          },
+          "draft": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "forked_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "metadata": true,
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/SessionStatusV1"
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          },
+          "updated_at": {
+            "default": 0,
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "SessionMetricsResponseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "by_session": {
+            "items": {
+              "$ref": "#/definitions/SessionUsageV1"
+            },
+            "type": "array"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "root_session_id": {
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/definitions/SessionUsageTotalsV1"
+          },
+          "traces": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SessionTraceMetricsV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Trace/span aggregates when the engine's in-memory observability exporter is available. Usage metrics remain available when it is not."
+          }
+        },
+        "required": [
+          "by_session",
+          "complete",
+          "root_session_id",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "SessionStatusV1": {
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      },
+      "SessionTraceMetricsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "by_session": {
+            "items": {
+              "$ref": "#/definitions/SessionTraceUsageV1"
+            },
+            "type": "array"
+          },
+          "duration_ms": {
+            "description": "Elapsed window from the first observed span to the last observed span.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "trace_count": {
+            "description": "Distinct traces across the root session and all descendants.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_session",
+          "duration_ms",
+          "error_span_count",
+          "span_count",
+          "trace_count"
+        ],
+        "type": "object"
+      },
+      "SessionTraceUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "duration_ms": {
+            "description": "Elapsed window from the session's first observed span to its last.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "trace_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "duration_ms",
+          "error_span_count",
+          "session_id",
+          "span_count",
+          "trace_count"
+        ],
+        "type": "object"
+      },
+      "SessionUsageTotalsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "function_call_errors",
+          "function_calls",
+          "sessions",
+          "turns"
+        ],
+        "type": "object"
+      },
+      "SessionUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ContextSnapshotV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session's latest per-generation context snapshot (categories, budget, usage) — absent for sessions that have not generated since snapshots landed."
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "function_call_errors",
+          "function_calls",
+          "session_id",
+          "turns"
+        ],
+        "type": "object"
+      },
+      "SnapshotCategoriesV1": {
+        "description": "Where the request's tokens sit. Categories are assembly-time estimates; `hook_guidance` is the measured growth after assembly (pre-generate hook appends and orphan-repair patches), 0 when the request left assembly unchanged.",
+        "properties": {
+          "hook_guidance": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "messages": {
+            "$ref": "#/definitions/SnapshotMessagesV1"
+          },
+          "overhead": {
+            "description": "Provider framing plus response_format / provider_options fields.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "system_prompt": {
+            "description": "Final assembled system prompt: mode paragraph, identity, per-step aids, and any compaction summary section.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tools": {
+            "description": "Function schemas exposed to the model.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "messages",
+          "overhead",
+          "system_prompt",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "SnapshotMessagesV1": {
+        "description": "Estimated tokens of the assembled window's messages, by role.",
+        "properties": {
+          "assistant": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "custom": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_result": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assistant",
+          "custom",
+          "function_result",
+          "user"
+        ],
+        "type": "object"
+      },
+      "TurnStatus": {
+        "description": "The coarse, harness-internal turn lifecycle (harness.md § API Reference). Finer-grained than the session's `status`, which the loop derives from it.",
+        "enum": [
+          "running",
+          "awaiting_functions",
+          "completed",
+          "cancelled",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "Usage": {
+        "properties": {
+          "cache_read": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "baseline_session_id": {
+        "type": "string"
+      },
+      "captured_at": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "sessions": {
+        "items": {
+          "$ref": "#/definitions/SessionComparisonItemV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "baseline_session_id",
+      "captured_at",
+      "schema_version",
+      "sessions"
+    ],
+    "title": "SessionComparisonResponseV1",
+    "type": "object"
+  }
+}

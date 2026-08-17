@@ -17,7 +17,7 @@ use eval::{functions, manifest, queue, state, ui};
 #[derive(Parser, Debug)]
 #[command(
     name = "eval",
-    about = "Durable same-model A/B prompt evaluation over harness turns."
+    about = "Live comparison of Harness session metrics, with prompt experiments as an advanced surface."
 )]
 struct Cli {
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]

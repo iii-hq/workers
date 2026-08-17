@@ -96,13 +96,14 @@ your worker.
 
 ### The shared component library
 
-`Badge`, `Button`, `CodeEditor`, `CodeHighlight`, `Dialog` (+`DialogTrigger`,
-`DialogClose`, `DialogContent`, `DialogTitle`, `DialogDescription`),
-`DropdownMenu` (+`Trigger/Content/Item/Label/Separator`), `EmptyState`,
-`ErrorBoundary`, `FileDiff`, `Input`, `JsonHighlight`, `Markdown`,
-`MarkdownPreview`, `PageShell`/`PageHeader`/`PageBody`/`PageSidebar`/
-`PageMain` (the page chrome — see below), `Select`, `Skeleton`, `StatusDot`,
-`StatusPanel`, `Tabs` (+`TabsList/TabsTrigger/TabsContent`), `Tooltip`
+`AnsiText`, `Badge`, `Button`, `CodeEditor`, `CodeHighlight`, `Dialog`
+(+`DialogTrigger`, `DialogClose`, `DialogContent`, `DialogTitle`,
+`DialogDescription`), `DropdownMenu` (+`Trigger/Content/Item/Label/Separator`),
+`EmptyState`, `ErrorBoundary`, `FileDiff`, `Input`, `JsonHighlight`,
+`Markdown`, `MarkdownPreview`, `PageShell`/`PageHeader`/`PageBody`/
+`PageSidebar`/`PageMain` (the page chrome — see below), `Select`, `Skeleton`,
+`StatusDot`, `StatusPanel`, `Tabs` (+`TabsList/TabsTrigger/TabsContent`),
+`TerminalCommandLine`, `TerminalStream`, `Tooltip`
 (+`TooltipTrigger/TooltipContent`).
 
 **The page chrome is the mandatory layout for pages.** Every registered
@@ -145,6 +146,32 @@ console already provides.
 created/deleted side); the console computes and renders the unified diff,
 themed for both modes. `diffStyle: 'split'` and `overflow: 'scroll'` are
 opt-in props.
+
+**The terminal atoms are shared under the same rule.** Terminal-shaped
+cards (exec output, code runs, build logs) compose three pieces instead of
+carrying private copies:
+
+- `AnsiText` — terminal text with its ANSI SGR colors mapped onto the
+  design tokens (red→alert, green→ok, yellow→warn, blue/cyan/magenta→
+  accent, bold→semibold; extended-color params consumed, every other
+  CSI/OSC sequence stripped). Never bundle an ANSI parser.
+- `TerminalStream` — the labeled stdout/stderr pane: uppercase label,
+  whitespace-preserving mono body (set `ansi` to color it), long output
+  clamped behind an `expand · N lines / collapse` toggle
+  (`clampLines`/`clampChars`, defaults 12/2000), scrolls within itself.
+  `tone="err"` tints warn: stderr is the user's program failing, not the
+  console failing.
+- `TerminalCommandLine` — the `$ command` header: accent prompt glyph,
+  mono command that ellipsizes with the full text on `title`, optional
+  trailing `chips`, and `copy` for the standard copied/failed flash.
+
+```tsx
+import { TerminalCommandLine, TerminalStream } from '@iii-dev/console-ui'
+
+<TerminalCommandLine command="cargo test" copy chips={<Badge>1.2s</Badge>} />
+<TerminalStream label="stdout" ansi text={run.stdout} />
+<TerminalStream label="stderr" tone="err" text={run.stderr} />
+```
 
 ```tsx
 import { CodeEditor } from '@iii-dev/console-ui'

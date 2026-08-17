@@ -1,4 +1,5 @@
 import type { Mode, ModelId } from '@/types/chat'
+import type { HarnessImageBlock } from './harness-send'
 import type { SessionTriggerInfo } from './triggers'
 
 /**
@@ -128,6 +129,13 @@ export interface ChatStreamOptions {
    */
   workingDir?: string | null
   /**
+   * Per-session system-prompt selection. The real backend forwards it as
+   * `harness::send` `options.system_prompt` +
+   * `options.system_prompt_strategy`; omitted/null sends neither field
+   * (provider default identity prompt). Mock backends ignore this.
+   */
+  systemPrompt?: import('./harness-send').SystemPromptSelection | null
+  /**
    * Extra text content blocks appended after the prompt on the outgoing
    * user message — `#file(...)` mention expansions (`<attached-file …>`
    * blocks). When present the real backend sends a structured
@@ -135,6 +143,14 @@ export interface ChatStreamOptions {
    * backends ignore this.
    */
   attachedBlocks?: string[]
+  /**
+   * Image content blocks appended after the text on the outgoing user message
+   * — an attached, dropped or pasted picture, sent as a picture rather than as
+   * prose about one. The real backend forwards them as
+   * `ContentBlock::Image { mime, data }`, which the Anthropic and OpenAI
+   * providers map onto their own image shapes. Mock backends ignore this.
+   */
+  attachedImages?: HarnessImageBlock[]
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
@@ -293,7 +309,10 @@ export interface ChatBackend {
     sessionId: string,
     entryId: string,
     prompt: string,
-    opts?: { attachedBlocks?: string[] },
+    opts?: {
+      attachedBlocks?: string[]
+      attachedImages?: HarnessImageBlock[]
+    },
   ): Promise<void>
   /**
    * Subscribe to `harness::message-queued` for a session: fires when any
@@ -307,6 +326,13 @@ export interface ChatBackend {
    * type + config, delivery = notify-this-chat or call-a-function.
    */
   listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
+  /**
+   * Subscribe to `harness::triggers-changed` for a session: fires when the
+   * binding set or a fire count changes (registration, unregistration from
+   * any tab, a fire, expiry, GC) — the signal to refetch `listTriggers`.
+   * Returns an unsubscribe.
+   */
+  onTriggersChanged?(sessionId: string, onEvent: () => void): () => void
   /**
    * Tear one subscription down via `harness::triggers::unregister` (engine
    * trigger AND durable record; a raw engine unregister would orphan the

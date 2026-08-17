@@ -33,3 +33,9 @@ databases:
   # orders:
   #   url: mysql://user:pass@localhost:3306/orders
   #   capture: native
+
+# Console query history caps (per database, stored on the `state` worker).
+# Whichever cap hits first, oldest entries are dropped; 0 disables recording.
+# Defaults shown.
+# history_max_entries: 200
+# history_max_bytes: 262144

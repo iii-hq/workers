@@ -155,19 +155,27 @@ pub fn map_finish_reason(s: &str) -> StopReason {
 /// values — overwriting is correct for both, adding double-counts.
 pub fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
-    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
-        into.input = Some(v);
-    }
-    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
-        into.output = Some(v);
-    }
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The wire's `prompt_tokens` is a
+    // TOTAL that includes the cached slice, so the miss slice is derived —
+    // mapping the total verbatim would bill the cached prefix twice.
+    let mut cached = None;
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
             .and_then(Value::as_u64)
         {
-            into.cache_read = Some(v);
+            cached = Some(v);
         }
+    }
+    if let Some(v) = cached {
+        into.cache_read = Some(v);
+    }
+    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
+        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
+    }
+    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
+        into.output = Some(v);
     }
     if let Some(v) = raw
         .pointer("/completion_tokens_details/reasoning_tokens")
@@ -337,6 +345,19 @@ fn responses_usage(event: &Value, state: &mut PartialState) {
     if let Some(usage) = usage.filter(|usage| usage.is_object()) {
         merge_usage(usage, &mut state.usage);
         state.usage_seen = true;
+    }
+}
+
+fn responses_error_kind(event: &Value, message: &str) -> ErrorKind {
+    let error = event
+        .get("error")
+        .or_else(|| event.pointer("/response/error"));
+    match error {
+        Some(error) => {
+            let envelope = serde_json::json!({ "error": error });
+            classify(None, &envelope.to_string())
+        }
+        None => classify(None, message),
     }
 }
 
@@ -519,7 +540,7 @@ fn handle_responses_event(
             state.stop_reason = StopReason::Error;
             state.error_message = Some(message.clone());
             let mut error = build_final(state, model);
-            error.error_kind = Some(classify(None, &message));
+            error.error_kind = Some(responses_error_kind(event, &message));
             events.push(AssistantMessageEvent::Error { error });
         }
         _ => {}
@@ -589,7 +610,7 @@ mod tests {
         assert_eq!(final_msg.stop_reason, StopReason::End);
         assert_eq!(final_msg.native_stop_reason.as_deref(), Some("stop"));
         let usage = final_msg.usage.unwrap();
-        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.input, Some(8));
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));
@@ -781,10 +802,48 @@ mod tests {
             matches!(&final_message.content[0], ContentBlock::Text { text } if text == "Hello")
         );
         let usage = final_message.usage.unwrap();
-        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.input, Some(8));
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(1));
+    }
+
+    #[test]
+    fn responses_credit_exhaustion_events_are_permanent() {
+        let message = "You have no credits remaining.";
+        let events = [
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "insufficient_quota",
+                    "code": "credit_balance_exhausted",
+                    "message": message,
+                    "param": null
+                }
+            }),
+            json!({
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {
+                        "code": "credit_balance_exhausted",
+                        "message": message
+                    }
+                }
+            }),
+        ];
+
+        for event in events {
+            let (_, emitted) = run(&[event]);
+            assert_eq!(emitted.len(), 1);
+            match &emitted[0] {
+                AssistantMessageEvent::Error { error } => {
+                    assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+                    assert_eq!(error.error_message.as_deref(), Some(message));
+                }
+                other => panic!("want permanent error frame, got {other:?}"),
+            }
+        }
     }
 
     #[test]

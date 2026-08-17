@@ -64,7 +64,10 @@ const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (s
      budgeted by max_output_bytes (default 128 KiB; per-call override \
      clamped to max_read_bytes) — an over-budget full read fails with \
      a C218 carrying the file's size, line count, and the window/stat \
-     recovery calls. Batch mode: pass paths[] (XOR path) \
+     recovery calls. encoding: base64 (single-path full reads only) \
+     returns the file's exact bytes base64-encoded — the binary-aware \
+     read for images and other non-text payloads. Batch mode: pass \
+     paths[] (XOR path) \
      to read multiple files in one call — entries are processed in \
      request order against batch_read_budget_bytes, measured in \
      bytes of returned content (after UTF-8 sanitization); per-entry \
@@ -74,7 +77,9 @@ const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (s
      shell::fs::*. Non-accessible paths return C211.";
 
 const SEARCH_ID: &str = "coder::search";
-const SEARCH_DESC: &str = "Search file contents and/or paths. Supports literal or regex \
+const SEARCH_DESC: &str = "Search file contents and/or paths. Path search matches files AND \
+     directories (each path_match carries kind: file|dir); content \
+     search reads files only. Supports literal or regex \
      queries with include/exclude globs; non-accessible files are \
      excluded from both content and path results. Only the FIRST match \
      on each line is reported (one content match per matching line). \
@@ -120,7 +125,10 @@ const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits acro
 const CREATE_FILE_ID: &str = "coder::create-file";
 const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
      \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
-     flags; non-accessible paths return C211. Paths are relative to \
+     flags; writes publish atomically. For a conflict-safe overwrite, pass \
+     the `revision` returned by coder::read-file as `expected_revision`; \
+     stale revisions return C221 without writing. Non-accessible paths \
+     return C211. Paths are relative to \
      the primary allowed root or absolute inside any allowed root \
      (coder::info lists them); for host paths outside the jail use \
      shell::fs::*.";
@@ -151,7 +159,11 @@ const TREE_DESC: &str = "Recursive directory snapshot bounded by `max_depth` and
      coder::list-folder for pagination. Noise directories matching \
      default_exclude_globs (.git, node_modules, target, … — \
      coder::info lists them) appear as childless `truncated` stubs; \
-     pass use_default_excludes: false to descend into them. Paths are \
+     pass use_default_excludes: false to descend into them. Pass \
+     include_hidden: false to omit dot-prefixed entries (they then \
+     don't count toward per_folder_limit). A total node budget bounds \
+     every snapshot; folders past it are stubs with reason max_nodes \
+     — re-root there or paginate with coder::list-folder. Paths are \
      relative to the primary allowed root or absolute inside any \
      allowed root (coder::info lists them); for host paths outside \
      the jail use shell::fs::*.";

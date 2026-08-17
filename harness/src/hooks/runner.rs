@@ -89,6 +89,9 @@ impl HookRegistry {
     /// `pre_turn`: veto only. `Err(reason)` ends the turn.
     pub async fn run_pre_turn(&self, record: &TurnRecord, step: u64) -> Result<(), String> {
         for binding in self.pre_turn.ordered() {
+            if !sessions_match(&binding, &record.session_id) {
+                continue;
+            }
             let input = self.envelope(HookPoint::PreTurn, record, step);
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(_) => {}
@@ -112,6 +115,10 @@ impl HookRegistry {
         let mut appended: Vec<Value> = Vec::new();
         let mut annotations = Map::new();
         for binding in self.pre_generate.ordered() {
+            if let Some(injected) = binding.inject_prompt.as_deref() {
+                system_prompt = append_prompt(system_prompt, injected);
+                continue;
+            }
             let mut messages = base_messages.to_vec();
             messages.extend(appended.iter().cloned());
             let mut input = self.envelope(HookPoint::PreGenerate, record, step);
@@ -436,6 +443,13 @@ fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
     }
 }
 
+fn append_prompt(base: Option<String>, injected: &str) -> Option<String> {
+    Some(match base {
+        Some(base) if !base.is_empty() => format!("{base}\n\n{injected}"),
+        _ => injected.to_string(),
+    })
+}
+
 /// The bindings a `pre_trigger` run consults for this target: the glob-matched
 /// chain, cut down to everything AFTER `resume_after` when resuming a released
 /// hold — hooks up to and including the holder already ran and mutated the
@@ -466,7 +480,7 @@ pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool 
     globs_match(binding.functions.as_deref(), function_id)
 }
 
-/// Whether a post_turn binding's `sessions` globs match the completing
+/// Whether a pre_turn/post_turn binding's `sessions` globs match the turn's
 /// session (no filter → every session).
 fn sessions_match(binding: &HookBinding, session_id: &str) -> bool {
     globs_match(binding.sessions.as_deref(), session_id)
@@ -563,6 +577,15 @@ mod tests {
     }
 
     #[test]
+    fn static_prompt_injection_appends_without_a_leading_separator() {
+        assert_eq!(
+            append_prompt(Some("base".into()), "guidance").as_deref(),
+            Some("base\n\nguidance")
+        );
+        assert_eq!(append_prompt(None, "guidance").as_deref(), Some("guidance"));
+    }
+
+    #[test]
     fn deny_and_hold_parse() {
         match parse_output(json!({ "decision": "deny", "reason": "nope" })) {
             HookOutcome::Deny(r) => assert_eq!(r, "nope"),
@@ -620,6 +643,7 @@ mod tests {
     fn binding(function_id: &str, priority: i64) -> HookBinding {
         HookBinding {
             function_id: function_id.into(),
+            inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
             payload: None,
@@ -629,6 +653,16 @@ mod tests {
             timeout_ms: 5000,
             fail_closed: true,
         }
+    }
+
+    #[test]
+    fn pre_turn_session_scope_uses_the_same_globs_as_post_turn() {
+        let mut scoped = binding("snapshot", 0);
+        scoped.sessions = Some(vec!["console-123".into(), "job-*".into()]);
+
+        assert!(sessions_match(&scoped, "console-123"));
+        assert!(sessions_match(&scoped, "job-9"));
+        assert!(!sessions_match(&scoped, "console-456"));
     }
 
     fn ids(bindings: &[HookBinding]) -> Vec<&str> {
@@ -727,6 +761,7 @@ mod tests {
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
             function_id: "gate".into(),
+            inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
             payload: None,

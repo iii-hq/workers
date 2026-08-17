@@ -177,6 +177,15 @@ impl AgentMessage {
         }
     }
 
+    pub(crate) fn content_mut(&mut self) -> &mut Vec<ContentBlock> {
+        match self {
+            AgentMessage::User { content, .. }
+            | AgentMessage::Assistant { content, .. }
+            | AgentMessage::FunctionResult { content, .. }
+            | AgentMessage::Custom { content, .. } => content,
+        }
+    }
+
     pub fn set_content(&mut self, new_content: Vec<ContentBlock>) {
         match self {
             AgentMessage::User { content, .. }
@@ -262,6 +271,9 @@ pub struct Model {
     /// Reasoning-token budgets per thinking tier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budgets: Option<BTreeMap<ThinkingLevel, u64>>,
+    /// Whether the model accepts image content blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
 }
 
 /// An invocation-surface schema entry (README.md § AgentFunction) —
@@ -392,6 +404,7 @@ mod tests {
             "id": "claude-sonnet-4", "provider": "anthropic",
             "context_window": 200_000, "max_output_tokens": 16_000,
             "thinking_budgets": { "low": 1024, "high": 8192 },
+            "supports_vision": false,
             "display_name": "Sonnet", "supports_tools": true,
             "pricing": { "input": 3.0 }
         }))
@@ -401,6 +414,7 @@ mod tests {
             m.thinking_budgets.unwrap().get(&ThinkingLevel::High),
             Some(&8192)
         );
+        assert_eq!(m.supports_vision, Some(false));
     }
 
     #[test]

@@ -81,5 +81,6 @@ def test_setup_registers_hook_and_binds_one_shot():
             "type": guidance.HOOK_TRIGGER_TYPE,
             "function_id": guidance.HOOK_ID,
             "config": {"on_error": "fail_open"},
+            "metadata": {"inject_prompt": guidance.GUIDANCE},
         }
     ]

@@ -4,6 +4,7 @@
 //!
 //! **Self-skips** when no engine is available (storage-worker pattern):
 //! set `III_ENGINE_BIN=/path/to/iii` or have `iii` on PATH.
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -216,6 +217,60 @@ async fn call_until(
     }
 }
 
+/// Register the minimal state surface on a bare engine and fail exactly one
+/// numbered write. Used to prove router stores do not publish uncommitted
+/// in-memory state when persistence rejects a mutation.
+async fn start_flaky_state(url: &str, fail_on_set_call: u64) -> (IIIClient, Arc<AtomicU64>) {
+    let iii = register_worker(url, InitOptions::default());
+    let values = Arc::new(std::sync::Mutex::new(HashMap::<String, Value>::new()));
+    let get_values = values.clone();
+    iii.register_function(
+        "state::get",
+        RegisterFunction::new_async(move |input: Value| {
+            let values = get_values.clone();
+            async move {
+                let key = input["key"].as_str().unwrap_or_default();
+                Ok::<Value, Error>(values.lock().unwrap().get(key).cloned().unwrap_or_default())
+            }
+        }),
+    );
+    let set_calls = Arc::new(AtomicU64::new(0));
+    let calls = set_calls.clone();
+    let set_values = values;
+    iii.register_function(
+        "state::set",
+        RegisterFunction::new_async(move |input: Value| {
+            let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let values = set_values.clone();
+            async move {
+                if call == fail_on_set_call {
+                    Err(Error::Handler("injected state write failure".into()))
+                } else {
+                    let key = input["key"].as_str().unwrap_or_default().to_string();
+                    values.lock().unwrap().insert(key, input["value"].clone());
+                    Ok::<Value, Error>(json!({ "ok": true }))
+                }
+            }
+        }),
+    );
+    call_until(
+        &iii,
+        "engine::functions::list",
+        json!({ "include_internal": true }),
+        |value| {
+            value["functions"].as_array().is_some_and(|functions| {
+                ["state::get", "state::set"].iter().all(|id| {
+                    functions
+                        .iter()
+                        .any(|function| function["function_id"] == *id)
+                })
+            })
+        },
+    )
+    .await;
+    (iii, set_calls)
+}
+
 fn remote_code(err: &Error) -> &str {
     match err {
         Error::Remote { code, .. } => code,
@@ -225,9 +280,12 @@ fn remote_code(err: &Error) -> &str {
 
 // ── live provider helper ────────────────────────────────────────────────────
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ProviderOptions {
     ping_forever: bool,
+    /// Keep the function handler alive after the terminal frame. A compliant
+    /// router must complete from the stream terminal, not this RPC lifetime.
+    done_linger_ms: Option<u64>,
     credential_env_var: Option<String>,
     supports_model_listing: bool,
     /// model ids returned by provider::real::refresh_models
@@ -237,8 +295,23 @@ struct ProviderOptions {
 struct LiveProvider {
     iii: IIIClient,
     token: String,
+    stream_calls: Arc<AtomicU64>,
     write_failed: Arc<AtomicBool>,
     fail_at_ms: Arc<AtomicU64>,
+}
+
+fn live_provider_declaration(opts: &ProviderOptions, token: Option<String>) -> Value {
+    let mut payload = json!({
+        "id": "real",
+        "credential_env_var": opts.credential_env_var,
+        "defaults": { "api_url": "https://api.example.test/v1", "max_tokens": 8192 },
+        "supports_model_listing": opts.supports_model_listing,
+        "models": [{ "id": "live-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }]
+    });
+    if let Some(token) = token {
+        payload["token"] = json!(token);
+    }
+    payload
 }
 
 /// A live provider worker on its own connection: registers
@@ -247,18 +320,23 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     let iii = register_worker(url, InitOptions::default());
     let write_failed = Arc::new(AtomicBool::new(false));
     let fail_at_ms = Arc::new(AtomicU64::new(0));
+    let stream_calls = Arc::new(AtomicU64::new(0));
     let token_cell: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
 
     let address = url.to_string();
     let wf = write_failed.clone();
     let fam = fail_at_ms.clone();
+    let calls = stream_calls.clone();
     let ping_forever = opts.ping_forever;
+    let done_linger_ms = opts.done_linger_ms;
     iii.register_function(
         "provider::real::stream",
         RegisterFunction::new_async(move |input: Value| {
             let address = address.clone();
             let (wf, fam) = (wf.clone(), fam.clone());
+            let calls = calls.clone();
             async move {
+                calls.fetch_add(1, Ordering::SeqCst);
                 let r: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|e| Error::Serde(e.to_string()))?;
@@ -307,6 +385,9 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                         .map_err(|e| Error::Handler(e.to_string()))?;
                 }
                 let _ = writer.close().await;
+                if let Some(delay_ms) = done_linger_ms {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
                 Ok(json!({ "ok": true }))
             }
         }),
@@ -339,19 +420,47 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
         );
     }
 
+    // Match the production provider lifecycle: keep a deterministic direct
+    // ready handler so a restarted router can rediscover this still-live
+    // provider even if the one-shot trigger binding was replayed too late.
+    let iii_ready = iii.clone();
+    let token_for_ready = token_cell.clone();
+    let opts_for_ready = opts.clone();
+    iii.register_function(
+        "provider::real::on_router_ready",
+        RegisterFunction::new_async(move |_input: Value| {
+            let iii = iii_ready.clone();
+            let token = token_for_ready.lock().unwrap().clone();
+            let opts = opts_for_ready.clone();
+            async move {
+                let token = token.ok_or_else(|| {
+                    Error::Handler("provider ready handler has no registration token".into())
+                })?;
+                iii.trigger(TriggerRequest {
+                    function_id: "router::provider::register".into(),
+                    payload: live_provider_declaration(&opts, Some(token)),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await?;
+                Ok::<Value, Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+    let _ = iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "router::ready".into(),
+        function_id: "provider::real::on_router_ready".into(),
+        config: json!({}),
+        metadata: None,
+    });
+
     // declare (with a short retry in case the router is still booting)
     let mut token = None;
     for _ in 0..50 {
         let res = call(
             &iii,
             "router::provider::register",
-            json!({
-                "id": "real",
-                "credential_env_var": opts.credential_env_var,
-                "defaults": { "api_url": "https://api.example.test/v1", "max_tokens": 8192 },
-                "supports_model_listing": opts.supports_model_listing,
-                "models": [{ "id": "live-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }]
-            }),
+            live_provider_declaration(&opts, None),
         )
         .await;
         if let Ok(res) = res {
@@ -366,6 +475,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     LiveProvider {
         iii,
         token,
+        stream_calls,
         write_failed,
         fail_at_ms,
     }
@@ -595,20 +705,21 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
         .await
         .expect("router reboots");
 
-    let list = call(&second, "router::provider::list", json!({}))
-        .await
-        .expect("provider list");
+    // Availability is pessimistically reset on load. The router must recover
+    // this still-live provider itself through its direct engine-function nudge;
+    // relying only on the one-shot router::ready replay has a boot race.
+    let list = call_until(&second, "router::provider::list", json!({}), |value| {
+        value["providers"].as_array().is_some_and(|providers| {
+            providers
+                .iter()
+                .any(|provider| provider["id"] == "real" && provider["available"] == true)
+        })
+    })
+    .await;
     assert_eq!(list["providers"][0]["id"], "real", "list: {list}");
-    // Availability is NOT trusted across a restart: the persisted "up" flag
-    // could belong to a provider that died while the router was down. It is
-    // restored DOWN and only re-declaration / a successful dispatch flip it up.
-    assert_eq!(
-        list["providers"][0]["available"],
-        json!(false),
-        "restored availability must be pessimistic: {list}"
-    );
 
-    // re-declare with the original token: idempotent, same token accepted
+    // The automatic re-declare used the original bearer token; it remains
+    // accepted for an explicit idempotent declaration too.
     let again = call(
         &provider.iii,
         "router::provider::register",
@@ -618,16 +729,7 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
     .expect("re-declare accepted");
     assert_eq!(again["registration_token"], json!(provider.token.clone()));
 
-    // …and the re-declaration is what brings the provider back up.
-    let list = call(&second, "router::provider::list", json!({}))
-        .await
-        .expect("provider list after re-declare");
-    assert_eq!(
-        list["providers"][0]["available"],
-        json!(true),
-        "re-declare restores availability: {list}"
-    );
-
+    provider.iii.shutdown();
     second.shutdown();
 }
 
@@ -986,6 +1088,116 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+    let provider = start_live_provider(
+        &engine.url,
+        ProviderOptions {
+            ping_forever: true,
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let first_consumer = register_worker(&engine.url, InitOptions::default());
+    let (first_ref, first_frames, first_pump) = consumer_channel(&first_consumer).await;
+    let first_chat = {
+        let consumer = first_consumer.clone();
+        tokio::spawn(async move {
+            consumer
+                .trigger(TriggerRequest {
+                    function_id: "router::chat".into(),
+                    payload: json!({
+                        "writer_ref": first_ref,
+                        "request_id": "same-request",
+                        "model": "live-1",
+                        "messages": []
+                    }),
+                    action: None,
+                    timeout_ms: Some(10_000),
+                })
+                .await
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while first_frames.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "first stream did not start");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+
+    let second_consumer = register_worker(&engine.url, InitOptions::default());
+    let (second_ref, second_frames, second_pump) = consumer_channel(&second_consumer).await;
+    let duplicate = second_consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": second_ref,
+                "request_id": "same-request",
+                "model": "live-1",
+                "messages": []
+            }),
+            action: None,
+            timeout_ms: Some(3_000),
+        })
+        .await
+        .expect_err("duplicate live request id must be rejected");
+    assert_eq!(
+        remote_code(&duplicate),
+        "router/invalid_request",
+        "{duplicate:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), second_pump)
+        .await
+        .expect("duplicate channel EOF")
+        .expect("duplicate channel pump joins");
+    let duplicate_frames: Vec<Value> = second_frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    let duplicate_terminals = duplicate_frames
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .count();
+    assert_eq!(duplicate_terminals, 1, "frames: {duplicate_frames:?}");
+    assert_eq!(duplicate_frames.last().unwrap()["type"], "error");
+    assert_eq!(
+        provider.stream_calls.load(Ordering::SeqCst),
+        1,
+        "duplicate request reached the provider"
+    );
+    assert!(!first_chat.is_finished(), "original stream was disturbed");
+
+    let aborted = call(
+        &router,
+        "router::abort",
+        json!({ "request_id": "same-request" }),
+    )
+    .await
+    .expect("abort original");
+    assert_eq!(aborted["aborted"], true, "{aborted}");
+    let first = tokio::time::timeout(Duration::from_secs(3), first_chat)
+        .await
+        .expect("original chat resolves")
+        .expect("original task joins")
+        .expect("original chat response");
+    assert_eq!(first["stop_reason"], "aborted", "{first}");
+    tokio::time::timeout(Duration::from_secs(2), first_pump)
+        .await
+        .expect("original channel EOF")
+        .expect("original channel pump joins");
+
+    first_consumer.shutdown();
+    second_consumer.shutdown();
+    provider.iii.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn update_credential_persists_and_resolves_back() {
     let engine = engine_or_skip!();
 
@@ -1134,11 +1346,603 @@ async fn router_boots_its_interface_against_a_bare_engine() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn failed_registry_write_rolls_back_and_retry_can_bind_without_a_token() {
+    let engine = bare_engine_or_skip!();
+    let (state, set_calls) = start_flaky_state(&engine.url, 1).await;
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let first = call(
+        &router,
+        "router::provider::register",
+        json!({ "id": "recoverable" }),
+    )
+    .await
+    .expect_err("the injected first state write must fail");
+    assert_eq!(remote_code(&first), "router/invalid_request", "{first:?}");
+
+    let after_failure = call(&router, "router::provider::list", json!({}))
+        .await
+        .expect("provider list");
+    assert_eq!(
+        after_failure["providers"],
+        json!([]),
+        "failed persistence must not publish a ghost provider: {after_failure}"
+    );
+
+    let retry = call(
+        &router,
+        "router::provider::register",
+        json!({ "id": "recoverable" }),
+    )
+    .await
+    .expect("retry without an undelivered token must bind cleanly");
+    assert_eq!(retry["ok"], true, "{retry}");
+    assert!(
+        retry["registration_token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty()),
+        "registration token missing: {retry}"
+    );
+    assert_eq!(set_calls.load(Ordering::SeqCst), 2);
+
+    router.shutdown();
+    state.shutdown();
+}
+
+async fn assert_static_registration_failure_is_atomic(
+    fail_on_set_call: u64,
+    expected_set_calls_after_retry: u64,
+) {
+    let engine = bare_engine_or_skip!();
+    let (state, set_calls) = start_flaky_state(&engine.url, fail_on_set_call).await;
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let provider_id = format!("atomic-static-{fail_on_set_call}");
+    let model_id = format!("atomic-model-{fail_on_set_call}");
+    let declaration = json!({
+        "id": provider_id,
+        "models": [{
+            "id": model_id,
+            "provider": provider_id,
+            "context_window": 1_000,
+            "max_output_tokens": 100
+        }]
+    });
+    call(&router, "router::provider::register", declaration.clone())
+        .await
+        .expect_err("the selected state write must fail registration");
+
+    let providers = call(&router, "router::provider::list", json!({}))
+        .await
+        .expect("provider list after failure");
+    assert!(
+        providers["providers"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| row["id"] != provider_id)),
+        "failed registration published a provider ghost: {providers}"
+    );
+    let models = call(
+        &router,
+        "router::models::list",
+        json!({ "provider": provider_id }),
+    )
+    .await
+    .expect("model list after failure");
+    assert_eq!(
+        models["models"],
+        json!([]),
+        "failed registration published a catalog ghost: {models}"
+    );
+
+    // Rebuild both stores from the fake state's successful writes. In the
+    // fail-on-2 case this specifically proves the durable catalog candidate
+    // was compensated after the registry commit failed.
+    router.shutdown();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone())
+        .await
+        .expect("router reboots");
+    let providers = call(&router, "router::provider::list", json!({}))
+        .await
+        .expect("provider list after restart");
+    assert!(
+        providers["providers"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| row["id"] != provider_id)),
+        "failed registration survived restart as a provider ghost: {providers}"
+    );
+    let models = call(
+        &router,
+        "router::models::list",
+        json!({ "provider": provider_id }),
+    )
+    .await
+    .expect("model list after restart");
+    assert_eq!(
+        models["models"],
+        json!([]),
+        "failed registration survived restart as a catalog ghost: {models}"
+    );
+
+    let retry = call(&router, "router::provider::register", declaration)
+        .await
+        .expect("retry without an undelivered token must bind cleanly");
+    assert_eq!(retry["ok"], true, "{retry}");
+    assert!(
+        retry["registration_token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty()),
+        "registration token missing after retry: {retry}"
+    );
+    let models = call(
+        &router,
+        "router::models::list",
+        json!({ "provider": provider_id }),
+    )
+    .await
+    .expect("model list after retry");
+    assert_eq!(models["models"][0]["id"], model_id, "{models}");
+    assert_eq!(
+        set_calls.load(Ordering::SeqCst),
+        expected_set_calls_after_retry
+    );
+
+    router.shutdown();
+    state.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_static_catalog_write_keeps_provider_and_models_invisible() {
+    // catalog write fails before the registry is attempted; retry performs
+    // one catalog and one registry write.
+    assert_static_registration_failure_is_atomic(1, 3).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_registry_after_static_catalog_rolls_back_before_retry() {
+    // catalog persists, registry fails, catalog rollback persists the prior
+    // snapshot, then retry performs catalog + registry writes.
+    assert_static_registration_failure_is_atomic(2, 5).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_down() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let provider = register_worker(&engine.url, InitOptions::default());
+    let handler_entered = entered.clone();
+    let handler_release = release.clone();
+    provider.register_function(
+        "provider::generation-race::stream",
+        RegisterFunction::new_async(move |_input: Value| {
+            let entered = handler_entered.clone();
+            let release = handler_release.clone();
+            async move {
+                entered.add_permits(1);
+                release
+                    .acquire()
+                    .await
+                    .expect("release semaphore stays open")
+                    .forget();
+                Err::<Value, Error>(Error::Remote {
+                    code: "function_not_found".into(),
+                    message: "delayed failure from the old registration".into(),
+                    stacktrace: None,
+                })
+            }
+        }),
+    );
+
+    let declaration = json!({
+        "id": "generation-race",
+        "models": [{
+            "id": "generation-race-model",
+            "provider": "generation-race",
+            "context_window": 1_000,
+            "max_output_tokens": 100
+        }]
+    });
+    let first = call(&provider, "router::provider::register", declaration.clone())
+        .await
+        .expect("first registration");
+    let token = first["registration_token"]
+        .as_str()
+        .expect("registration token")
+        .to_string();
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let chat = {
+        let consumer = consumer.clone();
+        tokio::spawn(async move {
+            consumer
+                .trigger(TriggerRequest {
+                    function_id: "router::chat".into(),
+                    payload: json!({
+                        "writer_ref": writer_ref,
+                        "model": "generation-race-model",
+                        "messages": []
+                    }),
+                    action: None,
+                    timeout_ms: Some(10_000),
+                })
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(3), entered.acquire())
+        .await
+        .expect("old provider handler was not entered")
+        .expect("entered semaphore stays open")
+        .forget();
+
+    let mut redeclaration = declaration;
+    redeclaration["token"] = json!(token);
+    call(&provider, "router::provider::register", redeclaration)
+        .await
+        .expect("new generation registers before the old failure lands");
+    release.add_permits(1);
+
+    let error = tokio::time::timeout(Duration::from_secs(3), chat)
+        .await
+        .expect("chat resolves after releasing old handler")
+        .expect("chat task joins")
+        .expect_err("old dispatch still failed");
+    assert_eq!(
+        remote_code(&error),
+        "router/provider_unavailable",
+        "{error:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("consumer channel EOF")
+        .expect("consumer pump joins");
+    let terminal_count = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .count();
+    assert_eq!(terminal_count, 1, "frames: {:?}", frames.lock().unwrap());
+
+    let providers = call(&router, "router::provider::list", json!({}))
+        .await
+        .expect("provider list");
+    let current = providers["providers"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == "generation-race"))
+        .expect("generation-race provider remains registered");
+    assert_eq!(
+        current["available"], true,
+        "late old-generation failure marked the new registration down: {providers}"
+    );
+    let route = call(
+        &router,
+        "router::route",
+        json!({ "model": "generation-race-model" }),
+    )
+    .await
+    .expect("new registration remains routable");
+    assert_eq!(route["provider"], "generation-race", "{route}");
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let provider = register_worker(&engine.url, InitOptions::default());
+    provider.register_function(
+        "provider::coded-error::stream",
+        RegisterFunction::new_async(|_input: Value| async move {
+            Err::<Value, Error>(Error::Remote {
+                code: "router/not_configured".into(),
+                message: "provider credentials are not configured".into(),
+                stacktrace: None,
+            })
+        }),
+    );
+    call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": "coded-error",
+            "models": [{
+                "id": "coded-error-model",
+                "provider": "coded-error",
+                "context_window": 1_000,
+                "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await
+    .expect("provider registers");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let error = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "model": "coded-error-model",
+                "messages": []
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect_err("router-coded provider failure remains a typed bus error");
+    assert_eq!(remote_code(&error), "router/not_configured", "{error:?}");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel reaches EOF")
+        .expect("channel pump joins");
+
+    let parsed: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    let terminals: Vec<&Value> = parsed
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {parsed:?}");
+    assert_eq!(terminals[0]["type"], "error", "frames: {parsed:?}");
+    assert_eq!(
+        terminals[0]["error"]["error_kind"], "permanent",
+        "frames: {parsed:?}"
+    );
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+
+    // Mint the consumer channel before adversarially shadowing the engine's
+    // channel factory. The chat pipeline must turn the later internal factory
+    // failure into a terminal frame on this already-valid caller channel.
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let saboteur = register_worker(&engine.url, InitOptions::default());
+    saboteur.register_function(
+        "engine::channels::create",
+        RegisterFunction::new_async(|_input: Value| async move {
+            Err::<Value, Error>(Error::Remote {
+                code: "injected/channel_unavailable".into(),
+                message: "injected channel factory failure".into(),
+                stacktrace: None,
+            })
+        }),
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match call(&saboteur, "engine::channels::create", json!({})).await {
+            Err(error) if remote_code(&error) == "injected/channel_unavailable" => break,
+            _ => {
+                assert!(
+                    Instant::now() < deadline,
+                    "adversarial channel factory did not become active"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    }
+
+    let error = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "model": "live-1",
+                "messages": []
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect_err("internal channel creation failure remains a bus error");
+    assert_eq!(
+        remote_code(&error),
+        "injected/channel_unavailable",
+        "{error:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel reaches EOF")
+        .expect("channel pump joins");
+
+    let parsed: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    let terminals: Vec<&Value> = parsed
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {parsed:?}");
+    assert_eq!(terminals[0]["type"], "error", "frames: {parsed:?}");
+    assert_eq!(
+        terminals[0]["error"]["error_kind"], "transient",
+        "frames: {parsed:?}"
+    );
+
+    saboteur.shutdown();
+    consumer.shutdown();
+    provider.iii.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+    call(
+        &router,
+        "router::provider::register",
+        json!({
+            "id": "ghost",
+            "models": [{
+                "id": "ghost-model",
+                "provider": "ghost",
+                "context_window": 1000,
+                "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await
+    .expect("declaration accepted");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let err = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "model": "ghost-model",
+                "messages": []
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect_err("missing provider function must be a typed error");
+    assert_eq!(remote_code(&err), "router/provider_unavailable", "{err:?}");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel must reach EOF")
+        .expect("channel pump joins");
+
+    let parsed: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    let terminals: Vec<&Value> = parsed
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {parsed:?}");
+    assert_eq!(terminals[0]["type"], "error", "frames: {parsed:?}");
+    assert_eq!(
+        terminals[0]["error"]["error_kind"], "transient",
+        "frames: {parsed:?}"
+    );
+
+    let listed = call(&router, "router::provider::list", json!({}))
+        .await
+        .expect("provider list");
+    assert_eq!(listed["providers"][0]["available"], false, "{listed}");
+    let route = call(&router, "router::route", json!({ "model": "ghost-model" }))
+        .await
+        .expect_err("an unavailable catalog owner must not remain routable");
+    assert_eq!(
+        remote_code(&route),
+        "router/provider_unavailable",
+        "unexpected routing error: {route:?}"
+    );
+
+    consumer.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+    let provider = start_live_provider(
+        &engine.url,
+        ProviderOptions {
+            done_linger_ms: Some(5_000),
+            ..Default::default()
+        },
+    )
+    .await;
+    call(
+        &router,
+        "configuration::set",
+        json!({
+            "id": "llm-router",
+            "value": {
+                "settings": {
+                    "stream_timeout_ms": 1_000,
+                    "idle_timeout_ms": 500,
+                    "retry_max": 0
+                }
+            }
+        }),
+    )
+    .await
+    .expect("settings update");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let started = Instant::now();
+    let response = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await
+        .expect("done frame completes chat");
+    let elapsed = started.elapsed();
+    assert_eq!(response["ok"], true, "{response}");
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "chat waited for the provider RPC after done: {elapsed:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel EOF")
+        .expect("channel pump joins");
+    let terminal_count = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .count();
+    assert_eq!(terminal_count, 1, "frames: {:?}", frames.lock().unwrap());
+
+    consumer.shutdown();
+    provider.iii.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn complete_fails_fast_when_the_provider_worker_is_gone() {
-    // Regression for the boundary hang: a registered provider whose worker is
-    // gone makes the dispatch fail with function_not_found; `run` returns a
-    // typed Err without ever writing a frame, and `router::complete`'s drain
-    // must not block on a channel that will never EOF.
+    // Regression for the completion boundary: a registered provider whose
+    // worker is gone emits a terminal error and returns a typed Err. The
+    // internal channel drain must still race the pipeline and answer promptly.
     let engine = engine_or_skip!();
     let router_iii = register_worker(&engine.url, InitOptions::default());
     register_router(router_iii.clone())

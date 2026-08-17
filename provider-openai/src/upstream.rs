@@ -232,7 +232,7 @@ mod tests {
         );
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
-                assert_eq!(message.usage.as_ref().unwrap().input, Some(12));
+                assert_eq!(message.usage.as_ref().unwrap().input, Some(8));
                 assert_eq!(message.usage.as_ref().unwrap().output, Some(2));
                 assert_eq!(message.usage.as_ref().unwrap().cache_read, Some(4));
                 assert_eq!(message.native_stop_reason.as_deref(), Some("stop"));
@@ -280,6 +280,22 @@ mod tests {
                 assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
             }
             other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_429_credit_balance_exhausted_is_permanent() {
+        let url = stub(
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"You have no credits remaining.\",\"type\":\"insufficient_quota\",\"code\":\"credit_balance_exhausted\"}}",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+            }
+            other => panic!("want permanent error, got {other:?}"),
         }
     }
 

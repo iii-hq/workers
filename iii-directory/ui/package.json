@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
+    "test": "node --test tests/frontmatter.test.mjs",
     "watch": "node build.mjs --watch"
   },
   "dependencies": {

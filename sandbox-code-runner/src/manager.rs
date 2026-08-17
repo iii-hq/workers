@@ -24,7 +24,8 @@
 //! `sandbox::run` can neither enable networking nor set create-time env.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -33,6 +34,8 @@ use crate::engine::{Engine, UnregisterFn};
 use crate::error::{
     classify_probe_error, classify_sandbox_error, CodeRunnerError, ProbeOutcome, SandboxFailure,
 };
+use crate::events::{Emitter, Event};
+use crate::functions::list_runtimes::{ListRuntimesResponse, RuntimeSummary};
 use crate::functions::register::{RegisterRequest, RegisterResponse};
 use crate::functions::run::{RunRequest, RunResponse};
 use crate::functions::teardown::{TeardownRequest, TeardownResponse};
@@ -136,6 +139,8 @@ pub(crate) struct RegisteredFn {
 pub(crate) struct RuntimeRecord {
     pub(crate) sandbox_id: String,
     pub(crate) lang: Lang,
+    /// Wall-clock creation time, reported by `list_runtimes`.
+    pub(crate) created_at: SystemTime,
     /// One in-flight exec per runtime — see the module doc.
     pub(crate) exec_lock: tokio::sync::Mutex<()>,
     /// Claimed by the first registered function id: `app::greet` claims
@@ -188,6 +193,10 @@ pub struct RuntimeManager {
     /// Guards a single process only — `engine::functions::info` is what
     /// covers a collision across two sandbox-code-runner processes on one bus.
     claims: Mutex<HashMap<String, String>>,
+    /// `sandbox-code-runner::event` emitter, wired once by `main` via
+    /// [`Self::set_events`]. Unset in unit tests that don't observe
+    /// emissions — every emit is then a no-op.
+    events: OnceLock<Emitter>,
 }
 
 /// Owner recorded in `claims` for this worker's own statically registered
@@ -231,7 +240,24 @@ impl RuntimeManager {
             namespaces: Mutex::new(HashMap::new()),
             namespace_create_lock: tokio::sync::Mutex::new(()),
             claims: Mutex::new(HashMap::new()),
+            events: OnceLock::new(),
         })
+    }
+
+    /// Wire the `sandbox-code-runner::event` emitter — once, from `main`,
+    /// before any caller-facing function is invoked. A second call is
+    /// ignored.
+    pub fn set_events(&self, events: Emitter) {
+        let _ = self.events.set(events);
+    }
+
+    /// Fire a lifecycle event when an emitter is wired. Fan-out inside the
+    /// emitter is fire-and-forget — this never blocks or fails the calling
+    /// handler.
+    fn emit(&self, event: Event) {
+        if let Some(events) = self.events.get() {
+            events.emit(event);
+        }
     }
 
     /// Seed `claims` with this worker's own statically registered ids
@@ -312,6 +338,7 @@ impl RuntimeManager {
             .unwrap()
             .insert((ns.to_string(), lang), id.clone());
         tracing::info!(namespace = %ns, lang = ?lang, "created a runtime for this namespace");
+        self.emit(Event::runtime_created(&id, lang, &record.sandbox_id));
         Ok((id, record))
     }
 
@@ -369,6 +396,8 @@ impl RuntimeManager {
     /// record. Idempotent — a second Gone for the same id finds nothing. Does
     /// NOT call `sandbox::stop` — the whole premise is that the daemon
     /// already reaped or lost the VM, so there is nothing left to stop.
+    /// Emits the same `teardown` event a real teardown does: subscribers
+    /// must learn about reaper-driven removal too.
     pub(crate) fn expire(&self, runtime_id: &str) {
         let record = self.runtimes.lock().unwrap().remove(runtime_id);
         self.unbind_namespace(runtime_id);
@@ -381,6 +410,8 @@ impl RuntimeManager {
                 (f.unregister)();
                 tracing::warn!(id = %f.id, "unregistered: its runtime's VM expired");
             }
+            drop(claims);
+            self.emit(Event::teardown(runtime_id));
         }
     }
 
@@ -519,6 +550,7 @@ impl RuntimeManager {
         let record = Arc::new(RuntimeRecord {
             sandbox_id,
             lang,
+            created_at: SystemTime::now(),
             exec_lock: tokio::sync::Mutex::new(()),
             namespace: Mutex::new(None),
             functions: Mutex::new(Vec::new()),
@@ -576,6 +608,7 @@ impl RuntimeManager {
             }
             let mut resp = self.run_into(id, &record, &req.code, timeout_ms).await?;
             resp.runtime_id = Some(id.clone());
+            self.emit(Event::run_settled(resp.runtime_id.as_deref(), record.lang));
             return Ok(resp);
         }
 
@@ -604,7 +637,11 @@ impl RuntimeManager {
         }
 
         let mut resp = result.map_err(Self::redact_boot_run_error)?;
+        if keep {
+            self.emit(Event::runtime_created(&id, lang, &record.sandbox_id));
+        }
         resp.runtime_id = keep.then_some(id);
+        self.emit(Event::run_settled(resp.runtime_id.as_deref(), lang));
         Ok(resp)
     }
 
@@ -777,6 +814,70 @@ impl RuntimeManager {
         Ok(unregistered)
     }
 
+    /// Snapshot every live runtime — kept-run and namespace runtimes alike
+    /// — newest first. Reads only in-process state, no daemon round trip:
+    /// a runtime the daemon reaped behind our back still lists until
+    /// something touches it (`sandbox_call`'s Gone handling) or tears it
+    /// down.
+    pub async fn list_runtimes(&self) -> ListRuntimesResponse {
+        let records: Vec<(String, Arc<RuntimeRecord>)> = self
+            .runtimes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, r)| (id.clone(), r.clone()))
+            .collect();
+        // Reconcile against the daemon so a reaped VM reads as `vm_gone`
+        // instead of listing as alive until the next use fails. Best-effort:
+        // a failed read means "unknown", never a claim either way.
+        let live_vms: Option<std::collections::HashSet<String>> = self
+            .engine
+            .call(
+                "sandbox::list".to_string(),
+                serde_json::json!({}),
+                FS_TIMEOUT_MS,
+            )
+            .await
+            .ok()
+            .and_then(|v| {
+                let ids = v
+                    .get("sandboxes")?
+                    .as_array()?
+                    .iter()
+                    .filter(|s| !s.get("stopped").and_then(|b| b.as_bool()).unwrap_or(false))
+                    .filter_map(|s| s.get("sandbox_id")?.as_str().map(str::to_string))
+                    .collect();
+                Some(ids)
+            });
+        let mut runtimes: Vec<RuntimeSummary> = records
+            .into_iter()
+            .map(|(runtime_id, r)| RuntimeSummary {
+                runtime_id,
+                lang: r.lang,
+                sandbox_id: r.sandbox_id.clone(),
+                created_at_ms: r
+                    .created_at
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                registered_functions: r
+                    .functions
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.id.clone())
+                    .collect(),
+                vm_gone: live_vms.as_ref().map(|live| !live.contains(&r.sandbox_id)),
+            })
+            .collect();
+        runtimes.sort_by(|a, b| {
+            b.created_at_ms
+                .cmp(&a.created_at_ms)
+                .then_with(|| a.runtime_id.cmp(&b.runtime_id))
+        });
+        ListRuntimesResponse { runtimes }
+    }
+
     /// Accepts exactly one of `runtime_id` (a kept-run runtime) or
     /// `namespace` (every runtime — one per language — backing a
     /// `register_function` namespace). A namespace teardown unregisters
@@ -799,6 +900,7 @@ impl RuntimeManager {
             )),
             (Some(id), None) => {
                 let unregistered = self.destroy_runtime(&id).await?;
+                self.emit(Event::teardown(&id));
                 Ok(TeardownResponse {
                     runtime_id: Some(id),
                     namespace: None,
@@ -822,7 +924,10 @@ impl RuntimeManager {
                 let mut unregistered = Vec::new();
                 for id in ids {
                     match self.destroy_runtime(&id).await {
-                        Ok(mut u) => unregistered.append(&mut u),
+                        Ok(mut u) => {
+                            unregistered.append(&mut u);
+                            self.emit(Event::teardown(&id));
+                        }
                         // Already gone (e.g. a concurrent teardown/expire
                         // beat this loop to it) reads as already torn
                         // down, not a failure — same as the by-id path's
@@ -959,7 +1064,14 @@ impl RuntimeManager {
 
         let weak = Arc::downgrade(self);
         match self.publish(&req, &runtime_id, &record, weak).await {
-            Ok(resp) => Ok(resp),
+            Ok(resp) => {
+                self.emit(Event::function_registered(
+                    &req.function_id,
+                    &runtime_id,
+                    req.lang,
+                ));
+                Ok(resp)
+            }
             Err(e) => {
                 self.release(&req.function_id, &record, &runtime_id);
                 Err(Self::redact_register_error(e))
@@ -1285,6 +1397,7 @@ mod tests {
         let record = Arc::new(RuntimeRecord {
             sandbox_id: sandbox_id.to_string(),
             lang,
+            created_at: SystemTime::now(),
             exec_lock: tokio::sync::Mutex::new(()),
             namespace: Mutex::new(None),
             functions: Mutex::new(Vec::new()),
@@ -2800,5 +2913,225 @@ mod tests {
             let err = m.teardown(td_by_ns(bad)).await.unwrap_err();
             assert_eq!(err.code(), "sandbox-code-runner::invalid_request", "{bad}");
         }
+    }
+
+    // ---------------------------------------------------------------
+    // list_runtimes.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_runtimes_is_empty_with_no_live_runtimes() {
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
+        assert!(m.list_runtimes().await.runtimes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_runtimes_carries_each_runtimes_registered_function_ids() {
+        let fake = happy_fake();
+        probe_free(&fake);
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        m.register(reg_req("app::a", Lang::Node)).await.unwrap();
+        m.register(reg_req("app::b", Lang::Node)).await.unwrap();
+
+        let out = m.list_runtimes().await;
+        assert_eq!(out.runtimes.len(), 1);
+        let rt = &out.runtimes[0];
+        assert!(rt.runtime_id.starts_with("rt-"));
+        assert_eq!(rt.lang, Lang::Node);
+        assert_eq!(rt.sandbox_id, "sb-1");
+        assert!(rt.created_at_ms > 0);
+        assert_eq!(rt.registered_functions, vec!["app::a", "app::b"]);
+    }
+
+    #[tokio::test]
+    async fn list_runtimes_shows_kept_runs_and_forgets_torn_down_runtimes() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let mut req = eval_req("1", Some(Lang::Node), None);
+        req.keep = true;
+        let id = m.run(req).await.unwrap().runtime_id.unwrap();
+
+        let out = m.list_runtimes().await;
+        assert_eq!(out.runtimes.len(), 1);
+        assert_eq!(out.runtimes[0].runtime_id, id);
+        assert!(out.runtimes[0].registered_functions.is_empty());
+
+        m.teardown(td_by_id(&id)).await.unwrap();
+        assert!(m.list_runtimes().await.runtimes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_runtimes_reconciles_vm_liveness_against_the_daemon() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let mut req = eval_req("1", Some(Lang::Node), None);
+        req.keep = true;
+        m.run(req).await.unwrap();
+
+        // No sandbox::list configured on the fake → reconciliation read
+        // fails → unknown, never a liveness claim.
+        assert_eq!(m.list_runtimes().await.runtimes[0].vm_gone, None);
+
+        fake.with_response(
+            "sandbox::list",
+            Ok(json!({ "sandboxes": [{ "sandbox_id": "sb-1", "stopped": false }] })),
+        );
+        assert_eq!(m.list_runtimes().await.runtimes[0].vm_gone, Some(false));
+
+        // The daemon no longer lists the VM (reaped) — flagged, not dropped:
+        // teardown still needs the record to unregister and clean up.
+        fake.with_response("sandbox::list", Ok(json!({ "sandboxes": [] })));
+        assert_eq!(m.list_runtimes().await.runtimes[0].vm_gone, Some(true));
+
+        // A stopped-but-listed VM counts as gone.
+        fake.with_response(
+            "sandbox::list",
+            Ok(json!({ "sandboxes": [{ "sandbox_id": "sb-1", "stopped": true }] })),
+        );
+        assert_eq!(m.list_runtimes().await.runtimes[0].vm_gone, Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_one_shot_run_never_appears_in_list_runtimes() {
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
+        m.run(eval_req("1", Some(Lang::Node), None)).await.unwrap();
+        assert!(m.list_runtimes().await.runtimes.is_empty());
+    }
+
+    /// Ordering is pinned with explicit creation times — real runtimes
+    /// minted in one test can share a millisecond.
+    #[tokio::test]
+    async fn list_runtimes_sorts_newest_first() {
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
+        for (id, ms) in [("rt-old", 1_000u64), ("rt-new", 2_000), ("rt-mid", 1_500)] {
+            let record = Arc::new(RuntimeRecord {
+                sandbox_id: format!("sb-{id}"),
+                lang: Lang::Node,
+                created_at: UNIX_EPOCH + std::time::Duration::from_millis(ms),
+                exec_lock: tokio::sync::Mutex::new(()),
+                namespace: Mutex::new(None),
+                functions: Mutex::new(Vec::new()),
+            });
+            m.runtimes.lock().unwrap().insert(id.to_string(), record);
+        }
+        let out = m.list_runtimes().await;
+        let ids: Vec<&str> = out.runtimes.iter().map(|r| r.runtime_id.as_str()).collect();
+        assert_eq!(ids, vec!["rt-new", "rt-mid", "rt-old"]);
+    }
+
+    // ---------------------------------------------------------------
+    // events: lifecycle emissions.
+    // ---------------------------------------------------------------
+
+    use crate::events::{EventDeliverer, SubscriberSet};
+
+    #[derive(Default)]
+    struct RecordingDeliverer {
+        seen: Mutex<Vec<Value>>,
+    }
+
+    impl EventDeliverer for RecordingDeliverer {
+        fn deliver(&self, _function_id: &str, payload: Value) {
+            self.seen.lock().unwrap().push(payload);
+        }
+    }
+
+    /// Wire a recording emitter with one subscriber, so every emission is
+    /// captured synchronously — no spawn, no bus.
+    fn record_events(m: &RuntimeManager) -> Arc<RecordingDeliverer> {
+        let subscribers = SubscriberSet::new();
+        subscribers.insert("t1".to_string(), "console::recv".to_string());
+        let recorder = Arc::new(RecordingDeliverer::default());
+        m.set_events(Emitter::new(subscribers, recorder.clone()));
+        recorder
+    }
+
+    #[tokio::test]
+    async fn a_kept_run_emits_runtime_created_then_run_settled() {
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
+        let recorder = record_events(&m);
+        let mut req = eval_req("1", Some(Lang::Node), None);
+        req.keep = true;
+        let id = m.run(req).await.unwrap().runtime_id.unwrap();
+
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0]["kind"], "runtime_created");
+        assert_eq!(seen[0]["runtime_id"], json!(id));
+        assert_eq!(seen[0]["lang"], "node");
+        assert_eq!(seen[0]["sandbox_id"], "sb-1");
+        assert_eq!(seen[1]["kind"], "run_settled");
+        assert_eq!(seen[1]["runtime_id"], json!(id));
+    }
+
+    /// A one-shot run's VM never persists: no runtime_created, no
+    /// teardown, and its run_settled carries no runtime_id.
+    #[tokio::test]
+    async fn a_one_shot_run_emits_only_run_settled_without_a_runtime_id() {
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
+        let recorder = record_events(&m);
+        m.run(eval_req("1", Some(Lang::Node), None)).await.unwrap();
+
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["kind"], "run_settled");
+        assert_eq!(seen[0]["lang"], "node");
+        assert!(seen[0].get("runtime_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn register_emits_runtime_created_then_function_registered() {
+        let fake = happy_fake();
+        probe_free(&fake);
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let recorder = record_events(&m);
+        m.register(reg_req("app::greet", Lang::Node)).await.unwrap();
+
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0]["kind"], "runtime_created");
+        assert_eq!(seen[0]["sandbox_id"], "sb-1");
+        assert_eq!(seen[1]["kind"], "function_registered");
+        assert_eq!(seen[1]["function_id"], "app::greet");
+        assert_eq!(seen[1]["runtime_id"], seen[0]["runtime_id"]);
+    }
+
+    /// Reaper-driven removal is a lifecycle change too: `expire` (S002/S004
+    /// behind our back) emits the same teardown event a real teardown does.
+    #[tokio::test]
+    async fn an_expired_runtime_emits_a_teardown_event() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let id = seed_runtime(&m, Lang::Node, "sb-1");
+        let recorder = record_events(&m);
+        fake.with_response("sandbox::fs::write", Err(wrapped("S004", "reaped")));
+        let _ = m
+            .run(eval_req("2", None, Some(id.clone())))
+            .await
+            .unwrap_err();
+
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["kind"], "teardown");
+        assert_eq!(seen[0]["runtime_id"], json!(id));
+    }
+
+    #[tokio::test]
+    async fn teardown_by_namespace_emits_one_event_per_destroyed_runtime() {
+        let fake = happy_fake();
+        probe_free(&fake);
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        m.register(reg_req("app::a", Lang::Node)).await.unwrap();
+        m.register(reg_req("app::b", Lang::Python)).await.unwrap();
+
+        let recorder = record_events(&m);
+        m.teardown(td_by_ns("app")).await.unwrap();
+
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|e| e["kind"] == "teardown"));
+        assert!(seen
+            .iter()
+            .all(|e| e["runtime_id"].as_str().unwrap().starts_with("rt-")));
     }
 }

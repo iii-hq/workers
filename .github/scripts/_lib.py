@@ -99,7 +99,7 @@ def list_tagged_versions(worker: str) -> list[str]:
 def validate_release_history(target: str, existing: list[str]) -> None:
     """Reject a target behind an already tagged core or maturity.
 
-    Legacy tags outside the v2 grammar do not participate in the maturity
+    Tags outside the strict release grammar do not participate in the maturity
     ladder. Exact equality is left to the workflow's idempotency check.
     """
     wanted = parse_release_version(target)

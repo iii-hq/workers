@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_SYSTEM_PROMPT_STATE } from '@/components/chat/system-prompt-selection'
 import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
 import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import type { Conversation } from '@/types/chat'
@@ -304,6 +305,7 @@ describe('appendMessageToConversation', () => {
             kind: 'notice',
             tone: 'error',
             content: 'response failed',
+            provisional: true,
             createdAt: 3_000,
           },
         ],
@@ -323,5 +325,98 @@ describe('appendMessageToConversation', () => {
       id: 'e_t-1_error',
       content: 'turn failed [llm.transient] — exact reason',
     })
+    expect(next.messages[0]).not.toHaveProperty('provisional')
+  })
+
+  it('does not overwrite a durable lifecycle notice with a late live fallback', () => {
+    const next = appendMessageToConversation(
+      conversation({
+        messages: [
+          {
+            id: 'e_t-1_error',
+            role: 'system',
+            kind: 'notice',
+            tone: 'error',
+            content: 'turn failed [llm.permanent] — exact reason',
+            createdAt: 3_000,
+          },
+        ],
+      }),
+      {
+        id: 'e_t-1_error',
+        role: 'system',
+        kind: 'notice',
+        tone: 'error',
+        content: 'response failed: fallback reason',
+        provisional: true,
+        createdAt: 3_100,
+      },
+    )
+
+    expect(next.messages).toHaveLength(1)
+    expect(next.messages[0]).toMatchObject({
+      id: 'e_t-1_error',
+      content: 'turn failed [llm.permanent] — exact reason',
+    })
+    expect(next.messages[0]).not.toHaveProperty('provisional')
+  })
+})
+
+describe('mergeConversationMeta / system_prompt', () => {
+  it('defaults when the key is absent', () => {
+    const next = mergeConversationMeta(undefined, sessionMeta({}))
+    expect(next.systemPrompt).toEqual(DEFAULT_SYSTEM_PROMPT_STATE)
+  })
+
+  it('restores a named choice with its strategy and resolved body', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          system_prompt: {
+            choice: { named: 'pirate' },
+            strategy: 'override',
+            named_body: 'Arr.',
+          },
+        },
+      }),
+    )
+    expect(next.systemPrompt).toEqual({
+      choice: { named: 'pirate' },
+      strategy: 'override',
+      namedBody: 'Arr.',
+      customText: '',
+    })
+  })
+
+  it('degrades malformed persisted values to the default without throwing', () => {
+    // Untrusted wire JSON: a string, a bare `custom`, and a missing name all
+    // have to fall back rather than produce a half-built choice.
+    for (const system_prompt of [
+      'pirate',
+      42,
+      null,
+      { strategy: 'override' },
+      { choice: 'custom' },
+      { choice: { named: 7 } },
+    ]) {
+      const next = mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { system_prompt } }),
+      )
+      expect(next.systemPrompt).toEqual(DEFAULT_SYSTEM_PROMPT_STATE)
+    }
+  })
+
+  it('unknown strategies fall back to enrich, never to an invalid value', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          system_prompt: { choice: { named: 'p' }, strategy: 'sideways' },
+        },
+      }),
+    )
+    expect(next.systemPrompt?.strategy).toBe('enrich')
   })
 })

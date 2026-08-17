@@ -80,6 +80,16 @@ export interface PageRenderProps {
    * Absent when the page renders outside a closable pane.
    */
   onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory, live: the page
+   * re-renders with the new value when the user picks another folder in
+   * chat, so filesystem-shaped pages can follow along. `null`/absent when
+   * no conversation is active or none is set.
+   */
+  workingDir?: string | null
+  /** Active chat session id. Reactive pages use it to subscribe to exact
+      Harness turn boundaries without receiving another chat's events. */
+  conversationId?: string | null
 }
 
 export interface PageRegistration {
@@ -191,6 +201,25 @@ export interface SessionChipRegistration {
 }
 
 /**
+ * Props a chat footer turn-summary receives. The extension owns the summary
+ * data; the host supplies only the active session and its live turn state.
+ */
+export interface SessionTurnSummaryProps {
+  sessionId: string
+  isStreaming: boolean
+}
+
+/**
+ * A compact per-session summary rendered immediately above the composer.
+ * Duplicate `id`: last registration wins.
+ */
+export interface SessionTurnSummaryRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<SessionTurnSummaryProps>
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -214,6 +243,7 @@ export interface Host {
   }
   chat: {
     registerSessionChip(chip: SessionChipRegistration): () => void
+    registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
   }
 }
 

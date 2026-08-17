@@ -62,10 +62,11 @@ pub struct SkipReason {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceKind {
     Skill,
     Prompt,
+    SystemPrompt,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -142,11 +143,57 @@ pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     (None, content)
 }
 
-/// True if any path component is exactly `prompts`. Used to bisect the
-/// `<skills_folder>/**/*.md` walk into the skill side and the prompt
-/// side.
-fn has_prompts_segment(rel: &Path) -> bool {
-    rel.components().any(|c| c.as_os_str() == "prompts")
+/// Which prompt-ish family a path/function belongs to. Carries every
+/// per-kind constant so the two families can't drift: the walk segment,
+/// the `SourceKind`, and the error-message noun. The segment doubles as
+/// the top-level folder `create` writes into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    /// User-invoked command templates (`prompts/` segment).
+    Command,
+    /// Identity prompts for the chat picker (`system-prompts/` segment).
+    System,
+}
+
+impl PromptKind {
+    /// Path component that marks this kind in the walk.
+    pub fn segment(self) -> &'static str {
+        match self {
+            Self::Command => "prompts",
+            Self::System => "system-prompts",
+        }
+    }
+
+    pub fn source_kind(self) -> SourceKind {
+        match self {
+            Self::Command => SourceKind::Prompt,
+            Self::System => SourceKind::SystemPrompt,
+        }
+    }
+
+    /// Singular noun for error messages.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Command => "prompt",
+            Self::System => "system prompt",
+        }
+    }
+}
+
+/// Classify one path (relative to a scan root) by its segments — the
+/// single discriminator the scanner, the download classifier, and the
+/// fs watcher all share. `system-prompts` wins over `prompts` regardless
+/// of component order, so a path carrying both classifies as exactly one
+/// kind.
+pub fn classify_rel_path(rel: &Path) -> SourceKind {
+    let has = |seg: &str| rel.components().any(|c| c.as_os_str() == seg);
+    if has(PromptKind::System.segment()) {
+        SourceKind::SystemPrompt
+    } else if has(PromptKind::Command.segment()) {
+        SourceKind::Prompt
+    } else {
+        SourceKind::Skill
+    }
 }
 
 /// Walk `base_dir` with the `**/*.md` glob and return every `.md` file
@@ -243,7 +290,7 @@ pub fn scan_skills(skills_folder: &Path) -> (Vec<FsSkill>, Vec<SkipReason>) {
     };
 
     for (abs, rel) in entries {
-        if has_prompts_segment(&rel) {
+        if classify_rel_path(&rel) != SourceKind::Skill {
             continue;
         }
         let id = match rel_to_id(&rel) {
@@ -285,14 +332,15 @@ pub fn scan_skills(skills_folder: &Path) -> (Vec<FsSkill>, Vec<SkipReason>) {
     (skills, skipped)
 }
 
-/// Scan every `*.md` under `<skills_folder>/<ns>/prompts/`. Each match
-/// must have YAML frontmatter declaring at least `description`; `name`
-/// is optional and overrides the file-basename-derived default.
+/// Scan one kind's prompt files (`kind.segment()` path segment) under
+/// `skills_folder`. Each match must have YAML frontmatter declaring at
+/// least `description`; `name` is optional and overrides the
+/// file-basename-derived default.
 ///
 /// Rejection reasons mirror [`scan_skills`]: missing frontmatter,
 /// invalid YAML, missing `description`, invalid prompt name, or a name
 /// collision with another prompt.
-pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
+pub fn scan_prompts(skills_folder: &Path, kind: PromptKind) -> (Vec<FsPrompt>, Vec<SkipReason>) {
     let mut prompts: Vec<FsPrompt> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
 
@@ -300,7 +348,7 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
         Ok(v) => v,
         Err(e) => {
             skipped.push(SkipReason {
-                kind: SourceKind::Prompt,
+                kind: kind.source_kind(),
                 path: skills_folder.to_path_buf(),
                 reason: e,
             });
@@ -309,14 +357,14 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
     };
 
     for (abs, rel) in entries {
-        if !has_prompts_segment(&rel) {
+        if classify_rel_path(&rel) != kind.source_kind() {
             continue;
         }
         let content = match std::fs::read_to_string(&abs) {
             Ok(c) => c,
             Err(e) => {
                 skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
+                    kind: kind.source_kind(),
                     path: abs,
                     reason: format!("read: {e}"),
                 });
@@ -327,7 +375,7 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
             Ok(f) => f,
             Err(reason) => {
                 skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
+                    kind: kind.source_kind(),
                     path: abs,
                     reason,
                 });
@@ -351,7 +399,7 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
 
         if let Err(e) = validate_name(&name) {
             skipped.push(SkipReason {
-                kind: SourceKind::Prompt,
+                kind: kind.source_kind(),
                 path: abs,
                 reason: format!("invalid prompt name {name:?}: {e}"),
             });
@@ -362,7 +410,7 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
             Some(d) if !d.trim().is_empty() => d.trim().to_string(),
             _ => {
                 skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
+                    kind: kind.source_kind(),
                     path: abs,
                     reason: "frontmatter missing non-empty `description`".into(),
                 });
@@ -373,7 +421,7 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
         if let Some(existing) = prompts.iter().find(|p| p.name == name) {
             if existing.abs_path != abs {
                 skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
+                    kind: kind.source_kind(),
                     path: abs,
                     reason: format!(
                         "duplicate name {name:?} also produced by {}",
@@ -537,10 +585,11 @@ pub fn scan_skills_merged(
 pub fn scan_prompts_merged(
     global_root: &Path,
     local_root: &Path,
+    kind: PromptKind,
 ) -> (Vec<FsPrompt>, Vec<SkipReason>) {
     let local_ns = top_level_namespaces(local_root);
 
-    let (global_prompts, mut global_skipped) = scan_prompts(global_root);
+    let (global_prompts, mut global_skipped) = scan_prompts(global_root, kind);
     let global_filtered: Vec<FsPrompt> = global_prompts
         .into_iter()
         .filter(|p| {
@@ -568,7 +617,7 @@ pub fn scan_prompts_merged(
         !local_ns.contains(&rel.to_string())
     });
 
-    let (local_prompts, local_skipped) = scan_prompts(local_root);
+    let (local_prompts, local_skipped) = scan_prompts(local_root, kind);
 
     let mut merged = local_prompts;
     merged.extend(global_filtered);
@@ -817,7 +866,7 @@ mod tests {
             "---\nname: open-pr\ndescription: Open a PR.\n---\nBody here.\n",
         );
 
-        let (prompts, skipped) = scan_prompts(tmp.path());
+        let (prompts, skipped) = scan_prompts(tmp.path(), PromptKind::Command);
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "open-pr");
@@ -833,7 +882,7 @@ mod tests {
             "---\ndescription: Just a description.\n---\nBody.\n",
         );
 
-        let (prompts, _skipped) = scan_prompts(tmp.path());
+        let (prompts, _skipped) = scan_prompts(tmp.path(), PromptKind::Command);
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "foo");
     }
@@ -843,7 +892,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(tmp.path(), "ns/prompts/no-fm.md", "# heading\nbody\n");
 
-        let (prompts, skipped) = scan_prompts(tmp.path());
+        let (prompts, skipped) = scan_prompts(tmp.path(), PromptKind::Command);
         assert!(prompts.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(
@@ -861,7 +910,7 @@ mod tests {
             "ns/prompts/no-desc.md",
             "---\nname: foo\n---\nBody.\n",
         );
-        let (prompts, skipped) = scan_prompts(tmp.path());
+        let (prompts, skipped) = scan_prompts(tmp.path(), PromptKind::Command);
         assert!(prompts.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(
@@ -879,7 +928,7 @@ mod tests {
             "ns/prompts/bad.md",
             "---\nname: Has Spaces\ndescription: x\n---\nBody.\n",
         );
-        let (prompts, skipped) = scan_prompts(tmp.path());
+        let (prompts, skipped) = scan_prompts(tmp.path(), PromptKind::Command);
         assert!(prompts.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(
@@ -902,7 +951,7 @@ mod tests {
             "ns-b/prompts/shared.md",
             "---\nname: shared\ndescription: from b\n---\nBody B.\n",
         );
-        let (prompts, skipped) = scan_prompts(tmp.path());
+        let (prompts, skipped) = scan_prompts(tmp.path(), PromptKind::Command);
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "shared");
         assert_eq!(skipped.len(), 1);
@@ -1115,5 +1164,120 @@ mod tests {
             "empty local dir should shadow global; got: {:?}",
             skills.iter().map(|s| &s.id).collect::<Vec<_>>()
         );
+    }
+
+    // ── third kind: classification + kind-scoped scans ───────────────
+
+    #[test]
+    fn classify_rel_path_three_kinds_and_precedence() {
+        use std::path::Path;
+        assert_eq!(classify_rel_path(Path::new("ns/a.md")), SourceKind::Skill);
+        assert_eq!(
+            classify_rel_path(Path::new("ns/prompts/a.md")),
+            SourceKind::Prompt
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("system-prompts/a.md")),
+            SourceKind::SystemPrompt
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("ns/system-prompts/a.md")),
+            SourceKind::SystemPrompt
+        );
+        // Both segments, either order: system-prompts wins, exactly one kind.
+        assert_eq!(
+            classify_rel_path(Path::new("system-prompts/prompts/a.md")),
+            SourceKind::SystemPrompt
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("ns/prompts/system-prompts/a.md")),
+            SourceKind::SystemPrompt
+        );
+        // Component-boundary near-misses: a segment name that merely
+        // starts with (or extends) "prompts"/"system-prompts" is a
+        // distinct path component and must NOT match — classification is
+        // by exact component equality, not substring.
+        assert_eq!(
+            classify_rel_path(Path::new("promptsx/foo.md")),
+            SourceKind::Skill
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("ns/prompts-extra/a.md")),
+            SourceKind::Skill
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("system-promptsx/a.md")),
+            SourceKind::Skill
+        );
+    }
+
+    #[test]
+    fn scan_prompts_bisects_by_kind_and_skills_scan_excludes_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "ns/prompts/cmd.md",
+            "---\ndescription: c\n---\nB\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "system-prompts/sys.md",
+            "---\ndescription: s\n---\nB\n",
+        );
+        let (cmd, skipped) = scan_prompts(tmp.path(), PromptKind::Command);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let names: Vec<&str> = cmd.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["cmd"]);
+        let (sys, skipped) = scan_prompts(tmp.path(), PromptKind::System);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let names: Vec<&str> = sys.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["sys"]);
+        // Neither prompt-ish file leaks into the skills scan.
+        let (skills, _) = scan_skills(tmp.path());
+        assert!(skills.is_empty(), "{skills:?}");
+    }
+
+    #[test]
+    fn same_name_may_exist_as_both_kinds() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "ns/prompts/hello.md",
+            "---\ndescription: c\n---\nC\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "system-prompts/hello.md",
+            "---\ndescription: s\n---\nS\n",
+        );
+        let (cmd, s1) = scan_prompts(tmp.path(), PromptKind::Command);
+        let (sys, s2) = scan_prompts(tmp.path(), PromptKind::System);
+        assert!(s1.is_empty() && s2.is_empty(), "cross-kind is not a dup");
+        assert_eq!(cmd.len(), 1);
+        assert_eq!(sys.len(), 1);
+        assert_eq!(cmd[0].description, "c");
+        assert_eq!(sys[0].description, "s");
+    }
+
+    #[test]
+    fn scan_prompts_merged_shadows_per_top_level_namespace_per_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global");
+        let local = tmp.path().join("local");
+        write_fixture(
+            &global,
+            "system-prompts/a.md",
+            "---\ndescription: g\n---\nG\n",
+        );
+        write_fixture(
+            &local,
+            "system-prompts/b.md",
+            "---\ndescription: l\n---\nL\n",
+        );
+        // A local top-level `system-prompts/` dir shadows the global one
+        // wholesale — same semantics every namespace already has.
+        let (merged, _) = scan_prompts_merged(&global, &local, PromptKind::System);
+        let names: Vec<&str> = merged.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["b"]);
     }
 }

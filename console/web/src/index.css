@@ -1,6 +1,6 @@
-@import "@fontsource/geist/400.css";
-@import "@fontsource/geist/500.css";
-@import "@fontsource/geist/600.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
 @import "@fontsource/chivo-mono/400.css";
 @import "@fontsource/chivo-mono/500.css";
 @import "@fontsource/chivo-mono/600.css";
@@ -11,7 +11,7 @@
 
 @theme {
   --font-sans:
-    "Geist", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono:
     "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
@@ -117,6 +117,7 @@
 }
 
 [data-theme="dark"] {
+    color-scheme: dark;
   /* Neutral grays derived from black — no blue cast in the base ramp. The
      component fills (surface*) are white-alpha so a step reads identically
      over any base layer; the ONLY chromatic surface is surface-selected,
@@ -195,6 +196,16 @@
     color: var(--color-accent-fg);
   }
 
+  /* Tailwind v4's preflight leaves buttons on `cursor: default`, so every
+     button without an explicit `cursor-pointer` reads as inert text (the
+     header's copy/export/close all did). Restore the v3 behavior once,
+     here; disabled buttons keep the default and `cursor-not-allowed`
+     utilities still win. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+
   /* Scrollbars stay system-default — no ::-webkit-scrollbar restyling. */
 
   /* flatten the native optgroup label so it doesn't introduce bold/italic
@@ -218,7 +229,7 @@
   }
 }
 
-/* Configuration uses Geist for UI chrome; Chivo Mono only on code surfaces. */
+/* Configuration uses Inter for UI chrome; Chivo Mono only on code surfaces. */
 .configuration-surface {
   font-family: var(--font-sans);
 }
@@ -235,7 +246,7 @@
   font-family: var(--font-mono);
 }
 
-/* Chat uses Geist for UI chrome; Chivo Mono only on code/terminal surfaces. */
+/* Chat uses Inter for UI chrome; Chivo Mono only on code/terminal surfaces. */
 .chat-surface {
   font-family: var(--font-sans);
 }
@@ -345,6 +356,35 @@
 
 @utility wiggle {
   animation: wiggle 3s ease-in-out infinite;
+}
+
+/* Discoverability nudge on the workspace edge add-panel zones: the `+`
+   panel sliver shakes for ~0.8s once every 10s until the user adds a
+   panel through a zone for the first time (see pane-controls.tsx). */
+@keyframes edge-nudge {
+  0%,
+  8%,
+  100% {
+    transform: translateX(0);
+  }
+  1%,
+  5% {
+    transform: translateX(-2px);
+  }
+  3%,
+  7% {
+    transform: translateX(2px);
+  }
+}
+
+@utility edge-nudge {
+  animation: edge-nudge 10s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-nudge {
+    animation: none;
+  }
 }
 
 /* sanctioned exception to the no-gradients rule: a soft sweep across the */

@@ -54,8 +54,8 @@ BINARY_NAME_EXCEPTIONS = frozenset({
 
 # The engine's bundle validator (iii-worker/src/cli/bundle_download.rs) only
 # accepts runtime.base_image values that name a sandbox-catalog preset ref
-# verbatim (sandbox_daemon/catalog.rs PRESETS); that's how a non-node bundle
-# picks its rootfs now that runtime.kind is deprecated.
+# verbatim (sandbox_daemon/catalog.rs PRESETS); that selects the rootfs for a
+# non-node bundle.
 BUNDLE_PRESET_IMAGES = frozenset({
     "docker.io/iiidev/python:latest",
     "docker.io/iiidev/node:latest",
@@ -225,9 +225,6 @@ def main(argv: list[str] | None = None) -> int:
     # 5. Bundled workers must ship skills/SKILL.md within the size cap.
     if worker in BOOTSTRAP_WORKERS:
         skill_md = root / "skills" / "SKILL.md"
-        legacy_skill_md = root / "skill.md"
-        if not skill_md.exists() and legacy_skill_md.exists():
-            skill_md = legacy_skill_md
         if not skill_md.exists():
             hard(
                 f"{worker}/skills/SKILL.md is missing — bundled workers must ship one "

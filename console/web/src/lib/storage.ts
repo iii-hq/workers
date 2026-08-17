@@ -99,6 +99,32 @@ export function saveLastModel(id: string | null): void {
   }
 }
 
+const EDGE_ADD_DISCOVERED_KEY = 'iii-edge-add-discovered'
+
+/**
+ * Whether the user has ever added a panel through an edge add zone (either
+ * side) — gates the discoverability nudge (the periodic `+` shake and hover
+ * hint). Existing splits don't count: the default workspace ships with a
+ * 2-column tab.
+ */
+export function loadEdgeAddDiscovered(): boolean {
+  try {
+    return localStorage.getItem(EDGE_ADD_DISCOVERED_KEY) === '1'
+  } catch {
+    // Storage unavailable means the flag could never persist — stay quiet
+    // rather than nudge on every visit.
+    return true
+  }
+}
+
+export function saveEdgeAddDiscovered(): void {
+  try {
+    localStorage.setItem(EDGE_ADD_DISCOVERED_KEY, '1')
+  } catch {
+    /* best-effort */
+  }
+}
+
 const RECENT_PROJECTS_KEY = 'iii-chat-recent-projects'
 const RECENT_PROJECTS_MAX = 12
 

@@ -15,6 +15,7 @@ use crate::functions::{
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
+    system_prompt::{SystemPromptPreview, SystemPromptRequest},
     triggers_list::{
         TriggersListRequest, TriggersListResponse, TriggersUnregisterRequest,
         TriggersUnregisterResponse, TRIGGERS_LIST_ID, TRIGGERS_UNREGISTER_ID,
@@ -22,7 +23,7 @@ use crate::functions::{
 };
 use crate::functions::{
     FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID, SESSION_TREE_ID, SPAWN_ID,
-    STATUS_ID, STOP_ID, TURN_ID,
+    STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
@@ -69,6 +70,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
+        spec::<SystemPromptRequest, SystemPromptPreview>(SYSTEM_PROMPT_ID),
         spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),
         spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),
         spec::<TriggersListRequest, TriggersListResponse>(TRIGGERS_LIST_ID),

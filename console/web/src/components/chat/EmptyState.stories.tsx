@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { fn } from 'storybook/test'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { EmptyState } from './EmptyState'
+import { DEFAULT_SYSTEM_PROMPT_STATE } from './system-prompt-selection'
 
 /** Mid-download progress for the live install console. */
 const installingStages: InstallStage[] = [
@@ -48,7 +49,23 @@ type Story = StoryObj<typeof meta>
 
 export const Ready: Story = {
   name: 'ready (harness + provider)',
-  args: { variant: 'ready' },
+  args: {
+    variant: 'ready',
+    systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
+    onSystemPromptChange: fn(),
+  },
+}
+
+export const ReadyWithNamedPrompt: Story = {
+  name: 'ready (named system prompt)',
+  args: {
+    variant: 'ready',
+    systemPrompt: {
+      ...DEFAULT_SYSTEM_PROMPT_STATE,
+      choice: { named: 'ptbr' },
+    },
+    onSystemPromptChange: fn(),
+  },
 }
 
 export const NoProvider: Story = {

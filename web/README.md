@@ -212,7 +212,7 @@ cargo fmt --check            # formatting
 ```
 
 The agent-facing authoring guide lives in
-[`skills/index.md`](./skills/index.md) (served at runtime via
+[`skills/SKILL.md`](./skills/SKILL.md) (served at runtime via
 `directory::skills::get`). For the exact, authoritative field types, call
 `engine::functions::info { function_id: "web::fetch" }` — the live schema
 wins if it ever disagrees with this document.

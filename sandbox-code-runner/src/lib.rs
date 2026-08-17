@@ -7,6 +7,8 @@
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod events;
+pub mod fleet_watch;
 pub mod functions;
 pub mod manager;
 pub mod manifest;

@@ -33,6 +33,19 @@ const PROMPT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
     "browse prompt names",
 )];
 
+/// Recovery pointer attached to a `directory::system-prompts::get` miss.
+const SYSTEM_PROMPT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
+    "directory::system-prompts::list",
+    "browse system prompt names",
+)];
+
+fn not_found_next(kind: fs_source::PromptKind) -> &'static [NextAction] {
+    match kind {
+        fs_source::PromptKind::Command => PROMPT_NOT_FOUND_NEXT,
+        fs_source::PromptKind::System => SYSTEM_PROMPT_NOT_FOUND_NEXT,
+    }
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 struct ListPromptsInput {}
 
@@ -77,20 +90,57 @@ pub struct PromptGetOutput {
 }
 
 pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
-    register_list_prompts(iii, cfg);
-    register_get_prompt(iii, cfg);
+    register_list(
+        iii,
+        cfg,
+        fs_source::PromptKind::Command,
+        "directory::prompts::list",
+        "List filesystem-backed command-template prompts (name, description, modified_at) \
+         from skills_folder (`prompts/` path segment).",
+    );
+    register_list(
+        iii,
+        cfg,
+        fs_source::PromptKind::System,
+        "directory::system-prompts::list",
+        "List filesystem-backed system prompts (name, description, modified_at) from \
+         skills_folder (`system-prompts/` path segment).",
+    );
+    register_get(
+        iii,
+        cfg,
+        fs_source::PromptKind::Command,
+        "directory::prompts::get",
+        "Fetch one filesystem-backed command-template prompt by name. Returns the raw \
+         markdown body plus name, description, and modified_at — no envelope, no templating.",
+    );
+    register_get(
+        iii,
+        cfg,
+        fs_source::PromptKind::System,
+        "directory::system-prompts::get",
+        "Fetch one filesystem-backed system prompt by name. Returns the raw markdown body \
+         plus name, description, and modified_at — no envelope, no templating.",
+    );
 }
 
-fn register_list_prompts(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
+fn register_list(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    kind: fs_source::PromptKind,
+    function_id: &str,
+    description: &str,
+) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        "directory::prompts::list",
+        function_id,
         RegisterFunction::new_async(move |_input: ListPromptsInput| {
             let cfg = cfg_inner.load_full();
             async move {
                 let (prompts, _skipped) = fs_source::scan_prompts_merged(
                     &cfg.resolved_skills_folder(),
                     &cfg.local_skills_folder(),
+                    kind,
                 );
                 let out: Vec<PromptEntry> = prompts
                     .into_iter()
@@ -106,24 +156,25 @@ fn register_list_prompts(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
                 Ok::<_, Error>(ListPromptsOutput { prompts: out })
             }
         })
-        .description(
-            "List filesystem-backed prompts (name, description, modified_at) from skills_folder.",
-        ),
+        .description(description),
     );
 }
 
-fn register_get_prompt(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
+fn register_get(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    kind: fs_source::PromptKind,
+    function_id: &str,
+    description: &str,
+) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        "directory::prompts::get",
+        function_id,
         RegisterFunction::new_async(move |req: PromptGetInput| {
             let cfg = cfg_inner.load_full();
-            async move { get_prompt(&cfg, req).await.map_err(Error::Handler) }
+            async move { get_prompt(&cfg, req, kind).await.map_err(Error::Handler) }
         })
-        .description(
-            "Fetch one filesystem-backed prompt by name. Returns the raw markdown body plus name, \
-             description, and modified_at — no envelope, no templating.",
-        ),
+        .description(description),
     );
 }
 
@@ -132,20 +183,24 @@ fn register_get_prompt(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
 pub async fn get_prompt(
     cfg: &SkillsConfig,
     req: PromptGetInput,
+    kind: fs_source::PromptKind,
 ) -> Result<PromptGetOutput, String> {
     let name = req.name;
     validate_name(&name)?;
-    let (prompts, _skipped) =
-        fs_source::scan_prompts_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
+    let (prompts, _skipped) = fs_source::scan_prompts_merged(
+        &cfg.resolved_skills_folder(),
+        &cfg.local_skills_folder(),
+        kind,
+    );
     let Some(fs) = prompts.iter().find(|p| p.name == name).cloned() else {
         let names: Vec<String> = prompts.into_iter().map(|p| p.name).collect();
         let candidates = rank_prompt_names(&names, &name, 3);
         return Err(not_found_message(
             "D210",
-            "prompt",
+            kind.noun(),
             &name,
             &candidates,
-            PROMPT_NOT_FOUND_NEXT,
+            not_found_next(kind),
         ));
     };
     let body = fs_source::read_body(&fs.abs_path)?;
@@ -239,5 +294,91 @@ mod tests {
         assert!(validate_name("send/email").is_err());
         assert!(validate_name("mcp::send").is_err());
         assert!(validate_name(&"x".repeat(NAME_MAX_LEN + 1)).is_err());
+    }
+
+    fn write_fixture(dir: &std::path::Path, rel: &str, contents: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn cfg_for(dir: &std::path::Path) -> SkillsConfig {
+        SkillsConfig {
+            skills_folder: dir.to_string_lossy().into_owned(),
+            local_skills_folder: dir.join("local-empty").to_string_lossy().into_owned(),
+            ..SkillsConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn get_prompt_is_kind_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "ns/prompts/hello.md",
+            "---\ndescription: cmd\n---\nCommand body.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "system-prompts/hello.md",
+            "---\ndescription: sys\n---\nSystem body.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+
+        let cmd = get_prompt(
+            &cfg,
+            PromptGetInput {
+                name: "hello".into(),
+                raw: None,
+            },
+            fs_source::PromptKind::Command,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmd.body.trim(), "Command body.");
+
+        let sys = get_prompt(
+            &cfg,
+            PromptGetInput {
+                name: "hello".into(),
+                raw: None,
+            },
+            fs_source::PromptKind::System,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sys.body.trim(), "System body.");
+    }
+
+    #[tokio::test]
+    async fn get_system_prompt_miss_names_the_kind_and_its_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "system-prompts/real.md",
+            "---\ndescription: s\n---\nB.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+        let err = get_prompt(
+            &cfg,
+            PromptGetInput {
+                name: "reel".into(),
+                raw: None,
+            },
+            fs_source::PromptKind::System,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.starts_with("D210 not_found: system prompt"),
+            "got: {err}"
+        );
+        assert!(err.contains("real"), "candidate missing: {err}");
+        assert!(
+            err.contains("directory::system-prompts::list"),
+            "next-action must point at the system family: {err}"
+        );
     }
 }

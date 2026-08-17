@@ -522,13 +522,15 @@
             ]
           },
           "system_prompt_strategy": {
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/definitions/SystemPromptStrategy"
+              },
+              {
+                "type": "null"
               }
             ],
-            "default": "enrich",
-            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it."
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it. When BOTH prompt fields are omitted on an existing session, the prior turn's resolved prompt is inherited; naming a strategy (even bare) resolves fresh — the reset-to-default escape hatch."
           },
           "thinking_level": {
             "anyOf": [

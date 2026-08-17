@@ -4,6 +4,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
+use crate::comparison::CompareSessionsRequestV1;
 use crate::contract::{
     EvalListRequestV1, EvalRerunRequestV1, EvalStartRequestV1, EvaluationIdRequestV1,
     EvaluatorInputV1, StepRequestV1, SweepEventV1, WakeEventV1,
@@ -22,8 +23,27 @@ pub const NORMALIZED_TEXT_ID: &str = "eval::assert::normalized_text";
 pub const STEP_ID: &str = "eval::step";
 pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
+pub const COMPARE_SESSIONS_ID: &str = "eval::compare-sessions";
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
+    let current = deps.clone();
+    iii.register_function(
+        COMPARE_SESSIONS_ID,
+        RegisterFunction::new_async(move |request: CompareSessionsRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::comparison::compare(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Compare 2–5 existing root sessions from live session, lifecycle, and Harness metrics. \
+             The response contains objective values and arithmetic deltas against the chosen \
+             baseline; it does not score, rank, validate equivalence, or persist a snapshot.",
+        ),
+    );
+
     let current = deps.clone();
     iii.register_function(
         START_ID,

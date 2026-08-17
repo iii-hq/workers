@@ -641,6 +641,7 @@ pub async fn run_step(
     };
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
+        session_id: record.session_id.clone(),
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
         // Cloned into the request so the originals stay available for the
@@ -741,6 +742,39 @@ pub async fn run_step(
     // must never fail a turn that generated successfully.
     if let Some(snapshot) = record.context_snapshot.as_mut() {
         snapshot.usage = outcome.message.usage.clone();
+        // Accumulate the session's running cost on top of the stored
+        // snapshot's total: turns are serialized per session (the harness-turn
+        // queue is fifo grouped by session_id) and steps run sequentially
+        // within a turn, so the loop is the only writer and the read-back is
+        // race-free. Seeding from the store keeps the total honest across
+        // turns and harness restarts. A failed read leaves the total unknown
+        // rather than fabricating one that resets to the current step's cost.
+        let step_cost = outcome
+            .message
+            .usage
+            .as_ref()
+            .and_then(|u| u.cost_usd)
+            .unwrap_or(0.0);
+        snapshot.session_cost_usd = match crate::context_snapshot::get(
+            &deps.iii,
+            &record.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        {
+            Ok(prev) => {
+                let prior_cost = prev.and_then(|p| p.session_cost_usd).unwrap_or(0.0);
+                Some(prior_cost + step_cost)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    %error,
+                    "prior context snapshot read failed; session cost total unknown this step"
+                );
+                None
+            }
+        };
         crate::context_snapshot::exactify(snapshot, &router, gen_system_prompt.as_deref(), &tools)
             .await;
         if let Err(error) =
@@ -2219,6 +2253,7 @@ fn build_context_snapshot(
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
         estimator: b.estimator,
+        session_cost_usd: None,
         usable: assembled.usable,
         effective_max_output_tokens: assembled.effective_max_output_tokens,
         total: final_request_tokens,
@@ -2246,18 +2281,32 @@ fn build_context_snapshot(
 /// call (`filesystem_scope::inject`) and the policy stays fail-closed at
 /// dispatch.
 fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let mut lines = vec![format!("Your session id is {}.", record.session_id)];
-    if let Some(dir) = record.options.filesystem_root() {
-        lines.push(format!("Your working directory is {dir}."));
-    }
-    if let Some(aid) = policy_aid(record.options.functions.as_ref()) {
-        lines.push(aid);
-    }
-    let aid = lines.join("\n");
+    let aid = runtime_context_aid(
+        &record.session_id,
+        record.options.filesystem_root(),
+        record.options.functions.as_ref(),
+    );
     Some(match system_prompt {
         Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{aid}"),
         _ => aid,
     })
+}
+
+/// The deterministic session context appended to every model-facing prompt.
+/// Kept separate so read-only previews use the same construction as a turn.
+pub(crate) fn runtime_context_aid(
+    session_id: &str,
+    filesystem_root: Option<&str>,
+    functions: Option<&FunctionPolicy>,
+) -> String {
+    let mut lines = vec![format!("Your session id is {session_id}.")];
+    if let Some(dir) = filesystem_root {
+        lines.push(format!("Your working directory is {dir}."));
+    }
+    if let Some(aid) = policy_aid(functions) {
+        lines.push(aid);
+    }
+    lines.join("\n")
 }
 
 /// The dispatch-policy aid line for a narrowed turn, `None` when the surface
@@ -2467,7 +2516,7 @@ const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed durin
 /// matches the live generation, or is being stamped for the first time; `Some`
 /// only when the registry changed under a session that acknowledged an earlier
 /// generation. The caller stamps `functions_generation = current` regardless.
-fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
     match record_gen {
         Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
         _ => None,

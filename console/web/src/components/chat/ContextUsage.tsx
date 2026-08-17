@@ -19,10 +19,7 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
 
   if (!contextWindow || contextWindow <= 0) {
     return (
-      <div
-        className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint"
-        title={`${tokens.toLocaleString()} tokens (context window unknown)`}
-      >
+      <div className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
         <span>ctx</span>
         <span className="tabular-nums text-ink">
           {formatTokenCount(tokens)}
@@ -51,23 +48,16 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
     tone === 'danger' && 'text-danger',
   )
 
-  const hint =
-    tone === 'normal'
-      ? null
-      : tone === 'warn'
-        ? 'consider /compact'
-        : 'pre-flight compaction imminent'
-
+  /* No tooltip: the bar, the percentage and the counts already say it, and
+     only the system-prompt and status read-outs carry one now. The
+     threshold hint rides the tone colour instead of prose. */
   return (
-    <div
-      className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint"
-      title={`${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${pct}%)${
-        hint ? ` — ${hint}` : ''
-      }`}
-    >
+    <div className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
       <span>ctx</span>
       <div
-        className="relative w-14 h-[6px] bg-surface overflow-hidden"
+        // `surface-active`, not `surface`: the header group this sits in is
+        // itself `bg-surface`, so a same-token track would vanish into it.
+        className="relative w-14 h-[6px] bg-surface-active overflow-hidden"
         role="progressbar"
         aria-label="context window usage"
         aria-valuenow={pct}
@@ -77,7 +67,9 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
         <div className={fillClass} style={{ width: `${pct}%` }} />
       </div>
       <span className={cn('tabular-nums', labelToneClass)}>{pct}%</span>
-      <span className="text-ink-ghost normal-case tracking-normal">
+      {/* `ink-faint` (5.1:1), not `ink-ghost` (2.4:1 on panel-raised — under
+          the 4.5:1 AA floor). Load-bearing numbers, not chrome. */}
+      <span className="text-ink-faint normal-case tracking-normal">
         {formatTokenCount(tokens)}/{formatTokenCount(contextWindow)}
       </span>
     </div>

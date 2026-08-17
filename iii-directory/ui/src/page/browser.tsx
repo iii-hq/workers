@@ -26,8 +26,15 @@
 
 import { Button, CodeEditor, type Host, Input, MarkdownPreview } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { BackButton, MarkdownFileIcon, SearchIcon, XIcon } from '../lib/widgets'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { BackButton, MarkdownFileIcon, PlusIcon, SearchIcon, XIcon } from '../lib/widgets'
+import {
+  frontmatterBody,
+  readFrontmatterField,
+  restoreFrontmatterFields,
+  setFrontmatterField,
+  withoutFrontmatterFields,
+} from './frontmatter'
 
 /** Container width (px) below which the browser collapses to the
  * drill-in list ⇄ document flow. */
@@ -47,6 +54,15 @@ export interface BrowserAdapter {
   noun: string
   /** Breadcrumb root segment ("skills" / "prompts"). */
   crumbRoot: string
+  /** Frontmatter keys that may carry the displayed name, in precedence
+      order. Skills support both legacy `title` and standard `name`. */
+  nameKeys?: readonly string[]
+  /** Field inserted when the document has no declared name yet. */
+  defaultNameKey?: string
+  /** Prompt names use the worker's lowercase identifier grammar. */
+  slugName?: boolean
+  /** Prompt scanners reject an empty description; skills keep it optional. */
+  descriptionRequired?: boolean
   /** Workspace empty-state copy. */
   emptyTitle: string
   emptyBody: string
@@ -56,9 +72,19 @@ export interface BrowserAdapter {
   /** Save; returns the entry's effective key after the write (a prompt
       rename via frontmatter `name:` moves the selection along). */
   save(host: Host, key: string, content: string): Promise<string>
+  /** Create a NEW entry; returns its key. Omit to hide the "new" button —
+      skills arrive by download, so only prompt-ish collections set this. */
+  create?(host: Host, name: string, content: string): Promise<string>
+  /** Permanently remove an existing entry. Omit when deletion is unsupported. */
+  remove?(host: Host, key: string): Promise<void>
   /** Worker trigger type to subscribe for external-change refreshes. */
   onChangeType: string
 }
+
+/** Starter frontmatter for a new entry — the scanner rejects a file without
+ *  a `description`, so scaffold both required keys rather than a blank page. */
+const NEW_TEMPLATE = '---\nname: \ndescription: ""\n---\n\n'
+const SLUG_NAME = /^[a-z0-9_-]+$/
 
 type EditorMode = 'edit' | 'split' | 'preview'
 
@@ -157,8 +183,10 @@ export function CollectionBrowser({
   const [listError, setListError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const searchRef = useRef<HTMLInputElement | null>(null)
+  const fieldId = useId()
 
   const [selected, setSelected] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [draft, setDraft] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -183,6 +211,8 @@ export function CollectionBrowser({
 
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
   const [staleOnDisk, setStaleOnDisk] = useState(false)
   const flashTimer = useRef<number | undefined>(undefined)
@@ -213,6 +243,8 @@ export function CollectionBrowser({
   dirtyRef.current = dirty
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const creatingRef = useRef(creating)
+  creatingRef.current = creating
 
   const open = useCallback(
     (key: string, opts?: { reload?: boolean }) => {
@@ -225,10 +257,12 @@ export function CollectionBrowser({
         }
       }
       setSelected(key)
+      setCreating(false)
       setLoaded(null)
       setDraft('')
       setLoadError(null)
       setSaveError(null)
+      setDeleteError(null)
       setStaleOnDisk(false)
       adapter
         .load(host, key)
@@ -246,6 +280,26 @@ export function CollectionBrowser({
     },
     [host, adapter],
   )
+
+  /** Blank editor for a new entry. `loaded.content` is empty rather than the
+      template, so the scaffold already counts as unsaved work and ⌘S/save is
+      live immediately. */
+  const startCreate = useCallback(() => {
+    if (
+      dirtyRef.current &&
+      !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)
+    ) {
+      return
+    }
+    setCreating(true)
+    setSelected(null)
+    setLoaded({ key: '', content: '' })
+    setDraft(NEW_TEMPLATE)
+    setLoadError(null)
+    setSaveError(null)
+    setDeleteError(null)
+    setStaleOnDisk(false)
+  }, [])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -272,10 +326,55 @@ export function CollectionBrowser({
   })
 
   const save = useCallback(() => {
-    if (!loaded || saving || draft === loaded.content) return
+    if (!loaded || saving || deleting || draft === loaded.content) return
+    const name = readFrontmatterField(
+      draft,
+      adapter.nameKeys ?? ['name'],
+      adapter.defaultNameKey,
+    ).value.trim()
+    const effectiveName = name || (!creating ? loaded.key : '')
+    if (adapter.slugName && !SLUG_NAME.test(effectiveName)) {
+      setSaveError(
+        'enter a name using lowercase letters, numbers, hyphens or underscores',
+      )
+      return
+    }
+    const description = readFrontmatterField(draft, ['description']).value
+    if (adapter.descriptionRequired && !description.trim()) {
+      setSaveError('enter a description before saving')
+      return
+    }
+    if (creating) {
+      if (!adapter.create) return
+      setSaving(true)
+      setSaveError(null)
+      setDeleteError(null)
+      adapter
+        .create(host, effectiveName, draft)
+        .then((effectiveKey) => {
+          refreshList()
+          if (!creatingRef.current) return
+          setCreating(false)
+          setLoaded({ key: effectiveKey, content: draft })
+          setSelected(effectiveKey)
+          setStaleOnDisk(false)
+          setSavedFlash(true)
+          window.clearTimeout(flashTimer.current)
+          flashTimer.current = window.setTimeout(
+            () => setSavedFlash(false),
+            2400,
+          )
+        })
+        .catch((e) => {
+          if (creatingRef.current) setSaveError(String(e))
+        })
+        .finally(() => setSaving(false))
+      return
+    }
     const key = loaded.key
     setSaving(true)
     setSaveError(null)
+    setDeleteError(null)
     adapter
       .save(host, key, draft)
       .then((effectiveKey) => {
@@ -295,7 +394,40 @@ export function CollectionBrowser({
         if (selectedRef.current === key) setSaveError(String(e))
       })
       .finally(() => setSaving(false))
-  }, [host, adapter, loaded, draft, saving, refreshList])
+  }, [host, adapter, loaded, draft, saving, deleting, creating, refreshList])
+
+  const remove = useCallback(() => {
+    if (!adapter.remove || !loaded || creating || saving || deleting) return
+    const key = loaded.key
+    const dirtyNote = dirty ? '\n\nYour unsaved changes will also be lost.' : ''
+    if (
+      !window.confirm(
+        `Delete ${adapter.noun} “${key}”? This removes its file and cannot be undone.${dirtyNote}`,
+      )
+    ) {
+      return
+    }
+
+    setDeleting(true)
+    setDeleteError(null)
+    setSaveError(null)
+    adapter
+      .remove(host, key)
+      .then(() => {
+        setRows((current) => current?.filter((row) => row.key !== key) ?? null)
+        refreshList()
+        if (selectedRef.current !== key) return
+        setSelected(null)
+        setLoaded(null)
+        setDraft('')
+        setLoadError(null)
+        setStaleOnDisk(false)
+      })
+      .catch((error) => {
+        if (selectedRef.current === key) setDeleteError(String(error))
+      })
+      .finally(() => setDeleting(false))
+  }, [host, adapter, loaded, creating, saving, deleting, dirty, refreshList])
 
   const onWorkspaceKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -317,10 +449,12 @@ export function CollectionBrowser({
   const goBack = () => {
     if (dirty && !window.confirm('Discard unsaved changes?')) return
     setSelected(null)
+    setCreating(false)
     setLoaded(null)
     setDraft('')
     setLoadError(null)
     setSaveError(null)
+    setDeleteError(null)
     setStaleOnDisk(false)
   }
 
@@ -384,13 +518,46 @@ export function CollectionBrowser({
 
   // Narrow: one pane at a time — the list, or the opened entry.
   const showSide = !narrow || selected === null
-  const showDoc = !narrow || selected !== null
+  const showDoc = !narrow || selected !== null || creating
 
   const docKey = loaded?.key ?? selected
   const docSegments = docKey ? docKey.split('/') : []
-  const docName = docSegments[docSegments.length - 1] ?? ''
+  const docName = creating
+    ? `new ${adapter.noun}`
+    : (docSegments[docSegments.length - 1] ?? '')
 
   const modeOptions: EditorMode[] = narrow ? ['edit', 'preview'] : ['edit', 'split', 'preview']
+
+  const row = rows?.find((item) => item.key === (loaded?.key || selected))
+  const nameField = readFrontmatterField(
+    draft,
+    adapter.nameKeys ?? ['name'],
+    adapter.defaultNameKey,
+  )
+  const descriptionField = readFrontmatterField(draft, ['description'])
+  const nameValue = nameField.present
+    ? nameField.value
+    : creating
+      ? ''
+      : row?.title || row?.key || ''
+  const descriptionValue = descriptionField.present
+    ? descriptionField.value
+    : creating
+      ? ''
+      : row?.description || ''
+  const editorSource = withoutFrontmatterFields(draft, [
+    nameField.key,
+    descriptionField.key,
+  ])
+  const managedFields = [
+    { ...nameField, value: nameValue, bare: adapter.slugName },
+    { ...descriptionField, value: descriptionValue },
+  ]
+
+  const editDraft = (next: string) => {
+    setDraft(next)
+    setSaveError(null)
+  }
 
   const draftLines = loaded === null ? 0 : draft.split('\n').length
   const draftBytes = loaded === null ? 0 : new Blob([draft]).size
@@ -408,6 +575,21 @@ export function CollectionBrowser({
         <aside className="dir-ui-side" aria-label={`${adapter.noun} list`}>
           <div className="dir-ui-side-top">
             {nav}
+            {adapter.create ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="dir-ui-new-btn"
+                onClick={startCreate}
+                aria-label={`new ${adapter.noun}`}
+                title={`new ${adapter.noun}`}
+              >
+                <span className="dir-ui-new-mark">
+                  <PlusIcon className="dir-ui-new-icon" />
+                </span>
+                <span>new {adapter.noun}</span>
+              </Button>
+            ) : null}
             <div className="dir-ui-search">
               <SearchIcon className="dir-ui-search-icon" />
               <Input
@@ -511,7 +693,7 @@ export function CollectionBrowser({
 
       {showDoc ? (
         <section className="dir-ui-doc" onKeyDown={onWorkspaceKeyDown} aria-label={`${adapter.noun} workspace`}>
-          {selected === null ? (
+          {selected === null && !creating ? (
             <div className="dir-ui-hero">
               <MarkdownFileIcon className="dir-ui-hero-icon" />
               <h2 className="dir-ui-hero-title">{adapter.emptyTitle}</h2>
@@ -548,6 +730,17 @@ export function CollectionBrowser({
                   ))}
                 </div>
                 <div className="dir-ui-save-area">
+                  {adapter.remove && !creating ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="dir-ui-delete-btn"
+                      disabled={!loaded || saving || deleting}
+                      onClick={remove}
+                    >
+                      {deleting ? 'deleting…' : 'delete'}
+                    </Button>
+                  ) : null}
                   <span className="dir-ui-save-note" aria-live="polite">
                     {saveStatus}
                   </span>
@@ -555,6 +748,7 @@ export function CollectionBrowser({
                     <Button
                       variant="ghost"
                       size="sm"
+                      disabled={deleting}
                       onClick={() => {
                         setDraft(loaded?.content ?? '')
                         setSaveError(null)
@@ -563,7 +757,7 @@ export function CollectionBrowser({
                       revert
                     </Button>
                   ) : null}
-                  <Button variant="primary" size="sm" disabled={!dirty || saving} onClick={save}>
+                  <Button variant="primary" size="sm" disabled={!dirty || saving || deleting} onClick={save}>
                     {saving ? 'saving…' : 'save'}
                   </Button>
                 </div>
@@ -597,6 +791,21 @@ export function CollectionBrowser({
                 </div>
               ) : null}
 
+              {deleteError ? (
+                <div className="dir-ui-banner alert" role="alert">
+                  <span>
+                    Delete failed.
+                    <span className="detail">{deleteError}</span>
+                  </span>
+                  <button type="button" className="dir-ui-linkish" onClick={remove}>
+                    retry
+                  </button>
+                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setDeleteError(null)}>
+                    dismiss
+                  </button>
+                </div>
+              ) : null}
+
               {loadError ? (
                 <div className="dir-ui-error-panel grow">
                   <p>
@@ -619,12 +828,73 @@ export function CollectionBrowser({
                 <>
                   <div className={`dir-ui-doc-body mode-${effMode}${dragging ? ' dragging' : ''}`} ref={bodyRef}>
                     <div className="dir-ui-pane editor" style={effMode === 'split' ? { flexGrow: split } : undefined}>
+                      <div className="dir-ui-edit-fields">
+                        <label className="dir-ui-edit-field" htmlFor={`${fieldId}-name`}>
+                          <span className="dir-ui-edit-label">
+                            name
+                            {adapter.slugName ? (
+                              <span className="dir-ui-edit-hint">a–z · 0–9 · - · _</span>
+                            ) : null}
+                          </span>
+                          <Input
+                            id={`${fieldId}-name`}
+                            value={nameValue}
+                            onChange={(next) =>
+                              editDraft(
+                                setFrontmatterField(
+                                  draft,
+                                  nameField.key,
+                                  adapter.slugName ? next.toLowerCase() : next,
+                                  adapter.slugName,
+                                ),
+                              )
+                            }
+                            placeholder={`${adapter.noun} name`}
+                            preserveCase={!adapter.slugName}
+                            required={adapter.slugName}
+                            pattern={adapter.slugName ? '[a-z0-9_-]+' : undefined}
+                            spellCheck={false}
+                            className="dir-ui-edit-input"
+                          />
+                        </label>
+                        <label
+                          className="dir-ui-edit-field"
+                          htmlFor={`${fieldId}-description`}
+                        >
+                          <span className="dir-ui-edit-label">description</span>
+                          <textarea
+                            id={`${fieldId}-description`}
+                            value={descriptionValue}
+                            onChange={(event) =>
+                              editDraft(
+                                setFrontmatterField(
+                                  draft,
+                                  descriptionField.key,
+                                  event.currentTarget.value,
+                                ),
+                              )
+                            }
+                            placeholder={`what this ${adapter.noun} is for…`}
+                            required={adapter.descriptionRequired}
+                            rows={2}
+                            className="dir-ui-edit-textarea"
+                          />
+                        </label>
+                      </div>
+                      <div className="dir-ui-source-head" aria-hidden>
+                        <span>content</span>
+                        <span>markdown</span>
+                      </div>
                       <CodeEditor
-                        value={draft}
-                        onChange={setDraft}
+                        value={editorSource}
+                        onChange={(next) =>
+                          editDraft(
+                            restoreFrontmatterFields(next, managedFields),
+                          )
+                        }
                         language="markdown"
                         className="dir-ui-code"
-                        aria-label={`${adapter.noun} markdown source`}
+                        aria-label={`${adapter.noun} markdown content`}
                         placeholder="# markdown…"
                       />
                     </div>
@@ -656,7 +926,7 @@ export function CollectionBrowser({
                         style={effMode === 'split' ? { flexGrow: 1 - split } : undefined}
                       >
                         <div className="dir-ui-reading">
-                          <MarkdownPreview markdown={stripFrontmatter(draft)} className="dir-ui-preview" />
+                          <MarkdownPreview markdown={frontmatterBody(draft)} className="dir-ui-preview" />
                         </div>
                       </div>
                     ) : null}
@@ -683,18 +953,4 @@ export function CollectionBrowser({
 function formatKb(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   return `${(bytes / 1024).toFixed(1)} KB`
-}
-
-/** Preview the body the way readers serve it: without the leading YAML
- * frontmatter block (same fence rules as the worker's split_frontmatter). */
-function stripFrontmatter(content: string): string {
-  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
-    return content
-  }
-  const rest = content.slice(content.indexOf('\n') + 1)
-  for (const fence of ['\n---\n', '\n---\r\n']) {
-    const idx = rest.indexOf(fence)
-    if (idx !== -1) return rest.slice(idx + fence.length)
-  }
-  return content
 }

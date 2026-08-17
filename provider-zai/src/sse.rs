@@ -154,19 +154,27 @@ pub fn map_finish_reason(s: &str) -> StopReason {
 /// all of these, adding double-counts.
 pub fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
-    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
-        into.input = Some(v);
-    }
-    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
-        into.output = Some(v);
-    }
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The wire's `prompt_tokens` is a
+    // TOTAL that includes the cached slice, so the miss slice is derived —
+    // mapping the total verbatim would bill the cached prefix twice.
+    let mut cached = None;
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
             .and_then(Value::as_u64)
         {
-            into.cache_read = Some(v);
+            cached = Some(v);
         }
+    }
+    if let Some(v) = cached {
+        into.cache_read = Some(v);
+    }
+    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
+        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
+    }
+    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
+        into.output = Some(v);
     }
     if let Some(v) = raw
         .pointer("/completion_tokens_details/reasoning_tokens")
@@ -434,7 +442,7 @@ mod tests {
         assert_eq!(final_msg.stop_reason, StopReason::End);
         assert_eq!(final_msg.native_stop_reason.as_deref(), Some("stop"));
         let usage = final_msg.usage.unwrap();
-        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.input, Some(8));
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));

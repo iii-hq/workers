@@ -26,6 +26,7 @@ pub struct DecideInput {
     pub model: String,
     pub provider: Option<String>,
     pub registered_providers: Vec<String>,
+    pub available_providers: Vec<String>,
     pub catalog: Vec<(String, Vec<String>)>, // provider id -> model ids
     pub heuristics: Vec<Heuristic>,
     pub default_provider: Option<String>,
@@ -33,6 +34,7 @@ pub struct DecideInput {
 
 pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     let registered = |id: &str| input.registered_providers.iter().any(|p| p == id);
+    let available = |id: &str| input.available_providers.iter().any(|p| p == id);
 
     // 1. Explicit provider — sole candidate; cold-catalog tolerant; typos loud.
     if let Some(provider) = &input.provider {
@@ -42,33 +44,52 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
                 format!("unknown provider {provider}"),
             ));
         }
+        if !available(provider) {
+            return Err(RouterError::new(
+                RouterCode::ProviderUnavailable,
+                format!("provider {provider} unavailable"),
+            ));
+        }
         return Ok(vec![provider.clone()]);
     }
 
-    // 2. Unique catalog owner; 2+ owners → ambiguous (the router never guesses).
-    let mut owners: Vec<&str> = input
+    // 2. Unique available catalog owner; 2+ available owners → ambiguous (the
+    // router never guesses). Ignore stale catalog slices belonging to a
+    // missing/down provider so route previews cannot select a known-dead
+    // dispatch target.
+    let owners: Vec<&str> = input
         .catalog
         .iter()
-        .filter(|(_, ids)| ids.iter().any(|m| m == &input.model))
+        .filter(|(provider, ids)| registered(provider) && ids.iter().any(|m| m == &input.model))
         .map(|(p, _)| p.as_str())
         .collect();
-    owners.sort_unstable();
-    match owners.len() {
-        1 => return Ok(vec![owners[0].to_string()]),
+    let mut available_owners: Vec<&str> = owners
+        .iter()
+        .copied()
+        .filter(|provider| available(provider))
+        .collect();
+    available_owners.sort_unstable();
+    match available_owners.len() {
+        1 => return Ok(vec![available_owners[0].to_string()]),
         n if n > 1 => {
             return Err(RouterError::new(
                 RouterCode::AmbiguousModel,
                 format!(
                     "ambiguous model {} (providers: {})",
                     input.model,
-                    owners.join(", ")
+                    available_owners.join(", ")
                 ),
             ))
         }
         _ => {}
     }
+    let mut unavailable_matches: Vec<&str> = owners
+        .iter()
+        .copied()
+        .filter(|provider| !available(provider))
+        .collect();
 
-    // 3. Operator heuristics from the llm-router entry; first match wins.
+    // 3. Operator heuristics from the llm-router entry; first available match wins.
     for h in &input.heuristics {
         if !registered(&h.provider) {
             continue;
@@ -77,18 +98,39 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
             continue; // an invalid operator regex never takes the router down
         };
         if re.is_match(&input.model) {
-            return Ok(vec![h.provider.clone()]);
+            if available(&h.provider) {
+                return Ok(vec![h.provider.clone()]);
+            }
+            unavailable_matches.push(&h.provider);
         }
     }
 
     // 4. Configured default provider makes routing a total function.
     if let Some(default) = &input.default_provider {
-        if registered(default) {
+        if registered(default) && available(default) {
             return Ok(vec![default.clone()]);
+        }
+        if registered(default) {
+            unavailable_matches.push(default);
         }
     }
 
-    // 5. Loud failure.
+    // 5. Preserve an actionable distinction between an unknown model and a
+    // model whose catalog, heuristic, or default candidates are all down.
+    unavailable_matches.sort_unstable();
+    unavailable_matches.dedup();
+    if !unavailable_matches.is_empty() {
+        return Err(RouterError::new(
+            RouterCode::ProviderUnavailable,
+            format!(
+                "no available provider for model {} (unavailable: {})",
+                input.model,
+                unavailable_matches.join(", ")
+            ),
+        ));
+    }
+
+    // 6. Loud failure.
     Err(RouterError::new(
         RouterCode::NoProviderForModel,
         format!("no provider registered for model {}", input.model),
@@ -115,10 +157,19 @@ pub fn make_route(
             let config = snapshot(&config);
             let heuristics = config.settings().routing_heuristics.clone();
             let default_provider = config.settings().default_provider.clone();
+            let providers = registry.list().await;
             let candidates = decide(&DecideInput {
                 model: req.model,
                 provider: req.provider,
-                registered_providers: registry.ids().await,
+                registered_providers: providers
+                    .iter()
+                    .map(|record| record.declaration.id.clone())
+                    .collect(),
+                available_providers: providers
+                    .iter()
+                    .filter(|record| record.available)
+                    .map(|record| record.declaration.id.clone())
+                    .collect(),
                 catalog: catalog.model_ids().await,
                 heuristics,
                 default_provider,
@@ -142,6 +193,7 @@ mod tests {
             model: String::new(),
             provider: None,
             registered_providers: vec!["anthropic".into(), "openai".into(), "lmstudio".into()],
+            available_providers: vec!["anthropic".into(), "openai".into(), "lmstudio".into()],
             catalog: vec![
                 ("anthropic".into(), vec!["claude-sonnet-4".into()]),
                 ("openai".into(), vec!["gpt-5".into(), "shared-model".into()]),
@@ -217,5 +269,62 @@ mod tests {
         );
         input.default_provider = Some("anthropic".into());
         assert_eq!(decide(&input).unwrap(), vec!["anthropic"]);
+    }
+
+    #[test]
+    fn explicit_unavailable_provider_is_distinct_from_unknown_provider() {
+        let mut input = base();
+        input.model = "gpt-5".into();
+        input.provider = Some("openai".into());
+        input.available_providers.retain(|id| id != "openai");
+
+        let err = decide(&input).unwrap_err();
+        assert_eq!(err.code, RouterCode::ProviderUnavailable);
+        assert_eq!(err.message, "provider openai unavailable");
+    }
+
+    #[test]
+    fn stale_catalog_owner_is_excluded_from_routing() {
+        let mut input = base();
+        input.model = "shared-model".into();
+        input.available_providers.retain(|id| id != "lmstudio");
+
+        assert_eq!(decide(&input).unwrap(), vec!["openai"]);
+
+        input.available_providers.retain(|id| id != "openai");
+        let err = decide(&input).unwrap_err();
+        assert_eq!(err.code, RouterCode::ProviderUnavailable);
+        assert_eq!(
+            err.message,
+            "no available provider for model shared-model (unavailable: lmstudio, openai)"
+        );
+    }
+
+    #[test]
+    fn stale_owner_does_not_block_an_available_default() {
+        let mut input = base();
+        input.model = "local-llama".into();
+        input.available_providers.retain(|id| id != "lmstudio");
+        input.default_provider = Some("anthropic".into());
+
+        assert_eq!(decide(&input).unwrap(), vec!["anthropic"]);
+    }
+
+    #[test]
+    fn unavailable_heuristic_or_default_reports_provider_unavailable() {
+        let mut input = base();
+        input.model = "gpt-future".into();
+        input.available_providers.retain(|id| id != "openai");
+
+        let err = decide(&input).unwrap_err();
+        assert_eq!(err.code, RouterCode::ProviderUnavailable);
+        assert!(err.message.contains("unavailable: openai"));
+
+        input.model = "mystery".into();
+        input.heuristics.clear();
+        input.default_provider = Some("openai".into());
+        let err = decide(&input).unwrap_err();
+        assert_eq!(err.code, RouterCode::ProviderUnavailable);
+        assert!(err.message.contains("unavailable: openai"));
     }
 }

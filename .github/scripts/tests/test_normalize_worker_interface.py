@@ -194,29 +194,6 @@ def test_untyped_trigger_surfaces_empty_schema() -> None:
     ]
 
 
-def test_trigger_schema_falls_back_to_legacy_engine_keys() -> None:
-    """Older engine output named the schemas `trigger_request_format` /
-    `call_request_format`; normalize still reads them as a fallback so a mixed
-    engine version doesn't silently drop schemas."""
-    cfg = {"type": "object", "properties": {"session_id": {"type": "string"}}}
-    interface = normalize_worker_interface(
-        **_session_manager_args(
-            {
-                "triggers": [
-                    {
-                        "id": "session::created",
-                        "worker_name": "session-manager",
-                        "description": "A new session exists.",
-                        "trigger_request_format": cfg,
-                    }
-                ]
-            }
-        )
-    )
-
-    assert interface["triggers"][0]["invocation_schema"] == cfg
-
-
 def test_collects_single_worker_without_baseline() -> None:
     workers_json = {
         "workers": [{"id": "shell", "name": "shell", "runtime": "rust"}],

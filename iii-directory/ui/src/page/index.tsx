@@ -32,6 +32,8 @@ interface PromptRow {
 const skillsAdapter: BrowserAdapter = {
   noun: 'skill',
   crumbRoot: 'skills',
+  nameKeys: ['name', 'title'],
+  defaultNameKey: 'name',
   onChangeType: 'directory::skills::on-change',
   emptyTitle: 'Select a skill',
   emptyBody:
@@ -63,6 +65,8 @@ const skillsAdapter: BrowserAdapter = {
 const promptsAdapter: BrowserAdapter = {
   noun: 'prompt',
   crumbRoot: 'prompts',
+  slugName: true,
+  descriptionRequired: true,
   onChangeType: 'directory::prompts::on-change',
   emptyTitle: 'Select a prompt',
   emptyBody:
@@ -90,12 +94,70 @@ const promptsAdapter: BrowserAdapter = {
   },
 }
 
-type Collection = 'skills' | 'prompts'
+const systemPromptsAdapter: BrowserAdapter = {
+  noun: 'system prompt',
+  crumbRoot: 'system-prompts',
+  slugName: true,
+  descriptionRequired: true,
+  onChangeType: 'directory::system-prompts::on-change',
+  emptyTitle: 'Select a system prompt',
+  emptyBody:
+    'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
+  async list(host) {
+    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
+      'directory::system-prompts::list',
+    )
+    return (out.prompts ?? []).map((p) => ({
+      key: p.name,
+      title: '',
+      description: p.description,
+      fine: formatRelativeTime(p.modified_at),
+    }))
+  },
+  async load(host, name) {
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
+      'directory::system-prompts::get',
+      { name, raw: true },
+    )
+    return out.raw ?? out.body
+  },
+  async save(host, name, content) {
+    // The effective name after the write follows a frontmatter rename.
+    const out = await host.iii.trigger<{ name: string }>(
+      'directory::system-prompts::update',
+      { name, content },
+    )
+    return out.name ?? name
+  },
+  async create(host, name, content) {
+    const out = await host.iii.trigger<{ name: string }>(
+      'directory::system-prompts::create',
+      { name, content },
+    )
+    return out.name ?? name
+  },
+  async remove(host, name) {
+    await host.iii.trigger('directory::system-prompts::delete', { name })
+  },
+}
+
+type Collection = 'skills' | 'prompts' | 'system-prompts'
 
 const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'skills' },
   { value: 'prompts', label: 'prompts' },
+  /* One word, like its siblings: the segmented button is a fixed 26px and
+     "system prompts" wraps out of it in a narrow panel. The filter
+     placeholder, the row count, and the breadcrumb still say "system
+     prompt(s)" in full. */
+  { value: 'system-prompts', label: 'system' },
 ]
+
+const ADAPTERS: Record<Collection, BrowserAdapter> = {
+  skills: skillsAdapter,
+  prompts: promptsAdapter,
+  'system-prompts': systemPromptsAdapter,
+}
 
 export function DirectoryPage({
   host,
@@ -107,7 +169,11 @@ export function DirectoryPage({
 
   const switcher = (
     // biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the sidebar column
-    <div className="dir-ui-seg block" role="group" aria-label="browse skills or prompts">
+    <div
+      className="dir-ui-seg block"
+      role="group"
+      aria-label="browse skills, prompts or system prompts"
+    >
       {COLLECTIONS.map((c) => (
         <button
           key={c.value}
@@ -127,14 +193,14 @@ export function DirectoryPage({
       <PageHeader
         icon={<MarkdownFileIcon />}
         title="directory"
-        description="filesystem-backed skills & prompts"
+        description="filesystem-backed skills, prompts & system prompts"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (
         <div key={c.value} className="dir-ui-shell-body" hidden={collection !== c.value}>
           <CollectionBrowser
             host={host}
-            adapter={c.value === 'skills' ? skillsAdapter : promptsAdapter}
+            adapter={ADAPTERS[c.value]}
             nav={switcher}
             panelSide={panelSide}
             storageKey={`iii-directory-ui:${tabId || 'page'}:${c.value}`}

@@ -1,0 +1,88 @@
+name: Reconcile exact GitHub Release
+run-name: RC · github_release · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id: { required: true, type: string }
+      step_id: { required: true, type: string }
+      worker: { required: true, type: string }
+      version: { required: true, type: string }
+      tag: { required: true, type: string }
+      state:
+        required: true
+        type: choice
+        options: [prerelease, release]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --mutating
+      - name: Read current state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view '${{ inputs.tag }}' --json tagName,isDraft,isPrerelease,url >before.json 2>/dev/null || echo null >before.json
+      - name: Apply exact state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease=false
+          [[ '${{ inputs.state }}' == prerelease ]] && prerelease=true
+          if jq -e 'type == "object"' before.json >/dev/null; then
+            gh release edit '${{ inputs.tag }}' --prerelease="$prerelease" --latest=false
+          elif [[ "$prerelease" == true ]]; then
+            gh release create '${{ inputs.tag }}' --title '${{ inputs.worker }} ${{ inputs.version }}' \
+              --generate-notes --prerelease --latest=false
+          else
+            gh release create '${{ inputs.tag }}' --title '${{ inputs.worker }} ${{ inputs.version }}' \
+              --generate-notes --latest=false
+          fi
+          gh release view '${{ inputs.tag }}' --json tagName,isDraft,isPrerelease,url >after.json
+          jq -e --arg tag '${{ inputs.tag }}' --argjson prerelease "$prerelease" \
+            '.tagName == $tag and .isDraft == false and .isPrerelease == $prerelease' after.json >/dev/null
+      - name: Write factual result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          subject=$(jq -cn --arg worker '${{ inputs.worker }}' --arg version '${{ inputs.version }}' --arg tag '${{ inputs.tag }}' \
+            '{worker:$worker,version:$version,tag:$tag}')
+          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"github_release_identity",status:$status}]')
+          changed=$(jq -s '.[0] != .[1]' before.json after.json 2>/dev/null || echo true)
+          effects=$(jq -cn --arg status "$JOB_STATUS" --arg state '${{ inputs.state }}' --argjson changed "$changed" \
+            '[{surface:"github_release",status:(if $status == "success" then (if $changed then "changed" else "unchanged" end) else "failed" end),after:$state}]')
+          outputs=$(jq -cn --slurpfile before before.json --slurpfile after after.json \
+            '{before:($before[0] // null),after:($after[0] // null)}' 2>/dev/null || echo '{}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind github_release --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow reconcile-github-release.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" --outputs "$outputs" \
+            --output execution-result.json
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

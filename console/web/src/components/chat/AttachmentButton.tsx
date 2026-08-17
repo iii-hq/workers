@@ -1,6 +1,6 @@
 import { Paperclip } from 'lucide-react'
 import { useRef } from 'react'
-import { uid } from '@/hooks/use-conversations'
+import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
@@ -8,20 +8,6 @@ interface AttachmentButtonProps {
   onAttach: (attachments: Attachment[]) => void
   disabled?: boolean
   className?: string
-}
-
-const MAX_PREVIEW_BYTES = 1_000_000
-
-function readPreview(file: File): Promise<string | undefined> {
-  if (file.size > MAX_PREVIEW_BYTES) return Promise.resolve(undefined)
-  if (!/^(image|text)\//.test(file.type)) return Promise.resolve(undefined)
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = () =>
-      resolve(typeof reader.result === 'string' ? reader.result : undefined)
-    reader.onerror = () => resolve(undefined)
-    reader.readAsDataURL(file)
-  })
 }
 
 export function AttachmentButton({
@@ -34,19 +20,7 @@ export function AttachmentButton({
   const handlePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (files.length === 0) return
-    const attachments: Attachment[] = await Promise.all(
-      files.map(async (f) => ({
-        id: uid(),
-        name: f.name,
-        size: f.size,
-        type: f.type || 'application/octet-stream',
-        dataUrl: await readPreview(f),
-        // Kept so the send path can hand the bytes to a worker that reads this
-        // kind of file (PDFs go through `pdf::to-markdown`). Not persisted.
-        file: f,
-      })),
-    )
-    onAttach(attachments)
+    onAttach(await attachmentsFromFiles(files))
     /* allow re-picking the same file */
     e.target.value = ''
   }

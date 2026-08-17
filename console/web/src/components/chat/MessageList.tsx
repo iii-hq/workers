@@ -1,4 +1,10 @@
-import { type ReactNode, useEffect, useMemo, useRef } from 'react'
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
 import {
   rawRedactor,
@@ -16,6 +22,10 @@ import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import { Message } from './Message'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  type SystemPromptState,
+} from './system-prompt-selection'
 
 interface MessageListProps {
   messages: MessageType[]
@@ -206,6 +216,20 @@ export function MessageList({
   // ConversationsProvider; the empty state falls back to `ready` there.
   const ctx = useConversationsCtxOptional()
 
+  /* Opening a session lands on the latest exchange, not the beginning: one
+     instant jump to the bottom the first time the transcript has content —
+     on mount for an already-hydrated session, or when the first hydration
+     batch arrives otherwise. Layout effect so the jump happens before
+     paint (no flash of the top). After this, the near-bottom rule below
+     owns scrolling, so reading upward is never interrupted. */
+  const didInitialScrollRef = useRef(false)
+  useLayoutEffect(() => {
+    if (didInitialScrollRef.current || messages.length === 0) return
+    didInitialScrollRef.current = true
+    const c = containerRef.current
+    if (c) c.scrollTop = c.scrollHeight
+  }, [messages])
+
   /* Auto-scroll only when the user is already near the bottom. The effect body
      reads layout off refs but the trigger we care about is "messages changed"
      or "thinking flipped", so list both explicitly. */
@@ -335,7 +359,7 @@ function resolveEmptyState(
 ): EmptyStateProps {
   if (!ctx) return { variant: 'ready', density }
 
-  const { harnessStatus, modelOptions, catalogLoading } = ctx
+  const { harnessStatus, modelOptions, catalogLoading, active } = ctx
   const base: EmptyStateProps = {
     variant: 'ready',
     density,
@@ -346,6 +370,13 @@ function resolveEmptyState(
     onConfigureProvider: () => {
       window.location.hash = '#/workers/configuration/llm-router'
     },
+    /* The system prompt is chosen here and nowhere else. It persists on the
+       conversation record, so it survives this view being keyed away and
+       back on a chat-tab switch. */
+    systemPrompt: active?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
+    onSystemPromptChange: active
+      ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
+      : undefined,
   }
 
   if (harnessStatus.error) return { ...base, variant: 'install-failed' }

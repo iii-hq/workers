@@ -1,3 +1,5 @@
+import type { SystemPromptState } from '@/components/chat/system-prompt-selection'
+
 export type Mode = 'ask' | 'agent'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
@@ -10,6 +12,12 @@ export interface ModelOption {
   label: string
   contextWindow?: number
   supportsThinking?: boolean
+  /**
+   * Whether the model reads images. `undefined` means the router did not say —
+   * an older catalog, or a model it has no row for — and callers treat that as
+   * "assume it can" rather than refusing to send a picture on missing metadata.
+   */
+  supportsVision?: boolean
   reasoningEfforts?: ReasoningEffortOption[]
 }
 
@@ -197,6 +205,12 @@ export interface SystemMessage extends BaseMessage {
   content: string
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction' | 'trigger-fired'
+  /**
+   * Live-only fallback for a durable transcript entry with the same id.
+   * It may fill a delivery gap, but must never replace the transcript-backed
+   * message when lifecycle and transcript events arrive out of order.
+   */
+  provisional?: boolean
   summaryText?: string
   tokensBefore?: number
   /** Present on `kind: 'trigger-fired'`. */
@@ -268,6 +282,15 @@ export interface Conversation {
    * configured default bank.
    */
   memoryBank?: string | null
+  /**
+   * System-prompt choice for this chat (session metadata `system_prompt`).
+   * Picked on the new-session screen before the first send, read-only after
+   * it — which is why it lives on the record rather than in ChatView state:
+   * ChatPanel keys ChatView by conversation id, so a local reset on a tab
+   * switch would be invisible with no interactive control left to show it.
+   * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
+   */
+  systemPrompt?: SystemPromptState
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's

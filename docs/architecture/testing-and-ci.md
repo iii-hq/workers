@@ -8,7 +8,8 @@ How pull requests are gated for workers in this monorepo.
 
 ## Discovery
 
-`discover` job runs `discover_changed_workers.py` comparing the PR to its base.
+`discover` runs `discover_changed_workers.py` comparing a PR to its base or a
+trusted `main` push to the previous revision.
 A directory is a **worker** when it contains `iii.worker.yaml` at its root.
 `docs/` is not discovered (no manifest).
 
@@ -19,7 +20,6 @@ Outputs:
 | `all` | Every changed worker folder |
 | `source_changed` | Workers with non-metadata file changes |
 | `rust` / `node` / `python` | Language buckets from `iii.worker.yaml` |
-| `vscode_changed` | `iii-lsp-vscode/` changed (special-case job) |
 
 **Harness fan-out:** when `harness/` changes, in-repo deps listed in
 `harness/iii.worker.yaml` `dependencies` join the rust matrix (version-bump
@@ -44,12 +44,25 @@ version/tests/README gates downgrade to GitHub notices.
 
 | Language | Lint | Test |
 |---|---|---|
-| Rust | `cargo fmt --check`, `clippy -D warnings` | `cargo test --all-features` |
+| Rust | `cargo fmt --check`, `cargo clippy --locked -D warnings` | `cargo test --locked --all-features` |
 | Node | `biome ci` | `npm test` (if `tests/` exists) |
 | Python | `ruff check`, `ruff format --check` | `pytest` (if `tests/` exists) |
 
 Workers with `web/package.json` (e.g. `console`) pre-build the SPA before cargo
 in both `rust` and `interface-smoke` jobs.
+
+### Rust reproducibility and caches
+
+- [`rust-toolchain.toml`](../../rust-toolchain.toml) pins the compiler used by
+  local Cargo commands and every Rust workflow. Update it deliberately after
+  the replacement version passes the workflow contract and Rust test suite.
+- CI compilation and tests use committed lockfiles via `--locked`.
+- Pull requests restore Rust caches but do not save branch-scoped copies. The
+  trusted push after merge advances caches for changed Rust workspaces.
+- `rust-version` is a package-level MSRV promise, not an alias for the CI
+  toolchain. Add or change it only when that package is actually tested on the
+  claimed minimum compiler; the repository does not infer an MSRV from the
+  pinned CI version.
 
 ## Interface boot smoke (Rust)
 
@@ -59,7 +72,7 @@ when SQLite parent dirs or sidecars are missing (#104 / `database/v0.2.6`).
 
 **Flow:**
 
-1. `cargo build` (default features — same as release binary)
+1. `cargo build --locked` (default features — same as release binary)
 2. Install `iii` CLI + start engine
 3. Start worker from `./target/debug/<bin>` (with `--config config.collect.yaml` when shipped)
 4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
@@ -75,13 +88,15 @@ Some workers have harness-level e2e beyond unit tests:
 | `shell-e2e.yml` | `shell` |
 | `database-e2e.yml` | `database` |
 | `storage-e2e.yml` | `storage` |
+| `rbac-proxy-e2e.yml` | `rbac-proxy` |
 
 Add a dedicated workflow when integration with the full harness stack is
 release-blocking and too slow for the per-PR matrix.
 
 ## Script tests
 
-`.github/scripts/tests/` — pytest for release/discovery helpers. Runs on every PR.
+`.github/scripts/tests/` — pytest for release/discovery/workflow helpers. Runs
+on every PR and trusted `main` push.
 
 ## Related
 

@@ -7,7 +7,8 @@
  *
  * `setup(host)` registers two contributions:
  * - src/page/ — the `#/ext/browser` page: the session rail, a screencast-fed
- *   live viewport, and the console/network feeds for the selected session.
+ *   live viewport, and the console/network feeds for the selected session;
+ *   drill-in flow (list ⇄ session workspace) when the pane is narrow.
  * - src/function-trigger-message/ — how every `browser::*` call renders in
  *   chat and the traces span tab (per-function terminal cards).
  *
@@ -26,7 +27,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'browser',
     title: 'browser',
-    render: () => <BrowserPage host={host} />,
+    render: (props) => <BrowserPage host={host} {...props} />,
   })
 
   host.functionTriggers.register(createBrowserRenderer(host))

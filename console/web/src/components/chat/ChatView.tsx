@@ -1,4 +1,4 @@
-import { Copy, Folder } from 'lucide-react'
+import { ArrowLeft, Copy, Folder } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
@@ -6,6 +6,11 @@ import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsB
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/Tooltip'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
@@ -18,9 +23,14 @@ import {
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
+import { expandAttachments, hasExpandableAttachments } from '@/lib/attachments'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
-import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import {
+  type HarnessImageBlock,
+  predictedUserEntryId,
+} from '@/lib/backend/harness-send'
+import { serialRefresh } from '@/lib/backend/serial-refresh'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -30,17 +40,13 @@ import type {
   CompactResult,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import {
-  expandPdfAttachments,
-  isPdfAttachment,
-  summaryLabel,
-} from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
-import { useExtSessionChips } from '@/lib/ui-slots'
+import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -78,6 +84,10 @@ import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  selectionForSend,
+} from './system-prompt-selection'
 import { WorktreeBadge } from './WorktreeBadge'
 
 /**
@@ -85,6 +95,19 @@ import { WorktreeBadge } from './WorktreeBadge'
  * one live check per activation, not one per render or per send.
  */
 const validatedWorkingDirs = new Set<string>()
+
+/**
+ * Order the header's injected chips deterministically. The registry appends
+ * in registration order, which is worker-CONNECT order — so without this the
+ * bar reshuffles itself between restarts. `context` leads (it is the widest
+ * and the most-read), the rest sort by id.
+ */
+function compareChips(a: { id: string }, b: { id: string }): number {
+  if (a.id === b.id) return 0
+  if (a.id === 'context') return -1
+  if (b.id === 'context') return 1
+  return a.id < b.id ? -1 : 1
+}
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -131,6 +154,12 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
+  /**
+   * Drill-out affordance for narrow (one-pane-at-a-time) hosts: when
+   * set, the header renders a ← back button returning to the session
+   * list and the chrome tightens to the compact (dock) padding.
+   */
+  onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string) => void
@@ -146,6 +175,7 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   onRequestClose,
+  onBack,
   onUpdateModel,
   onUpdateMode,
   onUpdateWorkingDir,
@@ -163,6 +193,12 @@ export function ChatView({
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
     DEFAULT_THINKING_LEVEL,
   )
+  /* Lives on the conversation record, not in local state: the interactive
+     picker is on the new-session screen, so a reset on a tab switch (ChatPanel
+     keys this view by conversation id) would be invisible — no control is left
+     in the composer to show or restore it. */
+  const effectiveSystemPrompt =
+    conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
@@ -172,6 +208,15 @@ export function ChatView({
     : false
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
+
+  /* What the model on the other end can do with a picture, read at send time
+     rather than closed over: the send and edit-queued callbacks are built
+     before the catalog lookup below, and a model switched between typing and
+     sending has to be the one the guard judges. Filled in further down. */
+  const visionRef = useRef<{ supports?: boolean; model: string | null }>({
+    supports: undefined,
+    model: null,
+  })
 
   // Live view of the transcript for the long-running stream loop: the
   // session-events reconciler (use-conversations) may add/replace rows while
@@ -279,32 +324,56 @@ export function ChatView({
 
   // Registered trigger subscriptions (the harness's durable binding rows,
   // owned by this session): shown above the composer, unregisterable, detail
-  // on click. Polled — bindings come and go as the agent registers them.
+  // on click. Pushed — `harness::triggers-changed` rings on every binding
+  // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by subscription id. When a once
-  // binding fires and retires, the poll drops it — this cache lets the fired
-  // ghost keep its full config/conditions after retirement.
+  // Every full row this tab has EVER fetched, by subscription id. When a once
+  // binding fires and retires, the refetch drops it — this cache lets the
+  // fired ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
+  // The current conversation's serialized list loader. Doorbells arrive
+  // at-least-once and burst on rapid fires; serialRefresh coalesces them
+  // behind one in-flight read so snapshots never apply out of order.
+  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
   const refreshTriggers = useCallback(() => {
+    triggersLoaderRef.current?.refresh()
+  }, [])
+  useEffect(() => {
     const listTriggers = backend.listTriggers
     if (!listTriggers) return
-    listTriggers(conversation.id)
-      .then((rows) => {
-        for (const row of rows) seenTriggersRef.current.set(row.id, row)
-        setSessionTriggers(rows)
-      })
-      .catch(() => {})
-  }, [backend.listTriggers, conversation.id])
-  useEffect(() => {
-    if (!backend.listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    refreshTriggers()
-    const timer = window.setInterval(refreshTriggers, 5000)
-    return () => window.clearInterval(timer)
-  }, [refreshTriggers, backend.listTriggers])
+    const loader = serialRefresh(
+      () => listTriggers(conversation.id),
+      (rows) => {
+        for (const row of rows) seenTriggersRef.current.set(row.id, row)
+        setSessionTriggers(rows)
+      },
+    )
+    triggersLoaderRef.current = loader
+    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
+    // rings instead of being missed (both ride the same client bootstrap, so
+    // the registration frames are queued ahead of the list read).
+    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
+    loader.refresh()
+    // Catch-up for doorbells missed while hidden (throttled tab). Missed
+    // doorbells across a socket outage are reseeded by the backend's
+    // reconnect listener.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loader.refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      off?.()
+      document.removeEventListener('visibilitychange', onVisible)
+      // Discard any in-flight snapshot so the old conversation's rows can't
+      // land in the next conversation's state.
+      loader.reset()
+      if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
+    }
+  }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
 
   const handleUnregisterTrigger = useCallback(
     async (subscriptionId: string) => {
@@ -360,7 +429,7 @@ export function ChatView({
 
   // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
   // system messages). Drives the panel's fired/unregistered ghost rows so a
-  // once-trigger stays visible after the engine drops it from the poll.
+  // once-trigger stays visible after the engine drops it from the list.
   const firedTriggers = useMemo<TriggerFiredData[]>(() => {
     const out: TriggerFiredData[] = []
     for (const m of conversation.messages) {
@@ -519,17 +588,22 @@ export function ChatView({
             ).blocks
           }
         }
-        // Same expansion as the live send path: a queued message's PDFs have
-        // to reach the agent as markdown too, or editing a queued message
-        // would silently drop the document it carried.
+        // Same expansion as the live send path: a queued message's documents
+        // and pictures have to reach the agent too, or editing a queued
+        // message would silently drop what it carried.
+        let attachedImages: HarnessImageBlock[] | undefined
         if (
           backend.id === 'real' &&
-          payload.attachments.some(isPdfAttachment)
+          hasExpandableAttachments(payload.attachments)
         ) {
-          const expanded = await expandPdfAttachments(payload.attachments)
+          const expanded = await expandAttachments(payload.attachments, {
+            vision: visionRef.current.supports,
+            model: visionRef.current.model,
+          })
           if (expanded.blocks.length > 0) {
             attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
+          if (expanded.images.length > 0) attachedImages = expanded.images
           // Same reporting as the live send path. Staying silent here would let
           // an edited queued message lose its document with no explanation.
           for (const failure of expanded.failures) {
@@ -547,7 +621,9 @@ export function ChatView({
             conversationId,
             id,
             payload.text,
-            attachedBlocks ? { attachedBlocks } : undefined,
+            attachedBlocks || attachedImages
+              ? { attachedBlocks, attachedImages }
+              : undefined,
           )
         } catch (err) {
           onAppendMessage(
@@ -587,6 +663,16 @@ export function ChatView({
     return match?.contextWindow
   }, [modelOptions, effectiveModel])
 
+  /* What the send path may do with an attached picture. `undefined` when the
+     catalog has no row or the router said nothing — the attachment router
+     treats that as "send it", so a missing capability flag never silently
+     eats an image. */
+  const modelVision = useMemo(() => {
+    const match = modelOptions.find((o) => o.id === effectiveModel)
+    return match?.supportsVision
+  }, [modelOptions, effectiveModel])
+  visionRef.current = { supports: modelVision, model: effectiveModel }
+
   /* Injected session chips (the `chat` extension slot), rendered in the
    * header's right cluster where the built-in context meter sits. A chip
    * with id `context` supersedes the estimate-based ContextUsage meter —
@@ -594,7 +680,7 @@ export function ChatView({
   const extSessionChips = useExtSessionChips()
   const sessionChips = useMemo(() => {
     if (extSessionChips.length === 0) return null
-    return extSessionChips.map((chip) => {
+    return [...extSessionChips].sort(compareChips).map((chip) => {
       const Chip = chip.render
       return (
         <Chip
@@ -609,6 +695,24 @@ export function ChatView({
   const hasInjectedContextChip = extSessionChips.some(
     (chip) => chip.id === 'context',
   )
+
+  /* Injected turn summaries live beside the composer rather than in the
+   * transcript. Workers own their data and subscribe by session id; the host
+   * only gives them the active turn state. */
+  const extSessionTurnSummaries = useExtSessionTurnSummaries()
+  const sessionTurnSummaries = useMemo(() => {
+    if (extSessionTurnSummaries.length === 0) return null
+    return [...extSessionTurnSummaries].sort(compareChips).map((summary) => {
+      const Summary = summary.render
+      return (
+        <Summary
+          key={summary.id}
+          sessionId={conversation.id}
+          isStreaming={streamingIndicator}
+        />
+      )
+    })
+  }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -875,8 +979,12 @@ export function ChatView({
   }, [backend, announcer, filesystemGrants])
 
   const handleCopySessionId = useCallback(() => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    void navigator.clipboard.writeText(sessionId).then(() => {
+    // Through the helper, not navigator.clipboard directly: over
+    // `http://<LAN-IP>` the page is not a secure context and the async
+    // clipboard API is undefined — the raw call made this button a no-op
+    // exactly where trace-correlation happens.
+    void copyTextToClipboard(sessionId).then((ok) => {
+      if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })
@@ -958,6 +1066,19 @@ export function ChatView({
         !isCompact &&
         (isStreaming || serverWorking) &&
         Boolean(backend.queueMessage)
+
+      // Only the session's first send carries the prompt selection; the
+      // harness inherits it afterwards (see selectionForSend). Gate on an
+      // assistant row rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again.
+      const turnEstablished = messagesRef.current.some(
+        (m) => m.role === 'assistant',
+      )
+      const systemPrompt = selectionForSend(
+        effectiveSystemPrompt,
+        turnEstablished,
+      )
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1060,30 +1181,43 @@ export function ChatView({
         }
       }
 
-      // A PDF is not text: read as bytes it reaches the model as noise, so the
-      // `pdf` worker converts it on this machine and the markdown is appended
-      // as another attachment block. Failures never block the send — an
-      // unreadable document becomes a placeholder block plus a warn notice, so
-      // the model knows it was handed something it could not read.
-      if (backend.id === 'real' && payload.attachments.some(isPdfAttachment)) {
-        const expanded = await expandPdfAttachments(payload.attachments)
+      // Attachments are not text. A PDF or an office document read as bytes
+      // reaches the model as noise, and an image reaches it as nothing at all,
+      // so each kind is expanded on this machine first: documents into
+      // `<attached-file …>` markdown blocks, pictures into image content
+      // blocks. Failures never block the send — an unreadable attachment
+      // becomes a placeholder block plus a warn notice, so the model knows it
+      // was handed something that could not be read.
+      let attachedImages: HarnessImageBlock[] | undefined
+      if (
+        backend.id === 'real' &&
+        hasExpandableAttachments(payload.attachments)
+      ) {
+        const expanded = await expandAttachments(payload.attachments, {
+          vision: visionRef.current.supports,
+          model: visionRef.current.model,
+        })
         if (expanded.blocks.length > 0) {
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
         }
-        // Relabel the chip with what the worker made of the document. The
-        // expansion runs before the model is called, so it never shows up as a
-        // function call — without this a person has no way to tell the PDF was
-        // read at all.
-        if (expanded.read.length > 0 && !willQueue) {
-          const byId = new Map(expanded.read.map((r) => [r.id, r]))
+        if (expanded.images.length > 0) attachedImages = expanded.images
+        // Drop the source bytes and relabel the chip with what the expansion
+        // made of each attachment. The relabel runs before the model is called,
+        // so it never shows up as a function call — without it a person has no
+        // way to tell the document was read at all.
+        //
+        // The `file` removal is NOT conditional on anything having been read:
+        // an attachment that failed, or an image refused for a model that
+        // cannot see, has finished its job too, and keeping its bytes would
+        // hold the whole file in memory for as long as the conversation stays
+        // open. Only the label depends on a matching entry.
+        if (!willQueue) {
+          const byId = new Map(expanded.read.map((r) => [r.id, r.label]))
           onPatchMessage(conversationId, userMsg.id, {
-            // `file` is dropped here as well as relabelled. It has done its job
-            // by now, and keeping it would hold the whole document in memory
-            // for as long as the conversation stays open.
             attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
               void file
-              const summary = byId.get(a.id)
-              return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
+              const label = byId.get(a.id)
+              return label ? { ...a, name: label } : a
             }),
           })
         }
@@ -1114,10 +1248,14 @@ export function ChatView({
               sessionId,
               messageId,
               thinkingLevel,
+              systemPrompt,
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
+                : {}),
+              ...(attachedImages && attachedImages.length > 0
+                ? { attachedImages }
                 : {}),
             },
           )
@@ -1159,12 +1297,16 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
+            systemPrompt,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
             approvalEventsExternallyManaged: true,
             ...(attachedBlocks && attachedBlocks.length > 0
               ? { attachedBlocks }
+              : {}),
+            ...(attachedImages && attachedImages.length > 0
+              ? { attachedImages }
               : {}),
           },
         )) {
@@ -1364,6 +1506,10 @@ export function ChatView({
                 kind: 'notice',
                 content: noticeContent,
                 tone: event.reason === 'error' ? 'error' : 'warn',
+                // The transcript owns the authoritative lifecycle notice under
+                // this id. Trigger delivery is unordered, so a late live
+                // fallback may fill a gap but must not overwrite that record.
+                provisional: true,
                 createdAt: Date.now(),
               }
               onAppendMessage(conversationId, notice)
@@ -1438,6 +1584,7 @@ export function ChatView({
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      effectiveSystemPrompt,
       sessionId,
       contextWindow,
       backend,
@@ -1519,8 +1666,9 @@ export function ChatView({
   })()
 
   const isDock = density === 'dock'
-  const headerPad = isDock ? 'px-4' : 'px-9'
-  const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+  const compact = isDock || onBack !== undefined
+  const headerPad = compact ? 'px-4' : 'px-9'
+  const footerPad = compact ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
 
   // Resolve the working directory to its managed worktree (badge), and keep
   // it fresh across landed / land-blocked events.
@@ -1646,50 +1794,108 @@ export function ChatView({
         className={headerPad}
         onClose={onRequestClose}
         actions={
-          <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em]">
-            {sessionChips}
-            {hasInjectedContextChip ? null : (
-              <ContextUsage
-                messages={conversation.messages}
-                contextWindow={contextWindow}
-              />
-            )}
-            <ExportSessionButton
-              conversation={conversation}
-              onExported={(filename) =>
-                announcer.announce(`session exported as ${filename}`)
-              }
-            />
-            <div className="flex items-center gap-2">
-              <StatusDot
-                tone={
-                  conversation.status === 'error'
-                    ? 'alert'
-                    : streamingIndicator
-                      ? 'accent'
-                      : 'ink'
+          <div className="flex items-center gap-2.5 font-mono text-[11px] uppercase tracking-[0.06em]">
+            {/* Read-outs and actions share ONE surface. This system draws no
+                lines (index.css:44-52 — rule/rule-2 are transparent in both
+                themes), so a group is a fill, not a run of dividers. It also
+                gives every control inside it a full-height hit box, which
+                bare 11px text runs did not have. */}
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+              {sessionChips}
+              {hasInjectedContextChip ? null : (
+                <ContextUsage
+                  messages={conversation.messages}
+                  contextWindow={contextWindow}
+                />
+              )}
+              {/* Session-id copy. The full id used to sit in the header's
+                  left run, where `truncate min-w-0` let it collapse to
+                  nothing in narrow panes and `isDock` hid it outright — the
+                  exact layouts where you're correlating traces. A copy
+                  control doesn't need the whole 40-char id on screen: show
+                  the distinguishing first group, copy the full thing. The
+                  copy glyph carries the affordance, so no tooltip — only the
+                  system-prompt and status read-outs have one. */}
+              <button
+                type="button"
+                onClick={handleCopySessionId}
+                aria-label={
+                  copied
+                    ? `copied ${sessionId}`
+                    : `copy session id ${sessionId}`
                 }
-                pulse={streamingIndicator}
-              />
-              <span
-                className="text-ink-faint"
-                title={
-                  conversation.status === 'error'
-                    ? conversation.statusReason
-                    : undefined
-                }
+                className="flex self-stretch items-center gap-1 text-ink-faint hover:text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                {streamingIndicator
-                  ? 'working'
-                  : conversation.status === 'error'
-                    ? 'error'
-                    : 'ready'}
-              </span>
+                <Copy className="size-3 flex-shrink-0" aria-hidden />
+                <span
+                  className={cn(
+                    'normal-case tracking-normal tabular-nums',
+                    copied && 'text-accent',
+                  )}
+                >
+                  {copied
+                    ? 'copied'
+                    : sessionId.replace(/^console-/, '').slice(0, 8)}
+                </span>
+              </button>
+              <ExportSessionButton
+                conversation={conversation}
+                onExported={(filename) =>
+                  announcer.announce(`session exported as ${filename}`)
+                }
+              />
             </div>
+            {/* Status sits OUTSIDE the group — it is state, not a control.
+                The dot alone carries it (green ready, pulsing accent
+                working, red error); the word lives in the tooltip and in an
+                sr-only role="status" span so transitions still announce.
+                `self-stretch px-1` turns a 6px dot into a full-height hover
+                target without letting an error widen the header. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex self-stretch items-center px-1">
+                  <StatusDot
+                    tone={
+                      conversation.status === 'error'
+                        ? 'alert'
+                        : streamingIndicator
+                          ? 'accent'
+                          : 'ok'
+                    }
+                    pulse={streamingIndicator}
+                  />
+                  <span role="status" className="sr-only">
+                    {streamingIndicator
+                      ? 'working'
+                      : conversation.status === 'error'
+                        ? 'error'
+                        : 'ready'}
+                  </span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {conversation.status === 'error'
+                  ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
+                  : streamingIndicator
+                    ? 'working'
+                    : 'ready'}
+              </TooltipContent>
+            </Tooltip>
           </div>
         }
       >
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="back to conversations"
+              title="back to conversations"
+              className="flex items-center justify-center size-7 -ml-1.5 flex-shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            >
+              <ArrowLeft aria-hidden className="size-4" />
+            </button>
+          ) : null}
           <span className="text-accent flex-shrink-0" aria-hidden>
             $
           </span>
@@ -1698,32 +1904,6 @@ export function ChatView({
           <span className="text-ink-faint flex-shrink-0">
             {conversation.mode}
           </span>
-          {isDock ? null : (
-            <>
-              <span className="text-ink-ghost flex-shrink-0">·</span>
-              <button
-                type="button"
-                onClick={handleCopySessionId}
-                title={
-                  copied
-                    ? `copied ${sessionId}`
-                    : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
-                }
-                className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
-              >
-                <span className="truncate font-mono text-[11px] tabular-nums">
-                  {sessionId}
-                </span>
-                {copied ? (
-                  <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-                    copied
-                  </span>
-                ) : (
-                  <Copy className="size-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-                )}
-              </button>
-            </>
-          )}
         </div>
       </PageHeader>
 
@@ -1841,6 +2021,14 @@ export function ChatView({
                 </div>
               ) : null}
             </section>
+          ) : null}
+          {sessionTurnSummaries ? (
+            <div
+              className="flex flex-wrap items-center justify-end gap-1.5 px-1"
+              data-chat-turn-summary-slot
+            >
+              {sessionTurnSummaries}
+            </div>
           ) : null}
           <Composer
             mode={conversation.mode}

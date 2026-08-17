@@ -21,24 +21,13 @@
  */
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@iii-dev/console-ui'
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
+import { useCopyFlash } from './clipboard'
+import { asRecord, unwrapEnvelope } from './payload'
 
 /* --- payload helpers -------------------------------------------------- */
 
-/** Narrow to a plain object, or `undefined` for anything else (incl. arrays). */
-export function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    return undefined
-  return value as Record<string, unknown>
-}
-
-/** `{ content: [...], details }` harness result envelope → details. */
-export function unwrapEnvelope(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const obj = value as Record<string, unknown>
-  if (Array.isArray(obj.content) && 'details' in obj) return obj.details
-  return value
-}
+export { asRecord, unwrapEnvelope }
 
 export function isErrorOutput(value: unknown): boolean {
   return (
@@ -140,45 +129,13 @@ export function redactRuntimeIdsDeep(
   return out
 }
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    // Undefined outside a secure context (plain http:// over a LAN).
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    /* fall through to the textarea path */
-  }
-  try {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
-  } catch {
-    return false
-  }
-}
-
 /**
  * The truncated runtime-id chip. The full id is a capability, so it is only
  * ever handed over on an explicit click (copied to the clipboard), never
  * printed into the feed.
  */
 export function RuntimeChip({ runtimeId }: { runtimeId: string }) {
-  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
-
-  const copy = useCallback(() => {
-    void copyText(runtimeId).then((ok) => {
-      setState(ok ? 'copied' : 'failed')
-      window.setTimeout(() => setState('idle'), 1400)
-    })
-  }, [runtimeId])
+  const { state, copy } = useCopyFlash(runtimeId)
 
   return (
     <Tooltip>

@@ -35,6 +35,7 @@ pub trait StreamSink: Send + Sync {
 /// Inputs for one `router::chat` turn.
 pub struct ChatParams {
     pub request_id: String,
+    pub session_id: String,
     pub model: String,
     pub provider: Option<String>,
     pub system_prompt: Option<String>,
@@ -133,6 +134,7 @@ impl RouterClient {
         let mut payload = json!({
             "writer_ref": channel.writer_ref,
             "request_id": params.request_id,
+            "session_id": params.session_id,
             "model": params.model,
             "messages": params.messages,
             "tools": params.tools,

@@ -1,3 +1,4 @@
+import { SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { wt } from './typography'
 
@@ -7,20 +8,26 @@ interface EmptyStateProps {
 }
 
 /**
- * Local empty state. Not reusing `components/ui/EmptyState` because that
- * one wraps a heavier `<Cell>` and is designed for inline placement in
- * the traces panel; the editor's empty/no-selection state wants the
- * lighter centered treatment that matches the routing fallback.
+ * Local empty state, styled like the directory worker's workspace hero:
+ * a quiet glyph over a titled explanation that teaches the next action.
+ * Not reusing `components/ui/EmptyState` because that one wraps a heavier
+ * `<Cell>` and is designed for inline placement in the traces panel.
  */
 export function EditorEmptyState({ title, description }: EmptyStateProps) {
   return (
-    <div className="flex-1 flex items-center justify-center px-6">
-      <div className="max-w-md text-center space-y-2">
-        <p className={cn(wt.bodyLg, 'text-ink lowercase')}>{title}</p>
-        <p className={cn(wt.bodySm, 'text-ink-faint lowercase')}>
-          {description}
-        </p>
-      </div>
+    <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 py-12 text-center bg-panel">
+      <SlidersHorizontal className="size-7 text-ink-ghost mb-2" aria-hidden />
+      <p className={cn(wt.bodyLg, 'font-semibold text-ink lowercase')}>
+        {title}
+      </p>
+      <p
+        className={cn(
+          wt.bodySm,
+          'text-ink-faint lowercase max-w-md leading-relaxed',
+        )}
+      >
+        {description}
+      </p>
     </div>
   )
 }

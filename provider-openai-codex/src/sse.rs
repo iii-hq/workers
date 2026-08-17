@@ -152,18 +152,23 @@ pub fn merge_usage(data: &Value, into: &mut Usage) {
         return;
     };
     let num = |k: &str| u.get(k).and_then(Value::as_u64);
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The Responses API's
+    // `input_tokens` is a TOTAL that includes the cached slice, so the miss
+    // slice is derived — mapping the total verbatim would bill the cached
+    // prefix twice.
+    let cached = u
+        .pointer("/input_tokens_details/cached_tokens")
+        .or_else(|| u.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    if let Some(v) = cached {
+        into.cache_read = Some(v);
+    }
     if let Some(v) = num("input_tokens").or_else(|| num("prompt_tokens")) {
-        into.input = Some(v);
+        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
     }
     if let Some(v) = num("output_tokens").or_else(|| num("completion_tokens")) {
         into.output = Some(v);
-    }
-    if let Some(v) = u
-        .pointer("/input_tokens_details/cached_tokens")
-        .or_else(|| u.get("cached_tokens"))
-        .and_then(Value::as_u64)
-    {
-        into.cache_read = Some(v);
     }
     if let Some(v) = u
         .pointer("/output_tokens_details/reasoning_tokens")
@@ -446,6 +451,30 @@ mod tests {
         }
         assert_eq!(state.stop_reason, StopReason::End);
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    #[test]
+    fn usage_input_excludes_the_cached_slice() {
+        // `input_tokens` on the wire is a TOTAL including the cached prefix;
+        // `Usage.input` is the disjoint miss slice pricing bills at the full
+        // input rate. 10 total with 4 cached reads as 6 in, 4 cache_read.
+        let (_state, events) = run(&[
+            json!({ "type": "response.created" }),
+            json!({ "type": "response.output_text.delta", "delta": "Hello" }),
+            json!({ "type": "response.completed", "response": { "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "input_tokens_details": { "cached_tokens": 4 }
+            } } }),
+        ]);
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                let usage = message.usage.as_ref().unwrap();
+                assert_eq!(usage.input, Some(6));
+                assert_eq!(usage.cache_read, Some(4));
+            }
+            other => panic!("want done, got {other:?}"),
+        }
     }
 
     #[test]

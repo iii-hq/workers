@@ -1,4 +1,24 @@
-import { Button, type Host, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@iii-dev/console-ui'
+/**
+ * Everything for one selected session — the workspace beside (or, when
+ * narrow, instead of) the rail: a document header carrying the session's
+ * identity plus the pick-to-clipboard and stop controls, the URL bar, the
+ * screencast-fed viewport letterboxed in the workspace, the console /
+ * network feeds, and a status bar with the input-forwarding hints.
+ *
+ * Wide: the viewport takes the workspace and the feeds dock under it behind
+ * a console | network segmented control. Narrow: a viewport | console |
+ * network segmented control shows one pane at a time, and the screencast
+ * subscription only runs while the viewport segment is actually visible.
+ *
+ * Pick-to-chat became pick-to-clipboard: the injected UI has no composer
+ * slot (host.composer is unimplemented), so a picked element's summary is
+ * copied to the clipboard for the user to paste into chat.
+ *
+ * The page remounts this component per session (React key), so all state
+ * here — url draft, pick mode, type buffer, pane choices — is session-local.
+ */
+
+import { Button, type Host, Input } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_PICKED_TRIGGER,
@@ -23,27 +43,55 @@ import {
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
 import { Crosshair, Square, X } from '../lib/icons'
+import { BackButton } from '../lib/widgets'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
 import { useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
-/**
- * Everything for one selected session: the URL bar, pick-to-clipboard toggle,
- * stop control, the screencast-fed viewport, and the console / network tabs.
- *
- * Pick-to-chat became pick-to-clipboard: the injected UI has no composer slot
- * (host.composer is unimplemented), so a picked element's summary is copied
- * to the clipboard for the user to paste into chat.
- */
-
 const PICKED_FN = 'iii::browser-ui::picked'
 const TYPE_FLUSH_MS = 200
+
+type FeedPane = 'console' | 'network'
+type NarrowPane = 'viewport' | FeedPane
+
+const FEED_PANES: readonly FeedPane[] = ['console', 'network']
+const NARROW_PANES: readonly NarrowPane[] = ['viewport', 'console', 'network']
+
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStored(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    /* private mode / quota — persistence is best-effort */
+  }
+}
+
+/** Same page-title derivation as the rail rows. */
+function hostOf(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return parsed.host || url
+  } catch {
+    return url
+  }
+}
 
 interface SessionViewProps {
   host: Host
   session: BrowserSessionInfo
   enabled: boolean
+  narrow: boolean
+  /** Stable workspace-tab id — namespaces persisted UI state. */
+  tabId: string
+  onBack: () => void
   onSessionsRefresh: () => void
   onStopped: () => void
 }
@@ -52,12 +100,32 @@ export function SessionView({
   host,
   session,
   enabled,
+  narrow,
+  tabId,
+  onBack,
   onSessionsRefresh,
   onStopped,
 }: SessionViewProps) {
   const sessionId = session.session_id
   const [picking, setPicking] = useState(false)
-  const live = useLiveFrames(host, sessionId, enabled)
+
+  // Narrow-mode segment (viewport | console | network); session-local, so a
+  // drill-in always lands on the viewport.
+  const [narrowPane, setNarrowPane] = useState<NarrowPane>('viewport')
+  // Wide-mode feeds dock (console | network), persisted per workspace tab.
+  const dockStoreKey = `browser-ui:${tabId || 'page'}:dock`
+  const [dockPane, setDockPaneState] = useState<FeedPane>(() =>
+    readStored(dockStoreKey) === 'network' ? 'network' : 'console',
+  )
+  const setDockPane = (pane: FeedPane) => {
+    setDockPaneState(pane)
+    writeStored(dockStoreKey, pane)
+  }
+
+  // The screencast subscription is gated on the viewport actually being
+  // visible: wide mode always shows it, narrow only on its segment.
+  const viewportShown = !narrow || narrowPane === 'viewport'
+  const live = useLiveFrames(host, sessionId, enabled && viewportShown)
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -242,8 +310,56 @@ export function SessionView({
     })
   }, [host, sessionId, runAction, onSessionsRefresh, onStopped])
 
+  const displayName =
+    session.title?.trim() || hostOf(session.url) || 'about:blank'
+  const feedPane: FeedPane = narrow
+    ? narrowPane === 'network'
+      ? 'network'
+      : 'console'
+    : dockPane
+
   return (
-    <section className="br-ui-session" aria-label={`browser session ${sessionId}`}>
+    <section
+      className="br-ui-stage"
+      aria-label={`browser session ${sessionId}`}
+    >
+      <header className="br-ui-doc-head">
+        {narrow ? (
+          <BackButton onClick={onBack} label="back to session list" />
+        ) : null}
+        <div className="br-ui-doc-identity">
+          <span className="br-ui-doc-name" title={`${sessionId} · ${session.url}`}>
+            <span className="txt">{displayName}</span>
+          </span>
+          {!narrow ? (
+            <span className="br-ui-doc-crumb">
+              {sessionId} · {session.headless ? 'headless' : 'headful'} ·{' '}
+              {session.url}
+            </span>
+          ) : null}
+        </div>
+        <div className="br-ui-doc-actions">
+          <button
+            type="button"
+            onClick={togglePick}
+            aria-pressed={picking}
+            title={
+              picking
+                ? 'pick mode on: click an element in the viewport to copy it to the clipboard (esc cancels)'
+                : 'pick an element to the clipboard'
+            }
+            className={cn('br-ui-pick-btn', picking && 'is-on')}
+          >
+            <Crosshair size={13} aria-hidden />
+            {picking ? 'picking...' : 'pick element'}
+          </button>
+          <Button variant="ghost" size="sm" onClick={handleStop}>
+            <Square size={12} aria-hidden />
+            stop
+          </Button>
+        </div>
+      </header>
+
       <div className="br-ui-toolbar">
         <Input
           value={urlDraft}
@@ -264,24 +380,6 @@ export function SessionView({
         />
         <Button variant="pill" size="sm" onClick={submitUrl}>
           go
-        </Button>
-        <button
-          type="button"
-          onClick={togglePick}
-          aria-pressed={picking}
-          title={
-            picking
-              ? 'pick mode on: click an element in the viewport to copy it to the clipboard (esc cancels)'
-              : 'pick an element to the clipboard'
-          }
-          className={cn('br-ui-pick-btn', picking && 'is-on')}
-        >
-          <Crosshair size={13} aria-hidden />
-          {picking ? 'picking...' : 'pick element'}
-        </button>
-        <Button variant="ghost" size="sm" onClick={handleStop}>
-          <Square size={12} aria-hidden />
-          stop
         </Button>
       </div>
 
@@ -310,34 +408,124 @@ export function SessionView({
       ) : null}
 
       {actionError ? (
-        <p className="br-ui-session-err">{actionError}</p>
+        <div className="br-ui-banner alert" role="alert">
+          <span>{actionError}</span>
+          <button
+            type="button"
+            className="br-ui-linkish quiet"
+            onClick={() => setActionError(null)}
+          >
+            dismiss
+          </button>
+        </div>
       ) : null}
 
-      <Viewport
-        frame={live.frame}
-        loading={live.loading}
-        error={live.error}
-        picking={picking}
-        onClickAt={handleClickAt}
-        onPickAt={handlePickAt}
-        onScrollAt={handleScrollAt}
-        onTextInput={handleTextInput}
-        onPressKey={handlePressKey}
-        requestHint={requestHint}
-      />
+      {narrow ? (
+        <div className="br-ui-view-row">
+          {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the row */}
+          <div className="br-ui-seg block" role="group" aria-label="session view">
+            {NARROW_PANES.map((pane) => (
+              <button
+                key={pane}
+                type="button"
+                className={`br-ui-seg-btn${narrowPane === pane ? ' active' : ''}`}
+                aria-pressed={narrowPane === pane}
+                onClick={() => setNarrowPane(pane)}
+              >
+                {pane}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
-      <Tabs defaultValue="console" className="br-ui-tabs">
-        <TabsList className="br-ui-tabs-list">
-          <TabsTrigger value="console">console</TabsTrigger>
-          <TabsTrigger value="network">network</TabsTrigger>
-        </TabsList>
-        <TabsContent value="console" className="br-ui-tabs-content">
-          <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
-        </TabsContent>
-        <TabsContent value="network" className="br-ui-tabs-content">
-          <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
-        </TabsContent>
-      </Tabs>
+      {viewportShown ? (
+        <div className="br-ui-stage-body">
+          <Viewport
+            frame={live.frame}
+            loading={live.loading}
+            error={live.error}
+            picking={picking}
+            onClickAt={handleClickAt}
+            onPickAt={handlePickAt}
+            onScrollAt={handleScrollAt}
+            onTextInput={handleTextInput}
+            onPressKey={handlePressKey}
+            requestHint={requestHint}
+          />
+        </div>
+      ) : (
+        <div className="br-ui-pane-fill">
+          {feedPane === 'console' ? (
+            <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
+          ) : (
+            <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
+          )}
+        </div>
+      )}
+
+      {!narrow ? (
+        <div className="br-ui-dock">
+          <div className="br-ui-dock-head">
+            {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the row */}
+            <div className="br-ui-seg" role="group" aria-label="session feeds">
+              {FEED_PANES.map((pane) => (
+                <button
+                  key={pane}
+                  type="button"
+                  className={`br-ui-seg-btn${dockPane === pane ? ' active' : ''}`}
+                  aria-pressed={dockPane === pane}
+                  onClick={() => setDockPane(pane)}
+                >
+                  {pane}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="br-ui-dock-body">
+            {dockPane === 'console' ? (
+              <ConsolePanel
+                host={host}
+                sessionId={sessionId}
+                enabled={enabled}
+              />
+            ) : (
+              <NetworkPanel
+                host={host}
+                sessionId={sessionId}
+                enabled={enabled}
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      <footer className="br-ui-statusbar">
+        <span className="fact">{sessionId}</span>
+        {live.frame ? (
+          <span className="fact">
+            {live.frame.width}x{live.frame.height}
+          </span>
+        ) : null}
+        <span className="fact">
+          {session.headless ? 'headless' : 'headful'}
+        </span>
+        <span className="spacer" />
+        {viewportShown ? (
+          picking ? (
+            <span className="fact hint">
+              pick mode: click an element to copy it — esc cancels
+            </span>
+          ) : (
+            <>
+              <span className="fact hint">
+                click to focus — clicks, scroll and typing forward to the page
+              </span>
+              <span className="fact hint">shift+esc leaves the surface</span>
+            </>
+          )
+        ) : null}
+      </footer>
     </section>
   )
 }

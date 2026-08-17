@@ -73,6 +73,16 @@ export interface PageRenderProps {
    * Absent when the page renders outside a closable pane.
    */
   onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory, live: the page
+   * re-renders with the new value when the user picks another folder in
+   * chat, so filesystem-shaped pages can follow along. `null`/absent when
+   * no conversation is active or none is set.
+   */
+  workingDir?: string | null
+  /** Active chat session id. Reactive pages use it to subscribe to exact
+      Harness turn boundaries without receiving another chat's events. */
+  conversationId?: string | null
 }
 
 export interface PageRegistration {
@@ -187,6 +197,23 @@ export interface SessionChipRegistration {
   render: React.ComponentType<SessionChipProps>
 }
 
+/** Props a chat footer turn-summary receives. */
+export interface SessionTurnSummaryProps {
+  sessionId: string
+  /** Whether this session is currently producing a turn. */
+  isStreaming: boolean
+}
+
+/**
+ * A compact per-session summary rendered immediately above the composer.
+ * Duplicate `id`: last registration wins.
+ */
+export interface SessionTurnSummaryRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<SessionTurnSummaryProps>
+}
+
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
@@ -215,6 +242,10 @@ export interface Host {
    */
   chat?: {
     registerSessionChip(chip: SessionChipRegistration): () => void
+    /** Optional on consoles that predate the footer turn-summary slot. */
+    registerTurnSummary?(
+      summary: SessionTurnSummaryRegistration,
+    ): () => void
   }
 }
 
@@ -232,6 +263,21 @@ export declare function useTheme(): 'light' | 'dark'
 export declare const tokens: readonly string[]
 
 /* ── the shared component library ───────────────────────────────────── */
+
+export interface AnsiTextProps {
+  /** Raw terminal output, ANSI escapes included. */
+  text: string
+  className?: string
+}
+/** Terminal text with its ANSI SGR colors mapped onto the design tokens
+    (red→alert, green→ok, yellow→warn, blue/cyan/magenta→accent,
+    bold→semibold). Extended-color params are consumed, every other
+    CSI/OSC sequence is stripped, and pathological input falls back to
+    stripped plain text. The console's one ANSI renderer — like
+    `CodeEditor`, never bundle an ANSI parser into a worker asset; import
+    this instead. Inherits the parent's font, so put it inside a
+    whitespace-preserving mono pane (`TerminalStream` does). */
+export declare const AnsiText: React.ComponentType<AnsiTextProps>
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: 'default' | 'warn' | 'alert' | 'accent'
@@ -328,6 +374,7 @@ export interface FileDiffSide {
   name: string
   contents: string
 }
+export type FileDiffEditState = 'loading' | 'ready' | 'error'
 export interface FileDiffProps {
   /** Pass empty `contents` for a created (old) / deleted (new) file. */
   oldFile: FileDiffSide
@@ -335,6 +382,22 @@ export interface FileDiffProps {
   diffStyle?: 'unified' | 'split'
   /** Long lines wrap by default; `'scroll'` preserves strict columns. */
   overflow?: 'scroll' | 'wrap'
+  /** Intraline emphasis. `'none'` keeps only whole-line highlighting. */
+  lineDiffType?: 'word-alt' | 'word' | 'char' | 'none'
+  /** Ignore leading/trailing whitespace when computing changed lines. */
+  ignoreWhitespace?: boolean
+  /** Render the file body folded; useful for collapse-all review controls. */
+  collapsed?: boolean
+  /** Expand every unchanged line instead of the compact hunk view. */
+  expandUnchanged?: boolean
+  /** Hide the built-in file header when the caller supplies its own. */
+  disableFileHeader?: boolean
+  /** Enable direct editing of the new-file side. The editor loads lazily. */
+  edit?: boolean
+  /** Receives the complete current new-file body after each edit. */
+  onChange?(contents: string): void
+  /** Reports whether the lazily loaded inline editor can accept input. */
+  onEditStateChange?(state: FileDiffEditState): void
   className?: string
 }
 /** The console's one file-diff surface — the diff is computed from the two
@@ -488,6 +551,49 @@ export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
 }
 export declare const TabsContent: React.ComponentType<TabsContentProps>
+
+export interface TerminalCommandLineProps {
+  /** The command, verbatim — also the hover title and the copy payload. */
+  command: string
+  /** Prompt glyph, accent ink. Default `'$'`. */
+  prompt?: string
+  /** Trailing slot for header chips / pills. */
+  chips?: React.ReactNode
+  /** Render the copy affordance (standard copied/failed flash; the
+      clipboard write survives insecure origins). */
+  copy?: boolean
+  className?: string
+}
+/** One-line command header — the `$ command` row a terminal-shaped card
+    opens with: accent prompt glyph, mono command that ellipsizes with the
+    full text riding on `title`, optional trailing chips and copy button.
+    Like `CodeEditor`, never carry a private command-line header in a
+    worker asset; import this instead. */
+export declare const TerminalCommandLine: React.ComponentType<TerminalCommandLineProps>
+
+export interface TerminalStreamProps {
+  /** Pane label (`stdout`, `stderr`, `build`), rendered uppercase. */
+  label: string
+  /** The stream body; renders nothing when empty — the caller decides
+      what "no output" should say, if anything. */
+  text: string
+  /** `'err'` tints the body warn, and nothing more: stderr is the user's
+      program failing, not the console failing. Default `'out'`. */
+  tone?: 'out' | 'err'
+  /** Parse ANSI SGR colors in the body (`AnsiText`); plain otherwise. */
+  ansi?: boolean
+  /** Collapse behind the expand toggle past this many lines (default 12)… */
+  clampLines?: number
+  /** …or this many characters (default 2000). */
+  clampChars?: number
+  className?: string
+}
+/** Labeled monospace stream pane — the shared rendering for stdout /
+    stderr / log bodies in terminal-shaped cards: whitespace preserved,
+    long output clamped behind an `expand · N lines / collapse` toggle,
+    scrolls within itself, never page-wide. Like `CodeEditor`, never carry
+    a private stream pane in a worker asset; import this instead. */
+export declare const TerminalStream: React.ComponentType<TerminalStreamProps>
 
 /** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content only. */
 export interface TooltipProps {

@@ -20,11 +20,11 @@ class RegistryError(RuntimeError):
 def request_json(
     method: str,
     url: str,
-    payload: dict[str, Any],
+    payload: dict[str, Any] | None,
     *,
     api_key: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    body = json.dumps(payload).encode()
+    body = json.dumps(payload).encode() if payload is not None else None
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-API-Key"] = api_key
@@ -63,6 +63,36 @@ def resolve_version(api_url: str, worker: str, selector: str, *, allow_missing: 
     raise RegistryError(f"resolve {worker}@{selector} failed with HTTP {status}: {json.dumps(response)}")
 
 
+def release_tag_version(api_url: str, worker: str, tag: str, *, allow_missing: bool = False) -> str | None:
+    encoded_worker = urllib.parse.quote(worker, safe="")
+    status, response = request_json(
+        "GET",
+        f"{api_url.rstrip('/')}/w/{encoded_worker}/versions",
+        None,
+    )
+    if status == 200:
+        versions = response.get("versions")
+        if not isinstance(versions, list):
+            raise RegistryError(f"versions response for {worker} has no versions list")
+        matches = [
+            entry.get("version")
+            for entry in versions
+            if isinstance(entry, dict) and tag in (entry.get("tags") or [])
+        ]
+        if len(matches) == 1 and isinstance(matches[0], str) and matches[0]:
+            return matches[0]
+        if not matches and allow_missing:
+            return None
+        if not matches:
+            raise RegistryError(f"release tag {worker}@{tag} was not found")
+        raise RegistryError(f"release tag {worker}@{tag} points to multiple versions")
+    error = response.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if allow_missing and status == 404 and code in {"version_not_found", "worker_not_found"}:
+        return None
+    raise RegistryError(f"list versions for {worker} failed with HTTP {status}: {json.dumps(response)}")
+
+
 def promotion_payload(version: str, current_latest: str | None) -> dict[str, str]:
     payload = {"version": version, "expected_tag": "next"}
     if current_latest is not None:
@@ -70,14 +100,38 @@ def promotion_payload(version: str, current_latest: str | None) -> dict[str, str
     return payload
 
 
-def promote(api_url: str, api_key: str, worker: str, version: str) -> dict[str, Any]:
-    current_latest = resolve_version(api_url, worker, "latest", allow_missing=True)
-    current_next = resolve_version(api_url, worker, "next", allow_missing=True)
-    # A first promotion must still own `next`. Once Registry latest already
-    # points at the requested immutable version, allow an idempotent retry to
-    # repair GitHub/GHCR/Slack even if a newer candidate has moved `next`.
-    if current_latest != version and current_next != version:
-        raise RegistryError(f"next points to {current_next}, expected {version}")
+def promote(
+    api_url: str,
+    api_key: str,
+    worker: str,
+    version: str,
+    expected_next: str,
+    expected_latest: str | None,
+) -> dict[str, Any]:
+    # Read the raw release-tag pointers for CAS. Resolving the current latest
+    # graph may fail precisely when a dependency was promoted first; that must
+    # not prevent a compatible next candidate from rolling the graph forward.
+    current_latest = release_tag_version(api_url, worker, "latest", allow_missing=True)
+    current_next = release_tag_version(api_url, worker, "next", allow_missing=True)
+    if current_next != expected_next:
+        raise RegistryError(f"next points to {current_next}, expected {expected_next}")
+    if expected_next != version:
+        raise RegistryError(f"promotion target {version} does not match expected next {expected_next}")
+    if current_latest == version:
+        resolved_latest = resolve_version(api_url, worker, "latest")
+        if resolved_latest != version:
+            raise RegistryError(f"promotion verification resolved {resolved_latest}, expected {version}")
+        return {
+            "worker": worker,
+            "version": version,
+            "previous_latest": current_latest,
+            "next": current_next,
+            "latest": current_latest,
+            "changed": False,
+            "registry_response": {"changed": False, "idempotent": True},
+        }
+    if current_latest != expected_latest:
+        raise RegistryError(f"latest points to {current_latest}, expected {expected_latest}")
     encoded_worker = urllib.parse.quote(worker, safe="")
     status, response = request_json(
         "PUT",
@@ -88,6 +142,9 @@ def promote(api_url: str, api_key: str, worker: str, version: str) -> dict[str, 
     if status != 200:
         raise RegistryError(f"promotion failed with HTTP {status}: {json.dumps(response)}")
 
+    promoted_tag = release_tag_version(api_url, worker, "latest")
+    if promoted_tag != version:
+        raise RegistryError(f"latest tag points to {promoted_tag}, expected {version}")
     promoted = resolve_version(api_url, worker, "latest")
     if promoted != version:
         raise RegistryError(f"promotion verification resolved {promoted}, expected {version}")
@@ -105,9 +162,11 @@ def promote(api_url: str, api_key: str, worker: str, version: str) -> dict[str, 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-url", default="https://api.workers.iii.dev")
+    parser.add_argument("--api-url", required=True)
     parser.add_argument("--worker", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--expected-next-version", required=True)
+    parser.add_argument("--expected-latest-version", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -115,7 +174,15 @@ def main() -> None:
     if not api_key:
         raise SystemExit("WORKERS_REGISTRY_API_KEY is required")
     try:
-        result = promote(args.api_url, api_key, args.worker, args.version)
+        expected_latest = None if args.expected_latest_version == "none" else args.expected_latest_version
+        result = promote(
+            args.api_url,
+            api_key,
+            args.worker,
+            args.version,
+            args.expected_next_version,
+            expected_latest,
+        )
     except RegistryError as error:
         raise SystemExit(str(error)) from error
     args.output.parent.mkdir(parents=True, exist_ok=True)

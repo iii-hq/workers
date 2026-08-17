@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 
+use crate::comparison::{CompareSessionsRequestV1, SessionComparisonResponseV1};
 use crate::contract::{
     EvalCancelResponseV1, EvalDeleteResponseV1, EvalListRequestV1, EvalListResponseV1,
     EvalRerunRequestV1, EvalResultResponseV1, EvalStartRequestV1, EvalStartResponseV1,
@@ -7,8 +8,8 @@ use crate::contract::{
     StepRequestV1, StepResponseV1, SweepEventV1, SweepResponseV1, WakeEventV1, WakeResponseV1,
 };
 use crate::functions::{
-    CANCEL_ID, DELETE_ID, EXACT_ID, LIST_ID, NORMALIZED_TEXT_ID, RERUN_ID, RESULT_ID, START_ID,
-    STATUS_ID, STEP_ID, SWEEP_ID, WAKE_ID,
+    CANCEL_ID, COMPARE_SESSIONS_ID, DELETE_ID, EXACT_ID, LIST_ID, NORMALIZED_TEXT_ID, RERUN_ID,
+    RESULT_ID, START_ID, STATUS_ID, STEP_ID, SWEEP_ID, WAKE_ID,
 };
 
 pub struct FunctionSpec {
@@ -33,6 +34,7 @@ fn spec<Req: JsonSchema, Resp: JsonSchema>(function_id: &'static str) -> Functio
 
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
+        spec::<CompareSessionsRequestV1, SessionComparisonResponseV1>(COMPARE_SESSIONS_ID),
         spec::<EvalStartRequestV1, EvalStartResponseV1>(START_ID),
         spec::<EvalRerunRequestV1, EvalStartResponseV1>(RERUN_ID),
         spec::<EvalListRequestV1, EvalListResponseV1>(LIST_ID),

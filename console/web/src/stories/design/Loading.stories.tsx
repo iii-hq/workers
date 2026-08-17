@@ -175,7 +175,7 @@ export const TraceWaterfall: Story = {
                 >
                   {row.status}
                 </span>
-                <div className="col-span-4 mt-1 h-1 bg-rule-2 relative">
+                <div className="col-span-4 mt-1 h-1 bg-surface relative">
                   <div
                     className={cn('absolute top-0 h-full', tone.bar)}
                     style={{ left: `${start}%`, width: `${width}%` }}

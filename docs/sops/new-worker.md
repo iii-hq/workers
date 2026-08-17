@@ -124,21 +124,11 @@ slug against this catalog, so there is no second tag-pattern list to maintain.
 
 | # | Location | Action |
 |---|---|---|
-| 1 | [`.github/release-workers.yaml`](../../.github/release-workers.yaml) | Add a standard worker slug, or a special-worker route when it does not use `release.yml` |
-| 2 | [`.github/scripts/parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py) | Add to `ALLOWED_WORKERS` **only if** the worker ships `skills/` and you want out-of-band skills publishing via [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) |
-| 3 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
-
-Run the catalog guard locally after editing it:
-
-```bash
-python3 .github/scripts/release_catalog.py validate
-```
+| 1 | Release Control typed release policy | Add the worker capability, manifest exception if any, channel policy, and required validation |
+| 2 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
 
 **Worked example:** `session-manager` is a standard catalog entry and has no
 `BOOTSTRAP_WORKERS` entry because Harness does not require its skill at boot.
-
-**Known drift:** `email` ships `skills/SKILL.md` but is not in `ALLOWED_WORKERS`
-today — add it when enabling out-of-band skills publish for that worker.
 
 ## 7. Agent permissions
 
@@ -164,8 +154,6 @@ Ship `skills/SKILL.md` when agents should discover **when** to use the worker
   **required** (≤ 256 KiB) — the harness stack expects these skills at boot.
 - **On release:** skills are auto-uploaded via `POST /w/<worker>/skills` when
   markdown is present; skipped cleanly when absent.
-- **Out-of-band:** [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml)
-  re-publishes skills without a version bump (worker must be in `ALLOWED_WORKERS`).
 
 ## 9. First release
 

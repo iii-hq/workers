@@ -19,8 +19,9 @@ import { WorkersListView } from './WorkersListView'
 import { WorkersRegisterView } from './WorkersRegisterView'
 
 /**
- * Header label for `engine::*::list` ids. Mirrors `SandboxFunctionIdLabel`:
- * dims the namespace prefix so the tail is readable in the FCM header.
+ * Header label for `engine::*::list` ids. Mirrors the other families'
+ * FunctionIdLabels: dims the namespace prefix so the tail is readable in
+ * the FCM header.
  */
 export function EngineFunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('engine::')) {
