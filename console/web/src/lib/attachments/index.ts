@@ -64,11 +64,51 @@ export function hasExpandableAttachments(attachments: Attachment[]): boolean {
   return attachments.some((a) => a.file)
 }
 
+/** The one path an attachment takes. */
+export type AttachmentKind = 'pdf' | 'document' | 'image' | 'text' | 'unknown'
+
+/**
+ * Which path this file takes — exactly one.
+ *
+ * The kinds overlap, and letting a file take two paths is not a harmless
+ * duplicate: an SVG is both `image/svg+xml` and markup, so it was refused as a
+ * picture no model can decode AND inlined as text that read perfectly well,
+ * putting a "could not read" notice on a file the model had just read. A CSV is
+ * both a spreadsheet and plain text, and went through the worker and the
+ * browser both.
+ *
+ * Order is by how much is recovered. A PDF and an office document carry
+ * structure only their worker can reconstruct. Markup — SVG, HTML, XML — is
+ * text a model reads directly, and is worth more as characters than as a
+ * picture it may not be able to decode. A raster image is worth more as pixels
+ * than as the bytes underneath. Everything else that is text goes in as text.
+ */
+export function classifyAttachment(attachment: Attachment): AttachmentKind {
+  if (isPdfAttachment(attachment)) return 'pdf'
+  if (isDocumentAttachment(attachment)) return 'document'
+  if (isMarkupAttachment(attachment)) return 'text'
+  if (isImageAttachment(attachment)) return 'image'
+  if (isTextAttachment(attachment)) return 'text'
+  return 'unknown'
+}
+
+/**
+ * Markup that a browser labels as an image. `image/svg+xml` is the case that
+ * matters: no provider decodes an SVG as a picture, and every model reads it as
+ * the markup it is.
+ */
+function isMarkupAttachment(attachment: Attachment): boolean {
+  return (
+    attachment.type === 'image/svg+xml' ||
+    extensionOf(attachment.name) === 'svg'
+  )
+}
+
 /**
  * Expand every attachment on a message.
  *
- * The four passes run in sequence rather than concurrently. Each one is bounded
- * by its own per-send ceiling, and a composer holding a deck, a spreadsheet and
+ * The passes run in sequence rather than concurrently. Each one is bounded by
+ * its own per-send ceiling, and a composer holding a deck, a spreadsheet and
  * four screenshots would otherwise open a dozen simultaneous conversions on a
  * machine that is also running the model.
  */
@@ -78,52 +118,60 @@ export async function expandAttachments(
   const withBytes = attachments.filter((a) => a.file)
   if (withBytes.length === 0) return EMPTY_EXPANSION
 
+  const byKind = new Map<AttachmentKind, Attachment[]>()
+  for (const attachment of withBytes) {
+    const kind = classifyAttachment(attachment)
+    byKind.set(kind, [...(byKind.get(kind) ?? []), attachment])
+  }
+  const of = (kind: AttachmentKind) => byKind.get(kind) ?? []
+
   const blocks: string[] = []
   const images: AttachmentImageBlock[] = []
   const read: AttachmentReadSummary[] = []
   const failures: AttachmentFailure[] = []
 
-  if (withBytes.some(isPdfAttachment)) {
-    const pdfs = await expandPdfAttachments(withBytes)
-    blocks.push(...pdfs.blocks)
-    failures.push(...pdfs.failures)
+  const pdfs = of('pdf')
+  if (pdfs.length > 0) {
+    const expanded = await expandPdfAttachments(pdfs)
+    blocks.push(...expanded.blocks)
+    failures.push(...expanded.failures)
     read.push(
-      ...pdfs.read.map((summary) => ({
+      ...expanded.read.map((summary) => ({
         id: summary.id,
-        label: summaryLabel(
-          nameOf(withBytes, summary.id) ?? 'document',
-          summary,
-        ),
+        label: summaryLabel(nameOf(pdfs, summary.id) ?? 'document', summary),
       })),
     )
   }
 
-  if (withBytes.some(isDocumentAttachment)) {
-    const documents = await expandDocumentAttachments(withBytes)
-    blocks.push(...documents.blocks)
-    read.push(...documents.read)
-    failures.push(...documents.failures)
+  const documents = of('document')
+  if (documents.length > 0) {
+    const expanded = await expandDocumentAttachments(documents)
+    blocks.push(...expanded.blocks)
+    read.push(...expanded.read)
+    failures.push(...expanded.failures)
   }
 
-  if (withBytes.some(isImageAttachment)) {
-    const pictures = await expandImageAttachments(withBytes)
-    blocks.push(...pictures.blocks)
-    images.push(...pictures.images)
-    read.push(...pictures.read)
-    failures.push(...pictures.failures)
+  const pictures = of('image')
+  if (pictures.length > 0) {
+    const expanded = await expandImageAttachments(pictures)
+    blocks.push(...expanded.blocks)
+    images.push(...expanded.images)
+    read.push(...expanded.read)
+    failures.push(...expanded.failures)
   }
 
-  if (withBytes.some(isTextAttachment)) {
-    const texts = await expandTextAttachments(withBytes)
-    blocks.push(...texts.blocks)
-    read.push(...texts.read)
-    failures.push(...texts.failures)
+  const texts = of('text')
+  if (texts.length > 0) {
+    const expanded = await expandTextAttachments(texts)
+    blocks.push(...expanded.blocks)
+    read.push(...expanded.read)
+    failures.push(...expanded.failures)
   }
 
   // Anything left over reached the agent as nothing at all before this router
   // existed. Naming it in the message is the whole point: an unreadable
   // attachment the model knows about beats a silent one it does not.
-  for (const attachment of withBytes.filter(isUnhandled)) {
+  for (const attachment of of('unknown')) {
     const kind = attachment.type || extensionOf(attachment.name) || 'unknown'
     const reason = `${kind} is not a file the console can read into a message`
     blocks.push(failureBlock(attachment.name, reason))
@@ -131,15 +179,6 @@ export async function expandAttachments(
   }
 
   return { blocks, images, read, failures }
-}
-
-function isUnhandled(attachment: Attachment): boolean {
-  return (
-    !isPdfAttachment(attachment) &&
-    !isDocumentAttachment(attachment) &&
-    !isImageAttachment(attachment) &&
-    !isTextAttachment(attachment)
-  )
 }
 
 function nameOf(attachments: Attachment[], id: string): string | undefined {
