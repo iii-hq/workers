@@ -39,13 +39,16 @@ def test_harness_llm_stack_uses_shared_state_range() -> None:
         assert dependencies(worker)["state"] == expected
 
 
-def test_provider_lockfiles_track_llm_router_version() -> None:
+def test_provider_related_lockfiles_track_llm_router_version() -> None:
     router_manifest = tomllib.loads(
         (REPO_ROOT / "llm-router" / "Cargo.toml").read_text(encoding="utf-8"),
     )
     expected = router_manifest["package"]["version"]
 
-    for lockfile in sorted(REPO_ROOT.glob("provider-*/Cargo.lock")):
+    lockfiles = sorted(REPO_ROOT.glob("provider-*/Cargo.lock"))
+    lockfiles.append(REPO_ROOT / "crates" / "provider-integration-testkit" / "Cargo.lock")
+
+    for lockfile in lockfiles:
         lock = tomllib.loads(lockfile.read_text(encoding="utf-8"))
         locked_versions = [
             package["version"]
