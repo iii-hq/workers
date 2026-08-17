@@ -20,6 +20,19 @@ function verifySaturatedPayload() {
   };
 }
 
+function verifyBindFailedPayload(hint) {
+  return {
+    status: 'failed',
+    error_code: 'GXT_VERIFY_BIND_FAILED',
+    findings: [
+      {
+        failed_gate: 'gate',
+        resolution_hint: `verdict scope bind failed: ${hint}`,
+      },
+    ],
+  };
+}
+
 export function onVerifyPassed(state, data) {
   const repoRoot = data?.repo_root;
   if (!data?.msn_id || !data?.mission_rel_path || !repoRoot) return;
@@ -64,7 +77,12 @@ export function createVerifyHandler(state, { allowlistRoot } = {}) {
       return verifySaturatedPayload();
     }
     if (result?.status === 'passed' && data?.msn_id && data?.mission_rel_path && repoRoot) {
-      onVerifyPassed(state, data);
+      try {
+        onVerifyPassed(state, data);
+      } catch (e) {
+        const hint = e instanceof GantryDenied ? e.hint : e instanceof Error ? e.message : String(e);
+        return verifyBindFailedPayload(hint);
+      }
     }
     return result;
   };

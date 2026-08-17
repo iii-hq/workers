@@ -123,6 +123,6 @@ export function auditAsyncBoundaries(ctx) {
 /** @deprecated use runSourceRules */
 export async function checkAsyncBoundaries(scanRoot, options = {}) {
   const { runSourceRules } = await import('./run-source-rules.mjs');
-  const all = await runSourceRules(scanRoot, options);
-  return all.filter((f) => f.rule_id.startsWith('async/'));
+  const { findings } = await runSourceRules(scanRoot, options);
+  return findings.filter((f) => f.rule_id.startsWith('async/'));
 }

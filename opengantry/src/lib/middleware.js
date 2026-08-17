@@ -1,7 +1,6 @@
 import { evaluateFunctionScope, isPromoteClassFunctionId } from '@jeger-ai/opengantry/kernel';
 
 import { BoundedMap } from './bounded-map.js';
-import { isBypassMode } from './bypass.js';
 import { GantryDenied } from './denied.js';
 import { getGovernanceBundle } from './governance-context.js';
 import { LEASE_STATES, LeaseStore } from './lease-store.js';
@@ -45,10 +44,6 @@ function ensureLease(leases, msnId, worktreePath, missionRel) {
 export function createMiddlewareHandler(state) {
   return async function gantryMiddleware(input) {
     const { function_id, payload, context } = input;
-
-    if (isBypassMode()) {
-      return state.forwardTrigger(function_id, payload);
-    }
 
     const repoRoot = resolveRepoRootFromContext(context);
     const leases = getLeaseStore(state, repoRoot);

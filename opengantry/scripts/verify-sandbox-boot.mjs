@@ -3,6 +3,10 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** Pinned sandbox runtime — docker.io/iiidev/node:latest @ 2026-03-23 */
+const SANDBOX_IMAGE =
+  'docker.io/iiidev/node@sha256:a9b6a5354afa648f4a07ad95c03163a198668af0df314410dc557b9786fb47cb';
+
 const root = path.resolve(import.meta.dirname, '..');
 const bundle = path.join(root, 'sandbox.mjs');
 if (!fs.existsSync(bundle)) {
@@ -19,7 +23,7 @@ const result = spawnSync(
     `${bundle}:/w/index.mjs:ro`,
     '-w',
     '/w',
-    'docker.io/iiidev/node:latest',
+    SANDBOX_IMAGE,
     'node',
     '--input-type=module',
     '-e',

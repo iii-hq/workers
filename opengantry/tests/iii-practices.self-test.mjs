@@ -205,6 +205,17 @@ scripts:
   }
 
   {
+    const fx = materializeFixture('export-bag');
+    fx.write('w/package.json', JSON.stringify({ name: 'w', private: true, type: 'module' }));
+    fx.write('w/src/index.js', 'export const cache = new Map();\n');
+    const { findings } = await scanWorkersTree(fx.workers, opts);
+    cases.push({
+      name: 'export-module-bag',
+      ok: findings.some((f) => f.rule_id === 'durable-state/module-bags'),
+    });
+  }
+
+  {
     const fx = materializeFixture('const-bag');
     fx.write('w/package.json', JSON.stringify({ name: 'w', private: true, type: 'module' }));
     fx.write('w/src/index.js', 'const state = { cache: new Map() };\nexport const ok = state;\n');

@@ -71,6 +71,6 @@ export function auditWorkerIsolation(ctx) {
 /** @deprecated use runSourceRules */
 export async function checkWorkerIsolation(scanRoot) {
   const { runSourceRules } = await import('./run-source-rules.mjs');
-  const all = await runSourceRules(scanRoot, {});
-  return all.filter((f) => f.rule_id.startsWith('isolation/'));
+  const { findings } = await runSourceRules(scanRoot, {});
+  return findings.filter((f) => f.rule_id.startsWith('isolation/'));
 }

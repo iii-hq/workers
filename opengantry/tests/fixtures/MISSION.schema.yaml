@@ -1,0 +1,210 @@
+# MISSION.schema — JSON Schema (YAML encoding) for structured missions
+# Consumed by gantry (Ajv). Version label for docs only.
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://opengantry.local/schemas/mission.v1_1.json
+title: OpenGantryMission
+type: object
+additionalProperties: false
+required:
+  - skill_key
+  - gate_command
+allOf:
+  - anyOf:
+      - required: [msn_id]
+      - required: [msnId]
+  - if:
+      properties:
+        interrogation:
+          type: array
+          minItems: 1
+      required: [interrogation]
+    then:
+      required: [interrogation_sha256]
+properties:
+  msn_id:
+    type: string
+    pattern: "^MSN-[0-9]{4}$"
+  msnId:
+    type: string
+    pattern: "^MSN-[0-9]{4}$"
+  skill_key:
+    type: string
+    minLength: 1
+  gate_command:
+    type: string
+    minLength: 1
+  gate_success_substring:
+    type: ["string", "null"]
+  virtual_capture:
+    type: boolean
+    default: false
+    description: >-
+      When true, gantry verify captures gate stdout/stderr under
+      .gitagent/virtual/<flight-id>/ (gitignored) and purges on success.
+  upgrade_payload:
+    type: object
+    additionalProperties: false
+    required:
+      - from_version
+      - to_version
+      - staged_hashes
+      - planned_writes
+    properties:
+      from_version:
+        type: string
+      to_version:
+        type: string
+      staged_root:
+        type: string
+        const: ".gitagent/.upgrade-tmp"
+      planned_writes:
+        type: array
+        items:
+          type: string
+      skipped_scaffold_only:
+        type: array
+        items:
+          type: string
+      staged_hashes:
+        type: object
+        additionalProperties:
+          type: string
+      created_at:
+        type: string
+  trace_rows:
+    type: array
+    default: []
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - dod_id
+        - trace_quote
+        - anchor
+        - status
+      properties:
+        dod_id:
+          type: string
+        trace_quote:
+          type: string
+        anchor:
+          type: string
+        status:
+          type: string
+          pattern: "^(PASS|FAIL|PENDING|pass|fail|pending)$"
+  kpi_gate:
+    type: object
+    additionalProperties: false
+    required:
+      - thresholds
+    properties:
+      report_path:
+        type: string
+        minLength: 1
+      thresholds:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required:
+            - metric
+            - op
+            - value
+          properties:
+            metric:
+              type: string
+              minLength: 1
+            op:
+              type: string
+              enum: ["<=", ">=", "==", "<", ">"]
+            value:
+              type: number
+  llm_verifiers:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - command
+      properties:
+        id:
+          type: string
+          minLength: 1
+        command:
+          type: string
+          minLength: 1
+        provider:
+          type: string
+        required:
+          type: boolean
+          default: false
+  aggregators:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - key
+        - op
+        - sources
+      properties:
+        key:
+          type: string
+          minLength: 1
+        op:
+          type: string
+          enum: [max, min, sum]
+        sources:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+  interrogation:
+    type: array
+    default: []
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - finding_id
+        - kind
+        - question
+        - hypothesis
+        - operator_answer
+      properties:
+        finding_id:
+          type: string
+          minLength: 8
+        kind:
+          type: string
+          enum:
+            - risk_escalation
+            - forbidden_zone
+            - undefined_boundary
+            - missing_test_criteria
+            - adr_conflict
+        question:
+          type: string
+          minLength: 1
+        hypothesis:
+          type: string
+          minLength: 1
+        operator_answer:
+          type: string
+          minLength: 1
+        adr_refs:
+          type: array
+          items:
+            type: string
+            pattern: "^ADR-[0-9]{4}$"
+  interrogation_sha256:
+    type: string
+    pattern: "^[0-9a-f]{64}$"
+  declared_paths:
+    type: array
+    items:
+      type: string
+      minLength: 1

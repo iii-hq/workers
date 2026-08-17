@@ -7,7 +7,12 @@ import { findOrphanSourceDirs } from './scan-workers.mjs';
 import { runSourceRules } from './run-source-rules.mjs';
 import { loadHttpConnectorAllowlist } from './allowlist.mjs';
 
-const INFRA_RULE_IDS = new Set(['scan/deps-missing', 'scan/deps-unreadable', 'scan/parse']);
+const INFRA_RULE_IDS = new Set([
+  'scan/deps-missing',
+  'scan/deps-unreadable',
+  'scan/parse',
+  'scan/allowlist-invalid',
+]);
 
 export function practicesFailedPayload(findings) {
   return {
@@ -42,9 +47,25 @@ export async function runPracticesScan(scanRoot, options = {}) {
     };
   }
 
-  const allowlistRoot = options.allowlistRoot ?? scanRoot;
-  const { workers: httpAllowlist } = loadHttpConnectorAllowlist(allowlistRoot);
-  const mergedAllowlist = options.httpAllowlist ?? httpAllowlist;
+  let mergedAllowlist = options.httpAllowlist;
+  if (!mergedAllowlist) {
+    const allowlistRoot = options.allowlistRoot ?? scanRoot;
+    try {
+      ({ workers: mergedAllowlist } = loadHttpConnectorAllowlist(allowlistRoot));
+    } catch (e) {
+      return {
+        findings: [
+          {
+            rule_id: 'scan/allowlist-invalid',
+            file: '.',
+            line: 1,
+            message: e instanceof Error ? e.message : String(e),
+          },
+        ],
+        logs,
+      };
+    }
+  }
 
   const source = await runSourceRules(scanRoot, { httpAllowlist: mergedAllowlist });
   logs.push(...(source.logs ?? []));

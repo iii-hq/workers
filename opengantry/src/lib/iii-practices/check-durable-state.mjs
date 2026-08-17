@@ -72,8 +72,9 @@ export function auditDurableState(ctx) {
   const skipBags = options.durableExempt?.has('durable-state/module-bags') ?? false;
 
   if (!skipBags) {
-    for (const stmt of parsed.ast.body) {
-      if (stmt.type !== 'VariableDeclaration') continue;
+    for (const top of parsed.ast.body) {
+      const stmt = top.type === 'ExportNamedDeclaration' ? top.declaration : top;
+      if (!stmt || stmt.type !== 'VariableDeclaration') continue;
       for (const d of stmt.declarations) {
         if (d.id?.type !== 'Identifier') continue;
         const isLetVar = stmt.kind === 'let' || stmt.kind === 'var';
