@@ -467,8 +467,10 @@ async fn abort_lands_mid_stream_and_cancels_the_upstream() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
-    let frames = frames.lock();
-    let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+    let last: Value = {
+        let frames = frames.lock();
+        serde_json::from_str(frames.last().unwrap()).unwrap()
+    };
     assert_eq!(last["type"], "done");
     assert_eq!(last["message"]["stop_reason"], "aborted");
     // The provider abort surface is idempotent for a finished request.

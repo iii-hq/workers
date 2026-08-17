@@ -352,6 +352,26 @@ jobs:
           save-if: false
           workspaces: crates/provider-integration-testkit -> target
 
+      # provider-openai-codex embeds a small console UI. The integration
+      # testkit enables every provider feature in its Rust gate, so build the
+      # UI before Cargo reaches that provider's build.rs.
+      - name: Setup pnpm (providers with bundled UI)
+        if: hashFiles(format('provider-{0}/ui/package.json', matrix.provider)) != ''
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (providers with bundled UI)
+        if: hashFiles(format('provider-{0}/ui/package.json', matrix.provider)) != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build provider UI
+        if: hashFiles(format('provider-{0}/ui/package.json', matrix.provider)) != ''
+        working-directory: provider-${{ matrix.provider }}/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
       - name: Install pinned iii engine
         env:
           VERSION: '0.21.8'
