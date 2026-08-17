@@ -14,7 +14,7 @@
 //! `workflow::start` — it just skips the auto-stamp.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const STAMP_REPLY_ID: &str = "workflow::stamp-reply";
@@ -47,15 +47,33 @@ pub struct StampCall {
     pub arguments: Value,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum StampReplyResponse {
+    Continue(ContinueResponse),
+    Noop(()),
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ContinueResponse {
+    pub decision: String,
+    pub mutations: ArgumentMutations,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ArgumentMutations {
+    pub arguments: Value,
+}
+
 /// Pure decision: return the `continue` outcome with rewritten arguments when
-/// the call opted into `reply_to`, else `Value::Null` (continue unchanged).
-pub fn decide(event: StampReplyEvent) -> Value {
+/// the call opted into `reply_to`, else `Noop` (serialized as null, continue unchanged).
+pub fn decide(event: StampReplyEvent) -> StampReplyResponse {
     let Some(session_id) = event.session_id.filter(|s| !s.is_empty()) else {
-        return Value::Null; // no caller identity to stamp
+        return StampReplyResponse::Noop(()); // no caller identity to stamp
     };
     let mut args = event.call.map(|c| c.arguments).unwrap_or(Value::Null);
     let Some(obj) = args.as_object_mut() else {
-        return Value::Null;
+        return StampReplyResponse::Noop(());
     };
     // Always record the orchestrator session so node sessions can nest under it
     // in the console tree — independent of reply_to/await. Identity comes from
@@ -83,14 +101,17 @@ pub fn decide(event: StampReplyEvent) -> Value {
         }
         obj.insert("reply_to".into(), Value::Object(reply));
     }
-    json!({ "decision": "continue", "mutations": { "arguments": args } })
+    StampReplyResponse::Continue(ContinueResponse {
+        decision: "continue".into(),
+        mutations: ArgumentMutations { arguments: args },
+    })
 }
 
 /// Pre_trigger hook handler: stamp the caller identity into the call's arguments
 /// (see `decide`) and ALWAYS continue. The hook never parks or blocks the harness
 /// turn — `workflow::start` is fire-and-forget; the outcome comes back via
 /// `reply_to` / `notify`.
-pub async fn handle(event: StampReplyEvent) -> Result<Value, iii_sdk::errors::Error> {
+pub async fn handle(event: StampReplyEvent) -> Result<StampReplyResponse, iii_sdk::errors::Error> {
     Ok(decide(event))
 }
 
@@ -107,9 +128,13 @@ mod tests {
         .expect("envelope")
     }
 
+    fn decide_json(event: StampReplyEvent) -> Value {
+        serde_json::to_value(decide(event)).expect("response")
+    }
+
     #[test]
     fn stamps_session_and_model_when_reply_to_present() {
-        let out = decide(event(
+        let out = decide_json(event(
             "sess_1",
             "m1",
             json!({
@@ -130,7 +155,7 @@ mod tests {
     fn captures_caller_function_policy_into_reply_to() {
         // The envelope carries the caller turn's dispatch policy; decide stamps it
         // into reply_to so delivery can wake the caller with its own reach.
-        let out = decide(
+        let out = decide_json(
             serde_json::from_value(json!({
                 "session_id": "sess_1",
                 "model": "m1",
@@ -147,7 +172,7 @@ mod tests {
     #[test]
     fn overwrites_agent_supplied_session_id() {
         // Spoof attempt: agent points reply_to at someone else's session.
-        let out = decide(event(
+        let out = decide_json(event(
             "real_caller",
             "m1",
             json!({
@@ -163,7 +188,7 @@ mod tests {
     fn stamps_caller_session_when_reply_to_absent() {
         // Fire-and-forget start (no reply_to): still capture the caller session
         // so the run's node sessions can nest under the orchestrator chat.
-        let out = decide(event(
+        let out = decide_json(event(
             "sess_1",
             "m1",
             json!({ "definition": { "version": 1 } }),
@@ -178,6 +203,6 @@ mod tests {
     fn no_op_without_caller_session() {
         let ev: StampReplyEvent =
             serde_json::from_value(json!({ "call": { "arguments": { "reply_to": {} } } })).unwrap();
-        assert!(decide(ev).is_null());
+        assert!(decide_json(ev).is_null());
     }
 }

@@ -6,8 +6,7 @@
 //! hand-duplicated (and drifting) across the four static prompt variants.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 
 pub const GUIDANCE_HOOK_ID: &str = "workflow::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
@@ -36,6 +35,16 @@ pub struct GenerateContext {
     pub system_prompt: String,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PreGenerateResponse {
+    pub mutations: SystemPromptMutations,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SystemPromptMutations {
+    pub system_prompt: String,
+}
+
 /// Append the workflow guidance to the base prompt. Pure, so it's unit-testable.
 /// The harness OVERWRITES `system_prompt` with what we return (it does not merge),
 /// so we must return the FULL prompt (base + guidance), not just the addition.
@@ -49,8 +58,14 @@ fn enrich(base: &str) -> String {
 
 /// `pre_generate` hook entrypoint: return a `system_prompt` mutation that appends
 /// the workflow guidance. Bound `fail_open`, so an error here never blocks a turn.
-pub async fn handle(event: PreGenerateEvent) -> Result<Value, iii_sdk::errors::Error> {
-    Ok(json!({ "mutations": { "system_prompt": enrich(&event.generate.system_prompt) } }))
+pub async fn handle(
+    event: PreGenerateEvent,
+) -> Result<PreGenerateResponse, iii_sdk::errors::Error> {
+    Ok(PreGenerateResponse {
+        mutations: SystemPromptMutations {
+            system_prompt: enrich(&event.generate.system_prompt),
+        },
+    })
 }
 
 #[cfg(test)]
