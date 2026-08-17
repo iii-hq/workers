@@ -116,7 +116,7 @@ entry at boot and keeps an in-memory snapshot synchronized by the
 |---|---|---|
 | `stream_timeout_ms` | `300000` | Hard budget for one streamed turn. |
 | `idle_timeout_ms` | `120000` | Max silence between provider frames before the attempt is cut. |
-| `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame. |
+| `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame (`0`–`10`). |
 | `output_token_max` | `32000` | Ceiling on `max_output_tokens` forwarded to providers. |
 
 Per-provider slices additionally accept a nullable `system_prompt`: when set

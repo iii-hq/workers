@@ -7,6 +7,12 @@ use serde_json::Value;
 
 use crate::routing::Heuristic;
 
+/// Keep retry configuration within an operationally bounded range. Ten
+/// retries already span the exponential backoff ceiling and is intentionally
+/// generous for operator tuning without allowing a malformed durable entry to
+/// create billions of attempts.
+pub const MAX_RETRY_MAX: u32 = 10;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouterSettings {
     pub default_provider: Option<String>,
@@ -34,6 +40,13 @@ fn pos_u64(v: Option<&Value>, fallback: u64) -> u64 {
     v.and_then(Value::as_u64).unwrap_or(fallback)
 }
 
+fn bounded_u32(v: Option<&Value>, fallback: u32, max: u32) -> u32 {
+    v.and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value <= max)
+        .unwrap_or(fallback)
+}
+
 pub fn parse_settings(entry_value: &Value) -> RouterSettings {
     let mut out = RouterSettings::default();
     let Value::Object(root) = entry_value else {
@@ -59,7 +72,7 @@ pub fn parse_settings(entry_value: &Value) -> RouterSettings {
     if let Some(Value::Object(s)) = root.get("settings") {
         out.stream_timeout_ms = pos_u64(s.get("stream_timeout_ms"), out.stream_timeout_ms);
         out.idle_timeout_ms = pos_u64(s.get("idle_timeout_ms"), out.idle_timeout_ms);
-        out.retry_max = pos_u64(s.get("retry_max"), out.retry_max as u64) as u32;
+        out.retry_max = bounded_u32(s.get("retry_max"), out.retry_max, MAX_RETRY_MAX);
         out.output_token_max = pos_u64(s.get("output_token_max"), out.output_token_max);
     }
     out
@@ -119,5 +132,17 @@ mod tests {
         assert_eq!(slices.len(), 1);
         assert!(slices.contains_key("a"));
         assert!(provider_slices(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
+    fn extreme_retry_counts_fall_back_without_integer_wraparound() {
+        for retry_max in [json!(u32::MAX), json!(u64::MAX), json!(-1), json!(1.5)] {
+            let parsed = parse_settings(&json!({ "settings": { "retry_max": retry_max } }));
+            assert_eq!(parsed.retry_max, RouterSettings::default().retry_max);
+        }
+        assert_eq!(
+            parse_settings(&json!({ "settings": { "retry_max": MAX_RETRY_MAX } })).retry_max,
+            MAX_RETRY_MAX
+        );
     }
 }

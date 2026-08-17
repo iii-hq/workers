@@ -105,6 +105,27 @@ fn is_router_coded(err: &Error) -> bool {
     matches!(err, Error::Remote { code, .. } if code.starts_with("router/"))
 }
 
+/// Dispatch failures that already carry a stable pre-stream error contract.
+///
+/// Provider typed-handler deserialization happens before the provider handler
+/// can open its stream channel. Retrying `provider/invalid_request` cannot
+/// succeed, and replacing it with a synthetic transient EOF error hides the
+/// actionable cause from the caller.
+fn terminal_dispatch_error(err: &Error) -> Option<(&str, ErrorKind)> {
+    let Error::Remote { code, message, .. } = err else {
+        return None;
+    };
+    if is_router_coded(err) {
+        let kind = if code == RouterCode::ProviderUnavailable.as_str() {
+            ErrorKind::Transient
+        } else {
+            ErrorKind::Permanent
+        };
+        return Some((message, kind));
+    }
+    (code == "provider/invalid_request").then_some((message, ErrorKind::Permanent))
+}
+
 type ProviderCallOutcome = Result<Value, Error>;
 const MAX_PROVIDER_CALLS: usize = 64;
 
@@ -635,10 +656,12 @@ impl ChatPipeline {
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
+                        let delay = std::time::Duration::from_millis(backoff_ms(
                             attempt, 500, 8000, rand_unit,
-                        )))
-                        .await;
+                        ));
+                        if inflight.wait_for_abort(delay).await {
+                            break;
+                        }
                         continue;
                     }
                     if !terminal_forwarded {
@@ -686,24 +709,13 @@ impl ChatPipeline {
                     last_usage = usage.clone();
                     if let Some(Err(err)) = call_outcome {
                         if !forwarded {
-                            if is_router_coded(&err) {
-                                let (message, kind) = match &err {
-                                    Error::Remote { code, message, .. }
-                                        if code == RouterCode::ProviderUnavailable.as_str() =>
-                                    {
-                                        (message.clone(), ErrorKind::Transient)
-                                    }
-                                    Error::Remote { message, .. } => {
-                                        (message.clone(), ErrorKind::Permanent)
-                                    }
-                                    _ => unreachable!("is_router_coded only matches remote errors"),
-                                };
+                            if let Some((message, kind)) = terminal_dispatch_error(&err) {
                                 send_error_terminal(
                                     sink.as_ref(),
                                     last_partial.as_ref(),
                                     &call.model,
                                     provider,
-                                    &message,
+                                    message,
                                     kind,
                                     usage,
                                 );
@@ -750,10 +762,12 @@ impl ChatPipeline {
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
+                        let delay = std::time::Duration::from_millis(backoff_ms(
                             attempt, 500, 8000, rand_unit,
-                        )))
-                        .await;
+                        ));
+                        if inflight.wait_for_abort(delay).await {
+                            break;
+                        }
                         continue;
                     }
                     let message = if is_idle {
@@ -906,6 +920,11 @@ mod tests {
         assert!(!is_function_not_found(&Error::Timeout));
         assert!(is_router_coded(&remote("router/not_configured")));
         assert!(!is_router_coded(&remote("function_not_found")));
+        assert_eq!(
+            terminal_dispatch_error(&remote("provider/invalid_request")).map(|(_, kind)| kind),
+            Some(ErrorKind::Permanent)
+        );
+        assert!(terminal_dispatch_error(&remote("provider/upstream_unavailable")).is_none());
     }
 
     #[test]
