@@ -26,21 +26,11 @@ import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
 import { nextHistoryTarget } from './queue-history'
+import { useFileDrop } from './use-file-drop'
 
 export interface ComposerSubmitPayload {
   text: string
   attachments: Attachment[]
-}
-
-/**
- * `true` when a drag carries files rather than selected text.
- *
- * Dragging a word from the transcript into the composer is a text drag and has
- * to keep working; only a file drag becomes an attachment. During a drag the
- * browser withholds the data itself, so `types` is the only thing to read.
- */
-function carriesFiles(e: React.DragEvent): boolean {
-  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
 }
 
 /** Round icon action button (send / queue / stop) at the composer's edge. */
@@ -317,75 +307,23 @@ export function Composer({
     [handleAttach],
   )
 
-  // Drag state is a counter, not a boolean: dragging across a child element
-  // fires `dragleave` on the one being left before `dragenter` on the one being
-  // entered, so a boolean flickers the highlight off over every button in the
-  // composer.
-  const [dragDepth, setDragDepth] = useState(0)
-  const dragging = dragDepth > 0 && !inputDisabled
-
-  const handleDragEnter = useCallback(
-    (e: React.DragEvent) => {
-      if (inputDisabled || !carriesFiles(e)) return
-      e.preventDefault()
-      setDragDepth((depth) => depth + 1)
-    },
-    [inputDisabled],
-  )
-
-  const handleDragOver = useCallback(
-    (e: React.DragEvent) => {
-      if (inputDisabled || !carriesFiles(e)) return
-      // Without this the browser navigates to the dropped file, replacing the
-      // console with a PDF viewer and losing the conversation.
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'copy'
-    },
-    [inputDisabled],
-  )
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    if (!carriesFiles(e)) return
-    setDragDepth((depth) => Math.max(0, depth - 1))
-  }, [])
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      setDragDepth(0)
-      if (inputDisabled || !carriesFiles(e)) return
-      e.preventDefault()
-      void attachFiles(Array.from(e.dataTransfer.files))
-    },
-    [attachFiles, inputDisabled],
-  )
-
-  // Paste rides on the wrapper so it catches the editor's own paste as it
-  // bubbles. Files are consumed here: a screenshot pasted from the clipboard
-  // carries no text, and a file copied from a file manager carries its name as
-  // text, which would otherwise land in the message next to its own chip.
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      if (inputDisabled) return
-      const files = Array.from(e.clipboardData?.files ?? [])
-      if (files.length === 0) return
-      e.preventDefault()
-      void attachFiles(files)
-    },
-    [attachFiles, inputDisabled],
-  )
+  // The drop zone is the whole chat pane, claimed in the capture phase — see
+  // `use-file-drop`. A drop onto the transcript, where people actually let go
+  // of a screenshot, lands here too, and the editor never gets to eat it.
+  const shell = useRef<HTMLDivElement>(null)
+  const dragging = useFileDrop({
+    anchorRef: shell,
+    disabled: Boolean(inputDisabled),
+    onFiles: (files) => void attachFiles(files),
+  })
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: drop and paste are shortcuts onto the paperclip button inside, which stays the keyboard and screen-reader route to attaching a file; an interactive role here would announce the whole composer as one control.
     <div
+      ref={shell}
       className={cn(
         'rounded-xl bg-panel-raised shadow-raised transition-shadow',
         dragging && 'ring-2 ring-rule-focus',
       )}
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      onPaste={handlePaste}
     >
       {dragging ? (
         <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">

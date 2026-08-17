@@ -8,7 +8,7 @@
 //! 3. connect
 //! 4. register and fetch the configuration — a required boot dependency, so a
 //!    failure here aborts rather than running on guessed limits
-//! 5. register the functions, then the console UI they drive
+//! 5. register the functions
 //! 6. bind the configuration trigger LAST, so its handler closes over fully
 //!    built state
 //! 7. wait for a signal, then shut the SDK down cleanly
@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 
 use document::config::WorkerConfig;
 use document::configuration::ConfigCell;
-use document::{configuration, functions, manifest, ui};
+use document::{configuration, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(name = "document", about = manifest::DESCRIPTION)]
@@ -128,7 +128,6 @@ async fn main() -> anyhow::Result<()> {
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
     functions::register_all(&iii, &cell);
-    ui::register(&iii);
 
     configuration::register_config_trigger(&iii, cell.clone())
         .map_err(|e| anyhow::anyhow!("configuration trigger registration failed: {e}"))?;

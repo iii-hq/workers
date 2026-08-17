@@ -10,9 +10,6 @@ diagrams actually holds. Nothing is uploaded, and a long document is capped
 rather than dumped, so a report does not swallow the context an agent needed for
 the answer.
 
-It ships a console page too. Drop a document in and see exactly what the agent
-sees: the detected format, the markdown, and the images inside.
-
 ## Install
 
 ```bash
@@ -163,8 +160,7 @@ Defaults live in [`src/config.rs`](src/config.rs).
 This worker registers no harness hook and injects nothing into any prompt. A
 conversation that never touches a document never pays for it, and there is no
 per-turn cost to having it installed. An agent finds it the ordinary way,
-through the function registry and [`skills/SKILL.md`](skills/SKILL.md); a person
-finds it through the console page.
+through the function registry and [`skills/SKILL.md`](skills/SKILL.md).
 
 ## What this worker does not do
 
