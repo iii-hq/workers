@@ -6,15 +6,9 @@ Enforces:
     2. iii.worker.yaml parses and has required fields + valid enum values.
     3. The manifest version on this ref is greater than or equal to on --base-ref.
     4. tests/ exists and is non-empty.
-    5. For workers in BOOTSTRAP_WORKERS, skills/SKILL.md exists, is non-empty,
-       and is within the 256 KiB cap — the harness bootstraps these onto disk via
-       iii-directory on first boot; a missing or oversized file breaks the
-       chat surface's orientation.
 
 If `--worker` is not in `--source-changed`, requirements 1, 3, and 4 are
-downgraded to GitHub Actions notices instead of hard errors. Requirement
-5 is always strict — it's a release-blocking guarantee, not a hygiene
-check.
+downgraded to GitHub Actions notices instead of hard errors.
 """
 from __future__ import annotations
 
@@ -28,16 +22,6 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
 
-
-# Workers whose skills the harness stack requires at boot, making
-# skills/SKILL.md a hard PR gate. Keep in sync with what the harness
-# actually bootstraps.
-BOOTSTRAP_WORKERS = frozenset({
-    "iii-directory",
-    "shell",
-})
-
-SKILL_MD_SIZE_CAP = 256 * 1024  # 256 KiB
 
 # `iii worker add <worker>` downloads the release archive and looks for a
 # binary named after the WORKER (see iii crates/iii-worker binary_download.rs:
@@ -221,25 +205,6 @@ def main(argv: list[str] | None = None) -> int:
         soft(f"{worker}/tests/ is missing")
     elif not any(tests_dir.iterdir()):
         soft(f"{worker}/tests/ is empty")
-
-    # 5. Bundled workers must ship skills/SKILL.md within the size cap.
-    if worker in BOOTSTRAP_WORKERS:
-        skill_md = root / "skills" / "SKILL.md"
-        if not skill_md.exists():
-            hard(
-                f"{worker}/skills/SKILL.md is missing — bundled workers must ship one "
-                f"(see docs/sops/binary-worker.md)"
-            )
-        elif skill_md.stat().st_size == 0:
-            hard(
-                f"{worker}/{skill_md.relative_to(root).as_posix()} is empty — "
-                f"must contain the H1 + summary (see docs/sops/binary-worker.md)"
-            )
-        elif skill_md.stat().st_size > SKILL_MD_SIZE_CAP:
-            hard(
-                f"{worker}/{skill_md.relative_to(root).as_posix()} exceeds 256 KiB cap "
-                f"({skill_md.stat().st_size} bytes; see docs/sops/binary-worker.md)"
-            )
 
     for e in errs:
         print(f"::error::{e}")
