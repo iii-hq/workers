@@ -26,8 +26,13 @@ function walkSchemaObject(node, pathLabel, findings, file) {
       });
     }
   }
+  const typeList = Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
+  const isPassThroughUnion =
+    typeList.length > 1 &&
+    typeList.every((t) => ['object', 'array', 'string', 'number', 'boolean', 'null'].includes(t));
+  if (isPassThroughUnion) return;
   if (node.type === 'object' || (!node.type && node.properties)) {
-    if (node.additionalProperties !== false) {
+    if (node.additionalProperties !== false && !isPassThroughUnion) {
       findings.push({
         rule_id: 'payload/additionalProperties',
         file,
@@ -37,12 +42,12 @@ function walkSchemaObject(node, pathLabel, findings, file) {
     }
     const props = node.properties;
     if (!props || typeof props !== 'object' || Object.keys(props).length === 0) {
-      if (pathLabel === '$' || node.type === 'object') {
+      if ((pathLabel === '$' || node.type === 'object') && !isPassThroughUnion) {
         findings.push({
           rule_id: 'payload/properties',
           file,
           line: 1,
-          message: `object schema at ${pathLabel} must declare at least one named property`,
+          message: `object schema at ${pathLabel} must declare at least one named property or an explicit pass-through union type`,
         });
       }
     } else {
@@ -145,75 +150,66 @@ function objectHasIdentProp(node, name) {
   );
 }
 
-export async function checkPayloadContracts(scanRoot) {
-  const { acorn, walk } = await loadAcorn();
-  const Ajv = require('ajv');
-  const findings = [];
+export function auditPayloadContractsAst(ctx) {
+  const { parsed, rel, walk, constMap, findings } = ctx;
 
+  walk.simple(parsed.ast, {
+    CallExpression(node) {
+      if (isRegisterTriggerTypeCall(node) && node.arguments.length < 2) {
+        findings.push({
+          rule_id: 'runtime/register-trigger-type',
+          file: rel,
+          line: node.loc?.start?.line ?? 1,
+          message:
+            'registerTriggerType requires a trigger-type handler with registerTrigger and unregisterTrigger',
+        });
+      }
+      if (!isRegisterFunctionCall(node)) return;
+      const idArg = node.arguments[0];
+      const resolved = resolveStringExpr(idArg, constMap);
+      if (resolved == null) {
+        findings.push({
+          rule_id: 'payload/register-id',
+          file: rel,
+          line: node.loc?.start?.line ?? 1,
+          message:
+            'registerFunction id must be a string literal or module-scope const string (imported bindings fail)',
+        });
+        return;
+      }
+      const opts = node.arguments[2];
+      if (
+        !objectHasIdentProp(opts, 'request_format') ||
+        !objectHasIdentProp(opts, 'response_format')
+      ) {
+        findings.push({
+          rule_id: 'payload/request-response-format',
+          file: rel,
+          line: node.loc?.start?.line ?? 1,
+          message: `registerFunction ${resolved} must pass request_format and response_format`,
+        });
+      }
+    },
+  });
+}
+
+export function checkPayloadSchemaFiles(scanRoot, findings) {
+  const Ajv = require('ajv');
   for (const workerDir of listWorkerRoots(scanRoot)) {
     const schemasDir = path.join(workerDir, 'schemas');
-    if (fs.existsSync(schemasDir)) {
-      for (const file of walkFiles(schemasDir)) {
-        if (path.extname(file) !== '.json') continue;
-        validateSchemaFile(Ajv, file, path.relative(scanRoot, file), findings);
-      }
-    }
-    for (const file of walkFiles(workerDir, { skipTests: true })) {
-      if (!PARSE_EXTS.has(path.extname(file))) continue;
-      let parsed;
-      try {
-        parsed = parseFile(acorn, file);
-      } catch (e) {
-        findings.push({
-          rule_id: 'payload/parse',
-          file: path.relative(scanRoot, file),
-          line: 1,
-          message: `parse error: ${e.message}`,
-        });
-        continue;
-      }
-      const constMap = moduleStringConsts(parsed.ast);
-      const rel = path.relative(scanRoot, file);
-
-      walk.simple(parsed.ast, {
-        CallExpression(node) {
-          if (isRegisterTriggerTypeCall(node) && node.arguments.length < 2) {
-            findings.push({
-              rule_id: 'runtime/register-trigger-type',
-              file: rel,
-              line: node.loc?.start?.line ?? 1,
-              message:
-                'registerTriggerType requires a trigger-type handler with registerTrigger and unregisterTrigger',
-            });
-          }
-          if (!isRegisterFunctionCall(node)) return;
-          const idArg = node.arguments[0];
-          const resolved = resolveStringExpr(idArg, constMap);
-          if (resolved == null) {
-            findings.push({
-              rule_id: 'payload/register-id',
-              file: rel,
-              line: node.loc?.start?.line ?? 1,
-              message:
-                'registerFunction id must be a string literal or module-scope const string (imported bindings fail)',
-            });
-            return;
-          }
-          const opts = node.arguments[2];
-          if (
-            !objectHasIdentProp(opts, 'request_format') ||
-            !objectHasIdentProp(opts, 'response_format')
-          ) {
-            findings.push({
-              rule_id: 'payload/request-response-format',
-              file: rel,
-              line: node.loc?.start?.line ?? 1,
-              message: `registerFunction ${resolved} must pass request_format and response_format`,
-            });
-          }
-        },
-      });
+    if (!fs.existsSync(schemasDir)) continue;
+    for (const file of walkFiles(schemasDir)) {
+      if (path.extname(file) !== '.json') continue;
+      validateSchemaFile(Ajv, file, path.relative(scanRoot, file), findings);
     }
   }
-  return findings;
+}
+
+/** @deprecated use runPracticesScan */
+export async function checkPayloadContracts(scanRoot) {
+  const { runPracticesScan } = await import('./scan.mjs');
+  const { findings } = await runPracticesScan(scanRoot);
+  return findings.filter(
+    (f) => f.rule_id.startsWith('payload/') || f.rule_id.startsWith('runtime/'),
+  );
 }

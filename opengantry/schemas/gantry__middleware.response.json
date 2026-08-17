@@ -1,40 +1,4 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "status": {
-      "type": "string"
-    },
-    "ok": {
-      "type": "boolean"
-    },
-    "function_id": {
-      "type": "string"
-    },
-    "payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "_": {
-          "type": "string"
-        }
-      }
-    },
-    "findings": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "failed_gate": {
-            "type": "string"
-          },
-          "resolution_hint": {
-            "type": "string"
-          }
-        }
-      }
-    }
-  }
+  "type": ["object", "array", "string", "number", "boolean", "null"]
 }

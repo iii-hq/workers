@@ -1,81 +1,71 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { findOrphanSourceDirs } from './scan-workers.mjs';
-import { checkAsyncBoundaries } from './check-async-boundaries.mjs';
-import { checkPayloadContracts } from './check-payload-contracts.mjs';
-import { checkDurableState } from './check-durable-state.mjs';
-import { checkWorkerIsolation } from './check-worker-isolation.mjs';
+
+import { preflightDeps } from './scan-workers.mjs';
 import { checkWorkerManifest } from './check-manifest.mjs';
+import { checkPayloadSchemaFiles } from './check-payload-contracts.mjs';
+import { findOrphanSourceDirs } from './scan-workers.mjs';
+import { runSourceRules } from './run-source-rules.mjs';
+import { loadHttpConnectorAllowlist } from './allowlist.mjs';
 
-export async function scanWorkersTree(scanRoot, options = {}) {
-  const findings = [];
-  findings.push(...findOrphanSourceDirs(scanRoot));
-  findings.push(...checkWorkerManifest(scanRoot));
-  findings.push(...(await checkAsyncBoundaries(scanRoot, options)));
-  findings.push(...(await checkPayloadContracts(scanRoot)));
-  const durable = await checkDurableState(scanRoot);
-  findings.push(...durable.findings);
-  findings.push(...(await checkWorkerIsolation(scanRoot)));
-  return { findings, logs: durable.logs };
-}
-
-export function localWorkersRoot(repoRoot) {
-  return path.join(repoRoot, 'workers');
-}
-
-/**
- * Scan the adopter's local workers/ tree. Missing workers/ is a no-op (not a fail).
- * Registry-installed workers outside this tree are not scanned.
- */
-export async function scanLocalWorkers(repoRoot, options = {}) {
-  const scanRoot = options.scanRoot ?? localWorkersRoot(repoRoot);
-  if (!fs.existsSync(scanRoot)) {
-    return { findings: [], logs: [] };
-  }
-  try {
-    fs.readdirSync(scanRoot);
-  } catch (e) {
-    return {
-      findings: [
-        {
-          rule_id: 'scan/unreadable',
-          file: 'workers',
-          line: 1,
-          message: `local workers/ exists but is unreadable: ${e.message}`,
-        },
-      ],
-      logs: [],
-    };
-  }
-  try {
-    return await scanWorkersTree(scanRoot, options);
-  } catch (e) {
-    return {
-      findings: [
-        {
-          rule_id: 'scan/unreadable',
-          file: 'workers',
-          line: 1,
-          message: `local workers/ scan aborted: ${e.message}`,
-        },
-      ],
-      logs: [],
-    };
-  }
-}
+const INFRA_RULE_IDS = new Set(['scan/deps-missing', 'scan/deps-unreadable', 'scan/parse']);
 
 export function practicesFailedPayload(findings) {
   return {
     status: 'failed',
-    phase: 'iii-practices',
-    message: 'iii-practices scan failed on local workers/',
-    error_code: 'GXT_GATE_FAILED',
-    exit_code: 1,
     findings: findings.map((f) => ({
-      failed_gate: 'iii-practices',
-      resolution_hint: `[${f.rule_id}] ${f.file}:${f.line} ${f.message}`,
+      failed_gate: INFRA_RULE_IDS.has(f.rule_id) ? 'infra' : 'architecture',
+      resolution_hint: `${f.rule_id}: ${f.message} (${f.file}:${f.line ?? 1})`,
     })),
-    fix_hints: findings.map((f) => `[${f.rule_id}] ${f.file}:${f.line} ${f.message}`),
-    next_actions: ['Fix local workers/ to match iii worker contracts, then re-run gantry::verify'],
   };
 }
+
+/**
+ * Unified practices scan: preflight, AST rules (single pass), manifest, schemas, orphans.
+ * @param {string} scanRoot
+ * @param {{ allowlistRoot?: string, httpAllowlist?: Set<string> }} [options]
+ */
+export async function runPracticesScan(scanRoot, options = {}) {
+  const logs = [];
+  try {
+    preflightDeps();
+  } catch (e) {
+    return {
+      findings: [
+        {
+          rule_id: 'scan/deps-missing',
+          file: '.',
+          line: 1,
+          message: e instanceof Error ? e.message : String(e),
+        },
+      ],
+      logs,
+    };
+  }
+
+  const allowlistRoot = options.allowlistRoot ?? scanRoot;
+  const { workers: httpAllowlist } = loadHttpConnectorAllowlist(allowlistRoot);
+  const mergedAllowlist = options.httpAllowlist ?? httpAllowlist;
+
+  const source = await runSourceRules(scanRoot, { httpAllowlist: mergedAllowlist });
+  logs.push(...(source.logs ?? []));
+  const findings = [...(source.findings ?? [])];
+
+  findings.push(...checkWorkerManifest(scanRoot));
+  checkPayloadSchemaFiles(scanRoot, findings);
+  findings.push(...findOrphanSourceDirs(scanRoot));
+
+  return { findings, logs };
+}
+
+/** @deprecated use runPracticesScan */
+export async function scanLocalWorkers(scanRoot, options = {}) {
+  return runPracticesScan(scanRoot, {
+    allowlistRoot: options.allowlistRoot,
+    httpAllowlist: options.httpAllowlist,
+  });
+}
+
+/** @deprecated alias for self-tests */
+export const scanWorkersTree = scanLocalWorkers;
+
+export { runSourceRules };

@@ -86,7 +86,7 @@ export function walkFiles(root, options = {}) {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       if (ent.name === 'node_modules' || ent.name === '.git' || ent.name === 'dist') continue;
       if (options.skipTests && ent.isDirectory() && ent.name === 'tests') continue;
-      if (ent.name === 'sandbox.mjs') continue;
+      if (options.skipSandbox !== false && ent.name === 'sandbox.mjs') continue;
       const p = path.join(dir, ent.name);
       if (ent.isDirectory()) rec(p);
       else out.push(p);

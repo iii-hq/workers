@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { LeaseStore } from '../src/lib/lease-store.js';
+import { LEASE_STATES, LeaseStore } from '../src/lib/lease-store.js';
 import { defaultLeaseStorePath } from '../src/lib/repo-path.js';
 
 test('lease store rejects path outside .gitagent', () => {
@@ -27,6 +27,60 @@ test('corrupted lease store blocks get', () => {
   const store = new LeaseStore(storePath);
   assert.equal(store.corrupted, true);
   assert.equal(store.get('MSN-0001'), undefined);
+});
+
+test('unknown lease state marks corrupted on load', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-badstate-'));
+  const storePath = defaultLeaseStorePath(repoRoot);
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(
+    storePath,
+    JSON.stringify({
+      leases: [{ msn_id: 'MSN-0001', state: 'not-a-real-state', session_refs: {} }],
+    }),
+  );
+  const store = new LeaseStore(storePath);
+  assert.equal(store.corrupted, true);
+});
+
+test('get returns clone — caller mutation does not affect store', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-clone-'));
+  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  store.upsert({
+    msn_id: 'MSN-0001',
+    state: LEASE_STATES.active,
+    session_refs: Object.create(null),
+  });
+  const lease = store.get('MSN-0001');
+  lease.state = LEASE_STATES.tombstoned;
+  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.active);
+});
+
+test('transition rejects stale from-state', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-cas-'));
+  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  store.upsert({
+    msn_id: 'MSN-0001',
+    state: LEASE_STATES.active,
+    session_refs: Object.create(null),
+  });
+  assert.equal(store.transition('MSN-0001', LEASE_STATES.promoting, LEASE_STATES.active), false);
+  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.active);
+});
+
+test('tombstone survives late promoting→active transition', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-tomb-'));
+  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  store.upsert({
+    msn_id: 'MSN-0001',
+    state: LEASE_STATES.promoting,
+    session_refs: Object.create(null),
+  });
+  store.acquireSession('MSN-0001', 'holder-a');
+  store.releaseSession('MSN-0001', 'holder-a');
+  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.tombstoned);
+  assert.equal(store.transition('MSN-0001', LEASE_STATES.promoting, LEASE_STATES.active), false);
+  assert.equal(store.get('MSN-0001')?.state, LEASE_STATES.tombstoned);
 });
 
 test('constructor holderId does not break session counting', () => {
@@ -56,4 +110,26 @@ test('atomic persist survives reload', () => {
   });
   const reloaded = new LeaseStore(storePath);
   assert.equal(reloaded.get('MSN-0002')?.msn_id, 'MSN-0002');
+});
+
+test('verdict_expected stripped from persisted lease rows', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-ve-'));
+  const storePath = defaultLeaseStorePath(repoRoot);
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(
+    storePath,
+    JSON.stringify({
+      leases: [
+        {
+          msn_id: 'MSN-0003',
+          state: 'active',
+          session_refs: {},
+          verdict_expected: { msn_id: 'MSN-0003' },
+        },
+      ],
+    }),
+  );
+  const store = new LeaseStore(storePath);
+  const lease = store.get('MSN-0003');
+  assert.equal(lease.verdict_expected, undefined);
 });

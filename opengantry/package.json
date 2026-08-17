@@ -9,25 +9,22 @@
     "node": ">=22.13.0"
   },
   "packageManager": "pnpm@10.18.2",
-  "iii_architecture": {
-    "exempt": [
-      "durable-state/module-bags"
-    ]
-  },
   "scripts": {
     "start": "node ./index.mjs",
-    "test": "node --test tests/middleware.test.mjs tests/lease-store.test.mjs && node tests/iii-practices.self-test.mjs",
+    "test": "node --test tests/middleware.test.mjs tests/lease-store.test.mjs tests/verify-promote.e2e.test.mjs && node tests/iii-practices.self-test.mjs",
     "build:bundle": "node scripts/build-bundle.mjs",
+    "verify:sandbox": "node scripts/verify-sandbox-boot.mjs",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },
   "dependencies": {
-    "@jeger-ai/opengantry": "^3.2.4",
+    "@jeger-ai/opengantry": "^3.2.5",
     "acorn": "8.14.1",
     "acorn-walk": "8.3.4",
     "ajv": "8.20.0",
     "iii-sdk": "^0.22.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",

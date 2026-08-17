@@ -1,27 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import YAML from 'yaml';
+
 import { listWorkerRoots, walkFiles } from './scan-workers.mjs';
 
 const DEPLOY_MODES = new Set(['binary', 'image', 'bundle']);
 
-function yamlScalar(text, key) {
-  const m = text.match(new RegExp(`^${key}:\\s*(\\S+)`, 'm'));
-  return m ? m[1].replace(/^["']|["']$/g, '') : null;
+function lineAt(doc, node) {
+  if (node?.range?.[0] != null && doc.lineCounter) {
+    return doc.lineCounter.linePos(node.range[0]).line;
+  }
+  return 1;
 }
 
-function hasTags(text) {
-  if (/^tags:\s*\[\s*\]/m.test(text)) return false;
-  if (/^tags:\s*\n\s+-\s*\S/m.test(text)) return true;
-  if (/^tags:\s*\[\s*['"]?\S/m.test(text)) return true;
-  if (/^tags:\s*$/m.test(text)) return false;
+function scalar(doc, key) {
+  const node = doc.get(key, true);
+  if (!node || node.value == null) return null;
+  return String(node.value);
+}
+
+function hasNonEmptyTags(doc) {
+  const tags = doc.get('tags');
+  if (!tags) return false;
+  if (YAML.isSeq(tags)) return tags.items.length > 0;
+  if (YAML.isScalar(tags) && Array.isArray(tags.value)) return tags.value.length > 0;
   return false;
 }
 
-function hasScriptsStart(text) {
-  return (
-    /(?:^|\n)scripts:\s*\n(?:.*\n)*?\s+start:\s*\S/m.test(text) ||
-    /(?:^|\n)scripts:\s*\n\s+start:\s*\S/m.test(text)
-  );
+function hasScriptsStart(doc) {
+  const scripts = doc.get('scripts');
+  if (!scripts || !YAML.isMap(scripts)) return false;
+  const start = scripts.get('start', true);
+  return Boolean(start?.value);
 }
 
 export function checkWorkerManifest(scanRoot) {
@@ -40,79 +50,109 @@ export function checkWorkerManifest(scanRoot) {
       continue;
     }
     const text = fs.readFileSync(yamlPath, 'utf8');
-    const name = yamlScalar(text, 'name');
+    const doc = YAML.parseDocument(text);
+    if (doc.errors?.length) {
+      findings.push({
+        rule_id: 'manifest/parse',
+        file: relYaml,
+        line: 1,
+        message: `invalid iii.worker.yaml: ${doc.errors[0].message}`,
+      });
+      continue;
+    }
+
+    const nameNode = doc.get('name', true);
+    const name = nameNode?.value != null ? String(nameNode.value) : null;
     if (!name) {
       findings.push({
         rule_id: 'manifest/name',
         file: relYaml,
-        line: 1,
+        line: lineAt(doc, nameNode),
         message: 'iii.worker.yaml must set name',
       });
     } else if (name !== folder) {
       findings.push({
         rule_id: 'manifest/name',
         file: relYaml,
-        line: 1,
+        line: lineAt(doc, nameNode),
         message: `name ${name} must equal folder ${folder}`,
       });
     }
-    if (!yamlScalar(text, 'language')) {
+
+    const langNode = doc.get('language', true);
+    if (!langNode?.value) {
       findings.push({
         rule_id: 'manifest/language',
         file: relYaml,
-        line: 1,
+        line: lineAt(doc, langNode),
         message: 'iii.worker.yaml must set language',
       });
     }
-    const deploy = yamlScalar(text, 'deploy');
+
+    const deployNode = doc.get('deploy', true);
+    const deploy = deployNode?.value != null ? String(deployNode.value) : null;
     if (!DEPLOY_MODES.has(deploy)) {
       findings.push({
         rule_id: 'manifest/deploy',
         file: relYaml,
-        line: 1,
+        line: lineAt(doc, deployNode),
         message: 'deploy must be binary, image, or bundle',
       });
     }
-    if (!hasTags(text)) {
+
+    if (!hasNonEmptyTags(doc)) {
+      const tagsNode = doc.get('tags', true);
       findings.push({
         rule_id: 'manifest/tags',
         file: relYaml,
-        line: 1,
+        line: lineAt(doc, tagsNode),
         message: 'iii.worker.yaml must set a non-empty tags list',
       });
     }
-    if (!hasScriptsStart(text)) {
+
+    if (!hasScriptsStart(doc)) {
+      const scriptsNode = doc.get('scripts', true);
       findings.push({
         rule_id: 'manifest/scripts-start',
         file: relYaml,
-        line: 1,
+        line: lineAt(doc, scriptsNode),
         message: 'iii.worker.yaml must set scripts.start',
       });
     }
+
     if (deploy === 'bundle') {
-      if (/^\s+setup:/m.test(text)) {
-        findings.push({
-          rule_id: 'manifest/bundle-setup',
-          file: relYaml,
-          line: 1,
-          message: 'bundle workers must not set scripts.setup',
-        });
+      const scripts = doc.get('scripts');
+      if (scripts && YAML.isMap(scripts)) {
+        const setupNode = scripts.get('setup', true);
+        if (setupNode) {
+          findings.push({
+            rule_id: 'manifest/bundle-setup',
+            file: relYaml,
+            line: lineAt(doc, setupNode),
+            message: 'bundle workers must not set scripts.setup',
+          });
+        }
+        const installNode = scripts.get('install', true);
+        if (installNode) {
+          findings.push({
+            rule_id: 'manifest/bundle-install',
+            file: relYaml,
+            line: lineAt(doc, installNode),
+            message: 'bundle workers must not set scripts.install',
+          });
+        }
       }
-      if (/^\s+install:/m.test(text)) {
-        findings.push({
-          rule_id: 'manifest/bundle-install',
-          file: relYaml,
-          line: 1,
-          message: 'bundle workers must not set scripts.install',
-        });
-      }
-      if (/base_image:/.test(text)) {
-        findings.push({
-          rule_id: 'manifest/bundle-base-image',
-          file: relYaml,
-          line: 1,
-          message: 'bundle workers must not set runtime.base_image',
-        });
+      const runtime = doc.get('runtime');
+      if (runtime && YAML.isMap(runtime)) {
+        const baseImageNode = runtime.get('base_image', true);
+        if (baseImageNode) {
+          findings.push({
+            rule_id: 'manifest/bundle-base-image',
+            file: relYaml,
+            line: lineAt(doc, baseImageNode),
+            message: 'bundle workers must not set runtime.base_image',
+          });
+        }
       }
     }
 

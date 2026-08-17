@@ -205,6 +205,17 @@ scripts:
   }
 
   {
+    const fx = materializeFixture('const-bag');
+    fx.write('w/package.json', JSON.stringify({ name: 'w', private: true, type: 'module' }));
+    fx.write('w/src/index.js', 'const state = { cache: new Map() };\nexport const ok = state;\n');
+    const { findings } = await scanWorkersTree(fx.workers, opts);
+    cases.push({
+      name: 'const-module-bag',
+      ok: findings.some((f) => f.rule_id === 'durable-state/module-bags'),
+    });
+  }
+
+  {
     const fx = materializeFixture('global');
     fx.write('w/package.json', JSON.stringify({ name: 'w', private: true, type: 'module' }));
     fx.write('w/src/index.js', 'global.orchestrationState = {};\n');
@@ -237,9 +248,7 @@ scripts:
       'good/schemas/good__ping.json',
       JSON.stringify({
         $schema: 'http://json-schema.org/draft-07/schema#',
-        type: 'object',
-        additionalProperties: false,
-        properties: { _: { type: 'string' } },
+        type: ['object', 'string', 'number', 'boolean', 'null'],
       }),
     );
     fx.write(

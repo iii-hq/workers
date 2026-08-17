@@ -1,5 +1,6 @@
 /** Operator-opt-in governance bypass (unsafe for production). */
+import { envFlag } from './env-flag.js';
+
 export function isBypassMode() {
-  const value = process.env.GANTRY_BYPASS_MODE?.trim().toLowerCase();
-  return value === 'true' || value === '1' || value === 'yes' || value === 'on';
+  return envFlag('GANTRY_BYPASS_MODE');
 }

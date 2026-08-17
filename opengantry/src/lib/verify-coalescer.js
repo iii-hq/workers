@@ -1,8 +1,7 @@
-/** Single-flight verify coalescing keyed by repo root. */
+/** Single-flight verify coalescing keyed by caller-supplied cache key. */
 export class VerifyCoalescer {
   constructor() {
     this.inFlight = new Map();
-    this.queueDepth = 0;
     this.maxQueue = 32;
   }
 
@@ -10,22 +9,14 @@ export class VerifyCoalescer {
     if (this.inFlight.has(key)) {
       return this.inFlight.get(key);
     }
-    if (this.queueDepth >= this.maxQueue) {
+    if (this.inFlight.size >= this.maxQueue) {
       return {
         status: 'failed',
         error_code: 'GXT_VERIFY_SATURATED',
-        findings: [
-          {
-            failed_gate: 'gate',
-            resolution_hint: 'verify queue saturated; retry later',
-          },
-        ],
       };
     }
-    this.queueDepth += 1;
     const promise = fn().finally(() => {
       this.inFlight.delete(key);
-      this.queueDepth -= 1;
     });
     this.inFlight.set(key, promise);
     return promise;

@@ -57,97 +57,86 @@ function pathLooksAllowed(str, _workerDir) {
   return false;
 }
 
-export async function checkDurableState(scanRoot) {
-  const { acorn, walk } = await loadAcorn();
-  const findings = [];
-  const logs = [];
+function isMutableContainerInit(init) {
+  if (!init) return false;
+  if (init.type === 'ObjectExpression' || init.type === 'ArrayExpression') return true;
+  if (init.type === 'NewExpression' && init.callee?.type === 'Identifier') {
+    return ['Map', 'Set', 'WeakMap', 'WeakSet'].includes(init.callee.name);
+  }
+  return false;
+}
 
-  for (const workerDir of listWorkerRoots(scanRoot)) {
-    const exemptResult = readWorkerExempt(workerDir);
-    if (!exemptResult.ok) {
-      findings.push(...exemptResult.findings);
-      continue;
-    }
-    logs.push(...exemptResult.logs);
-    const exempt = exemptResult.exempt;
-    const skipBags = exempt.has('durable-state/module-bags');
+/** @param {import('./run-source-rules.mjs').AuditCtx} ctx */
+export function auditDurableState(ctx) {
+  const { parsed, rel, walk, findings, workerDir, options } = ctx;
+  const skipBags = options.durableExempt?.has('durable-state/module-bags') ?? false;
 
-    for (const file of walkFiles(workerDir, { skipTests: true })) {
-      if (!PARSE_EXTS.has(path.extname(file))) continue;
-      let parsed;
-      try {
-        parsed = parseFile(acorn, file);
-      } catch (e) {
-        findings.push({
-          rule_id: 'durable-state/parse',
-          file: path.relative(scanRoot, file),
-          line: 1,
-          message: `parse error: ${e.message}`,
-        });
-        continue;
-      }
-      const rel = path.relative(scanRoot, file);
-      const _constMap = moduleStringConsts(parsed.ast);
-
-      // module-scope mutable bags
-      if (!skipBags) {
-        for (const stmt of parsed.ast.body) {
-          if (stmt.type !== 'VariableDeclaration') continue;
-          if (stmt.kind === 'const') continue;
-          for (const d of stmt.declarations) {
-            if (d.id?.type === 'Identifier') {
-              findings.push({
-                rule_id: 'durable-state/module-bags',
-                file: rel,
-                line: stmt.loc?.start?.line ?? 1,
-                message: `module-scope mutable binding banned: ${stmt.kind} ${d.id.name}`,
-              });
-            }
-          }
+  if (!skipBags) {
+    for (const stmt of parsed.ast.body) {
+      if (stmt.type !== 'VariableDeclaration') continue;
+      for (const d of stmt.declarations) {
+        if (d.id?.type !== 'Identifier') continue;
+        const isLetVar = stmt.kind === 'let' || stmt.kind === 'var';
+        const isConstBag = stmt.kind === 'const' && isMutableContainerInit(d.init);
+        if (isLetVar || isConstBag) {
+          findings.push({
+            rule_id: 'durable-state/module-bags',
+            file: rel,
+            line: stmt.loc?.start?.line ?? 1,
+            message: `module-scope mutable container banned: ${stmt.kind} ${d.id.name}`,
+          });
         }
       }
-
-      walk.simple(parsed.ast, {
-        AssignmentExpression(node) {
-          if (lhsIsGlobalOrProcess(node.left)) {
-            findings.push({
-              rule_id: 'durable-state/global-process',
-              file: rel,
-              line: node.loc?.start?.line ?? 1,
-              message: 'assignment to global/globalThis/process is banned (un-exemptible)',
-            });
-          }
-        },
-        UpdateExpression(node) {
-          if (lhsIsGlobalOrProcess(node.argument)) {
-            findings.push({
-              rule_id: 'durable-state/global-process',
-              file: rel,
-              line: node.loc?.start?.line ?? 1,
-              message: 'update of global/globalThis/process is banned (un-exemptible)',
-            });
-          }
-        },
-        CallExpression(node) {
-          if (!isFsWriteCallee(node.callee)) return;
-          const arg0 = node.arguments[0];
-          const allowed =
-            arg0?.type === 'Literal' &&
-            typeof arg0.value === 'string' &&
-            pathLooksAllowed(arg0.value, workerDir);
-          if (!allowed) {
-            findings.push({
-              rule_id: 'durable-state/fs-writes',
-              file: rel,
-              line: node.loc?.start?.line ?? 1,
-              message:
-                'filesystem write outside allowlisted roots (.gitagent/, worker .runtime/) — un-exemptible',
-            });
-          }
-        },
-      });
     }
   }
 
-  return { findings, logs };
+  walk.simple(parsed.ast, {
+    AssignmentExpression(node) {
+      if (lhsIsGlobalOrProcess(node.left)) {
+        findings.push({
+          rule_id: 'durable-state/global-process',
+          file: rel,
+          line: node.loc?.start?.line ?? 1,
+          message: 'assignment to global/globalThis/process is banned (un-exemptible)',
+        });
+      }
+    },
+    UpdateExpression(node) {
+      if (lhsIsGlobalOrProcess(node.argument)) {
+        findings.push({
+          rule_id: 'durable-state/global-process',
+          file: rel,
+          line: node.loc?.start?.line ?? 1,
+          message: 'update of global/globalThis/process is banned (un-exemptible)',
+        });
+      }
+    },
+    CallExpression(node) {
+      if (!isFsWriteCallee(node.callee)) return;
+      const arg0 = node.arguments[0];
+      const allowed =
+        arg0?.type === 'Literal' &&
+        typeof arg0.value === 'string' &&
+        pathLooksAllowed(arg0.value, workerDir);
+      if (!allowed) {
+        findings.push({
+          rule_id: 'durable-state/fs-writes',
+          file: rel,
+          line: node.loc?.start?.line ?? 1,
+          message:
+            'filesystem write outside allowlisted roots (.gitagent/, worker .runtime/) — un-exemptible',
+        });
+      }
+    },
+  });
+}
+
+/** @deprecated use runPracticesScan */
+export async function checkDurableState(scanRoot) {
+  const { runPracticesScan } = await import('./scan.mjs');
+  const { findings, logs } = await runPracticesScan(scanRoot);
+  return {
+    findings: findings.filter((f) => f.rule_id.startsWith('durable-state/')),
+    logs,
+  };
 }
