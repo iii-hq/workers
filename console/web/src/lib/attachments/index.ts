@@ -104,6 +104,17 @@ function isMarkupAttachment(attachment: Attachment): boolean {
   )
 }
 
+export interface ExpandOptions {
+  /**
+   * What the model on the other end can do with a picture. `false` refuses
+   * images with an explanation instead of sending pixels nothing will look at;
+   * `undefined` means the catalog did not say, and the image goes as before.
+   */
+  vision?: boolean
+  /** Model id, so the refusal names what to switch away from. */
+  model?: string | null
+}
+
 /**
  * Expand every attachment on a message.
  *
@@ -114,6 +125,7 @@ function isMarkupAttachment(attachment: Attachment): boolean {
  */
 export async function expandAttachments(
   attachments: Attachment[],
+  options: ExpandOptions = {},
 ): Promise<ExpandedAttachments> {
   const withBytes = attachments.filter((a) => a.file)
   if (withBytes.length === 0) return EMPTY_EXPANSION
@@ -153,11 +165,23 @@ export async function expandAttachments(
 
   const pictures = of('image')
   if (pictures.length > 0) {
-    const expanded = await expandImageAttachments(pictures)
-    blocks.push(...expanded.blocks)
-    images.push(...expanded.images)
-    read.push(...expanded.read)
-    failures.push(...expanded.failures)
+    // A model with no vision receives an image block and does nothing with it:
+    // the picture is dropped somewhere downstream and the answer arrives as
+    // though nothing was attached — the exact silence this whole path exists
+    // to prevent. Refuse it here, in the message, naming the way out.
+    if (options.vision === false) {
+      for (const picture of pictures) {
+        const reason = `${options.model ?? 'the selected model'} cannot read images, so this one was not sent — switch to a model with vision`
+        blocks.push(failureBlock(picture.name, reason))
+        failures.push({ name: picture.name, reason })
+      }
+    } else {
+      const expanded = await expandImageAttachments(pictures)
+      blocks.push(...expanded.blocks)
+      images.push(...expanded.images)
+      read.push(...expanded.read)
+      failures.push(...expanded.failures)
+    }
   }
 
   const texts = of('text')

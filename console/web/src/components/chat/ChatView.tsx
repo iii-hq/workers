@@ -209,6 +209,15 @@ export function ChatView({
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
 
+  /* What the model on the other end can do with a picture, read at send time
+     rather than closed over: the send and edit-queued callbacks are built
+     before the catalog lookup below, and a model switched between typing and
+     sending has to be the one the guard judges. Filled in further down. */
+  const visionRef = useRef<{ supports?: boolean; model: string | null }>({
+    supports: undefined,
+    model: null,
+  })
+
   // Live view of the transcript for the long-running stream loop: the
   // session-events reconciler (use-conversations) may add/replace rows while
   // a turn is in flight, and dedupe-by-functionTriggerId must see them.
@@ -587,7 +596,10 @@ export function ChatView({
           backend.id === 'real' &&
           hasExpandableAttachments(payload.attachments)
         ) {
-          const expanded = await expandAttachments(payload.attachments)
+          const expanded = await expandAttachments(payload.attachments, {
+            vision: visionRef.current.supports,
+            model: visionRef.current.model,
+          })
           if (expanded.blocks.length > 0) {
             attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
@@ -650,6 +662,16 @@ export function ChatView({
     const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.contextWindow
   }, [modelOptions, effectiveModel])
+
+  /* What the send path may do with an attached picture. `undefined` when the
+     catalog has no row or the router said nothing — the attachment router
+     treats that as "send it", so a missing capability flag never silently
+     eats an image. */
+  const modelVision = useMemo(() => {
+    const match = modelOptions.find((o) => o.id === effectiveModel)
+    return match?.supportsVision
+  }, [modelOptions, effectiveModel])
+  visionRef.current = { supports: modelVision, model: effectiveModel }
 
   /* Injected session chips (the `chat` extension slot), rendered in the
    * header's right cluster where the built-in context meter sits. A chip
@@ -1171,7 +1193,10 @@ export function ChatView({
         backend.id === 'real' &&
         hasExpandableAttachments(payload.attachments)
       ) {
-        const expanded = await expandAttachments(payload.attachments)
+        const expanded = await expandAttachments(payload.attachments, {
+          vision: visionRef.current.supports,
+          model: visionRef.current.model,
+        })
         if (expanded.blocks.length > 0) {
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
         }

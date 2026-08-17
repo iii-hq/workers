@@ -147,6 +147,56 @@ describe('expandAttachments', () => {
     expect(result.failures).toEqual([])
   })
 
+  /* A model with no vision receives an image block and does nothing with it:
+     the picture disappears downstream and the answer arrives as though nothing
+     was attached. DeepSeek V4, the cheap default on the rig, is exactly this
+     case. */
+  it('refuses an image when the model cannot see, naming the way out', async () => {
+    const result = await expandAttachments(
+      [attachment('shot.png', 'image/png')],
+      { vision: false, model: 'deepseek-v4-flash' },
+    )
+
+    expect(result.images).toEqual([])
+    expect(result.blocks).toHaveLength(1)
+    expect(result.blocks[0]).toContain('deepseek-v4-flash')
+    expect(result.blocks[0]).toContain('switch to a model with vision')
+    expect(result.failures).toHaveLength(1)
+  })
+
+  it('sends the image when the model can see', async () => {
+    const result = await expandAttachments(
+      [attachment('shot.png', 'image/png')],
+      { vision: true, model: 'claude-haiku-4-5' },
+    )
+
+    expect(result.images).toHaveLength(1)
+    expect(result.failures).toEqual([])
+  })
+
+  /* "The catalog did not say" is not "no". An older router, or a model with no
+     row, must not start eating pictures. */
+  it('sends the image when the capability is unknown', async () => {
+    const result = await expandAttachments([
+      attachment('shot.png', 'image/png'),
+    ])
+
+    expect(result.images).toHaveLength(1)
+    expect(result.failures).toEqual([])
+  })
+
+  /* The guard is about pixels only — a spreadsheet still converts on a model
+     with no vision, because it travels as text. */
+  it('leaves documents alone on a model with no vision', async () => {
+    const result = await expandAttachments([attachment('quarterly.docx')], {
+      vision: false,
+      model: 'deepseek-v4-flash',
+    })
+
+    expect(result.blocks[0]).toContain('the word text')
+    expect(result.failures).toEqual([])
+  })
+
   /* The whole point of the router: a file it cannot read still reaches the
      model as a block that says so, rather than vanishing. */
   it('names a file no path can read', async () => {
