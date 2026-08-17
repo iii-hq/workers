@@ -22,11 +22,15 @@ pub enum StorageError {
     ObjectNotFound { bucket: String, key: String },
 
     #[serde(rename = "BODY_TOO_LARGE")]
-    #[error("body exceeds 10 MiB cap; use presignUrl for large objects")]
+    #[error(
+        "body exceeds 10 MiB cap; use presignPost or a presignUrl PUT endpoint for file uploads"
+    )]
     BodyTooLarge { size: u64, cap: u64 },
 
     #[serde(rename = "OBJECT_TOO_LARGE")]
-    #[error("object exceeds 10 MiB cap; use presignUrl for large objects")]
+    #[error(
+        "object exceeds 10 MiB cap; use a signed GET endpoint from presignUrl for file downloads"
+    )]
     ObjectTooLarge { size: u64, cap: u64 },
 
     #[serde(rename = "INVALID_BASE64")]
@@ -40,18 +44,6 @@ pub enum StorageError {
     #[serde(rename = "PRESIGN_UNSUPPORTED")]
     #[error("presign unsupported on this backend: {reason}")]
     PresignUnsupported { reason: String },
-
-    #[serde(rename = "LOCAL_BACKEND_DOWN")]
-    #[error("local rustfs backend is down: {reason}")]
-    LocalBackendDown { reason: String },
-
-    #[serde(rename = "LOCAL_BACKEND_BIN_NOT_FOUND")]
-    #[error("rustfs binary not found: {reason}")]
-    LocalBackendBinNotFound { reason: String },
-
-    #[serde(rename = "LOCAL_BACKEND_BOOT_FAILED")]
-    #[error("rustfs boot failed: {reason}")]
-    LocalBackendBootFailed { reason: String },
 
     #[serde(rename = "PROVIDER_ERROR")]
     #[error("provider {provider} error: {message}")]
@@ -113,7 +105,6 @@ pub fn backend_error_to_storage(
             message,
         },
         BackendError::PresignUnsupported(reason) => StorageError::PresignUnsupported { reason },
-        BackendError::LocalBackendDown(reason) => StorageError::LocalBackendDown { reason },
         BackendError::ObjectTooLarge { actual_size, cap } => StorageError::ObjectTooLarge {
             size: actual_size,
             cap,

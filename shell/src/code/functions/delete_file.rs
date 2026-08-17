@@ -9,6 +9,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::code::change_journal::ChangeJournal;
 use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
 
@@ -51,6 +52,10 @@ pub struct DeleteFileResult {
     pub path: String,
     pub success: bool,
     pub removed: bool,
+    /// Opaque id for the console UI to retrieve the exact before/after diff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub change_id: Option<String>,
     /// Structured error for this entry. `code` is stable for programmatic
     /// branching (e.g. `"C211"` for not-found-or-denied; `"C210"` for
     /// refusing to delete an allowed root). `message` carries the
@@ -59,8 +64,25 @@ pub struct DeleteFileResult {
     pub error: Option<WireError>,
 }
 
+#[allow(dead_code)] // Public compatibility path used by integration callers without UI journaling.
 pub async fn handle(
     resolver: Arc<PathResolver>,
+    req: DeleteFileInput,
+) -> Result<DeleteFileOutput, String> {
+    handle_impl(resolver, None, req).await
+}
+
+pub async fn handle_with_journal(
+    resolver: Arc<PathResolver>,
+    journal: ChangeJournal,
+    req: DeleteFileInput,
+) -> Result<DeleteFileOutput, String> {
+    handle_impl(resolver, Some(&journal), req).await
+}
+
+async fn handle_impl(
+    resolver: Arc<PathResolver>,
+    journal: Option<&ChangeJournal>,
     req: DeleteFileInput,
 ) -> Result<DeleteFileOutput, String> {
     if req.paths.is_empty() {
@@ -80,13 +102,23 @@ pub async fn handle(
     }
     let results = entries
         .into_iter()
-        .map(|(p, resolved)| delete_one(&resolver, scope_anchor, &p, req.recursive, resolved))
+        .map(|(p, resolved)| {
+            delete_one(
+                &resolver,
+                journal,
+                scope_anchor,
+                &p,
+                req.recursive,
+                resolved,
+            )
+        })
         .collect();
     Ok(DeleteFileOutput { results })
 }
 
 fn delete_one(
     resolver: &PathResolver,
+    journal: Option<&ChangeJournal>,
     scope_root: Option<&str>,
     rel: &str,
     recursive: bool,
@@ -103,22 +135,25 @@ fn delete_one(
                 path: rel.to_string(),
                 success: false,
                 removed: false,
+                change_id: None,
                 error: Some((&e).into()),
             }
         }
     };
     let wire_path = abs.display().to_string();
-    match try_delete_one(resolver, scope_root, &abs, recursive) {
-        Ok(removed) => DeleteFileResult {
+    match try_delete_one(resolver, journal, scope_root, &abs, recursive) {
+        Ok((removed, change_id)) => DeleteFileResult {
             path: wire_path,
             success: true,
             removed,
+            change_id,
             error: None,
         },
         Err(e) => DeleteFileResult {
             path: wire_path,
             success: false,
             removed: false,
+            change_id: None,
             error: Some((&e).into()),
         },
     }
@@ -133,10 +168,11 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
 
 fn try_delete_one(
     resolver: &PathResolver,
+    journal: Option<&ChangeJournal>,
     scope_root: Option<&str>,
     abs: &Path,
     recursive: bool,
-) -> Result<bool, CoderError> {
+) -> Result<(bool, Option<String>), CoderError> {
     if resolver.is_root(abs) {
         return Err(CoderError::BadInput(
             "refusing to delete an allowed root itself".into(),
@@ -158,7 +194,7 @@ fn try_delete_one(
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Idempotent: missing target counts as "not removed, no error".
-            return Ok(false);
+            return Ok((false, None));
         }
         Err(e) => return Err(CoderError::from(e)),
     };
@@ -168,10 +204,13 @@ fn try_delete_one(
         } else {
             std::fs::remove_dir(abs).map_err(CoderError::from)?;
         }
-    } else {
-        std::fs::remove_file(abs).map_err(CoderError::from)?;
+        return Ok((true, None));
     }
-    Ok(true)
+    let before = std::fs::read(abs).map_err(CoderError::from)?;
+    std::fs::remove_file(abs).map_err(CoderError::from)?;
+    let change_id =
+        journal.and_then(|journal| journal.record(abs.display().to_string(), before, Vec::new()));
+    Ok((true, change_id))
 }
 
 /// `std::fs::remove_dir_all` plus a guard rail: refuse to descend through

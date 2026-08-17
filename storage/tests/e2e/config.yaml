@@ -29,8 +29,10 @@ workers:
       providers:
         local:
           # Path is relative to the engine's CWD. run-tests.sh uses an isolated
-          # temporary project, so every run gets a clean rustfs data tree.
+          # temporary project, so every run gets a clean native-local data tree.
           data_dir: ./data/storage
+          http:
+            bind_address: 127.0.0.1:0
 
       buckets:
         scratch-local:

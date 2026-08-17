@@ -338,6 +338,7 @@ pub fn handle_chunk(
                     .last()
                     .map(|c| c.id.clone())
                     .unwrap_or_default(),
+                arguments_preview: None,
             });
         }
         n if n.contains("completed") => {

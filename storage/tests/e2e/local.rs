@@ -1,94 +1,96 @@
-//! Local rustfs-backed round-trip. Skips cleanly when no rustfs binary is
-//! discoverable (in which case the test reports "skip" but does not fail).
-//! Otherwise spawns rustfs on a temp data dir, runs put/get/delete.
+//! Native local-backend round-trip with no external process or service.
 
 use std::collections::HashMap;
-use std::time::Duration;
-use storage::backend::factory::{self, LocalBackendCtx};
-use storage::backend::{GetReq, PutReq};
-use storage::config::{BucketConfig, LocalBucketConfig, LocalProviderConfig, ProvidersConfig};
-use storage::rustfs::{health, spawn};
+use std::sync::Arc;
+use storage::backend::{GetReq, ListReq, PresignMethod, PresignReq, PutReq};
+use storage::config::{LocalHttpConfig, LocalProviderConfig};
+use storage::triggers::dispatcher::EventDispatcher;
+use storage::triggers::normalize::ObjectEventNormalized;
+
+struct Ack;
+
+#[async_trait::async_trait]
+impl EventDispatcher for Ack {
+    async fn dispatch(&self, _: ObjectEventNormalized) -> bool {
+        true
+    }
+}
 
 #[tokio::test]
-async fn local_round_trip_when_rustfs_available() {
-    if spawn::discover_binary().is_err() {
-        eprintln!("e2e:local — skip: no rustfs binary on PATH (set RUSTFS_BIN to enable)");
-        return;
-    }
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let data_dir = tmp.path().to_string_lossy().to_string();
-    let port = spawn::allocate_port().expect("port");
-    let (access_key, secret_key) = spawn::ephemeral_credentials();
-    let handle = spawn::spawn(spawn::RustfsSpawnOpts {
-        data_dir: data_dir.clone(),
-        access_key: access_key.clone(),
-        secret_key: secret_key.clone(),
-        port,
-        notify_webhook_url: None,
-    })
-    .await
-    .expect("rustfs spawn");
+async fn native_local_round_trip_and_signed_download() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = LocalProviderConfig {
+        data_dir: temp.path().to_string_lossy().to_string(),
+        http: Some(LocalHttpConfig {
+            bind_address: "127.0.0.1:0".into(),
+            public_url: None,
+        }),
+    };
+    let mut prepared = storage::backend::local::prepare(Some(&config), Arc::new(Ack))
+        .await
+        .expect("prepare native local store");
+    let backend =
+        storage::backend::local::build(&prepared.context, "scratch".into(), "scratch".into())
+            .expect("build local bucket");
+    let http = storage::backend::local::start_http(&mut prepared).expect("HTTP enabled");
 
-    // Wrap the test body so we can guarantee `spawn::shutdown(handle)` runs
-    // even when an inner step fails. Without this, a panic in
-    // `wait_for_healthy` or any `.expect(...)` below would skip the shutdown
-    // and leave a stray rustfs process bound to `port`.
-    let body_result: Result<(), String> = async {
-        health::wait_for_healthy(port, Duration::from_secs(30))
-            .await
-            .map_err(|e| format!("rustfs healthy: {e}"))?;
-        storage::backend::local::ensure_bucket(port, &access_key, &secret_key, "scratch")
-            .await
-            .map_err(|e| format!("bucket bootstrap: {e}"))?;
+    let key = "e2e/local/test.bin";
+    let body = b"hello-local".to_vec();
+    backend
+        .put(PutReq {
+            key: key.into(),
+            body: body.clone(),
+            content_type: "application/octet-stream".into(),
+            cache_control: None,
+            metadata: HashMap::new(),
+        })
+        .await
+        .expect("put");
+    let got = backend
+        .get(GetReq {
+            key: key.into(),
+            ..Default::default()
+        })
+        .await
+        .expect("get");
+    assert_eq!(got.body, body);
 
-        let local_ctx = LocalBackendCtx {
-            port,
-            access_key_id: access_key.clone(),
-            secret_access_key: secret_key.clone(),
-        };
-        let providers = ProvidersConfig {
-            local: Some(LocalProviderConfig { data_dir }),
-        };
-        let cfg = BucketConfig::Local(LocalBucketConfig {
-            bucket: Some("scratch".into()),
-        });
-        let backend = factory::build("scratch", &cfg, &providers, Some(&local_ctx))
-            .await
-            .map_err(|e| format!("backend build: {e}"))?;
+    let listing = backend
+        .list(ListReq {
+            prefix: "e2e/".into(),
+            delimiter: Some("/".into()),
+            cursor: None,
+            limit: 100,
+        })
+        .await
+        .expect("list");
+    assert_eq!(listing.common_prefixes, vec!["e2e/local/"]);
 
-        let key = "e2e/local/test.bin";
-        let body = b"hello-local".to_vec();
-        backend
-            .put(PutReq {
-                key: key.into(),
-                body: body.clone(),
-                content_type: "application/octet-stream".into(),
-                cache_control: None,
-                metadata: HashMap::new(),
-            })
-            .await
-            .map_err(|e| format!("put: {e}"))?;
-        let got = backend
-            .get(GetReq {
-                key: key.into(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| format!("get: {e}"))?;
-        if got.body != body {
-            return Err(format!("body mismatch: got {} bytes", got.body.len()));
-        }
-        backend
-            .delete(storage::backend::DeleteReq {
-                key: key.into(),
-                version_id: None,
-            })
-            .await
-            .map_err(|e| format!("delete: {e}"))?;
-        Ok(())
-    }
-    .await;
+    let signed = backend
+        .presign(PresignReq {
+            key: key.into(),
+            method: PresignMethod::Get,
+            content_type: None,
+            expires_in_seconds: 60,
+            response_content_disposition: None,
+            response_content_type: None,
+        })
+        .await
+        .expect("presign GET");
+    let downloaded = reqwest::get(signed.url)
+        .await
+        .expect("download request")
+        .bytes()
+        .await
+        .expect("download body");
+    assert_eq!(&downloaded[..], &body);
 
-    spawn::shutdown(handle).await;
-    body_result.expect("e2e local round-trip");
+    backend
+        .delete(storage::backend::DeleteReq {
+            key: key.into(),
+            version_id: None,
+        })
+        .await
+        .expect("delete");
+    http.shutdown();
 }

@@ -47,6 +47,7 @@ pub fn register(iii: &Arc<IIIClient>, shared: &SharedConfig) {
             }
         })
         .description(TOOL_DESCRIPTION)
+        .metadata(json!({ "display": true }))
         .request_format(request_schema())
         .response_format(response_schema()),
     );

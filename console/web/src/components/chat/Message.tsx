@@ -699,7 +699,9 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
         <Prompt symbol="⚡">trigger · reaction task</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
         {event ? (
           <details className="mt-2 group">
             <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
@@ -734,7 +736,9 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
         <Prompt symbol="⟳">validator · corrective prompt</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
       </div>
     </article>
   )
@@ -764,25 +768,27 @@ function UserMessage({ message }: { message: UserMessageType }) {
       className="group flex flex-col items-end gap-2"
       data-message-role="user"
     >
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
+      <header className="flex items-center gap-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
         {message.content ? (
           <CopyMessageButton
             text={message.content}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
+            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           />
         ) : null}
-        <Prompt symbol="$">you</Prompt>
+        <span>You</span>
       </header>
       <div
         className={cn(
-          'max-w-[80%] rounded-sm bg-surface px-3.5 py-2.5',
+          'max-w-[92%] rounded-sm bg-surface px-3.5 py-2.5 sm:max-w-[80%]',
           'break-words',
         )}
       >
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
       </div>
       {message.attachments && message.attachments.length > 0 ? (
-        <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
+        <div className="flex max-w-[92%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
           {message.attachments.map((a) => (
             <AttachmentChip key={a.id} attachment={a} />
           ))}
@@ -809,8 +815,14 @@ function AssistantMessage({
       className="group flex flex-col gap-2"
       data-message-role="assistant"
     >
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
-        <Prompt symbol=">">agent</Prompt>
+      <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
+        <span className="font-medium text-ink-faint">Agent</span>
+        {copySource !== undefined && !message.streaming ? (
+          <CopyMessageButton
+            text={copySource}
+            className="opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+          />
+        ) : null}
         {message.model ? (
           <span className="text-ink-ghost">· {message.model}</span>
         ) : null}
@@ -818,16 +830,12 @@ function AssistantMessage({
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
-        {copySource !== undefined && !message.streaming ? (
-          <CopyMessageButton
-            text={copySource}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
-          />
-        ) : null}
       </header>
       <div className="pr-1">
         {message.content ? (
-          <Markdown>{message.content}</Markdown>
+          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+            {message.content}
+          </Markdown>
         ) : (
           <div className="font-mono text-[13px] italic thinking-shimmer">
             thinking…

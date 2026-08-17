@@ -3,8 +3,8 @@
 //! `iii-sdk` as a client, then tear both down. **Self-skips** when `iii` is
 //! not on `PATH` so CI hosts without the engine still pass.
 //!
-//! What we exercise: a `storage::putObject` round-trip against the bundled
-//! rustfs `local` backend (no cloud credentials needed), then a `getObject`
+//! What we exercise: a `storage::putObject` round-trip against the native
+//! local backend (no cloud credentials or sidecar needed), then a `getObject`
 //! to confirm the bytes round-trip.
 
 use std::process::{Child, Command, Stdio};
@@ -34,14 +34,6 @@ impl Drop for Harness {
 
 async fn boot() -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
-
-    // The default `config.yaml` declares a `local` (rustfs-backed) bucket so
-    // the worker has something useful to serve out of the box. Without a
-    // rustfs binary, the worker errors during startup before registering
-    // functions — self-skip rather than fail.
-    if std::env::var("RUSTFS_BIN").ok().is_none() && which::which("rustfs").is_err() {
-        return None;
-    }
 
     let mut iii = Command::new(&iii_bin)
         .arg("--use-default-config")
@@ -79,8 +71,8 @@ async fn boot() -> Option<Harness> {
 
 /// Poll `storage::putObject` until the worker has registered, or give up.
 /// Returns the last response value (or panics with the last error). The worker
-/// spawns rustfs and waits for the sidecar to become healthy before
-/// registering functions, so there's a non-trivial readiness window.
+/// initializes its local data directory before registering functions, so
+/// there can still be a short readiness window.
 async fn put_when_ready(
     client: &iii_sdk::IIIClient,
     payload: serde_json::Value,
@@ -118,9 +110,9 @@ async fn put_when_ready(
 }
 
 #[tokio::test]
-async fn put_then_get_round_trips_via_rustfs() {
+async fn put_then_get_round_trips_via_native_local_storage() {
     let Some(_h) = boot().await else {
-        eprintln!("skipping: `iii` and/or `rustfs` (or $RUSTFS_BIN) not on PATH");
+        eprintln!("skipping: `iii` is not on PATH");
         return;
     };
 
@@ -159,9 +151,9 @@ async fn put_then_get_round_trips_via_rustfs() {
     .expect("getObject timed out")
     .expect("getObject failed");
 
-    let got_b64 = get["body"]
+    let got_b64 = get["body_base64"]
         .as_str()
-        .expect("getObject response should have base64 `body`");
+        .expect("getObject response should have base64 `body_base64`");
     let got = B64.decode(got_b64).expect("response body is valid base64");
     assert_eq!(got, body, "round-tripped body must match");
 

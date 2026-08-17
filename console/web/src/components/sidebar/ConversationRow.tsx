@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, ChevronRight, Zap } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Trash2, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
@@ -7,6 +7,8 @@ import type { Conversation } from '@/types/chat'
 interface ConversationRowProps {
   conversation: Conversation
   active: boolean
+  /** Larger row actions when the sidebar is the whole narrow page. */
+  narrow?: boolean
   onSelect: () => void
   onRename: (title: string) => void
   onRemove: () => void
@@ -34,6 +36,7 @@ function formatRelative(ts: number): string {
 export function ConversationRow({
   conversation,
   active,
+  narrow = false,
   onSelect,
   onRename,
   onRemove,
@@ -76,7 +79,8 @@ export function ConversationRow({
       aria-current={active ? 'page' : undefined}
       aria-label={`open ${conversation.title}`}
       className={cn(
-        'group relative flex items-center gap-2 pl-3 pr-2 py-2 rounded-sm cursor-pointer transition-colors',
+        'group relative flex cursor-pointer items-center gap-2 rounded-sm pr-2 pl-3',
+        narrow ? 'min-h-12 py-1.5' : 'py-2',
         active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
       )}
       onClick={() => !editing && onSelect()}
@@ -111,16 +115,26 @@ export function ConversationRow({
               treeCollapsed ? 'expand sub-agents' : 'collapse sub-agents'
             }
             aria-expanded={!treeCollapsed}
-            className="flex items-center justify-center size-4 shrink-0 text-ink-faint hover:text-ink transition-colors"
+            className={cn(
+              'relative flex shrink-0 items-center justify-center text-ink-faint hover:text-ink',
+              narrow ? 'size-10' : 'size-4',
+            )}
           >
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
+            />
             {treeCollapsed ? (
-              <ChevronRight className="size-3.5" />
+              <ChevronRight className="size-4 shrink-0" aria-hidden />
             ) : (
-              <ChevronDown className="size-3.5" />
+              <ChevronDown className="size-4 shrink-0" aria-hidden />
             )}
           </button>
         ) : (
-          <span aria-hidden className="size-4 shrink-0" />
+          <span
+            aria-hidden
+            className={cn('shrink-0', narrow ? 'size-10' : 'size-4')}
+          />
         )
       ) : null}
       {/* Sub-agent origin: ⚡ a trigger reaction spawned it, 🤖 an agent's
@@ -135,15 +149,20 @@ export function ConversationRow({
           }
         >
           {conversation.spawnedBy === 'trigger' ? (
-            <Zap aria-label="spawned by a trigger" className="size-3" />
+            <Zap
+              aria-label="spawned by a trigger"
+              className="size-4 shrink-0"
+            />
           ) : (
-            <Bot aria-label="spawned by an agent" className="size-3" />
+            <Bot aria-label="spawned by an agent" className="size-4 shrink-0" />
           )}
         </span>
       ) : null}
       <div className="flex-1 min-w-0">
         {editing ? (
           <input
+            name="conversation-title"
+            aria-label="conversation title"
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.currentTarget.value)}
@@ -155,12 +174,12 @@ export function ConversationRow({
                 setDraft(conversation.title)
               }
             }}
-            className="w-full rounded-xs bg-surface px-1 py-0.5 font-mono text-[13px] text-ink outline-none lowercase"
+            className="w-full rounded-xs bg-surface px-1 py-1 font-sans text-base text-ink outline-none sm:text-[13px]"
           />
         ) : (
           <div
             className={cn(
-              'font-mono text-[13px] truncate lowercase',
+              'truncate font-sans text-base sm:text-[13px]',
               active ? 'text-ink' : 'text-ink-faint',
             )}
           >
@@ -177,7 +196,7 @@ export function ConversationRow({
           className="shrink-0"
         />
       ) : null}
-      <span className="font-mono text-[11px] text-ink-ghost tabular-nums shrink-0">
+      <span className="shrink-0 font-sans text-sm text-ink-ghost tabular-nums sm:text-[11px]">
         {formatRelative(conversation.updatedAt)}
       </span>
       <button
@@ -187,9 +206,18 @@ export function ConversationRow({
           onRemove()
         }}
         aria-label={`delete ${conversation.title}`}
-        className="opacity-0 group-hover:opacity-100 text-ink-faint hover:text-alert transition-opacity transition-colors font-mono text-[14px] leading-none px-1"
+        className={cn(
+          'relative flex shrink-0 items-center justify-center text-ink-faint hover:text-alert focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+          narrow
+            ? 'size-10 opacity-100'
+            : 'size-7 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+        )}
       >
-        ×
+        <span
+          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+          aria-hidden="true"
+        />
+        <Trash2 className="size-4 shrink-0" aria-hidden />
       </button>
     </div>
   )

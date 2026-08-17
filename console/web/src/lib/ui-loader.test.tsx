@@ -14,6 +14,7 @@ import {
 } from './ui-loader'
 import {
   getExtConfigForm,
+  getExtProviderConfigForm,
   getUiAssetsStatus,
   setUiAssetsStatus,
 } from './ui-slots'
@@ -34,6 +35,9 @@ function setupForm(label: string): UiModule {
   return {
     default(host) {
       host.configForms.register('llm-router', () => <p>{label}</p>)
+      host.providerConfigForms.register('openai-codex', () => (
+        <p>{label} provider</p>
+      ))
     },
   }
 }
@@ -118,10 +122,12 @@ describe('injectable UI loader readiness', () => {
     await vi.waitFor(() => {
       expect(getUiAssetsStatus()).toBe('ready')
       expect(renderCurrentForm()).toContain('custom form')
+      expect(getExtProviderConfigForm('openai-codex')).toBeDefined()
     })
 
     harness.stop()
     expect(renderCurrentForm()).toBe('')
+    expect(getExtProviderConfigForm('openai-codex')).toBeUndefined()
   })
 
   it('falls back when injectable UI is disabled', async () => {

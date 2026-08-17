@@ -660,7 +660,8 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 })
             }
         })
-        .description(SCREENSHOT_DESC),
+        .description(SCREENSHOT_DESC)
+        .metadata(json!({ "display": true })),
     );
 }
 

@@ -317,6 +317,7 @@ pub fn handle_chunk(
                             partial: None,
                             delta: args.to_string(),
                             id: state.function_calls[index].id.clone(),
+                            arguments_preview: None,
                         });
                     }
                 }

@@ -358,6 +358,7 @@ pub fn handle_sse_event(
                         partial: None,
                         delta: json.to_string(),
                         id: state.function_calls[idx].id.clone(),
+                        arguments_preview: None,
                     });
                 }
                 Some(BlockSlot::Thinking(idx)) if delta_type == "thinking_delta" => {

@@ -16,6 +16,8 @@ export const BROWSER_SESSIONS_START_FUNCTION_ID = 'browser::sessions::start'
 export const BROWSER_SESSIONS_LIST_FUNCTION_ID = 'browser::sessions::list'
 export const BROWSER_SESSIONS_STOP_FUNCTION_ID = 'browser::sessions::stop'
 export const BROWSER_NAVIGATE_FUNCTION_ID = 'browser::navigate'
+export const BROWSER_HISTORY_FUNCTION_ID = 'browser::history'
+export const BROWSER_DOCTOR_FUNCTION_ID = 'browser::doctor'
 export const BROWSER_SCREENSHOT_FUNCTION_ID = 'browser::screenshot'
 export const BROWSER_ACT_FUNCTION_ID = 'browser::act'
 export const BROWSER_CONSOLE_READ_FUNCTION_ID = 'browser::console::read'
@@ -61,6 +63,18 @@ export const sessionInfoSchema = z.object({
   console_entries: z.number(),
 })
 export type BrowserSessionInfo = z.infer<typeof sessionInfoSchema>
+
+const doctorSchema = z.object({
+  chromium_version: z.string().nullable().optional(),
+})
+export type BrowserDoctorInfo = z.infer<typeof doctorSchema>
+
+const historySchema = z.object({
+  ok: z.boolean(),
+  url: z.string(),
+  moved: z.boolean(),
+})
+export type BrowserHistoryResult = z.infer<typeof historySchema>
 
 const sessionListSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -460,6 +474,27 @@ export async function navigateBrowser(
     session_id: sessionId,
     url,
   })
+}
+
+export async function controlBrowserHistory(
+  iii: ExtensionIii,
+  sessionId: string,
+  action: 'back' | 'forward' | 'reload',
+): Promise<BrowserHistoryResult | null> {
+  const res = await iii.trigger<unknown>(BROWSER_HISTORY_FUNCTION_ID, {
+    session_id: sessionId,
+    action,
+  })
+  const parsed = historySchema.safeParse(res)
+  return parsed.success ? parsed.data : null
+}
+
+export async function readBrowserDoctor(
+  iii: ExtensionIii,
+): Promise<BrowserDoctorInfo | null> {
+  const res = await iii.trigger<unknown>(BROWSER_DOCTOR_FUNCTION_ID, {})
+  const parsed = doctorSchema.safeParse(res)
+  return parsed.success ? parsed.data : null
 }
 
 export async function takeBrowserScreenshot(

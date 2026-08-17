@@ -172,7 +172,7 @@ fn build_set(patterns: &[String]) -> GlobSet {
 }
 
 /// The single `agent_trigger` schema attached by default — the model triggers
-/// any allowed function via `{ function, payload }`.
+/// any allowed function via `{ function, description, payload }`.
 pub fn agent_trigger_schema() -> AgentFunction {
     AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
@@ -184,9 +184,15 @@ pub fn agent_trigger_schema() -> AgentFunction {
             "type": "object",
             "properties": {
                 "function": { "type": "string", "description": "Target iii function id." },
+                "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Short user-facing description of the action in the user's language. Describe the work, not the function id."
+                },
                 "payload": { "type": "object", "description": "Arguments for the target function." }
             },
-            "required": ["function"]
+            "required": ["function", "description"]
         }),
         label: None,
         execution_mode: Some("sequential".to_string()),
@@ -230,7 +236,8 @@ pub struct PlannedCall {
 }
 
 /// Extract the planned calls from an assistant message in content order. In
-/// `agent_trigger` exposure the wrapper carries `{ function, payload }`; in
+/// `agent_trigger` exposure the wrapper carries `{ function, description,
+/// payload }`; in
 /// native exposure the block's `function_id` is the target directly.
 pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<PlannedCall> {
     let mut out = Vec::new();
@@ -281,6 +288,11 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                                 _ => Default::default(),
                             };
                             map.remove("function");
+                            // Wrapper presentation belongs to the transcript,
+                            // never to the target function's request. Older
+                            // recovery logic hoists flattened target args, so
+                            // explicitly strip the new display-only field.
+                            map.remove("description");
                             Value::Object(map)
                         }
                     };
@@ -564,7 +576,12 @@ mod tests {
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
             function_id: AGENT_TRIGGER_NAME.into(),
-            arguments: json!({ "function": "engine::register_trigger", "trigger_type": "state", "config": { "key": "k" } }),
+            arguments: json!({
+                "function": "engine::register_trigger",
+                "description": "Registering the state trigger",
+                "trigger_type": "state",
+                "config": { "key": "k" }
+            }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
         assert_eq!(calls[0].function_id, "engine::register_trigger");
@@ -572,6 +589,18 @@ mod tests {
             calls[0].arguments,
             json!({ "trigger_type": "state", "config": { "key": "k" } })
         );
+    }
+
+    #[test]
+    fn agent_trigger_schema_requires_a_bounded_user_facing_description() {
+        let schema = agent_trigger_schema();
+        let description = &schema.parameters["properties"]["description"];
+        assert_eq!(description["type"], "string");
+        assert_eq!(description["minLength"], 1);
+        assert_eq!(description["maxLength"], 120);
+        assert!(schema.parameters["required"]
+            .as_array()
+            .is_some_and(|required| required.contains(&json!("description"))));
     }
 
     #[test]

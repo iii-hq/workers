@@ -36,7 +36,7 @@ export interface CodeEditorProps {
    ever fails to load) renders the same typography the editor is configured
    with, so the swap-in doesn't reflow the text. */
 const EDITOR_TYPOGRAPHY =
-  'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-mono text-[12.5px] leading-[19px]'
+  'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-code text-[12.5px] leading-[19px]'
 
 const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
   automaticLayout: true,
@@ -126,14 +126,14 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     React.useEffect(() => {
       let disposed = false
       void import('@/lib/monaco')
-        .then(({ monaco, CONSOLE_THEME, monoFontFamily }) => {
+        .then(({ monaco, CONSOLE_THEME, codeFontFamily }) => {
           if (disposed || !hostRef.current) return
           const editor = monaco.editor.create(hostRef.current, {
             ...MONACO_OPTIONS,
             value: latest.current.value,
             language: latest.current.language,
             theme: CONSOLE_THEME,
-            fontFamily: monoFontFamily(),
+            fontFamily: codeFontFamily(),
           })
           editorRef.current = editor
           editor.getModel()?.updateOptions({ tabSize: 2, insertSpaces: true })

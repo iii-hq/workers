@@ -9,13 +9,13 @@
  * by category with a stacked segment bar, legend, and last-turn actuals.
  */
 
-import { useEffect, useRef, useState } from 'react'
 import type { Host } from '@iii-dev/console-ui'
+import { useEffect, useRef, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
 import {
   type ContextSnapshot,
-  type SnapshotUsage,
   isSnapshot,
+  type SnapshotUsage,
 } from '../lib/metrics'
 import { TONE_COLOR, toneFor } from '../lib/tone'
 
@@ -233,7 +233,11 @@ function ContextPopover({
     usage != null && (usage.input != null || usage.cache_read != null)
   const cache = cacheSummary(usage)
   return (
-    <div className="harness-ui-pop" role="dialog" aria-label="context breakdown">
+    <div
+      className="harness-ui-pop"
+      role="dialog"
+      aria-label="context breakdown"
+    >
       <div className="harness-ui-pop-head">
         <span className="harness-ui-pop-model">
           {snapshot.model || modelId || 'model'}
@@ -282,7 +286,9 @@ function ContextPopover({
           <span>
             last step {formatTokens(usage?.input ?? 0)} in · output{' '}
             {formatTokens(usage?.output ?? 0)}
-            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : null}
+            {usage?.cost_usd != null ? (
+              <> · {formatCost(usage.cost_usd)}</>
+            ) : null}
           </span>
         ) : null}
         {cache ? (
@@ -292,8 +298,8 @@ function ContextPopover({
               'carries a premium. Hit rate is the cached share of the prompt.'
             }
           >
-            cache {formatTokens(cache.read)} read ·{' '}
-            {formatTokens(cache.write)} write ·{' '}
+            cache {formatTokens(cache.read)} read · {formatTokens(cache.write)}{' '}
+            write ·{' '}
             <span className="harness-ui-cache-hit" data-tone={cache.tone}>
               {cache.hitPct}% hit
             </span>
@@ -311,6 +317,66 @@ function ContextPopover({
         ) : null}
       </div>
     </div>
+  )
+}
+
+function EmptyContextPopover({
+  modelId,
+  contextWindow,
+}: {
+  modelId?: string
+  contextWindow?: number
+}) {
+  const hasWindow = contextWindow !== undefined && contextWindow > 0
+  return (
+    <div
+      className="harness-ui-pop"
+      role="dialog"
+      aria-label="context breakdown"
+    >
+      <div className="harness-ui-pop-head">
+        <span className="harness-ui-pop-model">{modelId || 'model'}</span>
+        <span className="harness-ui-pop-usage">waiting for usage</span>
+      </div>
+      {hasWindow ? (
+        <>
+          <div className="harness-ui-stack" />
+          <div className="harness-ui-legend">
+            <LegendRow
+              color={COLOR_FREE}
+              label="Free"
+              tokens={contextWindow}
+              usable={contextWindow}
+            />
+          </div>
+        </>
+      ) : null}
+      <div className="harness-ui-pop-foot">
+        <span>
+          {hasWindow
+            ? 'the breakdown appears after the first generation step'
+            : 'the selected model did not report a context-window limit'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function ContextCaret() {
+  return (
+    <svg
+      className="harness-ui-chip-caret"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <title>Show context details</title>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
   )
 }
 
@@ -363,7 +429,10 @@ export function createContextChip(host: Host) {
       const offHandler = host.iii.on<StateEvent>(eventFn, (event) => {
         if (!event || event.key !== sessionId) return
         if (event.event_type === 'state:deleted') return
-        if (isSnapshot(event.new_value) && event.new_value.session_id === sessionId)
+        if (
+          isSnapshot(event.new_value) &&
+          event.new_value.session_id === sessionId
+        )
           acceptNewer(event.new_value)
       })
       const offTrigger = host.iii.registerTrigger({
@@ -397,28 +466,55 @@ export function createContextChip(host: Host) {
     if (!snapshot || snapshot.usable <= 0) {
       if (contextWindow && contextWindow > 0) {
         return (
-          <div className="harness-ui-chip">
-            <span>ctx</span>
-            <span
-              className="harness-ui-chip-bar"
-              role="progressbar"
-              aria-label="context window usage"
-              aria-valuenow={0}
-              aria-valuemin={0}
-              aria-valuemax={100}
+          <div className="harness-ui-chip" ref={rootRef}>
+            <button
+              type="button"
+              className="harness-ui-chip-btn"
+              onClick={() => setOpen((value) => !value)}
+              aria-haspopup="dialog"
+              aria-expanded={open}
+              aria-label={`context: waiting for usage, ${contextWindow.toLocaleString()} token window — click for the breakdown`}
             >
-              <span className="harness-ui-chip-fill" style={{ width: 0 }} />
-            </span>
-            <span className="harness-ui-chip-counts">
-              0/{formatTokens(contextWindow)}
-            </span>
+              <span>ctx</span>
+              <span
+                className="harness-ui-chip-bar"
+                role="progressbar"
+                aria-label="context window usage"
+                aria-valuenow={0}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <span className="harness-ui-chip-fill" style={{ width: 0 }} />
+              </span>
+              <span className="harness-ui-chip-counts">
+                0/{formatTokens(contextWindow)}
+              </span>
+              <ContextCaret />
+            </button>
+            {open ? (
+              <EmptyContextPopover
+                modelId={modelId}
+                contextWindow={contextWindow}
+              />
+            ) : null}
           </div>
         )
       }
       return (
-        <div className="harness-ui-chip">
-          <span>ctx</span>
-          <span className="harness-ui-chip-empty">—</span>
+        <div className="harness-ui-chip" ref={rootRef}>
+          <button
+            type="button"
+            className="harness-ui-chip-btn"
+            onClick={() => setOpen((value) => !value)}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            aria-label="context: waiting for usage — click for the breakdown"
+          >
+            <span>ctx</span>
+            <span className="harness-ui-chip-empty">—</span>
+            <ContextCaret />
+          </button>
+          {open ? <EmptyContextPopover modelId={modelId} /> : null}
         </div>
       )
     }
@@ -433,6 +529,7 @@ export function createContextChip(host: Host) {
           type="button"
           className="harness-ui-chip-btn"
           onClick={() => setOpen((value) => !value)}
+          aria-haspopup="dialog"
           aria-expanded={open}
           aria-label={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
         >
@@ -462,18 +559,7 @@ export function createContextChip(host: Host) {
           </span>
           {/* Says "this opens something": drawn at lucide's `chevron-down`
               geometry, since an injected bundle has no icon dependency. */}
-          <svg
-            className="harness-ui-chip-caret"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
+          <ContextCaret />
         </button>
         {open ? <ContextPopover snapshot={snapshot} modelId={modelId} /> : null}
       </div>

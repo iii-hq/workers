@@ -97,7 +97,7 @@ are invisible; the function id is the only contract.
 - `engine::triggers::list` / `engine::triggers::info { id }` — legal trigger types and their config schemas
 - `engine::registered-triggers::list` — every trigger instance already bound
 
-**2. Call a function.** Use `agent_trigger` with `{ function: "<worker>::<fn>", payload: { ... } }`. Two rules: payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
+**2. Call a function.** Use `agent_trigger` with `{ function: "<worker>::<fn>", description: "<short user-facing action>", payload: { ... } }`. The description is shown as the agent's activity in chat; keep it concise and in the user's language. The payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
 
 **3. Need a capability that is not registered?**
 - `directory::registry::workers::list { search: "<capability>" }`
