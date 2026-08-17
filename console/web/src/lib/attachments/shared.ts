@@ -8,6 +8,8 @@
  * spreadsheet, or a text file the browser read directly.
  */
 
+import { getIiiClient } from '@/lib/iii-client'
+
 /** Opening of an attachment block; the header ends at the first `>`. */
 export const ATTACHED_FILE_PREFIX = '<attached-file '
 
@@ -36,6 +38,45 @@ export interface AttachmentReadSummary {
   id: string
   /** The chip's new label, already assembled. */
   label: string
+}
+
+/**
+ * Invoke a worker function. Injectable so a test drives an expansion without a
+ * live engine, which every expander needs and none should re-declare.
+ */
+export type TriggerFn = (
+  functionId: string,
+  payload: Record<string, unknown>,
+) => Promise<unknown>
+
+/** The live trigger, or the caller's stand-in. */
+export function triggerOr(trigger: TriggerFn | undefined): TriggerFn {
+  return (
+    trigger ??
+    (async (functionId, payload) => {
+      const client = await getIiiClient()
+      return client.trigger(functionId, payload)
+    })
+  )
+}
+
+/**
+ * Report the attachments a per-send ceiling cut off.
+ *
+ * Every kind has a ceiling and every kind has to say what it dropped: an
+ * attachment that silently disappears is the failure this whole path exists to
+ * prevent, and a person who attached six documents deserves to know two of them
+ * did not go.
+ */
+export function reportDropped(
+  dropped: readonly { name: string }[],
+  reason: string,
+  into: { blocks: string[]; failures: AttachmentFailure[] },
+): void {
+  for (const attachment of dropped) {
+    into.blocks.push(failureBlock(attachment.name, reason))
+    into.failures.push({ name: attachment.name, reason })
+  }
 }
 
 /**

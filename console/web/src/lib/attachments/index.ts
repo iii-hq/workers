@@ -16,9 +16,13 @@
 
 import type { Attachment } from '@/types/chat'
 import { expandDocumentAttachments, isDocumentAttachment } from './documents'
-import { expandImageAttachments, isImageAttachment } from './images'
-import { expandPdfAttachments, isPdfAttachment, summaryLabel } from './pdf'
-import { extensionOf, failureBlock } from './shared'
+import {
+  type ExpandedImages,
+  expandImageAttachments,
+  isImageAttachment,
+} from './images'
+import { expandPdfAttachments, isPdfAttachment } from './pdf'
+import { extensionOf, failureBlock, reportDropped } from './shared'
 import { expandTextAttachments, isTextAttachment } from './text'
 
 export { isDocumentAttachment } from './documents'
@@ -118,10 +122,13 @@ export interface ExpandOptions {
 /**
  * Expand every attachment on a message.
  *
- * The passes run in sequence rather than concurrently. Each one is bounded by
- * its own per-send ceiling, and a composer holding a deck, a spreadsheet and
- * four screenshots would otherwise open a dozen simultaneous conversions on a
- * machine that is also running the model.
+ * The four passes run concurrently and the files INSIDE each pass run one at a
+ * time. That split is the point: two documents queue against the same worker
+ * rather than opening simultaneous conversions on a machine that is also
+ * running the model, while a PDF, a spreadsheet and a screenshot — different
+ * workers, and in the image and text cases no worker at all — have nothing to
+ * contend over. This sits on the send path, so the message waits for the
+ * slowest pass rather than the sum of them.
  */
 export async function expandAttachments(
   attachments: Attachment[],
@@ -137,60 +144,39 @@ export async function expandAttachments(
   }
   const of = (kind: AttachmentKind) => byKind.get(kind) ?? []
 
-  const blocks: string[] = []
-  const images: AttachmentImageBlock[] = []
-  const read: AttachmentReadSummary[] = []
-  const failures: AttachmentFailure[] = []
-
-  const pdfs = of('pdf')
-  if (pdfs.length > 0) {
-    const expanded = await expandPdfAttachments(pdfs)
-    blocks.push(...expanded.blocks)
-    failures.push(...expanded.failures)
-    read.push(
-      ...expanded.read.map((summary) => ({
-        id: summary.id,
-        label: summaryLabel(nameOf(pdfs, summary.id) ?? 'document', summary),
-      })),
-    )
-  }
-
-  const documents = of('document')
-  if (documents.length > 0) {
-    const expanded = await expandDocumentAttachments(documents)
-    blocks.push(...expanded.blocks)
-    read.push(...expanded.read)
-    failures.push(...expanded.failures)
-  }
-
   const pictures = of('image')
-  if (pictures.length > 0) {
+  const [pdfs, documents, imagery, texts] = await Promise.all([
+    expandPdfAttachments(of('pdf')),
+    expandDocumentAttachments(of('document')),
     // A model with no vision receives an image block and does nothing with it:
     // the picture is dropped somewhere downstream and the answer arrives as
-    // though nothing was attached — the exact silence this whole path exists
-    // to prevent. Refuse it here, in the message, naming the way out.
-    if (options.vision === false) {
-      for (const picture of pictures) {
-        const reason = `${options.model ?? 'the selected model'} cannot read images, so this one was not sent — switch to a model with vision`
-        blocks.push(failureBlock(picture.name, reason))
-        failures.push({ name: picture.name, reason })
-      }
-    } else {
-      const expanded = await expandImageAttachments(pictures)
-      blocks.push(...expanded.blocks)
-      images.push(...expanded.images)
-      read.push(...expanded.read)
-      failures.push(...expanded.failures)
-    }
-  }
+    // though nothing was attached, the exact silence this whole path exists to
+    // prevent. Refuse it here, in the message, naming the way out.
+    options.vision === false
+      ? refuseImages(pictures, options.model)
+      : expandImageAttachments(pictures),
+    expandTextAttachments(of('text')),
+  ])
 
-  const texts = of('text')
-  if (texts.length > 0) {
-    const expanded = await expandTextAttachments(texts)
-    blocks.push(...expanded.blocks)
-    read.push(...expanded.read)
-    failures.push(...expanded.failures)
-  }
+  const blocks: string[] = [
+    ...pdfs.blocks,
+    ...documents.blocks,
+    ...imagery.blocks,
+    ...texts.blocks,
+  ]
+  const read: AttachmentReadSummary[] = [
+    ...pdfs.read,
+    ...documents.read,
+    ...imagery.read,
+    ...texts.read,
+  ]
+  const failures: AttachmentFailure[] = [
+    ...pdfs.failures,
+    ...documents.failures,
+    ...imagery.failures,
+    ...texts.failures,
+  ]
+  const images: AttachmentImageBlock[] = [...imagery.images]
 
   // Anything left over reached the agent as nothing at all before this router
   // existed. Naming it in the message is the whole point: an unreadable
@@ -205,6 +191,18 @@ export async function expandAttachments(
   return { blocks, images, read, failures }
 }
 
-function nameOf(attachments: Attachment[], id: string): string | undefined {
-  return attachments.find((a) => a.id === id)?.name
+/** The image pass, replaced by an explanation, for a model that cannot see. */
+function refuseImages(
+  pictures: Attachment[],
+  model: string | null | undefined,
+): ExpandedImages {
+  const refused: ExpandedImages = {
+    images: [],
+    blocks: [],
+    read: [],
+    failures: [],
+  }
+  const reason = `${model ?? 'the selected model'} cannot read images, so this one was not sent — switch to a model with vision`
+  reportDropped(pictures, reason, refused)
+  return refused
 }

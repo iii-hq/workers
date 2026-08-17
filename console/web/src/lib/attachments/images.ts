@@ -25,6 +25,7 @@ import {
   failureBlock,
   fileToBase64,
   formatBytes,
+  reportDropped,
 } from './shared'
 
 /** Images sent per message. Each one costs real tokens on arrival. */
@@ -229,11 +230,11 @@ export async function expandImageAttachments(
     })
   }
 
-  for (const dropped of candidates.slice(MAX_IMAGES_PER_SEND)) {
-    const reason = `only ${MAX_IMAGES_PER_SEND} images are sent per message`
-    blocks.push(failureBlock(dropped.name, reason))
-    failures.push({ name: dropped.name, reason })
-  }
+  reportDropped(
+    candidates.slice(MAX_IMAGES_PER_SEND),
+    `only ${MAX_IMAGES_PER_SEND} images are sent per message`,
+    { blocks, failures },
+  )
 
   return { images, blocks, read, failures }
 }

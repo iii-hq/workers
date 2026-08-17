@@ -18,7 +18,6 @@
  * say.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
 import type { Attachment } from '@/types/chat'
 import {
   ATTACHED_FILE_PREFIX,
@@ -29,6 +28,9 @@ import {
   extensionOf,
   failureBlock,
   fileToBase64,
+  reportDropped,
+  type TriggerFn,
+  triggerOr,
 } from './shared'
 
 export const TO_MARKDOWN_FUNCTION_ID = 'document::to-markdown'
@@ -113,11 +115,6 @@ interface MarkdownWire {
   elapsed_ms?: number
 }
 
-type TriggerFn = (
-  functionId: string,
-  payload: Record<string, unknown>,
-) => Promise<unknown>
-
 /**
  * Convert every attached office document through the `document` worker.
  *
@@ -133,12 +130,7 @@ export async function expandDocumentAttachments(
   const documents = attachments.filter((a) => isDocumentAttachment(a) && a.file)
   if (documents.length === 0) return { blocks: [], read: [], failures: [] }
 
-  const call =
-    trigger ??
-    (async (functionId: string, payload: Record<string, unknown>) => {
-      const client = await getIiiClient()
-      return client.trigger(functionId, payload)
-    })
+  const call = triggerOr(trigger)
 
   const blocks: string[] = []
   const read: AttachmentReadSummary[] = []
@@ -163,11 +155,11 @@ export async function expandDocumentAttachments(
     }
   }
 
-  for (const dropped of documents.slice(MAX_DOCUMENTS_PER_SEND)) {
-    const reason = `only ${MAX_DOCUMENTS_PER_SEND} documents are read per message`
-    blocks.push(failureBlock(dropped.name, reason))
-    failures.push({ name: dropped.name, reason })
-  }
+  reportDropped(
+    documents.slice(MAX_DOCUMENTS_PER_SEND),
+    `only ${MAX_DOCUMENTS_PER_SEND} documents are read per message`,
+    { blocks, failures },
+  )
 
   return { blocks, read, failures }
 }

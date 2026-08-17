@@ -248,20 +248,6 @@ pub fn describe_error(what: &str, err: &anydoc::ConvertError) -> String {
     format!("{what} failed: {err} — {advice}")
 }
 
-/// The machine-readable reason a conversion failed, for a caller that routes on
-/// it rather than reading prose.
-pub fn error_code(err: &anydoc::ConvertError) -> &'static str {
-    match err {
-        anydoc::ConvertError::Unsupported(_) => "unsupported",
-        anydoc::ConvertError::Malformed { .. } => "malformed",
-        anydoc::ConvertError::Encrypted => "encrypted",
-        anydoc::ConvertError::ResourceLimit { .. } => "resource_limit",
-        anydoc::ConvertError::MissingPart { .. } => "missing_part",
-        anydoc::ConvertError::Io(_) => "io",
-        _ => "unknown",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,11 +436,15 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_are_stable_names() {
-        assert_eq!(error_code(&anydoc::ConvertError::Encrypted), "encrypted");
-        assert_eq!(
-            error_code(&anydoc::ConvertError::Unsupported("x".into())),
-            "unsupported"
+    fn a_new_converter_variant_still_gets_advice() {
+        // The converter's error enum is `#[non_exhaustive]`, so the catch-all
+        // arm is what a future variant lands on. It still has to name the
+        // document and read as an answer.
+        let described = describe_error(
+            "conversion",
+            &anydoc::ConvertError::Io(std::io::Error::other("disk went away")),
         );
+        assert!(described.contains("conversion failed"), "{described}");
+        assert!(described.contains("could not be read"), "{described}");
     }
 }

@@ -21,6 +21,7 @@ import {
   extensionOf,
   failureBlock,
   formatBytes,
+  reportDropped,
 } from './shared'
 
 /** Text files inlined per message. */
@@ -161,11 +162,11 @@ export async function expandTextAttachments(
     }
   }
 
-  for (const dropped of files.slice(MAX_TEXT_FILES_PER_SEND)) {
-    const reason = `only ${MAX_TEXT_FILES_PER_SEND} text files are inlined per message`
-    blocks.push(failureBlock(dropped.name, reason))
-    failures.push({ name: dropped.name, reason })
-  }
+  reportDropped(
+    files.slice(MAX_TEXT_FILES_PER_SEND),
+    `only ${MAX_TEXT_FILES_PER_SEND} text files are inlined per message`,
+    { blocks, failures },
+  )
 
   return { blocks, read, failures }
 }

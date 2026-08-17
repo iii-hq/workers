@@ -31,7 +31,9 @@ const CHAT_PANE_SELECTOR = '[data-chat-session-id]'
  * the browser withholds the data itself, so `types` is the only thing to read.
  */
 function carriesFiles(e: DragEvent): boolean {
-  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
+  // `types` is already a readonly array of strings, and this runs on every
+  // `dragover` for the whole gesture, so there is nothing to copy it into.
+  return (e.dataTransfer?.types ?? []).includes('Files')
 }
 
 interface FileDropOptions {

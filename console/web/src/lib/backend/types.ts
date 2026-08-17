@@ -1,4 +1,5 @@
 import type { Mode, ModelId } from '@/types/chat'
+import type { HarnessImageBlock } from './harness-send'
 import type { SessionTriggerInfo } from './triggers'
 
 /**
@@ -149,7 +150,7 @@ export interface ChatStreamOptions {
    * `ContentBlock::Image { mime, data }`, which the Anthropic and OpenAI
    * providers map onto their own image shapes. Mock backends ignore this.
    */
-  attachedImages?: import('./harness-send').HarnessImageBlock[]
+  attachedImages?: HarnessImageBlock[]
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
@@ -310,7 +311,7 @@ export interface ChatBackend {
     prompt: string,
     opts?: {
       attachedBlocks?: string[]
-      attachedImages?: import('./harness-send').HarnessImageBlock[]
+      attachedImages?: HarnessImageBlock[]
     },
   ): Promise<void>
   /**

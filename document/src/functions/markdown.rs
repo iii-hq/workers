@@ -81,23 +81,24 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
     let started = std::time::Instant::now();
 
     let file_name = req.source.file_name_hint();
-    let (format, detected_from) = format::resolve(req.format, &bytes, file_name.as_deref())
-        .ok_or_else(|| {
-            format!(
-                "{} is not a document this worker reads: nothing in its content matched a known \
-                 format, and its name did not name one either. Pass `format` if you know what it \
-                 is.",
-                req.source.label()
-            )
-        })?;
+    let (format, detected_from) = format::resolve_or_explain(
+        req.format,
+        &bytes,
+        file_name.as_deref(),
+        &req.source.label(),
+    )?;
 
     let markdown = anydoc::to_markdown_bytes(&bytes, format.to_anydoc())
         .map_err(|e| describe_error("markdown conversion", &e))?;
 
-    // The asset count comes from the document model, which a PDF has no form
-    // of. Counting is cheap next to the conversion that just ran, and a failure
-    // here is not a reason to throw away markdown that converted fine.
-    let asset_count = if format.has_document_model() {
+    // The asset count comes from the document model, and reaching it costs a
+    // SECOND parse: the converter builds the model internally, renders it, and
+    // drops it, and its only other public entry point is the parse itself. That
+    // is the price of telling a caller a deck's content is pictures rather than
+    // letting it read as an empty document, so it is only paid for formats that
+    // can actually carry an asset. A failure here is not a reason to throw away
+    // markdown that converted fine.
+    let asset_count = if format.carries_assets() {
         anydoc::to_document(&bytes, format.to_anydoc())
             .map(|doc| doc.assets.len())
             .unwrap_or(0)

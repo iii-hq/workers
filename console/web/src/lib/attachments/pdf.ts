@@ -16,15 +16,18 @@
  * to the model than an empty one. Failures never block the send.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
 import type { Attachment } from '@/types/chat'
 import {
   ATTACHED_FILE_PREFIX,
   type AttachmentFailure,
+  type AttachmentReadSummary,
   describeWorkerFailure,
   escapeAttr,
   failureBlock,
   fileToBase64,
+  reportDropped,
+  type TriggerFn,
+  triggerOr,
 } from './shared'
 
 export const CLASSIFY_FUNCTION_ID = 'pdf::classify'
@@ -50,13 +53,13 @@ export const MAX_PDF_BYTES = 64 * 1024 * 1024
 export type PdfExpansionFailure = AttachmentFailure
 
 /**
- * What one document turned into, for the chip on the sent message.
+ * What one document turned into, on the way to its chip label.
  *
  * Without this the composer chip reads "report.pdf 32kb" whether the document
  * was parsed, skipped or failed, which leaves a person with no way to tell
  * that the PDF reached the agent at all.
  */
-export interface PdfReadSummary {
+interface PdfReadSummary {
   /** Attachment id, so the caller can match this back to its chip. */
   id: string
   pages: number
@@ -72,7 +75,7 @@ export interface ExpandedPdfs {
   /** One `<attached-file …>` block per expanded document, in input order. */
   blocks: string[]
   /** One entry per document actually read, for the message chips. */
-  read: PdfReadSummary[]
+  read: AttachmentReadSummary[]
   failures: PdfExpansionFailure[]
 }
 
@@ -107,11 +110,6 @@ interface MarkdownWire {
   elapsed_ms?: number
 }
 
-type TriggerFn = (
-  functionId: string,
-  payload: Record<string, unknown>,
-) => Promise<unknown>
-
 /**
  * Read every attached PDF through the `pdf` worker and format the blocks.
  *
@@ -127,15 +125,10 @@ export async function expandPdfAttachments(
   const pdfs = attachments.filter((a) => isPdfAttachment(a) && a.file)
   if (pdfs.length === 0) return { blocks: [], read: [], failures: [] }
 
-  const call =
-    trigger ??
-    (async (functionId: string, payload: Record<string, unknown>) => {
-      const client = await getIiiClient()
-      return client.trigger(functionId, payload)
-    })
+  const call = triggerOr(trigger)
 
   const blocks: string[] = []
-  const read: PdfReadSummary[] = []
+  const read: AttachmentReadSummary[] = []
   const failures: PdfExpansionFailure[] = []
 
   for (const attachment of pdfs.slice(0, MAX_PDFS_PER_SEND)) {
@@ -149,7 +142,10 @@ export async function expandPdfAttachments(
     try {
       const outcome = await expandOne(attachment, call)
       blocks.push(outcome.block)
-      read.push(outcome.summary)
+      read.push({
+        id: attachment.id,
+        label: summaryLabel(attachment.name, outcome.summary),
+      })
     } catch (err) {
       const reason = describeFailure(err)
       blocks.push(failureBlock(attachment.name, reason))
@@ -157,11 +153,11 @@ export async function expandPdfAttachments(
     }
   }
 
-  for (const dropped of pdfs.slice(MAX_PDFS_PER_SEND)) {
-    const reason = `only ${MAX_PDFS_PER_SEND} PDFs are read per message`
-    blocks.push(failureBlock(dropped.name, reason))
-    failures.push({ name: dropped.name, reason })
-  }
+  reportDropped(
+    pdfs.slice(MAX_PDFS_PER_SEND),
+    `only ${MAX_PDFS_PER_SEND} PDFs are read per message`,
+    { blocks, failures },
+  )
 
   return { blocks, read, failures }
 }
@@ -262,7 +258,7 @@ async function expandOne(
  * was read at all, because the expansion happens before the model is called and
  * so never appears as a function call in the transcript.
  */
-export function summaryLabel(name: string, summary: PdfReadSummary): string {
+function summaryLabel(name: string, summary: PdfReadSummary): string {
   const parts = [`${summary.pages} page${summary.pages === 1 ? '' : 's'}`]
   if (summary.needsOcr && summary.chars === undefined) {
     parts.push('no readable text')

@@ -109,13 +109,12 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
     let started = std::time::Instant::now();
 
     let file_name = req.source.file_name_hint();
-    let (format, _) =
-        format::resolve(req.format, &bytes, file_name.as_deref()).ok_or_else(|| {
-            format!(
-                "{} is not a document this worker reads. Pass `format` if you know what it is.",
-                req.source.label()
-            )
-        })?;
+    let (format, _) = format::resolve_or_explain(
+        req.format,
+        &bytes,
+        file_name.as_deref(),
+        &req.source.label(),
+    )?;
 
     // A PDF never builds a document model, so there is no asset list to walk.
     // Say where the pictures actually live rather than returning an empty list

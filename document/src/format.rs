@@ -136,6 +136,16 @@ impl Format {
     pub fn has_document_model(self) -> bool {
         self != Format::Pdf
     }
+
+    /// `true` when the format can embed an image or object at all.
+    ///
+    /// Counting assets costs a second parse of the whole document, and a CSV is
+    /// rows of text with nowhere to put a picture. Skipping it there is the
+    /// difference between one parse and two on the cheapest format people
+    /// attach.
+    pub fn carries_assets(self) -> bool {
+        self.has_document_model() && self != Format::Csv
+    }
 }
 
 /// Resolve the format for a document, and say how the answer was reached.
@@ -144,6 +154,26 @@ impl Format {
 /// something the bytes do not say; content beats the extension because a
 /// mislabelled file is common and a wrong extension is not worth failing over;
 /// the extension is the last resort, and the only route for CSV.
+/// [`resolve`], with the refusal a handler owes its caller when nothing
+/// matched.
+///
+/// `document::detect` wants the bare `Option` — "not a document I read" is its
+/// answer, not a failure. Every function that goes on to convert wants the same
+/// sentence, so it lives here rather than being written twice and drifting.
+pub fn resolve_or_explain(
+    requested: Option<Format>,
+    bytes: &[u8],
+    file_name: Option<&str>,
+    label: &str,
+) -> Result<(Format, DetectedFrom), String> {
+    resolve(requested, bytes, file_name).ok_or_else(|| {
+        format!(
+            "{label} is not a document this worker reads: nothing in its content matched a known \
+             format, and its name did not name one either. Pass `format` if you know what it is."
+        )
+    })
+}
+
 pub fn resolve(
     requested: Option<Format>,
     bytes: &[u8],
