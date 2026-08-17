@@ -180,7 +180,11 @@ For scale: one rendered page of a text PDF measured about 1,400 input tokens on
 `claude-haiku-4-5`, or roughly $0.0016 a page.
 
 Rendering a PDF needs the file on disk (`path`, not `bytes_base64`) and the
-`browser` worker's `allowed_schemes` to include `file`.
+`browser` worker allowed to open it: its Behavior settings carry an allowed
+URL schemes list that ships as `http, https`, and a local PDF needs `file`
+added. It hot-applies on save. That list is deliberately narrow — the browser
+does not check a path against the session's filesystem scope the way this
+worker does, so widening it widens what any caller can read.
 
 ## Response caps
 

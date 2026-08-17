@@ -47,6 +47,14 @@ pub struct WorkerConfig {
     /// JPEG quality for `browser::screenshot` (1-100).
     pub screenshot_quality: u64,
     /// URL schemes `browser::navigate` accepts.
+    ///
+    /// `file` ships enabled so a local document can be opened and rendered —
+    /// the path `document::ocr` takes to read a scanned PDF, which has nowhere
+    /// else to get pixels from. Note what that permits: unlike the workers that
+    /// read files directly, navigation is not checked against a session's
+    /// filesystem scope, so any caller that reaches `browser::navigate` can
+    /// open any file this process can read. Narrow the list on a shared or
+    /// multi-tenant machine.
     pub allowed_schemes: Vec<String>,
     /// Maximum nodes serialized by `browser::snapshot` before truncation.
     pub max_snapshot_nodes: u64,
@@ -71,7 +79,7 @@ impl Default for WorkerConfig {
             max_timeout_ms: 120_000,
             idle_stop_ms: 300_000,
             screenshot_quality: 60,
-            allowed_schemes: vec!["http".to_string(), "https".to_string()],
+            allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
             allow_attach: false,
         }
@@ -128,7 +136,7 @@ mod tests {
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.idle_stop_ms, 300_000);
         assert_eq!(c.screenshot_quality, 60);
-        assert_eq!(c.allowed_schemes, vec!["http", "https"]);
+        assert_eq!(c.allowed_schemes, vec!["http", "https", "file"]);
         assert_eq!(c.max_snapshot_nodes, 2_000);
         assert!(!c.allow_attach);
     }
