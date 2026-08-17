@@ -356,11 +356,11 @@ jobs:
       # testkit enables every provider feature in its Rust gate, so build the
       # UI before Cargo reaches that provider's build.rs.
       - name: Setup pnpm (providers with bundled UI)
-        if: hashFiles(format('provider-{0}/ui/package.json', matrix.provider)) != ''
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
         uses: pnpm/action-setup@v5
 
       - name: Setup Node (providers with bundled UI)
-        if: hashFiles(format('provider-{0}/ui/package.json', matrix.provider)) != ''
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -368,8 +368,8 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build provider UI
-        if: hashFiles(format('provider-{0}/ui/package.json', matrix.provider)) != ''
-        working-directory: provider-${{ matrix.provider }}/ui
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+        working-directory: ${{ matrix.provider }}/ui
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Install pinned iii engine
@@ -507,15 +507,16 @@ jobs:
 
       # Workers that embed a Vite SPA into the binary (e.g. console) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
-      # short-circuits it — mirrors the `rust` job above.
+      # short-circuits it — mirrors the `rust` job above. provider-opencode-go
+      # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         uses: pnpm/action-setup@v5
         # version comes from the repo-root package.json `packageManager`
         # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -525,7 +526,7 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         run: |
           set -euo pipefail
           for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
@@ -533,6 +534,9 @@ jobs:
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi
           done
+          if [[ "${{ matrix.worker }}" == "provider-opencode-go" ]]; then
+            (cd llm-router/ui && pnpm install --frozen-lockfile && pnpm build)
+          fi
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (`_rust-binary.yml` builds default features).
