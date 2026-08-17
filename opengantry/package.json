@@ -2,7 +2,7 @@
   "name": "opengantry",
   "version": "0.1.0",
   "private": true,
-  "description": "OpenGantry governance worker for iii: local workers/ scan plus gantry::verify.",
+  "description": "OpenGantry governance worker for iii: kernel verify and middleware gate.",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -11,7 +11,9 @@
   "packageManager": "pnpm@10.18.2",
   "scripts": {
     "start": "node ./index.mjs",
-    "test": "node --test tests/middleware.test.mjs tests/lease-store.test.mjs tests/verify-promote.e2e.test.mjs && node tests/iii-practices.self-test.mjs",
+    "demo": "node ./demo.mjs",
+    "loadtest": "node ./loadtest.mjs",
+    "test": "node --test tests/middleware.test.mjs tests/lease-store.test.mjs tests/verify-promote.e2e.test.mjs",
     "build:bundle": "node scripts/build-bundle.mjs",
     "verify:sandbox": "node scripts/verify-sandbox-boot.mjs",
     "lint": "biome check .",
@@ -19,12 +21,8 @@
   },
   "dependencies": {
     "@jeger-ai/opengantry": "^3.2.5",
-    "acorn": "8.14.1",
-    "acorn-walk": "8.3.4",
-    "ajv": "8.20.0",
     "iii-sdk": "^0.22.1",
-    "typescript": "^5.7.2",
-    "yaml": "^2.8.1"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",

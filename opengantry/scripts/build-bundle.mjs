@@ -41,7 +41,7 @@ await build({
   format: 'esm',
   outfile: join(root, 'dist/bundle/index.mjs'),
   legalComments: 'none',
-  external: ['typescript', 'fsevents'],
+  external: ['fsevents'],
   banner: {
     js: "import{createRequire as __iiiCR}from'module';const require=__iiiCR(import.meta.url);",
   },

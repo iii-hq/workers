@@ -9,6 +9,6 @@ tags:
   - policy
   - gxt
   - opengantry
-description: OpenGantry governance for iii. Scans local workers/ then runs gantry verify before promote-class calls.
+description: OpenGantry governance for iii. Kernel verify and middleware gate before promote-class calls.
 scripts:
   start: node ./index.mjs

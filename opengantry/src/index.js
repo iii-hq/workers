@@ -1,14 +1,35 @@
-import { createMiddlewareHandler, isReservedGovernanceFunctionId } from './lib/middleware.js';
-import { opengantryWorkerOptions } from './lib/worker-init.js';
-import { loadSchema } from './lib/schemas.js';
-import { createVerifyHandler } from './lib/verify-handler.js';
-import { createWorkerState } from './lib/worker-state.js';
+import { createMiddlewareHandler, isReservedGovernanceFunctionId } from './middleware.js';
+import { createVerifyHandler, createWorkerState } from './verify.js';
+import {
+  MIDDLEWARE_REQUEST_FORMAT,
+  MIDDLEWARE_RESPONSE_FORMAT,
+  ON_FUNCTION_REGISTRATION_REQUEST_FORMAT,
+  ON_FUNCTION_REGISTRATION_RESPONSE_FORMAT,
+  ON_TRIGGER_REGISTRATION_REQUEST_FORMAT,
+  ON_TRIGGER_REGISTRATION_RESPONSE_FORMAT,
+  ON_TRIGGER_TYPE_REGISTRATION_REQUEST_FORMAT,
+  ON_TRIGGER_TYPE_REGISTRATION_RESPONSE_FORMAT,
+  VERIFY_REQUEST_FORMAT,
+  VERIFY_RESPONSE_FORMAT,
+} from './formats.js';
+
+function envFlag(name) {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === 'true' || value === '1' || value === 'yes' || value === 'on';
+}
+
+function opengantryWorkerOptions() {
+  return {
+    workerName: 'opengantry',
+    workerDescription: 'OpenGantry governance (verify, middleware, RBAC hooks)',
+    otel: { enabled: envFlag('OTEL_ENABLED') },
+  };
+}
 
 async function startWorker() {
-  const url = process.env.III_URL;
+  const url = process.env.III_URL ?? process.env.III_ENGINE_URL;
   if (!url) {
-    console.log('opengantry worker: III_URL not set — idle (use demo.mjs for offline harness)');
-    return;
+    throw new Error('opengantry worker: III_URL or III_ENGINE_URL is required');
   }
 
   const state = createWorkerState();
@@ -20,13 +41,13 @@ async function startWorker() {
   state.forwardTrigger = async (function_id, payload) => worker.trigger({ function_id, payload });
 
   worker.registerFunction('gantry::middleware', middleware, {
-    request_format: loadSchema('gantry__middleware.json'),
-    response_format: loadSchema('gantry__middleware.response.json'),
+    request_format: MIDDLEWARE_REQUEST_FORMAT,
+    response_format: MIDDLEWARE_RESPONSE_FORMAT,
   });
 
   worker.registerFunction('gantry::verify', createVerifyHandler(state), {
-    request_format: loadSchema('gantry__verify.json'),
-    response_format: loadSchema('gantry__verify.response.json'),
+    request_format: VERIFY_REQUEST_FORMAT,
+    response_format: VERIFY_RESPONSE_FORMAT,
   });
 
   worker.registerFunction(
@@ -38,8 +59,8 @@ async function startWorker() {
       return { function_id: input.function_id };
     },
     {
-      request_format: loadSchema('gantry__on-function-registration.json'),
-      response_format: loadSchema('gantry__on-function-registration.response.json'),
+      request_format: ON_FUNCTION_REGISTRATION_REQUEST_FORMAT,
+      response_format: ON_FUNCTION_REGISTRATION_RESPONSE_FORMAT,
     },
   );
 
@@ -52,14 +73,14 @@ async function startWorker() {
       return input;
     },
     {
-      request_format: loadSchema('gantry__on-trigger-registration.json'),
-      response_format: loadSchema('gantry__on-trigger-registration.response.json'),
+      request_format: ON_TRIGGER_REGISTRATION_REQUEST_FORMAT,
+      response_format: ON_TRIGGER_REGISTRATION_RESPONSE_FORMAT,
     },
   );
 
   worker.registerFunction('gantry::on-trigger-type-registration', async () => ({ denied: true }), {
-    request_format: loadSchema('gantry__on-trigger-type-registration.json'),
-    response_format: loadSchema('gantry__on-trigger-type-registration.response.json'),
+    request_format: ON_TRIGGER_TYPE_REGISTRATION_REQUEST_FORMAT,
+    response_format: ON_TRIGGER_TYPE_REGISTRATION_RESPONSE_FORMAT,
   });
 
   worker.registerTriggerType(
@@ -80,10 +101,3 @@ startWorker().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-
-export {
-  createWorkerState,
-  createVerifyHandler,
-  createMiddlewareHandler,
-  isReservedGovernanceFunctionId,
-};

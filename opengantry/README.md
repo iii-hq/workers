@@ -42,16 +42,7 @@ const result = await iii.trigger({
 console.log(result);
 ```
 
-Without a verdict token from `gantry::verify`, the middleware returns:
-
-```json
-{
-  "status": "failed",
-  "findings": [
-    { "failed_gate": "gate", "resolution_hint": "promote refused: no valid verdict token" }
-  ]
-}
-```
+Without a verdict token from `gantry::verify`, middleware throws `GantryDenied` (fail-closed).
 
 Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry::verify` for the active mission, then retry the promote call with the verdict token in `context` or `payload`.
 
@@ -75,3 +66,15 @@ workers:
 ```
 
 `worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`.
+
+## Development
+
+```bash
+npm install
+npm test          # unit tests (middleware, lease, verify-promote)
+npm run demo      # offline harness
+npm run loadtest  # concurrency smoke
+pnpm run build:bundle
+```
+
+`gantry::verify` runs kernel `verifyMission` only. Architecture lint lives in the OpenGantry examples tree (`run-iii-architecture.mjs`).

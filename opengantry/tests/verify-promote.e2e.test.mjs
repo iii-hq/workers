@@ -6,11 +6,9 @@ import { test } from 'node:test';
 
 import { mintVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel';
 
-import { GantryDenied } from '../src/lib/denied.js';
-import { createMiddlewareHandler } from '../src/lib/middleware.js';
-import { getLeaseStore } from '../src/lib/middleware.js';
-import { onVerifyPassed } from '../src/lib/verify-handler.js';
-import { createWorkerState } from '../src/lib/worker-state.js';
+import { GantryDenied } from '../src/denied.js';
+import { createMiddlewareHandler, getLeaseStore } from '../src/middleware.js';
+import { createWorkerState, onVerifyPassed } from '../src/verify.js';
 import { writeKeyring, writeMiniGantryRepo } from './helpers/mini-repo.mjs';
 
 test('onVerifyPassed pins mission_rel on lease store', () => {

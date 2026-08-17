@@ -1,11 +1,42 @@
 import { verifyMission } from '@jeger-ai/opengantry/kernel';
 
-import { getGovernanceBundle } from './governance-context.js';
-import { getLeaseStore } from './middleware.js';
-import { resolveVerifyRepoRoot } from './repo-path.js';
-import { runPracticesScan, practicesFailedPayload } from './iii-practices/scan.mjs';
-import { VerifyCoalescer } from './verify-coalescer.js';
 import { GantryDenied } from './denied.js';
+import { getGovernanceBundle, getLeaseStore } from './middleware.js';
+import { resolveVerifyRepoRoot } from './repo-path.js';
+
+/** Single-flight verify coalescing keyed by caller-supplied cache key. */
+export class VerifyCoalescer {
+  constructor() {
+    this.inFlight = new Map();
+    this.maxQueue = 32;
+  }
+
+  async run(key, fn) {
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key);
+    }
+    if (this.inFlight.size >= this.maxQueue) {
+      return {
+        status: 'failed',
+        error_code: 'GXT_VERIFY_SATURATED',
+      };
+    }
+    const promise = fn().finally(() => {
+      this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+}
+
+export function createWorkerState() {
+  return {
+    leaseStores: undefined,
+    governance: undefined,
+    coalescer: new VerifyCoalescer(),
+    forwardTrigger: async (function_id, payload) => ({ ok: true, function_id, payload }),
+  };
+}
 
 function verifySaturatedPayload() {
   return {
@@ -48,13 +79,8 @@ export function onVerifyPassed(state, data) {
   }
 }
 
-export async function runVerify(data, { allowlistRoot, skipPracticesScan } = {}) {
+export async function runVerify(data) {
   const repoRoot = resolveVerifyRepoRoot(data.repo_root);
-  if (!skipPracticesScan) {
-    const { findings, logs } = await runPracticesScan(repoRoot, { allowlistRoot });
-    for (const line of logs) console.log(line);
-    if (findings.length) return practicesFailedPayload(findings);
-  }
   return verifyMission({
     repoRoot,
     missionRelPath: data.mission_rel_path,
@@ -62,7 +88,7 @@ export async function runVerify(data, { allowlistRoot, skipPracticesScan } = {})
   });
 }
 
-export function createVerifyHandler(state, { allowlistRoot } = {}) {
+export function createVerifyHandler(state) {
   return async function gantryVerify(data) {
     const repoRoot = data?.repo_root;
     const key = JSON.stringify({
@@ -72,7 +98,7 @@ export function createVerifyHandler(state, { allowlistRoot } = {}) {
       options: data?.options ?? null,
     });
     const coalescer = state.coalescer;
-    const result = await coalescer.run(key, () => runVerify(data, { allowlistRoot }));
+    const result = await coalescer.run(key, () => runVerify(data));
     if (result?.error_code === 'GXT_VERIFY_SATURATED') {
       return verifySaturatedPayload();
     }
@@ -80,7 +106,8 @@ export function createVerifyHandler(state, { allowlistRoot } = {}) {
       try {
         onVerifyPassed(state, data);
       } catch (e) {
-        const hint = e instanceof GantryDenied ? e.hint : e instanceof Error ? e.message : String(e);
+        const hint =
+          e instanceof GantryDenied ? e.hint : e instanceof Error ? e.message : String(e);
         return verifyBindFailedPayload(hint);
       }
     }

@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { LEASE_STATES, LeaseStore } from '../src/lib/lease-store.js';
-import { defaultLeaseStorePath } from '../src/lib/repo-path.js';
+import { LEASE_STATES, LeaseStore } from '../src/lease-store.js';
+import { defaultLeaseStorePath } from '../src/repo-path.js';
 
 test('lease store rejects path outside .gitagent', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-path-'));

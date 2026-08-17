@@ -61,7 +61,10 @@ function withStoreLock(storePath, fn) {
   let fd;
   while (true) {
     try {
-      fd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fd = fs.openSync(
+        lockPath,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+      );
       fs.writeFileSync(fd, String(process.pid));
       break;
     } catch (e) {

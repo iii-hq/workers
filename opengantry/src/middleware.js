@@ -1,11 +1,56 @@
-import { evaluateFunctionScope, isPromoteClassFunctionId } from '@jeger-ai/opengantry/kernel';
+import {
+  evaluateFunctionScope,
+  isPromoteClassFunctionId,
+  loadGovernanceBundle,
+} from '@jeger-ai/opengantry/kernel';
 
-import { BoundedMap } from './bounded-map.js';
 import { GantryDenied } from './denied.js';
-import { getGovernanceBundle } from './governance-context.js';
 import { LEASE_STATES, LeaseStore } from './lease-store.js';
 import { defaultLeaseStorePath, resolveRepoRootFromContext } from './repo-path.js';
-import { verifyPromoteVerdictToken } from './verdict-bind.js';
+import { verifyPromoteVerdictToken } from './verdict.js';
+
+/** Size-capped Map: evicts oldest entry when at capacity. */
+class BoundedMap {
+  constructor(maxSize = 32) {
+    this.maxSize = maxSize;
+    this.map = new Map();
+  }
+
+  get(key) {
+    const v = this.map.get(key);
+    if (v !== undefined) {
+      this.map.delete(key);
+      this.map.set(key, v);
+    }
+    return v;
+  }
+
+  set(key, value) {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, value);
+    while (this.map.size > this.maxSize) {
+      const oldest = this.map.keys().next().value;
+      this.map.delete(oldest);
+    }
+  }
+
+  has(key) {
+    return this.map.has(key);
+  }
+}
+
+function governanceCacheKey(repoRoot, missionRel) {
+  return `${repoRoot}\0${missionRel}`;
+}
+
+export function getGovernanceBundle(state, repoRoot, missionRel) {
+  state.governance ??= new BoundedMap(32);
+  const key = governanceCacheKey(repoRoot, missionRel);
+  if (!state.governance.has(key)) {
+    state.governance.set(key, loadGovernanceBundle(repoRoot, missionRel));
+  }
+  return state.governance.get(key);
+}
 
 const RESERVED_PREFIXES = ['gantry::', 'opengantry::'];
 const RESERVED_SUFFIXES = ['::verify', '::attest', '::promote'];

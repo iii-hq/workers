@@ -6,10 +6,10 @@ import { test } from 'node:test';
 
 import { mintVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel';
 
-import { GantryDenied } from '../src/lib/denied.js';
-import { createMiddlewareHandler } from '../src/lib/middleware.js';
-import { LEASE_STATES, LeaseStore } from '../src/lib/lease-store.js';
-import { defaultLeaseStorePath } from '../src/lib/repo-path.js';
+import { GantryDenied } from '../src/denied.js';
+import { createMiddlewareHandler } from '../src/middleware.js';
+import { LeaseStore } from '../src/lease-store.js';
+import { defaultLeaseStorePath } from '../src/repo-path.js';
 import { writeKeyring, writeMiniGantryRepo } from './helpers/mini-repo.mjs';
 
 test('middleware throws on promote without mission binding', async () => {
