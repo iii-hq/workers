@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "browser"
-version = "0.2.1-experimental"
+version = "0.2.2-experimental"
 dependencies = [
  "anyhow",
  "arc-swap",
