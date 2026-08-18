@@ -66,6 +66,20 @@ Only the read surface is agent-callable (`router::models::list` / `get` /
 `supports`, `router::provider::list`); everything else is denied to in-run
 agents — see [Security model](#security-model).
 
+### Error conventions
+
+Errors use stable `router/<code>` identifiers. Streaming failures return an
+`error` object with a user-facing `message`, the shared `kind`, `retryable`,
+and an optional diagnostic `detail`. User interfaces should show `message`
+and keep `code` / `detail` behind technical details; automation should branch
+on `code` and `retryable`, never parse the prose.
+
+The main recovery codes are `router/provider_unavailable`,
+`router/capacity_exceeded`, `router/stream_idle_timeout`,
+`router/stream_incomplete`, `router/provider_auth_expired`,
+`router/provider_rate_limited`, `router/context_overflow`, and
+`router/provider_rejected`.
+
 ### Provider protocol
 
 Token-gated after the first declare: the response to `register` carries a

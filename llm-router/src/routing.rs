@@ -41,13 +41,17 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
         if !registered(provider) {
             return Err(RouterError::new(
                 RouterCode::UnknownProvider,
-                format!("unknown provider {provider}"),
+                format!(
+                    "Provider \"{provider}\" is not registered. Choose a configured provider and try again."
+                ),
             ));
         }
         if !available(provider) {
             return Err(RouterError::new(
                 RouterCode::ProviderUnavailable,
-                format!("provider {provider} unavailable"),
+                format!(
+                    "Provider \"{provider}\" is temporarily unavailable. Try again or choose another provider."
+                ),
             ));
         }
         return Ok(vec![provider.clone()]);
@@ -75,7 +79,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
             return Err(RouterError::new(
                 RouterCode::AmbiguousModel,
                 format!(
-                    "ambiguous model {} (providers: {})",
+                    "Model \"{}\" is available from multiple providers: {}. Choose a provider and try again.",
                     input.model,
                     available_owners.join(", ")
                 ),
@@ -123,7 +127,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
         return Err(RouterError::new(
             RouterCode::ProviderUnavailable,
             format!(
-                "no available provider for model {} (unavailable: {})",
+                "No provider currently available can serve model \"{}\" (unavailable: {}). Try again later or choose another model.",
                 input.model,
                 unavailable_matches.join(", ")
             ),
@@ -133,7 +137,10 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     // 6. Loud failure.
     Err(RouterError::new(
         RouterCode::NoProviderForModel,
-        format!("no provider registered for model {}", input.model),
+        format!(
+            "No configured provider can serve model \"{}\". Choose another model or configure a compatible provider.",
+            input.model
+        ),
     ))
 }
 
@@ -150,9 +157,11 @@ pub fn make_route(
         let (registry, catalog, config) = (registry.clone(), catalog.clone(), config.clone());
         Box::pin(async move {
             if req.model.is_empty() {
-                return Err(
-                    RouterError::new(RouterCode::InvalidRequest, "model is required").into(),
-                );
+                return Err(RouterError::new(
+                    RouterCode::InvalidRequest,
+                    "Select a model before sending the request.",
+                )
+                .into());
             }
             let config = snapshot(&config);
             let heuristics = config.settings().routing_heuristics.clone();
@@ -233,7 +242,7 @@ mod tests {
         assert_eq!(err.code, RouterCode::AmbiguousModel);
         assert_eq!(
             err.message,
-            "ambiguous model shared-model (providers: lmstudio, openai)"
+            "Model \"shared-model\" is available from multiple providers: lmstudio, openai. Choose a provider and try again."
         );
     }
 
@@ -280,7 +289,10 @@ mod tests {
 
         let err = decide(&input).unwrap_err();
         assert_eq!(err.code, RouterCode::ProviderUnavailable);
-        assert_eq!(err.message, "provider openai unavailable");
+        assert_eq!(
+            err.message,
+            "Provider \"openai\" is temporarily unavailable. Try again or choose another provider."
+        );
     }
 
     #[test]
@@ -296,7 +308,7 @@ mod tests {
         assert_eq!(err.code, RouterCode::ProviderUnavailable);
         assert_eq!(
             err.message,
-            "no available provider for model shared-model (unavailable: lmstudio, openai)"
+            "No provider currently available can serve model \"shared-model\" (unavailable: lmstudio, openai). Try again later or choose another model."
         );
     }
 
