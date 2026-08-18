@@ -115,17 +115,14 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         .description("Internal: reload devin configuration when it changes."),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })?;
+    ))?;
     Ok(())
 }
 

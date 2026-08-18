@@ -53,15 +53,12 @@ fn list_contains_function(raw: &Value, function_id: &str, namespace: &str) -> bo
 async fn function_available(iii: &IIIClient, function_id: &str) -> bool {
     let prefix = format!("{}::", function_prefix(function_id));
     let raw = iii
-        .trigger(
-            TriggerRequest {
-                function_id: EngineFunctions::LIST_FUNCTIONS.into(),
-                payload: json!({ "prefix": prefix }),
-                action: None,
-                timeout_ms: Some(15_000),
-            }
-            .namespace("default"),
-        )
+        .trigger(TriggerRequest {
+            function_id: EngineFunctions::LIST_FUNCTIONS.into(),
+            payload: json!({ "prefix": prefix }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
         .await;
     let namespace = iii.namespace().unwrap_or_else(|| "default".into());
     raw.as_ref()

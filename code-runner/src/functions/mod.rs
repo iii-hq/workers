@@ -146,14 +146,11 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
 /// fail-CLOSED, so an error or timeout here would abort the agent's turn; a
 /// missing guidance line must never do that.
 pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
-    match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-        trigger_type: "harness::hook::pre-generate".to_string(),
-        function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-        config: serde_json::json!({ "on_error": "fail_open" }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+        "harness::hook::pre-generate".to_string(),
+        inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+        serde_json::json!({ "on_error": "fail_open" }),
+    )) {
         Ok(_) => tracing::info!("code-runner pre-generate hook bound"),
         Err(e) => tracing::warn!(error = %e, "guidance hook binding failed; continuing without it"),
     }

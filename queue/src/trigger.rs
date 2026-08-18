@@ -42,15 +42,12 @@ const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
 /// shape is unrecognized.
 async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
     let response = iii
-        .trigger(
-            TriggerRequest {
-                function_id: "engine::workers::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
-            }
-            .namespace("default"),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
+        })
         .await
         .ok()?;
     response
@@ -216,15 +213,12 @@ impl Invoker for IiiInvoker {
     async fn function_available(&self, function_id: &str) -> Result<bool, String> {
         match self
             .iii
-            .trigger(
-                TriggerRequest {
-                    function_id: "engine::functions::info".to_string(),
-                    payload: json!({ "function_id": function_id }),
-                    action: None,
-                    timeout_ms: Some(5_000),
-                }
-                .namespace("default"),
-            )
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::info".to_string(),
+                payload: json!({ "function_id": function_id }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
             .await
         {
             Ok(value) => Ok(!value.is_null() && value.get("error").is_none()),
@@ -246,18 +240,15 @@ impl Invoker for IiiInvoker {
     ) -> Result<bool, String> {
         match self
             .iii
-            .trigger(
-                TriggerRequest {
-                    function_id: "engine::functions::info".to_string(),
-                    payload: json!({
-                        "function_id": function_id,
-                        "namespace": namespace,
-                    }),
-                    action: None,
-                    timeout_ms: Some(5_000),
-                }
-                .namespace("default"),
-            )
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::info".to_string(),
+                payload: json!({
+                    "function_id": function_id,
+                    "namespace": namespace,
+                }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
             .await
         {
             Ok(value) => Ok(!value.is_null() && value.get("error").is_none()),

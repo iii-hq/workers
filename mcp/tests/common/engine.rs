@@ -98,17 +98,14 @@ async fn register_bridge(iii: &Arc<IIIClient>) {
     functions::register_all(iii, &cfg);
 
     let api_path = cfg.api_path.clone();
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: FUNCTION_ID.to_string(),
-        config: json!({
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        FUNCTION_ID.to_string(),
+        json!({
             "api_path": api_path,
             "http_method": "POST",
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    )) {
         eprintln!(
             "[warn] mcp BDD harness failed to register HTTP trigger at {api_path}: {e}; \
              POST /mcp scenarios may fall through to whatever (if anything) is already \

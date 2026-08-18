@@ -20,7 +20,6 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::sync::{watch, Notify};
 
-use super::EngineClient;
 use crate::error::HarnessError;
 use crate::types::event::{AssistantMessageEvent, FunctionCallArgumentsPreview, StopReason};
 use crate::types::message::{empty_assistant, AssistantMessage};
@@ -66,7 +65,6 @@ const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
-    engine: EngineClient,
     timeout_ms: u64,
     coalesce_ms: u64,
 }
@@ -74,7 +72,6 @@ pub struct RouterClient {
 impl RouterClient {
     pub fn new(iii: Arc<IIIClient>, timeout_ms: u64, coalesce_ms: u64) -> Self {
         Self {
-            engine: EngineClient::new(iii.clone(), timeout_ms),
             iii,
             timeout_ms,
             coalesce_ms,
@@ -94,9 +91,7 @@ impl RouterClient {
         sink: &dyn StreamSink,
         mut abort_rx: watch::Receiver<bool>,
     ) -> Result<ChatOutcome, HarnessError> {
-        let channel = self
-            .engine
-            .create_channel(None)
+        let channel = iii_sdk::helpers::create_channel(&self.iii, None)
             .await
             .map_err(|e| HarnessError::Dependency(format!("create_channel: {e}")))?;
 

@@ -214,14 +214,11 @@ impl TriggerHandles {
 /// but a transient failure must not brick boot — it surfaces as a `None`
 /// handle.
 fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    match iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    )) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
             Some(handle)
@@ -305,17 +302,14 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })?;
+    ))?;
     Ok(())
 }
 

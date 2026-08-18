@@ -454,23 +454,17 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             }),
         );
     }
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: PENDING_CREATED.to_string(),
-        function_id: "recorder::on_created".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        PENDING_CREATED.to_string(),
+        "recorder::on_created".to_string(),
+        json!({}),
+    ))
     .expect("bind pending_created");
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: PENDING_RESOLVED.to_string(),
-        function_id: "recorder::on_resolved".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        PENDING_RESOLVED.to_string(),
+        "recorder::on_resolved".to_string(),
+        json!({}),
+    ))
     .expect("bind pending_resolved");
 
     configuration::bind_hook(&iii);

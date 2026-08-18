@@ -121,14 +121,11 @@ impl CronSlot {
         // `expression` is the binding key the cron trigger type consumes
         // (engine built-in and the standalone cron worker alike), matching
         // how the harness binds its own sweep.
-        let new = match iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "cron".to_string(),
-            function_id: "worktree::prune".to_string(),
-            config: json!({ "expression": schedule }),
-            metadata: None,
-            namespace: iii.namespace(),
-            trigger_namespace: None,
-        }) {
+        let new = match iii.register_trigger(RegisterTriggerInput::new(
+            "cron".to_string(),
+            "worktree::prune".to_string(),
+            json!({ "expression": schedule }),
+        )) {
             Ok(trigger) => {
                 tracing::info!(schedule, "prune cron binding registered");
                 trigger
@@ -195,17 +192,14 @@ pub fn register_config_trigger(
         ),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })?;
+    ))?;
     Ok(())
 }
 

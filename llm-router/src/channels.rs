@@ -1,7 +1,7 @@
 //! Real iii channel plumbing for the relay (no abstraction — these are the
 //! concrete bridges over `iii_sdk` channels).
-//! `create_router_channel` mints a router-owned iii channel through the
-//! engine's `default` namespace; `open_sink` builds a `ChannelWriter` directly
+//! `create_router_channel` mints a router-owned iii channel through the SDK;
+//! `open_sink` builds a `ChannelWriter` directly
 //! from a forwarded `writer_ref` (the Rust SDK does not hydrate refs in
 //! payloads).
 //!
@@ -14,10 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::channel::{Channel, ChannelReader, ChannelWriter, StreamChannelRef};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::{errors::Error, IIIClient};
-use serde_json::json;
 use tokio::sync::{mpsc, Notify};
 
 use crate::chat::relay::{CallerGone, FrameSink, ReadEvent, RelayRead, RouterChannel};
@@ -108,29 +106,7 @@ impl RelayRead for SdkReader {
 
 /// Mint a fresh router-owned iii channel for one provider attempt.
 pub async fn create_router_channel(iii: &IIIClient) -> Result<RouterChannel, Error> {
-    // SDK 0.23 makes an unqualified trigger inherit this worker's project
-    // namespace. Channel creation is a static engine function, so target the
-    // engine namespace explicitly while provider calls continue to inherit the
-    // project namespace elsewhere.
-    let result = iii
-        .trigger(
-            TriggerRequest {
-                function_id: "engine::channels::create".to_string(),
-                payload: json!({ "buffer_size": null }),
-                action: None,
-                timeout_ms: None,
-            }
-            .namespace("default"),
-        )
-        .await?;
-    let writer_ref = channel_ref(&result, "writer")?;
-    let reader_ref = channel_ref(&result, "reader")?;
-    let channel = Channel {
-        writer: ChannelWriter::new(iii.address(), &writer_ref),
-        reader: ChannelReader::new(iii.address(), &reader_ref),
-        writer_ref,
-        reader_ref,
-    };
+    let channel = iii_sdk::helpers::create_channel(iii, None).await?;
 
     // reader: bridge on_message + a pump task into an mpsc the relay can
     // select on. The pump drives next_binary(), which is what dispatches
@@ -174,16 +150,6 @@ pub async fn create_router_channel(iii: &IIIClient) -> Result<RouterChannel, Err
         }),
         writer: spawn_writer_forwarder(channel.writer),
     })
-}
-
-fn channel_ref(result: &serde_json::Value, field: &str) -> Result<StreamChannelRef, Error> {
-    serde_json::from_value(
-        result
-            .get(field)
-            .cloned()
-            .ok_or_else(|| Error::Serde(format!("missing '{field}' in channel response")))?,
-    )
-    .map_err(Error::from)
 }
 
 /// Build a sink for a caller-supplied writer_ref; same forwarder-task bridge.

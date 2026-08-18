@@ -123,12 +123,11 @@ pub fn apply_guidance(iii: &IIIClient, handles: &TriggerHandles, enabled: bool) 
 pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "cron".to_string(),
-            function_id: SWEEP_ID.to_string(),
-            config: json!({ "expression": cfg.sweep_expression }),
-            metadata: None,
-        },
+        RegisterTriggerInput::new(
+            "cron".to_string(),
+            SWEEP_ID.to_string(),
+            json!({ "expression": cfg.sweep_expression }),
+        ),
     )
 }
 
@@ -139,12 +138,11 @@ pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
 fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "harness::turn-completed".to_string(),
-            function_id: crate::functions::wake::WAKE_ID.to_string(),
-            config: json!({}),
-            metadata: None,
-        },
+        RegisterTriggerInput::new(
+            "harness::turn-completed".to_string(),
+            crate::functions::wake::WAKE_ID.to_string(),
+            json!({}),
+        ),
     )
 }
 
@@ -160,12 +158,11 @@ fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
 fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "harness::hook::pre-trigger".to_string(),
-            function_id: crate::functions::stamp_reply::STAMP_REPLY_ID.to_string(),
-            config: json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
-            metadata: None,
-        },
+        RegisterTriggerInput::new(
+            "harness::hook::pre-trigger".to_string(),
+            crate::functions::stamp_reply::STAMP_REPLY_ID.to_string(),
+            json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
+        ),
     )
 }
 
@@ -179,14 +176,14 @@ fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
 fn bind_pre_generate_hook(iii: &IIIClient) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "harness::hook::pre-generate".to_string(),
-            function_id: crate::functions::inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-            config: json!({ "on_error": "fail_open" }),
-            metadata: Some(json!({
-                "inject_prompt": crate::functions::inject_guidance::WORKFLOW_GUIDANCE
-            })),
-        },
+        RegisterTriggerInput::new(
+            "harness::hook::pre-generate".to_string(),
+            crate::functions::inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+            json!({ "on_error": "fail_open" }),
+        )
+        .with_metadata(json!({
+            "inject_prompt": crate::functions::inject_guidance::WORKFLOW_GUIDANCE
+        })),
     )
 }
 

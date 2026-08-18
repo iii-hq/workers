@@ -232,17 +232,14 @@ pub async fn start_injectable_ui_sync(iii: &Arc<IIIClient>, control: UiControl) 
         );
     }
 
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_CHANGE_FN_ID.to_string(),
-        config: json!({
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_CHANGE_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    )) {
         tracing::warn!(
             error = %e,
             "injectable-ui toggles: configuration trigger registration failed; \

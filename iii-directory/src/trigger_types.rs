@@ -16,7 +16,7 @@
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
-//! `iii.register_trigger(RegisterTriggerInput { trigger_type: "directory::skills::on-change", ... })`.
+//! `iii.register_trigger(RegisterTriggerInput::new("directory::skills::on-change", ...))`.
 //! The engine routes that registration through our
 //! [`SkillsTriggerHandler`] which stashes the subscriber in
 //! [`SubscriberSet`]. When a download lands, the `functions::download`

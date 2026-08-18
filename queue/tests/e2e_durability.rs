@@ -82,14 +82,11 @@ fn register_subscriber_with_config(
     if let Some(qc) = queue_config {
         config["queue_config"] = qc;
     }
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: TRIGGER_TYPE.to_string(),
-        function_id: function_id.to_string(),
+    iii.register_trigger(RegisterTriggerInput::new(
+        TRIGGER_TYPE.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })
+    ))
     .expect("register durable subscriber trigger");
 }
 

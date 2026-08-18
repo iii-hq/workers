@@ -109,17 +109,14 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, parts: BootParts) -> Result
         .description("Internal: reload cron configuration from the authoritative store on change."),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })?;
+    ))?;
     Ok(())
 }
 

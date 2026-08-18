@@ -106,14 +106,7 @@ fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>) -> Vec<Trigger> {
             json!({ "expression": "*/15 * * * * *" }),
         ),
     ] {
-        match iii.register_trigger(RegisterTriggerInput {
-            trigger_type: trigger_type.into(),
-            function_id: function_id.into(),
-            config,
-            metadata: None,
-            namespace: iii.namespace(),
-            trigger_namespace: None,
-        }) {
+        match iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config)) {
             Ok(handle) => handles.push(handle),
             Err(error) => tracing::warn!(
                 trigger_type,

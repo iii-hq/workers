@@ -500,14 +500,11 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
             }
         }),
     );
-    let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "router::ready".into(),
-        function_id: "provider::real::on_router_ready".into(),
-        config: json!({}),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    });
+    let _ = iii.register_trigger(RegisterTriggerInput::new(
+        "router::ready",
+        "provider::real::on_router_ready",
+        json!({}),
+    ));
 
     // declare (with a short retry in case the router is still booting)
     let mut token = None;
@@ -1384,14 +1381,11 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
         }),
     );
     probe
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "router::models::changed".into(),
-            function_id: "probe::on_models_changed".into(),
-            config: json!({}),
-            metadata: None,
-            namespace: probe.namespace(),
-            trigger_namespace: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "router::models::changed",
+            "probe::on_models_changed",
+            json!({}),
+        ))
         .expect("router::models::changed trigger registered");
 
     // Declare already emits count=1 from the static model; reconcile two

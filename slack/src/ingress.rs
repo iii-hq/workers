@@ -107,12 +107,9 @@ pub async fn shutdown(deps: &Arc<Deps>) {
 }
 
 fn register_route(iii: &IIIClient, function_id: &str, api_path: &str) -> Result<Trigger, Error> {
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: function_id.to_string(),
-        config: json!({ "api_path": api_path, "http_method": "POST" }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        function_id.to_string(),
+        json!({ "api_path": api_path, "http_method": "POST" }),
+    ))
 }

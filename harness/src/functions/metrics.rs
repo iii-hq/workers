@@ -224,19 +224,16 @@ async fn collect_trace_metrics(
     let cfg = deps.cfg().await;
     let response = deps
         .iii
-        .trigger(
-            TriggerRequest {
-                function_id: "engine::traces::group_by".into(),
-                payload: json!({
-                    "attribute": "iii.session.id",
-                    "limit": u32::MAX,
-                    "include_internal": true,
-                }),
-                action: None,
-                timeout_ms: Some(cfg.dispatch_timeout_ms),
-            }
-            .namespace("default"),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::traces::group_by".into(),
+            payload: json!({
+                "attribute": "iii.session.id",
+                "limit": u32::MAX,
+                "include_internal": true,
+            }),
+            action: None,
+            timeout_ms: Some(cfg.dispatch_timeout_ms),
+        })
         .await;
     let value = match response {
         Ok(value) => value,

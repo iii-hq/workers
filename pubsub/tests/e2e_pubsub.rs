@@ -42,14 +42,11 @@ async fn publish_fans_out_raw_data_to_subscribe_triggers() {
     }
 
     for fn_id in ["e2e::pubsub-listener-a", "e2e::pubsub-listener-b"] {
-        iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".to_string(),
-            function_id: fn_id.to_string(),
-            config: json!({"topic": "e2e.orders"}),
-            metadata: None,
-            namespace: iii.namespace(),
-            trigger_namespace: None,
-        })
+        iii.register_trigger(RegisterTriggerInput::new(
+            "subscribe".to_string(),
+            fn_id.to_string(),
+            json!({"topic": "e2e.orders"}),
+        ))
         .expect("trigger registration");
     }
 

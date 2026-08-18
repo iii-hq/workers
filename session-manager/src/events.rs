@@ -987,14 +987,11 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
         .metadata(serde_json::json!({ "trace_hidden": true })),
     );
 
-    match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-        trigger_type: STORE_EVENTS.to_string(),
-        function_id: relay_id.clone(),
-        config: serde_json::json!({}),
-        metadata: None,
-        namespace: remote.namespace(),
-        trigger_namespace: None,
-    }) {
+    match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+        STORE_EVENTS.to_string(),
+        relay_id.clone(),
+        serde_json::json!({}),
+    )) {
         Ok(_) => tracing::info!(relay = %relay_id, "attached to the main instance's event feed"),
         Err(e) => tracing::warn!(
             error = %e,

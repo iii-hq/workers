@@ -18,7 +18,7 @@ name = "document"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.23.0-rc.2"
 # The converter. Pure Rust, no system libraries, no subprocess, no network.
 anydoc = "=0.1.9"
 base64 = "0.22"

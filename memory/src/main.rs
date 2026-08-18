@@ -75,14 +75,11 @@ fn bind_best_effort(
     function_id: &str,
     config: serde_json::Value,
 ) {
-    let res = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    let res = iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    });
+    ));
     match res {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
         Err(e) => {
@@ -238,14 +235,11 @@ async fn main() -> Result<()> {
     // the bus surface still serves everything.
     for spec in functions::catalog() {
         let api_path = spec.function_id.replace("::", "/");
-        match iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: spec.function_id.to_string(),
-            config: json!({ "api_path": api_path, "http_method": "POST" }),
-            metadata: None,
-            namespace: iii.namespace(),
-            trigger_namespace: None,
-        }) {
+        match iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            spec.function_id.to_string(),
+            json!({ "api_path": api_path, "http_method": "POST" }),
+        )) {
             Ok(_) => tracing::debug!(
                 function_id = spec.function_id,
                 api_path,

@@ -4,7 +4,7 @@
 //!
 //! Every registration below is a direct `iii_sdk` call:
 //! `iii.register_function(id, RegisterFunction::new_async(...))` for the
-//! function surface and `iii.register_trigger(RegisterTriggerInput { .. })`
+//! function surface and `iii.register_trigger(RegisterTriggerInput::new(...))`
 //! for trigger bindings. Router events fan out via worker-owned trigger types
 //! (`triggers::RouterEvents`).
 use std::collections::BTreeMap;
@@ -252,14 +252,11 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_CONFIG_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".into(),
-        function_id: surface::ON_CONFIG_CHANGED_ID.into(),
-        config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
-        metadata: None,
-    namespace: iii.namespace(),
-    trigger_namespace: None,
-    })?;
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration",
+        surface::ON_CONFIG_CHANGED_ID,
+        json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
+    ))?;
 
     // Close the boot race between the initial fetch and trigger binding by
     // running the SAME operation the trigger runs: one reconcile keeps the
@@ -324,14 +321,11 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_FUNCTIONS_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "engine::functions-available".into(),
-            function_id: surface::ON_FUNCTIONS_CHANGED_ID.into(),
-            config: json!({}),
-            metadata: None,
-            namespace: iii.namespace(),
-            trigger_namespace: None,
-        }) {
+        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+            "engine::functions-available",
+            surface::ON_FUNCTIONS_CHANGED_ID,
+            json!({}),
+        )) {
             // Best-effort: without it providers still recover on their own
             // timer, exactly as before this binding existed.
             tracing::warn!(error = %e, "binding engine::functions-available failed; provider re-discovery falls back to each provider's periodic refresh");

@@ -133,14 +133,11 @@ pub fn register_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelRes
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "router::models::changed".to_string(),
-        function_id: MODELS_CHANGED_FN_ID.to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        "router::models::changed".to_string(),
+        MODELS_CHANGED_FN_ID.to_string(),
+        json!({}),
+    )) {
         tracing::warn!(
             error = %e,
             "could not bind router::models::changed; model-budget cache degrades to TTL-only invalidation"

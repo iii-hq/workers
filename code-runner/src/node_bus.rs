@@ -75,12 +75,9 @@ fn guest_trigger_input(
 ) -> Result<RegisterTriggerInput, String> {
     let guest = parse_guest_trigger(input)?;
     Ok(RegisterTriggerInput {
-        trigger_type: guest.r#type,
-        function_id: guest.function_id,
-        config: guest.config,
         metadata: guest.metadata,
         namespace,
-        trigger_namespace: None,
+        ..RegisterTriggerInput::new(guest.r#type, guest.function_id, guest.config)
     })
 }
 

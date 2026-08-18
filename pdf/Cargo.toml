@@ -18,7 +18,7 @@ name = "pdf"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0-rc.1"
+iii-sdk = "=0.23.0-rc.2"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }

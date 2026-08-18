@@ -16,6 +16,10 @@
 //!   fetch INSIDE it, so overlapping `configuration:updated` deliveries
 //!   converge on the latest authoritative value instead of racing
 //!   (docs/sops/configuration.md §6).
+//! - **Control-plane routing**: `configuration::*` is a worker-owned API,
+//!   not an `engine::*` builtin. Its client calls therefore name `default`
+//!   explicitly while registered callbacks still target the caller's
+//!   project namespace.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -91,12 +95,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),
@@ -261,12 +268,11 @@ where
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: fn_id.to_string(),
-        config: json!({ "configuration_id": config_id, "event_types": ["configuration:updated"] }),
-        metadata: None,
-    })?;
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        fn_id.to_string(),
+        json!({ "configuration_id": config_id, "event_types": ["configuration:updated"] }),
+    ))?;
     Ok(reload)
 }
 
@@ -285,12 +291,11 @@ mod tests {
     fn some_binding(iii: &IIIClient) -> Option<Trigger> {
         try_bind(
             iii,
-            RegisterTriggerInput {
-                trigger_type: "harness::hook::pre-generate".to_string(),
-                function_id: "test::hook".to_string(),
-                config: json!({ "on_error": "fail_open" }),
-                metadata: None,
-            },
+            RegisterTriggerInput::new(
+                "harness::hook::pre-generate".to_string(),
+                "test::hook".to_string(),
+                json!({ "on_error": "fail_open" }),
+            ),
         )
     }
 

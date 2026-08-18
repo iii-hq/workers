@@ -65,12 +65,12 @@ pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
         || {
             config_client::try_bind(
                 iii,
-                RegisterTriggerInput {
-                    trigger_type: "harness::hook::pre-generate".to_string(),
-                    function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-                    config: json!({ "on_error": "fail_open" }),
-                    metadata: Some(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
-                },
+                RegisterTriggerInput::new(
+                    "harness::hook::pre-generate".to_string(),
+                    inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+                    json!({ "on_error": "fail_open" }),
+                )
+                .with_metadata(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
             )
         },
         "inject_guidance on: appending web::fetch guidance to agent system prompts",

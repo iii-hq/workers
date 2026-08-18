@@ -49,18 +49,15 @@ async fn register_counting_backend_with_condition(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_http::TRIGGER_TYPE.to_string(),
         function_id,
-        config: json!({
+        json!({
             "api_path": api_path,
             "http_method": http_method,
             "condition_function_id": condition_function_id,
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })
+    ))
     .expect("register http trigger with condition");
 }
 

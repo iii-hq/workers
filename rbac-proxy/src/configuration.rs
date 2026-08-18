@@ -184,17 +184,14 @@ pub fn register_config_trigger(
         ),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })?;
+    ))?;
     Ok(())
 }
 
@@ -266,14 +263,11 @@ pub fn bind_catalog_refresh(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
         ),
     );
 
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "engine::functions-available".to_string(),
-        function_id: FUNCTIONS_AVAILABLE_FN_ID.to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "engine::functions-available".to_string(),
+        FUNCTIONS_AVAILABLE_FN_ID.to_string(),
+        json!({}),
+    )) {
         Ok(_) => tracing::info!("bound catalog-refresh trigger (engine::functions-available)"),
         Err(e) => {
             tracing::warn!(error = %e, "catalog-refresh trigger binding failed; relying on the TTL refresh")

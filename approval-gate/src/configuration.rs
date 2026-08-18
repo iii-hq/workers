@@ -140,18 +140,15 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
 
 /// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
 pub fn bind_hook(iii: &IIIClient) {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::hook::pre-trigger".to_string(),
-        function_id: "approval::gate".to_string(),
-        config: json!({
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::pre-trigger".to_string(),
+        "approval::gate".to_string(),
+        json!({
             "functions": HOOK_FUNCTIONS,
             "timeout_ms": HOOK_TIMEOUT_MS,
             "on_error": HOOK_ON_ERROR,
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::pre-trigger",
             function_id = "approval::gate",
@@ -171,18 +168,15 @@ pub fn bind_hook(iii: &IIIClient) {
 /// best-effort discipline (a standalone deployment without the harness
 /// still boots; a missing binding surfaces as a log, never an `Err` here).
 pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::hook::post-trigger".to_string(),
-        function_id: "approval::filesystem-access-watch".to_string(),
-        config: json!({
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::post-trigger".to_string(),
+        "approval::filesystem-access-watch".to_string(),
+        json!({
             "functions": FILESYSTEM_ACCESS_WATCH_FUNCTIONS,
             "timeout_ms": FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS,
             "on_error": FILESYSTEM_ACCESS_WATCH_ON_ERROR,
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::post-trigger",
             function_id = "approval::filesystem-access-watch",
@@ -279,17 +273,14 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         ),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    })?;
+    ))?;
     Ok(())
 }
 

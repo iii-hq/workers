@@ -297,17 +297,14 @@ fn setup_auto_download(
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(RegisterTriggerInput {
-                trigger_type: "worker".to_string(),
-                function_id: "directory::__on_worker_added".to_string(),
-                config: json!({
+            let result = iii_sub.register_trigger(RegisterTriggerInput::new(
+                "worker".to_string(),
+                "directory::__on_worker_added".to_string(),
+                json!({
                     "operations": ["add"],
                     "stages": ["done"]
                 }),
-                metadata: None,
-                namespace: iii_sub.namespace(),
-                trigger_namespace: None,
-            });
+            ));
             match result {
                 Ok(_) => {
                     tracing::info!("subscribed to worker trigger for auto-download");

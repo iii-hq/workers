@@ -83,14 +83,11 @@ fn bind_schedule(iii: Arc<IIIClient>, deps: Arc<Deps>) {
 
     tokio::spawn(async move {
         for attempt in 1..=20u32 {
-            match iii.register_trigger(RegisterTriggerInput {
-                trigger_type: "cron".to_string(),
-                function_id: functions::TICK_ID.to_string(),
-                config: serde_json::json!({ "expression": CRON_EXPRESSION }),
-                metadata: None,
-                namespace: iii.namespace(),
-                trigger_namespace: None,
-            }) {
+            match iii.register_trigger(RegisterTriggerInput::new(
+                "cron".to_string(),
+                functions::TICK_ID.to_string(),
+                serde_json::json!({ "expression": CRON_EXPRESSION }),
+            )) {
                 Ok(_) => {
                     tracing::info!(expression = CRON_EXPRESSION, "cron heartbeat bound");
                     return;
@@ -197,14 +194,11 @@ async fn main() -> Result<()> {
     // (`POST /memory-consolidate/...`). Best-effort, like memory.
     for spec in functions::catalog() {
         let api_path = spec.function_id.replace("::", "/");
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: spec.function_id.to_string(),
-            config: serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
-            metadata: None,
-            namespace: iii.namespace(),
-            trigger_namespace: None,
-        }) {
+        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            spec.function_id.to_string(),
+            serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
+        )) {
             tracing::debug!(error = %e, function_id = spec.function_id, "http trigger registration failed");
         }
     }

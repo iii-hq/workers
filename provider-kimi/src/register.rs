@@ -171,14 +171,11 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "router::ready".into(),
-        function_id: surface::ON_ROUTER_READY_ID.into(),
-        config: json!({}),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    });
+    let _ = iii.register_trigger(RegisterTriggerInput::new(
+        "router::ready",
+        surface::ON_ROUTER_READY_ID,
+        json!({}),
+    ));
 
     // Boot declare, off the boot path (a missing router must not block boot).
     tokio::spawn(declare_and_refresh(iii, http));

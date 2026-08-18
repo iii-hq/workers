@@ -221,18 +221,15 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::hook::post-trigger".to_string(),
-        function_id: HOOK_FN_ID.to_string(),
-        config: json!({
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::post-trigger".to_string(),
+        HOOK_FN_ID.to_string(),
+        json!({
             "functions": HOOK_FUNCTIONS,
             "timeout_ms": HOOK_TIMEOUT_MS,
             "on_error": HOOK_ON_ERROR,
         }),
-        metadata: None,
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(function_id = HOOK_FN_ID, "file-change observer bound"),
         Err(e) => tracing::warn!(
             error = %e,

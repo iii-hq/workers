@@ -1050,7 +1050,11 @@ mod tests {
 
     #[test]
     fn rs_register_trigger_type() {
-        let source = r#"iii.register_trigger(RegisterTriggerInput { trigger_type: "http".to_string(), function_id: "x".to_string(), config: json!({}), metadata: None })"#;
+        let source = r#"iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "x".to_string(),
+            json!({}),
+        ))"#;
         let result = analyze(source, pos(0, 59), Language::Rust);
         assert_eq!(result.context, CompletionContext::TriggerType);
         assert_eq!(result.current_text, "http");
@@ -1058,7 +1062,11 @@ mod tests {
 
     #[test]
     fn rs_register_trigger_function_id() {
-        let source = r#"iii.register_trigger(RegisterTriggerInput { trigger_type: "http".to_string(), function_id: "greet".to_string(), config: json!({}), metadata: None })"#;
+        let source = r#"iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "greet".to_string(),
+            json!({}),
+        ))"#;
         let result = analyze(source, pos(0, 92), Language::Rust);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "greet");
