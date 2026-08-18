@@ -1293,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "provider-zai"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "clap",
  "futures",
