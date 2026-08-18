@@ -304,6 +304,7 @@ pub fn handle_chunk(
                         state.function_calls[index].args_json.push_str(args);
                         events.push(AssistantMessageEvent::FunctioncallDelta {
                             partial: None,
+                            arguments_preview: None,
                             delta: args.to_string(),
                             id: state.function_calls[index].id.clone(),
                         });
@@ -465,6 +466,7 @@ fn handle_responses_event(
             let id = call.id.clone();
             events.push(AssistantMessageEvent::FunctioncallDelta {
                 partial: None,
+                arguments_preview: None,
                 delta: delta.to_string(),
                 id,
             });
