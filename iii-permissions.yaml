@@ -51,6 +51,8 @@ rules:
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # Interactive PTY lifecycle is driven only by the console UI.
+  - '!shell::pty::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
