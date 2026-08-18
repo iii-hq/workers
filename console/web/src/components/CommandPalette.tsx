@@ -75,8 +75,8 @@ export interface CommandPaletteProps {
   onClose: () => void
   /** Rows the console can build without the engine: pages, chats, actions. */
   localEntries: PaletteEntry[]
-  /** Where a worker row goes when chosen (the workers screen). */
-  onOpenWorkers: () => void
+  /** Where a worker row goes when chosen, by worker name. */
+  onOpenWorker: (name: string) => void
   /** Where a function row goes when chosen (its worker's row). */
   onOpenFunction: (functionId: string, worker: string) => void
 }
@@ -85,7 +85,7 @@ export function CommandPalette({
   open,
   onClose,
   localEntries,
-  onOpenWorkers,
+  onOpenWorker,
   onOpenFunction,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
@@ -96,18 +96,29 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reset per opening: a palette that reopens on the last query is a palette
-  // you have to clear before you can use it.
+  // you have to clear before you can use it. Closing returns focus to whatever
+  // had it — the palette can be opened from anywhere, so it must not strand
+  // the caret when it goes away.
   useEffect(() => {
     if (!open) return
+    const opener = document.activeElement as HTMLElement | null
     setQuery('')
     setFilter('all')
     setActive(0)
     inputRef.current?.focus()
+    return () => {
+      if (opener?.isConnected) opener.focus()
+    }
   }, [open])
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    // Drop the previous opening's inventory first: a worker that disconnected
+    // since must not stay searchable while the new read is in flight, and must
+    // not survive a read that fails.
+    setEngineEntries([])
+    setEngineError(null)
     void readEngine().then((snapshot) => {
       if (cancelled) return
       setEngineError(snapshot.error)
@@ -120,7 +131,7 @@ export function CommandPalette({
           ? `${worker.status} · ${worker.version}`
           : worker.status,
         keywords: [worker.status],
-        run: onOpenWorkers,
+        run: () => onOpenWorker(worker.name),
       }))
       const functions: PaletteEntry[] = snapshot.functions.map((fn) => ({
         id: `function:${fn.id}`,
@@ -136,7 +147,7 @@ export function CommandPalette({
     return () => {
       cancelled = true
     }
-  }, [open, onOpenWorkers, onOpenFunction])
+  }, [open, onOpenWorker, onOpenFunction])
 
   const results = useMemo(
     () => filterEntries([...localEntries, ...engineEntries], query, filter),
@@ -193,9 +204,7 @@ export function CommandPalette({
   let cursor = -1
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh] backdrop-blur-sm"
-    >
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh] backdrop-blur-sm">
       {/* The scrim is a real button so dismissing by click is reachable
           without a mouse; the dialog below owns every other key. */}
       <button

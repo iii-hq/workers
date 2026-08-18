@@ -51,6 +51,10 @@ function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback
 }
 
+function reasonText(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason)
+}
+
 function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
@@ -63,10 +67,25 @@ function num(value: unknown): number {
 export async function readEngine(): Promise<EngineSnapshot> {
   try {
     const client = await getIiiClient()
-    const [workerResponse, functionResponse] = await Promise.all([
+    // Settled, not all: the two reads are independent, and a worker list that
+    // times out should not also cost you the function list.
+    const [workerResult, functionResult] = await Promise.allSettled([
       client.trigger<{ workers?: unknown }>('engine::workers::list', {}),
       client.trigger<{ functions?: unknown }>('engine::functions::list', {}),
     ])
+    const failures = [
+      workerResult.status === 'rejected'
+        ? reasonText(workerResult.reason)
+        : null,
+      functionResult.status === 'rejected'
+        ? reasonText(functionResult.reason)
+        : null,
+    ].filter((reason): reason is string => reason !== null)
+
+    const workerResponse =
+      workerResult.status === 'fulfilled' ? workerResult.value : undefined
+    const functionResponse =
+      functionResult.status === 'fulfilled' ? functionResult.value : undefined
 
     const workerRows = Array.isArray(workerResponse?.workers)
       ? workerResponse.workers
@@ -98,12 +117,15 @@ export async function readEngine(): Promise<EngineSnapshot> {
       })
       .filter((fn) => fn.id !== '')
 
-    return { workers, functions, error: null }
-  } catch (error) {
     return {
-      ...EMPTY,
-      error: error instanceof Error ? error.message : String(error),
+      workers,
+      functions,
+      error: failures.length > 0 ? failures.join('; ') : null,
     }
+  } catch (error) {
+    // Only a client that never connects lands here; the per-read failures
+    // above keep their own partial results.
+    return { ...EMPTY, error: reasonText(error) }
   }
 }
 

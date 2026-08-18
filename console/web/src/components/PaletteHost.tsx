@@ -12,6 +12,7 @@ import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import type { PaletteEntry } from '@/lib/palette/sources'
 import type { TabScreen } from '@/lib/workspace-tabs'
+import { setPendingWorkerSearch } from '@/pages/Workers/pending-selection'
 
 export interface PaletteHostProps {
   openScreen: (screen: TabScreen) => void
@@ -46,8 +47,23 @@ export function PaletteHost({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const openWorkers = useCallback(() => openScreen('workers'), [openScreen])
-  const openFunction = useCallback(() => openScreen('workers'), [openScreen])
+  // Both land on the workers page, filtered to what was picked: a worker by
+  // its name, a function by the worker that registers it, falling back to the
+  // function id when the engine reported no owner.
+  const openWorker = useCallback(
+    (name: string) => {
+      setPendingWorkerSearch(name)
+      openScreen('workers')
+    },
+    [openScreen],
+  )
+  const openFunction = useCallback(
+    (functionId: string, worker: string) => {
+      setPendingWorkerSearch(worker || functionId)
+      openScreen('workers')
+    },
+    [openScreen],
+  )
 
   const localEntries = useMemo((): PaletteEntry[] => {
     const pages: PaletteEntry[] = screenOptions.map((option) => ({
@@ -130,7 +146,7 @@ export function PaletteHost({
       open={open}
       onClose={() => setOpen(false)}
       localEntries={localEntries}
-      onOpenWorkers={openWorkers}
+      onOpenWorker={openWorker}
       onOpenFunction={openFunction}
     />
   )

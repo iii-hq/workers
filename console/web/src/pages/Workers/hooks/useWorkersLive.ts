@@ -4,6 +4,7 @@ import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
 import { getDefaultBackend } from '@/lib/backend'
 import { stopSupervisorWorker } from '../api/workers'
 import { fetchMergedWorkers } from '../lib/merge-workers'
+import { takePendingWorkerSearch } from '../pending-selection'
 import { filterWorkerRows, type WorkersFilterState } from '../types'
 
 export const workersKeys = {
@@ -27,11 +28,13 @@ const RUNTIME_STAGES = ['done', 'failed'] as const
 export function useWorkersLive() {
   const qc = useQueryClient()
   const enabled = getDefaultBackend().id === 'real'
-  const [filters, setFilters] = useState<WorkersFilterState>({
-    search: '',
+  // A caller (the command palette) can ask for this page filtered to one
+  // worker. It is consumed once, at mount, so a later visit opens unfiltered.
+  const [filters, setFilters] = useState<WorkersFilterState>(() => ({
+    search: takePendingWorkerSearch() ?? '',
     tag: null,
     runtime: null,
-  })
+  }))
   const [stoppingName, setStoppingName] = useState<string | null>(null)
 
   const query = useQuery({
