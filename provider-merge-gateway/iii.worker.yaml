@@ -3,16 +3,11 @@ name: provider-merge-gateway
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
+bin: provider-merge-gateway
 tags: [llm, merge-gateway, chat-completions, provider]
 description: Merge Gateway provider worker (multi-vendor routing via the OpenAI-compatible surface); implements provider::merge-gateway::stream and provider::merge-gateway::refresh_models behind llm-router.
 
 dependencies:
   state: "^0.22.0"
   llm-router: "^1.0.0"
-
-runtime:
-  kind: rust
-
-scripts:
-  install: cargo build
-  start: cargo run

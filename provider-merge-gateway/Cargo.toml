@@ -1,8 +1,5 @@
 [workspace]
 
-# 0.3.x: the provider-merge-gateway/v0.1.0–v0.2.1 tags belong to the retired
-# bundled Node provider; this lineage starts above them so Create Tag never
-# collides.
 [package]
 name = "provider-merge-gateway"
 version = "1.0.0"
