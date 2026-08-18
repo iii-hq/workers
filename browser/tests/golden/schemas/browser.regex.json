@@ -1,0 +1,40 @@
+{
+  "function_id": "browser::regex",
+  "description": "Run a regex over the visible text of provided HTML; `first` returns the first match, else all.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "pattern": {
+        "type": "string"
+      },
+      "first": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "html",
+      "pattern"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": [
+          "array",
+          "string",
+          "null"
+        ],
+        "items": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

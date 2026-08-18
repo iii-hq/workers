@@ -1,6 +1,7 @@
 //! `browser` binary entry: connect, register configuration + fetch the
-//! authoritative value, register the five `browser::*` trigger types and
-//! twelve functions, start the idle sweep, then sleep until Ctrl+C.
+//! authoritative value, register the `browser::*` trigger types and functions
+//! plus the native `browser::*` parse surface, start the idle
+//! sweep, then sleep until Ctrl+C.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use iii_sdk::{register_worker, InitOptions};
 use browser::config::WorkerConfig;
 use browser::events::{self, IiiDeliverer};
 use browser::session::Sessions;
-use browser::{configuration, functions, manifest};
+use browser::{configuration, functions, manifest, scrapling};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -53,11 +54,9 @@ async fn wait_for_shutdown_signal() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let rust_log = std::env::var("RUST_LOG").ok();
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(browser::logging::env_filter(rust_log.as_deref()))
         .init();
 
     let cli = Cli::parse();
@@ -120,10 +119,19 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("loading browser configuration")?;
+    let scrapling_startup = cfg.scrapling.startup_snapshot();
+    scrapling::adaptive::configure(&scrapling_startup.adaptive_storage_path)
+        .map_err(anyhow::Error::msg)
+        .context("configuring Scrapling adaptive storage")?;
+    scrapling::adaptive::configure_quota(cfg.scrapling.adaptive_quota());
     tracing::info!(
         headless = cfg.headless,
         max_sessions = cfg.max_sessions,
         console_buffer = cfg.console_buffer,
+        scrapling_security_mode = ?cfg.scrapling.security_mode,
+        scrapling_max_sessions = scrapling_startup.max_sessions,
+        scrapling_session_idle_timeout_s = scrapling_startup.session_idle_timeout_s,
+        scrapling_adaptive_storage_path = %scrapling_startup.adaptive_storage_path,
         "loaded browser configuration"
     );
     let shared = cfg.into_shared();
@@ -138,27 +146,45 @@ async fn main() -> Result<()> {
     let sessions = Sessions::new(shared.clone(), emitter, iii.clone());
     functions::register_all(&iii, &sessions);
 
-    configuration::register_config_trigger(&iii, shared.clone())
+    // Scrapling owns a private HTTP/dynamic/stealthy registry. Its ids never
+    // enter or control the interactive browser::sessions::* registry.
+    let scrapling_ctx = Arc::new(scrapling::net::Ctx::new(sessions.clone(), iii.clone()));
+    scrapling::register_all(&iii, &scrapling_ctx);
+    // The guidance hook FUNCTION is registered above (inert without a
+    // binding); the binding follows the inject_guidance knob — applied here
+    // at boot and re-applied by the config-change handler, so console flips
+    // take effect without a restart.
+    let guidance = scrapling::GuidanceState::default();
+    scrapling::apply_guidance(&iii, &guidance, shared.load().scrapling.inject_guidance);
+
+    configuration::register_config_trigger(&iii, shared.clone(), guidance)
         .context("registering configuration change trigger")?;
 
     // Injectable console UI — after the browser::* functions so the console
     // can attribute the assets.
     browser::ui::register(&iii);
 
-    // Idle sweep: stop sessions nobody has touched for idle_stop_ms.
+    // Idle sweep closes metadata and backends together in both registries.
     let sweep_sessions = sessions.clone();
+    let sweep_ctx = scrapling_ctx.clone();
     let sweep = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
             sweep_sessions.sweep_idle().await;
+            for id in sweep_ctx.http.sweep_idle() {
+                tracing::info!(session = %id, "scrapling session reaped (idle)");
+            }
         }
     });
 
-    tracing::info!("browser ready: browser::* sessions + console capture + pick");
+    tracing::info!(
+        "browser ready: browser::* sessions + console capture + pick, browser::* parsing"
+    );
     wait_for_shutdown_signal().await?;
     tracing::info!("browser shutting down");
     sweep.abort();
+    scrapling_ctx.http.close_all().await;
     sessions.stop_all().await;
     iii.shutdown_async().await;
     Ok(())

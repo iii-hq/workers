@@ -1,22 +1,27 @@
 {
-  "description": "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to browser::snapshot; read deep subtrees by passing a ref.",
   "function_id": "browser::dom::read",
+  "description": "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to browser::snapshot; read deep subtrees by passing a ref.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DomReadInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
     "properties": {
       "depth": {
-        "default": null,
         "description": "Levels of children to include (default 3).",
-        "format": "uint32",
-        "minimum": 0.0,
+        "default": null,
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "format": "uint32",
+        "minimum": 0.0
       },
       "ref": {
-        "default": null,
         "description": "Subtree root from an earlier ref (`e3`/`p1`) or dom node. Omit for the document root.",
+        "default": null,
         "type": [
           "string",
           "null"
@@ -25,30 +30,46 @@
       "session_id": {
         "type": "string"
       }
-    },
-    "required": [
-      "session_id"
-    ],
-    "title": "DomReadInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DomReadOutput",
+    "type": "object",
+    "required": [
+      "root",
+      "truncated"
+    ],
+    "properties": {
+      "root": {
+        "$ref": "#/definitions/DomNode"
+      },
+      "truncated": {
+        "description": "True when the node cap cut the tree short; read a subtree via `ref`.",
+        "type": "boolean"
+      }
+    },
     "definitions": {
       "DomNode": {
         "description": "One DOM node in the outline. `ref` resolves in `browser::act`, `browser::styles::read`, and `browser::styles::write`.",
+        "type": "object",
+        "required": [
+          "child_count",
+          "ref",
+          "tag"
+        ],
         "properties": {
           "child_count": {
             "description": "Total children in the document, which may exceed `children` returned at this depth.",
+            "type": "integer",
             "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+            "minimum": 0.0
           },
           "children": {
+            "type": "array",
             "items": {
               "$ref": "#/definitions/DomNode"
-            },
-            "type": "array"
+            }
           },
           "classes": {
             "type": [
@@ -76,29 +97,8 @@
               "null"
             ]
           }
-        },
-        "required": [
-          "child_count",
-          "ref",
-          "tag"
-        ],
-        "type": "object"
+        }
       }
-    },
-    "properties": {
-      "root": {
-        "$ref": "#/definitions/DomNode"
-      },
-      "truncated": {
-        "description": "True when the node cap cut the tree short; read a subtree via `ref`.",
-        "type": "boolean"
-      }
-    },
-    "required": [
-      "root",
-      "truncated"
-    ],
-    "title": "DomReadOutput",
-    "type": "object"
+    }
   }
 }

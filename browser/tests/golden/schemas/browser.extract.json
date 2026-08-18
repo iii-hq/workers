@@ -1,0 +1,71 @@
+{
+  "function_id": "browser::extract",
+  "description": "Parse HTML with a selector list (css/xpath/regex, text/attr/html, all-or-first).",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "selectors": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            },
+            "regex": {
+              "type": "string"
+            },
+            "attr": {
+              "type": "string",
+              "description": "extract this attribute instead of text"
+            },
+            "html": {
+              "type": "boolean",
+              "description": "extract inner HTML instead of text"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "return every match as a list"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      "adaptive": {
+        "type": "boolean",
+        "description": "relocate elements after a site change via saved identities"
+      },
+      "auto_save": {
+        "type": "boolean",
+        "description": "save matched identities (defaults on when adaptive)"
+      },
+      "adaptive_domain": {
+        "type": "string",
+        "description": "page URL/domain that keys saved identities"
+      }
+    },
+    "required": [
+      "html",
+      "selectors"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "extracted": {
+        "type": "object"
+      }
+    }
+  }
+}

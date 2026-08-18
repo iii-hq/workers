@@ -1,0 +1,14 @@
+{
+  "function": "browser::xpath",
+  "case": "following_axis_document_order",
+  "request": {
+    "html": "<div><i>A</i></div><p>B</p><p>C</p>",
+    "query": "//i/following::p/text()"
+  },
+  "ok": {
+    "result": [
+      "B",
+      "C"
+    ]
+  }
+}

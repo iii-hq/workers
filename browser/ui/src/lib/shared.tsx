@@ -19,6 +19,21 @@ export function Chip({
   return <span className={cn('br-ui-chip', className)}>{children}</span>
 }
 
+export function FilterChip({
+  label,
+  value,
+}: {
+  label: string
+  value: ReactNode
+}) {
+  return (
+    <Chip>
+      <span className="br-ui-chip-label">{label}</span>
+      <span>{value}</span>
+    </Chip>
+  )
+}
+
 export function MetaRow({ children }: { children: ReactNode }) {
   return <div className="br-ui-meta-row">{children}</div>
 }

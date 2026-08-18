@@ -1,25 +1,43 @@
 {
-  "description": "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and whether a session already adopted each). Read-only; adopt one with browser::sessions::attach.",
   "function_id": "browser::tabs::list",
+  "description": "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and whether a session already adopted each). Read-only; adopt one with browser::sessions::attach.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TabsListInput",
+    "type": "object",
+    "required": [
+      "cdp_url"
+    ],
     "properties": {
       "cdp_url": {
         "description": "CDP endpoint of the running browser, as in browser::sessions::attach.",
         "type": "string"
       }
-    },
-    "required": [
-      "cdp_url"
-    ],
-    "title": "TabsListInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TabsListOutput",
+    "type": "object",
+    "required": [
+      "tabs"
+    ],
+    "properties": {
+      "tabs": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/TabInfo"
+        }
+      }
+    },
     "definitions": {
       "TabInfo": {
         "description": "One open tab reported by `browser::tabs::list`.",
+        "type": "object",
+        "required": [
+          "adopted",
+          "url"
+        ],
         "properties": {
           "adopted": {
             "description": "True when a session already adopted this tab; it cannot be adopted again until that session stops.",
@@ -34,26 +52,8 @@
           "url": {
             "type": "string"
           }
-        },
-        "required": [
-          "adopted",
-          "url"
-        ],
-        "type": "object"
+        }
       }
-    },
-    "properties": {
-      "tabs": {
-        "items": {
-          "$ref": "#/definitions/TabInfo"
-        },
-        "type": "array"
-      }
-    },
-    "required": [
-      "tabs"
-    ],
-    "title": "TabsListOutput",
-    "type": "object"
+    }
   }
 }

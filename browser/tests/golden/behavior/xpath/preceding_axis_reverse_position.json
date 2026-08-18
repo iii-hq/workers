@@ -1,0 +1,13 @@
+{
+  "function": "browser::xpath",
+  "case": "preceding_axis_reverse_position",
+  "request": {
+    "html": "<p id='a'>A</p><p id='b'>B</p><p id='c'>C</p>",
+    "query": "//p[@id='c']/preceding::p[1]/@id"
+  },
+  "ok": {
+    "result": [
+      "b"
+    ]
+  }
+}

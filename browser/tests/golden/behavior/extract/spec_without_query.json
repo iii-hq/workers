@@ -1,0 +1,22 @@
+{
+  "function": "browser::extract",
+  "case": "spec_without_query",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "selectors": [
+      {
+        "name": "x"
+      },
+      {
+        "name": "y",
+        "all": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "x": null,
+      "y": []
+    }
+  }
+}

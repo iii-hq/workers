@@ -1,0 +1,9 @@
+{
+  "function": "browser::find",
+  "case": "empty_text_regex_error",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "text_regex": ""
+  },
+  "err": "provide at least one of `tag`, `attrs`, `text_regex`"
+}

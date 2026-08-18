@@ -1,0 +1,9 @@
+{
+  "function": "browser::xpath",
+  "case": "string_scalar_splits_into_text_nodes",
+  "request": {
+    "html": "<p>Alpha</p>",
+    "query": "string(//p)"
+  },
+  "err": "'str' object has no attribute 'iter'"
+}

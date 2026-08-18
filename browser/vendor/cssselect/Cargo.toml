@@ -1,0 +1,17 @@
+[package]
+name = "cssselect"
+version = "0.2.0"
+edition = "2021"
+license = "BSD-3-Clause"
+description = "Repository-owned Scrapling compatibility fork of cssselect"
+
+[features]
+default = ["std"]
+std = []
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+sxd-document = "0.3"
+sxd-xpath = "0.4"

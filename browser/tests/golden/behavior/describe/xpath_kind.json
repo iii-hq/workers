@@ -1,0 +1,28 @@
+{
+  "function": "browser::describe",
+  "case": "xpath_kind",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "query": "//li[2]/a",
+    "kind": "xpath"
+  },
+  "ok": {
+    "found": true,
+    "element": {
+      "tag": "a",
+      "text": "Banana",
+      "html": "<a href=\"/b\">Banana</a>",
+      "attrs": {
+        "href": "/b"
+      },
+      "css": "body > ul > li:nth-of-type(2) > a",
+      "xpath": "//body/ul/li[2]/a",
+      "full_css": "body > ul > li:nth-of-type(2) > a",
+      "full_xpath": "//body/ul/li[2]/a",
+      "classes": [],
+      "parent_tag": "li",
+      "children": 0,
+      "siblings": 0
+    }
+  }
+}

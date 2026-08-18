@@ -45,7 +45,7 @@ const BROWSER_PAGE_HASH = '#/ext/browser'
  * Header label for `browser::*` ids: dims the namespace prefix so the op
  * (`navigate`, `act`, …) reads clearly.
  */
-function FunctionIdLabel({ functionId }: { functionId: string }) {
+export function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('browser::')) {
     return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
   }

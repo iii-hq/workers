@@ -1,0 +1,15 @@
+{
+  "function": "browser::regex",
+  "case": "zero_width_findall",
+  "request": {
+    "html": "<p>ab</p>",
+    "pattern": "x*"
+  },
+  "ok": {
+    "result": [
+      "",
+      "",
+      ""
+    ]
+  }
+}

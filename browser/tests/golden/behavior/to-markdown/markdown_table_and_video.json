@@ -1,0 +1,11 @@
+{
+  "function": "browser::to-markdown",
+  "case": "markdown_table_and_video",
+  "request": {
+    "html": "\n         <figure><table><caption> Cap </caption><thead><tr><th colspan=\"2\">Head <img alt=\"ALT\" src=\"x\"></th></tr></thead>\n         <tbody><tr><td>A</td><td><b>B</b><br>C</td></tr></tbody></table>\n         <figcaption> Figure text </figcaption></figure>\n         <video poster=\"poster.jpg\"><source src=\"movie.mp4\">Trailer</video><video src=\"only.mp4\">Only</video>\n     "
+  },
+  "ok": {
+    "format": "markdown",
+    "content": "Cap\n\n| Head ALT | |\n| --- | --- |\n| A | **B** C |\n\nFigure text\n\n[![Trailer](poster.jpg)](movie.mp4)[Only](only.mp4)"
+  }
+}

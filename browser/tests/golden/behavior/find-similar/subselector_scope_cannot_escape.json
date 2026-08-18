@@ -1,0 +1,31 @@
+{
+  "function": "browser::find-similar",
+  "case": "subselector_scope_cannot_escape",
+  "request": {
+    "html": "<main><section><a>inside</a></section></main><a>outside</a>",
+    "anchor": "section",
+    "selectors": [
+      {
+        "name": "escaped",
+        "css": "body a",
+        "all": true
+      },
+      {
+        "name": "inside",
+        "css": "a",
+        "all": true
+      }
+    ]
+  },
+  "ok": {
+    "count": 1,
+    "items": [
+      {
+        "escaped": [],
+        "inside": [
+          "inside"
+        ]
+      }
+    ]
+  }
+}

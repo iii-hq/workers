@@ -1,8 +1,14 @@
 {
-  "description": "Evaluate a JavaScript expression in the page and return its completion value. Use for reads the snapshot can't express; prefer browser::act for interactions.",
   "function_id": "browser::evaluate",
+  "description": "Evaluate a JavaScript expression in the page and return its completion value. Use for reads the snapshot can't express; prefer browser::act for interactions.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EvaluateInput",
+    "type": "object",
+    "required": [
+      "expression",
+      "session_id"
+    ],
     "properties": {
       "expression": {
         "description": "JavaScript expression evaluated in the page. The completion value is returned by value; wrap statements in an IIFE.",
@@ -12,25 +18,24 @@
         "type": "string"
       },
       "timeout_ms": {
-        "default": null,
         "description": "Upper bound on evaluation; clamped to `max_timeout_ms`.",
-        "format": "uint64",
-        "minimum": 0.0,
+        "default": null,
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "format": "uint64",
+        "minimum": 0.0
       }
-    },
-    "required": [
-      "expression",
-      "session_id"
-    ],
-    "title": "EvaluateInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EvaluateOutput",
+    "type": "object",
+    "required": [
+      "ok"
+    ],
     "properties": {
       "error": {
         "description": "Exception text when not `ok`.",
@@ -45,11 +50,6 @@
       "value": {
         "description": "JSON completion value when `ok`."
       }
-    },
-    "required": [
-      "ok"
-    ],
-    "title": "EvaluateOutput",
-    "type": "object"
+    }
   }
 }

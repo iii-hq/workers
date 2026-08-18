@@ -1,0 +1,15 @@
+scrapling[fetchers]==0.4.9
+iii-sdk==0.21.6
+iii-helpers==0.21.6
+curl-cffi==0.16.0
+playwright==1.60.0
+patchright==1.60.1
+browserforge==1.2.4
+lxml==6.1.1
+cssselect==1.5.0
+w3lib==2.4.1
+markdownify==1.2.3
+beautifulsoup4==4.15.0
+pillow==12.3.0
+tld==0.13.2
+orjson==3.11.9

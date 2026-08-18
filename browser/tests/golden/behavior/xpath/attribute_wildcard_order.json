@@ -1,0 +1,15 @@
+{
+  "function": "browser::xpath",
+  "case": "attribute_wildcard_order",
+  "request": {
+    "html": "<p z='1' a='2' m='3'>P</p>",
+    "query": "//p/@*"
+  },
+  "ok": {
+    "result": [
+      "1",
+      "2",
+      "3"
+    ]
+  }
+}

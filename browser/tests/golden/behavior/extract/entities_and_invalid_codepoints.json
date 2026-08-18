@@ -1,0 +1,27 @@
+{
+  "function": "browser::extract",
+  "case": "entities_and_invalid_codepoints",
+  "request": {
+    "html": "<p>&copy; &apos; &#0; &#xD800; &notanentity;</p>",
+    "selectors": [
+      {
+        "name": "text",
+        "xpath": "//p/text()",
+        "all": true
+      },
+      {
+        "name": "html",
+        "css": "p",
+        "html": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "text": [
+        "© ' � � ¬anentity;"
+      ],
+      "html": "<p>© ' � � ¬anentity;</p>"
+    }
+  }
+}

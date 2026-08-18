@@ -1,0 +1,9 @@
+{
+  "function": "browser::xpath",
+  "case": "unknown_function_error",
+  "request": {
+    "html": "<p>Alpha</p>",
+    "query": "no-such-function()"
+  },
+  "err": "Invalid XPath selector: no-such-function()"
+}
