@@ -367,7 +367,8 @@ pub async fn run_step(
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
     // contracts may be stale. First sighting stamps silently.
-    let current_generation = deps.functions().await.generation;
+    let functions = deps.functions().await;
+    let current_generation = functions.generation;
     let mut assembly_system_prompt =
         with_filesystem_root_aid(record.options.system_prompt.clone(), &record);
     if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
@@ -382,7 +383,21 @@ pub async fn run_step(
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let mut tools = build_tools(deps, &record).await;
+    let policy = CompiledPolicy::from(record.options.functions.as_ref());
+    let decision_tools = concrete_allowed_tools(&policy, &functions.functions);
+    let expose = record
+        .options
+        .functions
+        .as_ref()
+        .map(|f| f.expose)
+        .unwrap_or(ExposeMode::AgentTrigger);
+    if expose == ExposeMode::Native && decision_tools.is_empty() {
+        tracing::warn!(
+            session_id = %record.session_id,
+            "native exposure matched no registry functions; the model has no tools this turn"
+        );
+    }
+    let mut tools = provider_tools(expose, &decision_tools);
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -459,6 +474,8 @@ pub async fn run_step(
                 payload.step,
                 assembled.system_prompt.clone(),
                 &assembled.messages,
+                current_generation,
+                &decision_tools,
             )
             .await
         {
@@ -2764,53 +2781,46 @@ pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<S
     }
 }
 
-/// Build the invocation-schema surface attached to the generate request
-/// (harness.md § Exposure modes). Default: the single `agent_trigger` schema.
-/// Native: expand the allow globs against the registry and attach one schema
-/// per allowed function.
-async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::model::AgentFunction> {
-    let expose = record
-        .options
-        .functions
-        .as_ref()
-        .map(|f| f.expose)
-        .unwrap_or(ExposeMode::AgentTrigger);
+/// The concrete tool schemas this turn's dispatch policy allows: one per
+/// allowed registry function, plus the harness-intercepted subscription
+/// controls (virtual functions the engine's public registry intentionally
+/// does not list). This is the decision surface hooks reason over,
+/// independent of how tools reach the provider.
+fn concrete_allowed_tools(
+    policy: &CompiledPolicy,
+    descriptors: &[crate::clients::FunctionDescriptor],
+) -> Vec<crate::types::model::AgentFunction> {
+    let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    for descriptor in descriptors {
+        if !policy.allows(&descriptor.function_id)
+            || tools.iter().any(|tool| tool.name == descriptor.function_id)
+        {
+            continue;
+        }
+        tools.push(crate::types::model::AgentFunction {
+            name: descriptor.function_id.clone(),
+            description: descriptor.description.clone().unwrap_or_default(),
+            parameters: descriptor
+                .parameters
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "object" })),
+            label: None,
+            execution_mode: Some("sequential".to_string()),
+        });
+    }
+    tools
+}
+
+/// The invocation-schema surface attached to the generate request
+/// (harness.md § Exposure modes). Default: the single `agent_trigger`
+/// schema. Native: the concrete allowed tools verbatim.
+fn provider_tools(
+    expose: ExposeMode,
+    concrete: &[crate::types::model::AgentFunction],
+) -> Vec<crate::types::model::AgentFunction> {
     match expose {
         ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
-        ExposeMode::Native => {
-            let policy = CompiledPolicy::from(record.options.functions.as_ref());
-            let snapshot = deps.functions().await;
-            // Subscription controls are harness-intercepted virtual functions,
-            // so the engine's public registry intentionally does not list
-            // them. Publish their real schemas alongside registry functions
-            // whenever this turn's dispatch policy allows them.
-            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
-            for descriptor in snapshot.functions.iter() {
-                if !policy.allows(&descriptor.function_id) {
-                    continue;
-                }
-                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
-                    continue;
-                }
-                tools.push(crate::types::model::AgentFunction {
-                    name: descriptor.function_id.clone(),
-                    description: descriptor.description.clone().unwrap_or_default(),
-                    parameters: descriptor
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({ "type": "object" })),
-                    label: None,
-                    execution_mode: Some("sequential".to_string()),
-                });
-            }
-            if tools.is_empty() {
-                tracing::warn!(
-                    session_id = %record.session_id,
-                    "native exposure matched no registry functions; the model has no tools this turn"
-                );
-            }
-            tools
-        }
+        ExposeMode::Native => concrete.to_vec(),
     }
 }
 
