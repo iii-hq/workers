@@ -15,6 +15,7 @@ import {
   useState,
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { PaletteHost } from '@/components/PaletteHost'
 import {
   Dialog,
   DialogContent,
@@ -217,6 +218,13 @@ export function App() {
           />
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <PaletteHost
+          openScreen={workspace.openScreen}
+          onOpenSettings={() => setView('configuration')}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
+          theme={theme}
+          onThemeChange={setTheme}
+        />
       </Sheet>
     </ConversationsProvider>
   )
@@ -746,6 +754,13 @@ interface ShortcutsDialogProps {
 }
 
 const SHORTCUTS: { combo: string; description: string }[] = [
+  {
+    combo: '⌘K / ctrl+K',
+    description: 'search workers, functions, pages, chats',
+  },
+  { combo: '↑ ↓', description: 'move through palette results' },
+  { combo: 'tab', description: 'cycle the palette filter' },
+  { combo: 'esc', description: 'close the palette' },
   { combo: '?', description: 'open this shortcut overlay' },
 ]
 
