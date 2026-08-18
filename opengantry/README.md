@@ -77,9 +77,7 @@ Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry
 
 ## Configuration
 
-Wire `gantry::middleware` and the RBAC registration hooks on your governed listener. Replace `session::auth` with your IdP worker.
-
-**Engine RBAC listener** (`iii-worker-manager` in `~/.iii/config.yaml`):
+Wire `gantry::middleware` and the RBAC registration hooks on your governed listener in `~/.iii/config.yaml`. Replace `session::auth` with your IdP worker.
 
 ```yaml
 workers:
@@ -95,8 +93,6 @@ workers:
         on_trigger_registration_function_id: gantry::on-trigger-registration
         on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
 ```
-
-**In-repo proxy** ([`rbac-proxy`](../rbac-proxy/)): same `middleware_function_id` and `rbac.*` keys, configured via the `configuration` worker under id `rbac-proxy` (see that worker's README).
 
 `worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`.
 
