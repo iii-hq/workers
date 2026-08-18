@@ -184,7 +184,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
-            .description(surface::ON_ROUTER_READY_DESC),
+            .description(surface::ON_ROUTER_READY_DESC)
+            // Invoked by id (the router's ready fan-out and its re-discovery
+            // nudge), never discovered — same as every other provider's ready
+            // handler. Untagged, this was the ONE provider handler visible in
+            // the default `engine::functions::list`, which made a router-side
+            // provider sweep look like it worked while finding 1 of 4.
+            .metadata(json!({ "internal": true })),
         );
     }
 

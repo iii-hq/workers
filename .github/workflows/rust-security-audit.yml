@@ -54,15 +54,15 @@ jobs:
           fi
 
           status=0
-          first=1
+          # No --no-fetch on the later iterations: the yanked check resolves
+          # crates against the index entries fetched by THIS invocation, so a
+          # --no-fetch pass only sees whatever the first lockfile happened to
+          # warm — every additional lockfile in a PR then fails its yanked
+          # lookups with "No such crate in crates.io index". The repeat
+          # advisory-db fetch is a fast no-op once the clone is fresh.
           for lockfile in "${lockfiles[@]}"; do
             echo "::group::cargo audit --file $lockfile"
-            if (( first )); then
-              cargo audit --file "$lockfile" || status=1
-              first=0
-            else
-              cargo audit --no-fetch --file "$lockfile" || status=1
-            fi
+            cargo audit --file "$lockfile" || status=1
             echo "::endgroup::"
           done
 

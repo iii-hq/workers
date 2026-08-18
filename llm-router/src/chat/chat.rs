@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::catalog::queries::model_supports;
+use crate::catalog::queries::{effective_model_ref, model_supports};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
 use crate::config::state::{snapshot, ConfigCell};
@@ -273,9 +273,30 @@ fn provider_call_saturated_response(
 impl ChatPipeline {
     pub async fn run(
         &self,
-        call: ChatCall,
+        mut call: ChatCall,
         sink: Arc<dyn FrameSink>,
     ) -> Result<ChatResponse, Error> {
+        // Composite `provider::model` ids — the console's display form —
+        // resolve in models::get/budget; dispatch must agree. Split once, up
+        // front, when the prefix names a registered or catalog provider, so
+        // routing, the structured-output gate, the output budget, and the
+        // provider payload all see the id the provider actually serves —
+        // exactly as if the caller had passed the pair. Unknown prefixes stay
+        // literal: an id may contain `::` without naming a provider.
+        let registered_providers = self.registry.ids().await;
+        let catalog_ids = self.catalog.model_ids().await;
+        {
+            let (provider, model) =
+                effective_model_ref(call.provider.as_deref(), &call.model, |p| {
+                    registered_providers.iter().any(|r| r == p)
+                        || catalog_ids.iter().any(|(owner, _)| owner == p)
+                });
+            let (provider, model) = (provider.map(str::to_owned), model.to_owned());
+            call.provider = provider;
+            call.model = model;
+        }
+        let call = call; // frozen: nothing below mutates the normalized pair
+
         // A pre-stream failure must still leave exactly one terminal frame on
         // the sink. Without it, `router::complete`'s drain blocks for its full
         // reader budget and `router::chat` consumers never see a terminal.
@@ -317,16 +338,13 @@ impl ChatPipeline {
         let candidates = decide(&DecideInput {
             model: call.model.clone(),
             provider: call.provider.clone(),
-            registered_providers: provider_records
-                .iter()
-                .map(|record| record.declaration.id.clone())
-                .collect(),
+            registered_providers,
             available_providers: provider_records
                 .iter()
                 .filter(|record| record.available)
                 .map(|record| record.declaration.id.clone())
                 .collect(),
-            catalog: self.catalog.model_ids().await,
+            catalog: catalog_ids,
             heuristics: settings.routing_heuristics.clone(),
             default_provider: settings.default_provider.clone(),
         })

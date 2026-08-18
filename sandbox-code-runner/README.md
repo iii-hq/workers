@@ -227,6 +227,18 @@ image allowlist are the iii-sandbox daemon's configuration —
 sandbox-code-runner deliberately duplicates none of them; a daemon-side
 refusal (e.g. capacity) maps to `sandbox-code-runner::capacity`.
 
+Separate from that file config, the builtin `configuration` worker owns the
+`sandbox-code-runner` entry with the worker's one live knob:
+`inject_guidance` (ON by default) appends the usage guidance to every agent
+system prompt via the harness `pre-generate` hook. Turn it off in the
+console's config dialog (the schema-generated form) or via
+`configuration::set` to shrink prompts — the harness's `# Granted functions`
+catalog still advertises the `sandbox-code-runner::*` ids. It hot-applies:
+the worker binds or unbinds the hook on change, no restart. The entry
+persists under `./data/configuration/sandbox-code-runner.yaml`, and a
+configuration-worker outage at boot is non-fatal (the worker warns and runs
+on the defaults).
+
 ## Errors
 
 | code | meaning |

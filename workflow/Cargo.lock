@@ -620,6 +620,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-config-client"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-helpers"
 version = "0.21.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2125,6 +2137,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "iii-config-client",
  "iii-helpers",
  "iii-sdk",
  "schemars",
