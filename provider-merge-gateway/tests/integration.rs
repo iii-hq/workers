@@ -53,7 +53,10 @@ fn free_port() -> u16 {
 async fn spawn_engine() -> Option<Engine> {
     let bin = engine_bin()?;
     let port = free_port();
-    let dir = std::env::temp_dir().join(format!("provider-merge-gateway-it-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!(
+        "provider-merge-gateway-it-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).expect("temp dir");
 
     let config = format!(
@@ -283,9 +286,13 @@ async fn configure_stub_key(router_iii: &IIIClient, stub_url: &str) {
 /// see it — the declaration carries no models, so tests that route by
 /// catalog ownership must refresh first.
 async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expect_id: &str) {
-    let res = call(provider_iii, "provider::merge-gateway::refresh_models", json!({}))
-        .await
-        .expect("refresh succeeds");
+    let res = call(
+        provider_iii,
+        "provider::merge-gateway::refresh_models",
+        json!({}),
+    )
+    .await
+    .expect("refresh succeeds");
     assert_eq!(res["ok"], true, "refresh response: {res}");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

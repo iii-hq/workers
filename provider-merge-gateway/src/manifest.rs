@@ -2,7 +2,8 @@
 //! (binary-worker.md § manifest; same shape as provider-anthropic/src/manifest.rs).
 use serde::Serialize;
 
-const DESCRIPTION: &str = "Merge Gateway provider worker behind llm-router (OpenAI-compatible surface).";
+const DESCRIPTION: &str =
+    "Merge Gateway provider worker behind llm-router (OpenAI-compatible surface).";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
