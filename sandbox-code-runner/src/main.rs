@@ -8,7 +8,7 @@ use iii_sdk::{register_worker, InitOptions};
 use sandbox_code_runner::engine::{Engine as _, IIIEngine};
 use sandbox_code_runner::error::{classify_probe_error, ProbeOutcome};
 use sandbox_code_runner::manager::RuntimeManager;
-use sandbox_code_runner::{config, events, functions, manifest};
+use sandbox_code_runner::{config, configuration, events, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -87,9 +87,39 @@ async fn main() -> Result<()> {
     manager.set_events(emitter.clone());
     sandbox_code_runner::fleet_watch::spawn(engine.clone(), emitter);
     functions::register_all(&iii, &manager);
-    functions::setup_harness_hooks(&iii);
     // Injected console UI: the function-trigger cards for the ops above.
     sandbox_code_runner::ui::register(&iii);
+
+    // The builtin `configuration` worker owns this worker's console-facing
+    // knobs; `inject_guidance` defaults on and hot-applies on change by
+    // binding/unbinding the pre-generate guidance hook.
+    //
+    // Best-effort on purpose: the entry carries one cosmetic prompt knob, so
+    // unlike the full config integrations (docs/sops/configuration.md §4c) a
+    // configuration-worker failure must not take the run/register surface off
+    // the bus — warn, run on defaults, and recover on the next configuration
+    // event or restart.
+    if let Err(e) = configuration::register_config(&iii).await {
+        tracing::warn!(error = %e, "registering sandbox-code-runner configuration schema failed; continuing");
+    }
+    let shared_cfg = match configuration::fetch_config(&iii).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "loading sandbox-code-runner configuration failed; using defaults");
+            configuration::RunnerSharedConfig::default()
+        }
+    };
+    let guidance = configuration::GuidanceState::default();
+    configuration::apply_guidance(&iii, &guidance, shared_cfg.inject_guidance);
+    match configuration::register_config_trigger(&iii, guidance) {
+        // One serialized re-fetch to close the boot gap: an update landing
+        // between the fetch above and the binding just registered fired into
+        // nothing, and would otherwise stay invisible until the NEXT change.
+        Ok(reload) => reload.run().await,
+        Err(e) => {
+            tracing::warn!(error = %e, "registering configuration change trigger failed; the inject_guidance knob is frozen until restart");
+        }
+    }
 
     // Startup probe: is the iii-sandbox daemon serving? Fail OPEN — the
     // operator may add it later, and every call meanwhile errors with the

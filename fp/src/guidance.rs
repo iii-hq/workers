@@ -1,7 +1,10 @@
 //! `fp::inject-guidance` — a `pre_generate` hook that contributes the
 //! `fp::pipe` / transform usage guidance to the agent's system prompt,
-//! ONLY while this worker is connected. The hook is bound at worker startup;
-//! binding order does not matter: the engine parks a binding whose trigger
+//! ONLY while this worker is connected AND the `fp` configuration's
+//! `inject_guidance` is on (the default; see src/configuration.rs — the
+//! console config dialog is the flip surface, and flips hot-apply by
+//! binding/unbinding the trigger, no restart). Binding order does not
+//! matter: the engine parks a binding whose trigger
 //! type is not registered yet as a pending intent and activates it when the
 //! type appears ("recoverable triggers", engine/src/trigger.rs — this also
 //! covers a harness restart, which re-parks and re-activates the binding).
@@ -14,11 +17,10 @@ use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::trigger::Trigger;
 use iii_sdk::{IIIClient, RegisterFunction};
 
 pub const GUIDANCE_HOOK_ID: &str = "fp::inject-guidance";
@@ -162,54 +164,12 @@ async fn handle(event: PreGenerateEvent) -> Result<PreGenerateResponse, Error> {
     })
 }
 
-/// Best-effort trigger binding: a transient failure must not brick boot — it
-/// surfaces as a `None` handle.
-fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
-        config,
-        metadata: Some(json!({ "inject_prompt": GUIDANCE })),
-        namespace: iii.namespace(),
-        trigger_namespace: None,
-    }) {
-        Ok(handle) => {
-            tracing::info!(trigger_type, function_id, "trigger binding requested");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed");
-            None
-        }
-    }
-}
-
-/// Register the guidance hook function and bind it to the harness
-/// pre-generate trigger type. One shot: if the harness is not up yet, the
-/// engine parks the binding as a pending intent and activates it when the
-/// type registers (recoverable triggers), so there is nothing to watch or
-/// retry. `on_error: fail_open` is MANDATORY: pre_generate defaults
-/// fail-CLOSED, which would abort generation if this hook ever errored/timed
-/// out; a missing guidance section must never block a turn.
-/// Skip the guidance hook entirely when `FP_INJECT_GUIDANCE=0`.
-///
-/// The hook's whole job is to advertise `fp::*` inside the agent's system
-/// prompt. That is right for production and wrong for an evaluation of
-/// whether an agent DISCOVERS fp on its own — an advertised worker cannot be
-/// discovered. Off by absence: unset means inject, as always.
-fn guidance_enabled() -> bool {
-    guidance_enabled_for(std::env::var("FP_INJECT_GUIDANCE").ok().as_deref())
-}
-
-fn guidance_enabled_for(value: Option<&str>) -> bool {
-    !matches!(value, Some("0" | "false" | "off"))
-}
-
-pub fn setup(iii: &Arc<IIIClient>) {
-    if !guidance_enabled() {
-        tracing::info!("FP_INJECT_GUIDANCE disabled; fp::* stays out of the agent system prompt");
-        return;
-    }
+/// Register the guidance hook FUNCTION unconditionally at boot. Registering
+/// the function is inert — the guidance reaches prompts only while a trigger
+/// binding exists, and [`apply`] owns that binding. Keeping the function
+/// always registered is what lets a config flip enable injection without a
+/// worker restart.
+pub fn register_hook(iii: &Arc<IIIClient>) {
     iii.register_function(
         GUIDANCE_HOOK_ID,
         RegisterFunction::new_async(
@@ -218,12 +178,38 @@ pub fn setup(iii: &Arc<IIIClient>) {
         .description(GUIDANCE_HOOK_DESC)
         .metadata(json!({ "internal": true })),
     );
+}
 
-    bind(
-        iii,
-        PRE_GENERATE_TRIGGER_TYPE,
-        GUIDANCE_HOOK_ID,
-        json!({ "on_error": "fail_open" }),
+/// The live pre-generate binding, if any. Shared with the configuration
+/// change handler so a config flip can bind/unbind at runtime.
+pub type GuidanceState = iii_config_client::BindingSlot;
+
+/// Reconcile the live binding with the configured `inject_guidance` value:
+/// on → bind once; off → unregister and drop the handle. Idempotent under
+/// repeated config events, and a failed bind retries on the next event.
+///
+/// Binding is one shot: if the harness is not up yet, the engine parks the
+/// binding as a pending intent and activates it when the type registers
+/// (recoverable triggers), so there is nothing to watch or retry.
+/// `on_error: fail_open` is MANDATORY: pre_generate defaults fail-CLOSED,
+/// which would abort generation if this hook ever errored/timed out; a
+/// missing guidance section must never block a turn.
+pub fn apply(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
+    state.reconcile(
+        enabled,
+        || {
+            iii_config_client::try_bind(
+                iii,
+                RegisterTriggerInput {
+                    trigger_type: PRE_GENERATE_TRIGGER_TYPE.to_string(),
+                    function_id: GUIDANCE_HOOK_ID.to_string(),
+                    config: json!({ "on_error": "fail_open" }),
+                    metadata: Some(json!({ "inject_prompt": GUIDANCE })),
+                },
+            )
+        },
+        "inject_guidance on: appending fp::pipe guidance to agent system prompts",
+        "inject_guidance off: fp::pipe guidance stays out of agent system prompts",
     );
 }
 
@@ -274,19 +260,6 @@ mod tests {
                 .any(|k| obj.contains_key(*k)),
             "PreGenerateResponse schema is untyped: {value}"
         );
-    }
-
-    #[test]
-    fn guidance_can_be_switched_off_for_discovery_evals() {
-        // Absence and any other value keep the production behaviour.
-        assert!(guidance_enabled_for(None));
-        assert!(guidance_enabled_for(Some("1")));
-        for off in ["0", "false", "off"] {
-            assert!(
-                !guidance_enabled_for(Some(off)),
-                "{off} must disable injection"
-            );
-        }
     }
 
     #[test]

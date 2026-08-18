@@ -221,7 +221,10 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
-            .description(surface::ON_ROUTER_READY_DESC),
+            .description(surface::ON_ROUTER_READY_DESC)
+            // Invoked by id (the router's ready fan-out), never discovered —
+            // tagged internal like every other provider's ready handler.
+            .metadata(json!({ "internal": true })),
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput {

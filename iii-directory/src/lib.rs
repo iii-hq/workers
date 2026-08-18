@@ -35,7 +35,8 @@
 //! `<skills_folder>/<namespace>/...`; `directory::skills::update` /
 //! `directory::prompts::update` / `directory::system-prompts::update`
 //! overwrite one existing file with edited full-file content;
-//! `directory::system-prompts::{create,delete}` manage system-prompt files. After
+//! `directory::prompts::{create,delete}` and
+//! `directory::system-prompts::{create,delete}` manage prompt files per kind. After
 //! every successful write the worker fires `directory::skills::on-change`
 //! and/or `directory::prompts::on-change` and/or
 //! `directory::system-prompts::on-change` so subscribers can forward

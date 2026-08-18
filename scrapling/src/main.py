@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from iii import InitOptions, register_worker
 
-from . import guidance, sessions, storage
+from . import configuration, guidance, sessions, storage
 from .handlers import create_handlers
 from .schemas import FUNCTIONS
 
@@ -81,7 +81,34 @@ def main() -> None:
             response_format=spec["response"],
         )
 
-    guidance.setup(iii)
+    # The builtin `configuration` worker owns the `scrapling` entry;
+    # `inject_guidance` defaults ON and hot-applies on change by
+    # binding/unbinding the pre-generate guidance hook.
+    #
+    # Best-effort on purpose: the entry carries one cosmetic prompt knob, so a
+    # configuration-worker failure must not take the scrapling::* surface off
+    # the bus — warn, run on defaults, and recover on the next configuration
+    # event or restart.
+    log = logging.getLogger("scrapling.main")
+    guidance.register_hook(iii)
+    try:
+        configuration.register_config(iii)
+    except Exception as e:  # noqa: BLE001 — best-effort boot dependency
+        log.warning("registering scrapling configuration schema failed; continuing: %s", e)
+    try:
+        worker_cfg = configuration.fetch_config(iii)
+    except Exception as e:  # noqa: BLE001 — best-effort boot dependency
+        log.warning("loading scrapling configuration failed; using defaults: %s", e)
+        worker_cfg = dict(configuration.DEFAULTS)
+    guidance_state = guidance.GuidanceState()
+    guidance.apply(iii, guidance_state, worker_cfg["inject_guidance"])
+    try:
+        configuration.register_config_trigger(iii, guidance_state)
+    except Exception as e:  # noqa: BLE001 — knob frozen until restart, worker still serves
+        log.warning(
+            "registering configuration change trigger failed; inject_guidance frozen until restart: %s",
+            e,
+        )
 
     iii.add_connection_state_listener(lambda state: _print_connected(state, url))
 

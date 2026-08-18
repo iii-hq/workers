@@ -177,6 +177,6 @@ const CSI_REGEX = /\x1b\[[0-9;?]*[ -/]*[@-~]/g
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI OSC (ESC ] … BEL) sequences.
 const OSC_REGEX = /\x1b\][^\x07]*\x07/g
 
-function stripAnsi(s: string): string {
+export function stripAnsi(s: string): string {
   return s.replace(CSI_REGEX, '').replace(OSC_REGEX, '')
 }

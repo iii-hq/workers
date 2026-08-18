@@ -275,3 +275,18 @@ class TestCargoLockSelfVersion:
         lock.write_text(self.LOCK)
         with pytest.raises(ValueError, match="not found"):
             _lib.sync_cargo_lock_self_version(lock, "ghost", "9.9.9")
+
+
+def test_frontend_bundle_dirs_include_direct_path_dependency_ui(tmp_path: Path) -> None:
+    worker = tmp_path / "provider-opencode-go"
+    dependency_ui = tmp_path / "llm-router" / "ui"
+    worker.mkdir()
+    dependency_ui.mkdir(parents=True)
+    manifest = worker / "Cargo.toml"
+    manifest.write_text(
+        '[package]\nname = "provider-opencode-go"\nversion = "0.0.1-experimental"\n'
+        '[dependencies]\nllm-router = { path = "../llm-router" }\n'
+    )
+    (dependency_ui / "package.json").write_text('{}\n')
+
+    assert _lib.frontend_bundle_dirs(manifest) == [Path("llm-router/ui")]

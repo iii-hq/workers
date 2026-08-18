@@ -386,7 +386,60 @@ describe('mergeConversationMeta / system_prompt', () => {
       strategy: 'override',
       namedBody: 'Arr.',
       customText: '',
+      addons: [],
     })
+  })
+
+  it('restores addons riding the default choice', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          system_prompt: {
+            choice: 'default',
+            strategy: 'enrich',
+            named_body: '',
+            addons: [
+              { kind: 'prompt', name: 'review', body: 'Review checklist.' },
+              { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
+            ],
+          },
+        },
+      }),
+    )
+    expect(next.systemPrompt).toEqual({
+      choice: 'default',
+      strategy: 'enrich',
+      namedBody: '',
+      customText: '',
+      addons: [
+        { kind: 'prompt', name: 'review', body: 'Review checklist.' },
+        { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
+      ],
+    })
+  })
+
+  it('drops malformed addon entries but keeps the valid ones', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          system_prompt: {
+            choice: { named: 'pirate' },
+            named_body: 'Arr.',
+            addons: [
+              'nonsense',
+              { kind: 'rule', name: 'x', body: 'y' },
+              { kind: 'prompt', name: 'review' },
+              { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
+            ],
+          },
+        },
+      }),
+    )
+    expect(next.systemPrompt?.addons).toEqual([
+      { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
+    ])
   })
 
   it('degrades malformed persisted values to the default without throwing', () => {

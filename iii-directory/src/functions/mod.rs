@@ -68,8 +68,8 @@ pub fn register_all(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         1 skills update, 4 directory::prompts::* (list + get + create + update), \
-         4 directory::system-prompts::* (list + get + create + update), \
+         1 skills update, 5 directory::prompts::* (list + get + create + update + delete), \
+         5 directory::system-prompts::* (list + get + create + update + delete), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );
@@ -91,8 +91,8 @@ pub fn register_all_with_cache(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         1 skills update, 4 directory::prompts::* (list + get + create + update), \
-         4 directory::system-prompts::* (list + get + create + update), \
+         1 skills update, 5 directory::prompts::* (list + get + create + update + delete), \
+         5 directory::system-prompts::* (list + get + create + update + delete), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );

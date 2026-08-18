@@ -17,6 +17,7 @@ mod fs;
 mod functions;
 mod jobs;
 mod path;
+mod pty;
 mod scode;
 mod target;
 mod telemetry;
@@ -412,6 +413,8 @@ async fn main() -> Result<()> {
         );
     }
 
+    let pty_manager = pty::PtyManager::new(iii.clone(), watch_resolver.clone());
+    pty::register(&iii, pty_manager.clone());
     register_workspace(&iii, &state);
 
     // fs::* keep Value handlers (preserving S210) and read the live host backend
@@ -452,6 +455,18 @@ async fn main() -> Result<()> {
     let killed = jobs::kill_running_host_jobs().await;
     if killed > 0 {
         tracing::info!(count = killed, "killed in-flight host jobs on shutdown");
+    }
+    match pty_manager.close_all().await {
+        Ok(closed) if closed > 0 => {
+            tracing::info!(
+                count = closed,
+                "closed interactive terminal sessions on shutdown"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(error = %error, "failed to close interactive terminal sessions");
+        }
     }
 
     iii.shutdown_async().await;
