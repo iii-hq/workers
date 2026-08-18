@@ -293,6 +293,25 @@ def read_cargo_package_name(manifest_path: Path) -> str:
     raise ValueError(f"no name field in [package] section of {manifest_path}")
 
 
+def frontend_bundle_dirs(manifest_path: Path) -> list[Path]:
+    """Return repo-relative frontend dirs required by a Rust manifest."""
+    manifest_path = manifest_path.resolve()
+    worker_dir = manifest_path.parent
+    repo_root = worker_dir.parent
+    candidates = [worker_dir / "web", worker_dir / "ui"]
+
+    for relative in re.findall(r'path\s*=\s*"([^"]+)"', manifest_path.read_text()):
+        dependency_dir = (worker_dir / relative).resolve()
+        candidates.append(dependency_dir / "ui")
+
+    found = {
+        candidate.relative_to(repo_root)
+        for candidate in candidates
+        if (candidate / "package.json").is_file()
+    }
+    return sorted(found, key=lambda path: path.as_posix())
+
+
 def sync_cargo_lock_self_version(lock_path: Path, name: str, new_version: str) -> bool:
     """Update a worker's own `[[package]]` version in its Cargo.lock to match
     its bumped Cargo.toml.

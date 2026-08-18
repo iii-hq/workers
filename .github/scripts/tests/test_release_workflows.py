@@ -176,3 +176,11 @@ def test_rust_binary_cache_is_keyed_by_frontend_bundle_digest() -> None:
     assert verify["env"]["EXPECTED_DIGEST"] == "${{ needs.web-build.outputs.frontend_digest }}"
     assert "git hash-object" in verify["run"]
     assert '[[ "$actual" == "$EXPECTED_DIGEST" ]]' in verify["run"]
+
+
+def test_release_detects_frontends_from_path_dependencies() -> None:
+    steps = workflow(WORKFLOWS / "release.yml")["jobs"]["setup"]["steps"]
+    detect = next(step for step in steps if step.get("name") == "Detect web bundle")
+
+    assert detect["env"]["MANIFEST"] == "${{ steps.meta.outputs.manifest }}"
+    assert "manifest_version.py frontend-bundles" in detect["run"]
