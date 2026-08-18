@@ -82,43 +82,170 @@ iii worker add opengantry
 npx skills add iii-hq/workers --skill opengantry
 ```
 
-## Quickstart
+## Recommended stack
 
-From zero to a fail-closed promote on the governed port:
+OpenGantry is the machine gate. It does not replace the rest of the governed port — install the siblings that already solve adjacent problems instead of reimplementing them.
 
-```bash
-iii worker add opengantry
-iii   # starts the engine + worker
+| Worker | Role in the blessed stack |
+|--------|---------------------------|
+| `opengantry` | `gantry::verify` + `gantry::middleware` — cryptographic promote gate |
+| `approval-gate` | Human-held judgement on promote-class calls (`approval::gate`) |
+| `worktree` + `shell` | Canonical promote target (`worktree::land` runs rebase, test gate, atomic CAS) |
+| `rbac-proxy` | **Preferred public door** — same middleware + registration-hook contract, out-of-process |
+| Your IdP worker | `session::auth` on the governed listener |
+
+**Canonical ship pipeline:** `worktree::create` → agent work → `gantry::verify` → `worktree::land` (with verdict token). Do not write a custom `myapp::deploy` when `worktree::land` or `github::*` already fits.
+
+### Tier 1 — local dev (engine listener)
+
+Wire middleware and RBAC hooks directly on `iii-worker-manager`:
+
+```yaml
+workers:
+  - name: opengantry
+  - name: approval-gate
+  - name: worktree
+  - name: shell
+  - name: iii-worker-manager
+    config:
+      host: 0.0.0.0
+      port: 49135
+      middleware_function_id: gantry::middleware
+      rbac:
+        auth_function_id: session::auth
+        on_function_registration_function_id: gantry::on-function-registration
+        on_trigger_registration_function_id: gantry::on-trigger-registration
+        on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
 ```
 
-Add the governed listener block from [Configuration](#configuration) to `~/.iii/config.yaml`, restart `iii`, then call any promote-class function on the governed port:
+### Tier 2 — preferred production (rbac-proxy as public door)
+
+Keep the engine listener internal (no `rbac` block on it). Point agents at `rbac-proxy`, which runs the identical middleware + hook contract out-of-process:
+
+```yaml
+workers:
+  - name: opengantry
+  - name: approval-gate
+  - name: worktree
+  - name: shell
+  - name: rbac-proxy
+    config:
+      host: 0.0.0.0
+      port: 49200
+      engine_url: ws://127.0.0.1:49134
+      middleware_function_id: gantry::middleware
+      rbac:
+        auth_function_id: session::auth
+        on_function_registration_function_id: gantry::on-function-registration
+        on_trigger_registration_function_id: gantry::on-trigger-registration
+        on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: 49134
+```
+
+### Pairing with approval-gate
+
+Machine gate first, human hold second:
+
+1. `approval::gate` (`pre_trigger`) evaluates session mode and rules — can **hold** promote-class calls for a human.
+2. `gantry::middleware` recomputes verdict claims and forwards only when the token matches.
+
+Recommended `approval-gate` rules (seed into the `approval-gate` configuration entry):
+
+```jsonc
+{
+  "default_mode": "manual",
+  "rules": [
+    "!approval::*",
+    { "function": "*::deploy", "action": "hold" },
+    { "function": "*::merge", "action": "hold" },
+    { "function": "*::publish", "action": "hold" },
+    { "function": "*::apply", "action": "hold" },
+    { "function": "*::push", "action": "hold" },
+    { "function": "*::promote", "action": "hold" }
+  ]
+}
+```
+
+Tune `action` to `allow` per session mode once you trust unattended promote on specific functions.
+
+### Why leases are not `state::`
+
+Leases live at `<repo>/.gitagent/leases.json` (mode `0600`), not in the bus-shared `state` worker. That is intentional: lease state is part of the security model for a governed repo — it must be colocated with the mission, exclusive-locked, and fail-closed on corruption. A shared KV any worker can write would break those guarantees.
+
+### `gantry::verdict` trigger
+
+After every `gantry::verify` completes (pass or fail), the worker fans out a best-effort event to every binding on the `gantry::verdict` trigger type:
+
+```json
+{
+  "status": "passed",
+  "error_code": null,
+  "repo_root": "/path/to/repo",
+  "msn_id": "MSN-0001",
+  "mission_rel_path": ".gitagent/missions/MSN-0001.yaml"
+}
+```
+
+Subscribe a sibling function (audit log, Slack notifier, console inbox) via `registerTrigger` on `gantry::verdict`. A failing subscriber never fails verify.
+
+## Quickstart
+
+From zero to a fail-closed land on the governed port:
+
+```bash
+iii worker add opengantry approval-gate worktree shell
+iii   # starts the engine + workers
+```
+
+Add the governed listener block from [Recommended stack](#recommended-stack) to `~/.iii/config.yaml`, restart `iii`, then run the canonical pipeline:
 
 ```js
 import { registerWorker } from 'iii-sdk';
 
 const iii = registerWorker('ws://127.0.0.1:49135', { workerName: 'demo' });
 
-const result = await iii.trigger({
-  function_id: 'myapp::deploy',
-  payload: { branch: 'main' },
-  context: {
+// 1. Mint an isolated worktree for the agent.
+const wt = await iii.trigger({
+  function_id: 'worktree::create',
+  payload: { repo_root: '/path/to/repo', branch: 'gxt/msn-0001' },
+});
+
+// 2. Agent works in wt.path, then verify the active mission.
+const verify = await iii.trigger({
+  function_id: 'gantry::verify',
+  payload: {
+    repo_root: '/path/to/repo',
     msn_id: 'MSN-0001',
-    worktree_path: '/path/to/repo',
+    mission_rel_path: '.gitagent/missions/MSN-0001.yaml',
   },
 });
 
-console.log(result);
+// 3. Land with the verdict token (promote-class — middleware gates this).
+const land = await iii.trigger({
+  function_id: 'worktree::land',
+  payload: { worktree_id: wt.id },
+  context: {
+    msn_id: 'MSN-0001',
+    worktree_path: '/path/to/repo',
+    verdict_token: verify.verdict_token,
+  },
+});
 ```
 
 Without a verdict token from `gantry::verify`, middleware throws `GantryDenied` (fail-closed).
 
-Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry::verify` for the active mission, then retry the promote call with the verdict token in `context` or `payload`.
+Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry::verify` for the active mission, then retry the land call with the verdict token in `context` or `payload`.
 
 A sandboxed `iii worker add` worker only mounts its own folder. `gantry::verify` against a host repo needs a host-started worker that can see that absolute path.
 
 ## Configuration
 
-Wire `gantry::middleware` and the RBAC registration hooks on your governed listener in `~/.iii/config.yaml`. Replace `session::auth` with your IdP worker.
+For local dev, use the Tier 1 block in [Recommended stack](#recommended-stack). For production, prefer Tier 2 (`rbac-proxy`). Replace `session::auth` with your IdP worker.
+
+Legacy single-listener block (equivalent to Tier 1):
 
 ```yaml
 workers:
@@ -150,8 +277,8 @@ Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in 
 | `src/verdict.js` | Recompute claims + HMAC. Maps kernel errors to `GantryDenied`. |
 | `src/lease-store.js` | File-locked `leases.json`. Fail-closed on corrupt JSON. |
 | `src/stores.js` | Bounded LRU for lease stores and governance bundles. |
-| `src/registration-hooks.js` | RBAC hooks. Namespace + suffix reservation. |
 | `src/registration-hooks.js` | Reserved prefix / suffix predicates and RBAC hook handlers. |
+| `src/verdict-events.js` | `gantry::verdict` trigger fan-out after verify completes. |
 | `src/repo-path.js` | Absolute repo resolution. Lease-path jail under `.gitagent/`. |
 | `src/formats.js` | Zod → JSON Schema for `registerFunction`. |
 | `src/denied.js` | `GantryDenied`. Throw so iii records `InvocationResult.error`. |

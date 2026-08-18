@@ -106,6 +106,20 @@ export async function runVerify(data) {
   });
 }
 
+async function emitVerdictForResult(deps, data, result) {
+  try {
+    await deps.emitVerdict({
+      status: result?.status ?? 'failed',
+      error_code: result?.error_code ?? null,
+      repo_root: data?.repo_root ?? null,
+      msn_id: data?.msn_id ?? result?.msn_id ?? null,
+      mission_rel_path: data?.mission_rel_path ?? result?.mission_file_path ?? null,
+    });
+  } catch {
+    /* verify result is authoritative; fan-out is best-effort */
+  }
+}
+
 export function createVerifyHandler(deps) {
   return async function gantryVerify(data) {
     const repoRoot = data?.repo_root;
@@ -122,7 +136,12 @@ export function createVerifyHandler(deps) {
       // Return a failed payload so the agent can retry. Throwing would look
       // like a worker crash rather than a full verify queue.
       if (e instanceof VerifyCoalescerSaturationError) {
-        return verifyFailedPayload('GXT_VERIFY_SATURATED', 'verify queue saturated; retry later');
+        const saturated = verifyFailedPayload(
+          'GXT_VERIFY_SATURATED',
+          'verify queue saturated; retry later',
+        );
+        await emitVerdictForResult(deps, data, saturated);
+        return saturated;
       }
       throw e;
     }
@@ -132,9 +151,15 @@ export function createVerifyHandler(deps) {
       } catch (e) {
         const hint =
           e instanceof GantryDenied ? e.hint : e instanceof Error ? e.message : String(e);
-        return verifyFailedPayload('GXT_VERIFY_BIND_FAILED', `verdict scope bind failed: ${hint}`);
+        const bindFailed = verifyFailedPayload(
+          'GXT_VERIFY_BIND_FAILED',
+          `verdict scope bind failed: ${hint}`,
+        );
+        await emitVerdictForResult(deps, data, bindFailed);
+        return bindFailed;
       }
     }
+    await emitVerdictForResult(deps, data, result);
     return result;
   };
 }

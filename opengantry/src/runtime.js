@@ -14,6 +14,7 @@ export function createGantryRuntime({
   forwardTrigger,
   verdictKeyringPath,
   leaseStorePathOverride,
+  emitVerdict,
 } = {}) {
   if (typeof forwardTrigger !== 'function') {
     throw new TypeError('opengantry: forwardTrigger is required');
@@ -34,6 +35,7 @@ export function createGantryRuntime({
     resolveLeaseStorePath(repoRoot) {
       return resolveLeaseStorePath(repoRoot, this.leaseStorePathOverride);
     },
+    emitVerdict: emitVerdict ?? (async () => {}),
   };
   return {
     middleware: createMiddlewareHandler(deps),

@@ -13,6 +13,7 @@ import {
   onTriggerTypeRegistration,
 } from './registration-hooks.js';
 import { createGantryRuntime } from './runtime.js';
+import { createVerdictEmitter } from './verdict-events.js';
 
 const HANDLERS = {
   'gantry::middleware': null,
@@ -37,8 +38,12 @@ async function startWorker() {
   }
 
   const worker = registerWorker(url, opengantryWorkerOptions());
+  const verdictEmitter = createVerdictEmitter({
+    trigger: (request) => worker.trigger(request),
+  });
   const { middleware, verify } = createGantryRuntime({
     forwardTrigger: (function_id, payload) => worker.trigger({ function_id, payload }),
+    emitVerdict: verdictEmitter.emit.bind(verdictEmitter),
   });
   HANDLERS['gantry::middleware'] = middleware;
   HANDLERS['gantry::verify'] = verify;
@@ -55,10 +60,7 @@ async function startWorker() {
       id: 'gantry::verdict',
       description: 'Emitted when gantry verify completes',
     },
-    {
-      registerTrigger() {},
-      unregisterTrigger() {},
-    },
+    verdictEmitter.handler,
   );
 
   console.log(`opengantry worker registered (verify, middleware, RBAC hooks) → ${url}`);
