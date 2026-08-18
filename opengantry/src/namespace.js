@@ -1,3 +1,8 @@
+/**
+ * Reserved ids for the governed bus. Prefixes belong to this worker.
+ * Suffixes ::verify / ::attest / ::promote are reserved bus-wide so a
+ * sibling cannot register demo::verify as a fake gate.
+ */
 const RESERVED_PREFIXES = ['gantry::', 'opengantry::'];
 const RESERVED_SUFFIXES = ['::verify', '::attest', '::promote'];
 

@@ -1,3 +1,9 @@
+/**
+ * Process-local caches. BoundedMap is insertion-order LRU so a long-lived
+ * worker cannot accumulate one LeaseStore per repo forever. Governance is
+ * keyed by path and invalidated when mission or MANIFEST mtime/size changes,
+ * so a rewritten work order is not served from a stale bundle.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 

@@ -1,3 +1,8 @@
+/**
+ * gantry::verify. Runs kernel verifyMission (the repo's gate_command),
+ * not a second scanner. Identical in-flight calls share one run so a
+ * stampede of agents does not spawn 32 gate processes.
+ */
 import { verifyMission } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from './denied.js';
@@ -61,6 +66,7 @@ function verifyBindFailedPayload(hint) {
   };
 }
 
+/** After a pass, pin the mission onto the lease so promote can recompute claims. */
 export async function onVerifyPassed(deps, data) {
   const resolved = resolveVerifyRepoRoot(data.repo_root);
   const leases = getLeaseStore(deps, resolved);
@@ -103,6 +109,8 @@ export function createVerifyHandler(deps) {
     try {
       result = await deps.coalescer.run(key, () => runVerify(data));
     } catch (e) {
+      // Return a failed payload so the agent can retry. Throwing would look
+      // like a worker crash rather than a full verify queue.
       if (e instanceof VerifyCoalescerSaturationError) {
         return verifySaturatedPayload();
       }

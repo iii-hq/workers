@@ -1,3 +1,8 @@
+/**
+ * Repo resolution. No process.cwd() fallback: a sandboxed worker that
+ * cannot see the host tree must fail rather than verify /workspace.
+ * GANTRY_III_LEASE_STORE may move leases.json, but only under .gitagent/.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 

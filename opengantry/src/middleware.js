@@ -1,3 +1,11 @@
+/**
+ * Hot-path policy on the governed listener.
+ *
+ * Order: lease (if msn_id + holder_id) → dirty-lineage check → promote
+ * verdict (promote-class only) → mission scope → forwardTrigger.
+ * Throws GantryDenied on any failure. Missing token, corrupt store, or
+ * rewritten mission never fall through to the target function.
+ */
 import { evaluateFunctionScope, isPromoteClassFunctionId } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from './denied.js';
@@ -52,6 +60,7 @@ export function createMiddlewareHandler(deps) {
         throw new GantryDenied('LINEAGE_DIRTY', 'lineage dirty; re-verify required');
       }
 
+      // Kernel classify: ::deploy / ::merge / ::publish / ::apply / ::push / ::promote.
       if (isPromoteClassFunctionId(function_id)) {
         const token = context?.verdict_token ?? payload?.verdict_token;
         verifyPromoteVerdictToken({

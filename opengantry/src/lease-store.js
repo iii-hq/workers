@@ -1,3 +1,12 @@
+/**
+ * Durable lease file at <repo>/.gitagent/leases.json.
+ *
+ * Mutations take an exclusive .lock (pid + stale timeout). Corrupt JSON
+ * or a duplicate msn_id sets `corrupted` and every later write returns
+ * false so promote cannot limp along on a half-read map. Rows use
+ * Object.create(null) session_refs so a holder_id of "__proto__" cannot
+ * pollute Object.prototype.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -277,6 +286,8 @@ export class LeaseStore {
       }
       let state = row.state;
       const activeSessions = Object.values(session_refs).reduce((a, b) => a + b, 0);
+      // A promote in flight with nobody holding the lease must not stay
+      // `promoting` forever. Tombstone so the next promote requires re-verify.
       if (activeSessions === 0 && state === LEASE_STATES.promoting) {
         state = LEASE_STATES.tombstoned;
       }

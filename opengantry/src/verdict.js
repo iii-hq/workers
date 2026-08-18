@@ -1,3 +1,9 @@
+/**
+ * Promote-time token check. Rebuild expected claims from the mission on
+ * disk, then HMAC-verify the token against that. The token is not a
+ * bearer of its own claims: a rewritten mission fails even if the agent
+ * still holds the old token.
+ */
 import path from 'node:path';
 
 import { verifyVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel';
@@ -45,7 +51,7 @@ function claimsDenial(e) {
   return new GantryDenied('VERDICT_CLAIMS_FAILED', msg);
 }
 
-/** Recompute claims at promote time and verify token — throws GantryDenied on failure. */
+/** Recompute claims at promote time and verify token. Throws GantryDenied on failure. */
 export function verifyPromoteVerdictToken({ token, msnId, repoRoot, missionRel }) {
   if (!token) {
     throw new GantryDenied('VERDICT_TOKEN_MISSING', 'promote refused: verdict token required');

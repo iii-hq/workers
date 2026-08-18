@@ -1,3 +1,9 @@
+/**
+ * Zod schemas compiled to JSON Schema for registerFunction. The iii
+ * contract requires request_format and response_format on every
+ * registration. Payload/context .passthrough() extra adopter fields
+ * (branch, tokens, custom context). The request envelope stays .strict().
+ */
 import { z } from 'zod';
 
 function jsonSchema(schema) {

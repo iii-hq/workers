@@ -1,3 +1,9 @@
+/**
+ * Worker boot. Registers gantry::* on the engine, then injects this
+ * connection's trigger() as forwardTrigger so middleware can replay a
+ * call after the policy checks. forwardTrigger is required: there is no
+ * fail-open default that would skip the governed listener.
+ */
 import { registerWorker } from 'iii-sdk';
 
 import {

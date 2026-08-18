@@ -1,3 +1,8 @@
+/**
+ * Composition root. Tests call this with a fake forwardTrigger instead of
+ * reaching into a mutable module bag. Caches live on `deps` so they die
+ * with the runtime, not as process globals.
+ */
 import { createMiddlewareHandler } from './middleware.js';
 import { BoundedMap, getLeaseStore } from './stores.js';
 import { createVerifyHandler, onVerifyPassed, VerifyCoalescer } from './verify.js';

@@ -1,4 +1,7 @@
-/** Governance denial surfaced to iii as InvocationResult.error via throw. */
+/**
+ * Governance denial. Throw so iii records InvocationResult.error.
+ * Returning { ok: false } would look like a successful trigger.
+ */
 export class GantryDenied extends Error {
   constructor(code, hint) {
     super(`[${code}] ${hint}`);

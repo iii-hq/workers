@@ -1,3 +1,9 @@
+/**
+ * Engine RBAC hooks on the governed listener. A sibling worker must not
+ * register gantry::* (or reserved suffixes) or bind triggers into that
+ * namespace. Trigger-type registration is always denied so agents cannot
+ * mint a competing gantry::verdict on this port.
+ */
 import { isGantryNamespaceFunctionId, isReservedGovernanceFunctionId } from './namespace.js';
 
 export function onFunctionRegistration(input) {

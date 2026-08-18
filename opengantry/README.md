@@ -1,17 +1,19 @@
 # opengantry
 
-iii can already run an agent unattended. It cannot yet let one **ship** unattended — any agent on the bus can call a merge, deploy, or publish function.
+iii can already run an agent unattended. It cannot yet let one ship unattended. Any agent on the bus can call a merge, deploy, or publish function.
 
-- **`approval-gate`** holds what a human should decide.
-- **`opengantry`** blocks what a machine can already prove is unsafe.
+- `approval-gate` holds what a human should decide.
+- `opengantry` blocks what a machine can already prove is unsafe.
 
-The proof is the repo's own gates: the build and test commands that already exist, plus a declared edit scope. Pass them and you get a signed verdict token bound to that exact mission revision; edit the work order afterwards and the token stops matching.
+The proof is the repo's own gates: the build and test commands that already exist, plus a declared edit scope. Pass them and you get a signed verdict token bound to that exact mission revision. Edit the work order afterwards and the token stops matching.
 
 **Net effect:** unattended agents, without accepting an unattended `git push`.
 
+This worker is the hot path only. It runs OpenGantry kernel `verifyMission` and gates promote-class calls on a governed listener. It does not admit sessions (`session::auth` is your IdP), hold for a human (`approval-gate`), or push git. It never writes `.gitagent/` law. Planner commits missions on the host.
+
 ## How it works
 
-1. Agent calls `gantry::verify` with an absolute `repo_root` and active mission — OpenGantry runs the repo's gate command and mints a verdict token.
+1. Agent calls `gantry::verify` with an absolute `repo_root` and active mission. OpenGantry runs the repo's gate command and mints a verdict token.
 2. Agent calls a promote-class function on a governed listener with that token in `context` or `payload`.
 3. `gantry::middleware` recomputes verdict claims at promote time and forwards the call only when the token matches the current mission revision. Otherwise it throws `GantryDenied` (fail-closed).
 
@@ -30,6 +32,43 @@ sequenceDiagram
     Gantry->>Target: forward when valid
     Gantry-->>Agent: GantryDenied when not
 ```
+
+Promote-class is a kernel match on the function id. Suffixes `::promote`, `::deploy`, `::merge`, `::publish`, `::apply`, and `::push` require a token. Other calls still go through middleware (lease + mission scope when bound) but do not need a verdict.
+
+## Functions
+
+| Function | Role |
+|----------|------|
+| `gantry::verify` | Kernel `verifyMission`. A pass binds the mission onto the lease. |
+| `gantry::middleware` | Governed-port gate. Recomputes claims from disk; never trusts the token's own payload. |
+| `gantry::on-function-registration` | Blocks `gantry::` / `opengantry::` squatting and reserved suffixes `::verify` / `::attest` / `::promote`. |
+| `gantry::on-trigger-registration` | Blocks triggers bound into the `gantry::` namespace. |
+| `gantry::on-trigger-type-registration` | Always denied. Agents must not register trigger types on the governed port. |
+| `gantry::verdict` | Trigger type emitted when verify completes. |
+
+## Practices this worker follows
+
+These are the rules the code is written to. A missing `.gitagent` does not unlock promote.
+
+**Fail closed.** Promote without a matching token throws `GantryDenied`. A corrupted lease file throws. A missing `forwardTrigger` throws at boot. Middleware never silently forwards a promote-class call.
+
+**Recompute, do not trust.** At promote time the kernel rebuilds expected claims from the mission file on disk, then HMAC-checks the token against that. Changing the mission after verify invalidates the token even if the agent still holds it.
+
+**Absolute paths only.** Middleware needs `context.worktree_path` or `context.repo_root`. `gantry::verify` needs an absolute `repo_root`. There is no `process.cwd()` fallback, so a sandboxed worker that cannot see the host repo fails instead of verifying the wrong tree.
+
+**Kernel verify only.** `gantry::verify` is `verifyMission`: the mission's `gate_command` and scope. It is not a second architecture scanner. Put structural lint in CI before this worker runs.
+
+**Leases are durable and exclusive.** State lives at `<repo>/.gitagent/leases.json` (mode `0600`), with an exclusive file lock around each mutation. A dirty lineage (`dirty_rewritten`) refuses promote until re-verify. If every session drops while a promote is in flight, the lease tombstones instead of staying `promoting`.
+
+**Bounded in-process caches.** Lease stores and governance bundles are capped LRU maps. Governance is keyed by repo + mission path and invalidated when file mtime or size changes, so a rewritten mission is not served from a stale bundle.
+
+**Verify coalesces.** Identical in-flight `gantry::verify` calls share one kernel run. A full coalescer returns `GXT_VERIFY_SATURATED` rather than starting a 33rd gate.
+
+**Registration is reserved.** Other workers cannot register `gantry::` / `opengantry::` functions, bind triggers into `gantry::`, or register trigger types on the governed listener. Suffixes `::verify`, `::attest`, and `::promote` are reserved bus-wide so a sibling cannot mint a fake gate.
+
+**The worker process is not Planner.** It does not write missions, manifests, or `gantry init` output. Bootstrap `.gitagent` on the host, then commit missions through the Planner workflow.
+
+**iii worker contract.** Every `registerFunction` passes `request_format` and `response_format`. Payload and context schemas `.passthrough()` extra adopter fields. The request envelope stays strict. Bundle deploy, no `scripts.setup` / `scripts.install`.
 
 ## Install
 
@@ -75,6 +114,8 @@ Without a verdict token from `gantry::verify`, middleware throws `GantryDenied` 
 
 Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry::verify` for the active mission, then retry the promote call with the verdict token in `context` or `payload`.
 
+A sandboxed `iii worker add` worker only mounts its own folder. `gantry::verify` against a host repo needs a host-started worker that can see that absolute path.
+
 ## Configuration
 
 Wire `gantry::middleware` and the RBAC registration hooks on your governed listener in `~/.iii/config.yaml`. Replace `session::auth` with your IdP worker.
@@ -94,6 +135,23 @@ workers:
         on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
 ```
 
-`worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`.
+`worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`. Override with `GANTRY_III_LEASE_STORE` only if the path still resolves under that repo's `.gitagent/`. Verdict HMAC keys default to `<repo>/.config/gantry/pepper-keyring.json` (`GANTRY_VERDICT_KEYRING` to override).
 
-`gantry::verify` runs kernel `verifyMission` only — the repo's declared `gate_command` and mission scope, not a separate scanner.
+## Source map
+
+Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in `tests/` use `createGantryRuntime` with a fake `forwardTrigger`.
+
+| File | Why it exists |
+|------|----------------|
+| `src/index.js` | Boot. Static `iii-sdk` import, registers the five functions, injects `forwardTrigger`. |
+| `src/runtime.js` | Composition root. Builds deps once. Refuses to start without `forwardTrigger`. |
+| `src/middleware.js` | Hot-path policy. Lease, verdict, scope, then forward. |
+| `src/verify.js` | `gantry::verify` handler, coalescer, post-pass lease bind. |
+| `src/verdict.js` | Recompute claims + HMAC. Maps kernel errors to `GantryDenied`. |
+| `src/lease-store.js` | File-locked `leases.json`. Fail-closed on corrupt JSON. |
+| `src/stores.js` | Bounded LRU for lease stores and governance bundles. |
+| `src/registration-hooks.js` | RBAC hooks. Namespace + suffix reservation. |
+| `src/namespace.js` | Reserved prefix / suffix predicates. |
+| `src/repo-path.js` | Absolute repo resolution. Lease-path jail under `.gitagent/`. |
+| `src/formats.js` | Zod → JSON Schema for `registerFunction`. |
+| `src/denied.js` | `GantryDenied`. Throw so iii records `InvocationResult.error`. |
