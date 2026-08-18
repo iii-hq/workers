@@ -119,15 +119,18 @@ jobs:
             shell
             console
 
+      # pnpm first: setup-node resolves a `cache: pnpm` store by running pnpm,
+      # so installing it afterwards fails the step with "Unable to locate
+      # executable file: pnpm" before anything is built.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
 
       - name: Install terminal prerequisites
         run: |
