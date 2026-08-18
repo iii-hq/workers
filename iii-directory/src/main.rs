@@ -47,7 +47,7 @@ use iii_directory::functions::skills::{
     make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
-use iii_directory::{configuration, functions, manifest, trigger_types};
+use iii_directory::{configuration, functions, guidance, manifest, trigger_types};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -164,6 +164,9 @@ async fn main() -> Result<()> {
         registry_cache.clone(),
     );
     functions::log_fs_health(&cfg_handle.load_full());
+    if cfg_handle.load_full().inject_guidance {
+        guidance::setup(&iii);
+    }
 
     // Injectable console UI: the skills & prompts editor page, the
     // directory::* function-trigger renderer, and the configuration form.

@@ -61,6 +61,10 @@ fn default_auto_download() -> bool {
     true
 }
 
+fn default_inject_guidance() -> bool {
+    false
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
@@ -113,6 +117,15 @@ pub struct SkillsConfig {
     /// folder.
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
+
+    /// When `true`, bind a `harness::hook::pre-generate` trigger at boot
+    /// that appends a short pointer to `directory::skills::index` to the
+    /// agent system prompt while this worker is connected. Off by default
+    /// so a stock deployment (including the harness integration stack)
+    /// leaves prompts untouched; enabling it is an operator decision.
+    /// Boot-time wiring: changing it requires a worker restart.
+    #[serde(default = "default_inject_guidance")]
+    pub inject_guidance: bool,
 }
 
 impl Default for SkillsConfig {
@@ -125,6 +138,7 @@ impl Default for SkillsConfig {
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),
             auto_download: default_auto_download(),
+            inject_guidance: default_inject_guidance(),
         }
     }
 }
@@ -195,6 +209,7 @@ impl SkillsConfig {
             skills_folder: self.skills_folder.clone(),
             local_skills_folder: self.local_skills_folder.clone(),
             auto_download: self.auto_download,
+            inject_guidance: self.inject_guidance,
         }
     }
 
@@ -251,6 +266,7 @@ pub struct Topology {
     pub skills_folder: String,
     pub local_skills_folder: String,
     pub auto_download: bool,
+    pub inject_guidance: bool,
 }
 
 pub fn load_config(path: &str) -> Result<SkillsConfig> {

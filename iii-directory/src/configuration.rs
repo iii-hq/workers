@@ -198,8 +198,9 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
     };
     if cfg.topology() != state.boot_topology {
         tracing::warn!(
-            "configuration change alters topology (skills_folder, local_skills_folder, or \
-             auto_download); a restart is required to apply it — keeping previous configuration"
+            "configuration change alters topology (skills_folder, local_skills_folder, \
+             auto_download, or inject_guidance); a restart is required to apply it — keeping \
+             previous configuration"
         );
         return;
     }

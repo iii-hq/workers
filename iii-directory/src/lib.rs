@@ -49,6 +49,7 @@ pub mod config;
 pub mod configuration;
 pub mod fs_source;
 pub mod functions;
+pub mod guidance;
 pub mod manifest;
 pub mod sources;
 pub mod trigger_types;
