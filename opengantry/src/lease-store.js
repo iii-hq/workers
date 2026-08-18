@@ -28,6 +28,10 @@ const LEASE_STATES = {
 
 const KNOWN_STATES = new Set(Object.values(LEASE_STATES));
 
+function defaultBranchName(msnId) {
+  return `gxt/${msnId.toLowerCase()}`;
+}
+
 function emptySessionRefs() {
   return Object.create(null);
 }
@@ -214,6 +218,7 @@ export class LeaseStore {
 
   get(msnId) {
     if (this.corrupted) return undefined;
+    this.load();
     const row = this.leases.get(msnId);
     return row ? structuredClone(row) : undefined;
   }
@@ -227,6 +232,28 @@ export class LeaseStore {
     });
   }
 
+  async ensure(msnId, { missionRel } = {}) {
+    if (this.corrupted) return false;
+    return this.mutate((map) => {
+      const existing = map.get(msnId);
+      if (!existing) {
+        const row = {
+          msn_id: msnId,
+          branch: defaultBranchName(msnId),
+          state: LEASE_STATES.active,
+          session_refs: emptySessionRefs(),
+        };
+        if (missionRel) row.mission_rel = missionRel;
+        map.set(msnId, sanitizeRow(row));
+        return true;
+      }
+      if (missionRel && !existing.mission_rel) {
+        map.set(msnId, sanitizeRow({ ...existing, mission_rel: missionRel }));
+      }
+      return true;
+    });
+  }
+
   async bindMissionRel(msnId, missionRel) {
     if (this.corrupted) return false;
     return this.mutate((map) => {
@@ -234,7 +261,7 @@ export class LeaseStore {
       if (existing?.mission_rel) return true;
       const row = existing ?? {
         msn_id: msnId,
-        branch: `gxt/${msnId.toLowerCase()}`,
+        branch: defaultBranchName(msnId),
         state: LEASE_STATES.active,
         session_refs: emptySessionRefs(),
       };

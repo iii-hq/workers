@@ -4,17 +4,9 @@
  * bearer of its own claims: a rewritten mission fails even if the agent
  * still holds the old token.
  */
-import path from 'node:path';
-
 import { verifyVerdictToken, verdictClaimsFor } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from './denied.js';
-
-export function defaultVerdictKeyringPath(repoRoot) {
-  const override = process.env.GANTRY_VERDICT_KEYRING?.trim();
-  if (override) return override;
-  return path.join(repoRoot, '.config/gantry/pepper-keyring.json');
-}
 
 /** Maps kernel throw sites to GantryDenied codes (kernel exports no error codes). */
 const KERNEL_CODE_TO_DENIED = {
@@ -52,7 +44,7 @@ function claimsDenial(e) {
 }
 
 /** Recompute claims at promote time and verify token. Throws GantryDenied on failure. */
-export function verifyPromoteVerdictToken({ token, msnId, repoRoot, missionRel }) {
+export function verifyPromoteVerdictToken({ token, msnId, repoRoot, missionRel, keyringPath }) {
   if (!token) {
     throw new GantryDenied('VERDICT_TOKEN_MISSING', 'promote refused: verdict token required');
   }
@@ -74,7 +66,7 @@ export function verifyPromoteVerdictToken({ token, msnId, repoRoot, missionRel }
   const ok = verifyVerdictToken({
     token,
     expected,
-    keyringPath: defaultVerdictKeyringPath(repoRoot),
+    keyringPath,
   });
   if (!ok) {
     throw new GantryDenied(

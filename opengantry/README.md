@@ -151,7 +151,7 @@ Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in 
 | `src/lease-store.js` | File-locked `leases.json`. Fail-closed on corrupt JSON. |
 | `src/stores.js` | Bounded LRU for lease stores and governance bundles. |
 | `src/registration-hooks.js` | RBAC hooks. Namespace + suffix reservation. |
-| `src/namespace.js` | Reserved prefix / suffix predicates. |
+| `src/registration-hooks.js` | Reserved prefix / suffix predicates and RBAC hook handlers. |
 | `src/repo-path.js` | Absolute repo resolution. Lease-path jail under `.gitagent/`. |
 | `src/formats.js` | Zod → JSON Schema for `registerFunction`. |
 | `src/denied.js` | `GantryDenied`. Throw so iii records `InvocationResult.error`. |

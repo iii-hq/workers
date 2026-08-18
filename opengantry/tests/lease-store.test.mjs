@@ -5,27 +5,20 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import { LEASE_STATES, LeaseStore } from '../src/lease-store.js';
-import { defaultLeaseStorePath } from '../src/repo-path.js';
+import { resolveLeaseStorePath } from '../src/repo-path.js';
 
 test('lease store rejects path outside .gitagent', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-path-'));
-  const prev = process.env.GANTRY_III_LEASE_STORE;
-  process.env.GANTRY_III_LEASE_STORE = '/tmp/evil-leases.json';
-  try {
-    assert.throws(
-      () => defaultLeaseStorePath(repoRoot),
-      /must resolve under/,
-      'lease store override outside .gitagent should throw',
-    );
-  } finally {
-    if (prev === undefined) delete process.env.GANTRY_III_LEASE_STORE;
-    else process.env.GANTRY_III_LEASE_STORE = prev;
-  }
+  assert.throws(
+    () => resolveLeaseStorePath(repoRoot, '/tmp/evil-leases.json'),
+    /must resolve under/,
+    'lease store override outside .gitagent should throw',
+  );
 });
 
 test('corrupted lease store blocks get', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-corrupt-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(storePath, '{"leases": null}');
   const store = new LeaseStore(storePath);
@@ -35,7 +28,7 @@ test('corrupted lease store blocks get', () => {
 
 test('unknown lease state marks corrupted on load', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-badstate-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(
     storePath,
@@ -49,7 +42,7 @@ test('unknown lease state marks corrupted on load', () => {
 
 test('missing lease state marks corrupted on load', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-nostate-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(
     storePath,
@@ -63,7 +56,7 @@ test('missing lease state marks corrupted on load', () => {
 
 test('lease file is written with restrictive permissions', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-mode-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   const store = new LeaseStore(storePath);
   await store.upsert({
     msn_id: 'MSN-0004',
@@ -76,7 +69,7 @@ test('lease file is written with restrictive permissions', async () => {
 
 test('get returns clone — caller mutation does not affect store', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-clone-'));
-  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  const store = new LeaseStore(resolveLeaseStorePath(repoRoot));
   await store.upsert({
     msn_id: 'MSN-0001',
     state: LEASE_STATES.active,
@@ -93,7 +86,7 @@ test('get returns clone — caller mutation does not affect store', async () => 
 
 test('transition rejects stale from-state', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-cas-'));
-  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  const store = new LeaseStore(resolveLeaseStorePath(repoRoot));
   await store.upsert({
     msn_id: 'MSN-0001',
     state: LEASE_STATES.active,
@@ -113,7 +106,7 @@ test('transition rejects stale from-state', async () => {
 
 test('tombstone survives late promoting→active transition', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-tomb-'));
-  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  const store = new LeaseStore(resolveLeaseStorePath(repoRoot));
   await store.upsert({
     msn_id: 'MSN-0001',
     state: LEASE_STATES.promoting,
@@ -140,7 +133,7 @@ test('tombstone survives late promoting→active transition', async () => {
 
 test('constructor holderId does not break session counting', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-proto-'));
-  const store = new LeaseStore(defaultLeaseStorePath(repoRoot));
+  const store = new LeaseStore(resolveLeaseStorePath(repoRoot));
   await store.upsert({
     msn_id: 'MSN-0001',
     state: 'active',
@@ -160,7 +153,7 @@ test('constructor holderId does not break session counting', async () => {
 
 test('atomic persist survives reload', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-persist-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   const store = new LeaseStore(storePath);
   await store.upsert({
     msn_id: 'MSN-0002',
@@ -177,7 +170,7 @@ test('atomic persist survives reload', async () => {
 
 test('verdict_expected stripped from persisted lease rows', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-ls-ve-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(
     storePath,

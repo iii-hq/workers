@@ -39,14 +39,7 @@ export const MiddlewareRequestSchema = z
   })
   .strict();
 
-export const MiddlewareResponseSchema = z.union([
-  z.object({}).passthrough(),
-  z.array(z.unknown()),
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-]);
+export const MiddlewareResponseSchema = z.unknown();
 
 export const VerifyRequestSchema = z
   .object({
@@ -82,25 +75,7 @@ export const VerifyResponseSchema = z
   })
   .strict();
 
-export const OnFunctionRegistrationRequestSchema = z
-  .object({
-    function_id: z.string(),
-  })
-  .strict();
-
-export const OnFunctionRegistrationResponseSchema = z
-  .object({
-    function_id: z.string(),
-  })
-  .strict();
-
-export const OnTriggerRegistrationRequestSchema = z
-  .object({
-    function_id: z.string(),
-  })
-  .strict();
-
-export const OnTriggerRegistrationResponseSchema = z
+export const FunctionIdEnvelopeSchema = z
   .object({
     function_id: z.string(),
   })
@@ -112,31 +87,31 @@ export const OnTriggerTypeRegistrationRequestSchema = z
   })
   .strict();
 
-export const OnTriggerTypeRegistrationResponseSchema = z
-  .object({
-    denied: z.literal(true),
-  })
-  .strict();
+export const OnTriggerTypeRegistrationResponseSchema = z.unknown();
 
-export const MIDDLEWARE_REQUEST_FORMAT = jsonSchema(MiddlewareRequestSchema);
-export const MIDDLEWARE_RESPONSE_FORMAT = jsonSchema(MiddlewareResponseSchema);
-export const VERIFY_REQUEST_FORMAT = jsonSchema(VerifyRequestSchema);
-export const VERIFY_RESPONSE_FORMAT = jsonSchema(VerifyResponseSchema);
-export const ON_FUNCTION_REGISTRATION_REQUEST_FORMAT = jsonSchema(
-  OnFunctionRegistrationRequestSchema,
-);
-export const ON_FUNCTION_REGISTRATION_RESPONSE_FORMAT = jsonSchema(
-  OnFunctionRegistrationResponseSchema,
-);
-export const ON_TRIGGER_REGISTRATION_REQUEST_FORMAT = jsonSchema(
-  OnTriggerRegistrationRequestSchema,
-);
-export const ON_TRIGGER_REGISTRATION_RESPONSE_FORMAT = jsonSchema(
-  OnTriggerRegistrationResponseSchema,
-);
-export const ON_TRIGGER_TYPE_REGISTRATION_REQUEST_FORMAT = jsonSchema(
-  OnTriggerTypeRegistrationRequestSchema,
-);
-export const ON_TRIGGER_TYPE_REGISTRATION_RESPONSE_FORMAT = jsonSchema(
-  OnTriggerTypeRegistrationResponseSchema,
-);
+export const FUNCTION_FORMATS = {
+  'gantry::middleware': {
+    request: MiddlewareRequestSchema,
+    response: MiddlewareResponseSchema,
+  },
+  'gantry::verify': {
+    request: VerifyRequestSchema,
+    response: VerifyResponseSchema,
+  },
+  'gantry::on-function-registration': {
+    request: FunctionIdEnvelopeSchema,
+    response: FunctionIdEnvelopeSchema,
+  },
+  'gantry::on-trigger-registration': {
+    request: FunctionIdEnvelopeSchema,
+    response: FunctionIdEnvelopeSchema,
+  },
+  'gantry::on-trigger-type-registration': {
+    request: OnTriggerTypeRegistrationRequestSchema,
+    response: OnTriggerTypeRegistrationResponseSchema,
+  },
+};
+
+export function formatFor(schema) {
+  return jsonSchema(schema);
+}

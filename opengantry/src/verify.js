@@ -6,6 +6,7 @@
 import { verifyMission } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from './denied.js';
+import { LEASE_STATES } from './lease-store.js';
 import { getGovernanceBundle, getLeaseStore } from './stores.js';
 import { resolveVerifyRepoRoot } from './repo-path.js';
 
@@ -40,30 +41,38 @@ export class VerifyCoalescer {
   }
 }
 
-function verifySaturatedPayload() {
+function verifyFailedPayload(code, hint) {
   return {
     status: 'failed',
-    error_code: 'GXT_VERIFY_SATURATED',
+    error_code: code,
     findings: [
       {
         failed_gate: 'gate',
-        resolution_hint: 'verify queue saturated; retry later',
+        resolution_hint: hint,
       },
     ],
   };
 }
 
-function verifyBindFailedPayload(hint) {
-  return {
-    status: 'failed',
-    error_code: 'GXT_VERIFY_BIND_FAILED',
-    findings: [
-      {
-        failed_gate: 'gate',
-        resolution_hint: `verdict scope bind failed: ${hint}`,
-      },
-    ],
-  };
+async function recoverLeaseAfterVerify(leases, msnId) {
+  const lease = leases.get(msnId);
+  if (lease?.state === LEASE_STATES.tombstoned) {
+    const recovered = await leases.transition(msnId, LEASE_STATES.tombstoned, LEASE_STATES.active);
+    if (!recovered) {
+      throw new GantryDenied('LEASE_RECOVERY_FAILED', 'failed to recover tombstoned lease');
+    }
+    return;
+  }
+  if (lease?.state === LEASE_STATES.dirty_rewritten) {
+    const recovered = await leases.transition(
+      msnId,
+      LEASE_STATES.dirty_rewritten,
+      LEASE_STATES.active,
+    );
+    if (!recovered) {
+      throw new GantryDenied('LEASE_RECOVERY_FAILED', 'failed to recover dirty lease');
+    }
+  }
 }
 
 /** After a pass, pin the mission onto the lease so promote can recompute claims. */
@@ -80,6 +89,7 @@ export async function onVerifyPassed(deps, data) {
   if (!bound) {
     throw new GantryDenied('LEASE_BIND_FAILED', 'failed to bind mission on lease store');
   }
+  await recoverLeaseAfterVerify(leases, data.msn_id);
   try {
     getGovernanceBundle(deps, resolved, data.mission_rel_path);
   } catch {
@@ -92,7 +102,7 @@ export async function runVerify(data) {
   return verifyMission({
     repoRoot,
     missionRelPath: data.mission_rel_path,
-    options: data.options ?? { skipStaleEvidence: true },
+    options: { skipStaleEvidence: true, ...data.options },
   });
 }
 
@@ -112,7 +122,7 @@ export function createVerifyHandler(deps) {
       // Return a failed payload so the agent can retry. Throwing would look
       // like a worker crash rather than a full verify queue.
       if (e instanceof VerifyCoalescerSaturationError) {
-        return verifySaturatedPayload();
+        return verifyFailedPayload('GXT_VERIFY_SATURATED', 'verify queue saturated; retry later');
       }
       throw e;
     }
@@ -122,7 +132,7 @@ export function createVerifyHandler(deps) {
       } catch (e) {
         const hint =
           e instanceof GantryDenied ? e.hint : e instanceof Error ? e.message : String(e);
-        return verifyBindFailedPayload(hint);
+        return verifyFailedPayload('GXT_VERIFY_BIND_FAILED', `verdict scope bind failed: ${hint}`);
       }
     }
     return result;

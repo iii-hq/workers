@@ -11,6 +11,9 @@ if (!fs.existsSync(bundle)) {
   process.exit(1);
 }
 
+const ALLOWED_BOOT_FAILURE =
+  /ECONNREFUSED|connect ECONNREFUSED|WebSocket|failed to connect|connection refused/i;
+
 const bundleUrl = pathToFileURL(bundle).href;
 const result = spawnSync(
   process.execPath,
@@ -23,10 +26,11 @@ try {
   await import(url);
 } catch (e) {
   const msg = String(e?.message ?? e);
-  if (/SyntaxError|Unexpected token|Invalid or unexpected token/.test(msg)) {
-    console.error('verify:sandbox: bundle syntax/boot error:', msg);
-    process.exit(1);
+  if (${ALLOWED_BOOT_FAILURE}.test(msg)) {
+    process.exit(0);
   }
+  console.error('verify:sandbox: unexpected boot error:', msg);
+  process.exit(1);
 }
 process.exit(0);`,
   ],

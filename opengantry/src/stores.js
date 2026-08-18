@@ -10,7 +10,6 @@ import path from 'node:path';
 import { loadGovernanceBundle } from '@jeger-ai/opengantry/kernel';
 
 import { LeaseStore } from './lease-store.js';
-import { defaultLeaseStorePath } from './repo-path.js';
 
 /** Size-capped Map: evicts oldest entry when at capacity. */
 export class BoundedMap {
@@ -73,7 +72,7 @@ export function getGovernanceBundle(deps, repoRoot, missionRel) {
 
 export function getLeaseStore(deps, repoRoot) {
   if (!deps.leaseStores.has(repoRoot)) {
-    deps.leaseStores.set(repoRoot, new LeaseStore(defaultLeaseStorePath(repoRoot)));
+    deps.leaseStores.set(repoRoot, new LeaseStore(deps.resolveLeaseStorePath(repoRoot)));
   }
   return deps.leaseStores.get(repoRoot);
 }

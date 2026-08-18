@@ -38,7 +38,8 @@ export function resolveVerifyRepoRoot(repoRoot) {
   return repoRoot;
 }
 
-function ensureResolvedUnderGitagent(repoRoot, targetPath) {
+/** Resolve override path under .gitagent/, creating parent dirs as needed. */
+export function resolveLeaseOverridePath(repoRoot, targetPath) {
   const root = path.resolve(repoRoot);
   const gitagentDir = path.join(root, '.gitagent');
   fs.mkdirSync(gitagentDir, { recursive: true });
@@ -53,12 +54,16 @@ function ensureResolvedUnderGitagent(repoRoot, targetPath) {
   }
 }
 
-export function defaultLeaseStorePath(repoRoot) {
+export function resolveLeaseStorePath(repoRoot, override) {
   const root = path.resolve(repoRoot);
   const defaultPath = path.join(root, '.gitagent', 'leases.json');
-  const override = process.env.GANTRY_III_LEASE_STORE?.trim();
   if (!override) return defaultPath;
   const resolved = path.resolve(override);
-  ensureResolvedUnderGitagent(root, resolved);
+  resolveLeaseOverridePath(root, resolved);
   return resolved;
+}
+
+/** Default lease store path; reads process env when no override is supplied. */
+export function defaultLeaseStorePath(repoRoot) {
+  return resolveLeaseStorePath(repoRoot, process.env.GANTRY_III_LEASE_STORE?.trim());
 }

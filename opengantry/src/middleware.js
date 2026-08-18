@@ -14,21 +14,6 @@ import { resolveRepoRootFromContext } from './repo-path.js';
 import { getGovernanceBundle, getLeaseStore } from './stores.js';
 import { verifyPromoteVerdictToken } from './verdict.js';
 
-async function ensureLease(leases, msnId, worktreePath, missionRel) {
-  const existing = leases.get(msnId);
-  if (!existing) {
-    await leases.upsert({
-      msn_id: msnId,
-      branch: worktreePath ?? `gxt/${msnId.toLowerCase()}`,
-      state: LEASE_STATES.active,
-      session_refs: Object.create(null),
-      mission_rel: missionRel,
-    });
-  } else if (missionRel && !existing.mission_rel) {
-    await leases.bindMissionRel(msnId, missionRel);
-  }
-}
-
 export function createMiddlewareHandler(deps) {
   return async function gantryMiddleware(input) {
     const { function_id, payload, context } = input;
@@ -46,10 +31,11 @@ export function createMiddlewareHandler(deps) {
     const holderId = context?.holder_id;
     const missionRel = context?.mission_rel_path ?? context?.mission_rel;
     let sessionHeld = false;
+    let promoteClaimed = false;
 
     try {
       if (msnId && holderId) {
-        await ensureLease(leases, msnId, context?.worktree_path ?? context?.repo_root, missionRel);
+        await leases.ensure(msnId, { missionRel });
         await leases.acquireSession(msnId, holderId);
         sessionHeld = true;
       }
@@ -62,26 +48,25 @@ export function createMiddlewareHandler(deps) {
 
       // Kernel classify: ::deploy / ::merge / ::publish / ::apply / ::push / ::promote.
       if (isPromoteClassFunctionId(function_id)) {
+        if (!msnId) {
+          throw new GantryDenied('MSN_ID_MISSING', 'promote refused: msn_id required');
+        }
         const token = context?.verdict_token ?? payload?.verdict_token;
         verifyPromoteVerdictToken({
           token,
           msnId,
           repoRoot,
           missionRel: lease?.mission_rel ?? missionRel,
+          keyringPath: deps.resolveVerdictKeyringPath(repoRoot),
         });
-        if (msnId) {
-          const claimed = await leases.transition(
-            msnId,
-            LEASE_STATES.active,
-            LEASE_STATES.promoting,
+        const claimed = await leases.transition(msnId, LEASE_STATES.active, LEASE_STATES.promoting);
+        if (!claimed) {
+          throw new GantryDenied(
+            'LEASE_NOT_PROMOTABLE',
+            'lease is not in active state; re-verify required',
           );
-          if (!claimed) {
-            throw new GantryDenied(
-              'LEASE_NOT_PROMOTABLE',
-              'lease is not in active state; re-verify required',
-            );
-          }
         }
+        promoteClaimed = true;
       }
 
       const boundMissionRel = lease?.mission_rel ?? missionRel;
@@ -98,12 +83,11 @@ export function createMiddlewareHandler(deps) {
         }
       }
 
-      const result = await deps.forwardTrigger(function_id, payload);
-      if (msnId) {
+      return await deps.forwardTrigger(function_id, payload);
+    } finally {
+      if (promoteClaimed && msnId) {
         await leases.transition(msnId, LEASE_STATES.promoting, LEASE_STATES.active);
       }
-      return result;
-    } finally {
       if (msnId && holderId && sessionHeld) {
         await leases.releaseSession(msnId, holderId);
       }

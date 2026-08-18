@@ -6,9 +6,15 @@ import { test } from 'node:test';
 
 import { isPromoteClassFunctionId } from '@jeger-ai/opengantry/kernel';
 
+import { GantryDenied } from '../src/denied.js';
 import { LEASE_STATES } from '../src/lease-store.js';
-import { isReservedGovernanceFunctionId } from '../src/namespace.js';
-import { defaultLeaseStorePath } from '../src/repo-path.js';
+import {
+  isReservedGovernanceFunctionId,
+  onFunctionRegistration,
+  onTriggerRegistration,
+  onTriggerTypeRegistration,
+} from '../src/registration-hooks.js';
+import { resolveLeaseStorePath } from '../src/repo-path.js';
 import { createGantryRuntime } from '../src/runtime.js';
 import { VerifyCoalescer, VerifyCoalescerSaturationError } from '../src/verify.js';
 
@@ -64,6 +70,30 @@ test('reserved governance namespace blocks gantry squatting', () => {
   );
 });
 
+test('onFunctionRegistration denies reserved ids', () => {
+  assert.throws(
+    () => onFunctionRegistration({ function_id: 'gantry::evil' }),
+    (err) => err instanceof GantryDenied && err.code === 'REGISTRATION_DENIED',
+    'reserved function ids should be denied',
+  );
+});
+
+test('onTriggerRegistration denies gantry namespace bindings', () => {
+  assert.throws(
+    () => onTriggerRegistration({ function_id: 'gantry::deploy' }),
+    (err) => err instanceof GantryDenied && err.code === 'REGISTRATION_DENIED',
+    'gantry namespace trigger bindings should be denied',
+  );
+});
+
+test('onTriggerTypeRegistration always denies', () => {
+  assert.throws(
+    () => onTriggerTypeRegistration(),
+    (err) => err instanceof GantryDenied && err.code === 'TRIGGER_TYPE_REGISTRATION_DENIED',
+    'trigger type registration should always be denied',
+  );
+});
+
 test('tombstone on disconnect while promoting', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-v-tomb-'));
   const runtime = createGantryRuntime({
@@ -88,7 +118,7 @@ test('tombstone on disconnect while promoting', async () => {
 
 test('default lease store path resolves under .gitagent', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-v-lease-path-'));
-  const storePath = defaultLeaseStorePath(repoRoot);
+  const storePath = resolveLeaseStorePath(repoRoot);
   assert.equal(
     storePath,
     path.join(repoRoot, '.gitagent', 'leases.json'),

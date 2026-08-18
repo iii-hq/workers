@@ -35,6 +35,7 @@ test('minted token promotes when mission_rel is bound', async () => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
       forwardTrigger: async () => ({ ok: true }),
+      verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
       repo_root: repoRoot,
@@ -60,6 +61,7 @@ test('mission edited after mint denies promote', async () => {
     fs.appendFileSync(path.join(repoRoot, missionRel), '\n# tamper\n');
     const runtime = createGantryRuntime({
       forwardTrigger: async () => ({ ok: true }),
+      verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
       repo_root: repoRoot,
@@ -111,6 +113,7 @@ test('missing org config denies promote', async () => {
     delete process.env.GANTRY_ORG_ID;
     const runtime = createGantryRuntime({
       forwardTrigger: async () => ({ ok: true }),
+      verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
       repo_root: repoRoot,

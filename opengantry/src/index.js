@@ -6,18 +6,7 @@
  */
 import { registerWorker } from 'iii-sdk';
 
-import {
-  MIDDLEWARE_REQUEST_FORMAT,
-  MIDDLEWARE_RESPONSE_FORMAT,
-  ON_FUNCTION_REGISTRATION_REQUEST_FORMAT,
-  ON_FUNCTION_REGISTRATION_RESPONSE_FORMAT,
-  ON_TRIGGER_REGISTRATION_REQUEST_FORMAT,
-  ON_TRIGGER_REGISTRATION_RESPONSE_FORMAT,
-  ON_TRIGGER_TYPE_REGISTRATION_REQUEST_FORMAT,
-  ON_TRIGGER_TYPE_REGISTRATION_RESPONSE_FORMAT,
-  VERIFY_REQUEST_FORMAT,
-  VERIFY_RESPONSE_FORMAT,
-} from './formats.js';
+import { formatFor, FUNCTION_FORMATS } from './formats.js';
 import {
   onFunctionRegistration,
   onTriggerRegistration,
@@ -25,16 +14,19 @@ import {
 } from './registration-hooks.js';
 import { createGantryRuntime } from './runtime.js';
 
-function envFlag(name) {
-  const value = process.env[name]?.trim().toLowerCase();
-  return value === 'true' || value === '1' || value === 'yes' || value === 'on';
-}
+const HANDLERS = {
+  'gantry::middleware': null,
+  'gantry::verify': null,
+  'gantry::on-function-registration': onFunctionRegistration,
+  'gantry::on-trigger-registration': onTriggerRegistration,
+  'gantry::on-trigger-type-registration': onTriggerTypeRegistration,
+};
 
 function opengantryWorkerOptions() {
   return {
     workerName: 'opengantry',
     workerDescription: 'OpenGantry governance (verify, middleware, RBAC hooks)',
-    otel: { enabled: envFlag('OTEL_ENABLED') },
+    otel: { enabled: process.env.OTEL_ENABLED === 'true' },
   };
 }
 
@@ -48,31 +40,15 @@ async function startWorker() {
   const { middleware, verify } = createGantryRuntime({
     forwardTrigger: (function_id, payload) => worker.trigger({ function_id, payload }),
   });
+  HANDLERS['gantry::middleware'] = middleware;
+  HANDLERS['gantry::verify'] = verify;
 
-  worker.registerFunction('gantry::middleware', middleware, {
-    request_format: MIDDLEWARE_REQUEST_FORMAT,
-    response_format: MIDDLEWARE_RESPONSE_FORMAT,
-  });
-
-  worker.registerFunction('gantry::verify', verify, {
-    request_format: VERIFY_REQUEST_FORMAT,
-    response_format: VERIFY_RESPONSE_FORMAT,
-  });
-
-  worker.registerFunction('gantry::on-function-registration', onFunctionRegistration, {
-    request_format: ON_FUNCTION_REGISTRATION_REQUEST_FORMAT,
-    response_format: ON_FUNCTION_REGISTRATION_RESPONSE_FORMAT,
-  });
-
-  worker.registerFunction('gantry::on-trigger-registration', onTriggerRegistration, {
-    request_format: ON_TRIGGER_REGISTRATION_REQUEST_FORMAT,
-    response_format: ON_TRIGGER_REGISTRATION_RESPONSE_FORMAT,
-  });
-
-  worker.registerFunction('gantry::on-trigger-type-registration', onTriggerTypeRegistration, {
-    request_format: ON_TRIGGER_TYPE_REGISTRATION_REQUEST_FORMAT,
-    response_format: ON_TRIGGER_TYPE_REGISTRATION_RESPONSE_FORMAT,
-  });
+  for (const [functionId, formats] of Object.entries(FUNCTION_FORMATS)) {
+    worker.registerFunction(functionId, HANDLERS[functionId], {
+      request_format: formatFor(formats.request),
+      response_format: formatFor(formats.response),
+    });
+  }
 
   worker.registerTriggerType(
     {
