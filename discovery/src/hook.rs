@@ -203,11 +203,16 @@ fn narrow_surface(tools: &[ToolSchema], minimum: usize) -> bool {
     namespaces.len() < minimum
 }
 
-/// True when any window message is a function_result from a real worker:
-/// the session is already exercising working calls, and a discovery hint
-/// would only re-open a settled path mid-turn.
+/// True when a message AFTER the latest user message is a function_result
+/// from a real worker: the task in progress is already exercising working
+/// calls, and a discovery hint would only re-open a settled path mid-turn.
+/// Evidence from BEFORE the latest user message belongs to the previous
+/// task — a new user message opens new capability needs, so it resets the
+/// window (otherwise a session whose first turn operated could never be
+/// re-hinted, even once the hint record went stale).
 fn operating_evidence(messages: &[Value]) -> bool {
-    messages.iter().any(|message| {
+    let start = latest_user_index(messages).map_or(0, |i| i + 1);
+    messages[start..].iter().any(|message| {
         message.get("role").and_then(Value::as_str) == Some("function_result")
             && message
                 .get("function_id")
@@ -220,12 +225,22 @@ fn operating_evidence(messages: &[Value]) -> bool {
     })
 }
 
-/// True when the conversation text already names a concrete callable
-/// function id from the surface (excluded prefixes aside): the task is
-/// guided — its contracts are spelled out or trivially known — and a
-/// discovery hint measurably *induces* redundant discovery instead of
-/// helping. Candidates are whitespace-split words carrying `::`, trimmed of
-/// surrounding punctuation.
+/// Index of the latest user message, if any. Gates that reason about "the
+/// current task" scope their evidence from here instead of the whole
+/// window: a new user message opens new capability needs, and evidence
+/// from the previous task must not silence the hint for the next one.
+fn latest_user_index(messages: &[Value]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+}
+
+/// True when the current task's text (the latest user message onward)
+/// names a concrete callable function id from the surface (excluded
+/// prefixes aside): the task is guided — its contracts are spelled out or
+/// trivially known — and a discovery hint measurably *induces* redundant
+/// discovery instead of helping. Candidates are whitespace-split words
+/// carrying `::`, trimmed of surrounding punctuation.
 fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
     let callable: std::collections::HashSet<&str> = tools
         .iter()
@@ -239,7 +254,8 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
     if callable.is_empty() {
         return false;
     }
-    messages.iter().any(|message| {
+    let start = latest_user_index(messages).unwrap_or(0);
+    messages[start..].iter().any(|message| {
         text_content(message).is_some_and(|text| {
             text.split_whitespace().any(|word| {
                 word.contains("::")
@@ -541,6 +557,59 @@ mod tests {
         }));
         let response = pre_generate(&deps, request).await;
         assert_skip(&response, DiscoveryReason::AlreadyOperating);
+    }
+
+    #[tokio::test]
+    async fn task_guidance_resets_at_the_latest_user_message() {
+        // Turn 1 named a function ("use browser::fetch…"), turn 2 does not:
+        // the old guidance belongs to the previous task and must not
+        // silence the hint for the new one.
+        let deps = deps();
+        let mut request = request_for("find", wide_tools());
+        request.generate.messages = vec![
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "use github::repo::view to check stars" }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "now do something else entirely" }]
+            }),
+        ];
+        let response = pre_generate(&deps, request).await;
+        assert_eq!(
+            response.annotations.discovery.data.outcome,
+            DiscoveryOutcome::HintInjected
+        );
+    }
+
+    #[tokio::test]
+    async fn operating_evidence_resets_at_the_latest_user_message() {
+        // Turn 1 operated (real worker result), then a NEW user message
+        // arrived: the old evidence is the previous task's and must not
+        // block the hint for the new one.
+        let deps = deps();
+        let mut request = request_for("find the stars", wide_tools());
+        request.generate.messages = vec![
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "summarize the news" }]
+            }),
+            json!({
+                "role": "function_result",
+                "function_id": "github::repo::view",
+                "content": [{ "type": "text", "text": "{\"stargazers_count\":1}" }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "now do something else entirely" }]
+            }),
+        ];
+        let response = pre_generate(&deps, request).await;
+        assert_eq!(
+            response.annotations.discovery.data.outcome,
+            DiscoveryOutcome::HintInjected
+        );
     }
 
     #[tokio::test]
