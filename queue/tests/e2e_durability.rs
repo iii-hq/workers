@@ -147,7 +147,7 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     };
 
     let dir = temp_store_dir();
-    let boot = iii_queue::boot::start(iii.clone(), file_config(&dir))
+    let boot = iii_queue::boot::start(iii.clone(), iii.clone(), file_config(&dir))
         .await
         .expect("queue worker should boot");
 

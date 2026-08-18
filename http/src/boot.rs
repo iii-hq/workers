@@ -113,12 +113,15 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
 /// registering it here would silently collide (last-write-wins).
 async fn guard_against_builtin_http(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
     let workers_list = iii
-        .trigger(TriggerRequest {
-            function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
-            payload: serde_json::json!({}),
-            action: None,
-            timeout_ms: Some(5000),
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
+                payload: serde_json::json!({}),
+                action: None,
+                timeout_ms: Some(5000),
+            }
+            .namespace("default"),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("failed to query {LIST_WORKERS_FUNCTION_ID}: {e}"))?;
 

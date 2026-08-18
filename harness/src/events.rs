@@ -94,6 +94,7 @@ impl BindingFilter {
 #[derive(Debug, Clone)]
 struct Binding {
     function_id: String,
+    namespace: Option<String>,
     filter: BindingFilter,
     /// The trigger's registration `metadata`, forwarded to the bound function
     /// as the invocation sidecar so targets like `harness::spawn` and
@@ -118,6 +119,7 @@ impl SubscriberSet {
             config.id,
             Binding {
                 function_id: config.function_id,
+                namespace: config.namespace,
                 filter,
                 metadata: config.metadata,
             },
@@ -132,6 +134,7 @@ impl SubscriberSet {
     fn add_unfiltered(&self, config: TriggerConfig) -> Binding {
         let binding = Binding {
             function_id: config.function_id,
+            namespace: config.namespace,
             filter: BindingFilter::default(),
             metadata: config.metadata,
         };
@@ -471,16 +474,13 @@ impl TurnEvents {
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
             };
-            // A dynamic target may be an engine builtin (a hook wired to
-            // `state::set`) or a sibling worker's function — route to the
-            // worker's namespace only when it is NOT a builtin.
-            let route_ns = crate::trigger::route_namespace(&self.iii, &binding.function_id);
-            let res = match (binding.metadata.clone(), route_ns) {
-                (Some(m), Some(ns)) => self.iii.trigger(request.metadata(m).namespace(ns)).await,
-                (Some(m), None) => self.iii.trigger(request.metadata(m)).await,
-                (None, Some(ns)) => self.iii.trigger(request.namespace(ns)).await,
-                (None, None) => self.iii.trigger(request).await,
-            };
+            let request: iii_sdk::protocol::TriggerRequestWithMetadata =
+                match binding.metadata.clone() {
+                    Some(metadata) => request.metadata(metadata),
+                    None => request.into(),
+                };
+            let namespace = binding.namespace.as_deref().unwrap_or("default");
+            let res = self.iii.trigger(request.namespace(namespace)).await;
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
             }
@@ -498,16 +498,12 @@ async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
         action: Some(TriggerAction::Void),
         timeout_ms: None,
     };
-    let route_ns = crate::trigger::route_namespace(iii, &binding.function_id);
-    let result = match (&binding.metadata, route_ns) {
-        (Some(metadata), Some(namespace)) => {
-            iii.trigger(request.metadata(metadata.clone()).namespace(namespace))
-                .await
-        }
-        (Some(metadata), None) => iii.trigger(request.metadata(metadata.clone())).await,
-        (None, Some(namespace)) => iii.trigger(request.namespace(namespace)).await,
-        (None, None) => iii.trigger(request).await,
+    let request: iii_sdk::protocol::TriggerRequestWithMetadata = match &binding.metadata {
+        Some(metadata) => request.metadata(metadata.clone()),
+        None => request.into(),
     };
+    let namespace = binding.namespace.as_deref().unwrap_or("default");
+    let result = iii.trigger(request.namespace(namespace)).await;
     if let Err(error) = result {
         tracing::warn!(
             trigger_type = READY,
@@ -570,5 +566,19 @@ mod tests {
             BindingFilter::parse(&Value::Null).unwrap(),
             BindingFilter::default()
         );
+    }
+
+    #[test]
+    fn subscriber_preserves_target_namespace() {
+        let set = SubscriberSet::default();
+        set.add(TriggerConfig {
+            id: "sub-1".into(),
+            function_id: "ui::refresh".into(),
+            config: json!({}),
+            metadata: None,
+            namespace: Some("project-a".into()),
+        })
+        .unwrap();
+        assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
     }
 }

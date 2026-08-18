@@ -62,12 +62,11 @@ impl Enqueuer for IiiEnqueuer {
             }),
             timeout_ms: None,
         };
-        match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        }
-        .map(|_| ())
-        .map_err(|e| WError::new(codes::ENQUEUE_FAILED, format!("enqueue to {queue:?}: {e}")))
+        self.iii
+            .trigger(request)
+            .await
+            .map(|_| ())
+            .map_err(|e| WError::new(codes::ENQUEUE_FAILED, format!("enqueue to {queue:?}: {e}")))
     }
 }
 

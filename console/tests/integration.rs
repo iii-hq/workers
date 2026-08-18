@@ -282,7 +282,7 @@ async fn ws_proxy_forwards_oversized_engine_message() {
     let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(console::server::serve(
         0,
-        console::server::AppState::new(engine_url, None),
+        console::server::AppState::new(engine_url, None, None),
         shutdown_rx,
         Some(bound_tx),
     ));

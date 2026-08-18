@@ -177,11 +177,9 @@ async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Valu
         action: None,
         timeout_ms: Some(CALL_TIMEOUT_MS),
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .map_err(|e| format!("{function_id}: {e}"))
+    iii.trigger(request)
+        .await
+        .map_err(|e| format!("{function_id}: {e}"))
 }
 
 /// Banks eligible for this pass (config allowlist applied).

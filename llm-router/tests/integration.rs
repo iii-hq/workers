@@ -4,7 +4,7 @@
 //!
 //! **Self-skips** when no engine is available (storage-worker pattern):
 //! set `III_ENGINE_BIN=/path/to/iii` or have `iii` on PATH.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,6 +14,8 @@ use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use llm_router::channels::create_router_channel;
+use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value};
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
 use llm_router::types::router::ProviderDeclaration;
@@ -228,6 +230,44 @@ async fn call_until(
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_entry_uses_default_namespace_from_a_namespaced_worker() {
+    let engine = engine_or_skip!();
+    let mut options = test_init_options();
+    options.namespace = Some("llm-router-namespace-test".into());
+    let router = register_worker(&engine.url, options);
+
+    register_entry(&router, &BTreeMap::new())
+        .await
+        .expect("configuration entry registers in the engine namespace");
+    assert_eq!(read_entry_value(&router).await.unwrap(), Value::Null);
+
+    let value = json!({ "settings": { "retry_max": 4 } });
+    write_entry_value(&router, value.clone())
+        .await
+        .expect("configuration entry updates in the engine namespace");
+    assert_eq!(read_entry_value(&router).await.unwrap(), value);
+
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn router_channel_creation_uses_default_namespace_from_a_namespaced_worker() {
+    let engine = bare_engine_or_skip!();
+    let mut options = test_init_options();
+    options.namespace = Some("llm-router-namespace-test".into());
+    let router = register_worker(&engine.url, options);
+
+    let channel = create_router_channel(&router)
+        .await
+        .expect("static engine channel factory resolves in default");
+    assert!(!channel.writer_ref.channel_id.is_empty());
+    channel.writer.close();
+    channel.reader.close();
+
+    router.shutdown();
 }
 
 /// Register the minimal state surface on a bare engine and fail exactly one

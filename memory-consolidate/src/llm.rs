@@ -152,11 +152,10 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
         action: None,
         timeout_ms: Some(5_000),
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .map_err(|e| format!("router::models::list: {e}"))?;
+    let reply = iii
+        .trigger(request)
+        .await
+        .map_err(|e| format!("router::models::list: {e}"))?;
     reply
         .get("models")
         .and_then(Value::as_array)
@@ -189,11 +188,10 @@ pub async fn judge(
         action: None,
         timeout_ms: Some(LLM_TIMEOUT_MS),
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .map_err(|e| format!("router::complete: {e}"))?;
+    let reply = iii
+        .trigger(request)
+        .await
+        .map_err(|e| format!("router::complete: {e}"))?;
     let text = reply
         .pointer("/message/content")
         .and_then(Value::as_array)

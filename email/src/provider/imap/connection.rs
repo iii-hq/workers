@@ -198,11 +198,7 @@ async fn fetch_credential(account: &str) -> Result<Value, Error> {
         action: None,
         timeout_ms: Some(5_000),
     };
-    let cred = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .map_err(|e| {
+    let cred = iii.trigger(request).await.map_err(|e| {
         handler_err(
             "E606",
             &format!("auth::get_token failed for `email::{account}`: {e}"),

@@ -106,10 +106,7 @@ pub async fn send(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let value = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let value = iii.trigger(request).await?;
     serde_json::from_value(value).map_err(|e| Error::Handler(format!("harness::send: {e}")))
 }
 
@@ -124,10 +121,7 @@ pub async fn stop(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let value = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let value = iii.trigger(request).await?;
     serde_json::from_value(value).map_err(|e| Error::Handler(format!("harness::stop: {e}")))
 }
 
@@ -142,10 +136,7 @@ pub async fn status_active(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let v = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let v = iii.trigger(request).await?;
     Ok(!v.is_null())
 }
 

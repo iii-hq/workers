@@ -100,10 +100,7 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
                     action: None,
                     timeout_ms: Some(5_000),
                 };
-                let cred = match iii.namespace() {
-                    Some(ns) => iii.trigger(request.namespace(ns)).await,
-                    None => iii.trigger(request).await,
-                }
+                let cred = iii.trigger(request).await
                     .map_err(|e| {
                         Error::Handler(
                             json!({

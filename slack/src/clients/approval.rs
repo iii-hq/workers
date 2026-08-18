@@ -22,10 +22,7 @@ pub async fn resolve(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    iii.trigger(request).await?;
     Ok(())
 }
 
@@ -41,9 +38,6 @@ pub async fn approve_always(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    iii.trigger(request).await?;
     Ok(())
 }

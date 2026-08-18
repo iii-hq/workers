@@ -113,10 +113,7 @@ pub async fn reconcile_run(
             action: None,
             timeout_ms: Some(timeout_ms),
         };
-        let result = match deps.iii.namespace() {
-            Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-            None => deps.iii.trigger(request).await,
-        };
+        let result = deps.iii.trigger(request).await;
         let resp = match result {
             Ok(resp) => resp,
             Err(e) => {

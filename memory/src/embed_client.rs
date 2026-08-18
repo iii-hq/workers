@@ -37,11 +37,7 @@ pub async fn embed_texts(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .ok()?;
+    let reply = iii.trigger(request).await.ok()?;
     let embeddings: Vec<Vec<f32>> =
         serde_json::from_value(reply.get("embeddings").cloned().unwrap_or(Value::Null)).ok()?;
     if embeddings.len() == texts.len() {

@@ -33,10 +33,7 @@ pub async fn list_models(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<Model>,
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let value = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let value = iii.trigger(request).await?;
     let resp: ModelsListResponse = serde_json::from_value(value)
         .map_err(|e| Error::Handler(format!("router::models::list: {e}")))?;
     Ok(resp.models)

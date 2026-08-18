@@ -47,10 +47,7 @@ pub(crate) async fn harness_stop_session(deps: &Deps, session_id: &str, dispatch
         action: None,
         timeout_ms: Some(dispatch_timeout_ms),
     };
-    let _ = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    };
+    let _ = deps.iii.trigger(request).await;
 }
 
 /// Stop the live session of every node still `Running`. Workflow nodes are

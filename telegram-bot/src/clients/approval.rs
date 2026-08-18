@@ -49,10 +49,7 @@ pub async fn resolve(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let value = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let value = iii.trigger(request).await?;
     serde_json::from_value(value).map_err(|e| Error::Handler(format!("approval::resolve: {e}")))
 }
 
@@ -71,10 +68,7 @@ pub async fn approve_always(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    iii.trigger(request).await?;
     Ok(())
 }
 
@@ -89,10 +83,7 @@ pub async fn list_pending(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let value = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let value = iii.trigger(request).await?;
     let resp: ListPendingResponse = serde_json::from_value(value)
         .map_err(|e| Error::Handler(format!("approval::list-pending: {e}")))?;
     Ok(resp.pending)

@@ -14,13 +14,13 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
-use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::sync::{watch, Notify};
 
+use super::EngineClient;
 use crate::error::HarnessError;
 use crate::types::event::{AssistantMessageEvent, FunctionCallArgumentsPreview, StopReason};
 use crate::types::message::{empty_assistant, AssistantMessage};
@@ -66,6 +66,7 @@ const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
+    engine: EngineClient,
     timeout_ms: u64,
     coalesce_ms: u64,
 }
@@ -73,6 +74,7 @@ pub struct RouterClient {
 impl RouterClient {
     pub fn new(iii: Arc<IIIClient>, timeout_ms: u64, coalesce_ms: u64) -> Self {
         Self {
+            engine: EngineClient::new(iii.clone(), timeout_ms),
             iii,
             timeout_ms,
             coalesce_ms,
@@ -92,7 +94,9 @@ impl RouterClient {
         sink: &dyn StreamSink,
         mut abort_rx: watch::Receiver<bool>,
     ) -> Result<ChatOutcome, HarnessError> {
-        let channel = create_channel(&self.iii, None)
+        let channel = self
+            .engine
+            .create_channel(None)
             .await
             .map_err(|e| HarnessError::Dependency(format!("create_channel: {e}")))?;
 
@@ -177,10 +181,7 @@ impl RouterClient {
                     action: None,
                     timeout_ms: Some(timeout_ms),
                 };
-                match iii.namespace() {
-                    Some(ns) => iii.trigger(request.namespace(ns)).await,
-                    None => iii.trigger(request).await,
-                }
+                iii.trigger(request).await
             }
             .with_context(parent_cx),
         );
@@ -433,10 +434,7 @@ impl RouterClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let res = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let res = self.iii.trigger(request).await;
         match res {
             Ok(v) => v.get("aborted").and_then(Value::as_bool).unwrap_or(false),
             Err(e) => {
@@ -461,11 +459,7 @@ impl RouterClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let resp = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        }
-        .ok()?;
+        let resp = self.iii.trigger(request).await.ok()?;
         resp.get("system_prompt")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
@@ -527,11 +521,7 @@ impl RouterClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let resp = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        }
-        .ok()?;
+        let resp = self.iii.trigger(request).await.ok()?;
         if resp.is_null() {
             return None;
         }
@@ -551,10 +541,7 @@ impl RouterClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let resp = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let resp = self.iii.trigger(request).await;
         match resp {
             Ok(v) => v.get("supported").and_then(Value::as_bool).unwrap_or(false),
             Err(_) => false,

@@ -130,11 +130,6 @@ pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Va
             action: None,
             timeout_ms: Some(timeout_ms),
         };
-        let request: iii_sdk::protocol::TriggerRequestWithMetadata =
-            match crate::trigger::route_namespace(&deps.iii, &condition.function_id) {
-                Some(namespace) => request.namespace(namespace),
-                None => request.into(),
-            };
         let raw = deps.iii.trigger(request).await;
 
         let decision = match raw {

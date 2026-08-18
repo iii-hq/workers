@@ -413,10 +413,7 @@ async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json:
             action: None,
             timeout_ms: Some(10_000),
         };
-        let result = match iii.namespace() {
-            Some(ns) => iii.trigger(request.namespace(ns)).await,
-            None => iii.trigger(request).await,
-        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         match result {
             Ok(val) => {

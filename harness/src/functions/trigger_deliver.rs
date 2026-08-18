@@ -476,11 +476,6 @@ async fn call_target(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let request: iii_sdk::protocol::TriggerRequestWithMetadata =
-        match crate::trigger::route_namespace(&deps.iii, target) {
-            Some(namespace) => request.namespace(namespace),
-            None => request.into(),
-        };
     let outcome = deps
         .iii
         .trigger(request)

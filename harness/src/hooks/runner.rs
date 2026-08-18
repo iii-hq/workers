@@ -364,13 +364,8 @@ impl HookRegistry {
             action: None,
             timeout_ms: Some(binding.timeout_ms),
         };
-        // A hook target is dynamic: engine builtins stay in the default
-        // namespace; sibling-worker functions follow this worker's namespace.
-        let request: iii_sdk::protocol::TriggerRequestWithMetadata =
-            match crate::trigger::route_namespace(&self.iii, &binding.function_id) {
-                Some(namespace) => request.namespace(namespace),
-                None => request.into(),
-            };
+        let namespace = binding.namespace.as_deref().unwrap_or("default");
+        let request = request.namespace(namespace);
         let fut = iii_helpers::observability::run_with_baggage(&baggage, self.iii.trigger(request));
         let bounded = tokio::time::timeout(
             Duration::from_millis(binding.timeout_ms.saturating_add(1_000)),
@@ -643,6 +638,7 @@ mod tests {
     fn binding(function_id: &str, priority: i64) -> HookBinding {
         HookBinding {
             function_id: function_id.into(),
+            namespace: None,
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
@@ -761,6 +757,7 @@ mod tests {
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
             function_id: "gate".into(),
+            namespace: None,
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,

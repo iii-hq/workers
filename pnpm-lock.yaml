@@ -175,8 +175,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       iii-browser-sdk:
-        specifier: ^0.21.6
-        version: 0.21.6
+        specifier: 0.23.0-rc.1
+        version: 0.23.0-rc.1
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -3353,8 +3353,8 @@ packages:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
     engines: {node: '>=0.10.0'}
 
-  iii-browser-sdk@0.21.6:
-    resolution: {integrity: sha512-ZyVvWAG3ar6P6Xi+OTKpVwWeoFPjsCH3AtFfV7UCva/pMj7fo5u1DzxZ7Kz7Vc/g9KBCn9dy3KOo5fBpmirYDA==}
+  iii-browser-sdk@0.23.0-rc.1:
+    resolution: {integrity: sha512-gXj3lfOAE7akvgE8u2zffmh7SMQFotERtDONLGOXmGnOWEoo9CA5OkrZGNnKhuwOzraHIMaT2q6sC5KxkhHCmA==}
 
   iii-sdk@0.22.0:
     resolution: {integrity: sha512-ia6iW/RrhslKz01KflGRRRUv1i98ZEeYgyT+CR4WG6zBiUg2XmSB97NCJCp4HYlrYGRENyYV5qYsIUzC8DjWdQ==}
@@ -7303,7 +7303,7 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iii-browser-sdk@0.21.6: {}
+  iii-browser-sdk@0.23.0-rc.1: {}
 
   iii-sdk@0.22.0:
     dependencies:

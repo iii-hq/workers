@@ -767,11 +767,7 @@ async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    let resp = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    }
-    .ok()?;
+    let resp = deps.iii.trigger(request).await.ok()?;
 
     let set: BTreeSet<(String, String)> = resp
         .get("models")?
@@ -832,11 +828,9 @@ pub async fn enqueue_tick(
         }),
         timeout_ms: None,
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+    iii.trigger(request)
+        .await
+        .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
     Ok(())
 }
 

@@ -113,10 +113,7 @@ pub async fn resolve_bank(iii: &IIIClient, session_id: &str, default_bank: &str)
         action: None,
         timeout_ms: Some(5_000),
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    };
+    let reply = iii.trigger(request).await;
     match reply {
         Ok(v) => {
             let from_meta = v
@@ -180,11 +177,11 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
         action: None,
         timeout_ms: Some(cfg.extraction_timeout_ms),
     };
-    let reply = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    }
-    .map_err(|e| format!("router::complete: {e}"))?;
+    let reply = deps
+        .iii
+        .trigger(request)
+        .await
+        .map_err(|e| format!("router::complete: {e}"))?;
 
     let text = assistant_text(&reply);
     let items = parse_items(&text)?;
@@ -416,11 +413,10 @@ async fn fetch_transcript_since(
             action: None,
             timeout_ms: Some(10_000),
         };
-        let reply = match iii.namespace() {
-            Some(ns) => iii.trigger(request.namespace(ns)).await,
-            None => iii.trigger(request).await,
-        }
-        .map_err(|e| format!("session::messages: {e}"))?;
+        let reply = iii
+            .trigger(request)
+            .await
+            .map_err(|e| format!("session::messages: {e}"))?;
         if let Some(items) = reply.get("messages").and_then(Value::as_array) {
             for item in items {
                 let entry_id = item
@@ -518,11 +514,10 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
         action: None,
         timeout_ms: Some(5_000),
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
-    .map_err(|e| format!("router::models::list: {e}"))?;
+    let reply = iii
+        .trigger(request)
+        .await
+        .map_err(|e| format!("router::models::list: {e}"))?;
     let first = reply
         .get("models")
         .and_then(Value::as_array)

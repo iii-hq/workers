@@ -42,12 +42,15 @@ const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
 /// shape is unrecognized.
 async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
     let response = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::workers::list".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: "engine::workers::list".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
+            }
+            .namespace("default"),
+        )
         .await
         .ok()?;
     response
@@ -70,6 +73,18 @@ pub trait Invoker: Send + Sync + 'static {
         _timeout_ms: u64,
     ) -> Result<Option<Value>, String> {
         self.call(function_id, payload).await
+    }
+
+    async fn call_with_timeout_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+        namespace: &str,
+    ) -> Result<Option<Value>, String> {
+        let _ = namespace;
+        self.call_with_timeout(function_id, payload, timeout_ms)
+            .await
     }
 
     /// Dispatch one SUBSCRIPTION DELIVERY: the payload plus the trigger's
@@ -98,6 +113,15 @@ pub trait Invoker: Send + Sync + 'static {
     /// burning delivery retries on a transient `FUNCTION_NOT_FOUND` error.
     async fn function_available(&self, _function_id: &str) -> Result<bool, String> {
         Ok(true)
+    }
+
+    async fn function_available_in_namespace(
+        &self,
+        function_id: &str,
+        namespace: &str,
+    ) -> Result<bool, String> {
+        let _ = namespace;
+        self.function_available(function_id).await
     }
 
     /// Capture the engine epoch immediately before a restart-sensitive
@@ -147,6 +171,28 @@ impl Invoker for IiiInvoker {
             .map_err(|e| e.to_string())
     }
 
+    async fn call_with_timeout_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+        namespace: &str,
+    ) -> Result<Option<Value>, String> {
+        self.iii
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                }
+                .namespace(namespace),
+            )
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
     async fn call_delivery(
         &self,
         function_id: &str,
@@ -170,12 +216,48 @@ impl Invoker for IiiInvoker {
     async fn function_available(&self, function_id: &str) -> Result<bool, String> {
         match self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::info".to_string(),
-                payload: json!({ "function_id": function_id }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::functions::info".to_string(),
+                    payload: json!({ "function_id": function_id }),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                }
+                .namespace("default"),
+            )
+            .await
+        {
+            Ok(value) => Ok(!value.is_null() && value.get("error").is_none()),
+            Err(error) => {
+                let message = error.to_string();
+                if message.to_ascii_uppercase().contains("NOT_FOUND") {
+                    Ok(false)
+                } else {
+                    Err(message)
+                }
+            }
+        }
+    }
+
+    async fn function_available_in_namespace(
+        &self,
+        function_id: &str,
+        namespace: &str,
+    ) -> Result<bool, String> {
+        match self
+            .iii
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::functions::info".to_string(),
+                    payload: json!({
+                        "function_id": function_id,
+                        "namespace": namespace,
+                    }),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(value) => Ok(!value.is_null() && value.get("error").is_none()),

@@ -7,7 +7,6 @@
 //! P1 covers the glob policy + target + normalisation. The `pre_trigger` /
 //! `post_trigger` hook chain and `pending` deferral layer on in later phases.
 
-use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::clients::EngineClient;
@@ -20,35 +19,6 @@ pub struct ResultData {
     pub content: Vec<ContentBlock>,
     pub is_error: bool,
     pub details: Value,
-}
-
-/// Route worker-to-worker calls through this worker's namespace while keeping
-/// engine builtins in `default`.
-pub(crate) fn route_namespace(iii: &IIIClient, function_id: &str) -> Option<String> {
-    (!is_engine_builtin(function_id))
-        .then(|| iii.namespace())
-        .flatten()
-}
-
-fn is_engine_builtin(function_id: &str) -> bool {
-    matches!(
-        function_id.split("::").next(),
-        Some(
-            "state"
-                | "stream"
-                | "queue"
-                | "pubsub"
-                | "configuration"
-                | "cron"
-                | "http"
-                | "engine"
-                | "sandbox"
-                | "log"
-                | "secret"
-                | "kv"
-                | "iii"
-        )
-    )
 }
 
 /// The outcome of triggering one call.
@@ -300,21 +270,6 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
-    }
-
-    #[test]
-    fn namespace_routing_keeps_builtins_in_default() {
-        for function_id in [
-            "state::get",
-            "engine::functions::list",
-            "queue::push",
-            "configuration::get",
-        ] {
-            assert!(is_engine_builtin(function_id), "{function_id}");
-        }
-        for function_id in ["router::chat", "session::get", "approval::evaluate"] {
-            assert!(!is_engine_builtin(function_id), "{function_id}");
-        }
     }
 
     #[test]

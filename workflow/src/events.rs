@@ -22,10 +22,7 @@ pub async fn emit_run_completed(
         action: Some(iii_sdk::TriggerAction::Void),
         timeout_ms: None,
     };
-    let _ = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    }; // best-effort fire-and-forget
+    let _ = deps.iii.trigger(request).await; // best-effort fire-and-forget
 }
 
 /// Fire the caller-supplied completion callback, if the run carries one. The
@@ -53,30 +50,7 @@ pub async fn emit_notify(deps: &crate::functions::Deps, record: &crate::types::W
         action: Some(iii_sdk::TriggerAction::Enqueue { queue }),
         timeout_ms: None,
     };
-    let route_ns = deps.iii.namespace().filter(|_| {
-        !matches!(
-            notify.function_id.split("::").next(),
-            Some(
-                "state"
-                    | "stream"
-                    | "queue"
-                    | "pubsub"
-                    | "configuration"
-                    | "cron"
-                    | "http"
-                    | "engine"
-                    | "sandbox"
-                    | "log"
-                    | "secret"
-                    | "kv"
-                    | "iii"
-            )
-        )
-    });
-    let _ = match route_ns {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    }; // best-effort; durable retry is the queue's job
+    let _ = deps.iii.trigger(request).await; // best-effort; durable retry is the queue's job
 }
 
 /// Build the `harness::send` payload that posts the run outcome into the
@@ -160,10 +134,7 @@ pub async fn emit_reply(deps: &crate::functions::Deps, record: &crate::types::Wo
         action: None,
         timeout_ms: None,
     };
-    let _ = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    }; // best-effort; deterministic idempotency_key makes re-fire safe
+    let _ = deps.iii.trigger(request).await; // best-effort; deterministic idempotency_key makes re-fire safe
 }
 
 #[cfg(test)]

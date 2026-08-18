@@ -138,10 +138,7 @@ impl ContextClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let resp = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let resp = self.iii.trigger(request).await;
 
         match resp {
             Ok(v) => serde_json::from_value::<AssembleOutput>(v)
@@ -174,10 +171,7 @@ impl ContextClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let resp = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let resp = self.iii.trigger(request).await;
 
         match resp {
             Ok(v) => serde_json::from_value::<CountTokensOutput>(v)

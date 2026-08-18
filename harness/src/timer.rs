@@ -81,14 +81,22 @@ impl TimerBus {
         }
     }
 
-    pub fn arm(&self, id: String, function_id: String, metadata: Option<Value>, at: i64) {
+    pub fn arm(
+        &self,
+        id: String,
+        function_id: String,
+        namespace: Option<String>,
+        metadata: Option<Value>,
+        at: i64,
+    ) {
         let bus = self.clone();
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
             let now = AgentMessage::now_ms();
             let wait = (at - now).max(0) as u64;
             tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
-            bus.fire(&task_id, &function_id, metadata, at).await;
+            bus.fire(&task_id, &function_id, namespace, metadata, at)
+                .await;
             bus.armed
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -115,7 +123,14 @@ impl TimerBus {
     /// One fire, then done. Awaited (not void) so a failed dispatch is loggable
     /// with its reason; the stored metadata rides along — for harness-managed
     /// bindings it is the `__binding` pointer the delivery hop resolves.
-    async fn fire(&self, id: &str, function_id: &str, metadata: Option<Value>, at: i64) {
+    async fn fire(
+        &self,
+        id: &str,
+        function_id: &str,
+        namespace: Option<String>,
+        metadata: Option<Value>,
+        at: i64,
+    ) {
         let event = json!({
             "trigger": "timer",
             "scheduled_at": at,
@@ -127,10 +142,12 @@ impl TimerBus {
             action: None,
             timeout_ms: Some(self.dispatch_timeout_ms),
         };
-        let res = match metadata {
-            Some(m) => self.iii.trigger(request.metadata(m)).await,
-            None => self.iii.trigger(request).await,
+        let request: iii_sdk::protocol::TriggerRequestWithMetadata = match metadata {
+            Some(metadata) => request.metadata(metadata),
+            None => request.into(),
         };
+        let namespace = namespace.as_deref().unwrap_or("default");
+        let res = self.iii.trigger(request.namespace(namespace)).await;
         if let Err(e) = res {
             tracing::warn!(timer = %id, function_id, error = %e, "timer dispatch failed");
         } else {
@@ -170,6 +187,7 @@ impl TriggerHandler for TimerHandler {
         self.bus.arm(
             config.id.clone(),
             config.function_id.clone(),
+            config.namespace.clone(),
             config.metadata.clone(),
             at,
         );
@@ -239,6 +257,7 @@ mod tests {
             "t1".into(),
             "noop::fn".into(),
             None,
+            None,
             AgentMessage::now_ms() + 60_000,
         );
         assert_eq!(bus.armed_count(), 1);
@@ -249,11 +268,13 @@ mod tests {
             "t2".into(),
             "noop::fn".into(),
             None,
+            None,
             AgentMessage::now_ms() + 60_000,
         );
         bus.arm(
             "t2".into(),
             "noop::fn".into(),
+            None,
             None,
             AgentMessage::now_ms() + 60_000,
         );

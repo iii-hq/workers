@@ -50,12 +50,15 @@ const NUDGE_TIMEOUT_MS: u64 = 10_000;
 /// verified live, one of four.
 pub async fn live_provider_ids(iii: &IIIClient) -> Vec<String> {
     let response = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::functions::list".into(),
-            payload: json!({ "prefix": PROVIDER_PREFIX, "include_internal": true }),
-            action: None,
-            timeout_ms: Some(NUDGE_TIMEOUT_MS),
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: "engine::functions::list".into(),
+                payload: json!({ "prefix": PROVIDER_PREFIX, "include_internal": true }),
+                action: None,
+                timeout_ms: Some(NUDGE_TIMEOUT_MS),
+            }
+            .namespace("default"),
+        )
         .await;
     let Ok(value) = response else {
         return Vec::new();

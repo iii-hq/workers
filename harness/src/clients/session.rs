@@ -76,10 +76,7 @@ impl SessionClient {
             action: None,
             timeout_ms: Some(self.timeout_ms),
         };
-        let res = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let res = self.iii.trigger(request).await;
         res.map_err(|e| HarnessError::Dependency(format!("{function_id}: {e}")))
     }
 

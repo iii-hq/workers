@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use iii_sdk::channel::{Channel, ChannelReader, ChannelWriter, StreamChannelRef};
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
@@ -75,7 +76,7 @@ impl EngineClient {
             timeout_ms: Some(self.timeout_ms),
         };
         let request: iii_sdk::protocol::TriggerRequestWithMetadata =
-            match crate::trigger::route_namespace(&self.iii, function_id) {
+            match route_namespace(&self.iii, function_id) {
                 Some(namespace) => request.namespace(namespace),
                 None => request.into(),
             };
@@ -105,16 +106,43 @@ impl EngineClient {
         })
     }
 
+    /// Create one engine streaming channel. The SDK helper leaves the request
+    /// namespace unset, which inherits this worker's project namespace in SDK
+    /// 0.23; dispatching here keeps the static `engine::*` call in `default`.
+    pub async fn create_channel(
+        &self,
+        buffer_size: Option<usize>,
+    ) -> Result<Channel, DispatchError> {
+        let result = self
+            .dispatch(
+                "engine::channels::create",
+                json!({ "buffer_size": buffer_size }),
+            )
+            .await?;
+        let writer_ref = channel_ref(&result, "writer")?;
+        let reader_ref = channel_ref(&result, "reader")?;
+
+        Ok(Channel {
+            writer: ChannelWriter::new(self.iii.address(), &writer_ref),
+            reader: ChannelReader::new(self.iii.address(), &reader_ref),
+            writer_ref,
+            reader_ref,
+        })
+    }
+
     /// List registry function descriptors (best-effort; empty on failure).
     pub async fn functions_list(&self) -> Vec<FunctionDescriptor> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::list".into(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(self.timeout_ms),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::functions::list".into(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(self.timeout_ms),
+                }
+                .namespace("default"),
+            )
             .await;
         match resp {
             Ok(v) => parse_descriptor_list(&v),
@@ -129,12 +157,15 @@ impl EngineClient {
     pub async fn functions_info(&self, function_id: &str) -> Option<FunctionDescriptor> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::info".into(),
-                payload: json!({ "function_id": function_id }),
-                action: None,
-                timeout_ms: Some(self.timeout_ms),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::functions::info".into(),
+                    payload: json!({ "function_id": function_id }),
+                    action: None,
+                    timeout_ms: Some(self.timeout_ms),
+                }
+                .namespace("default"),
+            )
             .await
             .ok()?;
         if resp.is_null() {
@@ -155,17 +186,41 @@ impl EngineClient {
     ) -> Option<Vec<FunctionDescriptor>> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::info".into(),
-                payload: json!({ "function_ids": function_ids }),
-                action: None,
-                timeout_ms: Some(self.timeout_ms),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::functions::info".into(),
+                    payload: json!({ "function_ids": function_ids }),
+                    action: None,
+                    timeout_ms: Some(self.timeout_ms),
+                }
+                .namespace("default"),
+            )
             .await
             .ok()?;
         let items = resp.get("functions").and_then(Value::as_array)?;
         Some(items.iter().filter_map(descriptor_of).collect())
     }
+}
+
+/// Static engine functions live only in `default`. Every other target is a
+/// project function and follows the namespace selected for this worker.
+fn route_namespace(iii: &IIIClient, function_id: &str) -> Option<String> {
+    if function_id.starts_with("engine::") {
+        Some("default".to_string())
+    } else {
+        iii.namespace()
+    }
+}
+
+fn channel_ref(result: &Value, field: &str) -> Result<StreamChannelRef, DispatchError> {
+    let value = result.get(field).cloned().ok_or_else(|| DispatchError {
+        code: Some("invalid_channel_response".to_string()),
+        message: format!("engine::channels::create response is missing '{field}'"),
+    })?;
+    serde_json::from_value(value).map_err(|error| DispatchError {
+        code: Some("invalid_channel_response".to_string()),
+        message: format!("engine::channels::create returned an invalid '{field}': {error}"),
+    })
 }
 
 /// How often an in-flight dispatch samples the engine epoch, and how long
@@ -182,12 +237,15 @@ const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
 /// shape is unrecognized.
 async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
     let response = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::workers::list".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: "engine::workers::list".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
+            }
+            .namespace("default"),
+        )
         .await
         .ok()?;
     parse_engine_epoch(&response)
@@ -350,6 +408,21 @@ fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dispatch_routes_static_engine_calls_to_default_and_dynamic_calls_to_project() {
+        let iii = IIIClient::new("ws://127.0.0.1:9");
+        iii.set_namespace("my-harness-ns");
+
+        assert_eq!(
+            route_namespace(&iii, "engine::channels::create").as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            route_namespace(&iii, "router::chat").as_deref(),
+            Some("my-harness-ns")
+        );
+    }
 
     #[test]
     fn engine_epoch_uses_the_oldest_in_process_engine_worker() {

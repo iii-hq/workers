@@ -35,6 +35,13 @@ fn worker_metadata() -> WorkerMetadata {
     }
 }
 
+fn engine_worker_metadata() -> WorkerMetadata {
+    WorkerMetadata {
+        name: "queue-engine".to_string(),
+        ..worker_metadata()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
@@ -80,7 +87,6 @@ async fn main() -> Result<()> {
             ..InitOptions::default()
         },
     ));
-
     configuration::register_config(&iii, seed.as_ref())
         .await
         .map_err(anyhow::Error::msg)
@@ -99,7 +105,19 @@ async fn main() -> Result<()> {
         }
     }
 
-    let boot = iii_queue::boot::start(iii.clone(), config).await?;
+    // Connect the project-scoped worker first. Compose observes that
+    // registration to verify III_NAMESPACE before this process opens the
+    // additional default-scoped connection for reserved engine::* providers.
+    let engine_iii = Arc::new(register_worker(
+        &cli.url,
+        InitOptions {
+            metadata: Some(engine_worker_metadata()),
+            namespace: Some("default".to_string()),
+            ..InitOptions::default()
+        },
+    ));
+
+    let boot = iii_queue::boot::start(iii.clone(), engine_iii.clone(), config).await?;
     configuration::register_config_trigger(
         &iii,
         boot.runtime.clone(),
@@ -121,5 +139,6 @@ async fn main() -> Result<()> {
     tracing::info!("queue worker shutting down");
     boot.shutdown().await;
     iii.shutdown_async().await;
+    engine_iii.shutdown_async().await;
     Ok(())
 }

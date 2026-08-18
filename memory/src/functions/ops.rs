@@ -123,10 +123,7 @@ async fn sibling_check(deps: &Deps, name: &str, function_id: &str, why: &str) ->
         action: None,
         timeout_ms: Some(3_000),
     };
-    let res = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    };
+    let res = deps.iii.trigger(request).await;
     match res {
         Ok(_) => DoctorCheck {
             name: name.into(),

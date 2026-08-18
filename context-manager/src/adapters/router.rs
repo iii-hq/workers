@@ -59,10 +59,7 @@ impl ModelResolver for RouterModelResolver {
             action: None,
             timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
         };
-        let budget_result = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let budget_result = self.iii.trigger(request).await;
         let resp = match budget_result {
             Ok(resp) => resp,
             Err(err) if is_unroutable(&err) => {
@@ -76,11 +73,7 @@ impl ModelResolver for RouterModelResolver {
                     action: None,
                     timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
                 };
-                let response = match self.iii.namespace() {
-                    Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-                    None => self.iii.trigger(request).await,
-                }
-                .map_err(|e| e.to_string())?;
+                let response = self.iii.trigger(request).await.map_err(|e| e.to_string())?;
                 if response.is_null() {
                     return Ok(None);
                 }
@@ -196,10 +189,7 @@ impl Summarizer for RouterSummarizer {
             action: None,
             timeout_ms: Some(timeout_ms),
         };
-        let trigger_result = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let trigger_result = self.iii.trigger(request).await;
 
         // The terminal event precedes the trigger response; give the
         // socket a short drain window, then stop reading either way.

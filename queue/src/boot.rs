@@ -39,7 +39,11 @@ impl BootHandle {
     }
 }
 
-pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
+pub async fn start(
+    iii: Arc<IIIClient>,
+    engine_iii: Arc<IIIClient>,
+    config: QueueConfig,
+) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&iii).await?;
 
     let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(iii.clone()));
@@ -66,7 +70,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
     // target function to appear, so starting before dependent workers is safe.
     runtime.start().await?;
 
-    crate::functions::register_all(&iii, adapter.clone(), runtime.clone());
+    crate::functions::register_all(&iii, &engine_iii, adapter.clone(), runtime.clone());
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,
@@ -191,12 +195,15 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
 
 async fn guard_against_builtin_iii_queue(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
     let workers_list = iii
-        .trigger(TriggerRequest {
-            function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
-            payload: serde_json::json!({}),
-            action: None,
-            timeout_ms: Some(5000),
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
+                payload: serde_json::json!({}),
+                action: None,
+                timeout_ms: Some(5000),
+            }
+            .namespace("default"),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("failed to query {LIST_WORKERS_FUNCTION_ID}: {e}"))?;
 

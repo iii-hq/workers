@@ -222,7 +222,13 @@ impl RecordingDeliverer {
 
 #[async_trait]
 impl EventDeliverer for RecordingDeliverer {
-    async fn deliver(&self, trigger_type: &str, _function_id: &str, payload: Value) {
+    async fn deliver(
+        &self,
+        trigger_type: &str,
+        _function_id: &str,
+        _namespace: Option<String>,
+        payload: Value,
+    ) {
         self.seen
             .lock()
             .unwrap()

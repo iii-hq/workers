@@ -150,10 +150,7 @@ pub async fn enqueue_step(
             }),
             timeout_ms: None,
         };
-        let res = match iii.namespace() {
-            Some(namespace) => iii.trigger(request.namespace(namespace)).await,
-            None => iii.trigger(request).await,
-        };
+        let res = iii.trigger(request).await;
         match res {
             Ok(_) => return Ok(()),
             Err(e) => {

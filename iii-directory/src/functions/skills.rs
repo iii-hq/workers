@@ -306,10 +306,7 @@ impl RegisteredWorkersCache {
             action: None,
             timeout_ms: Some(5_000),
         };
-        let result = match iii.namespace() {
-            Some(ns) => iii.trigger(request.namespace(ns)).await,
-            None => iii.trigger(request).await,
-        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         // Re-acquire the lock and store or fall back.
         let mut lock = self.inner.lock().await;

@@ -66,10 +66,7 @@ impl TestRunner for ShellExecRunner {
             action: None,
             timeout_ms: Some(timeout_ms.saturating_add(TRIGGER_MARGIN_MS)),
         };
-        let result = match self.iii.namespace() {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
-        };
+        let result = self.iii.trigger(request).await;
         match result {
             Ok(v) => {
                 let timed_out = v["timed_out"].as_bool().unwrap_or(false);

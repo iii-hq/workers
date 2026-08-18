@@ -12,8 +12,5 @@ pub async fn get(iii: &IIIClient, session_id: &str) -> Result<Value, Error> {
         action: None,
         timeout_ms: None,
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
+    iii.trigger(request).await
 }

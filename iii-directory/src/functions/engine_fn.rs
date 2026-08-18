@@ -79,12 +79,15 @@ async fn function_info(
 
     // Proxy to the engine's native function info.
     let val = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::functions::info".to_string(),
-            payload: json!({ "function_id": function_id }),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: "engine::functions::info".to_string(),
+                payload: json!({ "function_id": function_id }),
+                action: None,
+                timeout_ms: Some(10_000),
+            }
+            .namespace("default"),
+        )
         .await
         .map_err(|e| format!("engine::functions::info proxy: {e}"))?;
 

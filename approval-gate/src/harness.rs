@@ -16,10 +16,7 @@ pub async fn function_resolve(iii: &IIIClient, payload: Value) -> Result<Value, 
         action: None,
         timeout_ms: None,
     };
-    match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await,
-        None => iii.trigger(request).await,
-    }
+    iii.trigger(request).await
 }
 
 fn parse_roots(reply: &Value) -> Vec<String> {
@@ -45,10 +42,7 @@ pub async fn filesystem_grants(iii: &IIIClient, session_id: &str) -> Result<Vec<
         action: None,
         timeout_ms: None,
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let reply = iii.trigger(request).await?;
     Ok(parse_roots(&reply))
 }
 
@@ -66,9 +60,6 @@ pub async fn filesystem_grant(
         action: None,
         timeout_ms: None,
     };
-    let reply = match iii.namespace() {
-        Some(ns) => iii.trigger(request.namespace(ns)).await?,
-        None => iii.trigger(request).await?,
-    };
+    let reply = iii.trigger(request).await?;
     Ok(parse_roots(&reply))
 }

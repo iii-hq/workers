@@ -252,11 +252,11 @@ pub(crate) async fn fire_node(
         action: None,
         timeout_ms: Some(dispatch_timeout_ms),
     };
-    let resp = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    }
-    .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+    let resp = deps
+        .iii
+        .trigger(request)
+        .await
+        .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
 
     let turn_id = resp
         .get("turn_id")

@@ -272,12 +272,15 @@ async fn owner_state(deps: &Deps, session_id: &str) -> OwnerState {
 async fn list_binding_ids(deps: &Deps, function_id: &str) -> Option<Vec<String>> {
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "engine::registered-triggers::list".to_string(),
-            payload: json!({ "function_id": function_id, "include_internal": true }),
-            action: None,
-            timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
-        })
+        .trigger(
+            iii_sdk::protocol::TriggerRequest {
+                function_id: "engine::registered-triggers::list".to_string(),
+                payload: json!({ "function_id": function_id, "include_internal": true }),
+                action: None,
+                timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
+            }
+            .namespace("default"),
+        )
         .await
         .ok()?;
     Some(
@@ -295,12 +298,15 @@ async fn list_binding_ids(deps: &Deps, function_id: &str) -> Option<Vec<String>>
 async fn delivery_binding_id(deps: &Deps, trigger_id: &str) -> Option<Option<String>> {
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "engine::registered-triggers::info".to_string(),
-            payload: json!({ "id": trigger_id, "include_internal": true }),
-            action: None,
-            timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
-        })
+        .trigger(
+            iii_sdk::protocol::TriggerRequest {
+                function_id: "engine::registered-triggers::info".to_string(),
+                payload: json!({ "id": trigger_id, "include_internal": true }),
+                action: None,
+                timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
+            }
+            .namespace("default"),
+        )
         .await
         .ok()?;
     let detail = resp.get("registered_trigger").unwrap_or(&resp);

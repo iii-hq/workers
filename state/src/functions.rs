@@ -665,12 +665,15 @@ pub struct ClaimNamespaceResult {
 /// accepted too.
 async fn caller_worker_name(iii: &IIIClient, caller_worker_id: &str) -> Result<String, Error> {
     let workers = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "engine::workers::list".to_string(),
-            payload: serde_json::json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
+        .trigger(
+            iii_sdk::protocol::TriggerRequest {
+                function_id: "engine::workers::list".to_string(),
+                payload: serde_json::json!({}),
+                action: None,
+                timeout_ms: Some(5_000),
+            }
+            .namespace("default"),
+        )
         .await
         .map_err(|e| Error::Handler(format!("CALLER_LOOKUP_ERROR: {e}")))?;
     workers

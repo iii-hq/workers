@@ -25,12 +25,21 @@ use crate::{assets, proxy};
 #[derive(Clone)]
 pub struct AppState {
     pub engine_url: Arc<String>,
+    pub namespace: Option<String>,
     pub ui: Option<Arc<UiRegistry>>,
 }
 
 impl AppState {
-    pub fn new(engine_url: Arc<String>, ui: Option<Arc<UiRegistry>>) -> Self {
-        Self { engine_url, ui }
+    pub fn new(
+        engine_url: Arc<String>,
+        namespace: Option<String>,
+        ui: Option<Arc<UiRegistry>>,
+    ) -> Self {
+        Self {
+            engine_url,
+            namespace,
+            ui,
+        }
     }
 }
 
@@ -47,6 +56,7 @@ pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/", get(assets::index_handler))
         .route("/assets/*path", get(assets::asset_handler))
+        .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
 
     if state.ui.is_some() {
@@ -61,6 +71,20 @@ pub fn router(state: AppState) -> Router {
 
 async fn not_found() -> (StatusCode, &'static str) {
     (StatusCode::NOT_FOUND, "not found")
+}
+
+/// `GET /runtime` — connection settings that cannot be baked into the SPA.
+/// A browser has no process environment, so it needs the console worker to
+/// tell it which namespace its proxied engine connection must join.
+async fn runtime_handler(State(state): State<AppState>) -> Response {
+    let mut response = Json(serde_json::json!({
+        "namespace": state.namespace,
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// `Cache-Control` for every injected-UI response: mutable content, so the
@@ -166,7 +190,11 @@ mod tests {
     fn state_with_ui() -> (AppState, Arc<UiRegistry>) {
         let ui = Arc::new(UiRegistry::default());
         (
-            AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), Some(ui.clone())),
+            AppState::new(
+                Arc::new("ws://127.0.0.1:1".to_string()),
+                Some("project-a".to_string()),
+                Some(ui.clone()),
+            ),
             ui,
         )
     }
@@ -237,8 +265,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_exposes_the_worker_namespace_without_caching() {
+        let (state, _ui) = state_with_ui();
+        let response = get_response(router(state), "/runtime", &[]).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value, serde_json::json!({ "namespace": "project-a" }));
+    }
+
+    #[tokio::test]
     async fn kill_switch_removes_ui_routes() {
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
         let response = get_response(router(state.clone()), "/ui", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let response = get_response(router(state), "/vendor/react.js", &[]).await;

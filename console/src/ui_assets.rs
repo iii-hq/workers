@@ -344,12 +344,15 @@ impl UiBus for SdkBus {
     async fn unregister_engine_trigger(&self, trigger_id: &str) {
         let result = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::unregister_trigger".to_string(),
-                payload: json!({ "id": trigger_id }),
-                action: None,
-                timeout_ms: Some(FETCH_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::unregister_trigger".to_string(),
+                    payload: json!({ "id": trigger_id }),
+                    action: None,
+                    timeout_ms: Some(FETCH_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await;
         if let Err(e) = result {
             tracing::warn!(trigger_id, error = %e, "failed to prune superseded ui trigger");

@@ -139,6 +139,7 @@ enum AdapterDlqMessage {
 
 pub fn register_all(
     iii: &Arc<IIIClient>,
+    engine_iii: &Arc<IIIClient>,
     adapter: Arc<SwappableAdapter>,
     runtime: FunctionQueueRuntime,
 ) {
@@ -152,7 +153,7 @@ pub fn register_all(
         .description("Define and start a durable named function queue"),
     );
 
-    iii.register_function(
+    engine_iii.register_function(
         ENQUEUE_FUNCTION_FN_ID,
         RegisterFunction::new_async(move |input: EnqueueInput| {
             let runtime = runtime.clone();
@@ -202,7 +203,7 @@ pub fn register_all(
     );
 
     let list_adapter = adapter.clone();
-    iii.register_function(
+    engine_iii.register_function(
         LIST_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: ListTopicsInput| {
             let adapter = list_adapter.clone();
@@ -212,7 +213,7 @@ pub fn register_all(
     );
 
     let stats_adapter = adapter.clone();
-    iii.register_function(
+    engine_iii.register_function(
         TOPIC_STATS_FN_ID,
         RegisterFunction::new_async(move |input: TopicStatsInput| {
             let adapter = stats_adapter.clone();
@@ -222,7 +223,7 @@ pub fn register_all(
     );
 
     let dlq_topics_adapter = adapter.clone();
-    iii.register_function(
+    engine_iii.register_function(
         DLQ_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: DlqTopicsInput| {
             let adapter = dlq_topics_adapter.clone();
@@ -232,7 +233,7 @@ pub fn register_all(
     );
 
     let dlq_messages_adapter = adapter;
-    iii.register_function(
+    engine_iii.register_function(
         DLQ_MESSAGES_FN_ID,
         RegisterFunction::new_async(move |input: DlqMessagesInput| {
             let adapter = dlq_messages_adapter.clone();
