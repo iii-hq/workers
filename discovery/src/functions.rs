@@ -47,6 +47,18 @@ const MAX_SEARCH_CLAUSES: usize = 4;
 /// Consecutive empty answers before the next would-be-empty one widens to
 /// single-term matches (weak anchors beat a third empty result).
 const DESPERATION_STREAK: u32 = 2;
+/// Timeout for one registry call during the installable fallback.
+const REGISTRY_TIMEOUT_MS: u64 = 5_000;
+/// Registry list queries per fallback: the full query, then informative
+/// terms one by one — the registry's pg_trgm similarity misses long
+/// natural-language queries that a single term ("email") hits.
+const MAX_REGISTRY_QUERIES: usize = 4;
+/// Registry candidates whose API reference is fetched (info round trips).
+const MAX_REGISTRY_CANDIDATES: usize = 4;
+/// Registry workers returned per search.
+const MAX_INSTALLABLE_WORKERS: usize = 2;
+/// Contracts returned across the whole `installable` section.
+const MAX_INSTALLABLE_FUNCTIONS: usize = 6;
 /// OTel baggage key the harness stamps on agent-dispatched calls. The value
 /// is caller-supplied and unauthenticated: good enough to key a
 /// resend-avoidance cache, never a security boundary.
@@ -55,12 +67,16 @@ static CATALOG_RELOAD: Mutex<()> = Mutex::const_new(());
 
 pub type CatalogCell = Arc<RwLock<Arc<Vec<ToolSchema>>>>;
 
-/// Shared dependencies for the search handler and the hint hook.
+/// Shared dependencies for the search handler and the hint hook. `iii` is
+/// the engine client the registry fallback triggers `directory::*` through;
+/// absent (tests), the fallback is silently skipped — fail-open like every
+/// other registry failure.
 #[derive(Clone)]
 pub struct Deps {
     pub config: ConfigCell,
     pub catalog: CatalogCell,
     pub sessions: Arc<std::sync::Mutex<SessionRegistry>>,
+    pub iii: Option<Arc<IIIClient>>,
 }
 
 const SESSIONS_CAP: usize = 1024;
@@ -206,6 +222,14 @@ fall back to normal discovery.";
 const SEARCH_REFINE_GUIDANCE: &str = "No functions matched this query. Refine the query \
 with the concrete capabilities the task needs and call discovery::search_functions once more.";
 
+const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched this query, but the \
+public iii worker registry has workers (verified authors) whose functions match — they are \
+listed under `installable` and are NOT callable yet. To use one: confirm with the user \
+first, then install it with worker::add using { \"source\": { \"kind\": \"registry\", \
+\"name\": \"<installable worker name>\" }, \"wait\": false }, poll worker::status until it \
+reports running, and then call the listed functions (or call discovery::search_functions \
+again). If none fit, refine the query and search once more.";
+
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
     /// One natural-language query naming every capability the task needs.
@@ -225,10 +249,25 @@ pub struct SearchWorker {
     pub functions: Vec<SearchContract>,
 }
 
+/// A registry worker that is NOT installed but carries functions matching
+/// the query. `name` is the registry slug `worker::add` installs.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct InstallableWorker {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub functions: Vec<SearchContract>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchFunctionsResponse {
     pub guidance: String,
     pub workers: Vec<SearchWorker>,
+    /// Registry workers (verified authors) with matching functions, present
+    /// only when nothing installed matched. Their functions are NOT
+    /// callable until the worker is installed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub installable: Vec<InstallableWorker>,
     pub latency_ms: f64,
 }
 
@@ -376,6 +415,239 @@ fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWork
     workers
 }
 
+/// A registry candidate parsed from `directory::registry::workers::list`.
+#[derive(Debug, Clone, PartialEq)]
+struct RegistryCandidate {
+    name: String,
+    version: String,
+    description: String,
+}
+
+/// Verified-author candidates from a registry list response, in the
+/// registry's own relevance order. Unverified authors never surface: the
+/// fallback ends in an install suggestion, and suggesting unvetted code is
+/// not this worker's call.
+fn registry_candidates(list: &Value) -> Vec<RegistryCandidate> {
+    let Some(workers) = list.get("workers").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    workers
+        .iter()
+        .filter(|worker| {
+            worker
+                .get("author")
+                .and_then(|author| author.get("verified"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        })
+        .filter_map(|worker| {
+            Some(RegistryCandidate {
+                name: worker.get("name").and_then(Value::as_str)?.to_string(),
+                version: worker
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                description: worker
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The searchable contracts of one registry worker's `api_reference`:
+/// internal functions, excluded namespaces, and functions already installed
+/// (same id in the live catalog) are all skipped — the section only ever
+/// offers what installing would actually add.
+fn registry_contracts(info: &Value, installed: &HashSet<&str>) -> Vec<ToolSchema> {
+    let Some(functions) = info
+        .get("api_reference")
+        .and_then(|reference| reference.get("functions"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    functions
+        .iter()
+        .filter(|function| {
+            function
+                .get("metadata")
+                .and_then(|metadata| metadata.get("internal"))
+                .and_then(Value::as_bool)
+                != Some(true)
+        })
+        .filter_map(|function| {
+            let name = function.get("name").and_then(Value::as_str)?;
+            if installed.contains(name)
+                || EXCLUDED_NAMESPACE_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+            {
+                return None;
+            }
+            Some(ToolSchema {
+                name: name.to_string(),
+                description: function
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                parameters: function
+                    .get("request_schema")
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "type": "object" })),
+            })
+        })
+        .collect()
+}
+
+/// Rank the pooled candidate contracts against the FULL query and keep the
+/// survivors, bounded by `budget`. Same BM25 + coverage pruning as the
+/// installed catalog, and one shared ranking across every candidate — so a
+/// contract that merely grazes the query ("send a message") cannot outrank
+/// the real match ("send an email") by hiding in its own worker's pool.
+fn rank_registry_contracts(
+    query: &str,
+    contracts: Vec<ToolSchema>,
+    budget: usize,
+) -> Vec<ToolSchema> {
+    let corpus = canonical_tools(&contracts);
+    let index = Bm25Index::build(&corpus);
+    let selected: Vec<String> = drop_low_coverage(index.rank_with_matches(query))
+        .into_iter()
+        .map(|(function_id, _)| function_id)
+        .take(budget)
+        .collect();
+    selected
+        .into_iter()
+        .filter_map(|id| contracts.iter().find(|tool| tool.name == id).cloned())
+        .collect()
+}
+
+/// The registry list queries one fallback issues: the full query first
+/// (best server-side ranking when it hits), then informative terms one by
+/// one — pg_trgm similarity misses long natural-language queries that a
+/// single term lands.
+fn registry_queries(query: &str) -> Vec<String> {
+    let mut queries = vec![query.to_string()];
+    for term in crate::search::bm25_terms(query) {
+        if queries.len() >= MAX_REGISTRY_QUERIES {
+            break;
+        }
+        if !queries.contains(&term) {
+            queries.push(term);
+        }
+    }
+    queries
+}
+
+/// Group ranked contracts back under their owning candidates, in ranked
+/// order, capped at MAX_INSTALLABLE_WORKERS workers.
+fn assemble_installable(
+    ranked: Vec<ToolSchema>,
+    owners: &HashMap<String, RegistryCandidate>,
+) -> Vec<InstallableWorker> {
+    let mut section: Vec<InstallableWorker> = Vec::new();
+    for tool in ranked {
+        let Some(candidate) = owners.get(&tool.name) else {
+            continue;
+        };
+        let contract = SearchContract {
+            function_id: tool.name.clone(),
+            description: tool.description,
+            request_schema: tool.parameters,
+        };
+        match section
+            .iter()
+            .position(|worker| worker.name == candidate.name)
+        {
+            Some(index) => section[index].functions.push(contract),
+            None if section.len() < MAX_INSTALLABLE_WORKERS => section.push(InstallableWorker {
+                name: candidate.name.clone(),
+                version: candidate.version.clone(),
+                description: candidate.description.clone(),
+                functions: vec![contract],
+            }),
+            None => {}
+        }
+    }
+    section
+}
+
+/// The installable fallback: when nothing installed matched, ask the public
+/// registry (full query, then per-term retries), pull the top verified
+/// candidates' API references, and keep the functions that rank against the
+/// full query in one shared ranking. Every failure — registry down,
+/// malformed payload, no matches — returns an empty section: the search
+/// itself must never error over this.
+async fn registry_fallback(
+    iii: &IIIClient,
+    installed: &[ToolSchema],
+    query: &str,
+) -> Vec<InstallableWorker> {
+    let mut candidates: Vec<RegistryCandidate> = Vec::new();
+    for list_query in registry_queries(query) {
+        if candidates.len() >= MAX_REGISTRY_CANDIDATES {
+            break;
+        }
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "directory::registry::workers::list".into(),
+                payload: json!({ "search": list_query }),
+                action: None,
+                timeout_ms: Some(REGISTRY_TIMEOUT_MS),
+            })
+            .await
+        {
+            Ok(list) => {
+                for candidate in registry_candidates(&list) {
+                    if candidates.len() >= MAX_REGISTRY_CANDIDATES {
+                        break;
+                    }
+                    if !candidates.iter().any(|seen| seen.name == candidate.name) {
+                        candidates.push(candidate);
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "registry fallback: list failed; skipping");
+                return Vec::new();
+            }
+        }
+    }
+    let installed: HashSet<&str> = installed.iter().map(|tool| tool.name.as_str()).collect();
+    let mut owners: HashMap<String, RegistryCandidate> = HashMap::new();
+    let mut pooled: Vec<ToolSchema> = Vec::new();
+    for candidate in candidates {
+        let info = match iii
+            .trigger(TriggerRequest {
+                function_id: "directory::registry::workers::info".into(),
+                payload: json!({ "name": candidate.name }),
+                action: None,
+                timeout_ms: Some(REGISTRY_TIMEOUT_MS),
+            })
+            .await
+        {
+            Ok(info) => info,
+            Err(error) => {
+                tracing::warn!(%error, worker = %candidate.name, "registry fallback: info failed; skipping candidate");
+                continue;
+            }
+        };
+        for contract in registry_contracts(&info, &installed) {
+            if !owners.contains_key(&contract.name) {
+                owners.insert(contract.name.clone(), candidate.clone());
+                pooled.push(contract);
+            }
+        }
+    }
+    let ranked = rank_registry_contracts(query, pooled, MAX_INSTALLABLE_FUNCTIONS);
+    assemble_installable(ranked, &owners)
+}
+
 /// Up to `cap` tools sampled breadth-first across namespaces in the corpus's
 /// canonical order: every worker gets its first function before any worker
 /// One-shot lexical search: rank the catalog with BM25 and return the API
@@ -485,8 +757,22 @@ pub async fn search_functions(
         repeated = prior;
     }
     let workers = assemble_workers(&selected, &tools);
+    // Installable fallback: nothing installed matched (and nothing was
+    // withheld as a repeat), so consult the public registry for workers
+    // that WOULD match if installed. Behind the registry_fallback knob;
+    // every failure inside returns an empty section (fail-open).
+    let mut installable: Vec<InstallableWorker> = Vec::new();
+    if workers.is_empty() && repeated.is_empty() && deps.config.read().await.registry_fallback {
+        if let Some(iii) = deps.iii.as_deref() {
+            installable = registry_fallback(iii, &tools, &query).await;
+        }
+    }
     let guidance = if workers.is_empty() && repeated.is_empty() {
-        SEARCH_REFINE_GUIDANCE.to_string()
+        if installable.is_empty() {
+            SEARCH_REFINE_GUIDANCE.to_string()
+        } else {
+            SEARCH_INSTALL_GUIDANCE.to_string()
+        }
     } else if repeated.is_empty() {
         SEARCH_GUIDANCE.to_string()
     } else {
@@ -500,11 +786,16 @@ unchanged — reuse the earlier reference): {}.",
         deps.sessions
             .lock()
             .expect("delivered registry")
-            .note_outcome(session_id, &fingerprint, workers.is_empty());
+            .note_outcome(
+                session_id,
+                &fingerprint,
+                workers.is_empty() && installable.is_empty(),
+            );
     }
     Ok(SearchFunctionsResponse {
         guidance,
         workers,
+        installable,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -739,6 +1030,115 @@ mod tests {
         let ids: Vec<&str> = kept.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, ["a::leader", "a::cochecks", "b::getter"]);
         assert!(drop_low_coverage(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn registry_candidates_keep_verified_authors_in_order_and_cap() {
+        let list = json!({ "workers": [
+            { "name": "unverified", "version": "1.0.0", "description": "d",
+              "author": { "verified": false } },
+            { "name": "email-kit", "version": "0.3.1", "description": "send email",
+              "author": { "verified": true } },
+            { "name": "no-author", "version": "1.0.0", "description": "d" },
+            { "name": "mailer", "version": "2.0.0", "description": "smtp",
+              "author": { "verified": true } },
+            { "name": "extra", "version": "1.0.0", "description": "d",
+              "author": { "verified": true } },
+        ]});
+        let candidates = registry_candidates(&list);
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].name, "email-kit");
+        assert_eq!(candidates[0].version, "0.3.1");
+        assert_eq!(candidates[1].name, "mailer");
+        assert!(registry_candidates(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn registry_queries_try_the_full_query_then_informative_terms() {
+        assert_eq!(
+            registry_queries("send an email message"),
+            ["send an email message", "send", "email", "message"]
+        );
+        // Stopword-only queries fall back to just the full query.
+        assert_eq!(registry_queries("the and of"), ["the and of"]);
+        // The cap bounds the list calls.
+        assert_eq!(
+            registry_queries("alpha beta gamma delta epsilon").len(),
+            MAX_REGISTRY_QUERIES
+        );
+    }
+
+    #[test]
+    fn assemble_installable_groups_by_owner_in_rank_order() {
+        let tool = |name: &str| ToolSchema {
+            name: name.into(),
+            description: format!("{name} description"),
+            parameters: json!({ "type": "object" }),
+        };
+        let candidate = |name: &str| RegistryCandidate {
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: format!("{name} worker"),
+        };
+        let owners: HashMap<String, RegistryCandidate> = [
+            ("email::send".to_string(), candidate("email")),
+            ("email::read".to_string(), candidate("email")),
+            ("telegram::send".to_string(), candidate("telegram-bot")),
+            ("slack::send".to_string(), candidate("slack")),
+        ]
+        .into();
+        let section = assemble_installable(
+            vec![
+                tool("email::send"),
+                tool("telegram::send"),
+                tool("email::read"),
+                tool("slack::send"),   // third worker: over the cap, dropped
+                tool("orphan::fn"),    // no owner: skipped
+            ],
+            &owners,
+        );
+        assert_eq!(section.len(), MAX_INSTALLABLE_WORKERS);
+        assert_eq!(section[0].name, "email");
+        assert_eq!(section[0].functions.len(), 2);
+        assert_eq!(section[1].name, "telegram-bot");
+    }
+
+    #[test]
+    fn registry_contracts_skip_internal_installed_and_excluded() {
+        let info = json!({ "api_reference": { "functions": [
+            { "name": "email::send", "description": "send an email",
+              "request_schema": { "type": "object" }, "metadata": {} },
+            { "name": "email::on-config-change", "description": "internal",
+              "metadata": { "internal": true } },
+            { "name": "state::set", "description": "already installed" },
+            { "name": "engine::functions::list", "description": "excluded" },
+        ]}});
+        let installed: HashSet<&str> = ["state::set"].into();
+        let contracts = registry_contracts(&info, &installed);
+        assert_eq!(contracts.len(), 1);
+        assert_eq!(contracts[0].name, "email::send");
+        assert_eq!(contracts[0].parameters, json!({ "type": "object" }));
+        assert!(registry_contracts(&json!({}), &installed).is_empty());
+    }
+
+    #[test]
+    fn registry_contract_ranking_keeps_matches_within_budget() {
+        let contracts = vec![
+            ToolSchema {
+                name: "email::send".into(),
+                description: "Send an email message to a recipient over smtp.".into(),
+                parameters: json!({ "type": "object" }),
+            },
+            ToolSchema {
+                name: "email::templates::render".into(),
+                description: "Render an html template.".into(),
+                parameters: json!({ "type": "object" }),
+            },
+        ];
+        let ranked = rank_registry_contracts("send an email", contracts.clone(), 6);
+        assert_eq!(ranked.first().map(|tool| tool.name.as_str()), Some("email::send"));
+        assert!(rank_registry_contracts("send an email", contracts, 0).is_empty());
+        assert!(rank_registry_contracts("send an email", Vec::new(), 6).is_empty());
     }
 
     #[test]

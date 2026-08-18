@@ -441,6 +441,7 @@ mod tests {
             config: Arc::new(RwLock::new(DiscoveryConfig::default())),
             catalog: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             sessions: Arc::default(),
+            iii: None,
         }
     }
 

@@ -41,6 +41,7 @@ fn fixture_deps() -> Deps {
         config: Arc::new(RwLock::new(DiscoveryConfig::default())),
         catalog: Arc::new(RwLock::new(Arc::new(fixture_catalog()))),
         sessions: Arc::default(),
+        iii: None,
     }
 }
 

@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
         config: config_cell.clone(),
         catalog: catalog.clone(),
         sessions: Arc::default(),
+        iii: Some(iii.clone()),
     };
     functions::register_all(&iii, &deps);
     functions::bind_best_effort(&iii);
