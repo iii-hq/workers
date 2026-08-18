@@ -3,7 +3,7 @@
 # First experimental release of the Rust provider lineage.
 [package]
 name = "provider-opencode-go"
-version = "0.0.1-experimental"
+version = "0.0.2-experimental"
 edition = "2021"
 publish = false
 license = "Apache-2.0"

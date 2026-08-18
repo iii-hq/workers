@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "provider-opencode-go"
-version = "0.0.1-experimental"
+version = "0.0.2-experimental"
 dependencies = [
  "clap",
  "futures",
