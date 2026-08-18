@@ -44,6 +44,10 @@ rules:
   - '!configuration::get'
   - '!configuration::set'
   - '!configuration::register'
+  - '!discovery::pre-generate'
+  - '!discovery::on-functions-change'
+  - '!discovery::on-config-change'
+  - discovery::search_functions
   # Internal hot-reload trigger handler — must not be agent-callable; it is
   # invoked only by the engine's `configuration:updated` trigger dispatch.
   - '!shell::on-config-change'

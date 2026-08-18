@@ -1,0 +1,35 @@
+[workspace]
+
+[package]
+name = "discovery"
+version = "0.1.0"
+edition = "2021"
+description = "One-shot lexical function search for agents: one natural-language query returns the API reference of the relevant functions."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "discovery"
+path = "src/lib.rs"
+
+[[bin]]
+name = "discovery"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui" }
+iii-sdk = "=0.21.8"
+# Same crate version the iii-sdk tree pins: the baggage context attached
+# around invoked handlers is only visible through the same singleton.
+opentelemetry = { version = "0.31", default-features = false }
+# Must match the schemars major used by iii-sdk so schemas interoperate.
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

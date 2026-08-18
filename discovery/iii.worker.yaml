@@ -1,0 +1,19 @@
+iii: v1
+name: discovery
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: discovery
+tags:
+  - discovery
+  - search
+  - functions
+description: >-
+  One-shot lexical function search: one natural-language query returns the API
+  reference of only the relevant functions, grouped by worker, plus a
+  conditional pre-generate hint that invites the model to search before any
+  engine catalog walk.
+dependencies:
+  configuration: "^0.21.6"
+  harness: "^1.0.0"

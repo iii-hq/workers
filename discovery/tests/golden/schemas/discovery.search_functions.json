@@ -1,0 +1,80 @@
+{
+  "description": "Search every available function with one natural-language query describing everything the task needs; returns the full API reference for each relevant function, grouped by worker.",
+  "function_id": "discovery::search_functions",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "query": {
+        "description": "One natural-language query naming every capability the task needs.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "SearchFunctionsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SearchContract": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "request_schema": true
+        },
+        "required": [
+          "description",
+          "function_id",
+          "request_schema"
+        ],
+        "type": "object"
+      },
+      "SearchWorker": {
+        "properties": {
+          "functions": {
+            "items": {
+              "$ref": "#/definitions/SearchContract"
+            },
+            "type": "array"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "functions",
+          "namespace"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "guidance": {
+        "type": "string"
+      },
+      "latency_ms": {
+        "format": "double",
+        "type": "number"
+      },
+      "workers": {
+        "items": {
+          "$ref": "#/definitions/SearchWorker"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "guidance",
+      "latency_ms",
+      "workers"
+    ],
+    "title": "SearchFunctionsResponse",
+    "type": "object"
+  }
+}

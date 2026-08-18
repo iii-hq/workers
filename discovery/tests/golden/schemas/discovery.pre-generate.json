@@ -1,0 +1,240 @@
+{
+  "description": "Internal: inject the conditional search hint into one harness generation.",
+  "function_id": "discovery::pre-generate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ExposeKind": {
+        "oneOf": [
+          {
+            "enum": [
+              "agent_trigger",
+              "native"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Forward compatibility: an exposure mode this build does not know gets the mode-neutral call instruction rather than a deserialization error.",
+            "enum": [
+              "other"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GeneratePayload": {
+        "properties": {
+          "expose": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExposeKind"
+              }
+            ],
+            "description": "How the harness exposes functions to the model for this generation. Absent on harnesses that predate the field, which only ever exposed through agent_trigger by default."
+          },
+          "functions_generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "messages": {
+            "items": true,
+            "type": "array"
+          },
+          "system_prompt": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/definitions/ToolSchema"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "functions_generation",
+          "messages",
+          "system_prompt",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "ToolSchema": {
+        "description": "One catalog entry: the contract fields search runs on.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": true
+        },
+        "required": [
+          "description",
+          "name",
+          "parameters"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "depth": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "generate": {
+        "$ref": "#/definitions/GeneratePayload"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "depth",
+      "generate",
+      "session_id",
+      "step",
+      "turn_id"
+    ],
+    "title": "PreGenerateHookRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DiscoveryOutcome": {
+        "enum": [
+          "hint_injected",
+          "skipped"
+        ],
+        "type": "string"
+      },
+      "DiscoveryPassV1": {
+        "description": "The durable transcript row for one hook pass. Coarse by design: outcome, reason, and counts only — no prompts, messages, tool contracts, session ids, or timings ever leave the hook.",
+        "properties": {
+          "allowed_functions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "functions_generation": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/DiscoveryOutcome"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "allowed_functions",
+          "functions_generation",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "DiscoveryReason": {
+        "enum": [
+          "search_unavailable",
+          "already_searched",
+          "narrow_surface",
+          "already_operating",
+          "task_guided",
+          "hint_already_sent"
+        ],
+        "type": "string"
+      },
+      "DiscoveryTranscriptAnnotation": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/DiscoveryPassV1"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "summary",
+          "type",
+          "version"
+        ],
+        "type": "object"
+      },
+      "PreGenerateAnnotations": {
+        "properties": {
+          "discovery": {
+            "$ref": "#/definitions/DiscoveryTranscriptAnnotation"
+          }
+        },
+        "required": [
+          "discovery"
+        ],
+        "type": "object"
+      },
+      "PreGenerateMutations": {
+        "properties": {
+          "system_prompt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "system_prompt"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "annotations": {
+        "$ref": "#/definitions/PreGenerateAnnotations"
+      },
+      "decision": {
+        "type": "string"
+      },
+      "mutations": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PreGenerateMutations"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "annotations",
+      "decision"
+    ],
+    "title": "PreGenerateHookResponse",
+    "type": "object"
+  }
+}

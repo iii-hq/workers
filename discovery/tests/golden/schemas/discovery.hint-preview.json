@@ -1,0 +1,27 @@
+{
+  "description": "Internal: the exact search-hint text per exposure mode, for the configuration UI.",
+  "function_id": "discovery::hint-preview",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "HintPreviewRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The exact hint text per exposure mode, for the configuration UI. The live block's `functions_generation` attribute varies per generation; the preview renders it as 0.",
+    "properties": {
+      "agent_trigger": {
+        "type": "string"
+      },
+      "native": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_trigger",
+      "native"
+    ],
+    "title": "HintPreviewResponse",
+    "type": "object"
+  }
+}

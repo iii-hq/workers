@@ -265,6 +265,19 @@ export interface SessionTurnSummaryRegistration {
   render: React.ComponentType<SessionTurnSummaryProps>
 }
 
+/** Props for a worker-owned annotation detail rendered in the transcript. */
+export interface TranscriptAnnotationProps {
+  version: number
+  summary: string
+  data: JsonValue
+}
+
+/** A transcript annotation renderer, selected by its exact annotation id. */
+export interface TranscriptRendererRegistration {
+  id: string
+  render: React.ComponentType<TranscriptAnnotationProps>
+}
+
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
@@ -311,6 +324,9 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
+    registerTranscriptRenderer?(
+      renderer: TranscriptRendererRegistration,
+    ): () => void
   }
 }
 
