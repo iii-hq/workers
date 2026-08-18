@@ -120,6 +120,7 @@ import {
 import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
+import { ShellLauncher } from './ShellLauncher'
 import { TerminalPanel } from './TerminalPanel'
 import {
   activateTab,
@@ -2117,6 +2118,25 @@ export function ShellExplorerPage({
     [reviewSaveBarrier, root],
   )
 
+  // The browser card is only honest when that worker is actually on the bus.
+  const [browserAvailable, setBrowserAvailable] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    void host.iii
+      .trigger<{ workers?: Array<{ name?: unknown }> }>('engine::workers::list', {})
+      .then((response) => {
+        if (cancelled) return
+        const workers = Array.isArray(response?.workers) ? response.workers : []
+        setBrowserAvailable(workers.some((worker) => worker?.name === 'browser'))
+      })
+      .catch(() => {
+        if (!cancelled) setBrowserAvailable(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host])
+
   const appliedContextRef = useRef(0)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
@@ -2128,6 +2148,24 @@ export function ShellExplorerPage({
     if (context.type === 'file') {
       if (!openContextFile(context.path)) return
       appliedContextRef.current = panelContext.id
+      return
+    }
+    if (context.type === 'agent-terminal') {
+      // The agent's own CLI is the interface; shell just provides the terminal
+      // it wants. An existing terminal keeps the directory it was opened in,
+      // so this opens a NEW tab rooted where the run worked — otherwise the
+      // pane says pi-demo while the shell inside it sits somewhere else.
+      appliedContextRef.current = panelContext.id
+      changeRoot(context.cwd)
+      const stamp = `${Date.now().toString(36)}`
+      dispatchTerminalWorkspace({
+        type: 'tab-created',
+        tabId: `tab-agent-${stamp}`,
+        paneId: `pane-agent-${stamp}`,
+        root: context.cwd,
+      })
+      setTerminalOpen(true)
+      setTerminalActive(true)
       return
     }
     if (!confirmDiscardReviewEdits()) return
@@ -2771,9 +2809,24 @@ export function ShellExplorerPage({
                 onDirtyChange={onDirtyChange}
               />
             ) : (
-              <div className="shui-main-empty">
-                <span className="t-ghost">select a file to edit or review</span>
-              </div>
+              <ShellLauncher
+                host={host}
+                browserAvailable={browserAvailable}
+                // Changes is the navbar's review scope: ask for the last turn
+                // and open its first changed file, which is what the picker
+                // does when you choose the same scope by hand.
+                onOpenChanges={() => selectReviewScope(LAST_TURN_SCOPE)}
+                onOpenTerminal={() => {
+                  setTerminalOpen(true)
+                  setTerminalActive(true)
+                }}
+                // File is the sidebar tree: show it, and un-collapse if the
+                // sidebar was hidden.
+                onOpenFiles={() => {
+                  setSideTab('files')
+                  setCollapsed(false)
+                }}
+              />
             )}
           </PageMain>
         </PageBody>
