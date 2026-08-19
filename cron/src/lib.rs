@@ -10,3 +10,4 @@ pub mod locks;
 pub mod manifest;
 pub mod scheduler;
 pub mod trigger;
+pub mod ui;
