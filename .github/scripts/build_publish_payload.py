@@ -287,6 +287,7 @@ def build_payload(
     worker: str,
     version: str,
     registry_tag: str,
+    expected_current_version: str = "",
     deploy: str,
     repo_url: str,
     interface: dict[str, Any],
@@ -314,7 +315,6 @@ def build_payload(
     payload: dict[str, Any] = {
         "worker_name": worker,
         "version": version,
-        "tag": registry_tag or "latest",
         "type": deploy,
         "readme": readme,
         "repo": repo_url,
@@ -336,6 +336,15 @@ def build_payload(
         # registry rejects a string here, hence the explicit bool.
         "experimental": bool(experimental),
     }
+    # Stable finalization first creates an immutable version without moving a
+    # channel. The Registry distinguishes that bootstrap-safe state from a
+    # mutable `next`/`latest` assignment, so `none` must omit the tag field.
+    if registry_tag and registry_tag != "none":
+        payload["tag"] = registry_tag
+        if expected_current_version == "none":
+            payload["expected_current_version"] = None
+        elif expected_current_version:
+            payload["expected_current_version"] = expected_current_version
 
     tags = normalize_tags(meta.get("tags"))
     if tags:
@@ -373,6 +382,7 @@ def main() -> int:
     parser.add_argument("--worker", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--registry-tag", default="latest")
+    parser.add_argument("--expected-current-version", default="none")
     parser.add_argument("--deploy", required=True, choices=["binary", "image", "bundle"])
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
@@ -404,6 +414,7 @@ def main() -> int:
         worker=args.worker,
         version=args.version,
         registry_tag=args.registry_tag,
+        expected_current_version=args.expected_current_version,
         deploy=args.deploy,
         repo_url=args.repo_url,
         interface=interface,

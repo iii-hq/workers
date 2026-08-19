@@ -23,6 +23,11 @@ on:
         description: 'Registry tag (latest, next, ...)'
         required: true
         type: string
+      expected_current_version:
+        description: Current destination tag version, or none for an unassigned tag
+        required: false
+        default: ''
+        type: string
       tag:
         description: 'Git tag (e.g., image-resize/v1.0.0)'
         required: true
@@ -323,6 +328,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           DEPLOY: ${{ inputs.deploy }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
+          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
           EXPERIMENTAL: ${{ inputs.experimental }}
@@ -331,6 +337,7 @@ jobs:
             --worker "$WORKER" \
             --version "$VERSION" \
             --registry-tag "$REGISTRY_TAG" \
+            --expected-current-version "$EXPECTED_CURRENT_VERSION" \
             --experimental "$EXPERIMENTAL" \
             --deploy "$DEPLOY" \
             --repo-url "$REPO_URL" \
@@ -361,16 +368,22 @@ jobs:
           echo "HTTP $http"
           cat response.json
           if [[ "$http" == "409" ]]; then
+            resolve_version="$REGISTRY_TAG"
+            if [[ "$REGISTRY_TAG" == "none" ]]; then
+              resolve_version="$VERSION"
+            fi
             resolve_http=$(curl -sS -o resolve-response.json -w '%{http_code}' \
               -H "Content-Type: application/json" \
               -X POST "$API_URL/resolve" \
-              --data "$(jq -cn --arg worker "$WORKER" --arg version "$REGISTRY_TAG" \
+              --data "$(jq -cn --arg worker "$WORKER" --arg version "$resolve_version" \
                 '{worker: $worker, version: $version}')")
             resolved=$(jq -r '.root.version // empty' resolve-response.json)
-            if [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
+            if [[ "$REGISTRY_TAG" == "none" && "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
+              echo "::notice::$WORKER@$VERSION already exists without a mutable Registry channel; continuing idempotently"
+            elif [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
               echo "::notice::$WORKER@$VERSION already exists and $REGISTRY_TAG still points to it; continuing idempotently"
             else
-              echo "::error::duplicate publish is not a safe retry: $WORKER@$REGISTRY_TAG resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
+              echo "::error::duplicate publish is not a safe retry: $WORKER@$resolve_version resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
               cat resolve-response.json
               exit 1
             fi

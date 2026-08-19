@@ -13,6 +13,10 @@ from uuid import UUID
 
 
 KINDS = {
+    "prepare_release",
+    "publish_candidate",
+    "publish_stable",
+    "registry_finalize",
     "create_tag",
     "release",
     "registry_promotion",
@@ -35,6 +39,12 @@ def _uuid(value: str, field: str) -> str:
     return str(parsed)
 
 
+def _optional_uuid(value: str | None, field: str) -> str | None:
+    if value in (None, ""):
+        return None
+    return _uuid(value, field)
+
+
 def validate_dispatch(args: argparse.Namespace) -> int:
     expected_bot = args.expected_bot.strip()
     if not expected_bot:
@@ -50,6 +60,20 @@ def validate_dispatch(args: argparse.Namespace) -> int:
         raise ValueError("GITHUB_RUN_ATTEMPT or --run-attempt is required")
     if args.mutating and args.run_attempt != 1:
         raise ValueError("mutating Release Control executors cannot be rerun; create a recovery operation")
+    if args.plan_hash and not re.fullmatch(r"[0-9a-f]{64}", args.plan_hash):
+        raise ValueError("plan_hash must be a 64-char lowercase SHA-256")
+    if args.dispatch_nonce:
+        _uuid(args.dispatch_nonce, "dispatch_nonce")
+    for value, field in ((args.source_sha, "source_sha"), (args.prepared_sha, "prepared_sha")):
+        if value and not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise ValueError(f"{field} must be a full lowercase commit SHA")
+    candidate_pattern = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-rc\.[1-9][0-9]*"
+    if args.candidate_version and not re.fullmatch(candidate_pattern, args.candidate_version):
+        raise ValueError("candidate_version must be x.y.z-rc.N")
+    if args.stable_version and not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", args.stable_version):
+        raise ValueError("stable_version must be x.y.z")
+    if args.candidate_version and args.stable_version and args.candidate_version.split("-", 1)[0] != args.stable_version:
+        raise ValueError("candidate_version and stable_version must share the same core")
     return 0
 
 
@@ -88,6 +112,24 @@ def write_result(args: argparse.Namespace) -> int:
         "effects": _json(args.effects, "effects", list),
         "outputs": _json(args.outputs, "outputs", dict),
     }
+    release_identity = {
+        key: value
+        for key, value in {
+            "release_intent_id": _optional_uuid(args.release_intent_id, "release_intent_id"),
+            "candidate_id": _optional_uuid(args.candidate_id, "candidate_id"),
+            "attempt_id": _optional_uuid(args.attempt_id, "attempt_id"),
+            "plan_hash": args.plan_hash or None,
+            "dispatch_nonce": args.dispatch_nonce or None,
+            "candidate_version": args.candidate_version or None,
+            "stable_version": args.stable_version or None,
+            "source_sha": args.source_sha or None,
+            "prepared_sha": args.prepared_sha or None,
+            "digests": json.loads(args.digests_json) if args.digests_json else None,
+        }.items()
+        if value is not None
+    }
+    if release_identity:
+        payload["release"] = release_identity
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(json.dumps(payload, sort_keys=True))
     return 0
@@ -105,6 +147,12 @@ def parser() -> argparse.ArgumentParser:
     validate.add_argument("--expected-bot", default=os.environ.get("RELEASE_CONTROL_BOT_LOGIN", ""))
     validate.add_argument("--run-attempt", type=int, default=os.environ.get("GITHUB_RUN_ATTEMPT"))
     validate.add_argument("--mutating", action="store_true")
+    validate.add_argument("--plan-hash")
+    validate.add_argument("--dispatch-nonce")
+    validate.add_argument("--candidate-version")
+    validate.add_argument("--stable-version")
+    validate.add_argument("--source-sha")
+    validate.add_argument("--prepared-sha")
     validate.set_defaults(handler=validate_dispatch)
 
     write = commands.add_parser("write-result")
@@ -122,6 +170,16 @@ def parser() -> argparse.ArgumentParser:
     write.add_argument("--effects", required=True)
     write.add_argument("--outputs", required=True)
     write.add_argument("--output", type=Path, required=True)
+    write.add_argument("--release-intent-id")
+    write.add_argument("--candidate-id")
+    write.add_argument("--attempt-id")
+    write.add_argument("--plan-hash")
+    write.add_argument("--dispatch-nonce")
+    write.add_argument("--candidate-version")
+    write.add_argument("--stable-version")
+    write.add_argument("--source-sha")
+    write.add_argument("--prepared-sha")
+    write.add_argument("--digests-json")
     write.set_defaults(handler=write_result)
     return root
 
