@@ -27,6 +27,9 @@ export interface PaletteEntry {
   meta?: string
   /** Extra words that should match without being displayed. */
   keywords?: string[]
+  /** The keybinding that runs this row, if one is registered for it. Shown
+   *  as key caps so the palette teaches the shortcut it duplicates. */
+  shortcut?: string
   /** The row's own icon. Pages carry the icon the console already gives them,
    *  so a page looks the same here as it does in the attach menu; anything
    *  without one falls back to its category icon. */
