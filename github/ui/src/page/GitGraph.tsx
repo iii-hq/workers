@@ -22,11 +22,31 @@
  * is the typed seam for a v2 github PR/CI overlay — a no-op today.
  */
 
-import { Badge, Button, ErrorBoundary, type Host, StatusDot, StatusPanel } from '@iii-dev/console-ui'
-import { type KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Badge,
+  Button,
+  ErrorBoundary,
+  type Host,
+  StatusDot,
+  StatusPanel,
+} from '@iii-dev/console-ui'
+import {
+  type KeyboardEvent,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useGithubCalled } from './events'
 import { formatRelative } from './format'
-import { type Commit, type GraphEdge, type GraphLayout, layout } from './graph-layout'
+import {
+  type Commit,
+  type GraphEdge,
+  type GraphLayout,
+  layout,
+} from './graph-layout'
 import { AlertCircle, ChevronLeft, FolderGit2, RefreshCw } from './icons'
 import { NARROW_BELOW, useContainerNarrow } from './narrow'
 import { ResultView } from './result-views'
@@ -82,7 +102,9 @@ function parseLog(stdout: string): Commit[] {
     const subject = parts.slice(5).join(US)
     out.push({
       hash,
-      parents: parentField.trim() ? parentField.trim().split(' ').filter(Boolean) : [],
+      parents: parentField.trim()
+        ? parentField.trim().split(' ').filter(Boolean)
+        : [],
       refs: parseRefs(refField),
       author,
       time: Number(timeField) || 0,
@@ -177,7 +199,12 @@ function useGitGraph(host: Host) {
     try {
       const res = await host.iii.trigger<ExecResponse>('shell::exec', {
         command: 'git',
-        args: ['log', '--all', '--format=%H%x1f%P%x1f%D%x1f%an%x1f%ct%x1f%s', `--max-count=${MAX_COMMITS}`],
+        args: [
+          'log',
+          '--all',
+          '--format=%H%x1f%P%x1f%D%x1f%an%x1f%ct%x1f%s',
+          `--max-count=${MAX_COMMITS}`,
+        ],
       })
       if (res.exit_code !== 0) {
         setStatus('error')
@@ -209,11 +236,20 @@ function useGitGraph(host: Host) {
     timer.current = setTimeout(() => void fetchDag(), REFRESH_DEBOUNCE_MS)
   })
 
-  return { commits, status, error, live, setLive, refreshing, refresh: fetchDag }
+  return {
+    commits,
+    status,
+    error,
+    live,
+    setLive,
+    refreshing,
+    refresh: fetchDag,
+  }
 }
 
 export function GitGraph({ host }: { host: Host }) {
-  const { commits, status, error, live, setLive, refreshing, refresh } = useGitGraph(host)
+  const { commits, status, error, live, setLive, refreshing, refresh } =
+    useGitGraph(host)
   const [selected, setSelected] = useState<string | null>(null)
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
   const graph = useMemo(() => layout(commits), [commits])
@@ -223,7 +259,10 @@ export function GitGraph({ host }: { host: Host }) {
   const showGraph = !narrow || selected === null
 
   return (
-    <div className={`gh-ui-view gh-ui-graph${narrow ? ' narrow' : ''}`} ref={rootRef}>
+    <div
+      className={`gh-ui-view gh-ui-graph${narrow ? ' narrow' : ''}`}
+      ref={rootRef}
+    >
       <div className="gh-ui-toolbar">
         <span className="gh-ui-toolbar-note">
           {status === 'ready'
@@ -233,12 +272,22 @@ export function GitGraph({ host }: { host: Host }) {
               : 'reading the working repository'}
         </span>
         <span className="spacer" />
-        <Button variant="ghost" size="sm" aria-pressed={live} onClick={() => setLive((v) => !v)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={live}
+          onClick={() => setLive((v) => !v)}
+        >
           <StatusDot tone={live ? 'accent' : 'warn'} pulse={live} aria-hidden />
           {live ? 'live' : 'paused'}
         </Button>
-        <Button variant="ghost" size="sm" disabled={refreshing} onClick={() => void refresh()}>
-          <RefreshCw size={13} aria-hidden />
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={refreshing}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={16} aria-hidden />
           refresh
         </Button>
       </div>
@@ -266,14 +315,27 @@ export function GitGraph({ host }: { host: Host }) {
           <FolderGit2 className="gh-ui-hero-icon" />
           <h2 className="gh-ui-hero-title">No commits yet</h2>
           <p className="gh-ui-hero-body">
-            This repository has no history to graph — the graph refreshes automatically as commits land.
+            This repository has no history to graph — the graph refreshes
+            automatically as commits land.
           </p>
         </div>
       ) : (
         <div className="gh-ui-graph-split">
-          {showGraph ? <GraphCanvas graph={graph} rowH={rowH} selected={selected} onSelect={setSelected} /> : null}
+          {showGraph ? (
+            <GraphCanvas
+              graph={graph}
+              rowH={rowH}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          ) : null}
           {selected ? (
-            <CommitDetail host={host} hash={selected} narrow={narrow} onClose={() => setSelected(null)} />
+            <CommitDetail
+              host={host}
+              hash={selected}
+              narrow={narrow}
+              onClose={() => setSelected(null)}
+            />
           ) : null}
         </div>
       )}
@@ -318,7 +380,13 @@ function GraphCanvas({
 
   return (
     <div className="gh-ui-graph-scroll">
-      <svg className="gh-ui-graph-svg" width={gutter} height={height} viewBox={`0 0 ${gutter} ${height}`} aria-hidden>
+      <svg
+        className="gh-ui-graph-svg"
+        width={gutter}
+        height={height}
+        viewBox={`0 0 ${gutter} ${height}`}
+        aria-hidden
+      >
         {edges}
         {graph.rows.map((r) => (
           <g key={r.commit.hash} className={`gh-ui-lane-c${r.color}`}>
@@ -337,7 +405,9 @@ function GraphCanvas({
               cy={y(r.row)}
               r={NODE_R}
               fill="currentColor"
-              className={selected === r.commit.hash ? 'gh-ui-node-selected' : undefined}
+              className={
+                selected === r.commit.hash ? 'gh-ui-node-selected' : undefined
+              }
             />
           </g>
         ))}
@@ -359,7 +429,12 @@ function GraphCanvas({
   )
 }
 
-function edgePath(e: GraphEdge, x: (c: number) => number, y: (r: number) => number, rowH: number): string {
+function edgePath(
+  e: GraphEdge,
+  x: (c: number) => number,
+  y: (r: number) => number,
+  rowH: number,
+): string {
   const x0 = x(e.fromColumn)
   const y0 = y(e.fromRow)
   const x1 = x(e.toColumn)
@@ -409,17 +484,30 @@ const CommitRow = memo(function CommitRow({
       {labels.length > 0 ? (
         <span className="gh-ui-graph-refs">
           {labels.map((l, i) => (
-            <Badge key={i} variant={l.kind === 'head' ? 'accent' : l.kind === 'tag' ? 'warn' : 'default'}>
+            <Badge
+              key={i}
+              variant={
+                l.kind === 'head'
+                  ? 'accent'
+                  : l.kind === 'tag'
+                    ? 'warn'
+                    : 'default'
+              }
+            >
               {l.name}
             </Badge>
           ))}
         </span>
       ) : null}
-      <span className="gh-ui-graph-subject">{commit.subject || '(no message)'}</span>
+      <span className="gh-ui-graph-subject">
+        {commit.subject || '(no message)'}
+      </span>
       <span className="gh-ui-graph-meta">
         <span className="gh-ui-graph-hash">{commit.hash.slice(0, 7)}</span>
         <span className="gh-ui-graph-author">{commit.author}</span>
-        <span className="gh-ui-graph-time">{commit.time ? formatRelative(Date.now() / 1000 - commit.time) : ''}</span>
+        <span className="gh-ui-graph-time">
+          {commit.time ? formatRelative(Date.now() / 1000 - commit.time) : ''}
+        </span>
       </span>
     </div>
   )
@@ -428,9 +516,21 @@ const CommitRow = memo(function CommitRow({
 /* ── commit detail (git show → shared diff renderer) ─────────────────────── */
 
 /** Narrow-mode drill-out affordance in the detail's header. */
-function BackButton({ onClick, label }: { onClick: () => void; label: string }) {
+function BackButton({
+  onClick,
+  label,
+}: {
+  onClick: () => void
+  label: string
+}) {
   return (
-    <button type="button" className="gh-ui-back" onClick={onClick} aria-label={label} title={label}>
+    <button
+      type="button"
+      className="gh-ui-back"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+    >
       <ChevronLeft className="gh-ui-back-icon" />
     </button>
   )
@@ -484,11 +584,18 @@ function CommitDetail({
   return (
     <div className="gh-ui-detail">
       <div className="gh-ui-detail-head">
-        {narrow ? <BackButton onClick={onClose} label="back to the graph" /> : null}
+        {narrow ? (
+          <BackButton onClick={onClose} label="back to the graph" />
+        ) : null}
         <span className="gh-ui-graph-hash">{hash.slice(0, 12)}</span>
         <span className="spacer" />
         {!narrow ? (
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="close commit detail">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="close commit detail"
+          >
             close
           </Button>
         ) : null}
@@ -501,9 +608,15 @@ function CommitDetail({
             <span className="bar w75" />
           </div>
         ) : status === 'error' ? (
-          <div className="gh-ui-rv-empty gh-ui-rv-errtext">{error || 'could not load this commit'}</div>
+          <div className="gh-ui-rv-empty gh-ui-rv-errtext">
+            {error || 'could not load this commit'}
+          </div>
         ) : (
-          <ErrorBoundary fallback={() => <div className="gh-ui-rv-empty">could not render this commit</div>}>
+          <ErrorBoundary
+            fallback={() => (
+              <div className="gh-ui-rv-empty">Could not render this commit</div>
+            )}
+          >
             <ResultView kind="diff" preview={{ diff: text, truncated }} ok />
           </ErrorBoundary>
         )}

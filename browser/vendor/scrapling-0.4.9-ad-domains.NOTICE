@@ -1,0 +1,6 @@
+Scrapling 0.4.9 ad/tracker domain snapshot
+
+Source file: scrapling/engines/toolbelt/ad_domains.py
+Source data: Peter Lowe's ad and tracking server list
+Vendored list SHA-256: c05053529fa5d626774e178359db20a7628030d94075d2c12cb63957c785d387
+License: BSD-3-Clause; see SCRAPLING-0.4.9-LICENSE

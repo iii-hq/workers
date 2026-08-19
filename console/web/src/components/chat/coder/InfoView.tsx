@@ -7,6 +7,14 @@
 import { formatBytes } from '@/components/chat/sandbox/format'
 import { Chip, FooterPill } from '@/components/chat/sandbox/terminal/Terminal'
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
+import {
   type InfoResponse,
   infoRequestSchema,
   infoResponseSchema,
@@ -123,7 +131,7 @@ function RootsList({ basePaths }: { basePaths: string[] }) {
               className="font-mono text-[12px] text-ink flex flex-wrap items-center gap-1.5"
             >
               <span className="break-all">{root}</span>
-              {i === 0 ? <FooterPill tone="accent">primary</FooterPill> : null}
+              {i === 0 ? <FooterPill tone="accent">Primary</FooterPill> : null}
             </div>
           ))}
         </div>
@@ -135,26 +143,33 @@ function RootsList({ basePaths }: { basePaths: string[] }) {
 function ConfigSection({ title, rows }: { title: string; rows: ConfigRow[] }) {
   return (
     <div className="border-b border-rule-2 last:border-b-0">
-      <div className="px-3 pt-2 pb-1 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 pt-2 pb-1 font-sans text-[12px] font-semibold text-ink-faint">
         {title}
       </div>
-      <table className="w-full font-mono text-[12px] text-ink mb-1">
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.label}>
-              <td className="px-3 py-0.5 text-ink-faint whitespace-nowrap align-top">
-                {row.label}
-              </td>
-              <td className="px-3 py-0.5 tabular-nums break-all">
-                {row.value}
-                {row.note ? (
-                  <span className="text-ink-ghost"> · {row.note}</span>
-                ) : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TableViewport className="mb-1">
+        <TableFrame className="px-3">
+          <Table density="compact" aria-label={title}>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.label}>
+                  <TableCell className="whitespace-nowrap font-code text-ink-faint">
+                    {row.label}
+                  </TableCell>
+                  <TableCell className="break-all font-code tabular-nums">
+                    {row.value}
+                    {row.note ? (
+                      <span className="font-sans text-ink-ghost">
+                        {' '}
+                        · {row.note}
+                      </span>
+                    ) : null}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
+      </TableViewport>
     </div>
   )
 }
@@ -209,7 +224,7 @@ export function InfoView({ input, output, running, preview }: InfoViewProps) {
     <div className="border-t border-rule-2 bg-bg">
       <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
         <span className="font-mono text-[12.5px] text-ink">
-          <span className="text-ink-faint">coder </span>
+          <span className="text-ink-faint">Coder </span>
           <span>info</span>
         </span>
         {resp ? <Chip label="version">{resp.version}</Chip> : null}
@@ -224,8 +239,8 @@ export function InfoView({ input, output, running, preview }: InfoViewProps) {
       {resp ? (
         <>
           <RootsList basePaths={resp.base_paths} />
-          <ConfigSection title="byte budgets" rows={budgetRows(resp)} />
-          <ConfigSection title="defaults & caps" rows={limitRows(resp)} />
+          <ConfigSection title="Byte budgets" rows={budgetRows(resp)} />
+          <ConfigSection title="Defaults and caps" rows={limitRows(resp)} />
           <GlobList
             title="non_accessible_globs"
             note="access-protected — ops return C211"

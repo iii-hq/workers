@@ -47,7 +47,9 @@ const NARROW_BELOW = 860
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none) are ignored so a hidden page keeps its last
  * real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -98,7 +100,7 @@ export function WorktreesPage({
     <PageShell className="wt-ui-shell">
       <PageHeader
         icon={<GitBranch />}
-        title="worktrees"
+        title="Worktrees"
         description={`${countLabel} managed`}
         actions={
           <>
@@ -113,9 +115,14 @@ export function WorktreesPage({
               <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />
               {live ? 'live' : 'polling'}
             </span>
-            <Button variant="ghost" size="sm" onClick={refresh} disabled={loading}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={refresh}
+              disabled={loading}
+            >
               <RefreshCw
-                size={13}
+                size={16}
                 className={cn('wt-ui-refresh-icon', loading && 'spin')}
                 aria-hidden
               />
@@ -127,7 +134,11 @@ export function WorktreesPage({
       />
 
       <div
-        className={cn('wt-ui-body', narrow && 'narrow', panelSide === 'right' && 'right')}
+        className={cn(
+          'wt-ui-body',
+          narrow && 'narrow',
+          panelSide === 'right' && 'right',
+        )}
         ref={bodyRef}
       >
         {showCanvas ? (
@@ -155,7 +166,9 @@ export function WorktreesPage({
               <WorktreeGraph
                 worktrees={worktrees}
                 selectedId={selectedId}
-                onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
+                onSelect={(id) =>
+                  setSelectedId((cur) => (cur === id ? null : id))
+                }
               />
             )}
           </div>

@@ -32,7 +32,7 @@ export function WorkersFilters({
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search
             aria-hidden
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-faint pointer-events-none"
+            className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-faint pointer-events-none"
           />
           <Input
             value={filters.search}
@@ -49,7 +49,7 @@ export function WorkersFilters({
             onClick={onClear}
             className="inline-flex items-center gap-1 font-mono text-[12px] text-ink-faint hover:text-ink lowercase"
           >
-            <X className="w-3 h-3" aria-hidden />
+            <X className="size-4" aria-hidden />
             clear filters
           </button>
         ) : null}

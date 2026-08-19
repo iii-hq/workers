@@ -1,0 +1,10 @@
+BrowserForge 1.2.4 and apify-fingerprint-datapoints 0.15.0 data
+Copyright 2018 Apify Technologies s.r.o.
+
+The input and header Bayesian-network snapshots are redistributed under the
+Apache License, Version 2.0. Their frozen SHA-256 digests are:
+
+  input-network.json  85e51ab98b64f07255da7767c128c9e5f171af1ff2448a0a2e4688ffaa455a3f
+  header-network.json a30900f8cdee234113947630e46417042ac31391dd5dbc505359625899a47052
+
+https://github.com/apify/fingerprint-suite

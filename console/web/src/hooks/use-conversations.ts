@@ -31,6 +31,7 @@ import {
   type SystemPromptAddon,
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
+import { requestComposerFocus } from '@/lib/composer-insert'
 import { getIiiClient } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
@@ -103,6 +104,16 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     createdAt: now,
     updatedAt: now,
   }
+}
+
+/** A chat nobody has written in yet: still local, no transcript, no draft
+    text. Two of these are the same chat as far as anyone can tell. */
+export function isUntouchedDraft(conversation: Conversation): boolean {
+  return (
+    conversation.draft === true &&
+    conversation.messages.length === 0 &&
+    (conversation.draftText ?? '') === ''
+  )
 }
 
 function isMode(v: unknown): v is Mode {
@@ -447,6 +458,13 @@ export function mergeHydratedTranscript(
   return messages
 }
 
+/** A failed transcript read is still a terminal hydration outcome. Keep the
+ * live/optimistic snapshot accumulated in memory so the chat can render it
+ * instead of remaining in the initializing state indefinitely. */
+export function completeFailedHydration(c: Conversation): Conversation {
+  return c.hydrated ? c : { ...c, hydrated: true }
+}
+
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
@@ -751,6 +769,10 @@ export function useConversations(
         })
       })
       .catch((err) => {
+        // A request from a conversation the user already left must stay stale
+        // so re-activating it starts a fresh authoritative read.
+        if (cancelled) return
+        patchConversation(sessionId, completeFailedHydration)
         if (import.meta.env.DEV) {
           console.warn(
             '[conversations] transcript hydration failed',
@@ -812,11 +834,22 @@ export function useConversations(
   )
 
   const createNew = useCallback(() => {
+    // Asking for a new chat while an untouched one is already open reads as
+    // "nothing happened": the second empty draft is indistinguishable from
+    // the first, and they pile up in the list. Hand back the one in front of
+    // you instead, and put the caret in it.
+    const current = conversations.find(
+      (conversation) => conversation.id === activeId,
+    )
+    if (current && isUntouchedDraft(current)) {
+      requestComposerFocus()
+      return current.id
+    }
     const next = emptyConversation(loadLastModel())
     setConversations((list) => [next, ...list])
     setActiveId(next.id)
     return next.id
-  }, [])
+  }, [conversations, activeId])
 
   const select = useCallback((id: string) => setActiveId(id), [])
 

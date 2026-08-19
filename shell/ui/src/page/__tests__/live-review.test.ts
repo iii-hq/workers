@@ -118,4 +118,56 @@ describe('normalizeLiveReviewEvent', () => {
       baseline: 'original\n',
     })
   })
+
+  it('believes a witnessed creation over an inventory that only guessed', () => {
+    // A truncated inventory answers "file" for every path it never listed, so
+    // a file the turn created would otherwise read as modified with nothing
+    // to compare against.
+    expect(
+      normalizeLiveReviewEvent({
+        path: 'ReachAI/Dockerfile',
+        rawKind: 'created',
+        priorKind: 'file',
+        priorKindExact: false,
+        existsNow: true,
+      }),
+    ).toEqual({
+      action: 'created',
+      path: 'ReachAI/Dockerfile',
+      baseline: '',
+    })
+  })
+
+  it('keeps a proven existing file a modification, however it was written', () => {
+    expect(
+      normalizeLiveReviewEvent({
+        path: 'src/atomic.ts',
+        rawKind: 'created',
+        priorKind: 'file',
+        priorKindExact: true,
+        existsNow: true,
+      }),
+    ).toEqual({
+      action: 'modified',
+      path: 'src/atomic.ts',
+      baseline: undefined,
+    })
+  })
+
+  it('keeps a captured body even when the classification was a guess', () => {
+    expect(
+      normalizeLiveReviewEvent({
+        path: 'src/guessed.ts',
+        rawKind: 'created',
+        priorKind: 'file',
+        priorKindExact: false,
+        priorBaseline: 'before\n',
+        existsNow: true,
+      }),
+    ).toEqual({
+      action: 'modified',
+      path: 'src/guessed.ts',
+      baseline: 'before\n',
+    })
+  })
 })

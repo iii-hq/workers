@@ -669,7 +669,7 @@ export function MemoryGraph({
           <span className="mem-ui-legend-item">
             <span className="mem-ui-swatch pinned" /> pinned
           </span>
-          <span>wheel: zoom · drag: pan</span>
+          <span>Wheel: zoom · Drag: pan</span>
         </div>
 
         {selected ? (
@@ -682,7 +682,7 @@ export function MemoryGraph({
                 onClick={() => setSelectedId(null)}
                 aria-label="close memory card"
               >
-                <X size={14} aria-hidden />
+                <X size={16} aria-hidden />
               </Button>
             </div>
             <div className="mem-ui-row wrap">
@@ -705,11 +705,11 @@ export function MemoryGraph({
               >
                 {selected.pinned ? (
                   <>
-                    <PinOff size={12} aria-hidden /> unpin
+                    <PinOff size={16} aria-hidden /> unpin
                   </>
                 ) : (
                   <>
-                    <Pin size={12} aria-hidden /> pin
+                    <Pin size={16} aria-hidden /> pin
                   </>
                 )}
               </Button>
@@ -723,7 +723,7 @@ export function MemoryGraph({
                 disabled={busy}
                 className="mem-ui-gap1"
               >
-                <Trash2 size={12} aria-hidden /> delete
+                <Trash2 size={16} aria-hidden /> delete
               </Button>
             </div>
           </div>

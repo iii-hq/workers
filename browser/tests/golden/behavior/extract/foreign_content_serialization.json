@@ -1,0 +1,19 @@
+{
+  "function": "browser::extract",
+  "case": "foreign_content_serialization",
+  "request": {
+    "html": "<svg viewBox='0 0 1 1'><foreignObject><DIV xlink:href='x'>T</DIV></foreignObject></svg>",
+    "selectors": [
+      {
+        "name": "svg",
+        "css": "svg",
+        "html": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "svg": "<svg viewbox=\"0 0 1 1\"><foreignobject><div xlink:href=\"x\">T</div></foreignobject></svg>"
+    }
+  }
+}

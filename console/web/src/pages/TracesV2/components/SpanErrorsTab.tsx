@@ -119,11 +119,11 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
               className="flex items-center gap-1.5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs transition-colors"
             >
               {copiedKey === 'stackTrace' ? (
-                <span className="text-accent">copied</span>
+                <span className="text-accent">Copied</span>
               ) : (
                 <>
-                  <Copy className="w-2.5 h-2.5" />
-                  <span>copy</span>
+                  <Copy className="size-4" />
+                  <span>Copy</span>
                 </>
               )}
             </button>

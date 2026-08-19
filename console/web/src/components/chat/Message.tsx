@@ -133,6 +133,12 @@ export function Message({
 
 function SystemNotice({ message }: { message: SystemMessageType }) {
   const tone = message.tone ?? 'info'
+  const detailRows: Array<[string, string]> = message.technicalDetails
+    ? Object.entries(message.technicalDetails).flatMap(([key, value]) =>
+        typeof value === 'string' && value.length > 0 ? [[key, value]] : [],
+      )
+    : []
+  const structured = Boolean(message.nextActions?.length || detailRows.length)
   const toneCls =
     tone === 'error'
       ? 'border-l-danger text-danger'
@@ -144,11 +150,50 @@ function SystemNotice({ message }: { message: SystemMessageType }) {
       data-message-role="system-notice"
       data-message-tone={tone}
       className={cn(
-        'border-l-2 pl-3 py-1 font-mono text-[12px] uppercase tracking-[0.04em]',
+        'border-l-2 pl-3 py-1 font-mono text-[12px]',
+        structured ? 'tracking-normal' : 'uppercase tracking-[0.04em]',
         toneCls,
       )}
     >
-      {message.content}
+      <div data-message-summary>{message.content}</div>
+      {message.nextActions?.length ? (
+        <div
+          data-message-next-actions
+          className="mt-2 text-ink-faint normal-case"
+        >
+          <div className="text-[10px] uppercase tracking-[0.08em]">
+            What you can do
+          </div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {message.nextActions.map((action) => (
+              <li key={action}>{action}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {detailRows.length > 0 ? (
+        <details
+          data-message-technical-details
+          className="mt-2 text-ink-faint normal-case"
+        >
+          <summary className="cursor-pointer select-none text-[10px] uppercase tracking-[0.08em] hover:text-ink">
+            Technical details
+          </summary>
+          <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-rule-2 pl-3 text-[11px]">
+            {detailRows.map(([key, value]) => (
+              <div key={key} className="contents">
+                <dt className="uppercase text-ink-ghost">{key}</dt>
+                <dd
+                  data-technical-detail={key}
+                  className="break-words text-ink-faint"
+                >
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
     </article>
   )
 }
@@ -162,7 +207,7 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
         <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
           <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint flex items-center gap-2 group-hover:text-ink transition-colors">
-            <span>compacted</span>
+            <span>Compacted</span>
             {tokens > 0 ? (
               <>
                 <span className="text-ink-ghost">·</span>
@@ -241,9 +286,9 @@ function PaneHeader({
           title={copied ? 'copied' : 'copy'}
         >
           {copied ? (
-            <Check size={12} aria-hidden />
+            <Check size={16} aria-hidden />
           ) : (
-            <Copy size={12} aria-hidden />
+            <Copy size={16} aria-hidden />
           )}
         </button>
       ) : null}
@@ -466,11 +511,7 @@ function NotificationMessage({
   const parsed = parseNotification(message.content)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const icon = (
-    <Bell
-      aria-hidden
-      strokeWidth={2.5}
-      className="size-3.5 shrink-0 text-warn"
-    />
+    <Bell aria-hidden strokeWidth={2.5} className="size-4 shrink-0 text-warn" />
   )
   if (!parsed) {
     // Unlabeled / non-object / truncated notices carry their meaning in the
@@ -496,7 +537,7 @@ function NotificationMessage({
         <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer list-none select-none hover:bg-paper-2 transition-colors">
           {icon}
           <span className="min-w-0 flex-1 font-mono text-[13px] text-ink truncate">
-            <span className="text-ink">notification</span> triggered{' '}
+            <span className="text-ink">Notification</span> triggered{' '}
             <span className="text-ink-faint">{parsed.name}</span>
           </span>
           <span
@@ -512,8 +553,8 @@ function NotificationMessage({
           className="border-t border-rule-2"
         >
           <TabsList className="px-3">
-            <TabsTrigger value="terminal">terminal</TabsTrigger>
-            <TabsTrigger value="json">raw json</TabsTrigger>
+            <TabsTrigger value="terminal">Terminal</TabsTrigger>
+            <TabsTrigger value="json">Raw JSON</TabsTrigger>
           </TabsList>
           <TabsContent value="terminal">
             <NotificationTerminal
@@ -580,7 +621,7 @@ function TriggerFiredNotice({
       <Zap
         aria-hidden
         strokeWidth={2.5}
-        className="size-3.5 shrink-0 text-warn"
+        className="size-4 shrink-0 text-warn"
       />
       <span className="min-w-0 flex-1 font-mono text-[13px] text-ink truncate">
         {t && (called || notified) ? (
@@ -593,7 +634,7 @@ function TriggerFiredNotice({
               </>
             ) : (
               <>
-                <span className="text-ink">notification</span> triggered
+                <span className="text-ink">Notification</span> triggered
               </>
             )}
             <span className="text-ink-faint"> {triggerFiredName(t)}</span>
@@ -638,8 +679,8 @@ function TriggerFiredNotice({
           className="border-t border-rule-2"
         >
           <TabsList className="px-3">
-            <TabsTrigger value="terminal">terminal</TabsTrigger>
-            <TabsTrigger value="json">raw json</TabsTrigger>
+            <TabsTrigger value="terminal">Terminal</TabsTrigger>
+            <TabsTrigger value="json">Raw JSON</TabsTrigger>
           </TabsList>
           <TabsContent value="terminal">
             <TriggerFiredTerminal t={t} registration={registration} />
@@ -697,7 +738,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⚡">trigger · reaction task</Prompt>
+        <Prompt symbol="⚡">Trigger · reaction task</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
@@ -734,7 +775,7 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⟳">validator · corrective prompt</Prompt>
+        <Prompt symbol="⟳">Validator · corrective prompt</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
@@ -754,7 +795,7 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⚙">spawn · sub-agent task</Prompt>
+        <Prompt symbol="⚙">Spawn · sub-agent task</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown>{message.content}</Markdown>
@@ -779,7 +820,7 @@ function SlashCommandToken({ chip }: { chip: Attachment }) {
       className="inline-flex items-center gap-1.5 px-1.5 h-[22px] rounded-xs bg-surface font-mono text-[13px] text-ink select-none"
       title={`${isSkill ? 'skill' : 'prompt'} body attached · ${formatSize(chip.size)}`}
     >
-      <Icon size={13} aria-hidden className="text-accent shrink-0" />
+      <Icon size={16} aria-hidden className="text-accent shrink-0" />
       <span className="leading-none truncate">{chip.name}</span>
       <span className="leading-none text-[11px] text-ink-ghost tabular-nums shrink-0">
         {formatSize(chip.size)}

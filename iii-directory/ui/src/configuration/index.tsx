@@ -142,6 +142,34 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
         errors={props.errors}
       />
 
+      <CheckField
+        field="inject_hint"
+        label="inject the search hint"
+        hint="binds the directory::pre-generate hook; off unbinds it entirely and the model only finds search_functions through normal discovery"
+        checked={value.inject_hint !== false}
+        onChange={setBool}
+        errors={props.errors}
+      />
+
+      <NumberField
+        field="hint_min_workers"
+        label="hint minimum surface (workers)"
+        placeholder="2"
+        hint="the hint only fires when the session exposes at least this many distinct non-engine workers; 0 hints on every surface"
+        value={value.hint_min_workers}
+        onChange={setNumber}
+        errors={props.errors}
+      />
+
+      <CheckField
+        field="registry_search"
+        label="include installable registry workers"
+        hint="every search also consults the public registry (verified authors only) and lists NOT-installed matches under `installable`"
+        checked={value.registry_search !== false}
+        onChange={setBool}
+        errors={props.errors}
+      />
+
       {props.errors && props.errors.size > 0 ? (
         <div className="dir-ui-form-errors">
           {[...props.errors.entries()].map(([pointer, message]) => (
@@ -175,7 +203,7 @@ function FieldShell({
       <label htmlFor={`dir-cfg-${field}`}>
         {label}
         {TOPOLOGY_FIELDS.has(field) ? (
-          <span className="dir-ui-restart-chip">restart required</span>
+          <span className="dir-ui-restart-chip">Restart required</span>
         ) : null}
       </label>
       {children}
@@ -280,7 +308,7 @@ function CheckField({
         <label htmlFor={`dir-cfg-${field}`}>
           {label}
           {TOPOLOGY_FIELDS.has(field) ? (
-            <span className="dir-ui-restart-chip">restart required</span>
+            <span className="dir-ui-restart-chip">Restart required</span>
           ) : null}
         </label>
       </span>

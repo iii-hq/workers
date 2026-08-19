@@ -141,7 +141,7 @@ export function ProviderSettingsForm({
           />
           <h3
             id="provider-settings-heading"
-            className="font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-ink-ghost"
+            className="font-sans text-[11px] font-medium text-ink-ghost"
           >
             Provider settings
           </h3>

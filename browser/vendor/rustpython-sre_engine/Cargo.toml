@@ -1,0 +1,16 @@
+[package]
+name = "rustpython-sre_engine"
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+repository = "https://github.com/RustPython/RustPython"
+description = "Repository-owned Scrapling compatibility fork of RustPython's SRE engine"
+
+[dependencies]
+bitflags = "2.11"
+num_enum = { version = "0.7", default-features = false }
+optional = "0.5"
+rustpython-wtf8 = "0.5.0"
+unicode-ident = "1"
+unicode_names2 = "2"

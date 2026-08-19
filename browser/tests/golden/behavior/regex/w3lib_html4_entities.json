@@ -1,0 +1,18 @@
+{
+  "function": "browser::regex",
+  "case": "w3lib_html4_entities",
+  "request": {
+    "html": "<p>&amp;apos; &amp;Copy; &amp;#128; &amp;#129; &amp;unknown; &amp;unknown</p>",
+    "pattern": "&(?:[A-Za-z]+|#[0-9]+);?"
+  },
+  "ok": {
+    "result": [
+      "",
+      "©",
+      "€",
+      "",
+      "",
+      "&unknown"
+    ]
+  }
+}

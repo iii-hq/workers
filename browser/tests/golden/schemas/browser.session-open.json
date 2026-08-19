@@ -1,0 +1,60 @@
+{
+  "function_id": "browser::session-open",
+  "description": "Open a persistent HTTP/browser session; returns a session_id that reuses cookies + state.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "enum": [
+          "http",
+          "dynamic",
+          "stealthy"
+        ],
+        "description": "session engine"
+      },
+      "impersonate": {
+        "type": "string"
+      },
+      "headers": {
+        "type": "object"
+      },
+      "proxy": {
+        "type": "string"
+      },
+      "proxies": {
+        "type": "object"
+      },
+      "headless": {
+        "type": "boolean"
+      },
+      "useragent": {
+        "type": "string"
+      },
+      "solve_cloudflare": {
+        "type": "boolean"
+      },
+      "real_chrome": {
+        "type": "boolean"
+      },
+      "timeout": {
+        "type": "number"
+      },
+      "capture_xhr": {
+        "type": "string",
+        "description": "regex; capture matching XHRs (browser sessions)"
+      }
+    }
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "type": {
+        "type": "string"
+      }
+    }
+  }
+}

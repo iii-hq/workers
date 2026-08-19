@@ -126,8 +126,8 @@ export function NowStrip({
   if (shown.length === 0) {
     return (
       <div className="console-catalog-nowstrip" data-empty="true">
-        <span className="console-catalog-nowstrip-label">recent calls</span>
-        <span className="quiet">no calls recorded since this page opened</span>
+        <span className="console-catalog-nowstrip-label">Recent calls</span>
+        <span className="quiet">No calls recorded since this page opened</span>
       </div>
     )
   }
@@ -135,7 +135,7 @@ export function NowStrip({
   const now = Date.now()
   return (
     <div className="console-catalog-nowstrip">
-      <span className="console-catalog-nowstrip-label">recent calls</span>
+      <span className="console-catalog-nowstrip-label">Recent calls</span>
       <div className="console-catalog-nowstrip-track">
         {shown.map((span) => (
           <button

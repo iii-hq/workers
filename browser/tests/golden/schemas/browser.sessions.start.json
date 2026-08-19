@@ -1,39 +1,47 @@
 {
-  "description": "Start an interactive Chromium session and return its session_id. Sessions keep console and network history; stop them with browser::sessions::stop when done.",
   "function_id": "browser::sessions::start",
+  "description": "Start an interactive Chromium session and return its session_id. Sessions keep console and network history; stop them with browser::sessions::stop when done.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StartInput",
+    "type": "object",
     "properties": {
       "headful": {
-        "default": null,
         "description": "Force a visible window for this session, overriding the configured `headless` default.",
+        "default": null,
         "type": [
           "boolean",
           "null"
         ]
       },
       "read_only": {
-        "default": null,
         "description": "Inspection-only session: act, evaluate, execute, and styles::write are rejected while navigation, snapshots, reads, and screenshots work. Immutable for the session's lifetime.",
+        "default": null,
         "type": [
           "boolean",
           "null"
         ]
       },
       "url": {
-        "default": null,
         "description": "URL to open immediately. Omit to start on about:blank.",
+        "default": null,
         "type": [
           "string",
           "null"
         ]
       }
-    },
-    "title": "StartInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StartOutput",
+    "type": "object",
+    "required": [
+      "headless",
+      "read_only",
+      "session_id",
+      "url"
+    ],
     "properties": {
       "headless": {
         "type": "boolean"
@@ -48,14 +56,6 @@
       "url": {
         "type": "string"
       }
-    },
-    "required": [
-      "headless",
-      "read_only",
-      "session_id",
-      "url"
-    ],
-    "title": "StartOutput",
-    "type": "object"
+    }
   }
 }

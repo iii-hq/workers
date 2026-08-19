@@ -6,6 +6,8 @@ import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  completeFailedHydration,
+  isUntouchedDraft,
   markBackgroundedStale,
   mergeConversationMeta,
   mergeHydratedTranscript,
@@ -277,6 +279,39 @@ describe('mergeHydratedTranscript', () => {
   })
 })
 
+describe('completeFailedHydration', () => {
+  it('reaches a terminal state without replacing live or optimistic messages', () => {
+    const messages: Conversation['messages'] = [
+      {
+        id: 'live-1',
+        role: 'assistant',
+        content: 'partial live response',
+        createdAt: 2_100,
+      },
+      {
+        id: 'optimistic-1',
+        role: 'user',
+        content: 'pending prompt',
+        createdAt: 2_200,
+      },
+    ]
+    const current = conversation({ messages, hydrated: false })
+
+    const next = completeFailedHydration(current)
+
+    expect(next.hydrated).toBe(true)
+    expect(next.messages).toBe(messages)
+    expect(next.status).toBe(current.status)
+    expect(next.updatedAt).toBe(current.updatedAt)
+  })
+
+  it('is idempotent after hydration has already completed', () => {
+    const current = conversation({ hydrated: true })
+
+    expect(completeFailedHydration(current)).toBe(current)
+  })
+})
+
 describe('appendMessageToConversation', () => {
   it('marks a session working as soon as the user send is appended', () => {
     const next = appendMessageToConversation(
@@ -471,5 +506,41 @@ describe('mergeConversationMeta / system_prompt', () => {
       }),
     )
     expect(next.systemPrompt?.strategy).toBe('enrich')
+  })
+})
+
+describe('isUntouchedDraft', () => {
+  it('recognises the chat nobody has written in yet', () => {
+    expect(isUntouchedDraft(conversation({ draft: true, messages: [] }))).toBe(
+      true,
+    )
+  })
+
+  it('refuses a draft that already carries work', () => {
+    expect(
+      isUntouchedDraft(
+        conversation({
+          draft: true,
+          messages: [],
+          draftText: 'half a thought',
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      isUntouchedDraft(
+        conversation({
+          draft: true,
+          messages: [
+            { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
+          ] as Conversation['messages'],
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('refuses a real session, which is never interchangeable', () => {
+    expect(isUntouchedDraft(conversation({ draft: false, messages: [] }))).toBe(
+      false,
+    )
   })
 })

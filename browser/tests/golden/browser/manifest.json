@@ -1,0 +1,128 @@
+{
+  "cases": [
+    {
+      "case": "dynamic-viewport-png",
+      "request": {
+        "url": "{origin}/visual",
+        "retries": 1,
+        "fetcher": "dynamic",
+        "format": "png",
+        "full_page": false
+      },
+      "response": {
+        "content": [
+          {
+            "type": "image",
+            "mime": "image/png",
+            "file": "dynamic-viewport-png-1.png",
+            "bytes": 3069,
+            "sha256": "9864b884e9e46dc3b367f3ca69677fa411c7cacb7967f01cb690ec6d75b06938",
+            "dimensions": [
+              1024,
+              576
+            ]
+          },
+          {
+            "type": "text",
+            "text": "screenshot of {origin}/visual — 1024x576px, 1 tile(s), 3 KB"
+          }
+        ],
+        "url": "{origin}/visual",
+        "mime": "image/png"
+      }
+    },
+    {
+      "case": "dynamic-full-png",
+      "request": {
+        "url": "{origin}/visual",
+        "retries": 1,
+        "fetcher": "dynamic",
+        "format": "png",
+        "full_page": true
+      },
+      "response": {
+        "content": [
+          {
+            "type": "image",
+            "mime": "image/png",
+            "file": "dynamic-full-png-1.png",
+            "bytes": 7554,
+            "sha256": "460c1cd20d3d8b4c231600cf4e25186612b37adc98c3610493e32729256530b6",
+            "dimensions": [
+              1024,
+              1440
+            ]
+          },
+          {
+            "type": "text",
+            "text": "screenshot of {origin}/visual — 1024x1440px, 1 tile(s), 7 KB"
+          }
+        ],
+        "url": "{origin}/visual",
+        "mime": "image/png"
+      }
+    },
+    {
+      "case": "stealthy-viewport-png",
+      "request": {
+        "url": "{origin}/visual",
+        "retries": 1,
+        "fetcher": "stealthy",
+        "format": "png",
+        "full_page": false
+      },
+      "response": {
+        "content": [
+          {
+            "type": "image",
+            "mime": "image/png",
+            "file": "stealthy-viewport-png-1.png",
+            "bytes": 3091,
+            "sha256": "24e279ef055905ecdcc441561e27cb2118352dfc6acee3298fcf951b25ec8a82",
+            "dimensions": [
+              1024,
+              576
+            ]
+          },
+          {
+            "type": "text",
+            "text": "screenshot of {origin}/visual — 1024x576px, 1 tile(s), 3 KB"
+          }
+        ],
+        "url": "{origin}/visual",
+        "mime": "image/png"
+      }
+    },
+    {
+      "case": "stealthy-full-jpeg",
+      "request": {
+        "url": "{origin}/visual",
+        "retries": 1,
+        "fetcher": "stealthy",
+        "format": "jpeg",
+        "full_page": true
+      },
+      "response": {
+        "content": [
+          {
+            "type": "image",
+            "mime": "image/jpeg",
+            "file": "stealthy-full-jpeg-1.jpg",
+            "bytes": 19067,
+            "sha256": "aee1bf8560648030c76b3052a4a26eb782808fc24ea50315bb7f4ade3a572903",
+            "dimensions": [
+              1024,
+              960
+            ]
+          },
+          {
+            "type": "text",
+            "text": "screenshot of {origin}/visual — 1024x960px, 1 tile(s), 19 KB"
+          }
+        ],
+        "url": "{origin}/visual",
+        "mime": "image/jpeg"
+      }
+    }
+  ]
+}

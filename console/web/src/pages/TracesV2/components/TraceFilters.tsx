@@ -305,7 +305,7 @@ function SearchInput({
         className,
       )}
     >
-      <Search className="w-3 h-3 text-ink-faint flex-shrink-0" />
+      <Search className="size-4 text-ink-faint flex-shrink-0" />
       <span className="text-accent font-mono text-[12px] select-none">$</span>
       <input
         type="text"
@@ -324,7 +324,7 @@ function SearchInput({
           className="text-ink-faint hover:text-ink transition-colors"
           aria-label="clear search"
         >
-          <X className="w-3 h-3" />
+          <X className="size-4" />
         </button>
       )}
     </label>
@@ -336,9 +336,9 @@ function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
   return (
     <div className="flex items-stretch rounded-md bg-surface">
       <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase">
-        <Hash className="w-3 h-3 text-ink-faint" />
+        <Hash className="size-4 text-ink-faint" />
         <span className="text-ink tabular-nums">{stats.totalTraces}</span>
-        <span className="text-ink-ghost">traces</span>
+        <span className="text-ink-ghost">Traces</span>
       </div>
       <div
         className={cn(
@@ -346,16 +346,16 @@ function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
           stats.errorCount > 0 ? 'text-alert' : 'text-ink-faint',
         )}
       >
-        <XCircle className="w-3 h-3" />
+        <XCircle className="size-4" />
         <span className="tabular-nums">{stats.errorCount}</span>
-        <span className="text-ink-ghost">errors</span>
+        <span className="text-ink-ghost">Errors</span>
       </div>
       <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase">
-        <Timer className="w-3 h-3" />
+        <Timer className="size-4" />
         <span className="text-ink tabular-nums">
           {formatDurationMs(stats.avgDuration)}
         </span>
-        <span className="text-ink-ghost">avg</span>
+        <span className="text-ink-ghost">Avg</span>
       </div>
     </div>
   )
@@ -644,7 +644,7 @@ export function TraceFilters({
               title="dismiss warning"
               aria-label="dismiss warning"
             >
-              <X className="w-3 h-3" />
+              <X className="size-4" />
             </button>
           )}
         </div>
@@ -679,8 +679,8 @@ export function TraceFilters({
           aria-haspopup="dialog"
           aria-expanded={popoverOpen}
         >
-          <SlidersHorizontal className="w-3 h-3" />
-          <span>more filters</span>
+          <SlidersHorizontal className="size-4" />
+          <span>More filters</span>
           {advancedFilterCount > 0 && (
             <span className="px-1 py-0 rounded-xs bg-accent text-accent-fg font-mono text-[10px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
               {advancedFilterCount}
@@ -688,7 +688,7 @@ export function TraceFilters({
           )}
           <ChevronDown
             className={cn(
-              'w-3 h-3 transition-transform',
+              'size-4 transition-transform',
               popoverOpen && 'rotate-180',
             )}
           />
@@ -718,7 +718,7 @@ export function TraceFilters({
               className="flex items-center gap-1 px-2 py-1 rounded-sm bg-surface hover:bg-surface-hover hover:text-ink font-mono text-[11px] text-ink-faint transition-colors group lowercase"
             >
               <span>{filter.label}</span>
-              <X className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-all" />
+              <X className="size-4 opacity-50 group-hover:opacity-100 transition-all" />
             </button>
           ))}
           <Button variant="ghost" size="sm" onClick={onClear} className="ml-1">
@@ -743,7 +743,7 @@ export function TraceFilters({
               className="text-ink-faint hover:text-ink"
               aria-label="close"
             >
-              <X className="w-3 h-3" />
+              <X className="size-4" />
             </button>
           </div>
 

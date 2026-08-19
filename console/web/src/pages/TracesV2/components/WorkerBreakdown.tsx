@@ -89,7 +89,7 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
       >
         <ChevronRight
           className={cn(
-            'w-3 h-3 text-ink-faint transition-transform duration-150',
+            'size-4 text-ink-faint transition-transform duration-150',
             isExpanded && 'rotate-90',
           )}
         />

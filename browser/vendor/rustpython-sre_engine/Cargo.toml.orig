@@ -1,0 +1,27 @@
+[package]
+name = "rustpython-sre_engine"
+authors = ["Kangzhi Shi <shikangzhi@gmail.com>", "RustPython Team"]
+description = "A low-level implementation of Python's SRE regex engine"
+keywords = ["regex"]
+include = ["LICENSE", "src/**/*.rs"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bench]]
+name = "benches"
+harness = false
+
+[dependencies]
+rustpython-wtf8 = { workspace = true }
+num_enum = { workspace = true }
+bitflags = { workspace = true }
+optional = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[lints]
+workspace = true

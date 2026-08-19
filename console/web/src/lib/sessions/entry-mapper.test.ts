@@ -443,8 +443,11 @@ describe('entrySegments', () => {
     expect(err).toMatchObject({
       role: 'system',
       tone: 'error',
-      content:
-        'turn failed — remote error (router/provider_unavailable): provider zai unavailable',
+      content: 'The response could not be completed.',
+      technicalDetails: {
+        detail:
+          'remote error (router/provider_unavailable): provider zai unavailable',
+      },
       createdAt: 9,
     })
     const [fired] = entrySegments({
@@ -493,7 +496,8 @@ describe('entrySegments', () => {
       role: 'system',
       kind: 'notice',
       tone: 'error',
-      content: 'turn failed — provider zai unavailable',
+      content: 'The response could not be completed.',
+      technicalDetails: { detail: 'provider zai unavailable' },
     })
     const [notice] = entrySegments({
       entry_id: 'e_t1_max_turns',
@@ -576,7 +580,12 @@ describe('entrySegments', () => {
         data: {
           status: 'error',
           code: 'llm.transient',
-          summary: 'stream ended without a terminal frame',
+          class: 'llm.transient',
+          summary: 'The response was interrupted.',
+          detail: 'stream ended without a terminal frame',
+          provider: 'zai',
+          model: 'glm-5',
+          next_actions: ['Try again in a moment.', '', 42],
           partial_result_available: true,
           recovery: { attempted: 1, max_attempts: 1, outcome: 'exhausted' },
           timestamp: 42,
@@ -590,9 +599,49 @@ describe('entrySegments', () => {
       createdAt: 42,
     })
     if (notice.role !== 'system') throw new Error('expected a system notice')
-    expect(notice.content).toContain('turn failed [llm.transient]')
-    expect(notice.content).toContain('partial output above was preserved')
-    expect(notice.content).toContain('recovery exhausted (1/1)')
+    expect(notice.content).toBe(
+      'The response was interrupted. A partial response was preserved in this conversation and may be incomplete. Automatic recovery stopped after 1 of 1 attempts.',
+    )
+    expect(notice.content).not.toContain('llm.transient')
+    expect(notice.content).not.toContain('terminal frame')
+    expect(notice.nextActions).toEqual(['Try again in a moment.'])
+    expect(notice.technicalDetails).toEqual({
+      code: 'llm.transient',
+      class: 'llm.transient',
+      detail: 'stream ended without a terminal frame',
+      provider: 'zai',
+      model: 'glm-5',
+    })
+  })
+
+  it('keeps permanent provider diagnostics out of the primary copy', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-permanent-error',
+      custom: {
+        custom_type: 'error',
+        data: {
+          status: 'error',
+          summary: 'The provider rejected this request.',
+          next_actions: [
+            'Review the selected model and provider settings, then try again.',
+          ],
+          code: 'llm.permanent',
+          class: 'llm.permanent',
+          detail: 'openai responses: credit balance exhausted',
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      content: 'The provider rejected this request.',
+      nextActions: [
+        'Review the selected model and provider settings, then try again.',
+      ],
+      technicalDetails: {
+        code: 'llm.permanent',
+        class: 'llm.permanent',
+        detail: 'openai responses: credit balance exhausted',
+      },
+    })
   })
 
   it('renders recovery and blocked reaction lifecycle entries', () => {

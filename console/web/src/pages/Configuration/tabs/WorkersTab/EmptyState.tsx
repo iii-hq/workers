@@ -17,15 +17,8 @@ export function EditorEmptyState({ title, description }: EmptyStateProps) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 py-12 text-center bg-panel">
       <SlidersHorizontal className="size-7 text-ink-ghost mb-2" aria-hidden />
-      <p className={cn(wt.bodyLg, 'font-semibold text-ink lowercase')}>
-        {title}
-      </p>
-      <p
-        className={cn(
-          wt.bodySm,
-          'text-ink-faint lowercase max-w-md leading-relaxed',
-        )}
-      >
+      <p className={cn(wt.bodyLg, 'font-semibold text-ink')}>{title}</p>
+      <p className={cn(wt.bodySm, 'text-ink-faint max-w-md leading-relaxed')}>
         {description}
       </p>
     </div>

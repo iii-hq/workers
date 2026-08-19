@@ -3,13 +3,20 @@ name: browser
 description: >-
   Interactive Chromium sessions for reading and driving real web pages: open a
   URL, read the page as text, click and type, and read the page's own console
-  and network history. Reach for it when a task involves a running web app,
-  especially "why is this page broken".
+  and network history. Also scrapes: HTTP and browser fetching, screenshots,
+  persistent sessions, crawling, and CSS/XPath/regex parsing of HTML you
+  already have. Reach for it when a task involves a running web app,
+  especially "why is this page broken", or when pulling data off the web.
 ---
 
 # browser
 
-The browser worker runs real Chromium sessions on the bus. Start a session,
+The browser worker does two things. It runs real Chromium sessions on the bus
+(`browser::*`), and it parses HTML natively without a browser
+(`browser::*` — CSS/XPath/regex queries, element search,
+HTML→Markdown, over any HTML string you already have).
+
+Start a session,
 navigate, and the page becomes data: `browser::snapshot` returns an
 accessibility outline whose `[ref=eN]` handles feed straight into
 `browser::act`, and everything the page logs (console calls, uncaught
@@ -38,9 +45,16 @@ on navigation; re-snapshot before acting after any page change.
 
 ## Boundaries
 
-- One-shot fetching and scraping belong to `web::fetch` (plain HTTP) and the
-  scrapling worker (stealth fetching and bulk extraction). Do not start a
-  browser session just to read a static page once.
+- Do not start a browser session just to read a page once. One-shot fetching
+  is `browser::fetch` (no browser) or `browser::dynamic-fetch`
+  (Chromium, when the page needs JS). Sessions are for flows that need state
+  between steps.
+- Parsing HTML you already have needs neither a session nor a fetch: use the
+  `browser::*` parse function below. Starting Chromium to run a
+  CSS selector over a string you are already holding is pure waste.
+- `solve_cloudflare` is available on `browser::stealthy-fetch` and stealthy
+  Scrapling sessions. Use `browser::handoff` for challenges in an interactive
+  session or when automated solving does not clear the page.
 - Attach mode reaches the user's real browser profile with its logged-in
   sessions. It is disabled unless `allow_attach` is set, and adoption is
   exclusive (one session per tab) so two sessions never fight over a tab.
@@ -106,6 +120,85 @@ on navigation; re-snapshot before acting after any page change.
   accessibility tree hides.
 - `browser::styles::read` / `browser::styles::write` — computed styles and
   live inline CSS edits on one element.
+
+### Fetching, sessions and crawl
+
+These reach the network, so they need approval. All return one envelope —
+`{status, url, headers, cookies, encoding}` — and can extract or render inline
+via `selectors` / `format: markdown|text` / `include_html`, so you rarely need
+a second call to parse what you fetched. Each takes a single `url` or a bulk
+`urls` list.
+
+- `browser::fetch` — plain HTTP, no browser. The default choice: fastest,
+  cheapest. Safe mode uses bounded native HTTP; certified compat mode uses the
+  frozen curl-impersonate wire behavior.
+- `browser::dynamic-fetch` — real Chromium over CDP, for pages that
+  need JavaScript. Supports `wait_selector` (+ `wait_selector_state`),
+  `network_idle`, and a plain `wait`.
+- `browser::stealthy-fetch` — same, plus masking of the automation
+  tells a page can read. Escalate here only when `dynamic-fetch` is detected.
+- `browser::screenshot-url` — page as image tiles (≤1024px wide, ≤6
+  tiles); says so in the caption when a page is taller than the budget.
+- `browser::session-open` / `session-fetch` / `session-close` /
+  `session-list` — keep cookies and browser state across fetches.
+  HTTP, dynamic and stealthy types are private FIFO sessions with UUID4 hex
+  ids; they never appear in `browser::sessions::list` and reject interactive
+  ids. Close sessions when done.
+- `browser::crawl` — breadth-first from `start_urls`, same-domain by
+  default, capped by `max_pages` (20) and `max_depth` (2). The response holds
+  only a ≤10-item sample; read the rest from the stream it names.
+
+Safe mode refuses private, loopback and cloud-metadata addresses on every one
+of these connections (including redirects and crawl hops). To scrape a local
+dev server the operator must set `browser.scrapling.allow_loopback` in worker
+config. Compat mode reproduces the standalone worker's unrestricted network
+behavior and is for trusted calls.
+
+### HTML parsing — no session, no browser, no network
+
+These take an `html` string and never touch Chromium. Use them on HTML from
+any source (a fetch body, a file, a page you already read).
+
+- `browser::extract` — declarative selector list in one call:
+  each entry names a `css`/`xpath`/`regex` plus optional `attr`/`html`/`all`,
+  and the response is a `{name: value}` map. The right default when pulling
+  several fields off one document.
+- `browser::css` / `browser::xpath` — one query;
+  `first: true` returns a scalar, otherwise an array. `attr` pulls an
+  attribute instead of text.
+- `browser::regex` — regex over the document's visible text.
+- `browser::find` — element search by tag/attribute filters
+  (+ optional text regex), BeautifulSoup-style.
+- `browser::find-by-text` / `browser::find-by-regex` —
+  find elements by their visible text. Responses carry generated css/xpath
+  selectors for each hit, so you can feed one straight back into a query.
+- `browser::find-similar` — give one example element, get its
+  structural siblings. The fast path for "extract every card/row on this
+  page" without hand-writing a selector.
+- `browser::describe` — inspect the first match: attributes,
+  class list, generated selectors, parent/child/sibling counts.
+- `browser::to-markdown` — HTML → compact Markdown (or text), with
+  an optional CSS scope and a main-content cleaner. Use it to shrink a page
+  before putting it in context.
+
+`adaptive: true` persists element identities in the configured SQLite file.
+Parse calls are auto-allowed, so do not assume parsing is side-effect-free
+when adaptive tracking is enabled. Safe mode enforces the configured database
+quota; compat mode preserves the standalone worker's unbounded behavior.
+
+### Safe and compat modes
+
+`browser.scrapling.security_mode` defaults to `safe`. Safe mode keeps SSRF,
+TLS, proxy, response-size, timeout, and adaptive-database policy checks; an
+option the safe backend cannot enforce is refused with an actionable error.
+Compat is eligible only on certified Linux x86_64/aarch64 builds containing
+the frozen curl-impersonate and Chromium artifacts. Other targets reject it,
+and a Tier-1 build missing an artifact reports a capability error instead of
+silently using the safe transport.
+
+Native ids are `browser::<leaf>`. Map `scrapling::screenshot` to
+`browser::screenshot-url`; `browser::screenshot` is the interactive-session
+function. Crawl's default stream is `browser::crawl`.
 
 ## Workflow: inspect before acting
 

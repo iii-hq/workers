@@ -990,6 +990,30 @@ impl Message {
         })
     }
 
+    pub(super) fn function_calls<'a>(
+        calls: impl IntoIterator<Item = (&'a str, &'a ControlledFunction, Value)>,
+        model: &ModelFixtureV1,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Value {
+        json!({
+            "role": "assistant",
+            "content": calls
+                .into_iter()
+                .map(|(id, function, arguments)| json!({
+                    "type": "function_call",
+                    "id": id,
+                    "function_id": function.id(),
+                    "arguments": arguments
+                }))
+                .collect::<Vec<_>>(),
+            "stop_reason": "end",
+            "model": model.id,
+            "provider": model.provider,
+            "usage": usage(input_tokens, output_tokens)
+        })
+    }
+
     pub(super) fn assistant_text(
         text: &str,
         model: &ModelFixtureV1,

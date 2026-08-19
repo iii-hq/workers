@@ -1,30 +1,35 @@
 {
-  "description": "Read the session's captured console: console.* calls, uncaught exceptions, and browser-level log entries. Filter with pattern/level and page with since_seq instead of dumping everything.",
   "function_id": "browser::console::read",
+  "description": "Read the session's captured console: console.* calls, uncaught exceptions, and browser-level log entries. Filter with pattern/level and page with since_seq instead of dumping everything.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConsoleReadInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
     "properties": {
       "level": {
-        "default": null,
         "description": "Only entries at this level: `log`, `info`, `warning`, `error`, `debug`, `exception`. `error` also matches `exception`.",
+        "default": null,
         "type": [
           "string",
           "null"
         ]
       },
       "limit": {
-        "default": null,
         "description": "Maximum entries returned, newest kept (default 100).",
-        "format": "uint64",
-        "minimum": 0.0,
+        "default": null,
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "format": "uint64",
+        "minimum": 0.0
       },
       "pattern": {
-        "default": null,
         "description": "Regex applied to entry text. Use it: dumping an unfiltered console wastes the caller's context.",
+        "default": null,
         "type": [
           "string",
           "null"
@@ -34,27 +39,56 @@
         "type": "string"
       },
       "since_seq": {
-        "default": null,
         "description": "Only entries with `seq` greater than this; resume from the cursor returned as `last_seq`.",
-        "format": "uint64",
-        "minimum": 0.0,
+        "default": null,
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "format": "uint64",
+        "minimum": 0.0
       }
-    },
-    "required": [
-      "session_id"
-    ],
-    "title": "ConsoleReadInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ConsoleReadOutput",
+    "type": "object",
+    "required": [
+      "dropped",
+      "entries",
+      "last_seq"
+    ],
+    "properties": {
+      "dropped": {
+        "description": "Entries evicted from the ring buffer since session start.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "entries": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/ConsoleEntry"
+        }
+      },
+      "last_seq": {
+        "description": "Cursor for the next `since_seq`.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      }
+    },
     "definitions": {
       "ConsoleEntry": {
         "description": "One captured console/log/exception entry.",
+        "type": "object",
+        "required": [
+          "level",
+          "seq",
+          "text",
+          "timestamp"
+        ],
         "properties": {
           "level": {
             "description": "`log`, `info`, `warning`, `error`, `debug`, or `exception`.",
@@ -62,9 +96,9 @@
           },
           "seq": {
             "description": "Monotonic per-session cursor; pass back as `since_seq`.",
+            "type": "integer",
             "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
+            "minimum": 0.0
           },
           "source": {
             "description": "`url:line` of the emitting frame, when known.",
@@ -77,45 +111,11 @@
             "type": "string"
           },
           "timestamp": {
-            "format": "int64",
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           }
-        },
-        "required": [
-          "level",
-          "seq",
-          "text",
-          "timestamp"
-        ],
-        "type": "object"
+        }
       }
-    },
-    "properties": {
-      "dropped": {
-        "description": "Entries evicted from the ring buffer since session start.",
-        "format": "uint64",
-        "minimum": 0.0,
-        "type": "integer"
-      },
-      "entries": {
-        "items": {
-          "$ref": "#/definitions/ConsoleEntry"
-        },
-        "type": "array"
-      },
-      "last_seq": {
-        "description": "Cursor for the next `since_seq`.",
-        "format": "uint64",
-        "minimum": 0.0,
-        "type": "integer"
-      }
-    },
-    "required": [
-      "dropped",
-      "entries",
-      "last_seq"
-    ],
-    "title": "ConsoleReadOutput",
-    "type": "object"
+    }
   }
 }

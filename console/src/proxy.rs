@@ -24,7 +24,8 @@ use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{header, uri::Authority, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
@@ -40,10 +41,59 @@ use tokio_tungstenite::tungstenite::Message as TungMessage;
 /// engine response (e.g. a traces read on a long-running stack) killed
 /// the connection, and the browser SDK then reconnected, refetched the
 /// same payload, and looped forever.
-pub async fn ws_proxy(ws: WebSocketUpgrade, State(engine_url): State<Arc<String>>) -> Response {
+pub async fn ws_proxy(
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    State(engine_url): State<Arc<String>>,
+) -> Response {
+    if !browser_origin_allowed(&headers) {
+        tracing::warn!("rejected cross-origin browser WebSocket upgrade");
+        return (StatusCode::FORBIDDEN, "cross-origin WebSocket denied").into_response();
+    }
     ws.max_message_size(usize::MAX)
         .max_frame_size(usize::MAX)
         .on_upgrade(move |socket| handle_ws(socket, engine_url))
+}
+
+/// Browsers always send `Origin` on a WebSocket handshake. Require its
+/// authority to match the request `Host`, preventing an unrelated page from
+/// using this unauthenticated proxy as an engine client. Non-browser clients
+/// that omit `Origin` remain compatible.
+fn browser_origin_allowed(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let Some(host) = headers.get(header::HOST) else {
+        return false;
+    };
+    let (Ok(origin), Ok(host)) = (origin.to_str(), host.to_str()) else {
+        return false;
+    };
+    origin_matches_host(origin, host)
+}
+
+fn origin_matches_host(origin: &str, host: &str) -> bool {
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(origin.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(origin_host) = origin.host_str() else {
+        return false;
+    };
+    let Ok(authority) = host.parse::<Authority>() else {
+        return false;
+    };
+    let origin_host = origin_host.trim_matches(['[', ']']);
+    let request_host = authority.host().trim_matches(['[', ']']);
+    let origin_port = origin.port_or_known_default();
+    let request_port = authority.port_u16().or_else(|| match origin.scheme() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    });
+    origin_host.eq_ignore_ascii_case(request_host) && origin_port == request_port
 }
 
 async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
@@ -234,6 +284,43 @@ mod tests {
         assert!(matches!(&tung, TungMessage::Text(s) if s == "hello"));
         let back = tungstenite_to_axum(tung).unwrap();
         assert!(matches!(&back, AxumMessage::Text(s) if s == "hello"));
+    }
+
+    #[test]
+    fn browser_websocket_origin_must_match_the_request_host() {
+        assert!(origin_matches_host(
+            "http://127.0.0.1:3113",
+            "127.0.0.1:3113"
+        ));
+        assert!(origin_matches_host(
+            "https://console.example",
+            "console.example"
+        ));
+        assert!(origin_matches_host("http://[::1]:3113", "[::1]:3113"));
+        assert!(!origin_matches_host(
+            "http://127.0.0.1:8766",
+            "127.0.0.1:3113"
+        ));
+        assert!(!origin_matches_host(
+            "https://hostile.invalid",
+            "console.example"
+        ));
+        assert!(!origin_matches_host("null", "127.0.0.1:3113"));
+        assert!(!origin_matches_host(
+            "file:///tmp/attack.html",
+            "127.0.0.1:3113"
+        ));
+    }
+
+    #[test]
+    fn non_browser_clients_may_omit_origin_but_browser_requests_need_host() {
+        assert!(browser_origin_allowed(&HeaderMap::new()));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "http://127.0.0.1:3113".parse().unwrap());
+        assert!(!browser_origin_allowed(&headers));
+        headers.insert(header::HOST, "127.0.0.1:3113".parse().unwrap());
+        assert!(browser_origin_allowed(&headers));
     }
 
     #[test]

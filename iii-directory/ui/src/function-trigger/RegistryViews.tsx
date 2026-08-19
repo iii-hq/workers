@@ -86,7 +86,7 @@ export function RegistryWorkersListView({ input, output, running }: ViewProps) {
                   </KvChip>
                 ) : null}
                 {w.author?.verified ? (
-                  <Chip className="verified">verified</Chip>
+                  <Chip className="verified">Verified</Chip>
                 ) : null}
               </div>
               {w.description ? (
@@ -151,7 +151,7 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
           </KvChip>
         ) : null}
         {worker.author?.verified ? (
-          <Chip className="verified">verified</Chip>
+          <Chip className="verified">Verified</Chip>
         ) : null}
       </MetaRow>
       <ActionLine symbol="ƒ" tone="accent">
@@ -167,7 +167,7 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
       <SkillsTreeSection tree={skills_tree} />
       {readme ? (
         <div className="dir-ui-section">
-          <SectionHead>readme</SectionHead>
+          <SectionHead>README</SectionHead>
           <MarkdownPreview markdown={readme} />
         </div>
       ) : null}
@@ -267,7 +267,7 @@ function SkillsTreeSection({ tree }: { tree: SkillsTreeShape }) {
       ) : null}
       {prompts.length > 0 ? (
         <div>
-          <SubHead>prompts</SubHead>
+          <SubHead>Prompts</SubHead>
           <ul className="dir-ui-list">
             {prompts.map((p) => (
               <li key={p.name} className="dir-ui-row tight">

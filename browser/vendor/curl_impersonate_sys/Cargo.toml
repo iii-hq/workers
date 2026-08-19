@@ -1,0 +1,13 @@
+[package]
+name = "curl_impersonate_sys"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+links = "curl-impersonate"
+build = "build.rs"
+publish = false
+
+[features]
+default = []
+certified = []
+

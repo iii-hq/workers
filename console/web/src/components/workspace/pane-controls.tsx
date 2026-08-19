@@ -232,7 +232,7 @@ export function EdgeAddZone({ side, onAdd, nudge = false }: EdgeAddZoneProps) {
                   side === 'right' && '[animation-delay:-5s]',
                 )}
               >
-                <Plus className="size-3" />
+                <Plus className="size-4" />
               </span>
             </span>
           ) : null}

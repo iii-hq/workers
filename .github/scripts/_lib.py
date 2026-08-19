@@ -16,9 +16,9 @@ RELEASE_VERSION_RE = re.compile(
     r"^(?P<major>0|[1-9][0-9]*)\."
     r"(?P<minor>0|[1-9][0-9]*)\."
     r"(?P<patch>0|[1-9][0-9]*)"
-    r"(?:-(?P<maturity>experimental|alpha|beta))?$"
+    r"(?:-(?:(?P<rc>rc)\.(?P<rc_number>[1-9][0-9]*)|(?P<maturity>experimental|alpha|beta)))?$"
 )
-RELEASE_MATURITIES = ("experimental", "alpha", "beta", "stable")
+RELEASE_MATURITIES = ("experimental", "alpha", "beta", "rc", "stable")
 RELEASE_SUFFIXES = ("none", "experimental", "alpha", "beta")
 _MATURITY_RANK = {name: idx for idx, name in enumerate(RELEASE_MATURITIES)}
 
@@ -31,6 +31,7 @@ class ReleaseVersion:
     minor: int
     patch: int
     maturity: str
+    rc: int | None = None
 
     @property
     def core(self) -> tuple[int, int, int]:
@@ -45,20 +46,22 @@ def parse_release_version(version: str) -> ReleaseVersion:
     """Parse a worker release version and reject unsupported SemVer shapes.
 
     Release Control intentionally exposes only the product maturity ladder.
-    Build metadata, arbitrary prerelease labels and numbered prereleases are
-    excluded so the workflow and UI share one unambiguous contract.
+    Build metadata and arbitrary prerelease labels are excluded; numbered RCs
+    are represented explicitly so the workflow and UI share one unambiguous
+    contract.
     """
     match = RELEASE_VERSION_RE.fullmatch(version.strip())
     if not match:
         raise ValueError(
             "version must be MAJOR.MINOR.PATCH with an optional "
-            "-experimental, -alpha, or -beta suffix"
+            "-rc.N, -experimental, -alpha, or -beta suffix"
         )
     return ReleaseVersion(
         major=int(match.group("major")),
         minor=int(match.group("minor")),
         patch=int(match.group("patch")),
-        maturity=match.group("maturity") or "stable",
+        maturity=("rc" if match.group("rc") else match.group("maturity") or "stable"),
+        rc=int(match.group("rc_number")) if match.group("rc_number") else None,
     )
 
 
@@ -77,9 +80,14 @@ def validate_release_transition(current: str, target: str) -> None:
     after = parse_release_version(target)
     if after.core < before.core:
         raise ValueError(f"version core cannot move backwards: {current} -> {target}")
-    if after.core == before.core and target != current and before.maturity != "stable":
-        if _MATURITY_RANK[after.maturity] <= _MATURITY_RANK[before.maturity]:
+    if after.core == before.core and target != current:
+        # A manifest at an unreleased stable core is the bootstrap point for
+        # its first candidate. Once a prerelease exists, movement is forward
+        # only through the maturity ladder and RC counter.
+        if before.maturity != "stable" and _MATURITY_RANK[after.maturity] < _MATURITY_RANK[before.maturity]:
             raise ValueError(f"maturity cannot repeat or move backwards: {current} -> {target}")
+        if after.maturity == before.maturity == "rc" and (after.rc or 0) <= (before.rc or 0):
+            raise ValueError(f"rc number cannot repeat or move backwards: {current} -> {target}")
 
 
 def list_tagged_versions(worker: str) -> list[str]:
@@ -121,6 +129,8 @@ def validate_release_history(target: str, existing: list[str]) -> None:
         if version.core != wanted.core:
             continue
         same_version = version.maturity == wanted.maturity
+        if same_version and version.maturity == "rc" and (version.rc or 0) >= (wanted.rc or 0):
+            raise ValueError(f"rc {wanted.rc} cannot follow rc {version.rc} for {wanted.core_text}")
         if not same_version and _MATURITY_RANK[version.maturity] >= _MATURITY_RANK[wanted.maturity]:
             raise ValueError(
                 f"maturity {wanted.maturity} cannot follow {version.maturity} "
@@ -161,7 +171,11 @@ def parse_semver(v: str) -> SemverKey:
     parts = [int(x) for x in core.split(".")]
     while len(parts) < 3:
         parts.append(0)
-    return (tuple(parts), 0 if pre else 1, pre)
+    if not pre:
+        return (tuple(parts), 1, "")
+    if pre.startswith("rc.") and pre[3:].isdigit():
+        return (tuple(parts), 0, f"rc.{int(pre[3:]):020d}")
+    return (tuple(parts), 0, pre)
 
 
 def bump(current: str, kind: BumpKind) -> str:

@@ -8,12 +8,38 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+SHARED_DEPENDENCY_RANGES = {
+    "configuration": "0.x",
+    "llm-router": "^1.0.0",
+    "state": "0.x",
+}
 
 
 def dependencies(worker: str) -> dict[str, str]:
     manifest = REPO_ROOT / worker / "iii.worker.yaml"
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     return data.get("dependencies", {})
+
+
+def test_shared_dependencies_use_compatible_ranges() -> None:
+    consumers: dict[str, list[str]] = {
+        dependency: [] for dependency in SHARED_DEPENDENCY_RANGES
+    }
+
+    for manifest in sorted(REPO_ROOT.glob("*/iii.worker.yaml")):
+        worker_dependencies = dependencies(manifest.parent.name)
+        for dependency, expected_range in SHARED_DEPENDENCY_RANGES.items():
+            if dependency in worker_dependencies:
+                consumers[dependency].append(manifest.parent.name)
+                dependency_range = worker_dependencies[dependency]
+                assert dependency_range == expected_range, (
+                    f"{manifest.relative_to(REPO_ROOT)} pins shared dependency "
+                    f"{dependency} to {dependency_range!r}; use {expected_range!r} so "
+                    "compatible releases remain allowed without crossing majors"
+                )
+
+    for dependency, workers in consumers.items():
+        assert workers, f"expected at least one consumer of {dependency}"
 
 
 def test_approval_gate_uses_shared_runtime_dependency_ranges() -> None:

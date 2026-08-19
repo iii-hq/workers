@@ -1,0 +1,13 @@
+{
+  "function": "browser::xpath",
+  "case": "predicate_string_functions",
+  "request": {
+    "html": "<p>  Alpha beta  </p><p>Gamma</p>",
+    "query": "//p[starts-with(normalize-space(.), 'Alpha') and string-length(normalize-space(.)) = 10]"
+  },
+  "ok": {
+    "result": [
+      "  Alpha beta  "
+    ]
+  }
+}

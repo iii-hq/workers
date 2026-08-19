@@ -201,7 +201,7 @@ const WaterfallRow = memo(function WaterfallRow({
           >
             <ChevronRight
               className={cn(
-                'w-3 h-3 transition-transform',
+                'size-4 transition-transform',
                 isExpanded && 'rotate-90',
               )}
             />
@@ -224,7 +224,7 @@ const WaterfallRow = memo(function WaterfallRow({
         <span
           className={cn(
             'text-[13px] font-mono truncate lowercase',
-            isSelected ? 'text-accent' : 'text-ink',
+            isSelected ? 'font-semibold text-ink' : 'text-ink',
           )}
         >
           {displayLabel}
@@ -241,7 +241,7 @@ const WaterfallRow = memo(function WaterfallRow({
         <div
           className={cn(
             'absolute h-4 top-1 min-w-[3px]',
-            isSelected && 'outline outline-2 outline-accent',
+            isSelected && 'outline outline-2 outline-ink-faint',
             // Still running: elapsed-so-far bar, pulsing until the final
             // span replaces the live snapshot.
             span.pending && 'animate-pulse opacity-70',
@@ -385,10 +385,10 @@ function Toolbar(props: ToolbarProps) {
                   aria-label="expand all spans"
                   className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
                 >
-                  <ChevronsDown className="w-3.5 h-3.5" />
+                  <ChevronsDown className="size-4" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">expand all</TooltipContent>
+              <TooltipContent side="bottom">Expand all</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -398,10 +398,10 @@ function Toolbar(props: ToolbarProps) {
                   aria-label="collapse all spans"
                   className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
                 >
-                  <ChevronsUp className="w-3.5 h-3.5" />
+                  <ChevronsUp className="size-4" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">collapse all</TooltipContent>
+              <TooltipContent side="bottom">Collapse all</TooltipContent>
             </Tooltip>
           </>
         ) : null}
@@ -747,7 +747,7 @@ export function WaterfallChart({
         className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule-2 bg-panel-raised"
       >
         <div className="flex items-center relative">
-          <span>span</span>
+          <span>Span</span>
           {/* biome-ignore lint/a11y/useSemanticElements: <hr> can't host pointer handlers for a draggable resize affordance */}
           <div
             // biome-ignore lint/a11y/useAriaPropsForRole: separator is the WAI-ARIA pattern for a resizable column divider with no keyboard interaction requirement

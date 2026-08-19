@@ -121,7 +121,7 @@ function HintRow({ hint }: { hint: string }) {
 function LogsDirRow({ path }: { path: string }) {
   return (
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="uppercase tracking-[0.06em] text-[10px] mr-1">logs</span>
+      <span className="text-[10px] mr-1">Logs</span>
       {path}
     </div>
   )
@@ -173,7 +173,7 @@ function GhostRow({ label }: { label: string }) {
 function TypeChip({ workerType }: { workerType: string }) {
   return (
     <Chip>
-      <span className="text-ink-faint uppercase tracking-[0.06em]">type</span>
+      <span className="text-ink-faint">Type</span>
       <span className="ml-1 text-ink">{workerType}</span>
     </Chip>
   )
@@ -193,7 +193,7 @@ function VersionChip({ version }: { version: string }) {
 function PidChip({ pid }: { pid: number }) {
   return (
     <Chip>
-      <span className="text-ink-faint uppercase tracking-[0.06em]">pid</span>
+      <span className="text-ink-faint">PID</span>
       <span className="ml-1 text-ink tabular-nums">{pid}</span>
     </Chip>
   )

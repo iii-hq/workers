@@ -1,5 +1,5 @@
+import { EmptyState, type Host, type PageRenderProps, Skeleton, StatusPanel } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { EmptyState, Skeleton, StatusPanel, type Host } from '@iii-dev/console-ui'
 import { createEvalApi, errorMessage, isTerminal } from '../api'
 import { useEvalCompleted } from '../events'
 import type { CatalogModel, EvalRequest, EvalResultResponse, EvalStatusResponse, EvalSummary } from '../types'
@@ -8,7 +8,7 @@ import { History } from './History'
 import { NewEvaluationForm } from './NewEvaluationForm'
 import { SessionComparison } from './SessionComparison'
 
-export function EvalPage({ host }: { host: Host }) {
+export function EvalPage({ host, panelSide = 'left' }: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createEvalApi(host), [host])
   const [surface, setSurface] = useState<'sessions' | 'experiments'>('sessions')
   const [evaluations, setEvaluations] = useState<EvalSummary[]>([])
@@ -168,41 +168,65 @@ export function EvalPage({ host }: { host: Host }) {
     }
   }, [api, loadHistory, selectedId])
 
-  const rerun = useCallback(async (reverseOrder: boolean) => {
-    if (!selectedId) return
-    setActionPending(true)
-    try {
-      const started = await api.rerun(selectedId, reverseOrder)
-      setSelectedId(started.evaluation_id)
-      await loadHistory()
-      await loadDetail(started.evaluation_id)
-    } catch (error) {
-      setDetailError(errorMessage(error))
-    } finally {
-      setActionPending(false)
-    }
-  }, [api, loadDetail, loadHistory, selectedId])
+  const rerun = useCallback(
+    async (reverseOrder: boolean) => {
+      if (!selectedId) return
+      setActionPending(true)
+      try {
+        const started = await api.rerun(selectedId, reverseOrder)
+        setSelectedId(started.evaluation_id)
+        await loadHistory()
+        await loadDetail(started.evaluation_id)
+      } catch (error) {
+        setDetailError(errorMessage(error))
+      } finally {
+        setActionPending(false)
+      }
+    },
+    [api, loadDetail, loadHistory, selectedId],
+  )
 
   const selected = evaluations.find((item) => item.evaluation_id === selectedId) ?? null
 
   return (
     <div className="eval-ui-container">
       <div className="eval-ui-tabs" role="tablist" aria-label="Eval views">
-        <button className={surface === 'sessions' ? 'active' : ''} type="button" role="tab" aria-selected={surface === 'sessions'} onClick={() => setSurface('sessions')}>Sessions</button>
-        <button className={surface === 'experiments' ? 'active' : ''} type="button" role="tab" aria-selected={surface === 'experiments'} onClick={() => setSurface('experiments')}>Prompt experiments</button>
+        <button
+          className={surface === 'sessions' ? 'active' : ''}
+          type="button"
+          role="tab"
+          aria-selected={surface === 'sessions'}
+          onClick={() => setSurface('sessions')}
+        >
+          Sessions
+        </button>
+        <button
+          className={surface === 'experiments' ? 'active' : ''}
+          type="button"
+          role="tab"
+          aria-selected={surface === 'experiments'}
+          onClick={() => setSurface('experiments')}
+        >
+          Prompt experiments
+        </button>
       </div>
-      <div className={`eval-ui${creating && surface === 'experiments' ? ' creating' : ''}${surface === 'sessions' ? ' sessions-mode' : ''}`}>
-        {surface === 'experiments' ? <History
-          evaluations={evaluations}
-          selectedId={creating ? null : selectedId}
-          loading={historyLoading}
-          onSelect={(evaluationId) => {
-            setCreating(false)
-            setSelectedId(evaluationId)
-          }}
-          onNew={() => setCreating(true)}
-          onRefresh={() => void loadHistory()}
-        /> : null}
+      <div
+        className={`eval-ui${creating && surface === 'experiments' ? ' creating' : ''}${surface === 'sessions' ? ' sessions-mode' : ''}${panelSide === 'right' ? ' right' : ''}`}
+      >
+        {surface === 'experiments' ? (
+          <History
+            side={panelSide}
+            evaluations={evaluations}
+            selectedId={creating ? null : selectedId}
+            loading={historyLoading}
+            onSelect={(evaluationId) => {
+              setCreating(false)
+              setSelectedId(evaluationId)
+            }}
+            onNew={() => setCreating(true)}
+            onRefresh={() => void loadHistory()}
+          />
+        ) : null}
         <main className="eval-ui-main">
           {surface === 'sessions' ? <SessionComparison host={host} /> : null}
           {surface === 'experiments' && historyError ? (
@@ -237,7 +261,10 @@ export function EvalPage({ host }: { host: Host }) {
             <EmptyState
               title="select an evaluation"
               description="choose a recent report or start a new prompt comparison."
-              action={{ label: 'new evaluation', onClick: () => setCreating(true) }}
+              action={{
+                label: 'new evaluation',
+                onClick: () => setCreating(true),
+              }}
             />
           ) : null}
         </main>

@@ -1,0 +1,42 @@
+{
+  "function_id": "browser::to-markdown",
+  "description": "Convert HTML to compact Markdown (or text/html); optional CSS scope + main-content clean.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "markdown",
+          "text",
+          "html"
+        ]
+      },
+      "css_selector": {
+        "type": "string",
+        "description": "convert only the subtree matching this CSS selector"
+      },
+      "main_content_only": {
+        "type": "boolean",
+        "description": "strip nav/scripts/hidden nodes first"
+      }
+    },
+    "required": [
+      "html"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      }
+    }
+  }
+}

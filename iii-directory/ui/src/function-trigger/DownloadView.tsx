@@ -26,7 +26,9 @@ interface ViewProps {
 /** Classifies the request shape into the two valid source modes (repo or
  * registry). Only the active source's chips render — `null` means the
  * request was malformed and the dispatcher will fall back to JSON. */
-function classifySource(req: SkillsDownloadRequest):
+function classifySource(
+  req: SkillsDownloadRequest,
+):
   | { kind: 'repo'; repo: string; skill: string; branch: string }
   | { kind: 'registry'; worker: string; spec: string }
   | null {
@@ -120,14 +122,14 @@ function sourceChips(
   if (source.kind === 'repo') {
     return (
       <>
-        <KvChip label="source">repo</KvChip>
+        <KvChip label="Source">Repo</KvChip>
         <KvChip label="branch">{source.branch}</KvChip>
       </>
     )
   }
   return (
     <>
-      <KvChip label="source">registry</KvChip>
+      <KvChip label="Source">Registry</KvChip>
       <KvChip label="spec">{source.spec}</KvChip>
     </>
   )

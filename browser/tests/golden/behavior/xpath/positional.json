@@ -1,0 +1,12 @@
+{
+  "function": "browser::xpath",
+  "case": "positional",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "query": "//li[2]/a",
+    "first": true
+  },
+  "ok": {
+    "result": "Banana"
+  }
+}

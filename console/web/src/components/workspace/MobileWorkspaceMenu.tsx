@@ -3,6 +3,7 @@ import {
   CircleQuestionMark,
   PanelsTopLeft,
   Plus,
+  Search,
   Settings,
   X,
 } from 'lucide-react'
@@ -26,6 +27,7 @@ interface MobileWorkspaceMenuProps {
   onActivate: (tabId: string) => void
   onToggleSettings: () => void
   onOpenShortcuts: () => void
+  onOpenPalette: () => void
 }
 
 export function MobileWorkspaceMenu({
@@ -37,6 +39,7 @@ export function MobileWorkspaceMenu({
   onActivate,
   onToggleSettings,
   onOpenShortcuts,
+  onOpenPalette,
 }: MobileWorkspaceMenuProps) {
   return (
     <BottomSheet open={open} onOpenChange={onOpenChange}>
@@ -47,6 +50,20 @@ export function MobileWorkspaceMenu({
           contentClassName="flex flex-col overflow-hidden"
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3">
+            {/* The same search the header opens, repeated here because this
+                sheet is where a phone goes looking for everything else. */}
+            <button
+              type="button"
+              onClick={() => {
+                onOpenChange(false)
+                onOpenPalette()
+              }}
+              className="mb-3 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            >
+              <Search className="size-5" aria-hidden />
+              Search the console
+            </button>
+
             <ul className="space-y-1" aria-label="workspaces">
               {workspace.tabs.map((tab) => {
                 const active = tab.id === workspace.activeTabId
@@ -74,7 +91,7 @@ export function MobileWorkspaceMenu({
                       <PanelsTopLeft
                         className={cn(
                           'size-5 shrink-0',
-                          active ? 'text-accent' : 'text-ink-faint',
+                          active ? 'text-ink' : 'text-ink-faint',
                         )}
                         aria-hidden
                       />
@@ -97,7 +114,7 @@ export function MobileWorkspaceMenu({
                       </span>
                       {active ? (
                         <Check
-                          className="size-5 shrink-0 text-accent"
+                          className="size-5 shrink-0 text-ink"
                           aria-hidden
                         />
                       ) : null}

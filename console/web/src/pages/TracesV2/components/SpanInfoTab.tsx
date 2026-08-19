@@ -73,7 +73,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
                 {span.pending && '…'}
               </span>
               {span.pending ? (
-                <Badge variant="accent">running</Badge>
+                <Badge variant="accent">Running</Badge>
               ) : (
                 traceData && (
                   <span className="font-mono text-[11px] text-ink-faint tabular-nums">
@@ -157,7 +157,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
               <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
                 type
               </span>
-              <Badge variant="accent">root span</Badge>
+              <Badge variant="accent">Root span</Badge>
             </div>
           )}
         </div>
@@ -203,7 +203,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
                     copied
                   </span>
                 ) : (
-                  <Copy className="w-3 h-3 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                  <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                 )}
               </div>
             </button>

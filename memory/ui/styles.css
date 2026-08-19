@@ -67,12 +67,6 @@
 /* ── navigation rail (banks) ────────────────────────────────────────── */
 
 [data-iii-ui="memory"] .mem-ui-rail {
-  width: 232px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--color-sidebar);
   border-right: 1px solid var(--color-edge);
 }
 [data-iii-ui="memory"] .mem-ui-body.right .mem-ui-rail {
@@ -83,7 +77,6 @@
    not the viewport: one pane at a time — the JSX renders either the bank
    list or the opened workspace. */
 [data-iii-ui="memory"] .mem-ui-body.narrow .mem-ui-rail {
-  width: 100%;
   border-right: 0;
   border-left: 0;
 }
@@ -92,10 +85,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 6px 10px 6px 14px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--color-edge);
+  width: 100%;
+  min-width: 0;
 }
 [data-iii-ui="memory"] .mem-ui-col-head .label {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -150,7 +141,7 @@
   outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
 }
-/* Selection = wash + accent indicator + stronger name, not color alone. */
+/* Selection stays neutral: wash + edge indicator + stronger name. */
 [data-iii-ui="memory"] .mem-ui-nav-row.active {
   background: var(--color-surface-selected);
 }
@@ -162,7 +153,7 @@
   bottom: 7px;
   width: 2px;
   border-radius: 1px;
-  background: var(--color-accent);
+  background: var(--color-edge);
 }
 [data-iii-ui="memory"] .mem-ui-nav-row .name {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -314,47 +305,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* segmented control — one control, mutually exclusive panels */
-[data-iii-ui="memory"] .mem-ui-seg {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  background: var(--color-surface);
-  border-radius: 6px;
-  flex-shrink: 0;
-}
-[data-iii-ui="memory"] .mem-ui-seg-btn {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  height: 26px;
-  padding: 0 12px;
-  border-radius: 4px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-[data-iii-ui="memory"] .mem-ui-seg-btn:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="memory"] .mem-ui-seg-btn.active {
-  color: var(--color-ink);
-  background: var(--color-panel-raised);
-  box-shadow: 0 0 0 1px var(--color-edge);
-}
-[data-iii-ui="memory"] .mem-ui-seg-btn:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
 }
 
 /* back affordance (drill-in flow) */
@@ -599,16 +549,16 @@
   color: var(--color-ink-faint);
   cursor: pointer;
   transition:
-    color 120ms ease,
-    background-color 120ms ease,
-    border-color 120ms ease;
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="memory"] .mem-ui-tagbtn:hover {
   background: var(--color-surface-hover);
   color: var(--color-ink);
 }
 [data-iii-ui="memory"] .mem-ui-tagbtn.active {
-  border-color: var(--color-accent);
+  border-color: var(--color-edge);
   background: var(--color-surface-selected);
   color: var(--color-ink);
 }
@@ -723,7 +673,7 @@
   font-size: 10.5px;
   color: var(--color-ink-ghost);
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="memory"] .mem-ui-fromchat:hover {
   color: var(--color-ink);

@@ -82,8 +82,8 @@ export function PdfPage({ host }: { host: Host }) {
       <header className="pdf-ui__head">
         <h1 className="pdf-ui__title">pdf</h1>
         <p className="pdf-ui__lede">
-          Classify a document, see which pages need OCR, and read the markdown an
-          agent would get. Parsing runs in the worker on this machine.
+          Classify a document, see which pages need OCR, and read the markdown
+          an agent would get. Parsing runs in the worker on this machine.
         </p>
       </header>
 
@@ -153,7 +153,9 @@ export function PdfPage({ host }: { host: Host }) {
         />
       )}
 
-      {state.status === 'done' && <Result name={state.name} result={state.result} />}
+      {state.status === 'done' && (
+        <Result name={state.name} result={state.result} />
+      )}
     </div>
   )
 }
@@ -190,7 +192,10 @@ function Result({ name, result }: { name: string; result: Inspection }) {
       </div>
 
       <dl className="pdf-ui__stats">
-        <Stat label="confidence" value={`${Math.round(classify.confidence * 100)}%`} />
+        <Stat
+          label="confidence"
+          value={`${Math.round(classify.confidence * 100)}%`}
+        />
         <Stat label="pages" value={String(classify.page_count)} />
         <Stat
           label="sampled"
@@ -200,7 +205,10 @@ function Result({ name, result }: { name: string; result: Inspection }) {
               : `${classify.pages_sampled} of ${classify.page_count}`
           }
         />
-        <Stat label="need ocr" value={String(classify.pages_needing_ocr.length)} />
+        <Stat
+          label="need ocr"
+          value={String(classify.pages_needing_ocr.length)}
+        />
         <Stat
           label="classify"
           value={`${classify.elapsed_ms} ms`}
@@ -227,7 +235,9 @@ function Result({ name, result }: { name: string; result: Inspection }) {
             . Parsed on this machine, with nothing uploaded.
           </>
         ) : (
-          <>Classified in {totalMs} ms on this machine, with nothing uploaded.</>
+          <>
+            Classified in {totalMs} ms on this machine, with nothing uploaded.
+          </>
         )}
       </p>
 
@@ -261,11 +271,11 @@ function Result({ name, result }: { name: string; result: Inspection }) {
       {markdown ? (
         <Tabs defaultValue="document" className="pdf-ui__tabs">
           <TabsList>
-            <TabsTrigger value="document">document</TabsTrigger>
+            <TabsTrigger value="document">Document</TabsTrigger>
             <TabsTrigger value="pages">
-              pages{markdown.pages ? ` (${markdown.pages.length})` : ''}
+              Pages{markdown.pages ? ` (${markdown.pages.length})` : ''}
             </TabsTrigger>
-            <TabsTrigger value="source">markdown source</TabsTrigger>
+            <TabsTrigger value="source">Markdown Source</TabsTrigger>
           </TabsList>
 
           <TabsContent value="document" className="pdf-ui__pane">
@@ -279,7 +289,9 @@ function Result({ name, result }: { name: string; result: Inspection }) {
                   <span className="pdf-ui__page-no">page {page.page}</span>
                   {page.needs_ocr && (
                     <Badge variant="warn">
-                      {page.ocr_reason ? ocrReasonLabel(page.ocr_reason) : 'needs ocr'}
+                      {page.ocr_reason
+                        ? ocrReasonLabel(page.ocr_reason)
+                        : 'needs ocr'}
                     </Badge>
                   )}
                   {tables.has(page.page) && <Badge>table</Badge>}

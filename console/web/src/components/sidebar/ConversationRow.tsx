@@ -79,8 +79,8 @@ export function ConversationRow({
       aria-current={active ? 'page' : undefined}
       aria-label={`open ${conversation.title}`}
       className={cn(
-        'group relative flex cursor-pointer items-center gap-2 rounded-sm pr-2 pl-3',
-        narrow ? 'min-h-12 py-1.5' : 'py-2',
+        'group relative flex cursor-pointer items-center gap-2 rounded-sm pr-1 pl-2',
+        narrow ? 'min-h-12 py-1.5' : 'py-1',
         active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
       )}
       onClick={() => !editing && onSelect()}

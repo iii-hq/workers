@@ -10,11 +10,22 @@
  * talking to, which is why there is no `driver` prop.
  */
 
-import { Button, CodeEditor, type CodeEditorHandle, type Host, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Button,
+  CodeEditor,
+  type CodeEditorHandle,
+  type Host,
+  StatusPanel,
+} from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errText } from '../lib/errors'
 import { type ExplainResult, explain } from '../lib/rpc'
-import { type AdhocResult, ddlInfo, isReadOnlySql, runAdhocSql } from './db-data'
+import {
+  type AdhocResult,
+  ddlInfo,
+  isReadOnlySql,
+  runAdhocSql,
+} from './db-data'
 import { AlertCircle, History, Play, X } from './icons'
 import { PlanTree } from './PlanTree'
 import { ResultGrid } from './result-grid'
@@ -52,7 +63,10 @@ const HISTORY_LIMIT = 20
 
 /** The run chord, written the way this keyboard has it. */
 const RUN_CHORD =
-  typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent) ? '⌘⏎' : 'ctrl+⏎'
+  typeof navigator !== 'undefined' &&
+  /mac/i.test(navigator.platform || navigator.userAgent)
+    ? '⌘⏎'
+    : 'ctrl+⏎'
 
 /** The keyword slice offered as-you-type; the table names ride alongside. */
 const SQL_KEYWORDS = [
@@ -96,7 +110,9 @@ function loadHistory(db: string): string[] {
   try {
     const raw = window.localStorage.getItem(historyKey(db))
     const parsed: unknown = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : []
+    return Array.isArray(parsed)
+      ? parsed.filter((s): s is string => typeof s === 'string')
+      : []
   } catch {
     return []
   }
@@ -104,15 +120,29 @@ function loadHistory(db: string): string[] {
 
 function saveHistory(db: string, entries: string[]) {
   try {
-    window.localStorage.setItem(historyKey(db), JSON.stringify(entries.slice(0, HISTORY_LIMIT)))
+    window.localStorage.setItem(
+      historyKey(db),
+      JSON.stringify(entries.slice(0, HISTORY_LIMIT)),
+    )
   } catch {
     // storage full/unavailable — history is a convenience, not state
   }
 }
 
-export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDirtyChange }: SqlPanelProps) {
+export function SqlPanel({
+  host,
+  db,
+  seedSql,
+  tables,
+  starterSql,
+  onWrite,
+  onDirtyChange,
+}: SqlPanelProps) {
   const [sql, setSql] = useState(seedSql ?? '')
-  const completions = useMemo(() => Array.from(new Set([...(tables ?? []), ...SQL_KEYWORDS])), [tables])
+  const completions = useMemo(
+    () => Array.from(new Set([...(tables ?? []), ...SQL_KEYWORDS])),
+    [tables],
+  )
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<AdhocResult | null>(null)
@@ -138,7 +168,8 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
     const onDown = (e: MouseEvent) => {
       const t = e.target
       if (!(t instanceof Node)) return
-      if (historyRef.current?.contains(t) || historyBtnRef.current?.contains(t)) return
+      if (historyRef.current?.contains(t) || historyBtnRef.current?.contains(t))
+        return
       setHistoryOpen(false)
     }
     document.addEventListener('keydown', onKey)
@@ -180,7 +211,10 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
         setRanSql(trimmed)
         if (next.write) onWrite?.()
         setHistory((cur) => {
-          const updated = [trimmed, ...cur.filter((s) => s !== trimmed)].slice(0, HISTORY_LIMIT)
+          const updated = [trimmed, ...cur.filter((s) => s !== trimmed)].slice(
+            0,
+            HISTORY_LIMIT,
+          )
           saveHistory(db, updated)
           return updated
         })
@@ -242,20 +276,34 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
               // when they're all disabled. (Monaco consumes Escape while a
               // widget is open — closing it — so this fires on the second.)
               if (e.key === 'Escape') {
-                const next = actionsRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+                const next =
+                  actionsRef.current?.querySelector<HTMLButtonElement>(
+                    'button:not(:disabled)',
+                  )
                 if (next) next.focus()
-                else if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+                else if (document.activeElement instanceof HTMLElement)
+                  document.activeElement.blur()
               }
             }}
           />
         </div>
         <div className="db-sql-actions" ref={actionsRef}>
-          <Button variant="ghost" size="sm" onClick={() => void run(sql)} disabled={running || sql.trim() === ''}>
-            <Play size={12} aria-hidden />
-            {running ? 'running…' : 'run'}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void run(sql)}
+            disabled={running || sql.trim() === ''}
+          >
+            <Play size={16} aria-hidden />
+            {running ? 'Running…' : 'Run'}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => void explainNow()} disabled={running || sql.trim() === ''}>
-            explain
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void explainNow()}
+            disabled={running || sql.trim() === ''}
+          >
+            Explain
           </Button>
           <span ref={historyBtnRef} style={{ display: 'contents' }}>
             <Button
@@ -265,15 +313,17 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
               disabled={history.length === 0}
               aria-expanded={historyOpen}
             >
-              <History size={12} aria-hidden />
-              history · {history.length}
+              <History size={16} aria-hidden />
+              History · {history.length}
             </Button>
           </span>
           {isWrite ? (
             // A heads-up, not a gate: this statement will mutate and commit.
             // Schema changes get the louder ink and name what they do.
             <span className={`db-sql-warn${ddl ? ' ddl' : ''}`}>
-              {ddl ? `${ddl.present} — commits on ${db}` : `write — runs and commits on ${db}`}
+              {ddl
+                ? `${ddl.present} — commits on ${db}`
+                : `write — runs and commits on ${db}`}
             </span>
           ) : null}
           {outcome ? (
@@ -281,7 +331,9 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
               {outcome.write
                 ? (outcome.write.echo ??
                   `${outcome.write.affectedRows} affected${
-                    outcome.write.lastInsertId !== null ? ` · id ${outcome.write.lastInsertId}` : ''
+                    outcome.write.lastInsertId !== null
+                      ? ` · id ${outcome.write.lastInsertId}`
+                      : ''
                   }`)
                 : `${outcome.result.row_count} row${outcome.result.row_count === 1 ? '' : 's'}`}{' '}
               · {outcome.durationMs}
@@ -310,7 +362,9 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
           <div className="db-sql-history" ref={historyRef}>
             {/* Where these live is worth one line: they never leave this
                 browser, and eviction is silent at the cap. */}
-            <div className="db-sql-history-note">recent statements · saved in this browser · newest first</div>
+            <div className="db-sql-history-note">
+              Recent statements · Saved in this browser · Newest first
+            </div>
             {history.map((entry) => (
               <div key={entry} className="db-sql-history-row">
                 <button
@@ -337,7 +391,7 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
                   }
                   aria-label="remove from history"
                 >
-                  <X size={12} />
+                  <X size={16} />
                 </button>
               </div>
             ))}
@@ -347,7 +401,12 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
       <div className={`db-sql-results${running ? ' running' : ''}`}>
         {error ? (
           <div className="db-pad">
-            <StatusPanel variant="alert" icon={<AlertCircle size={18} />} headline="query failed" detail={error} />
+            <StatusPanel
+              variant="alert"
+              icon={<AlertCircle size={18} />}
+              headline="Query failed"
+              detail={error}
+            />
           </div>
         ) : plan ? (
           <PlanTree plan={plan} />
@@ -356,7 +415,7 @@ export function SqlPanel({ host, db, seedSql, tables, starterSql, onWrite, onDir
             // A write without RETURNING has no grid to draw; an empty one
             // reads as "nothing happened", which is the opposite of the truth.
             <p className="db-sql-placeholder">
-              statement ran —{' '}
+              Statement ran —{' '}
               {outcome.write.echo ??
                 `${outcome.write.affectedRows} row${outcome.write.affectedRows === 1 ? '' : 's'} affected`}
             </p>

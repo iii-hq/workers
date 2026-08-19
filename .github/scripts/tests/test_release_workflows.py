@@ -10,6 +10,67 @@ WORKFLOWS = ROOT / "workflows"
 COMMON = {"operation_id", "step_id"}
 
 EXPECTED_INPUTS = {
+    "harness-e2e-shadow.yml": {"campaign_id", "execution_id", "attempt", "execution_contract"},
+    "prepare-release.yml": COMMON
+    | {
+        "release_intent_id",
+        "candidate_id",
+        "release_attempt_id",
+        "worker",
+        "stable_version",
+        "candidate_version",
+        "source_sha",
+        "plan_hash",
+        "dispatch_nonce",
+    },
+    "publish-candidate.yml": COMMON
+    | {
+        "release_intent_id",
+        "candidate_id",
+        "release_attempt_id",
+        "worker",
+        "stable_version",
+        "candidate_version",
+        "source_sha",
+        "prepared_sha",
+        "prepared_run_id",
+        "prepared_artifact",
+        "plan_hash",
+        "expected_next_version",
+        "dispatch_nonce",
+    },
+    "publish-stable.yml": COMMON
+    | {
+        "release_intent_id",
+        "candidate_id",
+        "release_attempt_id",
+        "worker",
+        "candidate_version",
+        "stable_version",
+        "source_operation_id",
+        "source_sha",
+        "plan_hash",
+        "expected_next_version",
+        "expected_latest_version",
+        "recovery_run_id",
+        "recovery_operation_id",
+        "recovery_step_id",
+        "dispatch_nonce",
+    },
+    "finalize-registry.yml": COMMON
+    | {
+        "release_intent_id",
+        "candidate_id",
+        "release_attempt_id",
+        "worker",
+        "candidate_version",
+        "stable_version",
+        "source_sha",
+        "plan_hash",
+        "expected_next_version",
+        "expected_latest_version",
+        "dispatch_nonce",
+    },
     "create-tag.yml": COMMON | {"worker", "target_version", "registry_tag", "experimental", "expected_current_version", "source_sha"},
     "create-prerelease-tag.yml": COMMON | {"worker", "target_version", "source_sha", "experimental"},
     "release.yml": COMMON | {"source_tag_step_id", "tag", "publish_registry"},
@@ -82,6 +143,10 @@ EXPECTED_INPUTS = {
 }
 
 MUTATING = {
+    "prepare-release.yml",
+    "publish-candidate.yml",
+    "publish-stable.yml",
+    "finalize-registry.yml",
     "create-tag.yml",
     "create-prerelease-tag.yml",
     "release.yml",
@@ -116,7 +181,19 @@ def test_release_control_workflow_input_contract_is_exact() -> None:
         dispatch = workflow(WORKFLOWS / name)["on"]["workflow_dispatch"]
         inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
         assert set(inputs) == expected, name
-        assert all(input_definition.get("required") == "true" for input_definition in inputs.values()), name
+        optional_defaults = {
+            "publish-stable.yml": {
+                "recovery_run_id": "0",
+                "recovery_operation_id": "none",
+                "recovery_step_id": "none",
+            },
+        }
+        for input_name, definition in inputs.items():
+            if input_name in optional_defaults.get(name, {}):
+                assert definition.get("required") == "false", (name, input_name)
+                assert definition.get("default") == optional_defaults[name][input_name], (name, input_name)
+            else:
+                assert definition.get("required") == "true", (name, input_name)
 
 
 def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
@@ -124,7 +201,11 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         body = (WORKFLOWS / name).read_text()
         assert "release_control_contract.py validate-dispatch" in body, name
         assert "RELEASE_CONTROL_BOT_LOGIN" in body, name
-        assert "execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}" in body, name
+        if name == "harness-e2e-shadow.yml":
+            assert "e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}" in body, name
+            assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in body, name
+        else:
+            assert "execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}" in body, name
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
@@ -147,8 +228,21 @@ def test_reusable_release_executors_have_no_implicit_inputs() -> None:
     for name in RELEASE_EXECUTORS:
         inputs = workflow(WORKFLOWS / name)["on"]["workflow_call"]["inputs"]
         assert inputs, name
-        assert all(definition.get("required") == "true" for definition in inputs.values()), name
-        assert all("default" not in definition for definition in inputs.values()), name
+        optional_defaults = {
+            "_publish-registry.yml": {"expected_current_version": ""},
+            "publish-stable.yml": {
+                "recovery_run_id": "0",
+                "recovery_operation_id": "none",
+                "recovery_step_id": "none",
+            },
+        }
+        for input_name, definition in inputs.items():
+            if input_name in optional_defaults.get(name, {}):
+                assert definition.get("required") == "false", (name, input_name)
+                assert definition.get("default") == optional_defaults[name][input_name], (name, input_name)
+            else:
+                assert definition.get("required") == "true", (name, input_name)
+                assert "default" not in definition, (name, input_name)
 
 
 def test_registry_publish_authenticates_iii_installer() -> None:

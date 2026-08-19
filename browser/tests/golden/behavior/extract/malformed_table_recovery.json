@@ -1,0 +1,19 @@
+{
+  "function": "browser::extract",
+  "case": "malformed_table_recovery",
+  "request": {
+    "html": "<table><td>A<td>B<div>C",
+    "selectors": [
+      {
+        "name": "table",
+        "css": "table",
+        "html": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "table": "<table><td>A</td><td>B<div>C</div></td></table>"
+    }
+  }
+}

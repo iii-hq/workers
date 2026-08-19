@@ -9,6 +9,16 @@
 import { TriangleAlert } from 'lucide-react'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -56,59 +66,65 @@ export function DeleteFileView({
         ) : null}
       </div>
 
-      <table className="w-full font-mono text-[12px] text-ink">
-        <thead>
-          <tr className="border-b border-rule-2 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            <th className="text-left font-normal px-3 py-1.5">path</th>
-            <th className="text-left font-normal px-3 py-1.5 w-28">outcome</th>
-            <th className="text-left font-normal px-3 py-1.5 w-16">status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {req.paths.map((path, i) => {
-            const result = resp?.results[i]
-            const pending = preview || running
-            // success + !removed = idempotent no-op (path already gone).
-            const outcome = pending
-              ? { label: 'pending', tone: 'text-ink-faint' }
-              : !result
-                ? { label: '—', tone: 'text-ink-faint' }
-                : result.removed
-                  ? { label: 'removed', tone: 'text-warn' }
-                  : result.success
-                    ? { label: 'already absent', tone: 'text-ink-ghost' }
-                    : { label: 'failed', tone: 'text-ink-ghost' }
+      <TableViewport>
+        <TableFrame className="px-3">
+          <Table density="compact">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Path</TableHead>
+                <TableHead className="w-28">Outcome</TableHead>
+                <TableHead className="w-16">Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {req.paths.map((path, i) => {
+                const result = resp?.results[i]
+                const pending = preview || running
+                // success + !removed = idempotent no-op (path already gone).
+                const outcome = pending
+                  ? { label: 'Pending', tone: 'text-ink-faint' }
+                  : !result
+                    ? { label: '—', tone: 'text-ink-faint' }
+                    : result.removed
+                      ? { label: 'Removed', tone: 'text-warn' }
+                      : result.success
+                        ? { label: 'Already absent', tone: 'text-ink-ghost' }
+                        : { label: 'Failed', tone: 'text-ink-ghost' }
 
-            return (
-              <tr key={path} className="border-b border-rule-2 last:border-b-0">
-                <td className="px-3 py-1.5">{path}</td>
-                <td className="px-3 py-1.5">
-                  <span className={outcome.tone}>{outcome.label}</span>
-                </td>
-                <td className="px-3 py-1.5">
-                  {pending || !result ? (
-                    <span className="text-ink-faint">—</span>
-                  ) : result.success ? (
-                    <span className="text-accent">ok</span>
-                  ) : result.error ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                          <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
-                          {result.error.code}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{result.error.message}</TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <span className="text-warn">err</span>
-                  )}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+                return (
+                  <TableRow key={path}>
+                    <TableCell className="font-code">{path}</TableCell>
+                    <TableCell>
+                      <span className={outcome.tone}>{outcome.label}</span>
+                    </TableCell>
+                    <TableCell>
+                      {pending || !result ? (
+                        <span className="text-ink-faint">—</span>
+                      ) : result.success ? (
+                        <span className="text-accent">OK</span>
+                      ) : result.error ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex cursor-help items-center gap-1 text-warn">
+                              <TriangleAlert aria-hidden className="size-4" />
+                              {result.error.code}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {result.error.message}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <span className="text-warn">Error</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </TableFrame>
+      </TableViewport>
     </div>
   )
 }

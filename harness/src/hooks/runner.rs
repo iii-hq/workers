@@ -110,6 +110,8 @@ impl HookRegistry {
         step: u64,
         base_system_prompt: Option<String>,
         base_messages: &[Value],
+        functions_generation: u64,
+        tools: &[crate::types::model::AgentFunction],
     ) -> PreGenerateOutcome {
         let mut system_prompt = base_system_prompt;
         let mut appended: Vec<Value> = Vec::new();
@@ -127,6 +129,17 @@ impl HookRegistry {
                 "messages": messages,
                 "model": record.options.model,
                 "provider": record.options.provider.clone().unwrap_or_default(),
+                "functions_generation": functions_generation,
+                "tools": tools,
+                // Hooks always receive the concrete decision tools, so the
+                // exposure mode is not inferable from `tools`; injectors need
+                // it to phrase call instructions the model can actually follow.
+                "expose": record
+                    .options
+                    .functions
+                    .as_ref()
+                    .map(|functions| functions.expose)
+                    .unwrap_or_default(),
             });
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(m) => {

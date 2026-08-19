@@ -1,0 +1,21 @@
+{
+  "function": "browser::find",
+  "case": "tag_html_root",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "tag": "html"
+  },
+  "ok": {
+    "count": 1,
+    "items": [
+      {
+        "tag": "html",
+        "text": "Hello\nApple\nBanana\nprice 42 usd then 99",
+        "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>",
+        "attrs": {},
+        "css": "",
+        "xpath": "//"
+      }
+    ]
+  }
+}

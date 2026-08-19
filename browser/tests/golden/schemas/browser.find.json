@@ -1,0 +1,73 @@
+{
+  "function_id": "browser::find",
+  "description": "Find elements by tag/attribute filters (+ optional text regex); BeautifulSoup-style.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "tag": {
+        "type": [
+          "string",
+          "array"
+        ],
+        "items": {
+          "type": "string"
+        },
+        "description": "tag name or list of tag names"
+      },
+      "attrs": {
+        "type": "object",
+        "description": "attribute filters, e.g. {\"class\": \"card\"}"
+      },
+      "text_regex": {
+        "type": "string",
+        "description": "keep only elements whose text matches this regex"
+      },
+      "first": {
+        "type": "boolean"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "html"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "html": {
+              "type": "string"
+            },
+            "attrs": {
+              "type": "object"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

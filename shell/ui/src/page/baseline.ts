@@ -18,6 +18,19 @@ export interface WorkspaceBaseline {
   contents: ReadonlyMap<string, string>
   /** False when coder::tree may have omitted reviewable descendants. */
   complete: boolean
+  /** How much of the reviewable inventory the body snapshot could hold. A
+      capped snapshot still classifies every path — only bodies are missing —
+      so this stays separate from `complete`, which drives new-vs-existing. */
+  coverage: WorkspaceBaselineCoverage
+}
+
+export interface WorkspaceBaselineCoverage {
+  /** Reviewable files the inventory offered. */
+  candidates: number
+  /** Files whose body the snapshot actually holds. */
+  captured: number
+  /** True when the candidate count exceeded the per-turn body budget. */
+  capped: boolean
 }
 
 export interface WorkspaceBaselinePathState {
@@ -76,6 +89,34 @@ export function classifyWorkspaceBaselinePath(
     : { priorKind: 'file', exact: false }
 }
 
+/** Reviewable files in the order the body budget should spend itself: most
+    recently modified first. A turn edits the working set, not the
+    alphabetically first 500 paths, so recency buys far more coverage than
+    tree order on a large or shared root. Equal mtimes keep tree order. */
+export function prioritizedBaselineCandidates(
+  root: TreeNode,
+  includePath: (path: string) => boolean,
+): string[] {
+  const candidates: { path: string; mtime: number; order: number }[] = []
+  const walk = (node: TreeNode, prefix: string) => {
+    for (const child of node.children ?? []) {
+      const path = prefix === '' ? child.name : `${prefix}/${child.name}`
+      if (child.kind === 'file' && includePath(path)) {
+        candidates.push({ path, mtime: child.mtime, order: candidates.length })
+      }
+      walk(child, path)
+    }
+  }
+  walk(root, '')
+  return candidates
+    .sort((left, right) =>
+      left.mtime === right.mtime
+        ? left.order - right.order
+        : right.mtime - left.mtime,
+    )
+    .map((candidate) => candidate.path)
+}
+
 /**
  * Capture a turn baseline at Harness's awaited pre-turn boundary. The result
  * is built locally and published atomically, so tree refreshes cannot cancel a
@@ -90,10 +131,8 @@ export async function captureWorkspaceBaseline(
 ): Promise<WorkspaceBaseline> {
   const treeResponse = await baselineTree(host, root)
   const tree = flattenTree(treeResponse.root)
-  const relPaths = [...tree.kinds]
-    .filter(([path, kind]) => kind === 'file' && includePath(path))
-    .map(([path]) => path)
-    .slice(0, SNAPSHOT_MAX_FILES)
+  const candidates = prioritizedBaselineCandidates(treeResponse.root, includePath)
+  const relPaths = candidates.slice(0, SNAPSHOT_MAX_FILES)
   const contents = new Map<string, string>()
 
   for (let start = 0; start < relPaths.length; start += SNAPSHOT_BATCH_SIZE) {
@@ -115,5 +154,10 @@ export async function captureWorkspaceBaseline(
     // rejects that subtree. Capacity, depth, I/O, and reviewable default
     // excludes remain fail-closed.
     complete: inventoryCompleteForReview(treeResponse.root, includePath),
+    coverage: {
+      candidates: candidates.length,
+      captured: contents.size,
+      capped: candidates.length > SNAPSHOT_MAX_FILES,
+    },
   }
 }

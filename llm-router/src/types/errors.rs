@@ -11,6 +11,16 @@ pub enum RouterCode {
     NotConfigured,
     StructuredOutputUnsupported,
     RegistrationRejected, // token mismatch (spec adaptation: identity binding)
+    RequestInProgress,
+    CapacityExceeded,
+    StreamSetupFailed,
+    StreamIdleTimeout,
+    StreamIncomplete,
+    ProviderAuthExpired,
+    ProviderRateLimited,
+    ContextOverflow,
+    ProviderTransient,
+    ProviderRejected,
 }
 
 impl RouterCode {
@@ -24,6 +34,16 @@ impl RouterCode {
             RouterCode::NotConfigured => "router/not_configured",
             RouterCode::StructuredOutputUnsupported => "router/structured_output_unsupported",
             RouterCode::RegistrationRejected => "router/registration_rejected",
+            RouterCode::RequestInProgress => "router/request_in_progress",
+            RouterCode::CapacityExceeded => "router/capacity_exceeded",
+            RouterCode::StreamSetupFailed => "router/stream_setup_failed",
+            RouterCode::StreamIdleTimeout => "router/stream_idle_timeout",
+            RouterCode::StreamIncomplete => "router/stream_incomplete",
+            RouterCode::ProviderAuthExpired => "router/provider_auth_expired",
+            RouterCode::ProviderRateLimited => "router/provider_rate_limited",
+            RouterCode::ContextOverflow => "router/context_overflow",
+            RouterCode::ProviderTransient => "router/provider_transient",
+            RouterCode::ProviderRejected => "router/provider_rejected",
         }
     }
 }

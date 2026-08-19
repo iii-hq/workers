@@ -1,0 +1,75 @@
+{
+  "function_id": "browser::find-similar",
+  "description": "Structural auto-match: given one example element, return it plus similar elements.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "anchor": {
+        "type": "string",
+        "description": "CSS selector to one example element"
+      },
+      "similarity_threshold": {
+        "type": "number"
+      },
+      "match_text": {
+        "type": "boolean"
+      },
+      "selectors": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            },
+            "regex": {
+              "type": "string"
+            },
+            "attr": {
+              "type": "string",
+              "description": "extract this attribute instead of text"
+            },
+            "html": {
+              "type": "boolean",
+              "description": "extract inner HTML instead of text"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "return every match as a list"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    "required": [
+      "html",
+      "anchor"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

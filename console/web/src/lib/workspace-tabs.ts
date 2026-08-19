@@ -381,10 +381,17 @@ export function withWorkspaceScreenOpened(
   screen: TabScreen,
   makeTabId: () => string = newTabId,
 ): OpenWorkspaceScreenResult {
+  const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
+  // Where you already are beats where it happens to be mounted: opening chat
+  // from a workspace that shows chat should stay put, not send you to
+  // whichever other tab was created first.
+  if (active?.screens.includes(screen)) {
+    return { tabs, activeTabId: active.id }
+  }
+
   const existing = tabs.find((tab) => tab.screens.includes(screen))
   if (existing) return { tabs, activeTabId: existing.id }
 
-  const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
   if (active) {
     const placed = withScreenOpenedBeside(active, screen)
     if (placed) {

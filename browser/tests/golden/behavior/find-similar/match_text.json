@@ -1,0 +1,22 @@
+{
+  "function": "browser::find-similar",
+  "case": "match_text",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "anchor": "li",
+    "match_text": true
+  },
+  "ok": {
+    "count": 2,
+    "items": [
+      {
+        "text": "Apple",
+        "html": "<li><a href=\"/a\">Apple</a></li>"
+      },
+      {
+        "text": "Banana",
+        "html": "<li><a href=\"/b\">Banana</a></li>"
+      }
+    ]
+  }
+}

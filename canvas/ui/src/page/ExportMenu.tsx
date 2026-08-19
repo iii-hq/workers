@@ -57,7 +57,7 @@ export function ExportMenu({ theme, disabled, onExport }: ExportMenuProps) {
         disabled={disabled}
         title="download as svg"
       >
-        <Download size={13} aria-hidden />
+        <Download size={16} aria-hidden />
         svg
       </Button>
       <Button
@@ -67,7 +67,7 @@ export function ExportMenu({ theme, disabled, onExport }: ExportMenuProps) {
         disabled={disabled}
         title="download as png"
       >
-        <Download size={13} aria-hidden />
+        <Download size={16} aria-hidden />
         png
       </Button>
     </span>

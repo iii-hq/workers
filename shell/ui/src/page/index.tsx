@@ -50,6 +50,7 @@ import { errorMessage } from '../lib/format'
 import {
   captureWorkspaceBaseline,
   classifyWorkspaceBaselinePath,
+  type WorkspaceBaselineCoverage,
 } from './baseline'
 import { ChangeDiffPane } from './ChangeDiffPane'
 import {
@@ -109,6 +110,7 @@ import {
 } from './ReviewPane'
 import {
   ReviewScopePicker,
+  reviewScopeLabel,
   type ReviewScopeSelection,
 } from './ReviewScopePicker'
 import {
@@ -120,6 +122,8 @@ import {
 import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
+import { ShellLauncher } from './ShellLauncher'
+import { WorkspaceBrowser } from './WorkspaceBrowser'
 import { TerminalPanel } from './TerminalPanel'
 import {
   activateTab,
@@ -138,7 +142,7 @@ import {
   normalizeTerminalWorkspace,
   reduceTerminalWorkspace,
 } from './terminal-layout'
-import { createTerminalOutputRouter } from './terminal-output-router'
+import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
 import { useHarnessPreTurn, useHarnessTurn } from './turn'
 import {
@@ -259,10 +263,6 @@ function reviewablePath(rel: string): boolean {
   )
 }
 
-function clampSidebarWidth(w: number): number {
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
-}
-
 function clampTerminalSize(size: number | undefined, fallback: number): number {
   if (size === undefined || !Number.isFinite(size)) return fallback
   return Math.min(1200, Math.max(160, Math.round(size)))
@@ -279,13 +279,14 @@ const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
 
 export function ShellExplorerPage({
   host,
+  terminalRouter,
   panelSide,
   tabId,
   onRequestClose,
   workingDir,
   panelContext,
   conversationId,
-}: { host: Host } & PageRenderProps) {
+}: { host: Host; terminalRouter: TerminalOutputRouter } & PageRenderProps) {
   const theme = host.useTheme()
   const observedReview = useHarnessTurn(host, conversationId)
   const observedReviewKey = observedReview.turnId
@@ -320,6 +321,7 @@ export function ShellExplorerPage({
   const rootResolveSeqRef = useRef(0)
   const rootTransitionRef = useRef(false)
   const [sideTab, setSideTab] = useState<SideTab>('files')
+  const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
   const [terminalActive, setTerminalActive] = useState(false)
@@ -334,11 +336,9 @@ export function ShellExplorerPage({
     '/',
     createTerminalWorkspace,
   )
-  const terminalRouter = useMemo(() => createTerminalOutputRouter(host), [host])
   const terminalConnectionCoordinators = useRef(
     new Map<string, TerminalConnectionCoordinator>(),
   ).current
-  useEffect(() => () => terminalRouter.dispose(), [terminalRouter])
   const terminalLeaseStore = useMemo(() => {
     try {
       return window.localStorage
@@ -348,7 +348,11 @@ export function ShellExplorerPage({
   }, [])
   const terminalStorageKey = `iii::shell-ui::terminal-leases::${tabId}`
   const [collapsed, setCollapsed] = useState(false)
-  const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
+  const [narrow, setNarrow] = useState(false)
+  // A callback ref, not useRef: the page renders a placeholder shell before
+  // the workspace frame exists, so an effect that reads a ref once would
+  // observe nothing.
+  const [frameEl, setFrameEl] = useState<HTMLDivElement | null>(null)
   const [tree, setTree] = useState<FlatTree | null>(null)
   // Dot entries are filtered by default (Finder/VS Code convention) —
   // in home-shaped folders they otherwise crowd out every visible name.
@@ -435,6 +439,9 @@ export function ShellExplorerPage({
   const baselineCompleteRef = useRef(false)
   const baselineCapturedRef = useRef(false)
   const baselineReadyRef = useRef<Promise<void>>(Promise.resolve())
+  // A capped snapshot degrades quietly per row, so the toolbar says so once.
+  const [baselineCoverage, setBaselineCoverage] =
+    useState<WorkspaceBaselineCoverage | null>(null)
   const preparedTurnRef = useRef<string | null>(null)
   const lastReviewKeyRef = useRef<string | null>(observedReviewKey ?? null)
   const reviewEpochRef = useRef(0)
@@ -601,6 +608,7 @@ export function ShellExplorerPage({
       baselineCompleteRef.current = false
       baselineCapturedRef.current = false
       baselineReadyRef.current = Promise.resolve()
+      setBaselineCoverage(null)
       reviewEntriesRef.current = new Map()
       setReviewEntries(new Map())
       scopeEntriesRef.current = new Map()
@@ -641,7 +649,7 @@ export function ShellExplorerPage({
     baselineCompleteRef.current = false
     baselineCapturedRef.current = false
     const snapshot = captureWorkspaceBaseline(host, currentRoot, reviewablePath)
-      .then(({ contents, kinds, complete }) => {
+      .then(({ contents, kinds, complete, coverage }) => {
         if (
           rootGenerationRef.current !== generation ||
           reviewEpochRef.current !== epoch ||
@@ -653,6 +661,7 @@ export function ShellExplorerPage({
         baselineKindsRef.current = kinds
         baselineCompleteRef.current = complete
         baselineCapturedRef.current = true
+        setBaselineCoverage(coverage)
       })
       .catch(() => {
         // Git can still provide HEAD; non-Git rows fail closed with a clear
@@ -760,9 +769,6 @@ export function ShellExplorerPage({
           setTabs(restoreTabs(restored.open, restored.active))
           setExpanded(restored.expanded)
           setShowHidden(restored.showHidden ?? false)
-          setSideWidth(
-            clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH),
-          )
           restoreTerminalUiState(restored)
         } else if (
           restored &&
@@ -773,9 +779,6 @@ export function ShellExplorerPage({
           setTabs(restoreTabs(restored.open, restored.active))
           setExpanded(restored.expanded)
           setShowHidden(restored.showHidden ?? false)
-          setSideWidth(
-            clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH),
-          )
           restoreTerminalUiState(restored)
         } else {
           dispatchTerminalWorkspace({
@@ -887,6 +890,36 @@ export function ShellExplorerPage({
     () => [...visibleReviewEntries.values()].map((entry) => entry.change),
     [visibleReviewEntries],
   )
+  const scopeEmpty =
+    reviewScope.kind !== 'last-turn' &&
+    !scopeLoading &&
+    scopeError === null &&
+    scopeEntries.size === 0
+
+  // The panel, not the viewport, decides what fits: a shell page shares the
+  // console with other panels. Below the same width the stylesheet treats as
+  // narrow, the sidebar becomes an overlay, so it starts out of the way.
+  useEffect(() => {
+    if (!frameEl) return
+    const measure = () =>
+      setNarrow(frameEl.getBoundingClientRect().width <= 720)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(frameEl)
+    return () => observer.disconnect()
+  }, [frameEl])
+
+  const narrowRef = useRef(narrow)
+  useEffect(() => {
+    if (narrow && !narrowRef.current) setCollapsed(true)
+    narrowRef.current = narrow
+  }, [narrow])
+
+  const rootLabel = useMemo(
+    () => root?.split('/').filter(Boolean).slice(-1)[0] ?? 'workspace',
+    [root],
+  )
+
   const orderedReviewEntries = useMemo<readonly ReviewEntry[]>(
     () => [...visibleReviewEntries.values()],
     [visibleReviewEntries],
@@ -1467,6 +1500,7 @@ export function ShellExplorerPage({
               path: rel,
               rawKind,
               priorKind,
+              priorKindExact: baselinePath?.exact,
               priorBaseline: baseline,
               existsNow:
                 results === null
@@ -1549,7 +1583,6 @@ export function ShellExplorerPage({
       active: tabs.active,
       expanded,
       showHidden,
-      sideWidth,
       terminalOpen,
       terminalDock,
       terminalActive,
@@ -1563,7 +1596,6 @@ export function ShellExplorerPage({
     tabs,
     expanded,
     showHidden,
-    sideWidth,
     terminalOpen,
     terminalDock,
     terminalActive,
@@ -1659,49 +1691,6 @@ export function ShellExplorerPage({
     [dirtyPaths, reviewDirtyPaths, reviewSaveBarrier],
   )
 
-  // ── sidebar resize (drag handle on the boundary toward the main pane) ──
-  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
-  const onHandlePointerDown = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      dragRef.current = { startX: e.clientX, startWidth: sideWidth }
-      // Capture is best-effort: some pointer types refuse it, and the
-      // drag still works through the move/up handlers.
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId)
-      } catch {
-        // no capture — moves outside the handle end the drag early
-      }
-    },
-    [sideWidth],
-  )
-  const onHandlePointerMove = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      const drag = dragRef.current
-      if (!drag) return
-      const delta = e.clientX - drag.startX
-      // A right-hugging sidebar widens as the handle moves LEFT.
-      setSideWidth(
-        clampSidebarWidth(
-          panelSide === 'right'
-            ? drag.startWidth - delta
-            : drag.startWidth + delta,
-        ),
-      )
-    },
-    [panelSide],
-  )
-  const onHandlePointerUp = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      dragRef.current = null
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId)
-      } catch {
-        // never captured — nothing to release
-      }
-    },
-    [],
-  )
-
   const changeRoot = useCallback(
     (
       nextRoot: string,
@@ -1760,6 +1749,7 @@ export function ShellExplorerPage({
         baselineCompleteRef.current = false
         baselineCapturedRef.current = false
         baselineReadyRef.current = Promise.resolve()
+        setBaselineCoverage(null)
         preparedTurnRef.current = null
         reviewEntriesRef.current = new Map()
         reviewEditBackupsRef.current.clear()
@@ -2117,6 +2107,25 @@ export function ShellExplorerPage({
     [reviewSaveBarrier, root],
   )
 
+  // The browser card is only honest when that worker is actually on the bus.
+  const [browserAvailable, setBrowserAvailable] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    void host.iii
+      .trigger<{ workers?: Array<{ name?: unknown }> }>('engine::workers::list', {})
+      .then((response) => {
+        if (cancelled) return
+        const workers = Array.isArray(response?.workers) ? response.workers : []
+        setBrowserAvailable(workers.some((worker) => worker?.name === 'browser'))
+      })
+      .catch(() => {
+        if (!cancelled) setBrowserAvailable(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host])
+
   const appliedContextRef = useRef(0)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
@@ -2128,6 +2137,24 @@ export function ShellExplorerPage({
     if (context.type === 'file') {
       if (!openContextFile(context.path)) return
       appliedContextRef.current = panelContext.id
+      return
+    }
+    if (context.type === 'agent-terminal') {
+      // The agent's own CLI is the interface; shell just provides the terminal
+      // it wants. An existing terminal keeps the directory it was opened in,
+      // so this opens a NEW tab rooted where the run worked — otherwise the
+      // pane says pi-demo while the shell inside it sits somewhere else.
+      appliedContextRef.current = panelContext.id
+      changeRoot(context.cwd)
+      const stamp = `${Date.now().toString(36)}`
+      dispatchTerminalWorkspace({
+        type: 'tab-created',
+        tabId: `tab-agent-${stamp}`,
+        paneId: `pane-agent-${stamp}`,
+        root: context.cwd,
+      })
+      setTerminalOpen(true)
+      setTerminalActive(true)
       return
     }
     if (!confirmDiscardReviewEdits()) return
@@ -2191,7 +2218,7 @@ export function ShellExplorerPage({
     <PageHeader
       className="shui-page-header"
       icon={<SquareTerminal />}
-      title="shell"
+      title="Shell"
       description={
         root ? (
           rootOptions.length > 1 ? (
@@ -2270,26 +2297,30 @@ export function ShellExplorerPage({
                 <Terminal aria-hidden className="shui-side-tab-icon" />
               </button>
             </HoverTip>
-            <HoverTip
-              label={
-                collapsed ? 'Show the file sidebar' : 'Hide the file sidebar'
-              }
-            >
-              <button
-                type="button"
-                className="shui-collapse-btn"
-                onClick={() => setCollapsed((value) => !value)}
-                aria-label={
-                  collapsed ? 'Show file sidebar' : 'Hide file sidebar'
+            {narrow ? (
+              <HoverTip
+                label={
+                  collapsed
+                    ? 'Show the file sidebar'
+                    : 'Hide the file sidebar'
                 }
               >
-                {panelSide === 'right' ? (
-                  <PanelRight aria-hidden className="shui-side-tab-icon" />
-                ) : (
-                  <PanelLeft aria-hidden className="shui-side-tab-icon" />
-                )}
-              </button>
-            </HoverTip>
+                <button
+                  type="button"
+                  className="shui-collapse-btn"
+                  onClick={() => setCollapsed((value) => !value)}
+                  aria-label={
+                    collapsed ? 'Show file sidebar' : 'Hide file sidebar'
+                  }
+                >
+                  {panelSide === 'right' ? (
+                    <PanelRight aria-hidden className="shui-side-tab-icon" />
+                  ) : (
+                    <PanelLeft aria-hidden className="shui-side-tab-icon" />
+                  )}
+                </button>
+              </HoverTip>
+            ) : null}
           </div>
         ) : undefined
       }
@@ -2326,60 +2357,60 @@ export function ShellExplorerPage({
   return (
     <PageShell>
       {header}
-      <div className={`shui-workspace-frame terminal-${terminalDock}`}>
+      <div
+        ref={setFrameEl}
+        className={`shui-workspace-frame terminal-${terminalDock}`}
+      >
+        {narrow && !collapsed ? (
+          <button
+            type="button"
+            className="shui-sidebar-scrim"
+            aria-label="Hide file sidebar"
+            onClick={() => setCollapsed(true)}
+          />
+        ) : null}
         <PageBody side={panelSide}>
-          {!collapsed ? (
-            <PageSidebar width={sideWidth} className="shui-sidebar">
-              <button
-                type="button"
-                className={`shui-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
-                onPointerDown={onHandlePointerDown}
-                onPointerMove={onHandlePointerMove}
-                onPointerUp={onHandlePointerUp}
-                onPointerCancel={onHandlePointerUp}
-                onLostPointerCapture={onHandlePointerUp}
-                onKeyDown={(event) => {
-                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
-                    return
-                  event.preventDefault()
-                  const inward =
-                    panelSide === 'right' ? 'ArrowLeft' : 'ArrowRight'
-                  setSideWidth((width) =>
-                    clampSidebarWidth(
-                      width + (event.key === inward ? 10 : -10),
-                    ),
-                  )
-                }}
-                aria-label="resize sidebar"
-                title="drag to resize"
-              />
-              <div className="shui-side-body">
-                {sideTab === 'files' ? (
-                  <FilesTab
-                    tree={reviewTree}
-                    gitStatus={treeGitStatus}
-                    theme={theme}
-                    hiddenFiltered={!showHidden}
-                    expanded={expanded}
-                    onExpandedChange={setExpanded}
-                    reveal={reveal}
-                    onRevealed={onRevealed}
-                    activePath={diff?.change.path ?? tabs.active}
-                    onActivateFile={activateFile}
-                    onPinFile={pinFile}
-                  />
-                ) : (
-                  <SearchTab
-                    host={host}
-                    root={root}
-                    onPreviewFile={previewFile}
-                    onPinFile={pinFile}
-                    onRevealFolder={revealFolder}
-                  />
-                )}
-              </div>
-            </PageSidebar>
-          ) : null}
+          <PageSidebar
+            label={sideTab === 'files' ? 'Files' : 'Search'}
+            side={panelSide}
+            storageKey={`shell:${tabId || 'page'}:sidebar`}
+            defaultWidth={SIDEBAR_DEFAULT_WIDTH}
+            minWidth={SIDEBAR_MIN_WIDTH}
+            maxWidth={SIDEBAR_MAX_WIDTH}
+            collapsible
+            collapsed={collapsed}
+            onCollapsedChange={setCollapsed}
+            resizable
+            narrow={narrow}
+            hidden={narrow && collapsed}
+            className="shui-sidebar"
+          >
+            <div className="shui-side-body">
+              {sideTab === 'files' ? (
+                <FilesTab
+                  tree={reviewTree}
+                  gitStatus={treeGitStatus}
+                  theme={theme}
+                  hiddenFiltered={!showHidden}
+                  expanded={expanded}
+                  onExpandedChange={setExpanded}
+                  reveal={reveal}
+                  onRevealed={onRevealed}
+                  activePath={diff?.change.path ?? tabs.active}
+                  onActivateFile={activateFile}
+                  onPinFile={pinFile}
+                />
+              ) : (
+                <SearchTab
+                  host={host}
+                  root={root}
+                  onPreviewFile={previewFile}
+                  onPinFile={pinFile}
+                  onRevealFolder={revealFolder}
+                />
+              )}
+            </div>
+          </PageSidebar>
 
           <PageMain>
             {workingDirError ? (
@@ -2457,6 +2488,15 @@ export function ShellExplorerPage({
                 {scopeError ? (
                   <span className="shui-review-scope-error" title={scopeError}>
                     unavailable
+                  </span>
+                ) : null}
+                {reviewScope.kind === 'last-turn' && baselineCoverage?.capped ? (
+                  <span
+                    className="shui-review-count"
+                    title={`This workspace holds ${baselineCoverage.candidates} reviewable files; the pre-turn snapshot captured the ${baselineCoverage.captured} most recently modified. Rows outside it fall back to the last commit, or say so when there is none. Open a narrower folder for full coverage.`}
+                  >
+                    snapshot {baselineCoverage.captured}/
+                    {baselineCoverage.candidates}
                   </span>
                 ) : null}
                 {reviewTotals.ready > 0 ? (
@@ -2758,6 +2798,12 @@ export function ShellExplorerPage({
               <div className="shui-main-empty">
                 <span className="t-warn">{scopeError}</span>
               </div>
+            ) : scopeEmpty ? (
+              <div className="shui-main-empty">
+                <span className="t-ghost">
+                  No changes in {reviewScopeLabel(reviewScope)}
+                </span>
+              </div>
             ) : tabs.active !== null ? (
               <EditorPane
                 // fileBump remounts after an agent-side write to the active
@@ -2770,10 +2816,43 @@ export function ShellExplorerPage({
                 onSaved={onSaved}
                 onDirtyChange={onDirtyChange}
               />
+            ) : browsePath !== null ? (
+              <WorkspaceBrowser
+                tree={tree}
+                path={browsePath}
+                rootLabel={rootLabel}
+                onOpenFolder={(relPath) => {
+                  setBrowsePath(relPath)
+                  if (relPath !== '') revealFolder(relPath)
+                }}
+                onOpenFile={pinFile}
+              />
             ) : (
-              <div className="shui-main-empty">
-                <span className="t-ghost">select a file to edit or review</span>
-              </div>
+              <ShellLauncher
+                host={host}
+                browserAvailable={browserAvailable}
+                // Changes is the navbar's review scope: the last turn when it
+                // touched anything, otherwise everything the working tree has
+                // that HEAD does not.
+                onOpenChanges={() =>
+                  selectReviewScope(
+                    reviewEntriesRef.current.size > 0
+                      ? LAST_TURN_SCOPE
+                      : { kind: 'uncommitted' },
+                  )
+                }
+                onOpenTerminal={() => {
+                  setTerminalOpen(true)
+                  setTerminalActive(true)
+                }}
+                // File opens the workspace browser in this pane and shows the
+                // sidebar tree beside it.
+                onOpenFiles={() => {
+                  setBrowsePath('')
+                  setSideTab('files')
+                  setCollapsed(false)
+                }}
+              />
             )}
           </PageMain>
         </PageBody>

@@ -217,6 +217,10 @@ export interface SystemMessage extends BaseMessage {
   content: string
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction' | 'trigger-fired'
+  /** User-facing remediation supplied by a structured lifecycle record. */
+  nextActions?: string[]
+  /** Diagnostic context kept behind a collapsed disclosure. */
+  technicalDetails?: SystemNoticeTechnicalDetails
   /**
    * Live-only fallback for a durable transcript entry with the same id.
    * It may fill a delivery gap, but must never replace the transcript-backed
@@ -227,6 +231,14 @@ export interface SystemMessage extends BaseMessage {
   tokensBefore?: number
   /** Present on `kind: 'trigger-fired'`. */
   trigger?: TriggerFiredData
+}
+
+export interface SystemNoticeTechnicalDetails {
+  code?: string
+  class?: string
+  detail?: string
+  provider?: string
+  model?: string
 }
 
 export type Message =
@@ -262,6 +274,8 @@ export interface MessagePatch {
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction'
+  nextActions?: string[]
+  technicalDetails?: SystemNoticeTechnicalDetails
   summaryText?: string
   tokensBefore?: number
 }

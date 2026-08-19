@@ -66,7 +66,7 @@ function RuleEditor({
         <div className="mem-ui-rule-actions">
           {dirty ? (
             <>
-              <span className="mem-ui-unsaved">unsaved</span>
+              <span className="mem-ui-unsaved">Unsaved</span>
               <Button variant="ghost" size="sm" disabled={busy} onClick={save}>
                 save
               </Button>
@@ -102,7 +102,7 @@ function RuleEditor({
               aria-label={`delete rule ${name}`}
               onClick={() => setConfirmDelete(true)}
             >
-              <X size={14} aria-hidden />
+              <X size={16} aria-hidden />
             </Button>
           )}
         </div>
@@ -208,7 +208,7 @@ export function RulesPanel({
             disabled={busy || (!validName && !suggestion)}
             className="mem-ui-gap1"
           >
-            <Plus size={14} aria-hidden />
+            <Plus size={16} aria-hidden />
             add rule
           </Button>
         </div>

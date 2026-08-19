@@ -1,0 +1,38 @@
+# iii engine configuration — passed via `iii -c` (through run-tests.sh's
+# untracked reports/config.runtime.yaml copy; see the comment in
+# run-tests.sh for why it isn't booted from this tracked file directly).
+#
+# Infrastructure workers only. `iii-worker-manager` is the builtin worker
+# that owns the engine's WebSocket listener (engine/src/workers/worker/mod.rs
+# in the iii engine repo); its `port` is overridden to ${E2E_PORT:49234} —
+# NOT the iii default of 49134 — so this suite never shares a port (and
+# therefore never risks sharing root browser::* function registrations) with a
+# locally running dev engine. The Python worker uses distinct scrapling::* ids;
+# another browser worker at the same browser::* ids would silently test the
+# wrong implementation.
+#
+# run-tests.sh exports E2E_PORT (default 49234) before starting the engine;
+# override with `E2E_PORT=<port> ./run-tests.sh` if 49234 is also taken.
+# `:49234` (no dash) is the iii engine's own config templating syntax
+# (EngineConfig::expand_env_vars), not bash's — it's only a fallback for
+# anyone booting this file directly with `iii -c config.yaml`, bypassing
+# run-tests.sh's own preflight port check.
+#
+# The browser worker and harness are NOT registered here.
+# run-tests.sh:
+#   1. starts this engine
+#   2. spawns the browser binary as a host process (--url ws://…)
+#   3. runs the harness test suite
+
+workers:
+  - name: iii-worker-manager
+    config:
+      port: ${E2E_PORT:49234}
+
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: browser-tests
+      exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0

@@ -17,7 +17,8 @@ pub fn build_manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
             "Interactive Chromium sessions on the iii bus. Navigate, act, read the page console, \
-             pick elements."
+             pick elements. Also parses HTML natively without a browser \
+             (browser::* — css/xpath/regex, element search, markdown)."
                 .to_string(),
         default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],

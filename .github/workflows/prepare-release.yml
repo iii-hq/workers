@@ -1,0 +1,146 @@
+name: Prepare exact release attempt
+run-name: RC · prepare_release · ${{ inputs.operation_id }} · ${{ inputs.step_id }} · ${{ inputs.dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        description: Release Control operation UUID
+        required: true
+        type: string
+      step_id:
+        description: Release Control step UUID
+        required: true
+        type: string
+      release_intent_id:
+        required: true
+        type: string
+      candidate_id:
+        required: true
+        type: string
+      release_attempt_id:
+        required: true
+        type: string
+      worker:
+        required: true
+        type: string
+      stable_version:
+        required: true
+        type: string
+      candidate_version:
+        required: true
+        type: string
+      source_sha:
+        description: Immutable source commit used by the plan
+        required: true
+        type: string
+      plan_hash:
+        required: true
+        type: string
+      dispatch_nonce:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-prepare-${{ inputs.worker }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Build ${{ inputs.worker }} ${{ inputs.candidate_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Generate token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Validate exact dispatch and inputs
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --plan-hash '${{ inputs.plan_hash }}'
+          --dispatch-nonce '${{ inputs.dispatch_nonce }}'
+          --candidate-version '${{ inputs.candidate_version }}'
+          --stable-version '${{ inputs.stable_version }}'
+          --source-sha '${{ inputs.source_sha }}'
+          --mutating
+
+      - name: Prepare, test and package without publishing
+        env:
+          RELEASE_ATTEMPT_ID: ${{ inputs.release_attempt_id }}
+        run: >-
+          python3 .github/scripts/release_train.py
+          --worker '${{ inputs.worker }}'
+          --source-sha '${{ inputs.source_sha }}'
+          --candidate-version '${{ inputs.candidate_version }}'
+          --intent-id '${{ inputs.release_intent_id }}'
+          --attempt-id '${{ inputs.release_attempt_id }}'
+          --branch 'refs/heads/release-control/${{ inputs.release_intent_id }}/${{ inputs.release_attempt_id }}'
+          --out release-prepared
+
+      - name: Upload prepared artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-prepared-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: release-prepared/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Write factual preparation result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          PREPARED: ${{ inputs.candidate_version }}
+        run: |
+          set -euo pipefail
+          prepared_sha=$(jq -r '.prepared_sha // empty' release-prepared/prepared.json 2>/dev/null || true)
+          artifact_sha=$(jq -c '[.artifacts[]? | {name,sha256}]' release-prepared/prepared.json 2>/dev/null || echo '[]')
+          subject=$(jq -cn \
+            --arg worker '${{ inputs.worker }}' --arg candidate '${{ inputs.candidate_version }}' \
+            --arg stable '${{ inputs.stable_version }}' --arg source '${{ inputs.source_sha }}' \
+            --arg prepared "$prepared_sha" \
+            '{worker:$worker,version:$candidate,candidate_version:$candidate,stable_version:$stable,source_sha:$source,prepared_sha:(if $prepared == "" then null else $prepared end)}')
+          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"prepare_build_and_tests",status:$status}]')
+          effects=$(jq -cn --arg status "$JOB_STATUS" --arg prepared "$prepared_sha" \
+            '[{surface:"internal_attempt_ref",status:(if $prepared == "" then "unknown" else (if $status == "success" then "changed" else "present" end) end),immutable_id:$prepared}]')
+          outputs=$(jq -cn --arg prepared "$prepared_sha" --argjson digests "$artifact_sha" \
+            --arg artifact "release-prepared-${{ inputs.operation_id }}-${{ inputs.step_id }}" \
+            '{prepared_sha:(if $prepared == "" then null else $prepared end),prepared_run_id:(${{ github.run_id }}),prepared_artifact:$artifact,digests:$digests}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind prepare_release --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow prepare-release.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" --outputs "$outputs" \
+            --release-intent-id '${{ inputs.release_intent_id }}' --candidate-id '${{ inputs.candidate_id }}' --attempt-id '${{ inputs.release_attempt_id }}' \
+            --plan-hash '${{ inputs.plan_hash }}' --dispatch-nonce '${{ inputs.dispatch_nonce }}' \
+            --candidate-version '${{ inputs.candidate_version }}' --stable-version '${{ inputs.stable_version }}' \
+            --source-sha '${{ inputs.source_sha }}' --prepared-sha "$prepared_sha" \
+            --digests-json "$artifact_sha" --output execution-result.json
+
+      - name: Upload factual result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error

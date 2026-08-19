@@ -49,7 +49,7 @@ export function BoxIcon({ size = 16, ...rest }: IconProps) {
   )
 }
 
-export function RefreshIcon({ size = 14, ...rest }: IconProps) {
+export function RefreshIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M21 12a9 9 0 1 1-2.64-6.36" />
@@ -58,7 +58,7 @@ export function RefreshIcon({ size = 14, ...rest }: IconProps) {
   )
 }
 
-export function PlayIcon({ size = 14, ...rest }: IconProps) {
+export function PlayIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M7 4l13 8-13 8V4z" />
@@ -66,7 +66,7 @@ export function PlayIcon({ size = 14, ...rest }: IconProps) {
   )
 }
 
-export function PlusIcon({ size = 14, ...rest }: IconProps) {
+export function PlusIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M12 5v14M5 12h14" />
@@ -74,7 +74,7 @@ export function PlusIcon({ size = 14, ...rest }: IconProps) {
   )
 }
 
-export function FolderIcon({ size = 14, ...rest }: IconProps) {
+export function FolderIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6z" />
@@ -82,7 +82,7 @@ export function FolderIcon({ size = 14, ...rest }: IconProps) {
   )
 }
 
-export function FileIcon({ size = 14, ...rest }: IconProps) {
+export function FileIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M6 3h8l4 4v14H6V3z" />
@@ -91,7 +91,7 @@ export function FileIcon({ size = 14, ...rest }: IconProps) {
   )
 }
 
-export function ChevronIcon({ size = 12, ...rest }: IconProps) {
+export function ChevronIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M9 6l6 6-6 6" />
@@ -99,7 +99,7 @@ export function ChevronIcon({ size = 12, ...rest }: IconProps) {
   )
 }
 
-export function CopyIcon({ size = 13, ...rest }: IconProps) {
+export function CopyIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <rect x="9" y="9" width="12" height="12" rx="1.5" />
@@ -108,7 +108,7 @@ export function CopyIcon({ size = 13, ...rest }: IconProps) {
   )
 }
 
-export function DownloadIcon({ size = 13, ...rest }: IconProps) {
+export function DownloadIcon({ size = 16, ...rest }: IconProps) {
   return (
     <Glyph size={size} {...rest}>
       <path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16" />

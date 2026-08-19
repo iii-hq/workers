@@ -12,7 +12,7 @@ use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::clients::router::{ChatParams, StreamSink};
+use crate::clients::router::{ChatError, ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -29,34 +29,54 @@ use crate::types::turn::{
 };
 
 #[derive(Clone, Copy)]
-struct FailureInfo {
-    code: &'static str,
+struct FailureInfo<'a> {
+    code: &'a str,
     phase: &'static str,
     retryable: bool,
+    kind: Option<ErrorKind>,
+    detail: Option<&'a str>,
+    provider: Option<&'a str>,
+    model: Option<&'a str>,
 }
 
-const INTERNAL_FAILURE: FailureInfo = FailureInfo {
+const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.turn_internal",
     phase: "execution",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
-const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
+const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.context_overflow",
     phase: "context_assembly",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
-const BUDGET_EXCEEDED_FAILURE: FailureInfo = FailureInfo {
+const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.budget_exceeded",
     phase: "budget_preflight",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
-const BUDGET_UNAVAILABLE_FAILURE: FailureInfo = FailureInfo {
+const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.budget_unavailable",
     phase: "budget_preflight",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
 /// Provider adapters add framing outside the fields visible to the harness.
@@ -229,8 +249,8 @@ pub async fn run_step(
             None => return Ok(skipped(&payload.session_id)),
         };
 
-    // Stale guards: wrong turn or an old step is acked and dropped.
-    if record.turn_id != payload.turn_id || payload.step < record.step {
+    // Stale guards: wrong turn or any non-current step is acked and dropped.
+    if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
         return Ok(skipped(&payload.session_id));
     }
     if record.status.is_terminal() {
@@ -272,6 +292,10 @@ pub async fn run_step(
                     code: "harness.pre_turn_denied",
                     phase: "pre_turn",
                     retryable: false,
+                    kind: None,
+                    detail: None,
+                    provider: None,
+                    model: None,
                 },
             )
             .await;
@@ -316,6 +340,10 @@ pub async fn run_step(
                         code: "harness.output_contract_invalid",
                         phase: "output_validation",
                         retryable: false,
+                        kind: None,
+                        detail: None,
+                        provider: None,
+                        model: None,
                     },
                 )
                 .await
@@ -339,7 +367,8 @@ pub async fn run_step(
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
     // contracts may be stale. First sighting stamps silently.
-    let current_generation = deps.functions().await.generation;
+    let functions = deps.functions().await;
+    let current_generation = functions.generation;
     let mut assembly_system_prompt =
         with_filesystem_root_aid(record.options.system_prompt.clone(), &record);
     if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
@@ -354,7 +383,21 @@ pub async fn run_step(
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let mut tools = build_tools(deps, &record).await;
+    let policy = CompiledPolicy::from(record.options.functions.as_ref());
+    let decision_tools = concrete_allowed_tools(&policy, &functions.functions);
+    let expose = record
+        .options
+        .functions
+        .as_ref()
+        .map(|f| f.expose)
+        .unwrap_or(ExposeMode::AgentTrigger);
+    if expose == ExposeMode::Native && decision_tools.is_empty() {
+        tracing::warn!(
+            session_id = %record.session_id,
+            "native exposure matched no registry functions; the model has no tools this turn"
+        );
+    }
+    let mut tools = provider_tools(expose, &decision_tools);
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -431,6 +474,8 @@ pub async fn run_step(
                 payload.step,
                 assembled.system_prompt.clone(),
                 &assembled.messages,
+                current_generation,
+                &decision_tools,
             )
             .await
         {
@@ -449,6 +494,10 @@ pub async fn run_step(
                         code: "harness.pre_generate_denied",
                         phase: "pre_generate",
                         retryable: false,
+                        kind: None,
+                        detail: None,
+                        provider: None,
+                        model: None,
                     },
                 )
                 .await;
@@ -487,6 +536,10 @@ pub async fn run_step(
                     code: "harness.empty_context",
                     phase: "context_assembly",
                     retryable: false,
+                    kind: None,
+                    detail: None,
+                    provider: None,
+                    model: None,
                 },
             )
             .await;
@@ -829,20 +882,35 @@ pub async fn run_step(
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
     if !outcome.ok {
-        let reason = outcome
-            .error
-            .clone()
-            .unwrap_or_else(|| "generation failed".to_string());
+        let generation_error = outcome.error.clone().unwrap_or_else(|| ChatError {
+            code: None,
+            message: "The provider rejected this request.".into(),
+            detail: Some("generation failed".into()),
+            kind: outcome.message.error_kind,
+            retryable: outcome.message.error_kind.map(ErrorKind::is_retryable),
+        });
+        let failure = llm_failure_info(
+            Some(&generation_error),
+            outcome.message.error_kind,
+            Some(outcome.message.provider.as_str()).filter(|provider| !provider.is_empty()),
+            Some(outcome.message.model.as_str()).filter(|model| !model.is_empty()),
+        );
+        let reason = generation_error.message.clone();
+        let detail = generation_error
+            .detail
+            .as_deref()
+            .unwrap_or(&generation_error.message)
+            .to_string();
         preserve_assistant_partial(&mut record.result, &outcome.message);
         if transient_resume_allowed(
-            outcome.message.error_kind,
+            failure.retryable.then_some(ErrorKind::Transient),
             record.transient_resumes,
             record.options.max_transient_resumes,
             record.turn_count,
             record.options.max_turns,
         ) {
             let attempt = record.transient_resumes + 1;
-            record_recovery_telemetry(&record, &reason, attempt);
+            record_recovery_telemetry(&record, &detail, attempt);
             let _ = session
                 .append_custom(
                     &record.session_id,
@@ -854,6 +922,11 @@ pub async fn run_step(
                             record.options.max_transient_resumes
                         ),
                         "reason": reason,
+                        "detail": detail,
+                        "code": failure.code,
+                        "class": failure_class(failure),
+                        "provider": failure.provider.or(record.options.provider.as_deref()),
+                        "model": failure.model.unwrap_or(&record.options.model),
                         "phase": "generation",
                         "attempt": attempt,
                         "max_attempts": record.options.max_transient_resumes,
@@ -889,14 +962,7 @@ pub async fn run_step(
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
         }
-        return finalize_failed(
-            deps,
-            &session,
-            &mut record,
-            &reason,
-            llm_failure_info(outcome.message.error_kind),
-        )
-        .await;
+        return finalize_failed(deps, &session, &mut record, &reason, failure).await;
     }
 
     if record.transient_resumes > 0 {
@@ -1263,6 +1329,15 @@ pub async fn run_step(
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
 }
 
+fn turn_step_matches(
+    record_turn_id: &str,
+    record_step: u64,
+    payload_turn_id: &str,
+    payload_step: u64,
+) -> bool {
+    record_turn_id == payload_turn_id && payload_step == record_step
+}
+
 /// Whether model-visible messages are parked in the session's queue
 /// (harness.md § Concurrency & steering). Custom-role rows never reach the
 /// model context, so a custom-only queue must not steer — a re-generate over
@@ -1524,6 +1599,10 @@ async fn retry_or_giveup_with(
                 code: "harness.output_contract_invalid",
                 phase: "output_validation",
                 retryable: false,
+                kind: None,
+                detail: None,
+                provider: None,
+                model: None,
             },
         )
         .await
@@ -1618,19 +1697,170 @@ async fn finalize_completed(
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct FailurePresentation {
+    summary: String,
+    next_actions: Vec<&'static str>,
+}
+
+fn failure_class(failure: FailureInfo<'_>) -> &'static str {
+    match failure.kind {
+        Some(ErrorKind::AuthExpired) => "llm.auth_expired",
+        Some(ErrorKind::RateLimited) => "llm.rate_limited",
+        Some(ErrorKind::ContextOverflow) => "llm.context_overflow",
+        Some(ErrorKind::Transient) => "llm.transient",
+        Some(ErrorKind::Permanent) => "llm.permanent",
+        None if failure.retryable => "llm.transient",
+        None => "llm.permanent",
+    }
+}
+
+fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> FailurePresentation {
+    let (summary, next_actions): (&str, &[&str]) = match failure.code {
+        "router/not_configured" => (
+            "The selected provider is not configured.",
+            &[
+                "Open LLM Router settings and complete the provider setup.",
+                "Retry the turn after the provider is configured.",
+            ],
+        ),
+        "router/provider_unavailable" => (
+            "The selected provider is temporarily unavailable.",
+            &[
+                "Retry the turn in a moment.",
+                "Choose another available provider or model.",
+            ],
+        ),
+        "router/unknown_provider" => (
+            "The selected provider is no longer registered.",
+            &["Refresh the model list and choose another provider."],
+        ),
+        "router/no_provider_for_model" => (
+            "No configured provider can serve the selected model.",
+            &[
+                "Choose another model.",
+                "Configure a provider that supports this model.",
+            ],
+        ),
+        "router/ambiguous_model" => (
+            "The selected model is available from multiple providers.",
+            &["Choose a provider explicitly, then try again."],
+        ),
+        "router/invalid_request" => (
+            "The model request is invalid.",
+            &["Review the request fields, then try again."],
+        ),
+        "router/structured_output_unsupported" => (
+            "The selected model does not support structured output.",
+            &[
+                "Choose another model.",
+                "Disable structured output, then try again.",
+            ],
+        ),
+        "router/request_in_progress" => (
+            "A request with the same ID is already in progress.",
+            &["Wait for the active request to finish, then try again."],
+        ),
+        "router/capacity_exceeded" => (
+            "The provider is busy right now.",
+            &[
+                "Wait a moment, then retry the turn.",
+                "Choose another available provider or model.",
+            ],
+        ),
+        "router/stream_setup_failed" => (
+            "The response stream could not be started.",
+            &["Retry the turn in a moment."],
+        ),
+        "router/stream_idle_timeout" => (
+            "The provider stopped responding before the answer completed.",
+            &["Retry the turn to continue."],
+        ),
+        "router/stream_incomplete" => (
+            "The provider disconnected before completing the response.",
+            &["Retry the turn to continue."],
+        ),
+        "router/provider_auth_expired" => (
+            "The provider authentication needs attention.",
+            &[
+                "Update the provider credentials in LLM Router settings.",
+                "Retry the turn after the credentials are updated.",
+            ],
+        ),
+        "router/provider_rate_limited" => (
+            "The provider is busy right now.",
+            &["Wait a moment, then retry the turn."],
+        ),
+        "router/context_overflow" => (
+            "The conversation is too large for the selected model.",
+            &[
+                "Compact or shorten the conversation.",
+                "Choose a model with a larger context window.",
+            ],
+        ),
+        "router/provider_transient" => (
+            "The provider temporarily failed while generating a response.",
+            &["Retry the turn in a moment."],
+        ),
+        "router/provider_rejected" => (
+            "The provider rejected this request.",
+            &["Review the selected model and provider settings, then try again."],
+        ),
+        _ => match failure.kind {
+            Some(ErrorKind::AuthExpired) => (
+                "The provider authentication needs attention.",
+                &["Update the provider credentials, then try again."],
+            ),
+            Some(ErrorKind::RateLimited) => (
+                "The provider is busy right now.",
+                &["Wait a moment, then retry the turn."],
+            ),
+            Some(ErrorKind::ContextOverflow) => (
+                "The conversation is too large for the selected model.",
+                &[
+                    "Compact or shorten the conversation.",
+                    "Choose a model with a larger context window.",
+                ],
+            ),
+            Some(ErrorKind::Transient) => (
+                "The provider temporarily failed while generating a response.",
+                &["Retry the turn in a moment."],
+            ),
+            Some(ErrorKind::Permanent) => (
+                "The provider rejected this request.",
+                &["Review the selected model and provider settings, then try again."],
+            ),
+            None => (
+                public_message,
+                &[
+                    "Inspect the failure details.",
+                    "Retry only after correcting the dependency or request.",
+                ],
+            ),
+        },
+    };
+    FailurePresentation {
+        summary: summary.to_string(),
+        next_actions: next_actions.to_vec(),
+    }
+}
+
 async fn finalize_failed(
     deps: &Deps,
     session: &SessionClient,
     record: &mut TurnRecord,
-    reason: &str,
-    failure: FailureInfo,
+    public_message: &str,
+    failure: FailureInfo<'_>,
 ) -> Result<TurnStepResult, HarnessError> {
     let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
+    let presentation = failure_presentation(public_message, failure);
+    let summary = presentation.summary;
+    let detail = failure.detail.unwrap_or(public_message);
     record.status = TurnStatus::Failed;
-    record.result_error = Some(reason.to_string());
+    record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
-    record_failure_telemetry(record, reason, failure);
+    record_failure_telemetry(record, detail, failure);
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -1639,10 +1869,14 @@ async fn finalize_failed(
             "error",
             json!({
                 "status": "error",
-                "summary": reason,
-                "reason": reason,
+                "summary": summary,
+                "reason": detail,
                 "code": failure.code,
-                "message": reason,
+                "class": failure_class(failure),
+                "message": public_message,
+                "detail": detail,
+                "provider": failure.provider.or(record.options.provider.as_deref()),
+                "model": failure.model.unwrap_or(&record.options.model),
                 "retryable": failure.retryable,
                 "phase": failure.phase,
                 "partial_result_available": record.result.is_some(),
@@ -1651,10 +1885,7 @@ async fn finalize_failed(
                     "max_attempts": record.options.max_transient_resumes,
                     "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
                 },
-                "next_actions": [
-                    "inspect the failure reason",
-                    "retry only after correcting the dependency or request"
-                ],
+                "next_actions": presentation.next_actions,
                 "artifacts": {
                     "session_id": record.session_id,
                     "turn_id": record.turn_id,
@@ -1666,7 +1897,7 @@ async fn finalize_failed(
         )
         .await;
     let _ = session
-        .set_status(&record.session_id, "error", Some(reason))
+        .set_status(&record.session_id, "error", Some(&summary))
         .await;
     deps.events
         .emit_completed(
@@ -1674,8 +1905,8 @@ async fn finalize_failed(
             &record.turn_id,
             "failed",
             record.result.as_ref(),
-            Some(reason),
-            Some(reason),
+            Some(&summary),
+            Some(&summary),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
             turn_is_terminal(deps, &record.session_id).await,
@@ -1695,7 +1926,7 @@ async fn finalize_failed(
             &parent,
             "failed",
             record.result.as_ref(),
-            Some(reason),
+            Some(&summary),
         )
         .await;
     }
@@ -1717,38 +1948,34 @@ async fn finalize_failed(
     })
 }
 
-fn llm_failure_info(error_kind: Option<ErrorKind>) -> FailureInfo {
-    match error_kind {
-        Some(ErrorKind::AuthExpired) => FailureInfo {
-            code: "llm.auth_expired",
-            phase: "generation",
-            retryable: false,
-        },
-        Some(ErrorKind::RateLimited) => FailureInfo {
-            code: "llm.rate_limited",
-            phase: "generation",
-            retryable: true,
-        },
-        Some(ErrorKind::ContextOverflow) => FailureInfo {
-            code: "llm.context_overflow",
-            phase: "generation",
-            retryable: false,
-        },
-        Some(ErrorKind::Transient) => FailureInfo {
-            code: "llm.transient",
-            phase: "generation",
-            retryable: true,
-        },
-        Some(ErrorKind::Permanent) => FailureInfo {
-            code: "llm.permanent",
-            phase: "generation",
-            retryable: false,
-        },
-        None => FailureInfo {
-            code: "llm.generation_failed",
-            phase: "generation",
-            retryable: false,
-        },
+fn llm_failure_info<'a>(
+    error: Option<&'a ChatError>,
+    terminal_kind: Option<ErrorKind>,
+    provider: Option<&'a str>,
+    model: Option<&'a str>,
+) -> FailureInfo<'a> {
+    let kind = error.and_then(|error| error.kind).or(terminal_kind);
+    let fallback_code = match kind {
+        Some(ErrorKind::AuthExpired) => "llm.auth_expired",
+        Some(ErrorKind::RateLimited) => "llm.rate_limited",
+        Some(ErrorKind::ContextOverflow) => "llm.context_overflow",
+        Some(ErrorKind::Transient) => "llm.transient",
+        Some(ErrorKind::Permanent) => "llm.permanent",
+        None => "llm.generation_failed",
+    };
+    FailureInfo {
+        code: error
+            .and_then(|error| error.code.as_deref())
+            .filter(|code| !code.is_empty())
+            .unwrap_or(fallback_code),
+        phase: "generation",
+        retryable: error
+            .and_then(|error| error.retryable)
+            .unwrap_or_else(|| kind.is_some_and(ErrorKind::is_retryable)),
+        kind,
+        detail: error.and_then(|error| error.detail.as_deref()),
+        provider,
+        model,
     }
 }
 
@@ -1777,13 +2004,13 @@ fn record_recovery_telemetry(record: &TurnRecord, reason: &str, attempt: u32) {
     );
 }
 
-fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureInfo) {
+fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureInfo<'_>) {
     let cx = Context::current();
     let span = cx.span();
     if !span.span_context().is_valid() {
         return;
     }
-    span.set_attribute(KeyValue::new("error.type", failure.code));
+    span.set_attribute(KeyValue::new("error.type", failure.code.to_string()));
     span.set_attribute(KeyValue::new("error.message", reason.to_string()));
     span.set_attribute(KeyValue::new("iii.turn.failure_phase", failure.phase));
     span.set_attribute(KeyValue::new("iii.turn.retryable", failure.retryable));
@@ -2554,53 +2781,46 @@ pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<S
     }
 }
 
-/// Build the invocation-schema surface attached to the generate request
-/// (harness.md § Exposure modes). Default: the single `agent_trigger` schema.
-/// Native: expand the allow globs against the registry and attach one schema
-/// per allowed function.
-async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::model::AgentFunction> {
-    let expose = record
-        .options
-        .functions
-        .as_ref()
-        .map(|f| f.expose)
-        .unwrap_or(ExposeMode::AgentTrigger);
+/// The concrete tool schemas this turn's dispatch policy allows: one per
+/// allowed registry function, plus the harness-intercepted subscription
+/// controls (virtual functions the engine's public registry intentionally
+/// does not list). This is the decision surface hooks reason over,
+/// independent of how tools reach the provider.
+fn concrete_allowed_tools(
+    policy: &CompiledPolicy,
+    descriptors: &[crate::clients::FunctionDescriptor],
+) -> Vec<crate::types::model::AgentFunction> {
+    let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    for descriptor in descriptors {
+        if !policy.allows(&descriptor.function_id)
+            || tools.iter().any(|tool| tool.name == descriptor.function_id)
+        {
+            continue;
+        }
+        tools.push(crate::types::model::AgentFunction {
+            name: descriptor.function_id.clone(),
+            description: descriptor.description.clone().unwrap_or_default(),
+            parameters: descriptor
+                .parameters
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "object" })),
+            label: None,
+            execution_mode: Some("sequential".to_string()),
+        });
+    }
+    tools
+}
+
+/// The invocation-schema surface attached to the generate request
+/// (harness.md § Exposure modes). Default: the single `agent_trigger`
+/// schema. Native: the concrete allowed tools verbatim.
+fn provider_tools(
+    expose: ExposeMode,
+    concrete: &[crate::types::model::AgentFunction],
+) -> Vec<crate::types::model::AgentFunction> {
     match expose {
         ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
-        ExposeMode::Native => {
-            let policy = CompiledPolicy::from(record.options.functions.as_ref());
-            let snapshot = deps.functions().await;
-            // Subscription controls are harness-intercepted virtual functions,
-            // so the engine's public registry intentionally does not list
-            // them. Publish their real schemas alongside registry functions
-            // whenever this turn's dispatch policy allows them.
-            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
-            for descriptor in snapshot.functions.iter() {
-                if !policy.allows(&descriptor.function_id) {
-                    continue;
-                }
-                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
-                    continue;
-                }
-                tools.push(crate::types::model::AgentFunction {
-                    name: descriptor.function_id.clone(),
-                    description: descriptor.description.clone().unwrap_or_default(),
-                    parameters: descriptor
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({ "type": "object" })),
-                    label: None,
-                    execution_mode: Some("sequential".to_string()),
-                });
-            }
-            if tools.is_empty() {
-                tracing::warn!(
-                    session_id = %record.session_id,
-                    "native exposure matched no registry functions; the model has no tools this turn"
-                );
-            }
-            tools
-        }
+        ExposeMode::Native => concrete.to_vec(),
     }
 }
 
@@ -2649,12 +2869,117 @@ impl Clone for SessionStreamSink {
 mod tests {
     use super::{
         cancel_requested, count_model_visible, retryable_function_result_append_error,
-        transient_resume_allowed,
+        transient_resume_allowed, turn_step_matches,
     };
+    use crate::clients::router::ChatError;
     use crate::error::HarnessError;
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+
+    #[test]
+    fn llm_failure_preserves_router_contract_and_runtime_attribution() {
+        let error = ChatError {
+            code: Some("router/provider_unavailable".into()),
+            message: "Provider unavailable.".into(),
+            detail: Some("provider openai stream function was not found".into()),
+            kind: Some(ErrorKind::Transient),
+            retryable: Some(true),
+        };
+        let failure = super::llm_failure_info(
+            Some(&error),
+            Some(ErrorKind::Permanent),
+            Some("openai"),
+            Some("gpt-test"),
+        );
+
+        assert_eq!(failure.code, "router/provider_unavailable");
+        assert_eq!(failure.kind, Some(ErrorKind::Transient));
+        assert!(failure.retryable);
+        assert_eq!(
+            failure.detail,
+            Some("provider openai stream function was not found")
+        );
+        assert_eq!(failure.provider, Some("openai"));
+        assert_eq!(failure.model, Some("gpt-test"));
+        assert_eq!(super::failure_class(failure), "llm.transient");
+    }
+
+    #[test]
+    fn router_code_selects_a_friendly_summary_and_actions() {
+        let error = ChatError {
+            code: Some("router/provider_unavailable".into()),
+            message: "legacy raw provider text".into(),
+            detail: Some("legacy raw provider text".into()),
+            kind: Some(ErrorKind::Transient),
+            retryable: Some(true),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, Some("openai"), Some("gpt-test"));
+        let presentation = super::failure_presentation(&error.message, failure);
+
+        assert_eq!(
+            presentation.summary,
+            "The selected provider is temporarily unavailable."
+        );
+        assert_eq!(
+            presentation.next_actions,
+            vec![
+                "Retry the turn in a moment.",
+                "Choose another available provider or model."
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_permanent_presentation_has_stable_copy() {
+        let error = ChatError {
+            code: Some("provider/custom_rejection".into()),
+            message: "raw rejection".into(),
+            detail: Some("raw rejection with upstream diagnostics".into()),
+            kind: Some(ErrorKind::Permanent),
+            retryable: Some(false),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, None, Some("m"));
+        let presentation = super::failure_presentation(&error.message, failure);
+
+        assert_eq!(presentation.summary, "The provider rejected this request.");
+        assert_eq!(
+            presentation.next_actions,
+            vec!["Review the selected model and provider settings, then try again."]
+        );
+        assert_eq!(super::failure_class(failure), "llm.permanent");
+    }
+
+    #[test]
+    fn only_the_exact_current_turn_step_is_executable() {
+        assert!(!turn_step_matches("t_current", 4, "t_stale", 4));
+        assert!(!turn_step_matches("t_current", 4, "t_current", 3));
+        assert!(turn_step_matches("t_current", 4, "t_current", 4));
+        assert!(!turn_step_matches("t_current", 4, "t_current", 5));
+    }
+
+    #[test]
+    fn function_result_append_retries_only_dependency_registration_races() {
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency(
+                "session::append: remote error (function_not_found): Function not found".into(),
+            )
+        ));
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: iii is not connected".into())
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: invalid message".into())
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Dependency(
+                "context::assemble: remote error (function_not_found): Function not found".into(),
+            )
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Internal("session::append: function_not_found".into())
+        ));
+    }
 
     fn queued(message: AgentMessage) -> crate::state::QueuedMessage {
         crate::state::QueuedMessage {
@@ -3044,28 +3369,5 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
-    }
-
-    #[test]
-    fn function_result_append_retries_only_dependency_registration_races() {
-        assert!(retryable_function_result_append_error(
-            &HarnessError::Dependency(
-                "session::append: remote error (function_not_found): Function not found".into(),
-            )
-        ));
-        assert!(retryable_function_result_append_error(
-            &HarnessError::Dependency("session::append: iii is not connected".into())
-        ));
-        assert!(!retryable_function_result_append_error(
-            &HarnessError::Dependency("session::append: invalid message".into())
-        ));
-        assert!(!retryable_function_result_append_error(
-            &HarnessError::Dependency(
-                "context::assemble: remote error (function_not_found): Function not found".into(),
-            )
-        ));
-        assert!(!retryable_function_result_append_error(
-            &HarnessError::Internal("session::append: function_not_found".into())
-        ));
     }
 }

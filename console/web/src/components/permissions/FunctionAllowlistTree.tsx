@@ -307,7 +307,7 @@ function Tristate({ state, onClick, 'aria-label': label }: TristateProps) {
         onClick()
       }}
       className={cn(
-        'shrink-0 w-3.5 h-3.5 border flex items-center justify-center',
+        'shrink-0 size-4 border flex items-center justify-center',
         'border-rule hover:border-ink transition-colors',
         state === 'checked' && 'bg-ink border-ink text-bg',
         state === 'mixed' && 'bg-ink-ghost border-ink-ghost text-bg',

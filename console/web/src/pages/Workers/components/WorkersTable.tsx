@@ -181,7 +181,7 @@ function WorkerTableRow({
         if (row.configurationId) onConfigure?.(row.configurationId)
       }}
     >
-      <Settings className="h-3.5 w-3.5" aria-hidden />
+      <Settings className="size-4" aria-hidden />
     </Button>
   ) : null
 
@@ -227,7 +227,7 @@ function WorkerTableRow({
             >
               <ChevronRight
                 className={cn(
-                  'h-3 w-3 shrink-0 text-ink-faint transition-transform',
+                  'size-4 shrink-0 text-ink-faint transition-transform',
                   expanded && 'rotate-90',
                 )}
                 aria-hidden

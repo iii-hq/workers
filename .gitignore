@@ -55,6 +55,8 @@ harness/config.yaml
 .planning/
 .skill-check/
 .gstack/
+.superpowers/
+.impeccable/
 .worktrees/
 CLAUDE.md
 data/

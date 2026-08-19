@@ -375,7 +375,7 @@ function NameList({ names, empty }: { names: string[]; empty: string }) {
 function PidChip({ pid }: { pid: number }) {
   return (
     <Chip>
-      <span className="text-ink-faint uppercase tracking-[0.06em]">pid</span>
+      <span className="text-ink-faint">PID</span>
       <span className="ml-1 text-ink tabular-nums">{pid}</span>
     </Chip>
   )
@@ -384,7 +384,7 @@ function PidChip({ pid }: { pid: number }) {
 function portChip(port: number) {
   return (
     <Chip key="port">
-      <span className="text-ink-faint uppercase tracking-[0.06em]">port</span>
+      <span className="text-ink-faint">Port</span>
       <span className="ml-1 text-ink tabular-nums">{port}</span>
     </Chip>
   )
@@ -393,7 +393,7 @@ function portChip(port: number) {
 function configChip(path: string) {
   return (
     <Chip key="config">
-      <span className="text-ink-faint uppercase tracking-[0.06em]">config</span>
+      <span className="text-ink-faint">Config</span>
       <span
         className="ml-1 text-ink break-all max-w-[24ch] truncate inline-block align-bottom"
         title={path}

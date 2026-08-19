@@ -2,6 +2,8 @@
 //! `browser::*` surface via iii-sdk as a client. Self-skips when `iii` or a
 //! Chromium executable is absent, so CI hosts without either stay green.
 
+use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -10,11 +12,11 @@ use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-
 struct Harness {
     iii: Child,
     worker: Child,
+    engine_ws: String,
+    config_path: PathBuf,
 }
 
 impl Drop for Harness {
@@ -23,6 +25,7 @@ impl Drop for Harness {
         let _ = self.worker.wait();
         let _ = self.iii.kill();
         let _ = self.iii.wait();
+        let _ = std::fs::remove_file(&self.config_path);
     }
 }
 
@@ -46,8 +49,26 @@ async fn boot() -> Option<Harness> {
         return None;
     }
 
+    let port = TcpListener::bind("127.0.0.1:0")
+        .ok()?
+        .local_addr()
+        .ok()?
+        .port();
+    let engine_ws = format!("ws://127.0.0.1:{port}");
+    let config_path = std::env::temp_dir().join(format!(
+        "browser-integration-{}.yaml",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(
+        &config_path,
+        format!(
+            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\nmodules: []\n"
+        ),
+    )
+    .ok()?;
+
     let mut iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
+        .args(["--config", config_path.to_str()?, "--no-update-check"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -57,7 +78,7 @@ async fn boot() -> Option<Harness> {
 
     let worker = match Command::new(env!("CARGO_BIN_EXE_browser"))
         .arg("--url")
-        .arg(ENGINE_WS)
+        .arg(&engine_ws)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -68,23 +89,29 @@ async fn boot() -> Option<Harness> {
             // constructed), so clean up the already-started engine here.
             let _ = iii.kill();
             let _ = iii.wait();
+            let _ = std::fs::remove_file(config_path);
             return None;
         }
     };
 
     sleep(Duration::from_millis(1500)).await;
 
-    Some(Harness { iii, worker })
+    Some(Harness {
+        iii,
+        worker,
+        engine_ws,
+        config_path,
+    })
 }
 
 #[tokio::test]
 async fn session_lifecycle_console_and_snapshot() {
-    let Some(_h) = boot().await else {
+    let Some(h) = boot().await else {
         eprintln!("skipping: `iii` or Chromium not available");
         return;
     };
 
-    let client = register_worker(ENGINE_WS, InitOptions::default());
+    let client = register_worker(&h.engine_ws, InitOptions::default());
     sleep(Duration::from_millis(500)).await;
 
     let call = |function_id: &str, payload: serde_json::Value, timeout_ms: u64| {
@@ -255,7 +282,6 @@ async fn session_lifecycle_console_and_snapshot() {
         tabs.is_err(),
         "tabs::list must be refused when allow_attach is false: {tabs:?}"
     );
-
     // stop is idempotent
     let stopped = call(
         "browser::sessions::stop",

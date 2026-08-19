@@ -314,7 +314,6 @@ def build_payload(
     payload: dict[str, Any] = {
         "worker_name": worker,
         "version": version,
-        "tag": registry_tag or "latest",
         "type": deploy,
         "readme": readme,
         "repo": repo_url,
@@ -336,6 +335,11 @@ def build_payload(
         # registry rejects a string here, hence the explicit bool.
         "experimental": bool(experimental),
     }
+    # Stable finalization first creates an immutable version without moving a
+    # channel. The Registry distinguishes that bootstrap-safe state from a
+    # mutable `next`/`latest` assignment, so `none` must omit the tag field.
+    if registry_tag and registry_tag != "none":
+        payload["tag"] = registry_tag
 
     tags = normalize_tags(meta.get("tags"))
     if tags:

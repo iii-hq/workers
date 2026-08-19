@@ -63,7 +63,7 @@ export function MemoryChip({ memory }: MemoryChipProps) {
         className={cn(
           'font-mono text-[10px] lowercase px-1.5 py-0.5 border transition-colors',
           open
-            ? 'border-accent text-ink'
+            ? 'border-edge bg-surface-selected text-ink'
             : 'border-rule text-ink-faint hover:border-ink hover:text-ink',
         )}
       >
