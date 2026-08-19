@@ -323,15 +323,14 @@ fn setup_auto_download(
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(RegisterTriggerInput {
-                trigger_type: "worker".to_string(),
-                function_id: "directory::__on_worker_added".to_string(),
-                config: json!({
+            let result = iii_sub.register_trigger(RegisterTriggerInput::new(
+                "worker".to_string(),
+                "directory::__on_worker_added".to_string(),
+                json!({
                     "operations": ["add"],
                     "stages": ["done"]
                 }),
-                metadata: None,
-            });
+            ));
             match result {
                 Ok(_) => {
                     tracing::info!("subscribed to worker trigger for auto-download");
@@ -431,14 +430,13 @@ async fn reconcile_one(
 async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         match result {
             Ok(val) => {

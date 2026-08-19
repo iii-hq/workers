@@ -144,7 +144,7 @@ async fn main() -> Result<()> {
 
     let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel::<()>();
     let engine_url_redacted = redact_url(&engine_url);
-    let state = server::AppState::new(Arc::new(engine_url), ui);
+    let state = server::AppState::new(Arc::new(engine_url), iii.namespace(), ui);
     let http_port = cfg.http_port;
     let server_handle = tokio::spawn(async move {
         if let Err(e) = server::serve(http_port, state, http_shutdown_rx, None).await {

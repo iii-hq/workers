@@ -387,6 +387,7 @@ impl QueueAdapter for RedisAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         // RabbitMQ-only feature; the redis pub/sub adapter ignores it, same
         // as the engine.
         _priority: Option<u8>,
@@ -402,6 +403,7 @@ impl QueueAdapter for RedisAdapter {
             "function_id": function_id,
             "message_id": message_id,
             "data": data,
+            "namespace": namespace,
         });
 
         let json = serde_json::to_string(&envelope).map_err(|err| {

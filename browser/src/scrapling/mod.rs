@@ -202,14 +202,14 @@ pub fn apply_guidance(iii: &iii_sdk::IIIClient, state: &GuidanceState, enabled: 
         || {
             iii_config_client::try_bind(
                 iii,
-                iii_sdk::protocol::RegisterTriggerInput {
-                    trigger_type: "harness::hook::pre-generate".to_string(),
-                    function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-                    config: serde_json::json!({ "on_error": "fail_open" }),
-                    metadata: Some(
-                        serde_json::json!({ "inject_prompt": inject_guidance::GUIDANCE }),
-                    ),
-                },
+                iii_sdk::protocol::RegisterTriggerInput::new(
+                    "harness::hook::pre-generate",
+                    inject_guidance::GUIDANCE_HOOK_ID,
+                    serde_json::json!({ "on_error": "fail_open" }),
+                )
+                .with_metadata(serde_json::json!({
+                    "inject_prompt": inject_guidance::GUIDANCE
+                })),
             )
         },
         "inject_guidance on: appending browser::* scraping guidance to agent system prompts",

@@ -214,12 +214,11 @@ fn bind_best_effort(
     function_id: &str,
     config: serde_json::Value,
 ) {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    match iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger bound"),
         Err(e) => {
             tracing::warn!(trigger_type, function_id, error = %e, "trigger bind failed (sibling absent?)")

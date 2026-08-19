@@ -372,12 +372,11 @@ async fn state_trigger_fires_with_event_payload() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::on_state".to_string(),
-        config: json!({"scope": scope}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::on_state".to_string(),
+        json!({"scope": scope}),
+    ))
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
 
@@ -483,19 +482,17 @@ async fn condition_false_blocks_null_passes() {
         );
     }
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::backend_false".to_string(),
-        config: json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::backend_false".to_string(),
+        json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
+    ))
     .expect("register false-condition trigger");
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::backend_null".to_string(),
-        config: json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::backend_null".to_string(),
+        json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
+    ))
     .expect("register null-condition trigger");
     wait_for_trigger_count(&boot.triggers, 2).await;
 
@@ -550,12 +547,11 @@ async fn max_value_bytes_rejects_oversized_set() {
             }
         }),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::on_state_cfg".to_string(),
-        config: json!({"scope": scope}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::on_state_cfg".to_string(),
+        json!({"scope": scope}),
+    ))
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
 
@@ -564,7 +560,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": {"max_value_bytes": 10}}),
+        json!({"id": configuration::config_id(), "value": {"max_value_bytes": 10}}),
     )
     .await
     .expect("configuration::set max_value_bytes");
@@ -606,7 +602,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": {"triggers_enabled": false}}),
+        json!({"id": configuration::config_id(), "value": {"triggers_enabled": false}}),
     )
     .await
     .expect("configuration::set triggers_enabled=false");
@@ -630,7 +626,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": StateConfig::default().to_json()}),
+        json!({"id": configuration::config_id(), "value": StateConfig::default().to_json()}),
     )
     .await
     .expect("restore default configuration");
@@ -741,12 +737,11 @@ async fn claim_namespace_lifecycle() {
             }
         }),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::on_private".to_string(),
-        config: json!({"scope": private_scope}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::on_private".to_string(),
+        json!({"scope": private_scope}),
+    ))
     .expect("register trigger on the private scope");
     wait_for_trigger_count(&boot.triggers, 1).await;
 

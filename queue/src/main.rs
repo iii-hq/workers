@@ -35,6 +35,13 @@ fn worker_metadata() -> WorkerMetadata {
     }
 }
 
+fn engine_worker_metadata() -> WorkerMetadata {
+    WorkerMetadata {
+        name: "queue-engine".to_string(),
+        ..worker_metadata()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
@@ -73,19 +80,18 @@ async fn main() -> Result<()> {
         None => None,
     };
 
-    let iii = Arc::new(register_worker(
+    let project_iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
             metadata: Some(worker_metadata()),
             ..InitOptions::default()
         },
     ));
-
-    configuration::register_config(&iii, seed.as_ref())
+    configuration::register_config(&project_iii, seed.as_ref())
         .await
         .map_err(anyhow::Error::msg)
         .context("registering queue configuration schema")?;
-    let config = configuration::fetch_config(&iii)
+    let config = configuration::fetch_config(&project_iii)
         .await
         .map_err(anyhow::Error::msg)
         .context("loading queue configuration")?;
@@ -99,9 +105,21 @@ async fn main() -> Result<()> {
         }
     }
 
-    let boot = iii_queue::boot::start(iii.clone(), config).await?;
+    // Connect the project-scoped worker first. Compose observes that
+    // registration to verify III_NAMESPACE before this process opens the
+    // additional default-scoped connection for reserved engine::* providers.
+    let default_iii = Arc::new(register_worker(
+        &cli.url,
+        InitOptions {
+            metadata: Some(engine_worker_metadata()),
+            namespace: Some("default".to_string()),
+            ..InitOptions::default()
+        },
+    ));
+
+    let boot = iii_queue::boot::start(project_iii.clone(), default_iii.clone(), config).await?;
     configuration::register_config_trigger(
-        &iii,
+        &project_iii,
         boot.runtime.clone(),
         boot.trigger_handler.clone(),
     )
@@ -120,6 +138,7 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     tracing::info!("queue worker shutting down");
     boot.shutdown().await;
-    iii.shutdown_async().await;
+    project_iii.shutdown_async().await;
+    default_iii.shutdown_async().await;
     Ok(())
 }

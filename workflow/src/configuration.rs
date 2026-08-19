@@ -22,13 +22,31 @@ use crate::config::WorkerConfig;
 // Reuse the ConfigCell type declared in functions::mod — do NOT redefine.
 use crate::functions::ConfigCell;
 
-pub const CONFIG_ID: &str = "workflow";
+pub const DEFAULT_CONFIG_ID: &str = "workflow";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 pub const CONFIG_FN_ID: &str = "workflow::on-config-change";
 pub const SWEEP_ID: &str = "workflow::sweep";
 
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
-        id: CONFIG_ID,
+        id: config_id(),
         name: "Workflow",
         description: "Workflow worker settings: default node-pending timeout, \
                       cron sweep schedule, RPC dispatch timeout, and max node retries.",
@@ -47,7 +65,7 @@ pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
 /// Read the live `workflow` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
 pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
-    match config_client::fetch(iii, CONFIG_ID).await? {
+    match config_client::fetch(iii, config_id()).await? {
         Some(v) => WorkerConfig::from_json(&v),
         None => {
             tracing::info!("no configuration value found; using built-in default configuration");
@@ -105,12 +123,11 @@ pub fn apply_guidance(iii: &IIIClient, handles: &TriggerHandles, enabled: bool) 
 pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "cron".to_string(),
-            function_id: SWEEP_ID.to_string(),
-            config: json!({ "expression": cfg.sweep_expression }),
-            metadata: None,
-        },
+        RegisterTriggerInput::new(
+            "cron".to_string(),
+            SWEEP_ID.to_string(),
+            json!({ "expression": cfg.sweep_expression }),
+        ),
     )
 }
 
@@ -121,12 +138,11 @@ pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
 fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "harness::turn-completed".to_string(),
-            function_id: crate::functions::wake::WAKE_ID.to_string(),
-            config: json!({}),
-            metadata: None,
-        },
+        RegisterTriggerInput::new(
+            "harness::turn-completed".to_string(),
+            crate::functions::wake::WAKE_ID.to_string(),
+            json!({}),
+        ),
     )
 }
 
@@ -142,12 +158,11 @@ fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
 fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "harness::hook::pre-trigger".to_string(),
-            function_id: crate::functions::stamp_reply::STAMP_REPLY_ID.to_string(),
-            config: json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
-            metadata: None,
-        },
+        RegisterTriggerInput::new(
+            "harness::hook::pre-trigger".to_string(),
+            crate::functions::stamp_reply::STAMP_REPLY_ID.to_string(),
+            json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
+        ),
     )
 }
 
@@ -161,14 +176,14 @@ fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
 fn bind_pre_generate_hook(iii: &IIIClient) -> Option<Trigger> {
     config_client::try_bind(
         iii,
-        RegisterTriggerInput {
-            trigger_type: "harness::hook::pre-generate".to_string(),
-            function_id: crate::functions::inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-            config: json!({ "on_error": "fail_open" }),
-            metadata: Some(json!({
-                "inject_prompt": crate::functions::inject_guidance::WORKFLOW_GUIDANCE
-            })),
-        },
+        RegisterTriggerInput::new(
+            "harness::hook::pre-generate".to_string(),
+            crate::functions::inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+            json!({ "on_error": "fail_open" }),
+        )
+        .with_metadata(json!({
+            "inject_prompt": crate::functions::inject_guidance::WORKFLOW_GUIDANCE
+        })),
     )
 }
 
@@ -198,7 +213,7 @@ pub fn register_config_trigger(
     let engine = iii.clone();
     config_client::on_change(
         iii,
-        CONFIG_ID,
+        config_id(),
         CONFIG_FN_ID,
         "Internal: hot-reload workflow config — re-binds the cron sweep on a \
          sweep_expression change and swaps the per-call tuning snapshot otherwise.",

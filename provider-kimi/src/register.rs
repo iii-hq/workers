@@ -10,6 +10,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
+use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -124,7 +125,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
     iii.register_function(
         surface::STREAM_ID,
-        RegisterFunction::new_async_with_bad_request(
+        typed_async_with_bad_request(
             make_stream(iii.clone(), http.clone(), aborts.clone()),
             invalid_request_from_serde,
         )
@@ -132,14 +133,11 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_abort(aborts),
-            invalid_request_from_serde,
-        )
-        .description(surface::ABORT_DESC)
-        // Control-plane callback (router::abort fan-out) — hide from the
-        // agent-facing catalog like the other providers' abort functions.
-        .metadata(serde_json::json!({ "internal": true })),
+        typed_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
+            .description(surface::ABORT_DESC)
+            // Control-plane callback (router::abort fan-out) — hide from the
+            // agent-facing catalog like the other providers' abort functions.
+            .metadata(serde_json::json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
@@ -178,12 +176,11 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "router::ready".into(),
-        function_id: surface::ON_ROUTER_READY_ID.into(),
-        config: json!({}),
-        metadata: None,
-    });
+    let _ = iii.register_trigger(RegisterTriggerInput::new(
+        "router::ready",
+        surface::ON_ROUTER_READY_ID,
+        json!({}),
+    ));
 
     // Boot declare, off the boot path (a missing router must not block boot).
     tokio::spawn(declare_and_refresh(iii, http));

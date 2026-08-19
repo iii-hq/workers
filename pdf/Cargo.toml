@@ -18,12 +18,12 @@ name = "pdf"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.23.0-rc.2"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 # The parser. Pure Rust, no C libraries, no subprocess, no network.
-pdf-inspector = "=0.1.7"
+pdf-inspector = "=0.1.8"
 # The CJK CMap payload the parser resolves at runtime; embedded from OUT_DIR so
 # a cross-compiled binary keeps them (see src/cmaps.rs).
 include_dir = "0.7"

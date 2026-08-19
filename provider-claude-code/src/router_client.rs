@@ -24,7 +24,7 @@ fn function_prefix(function_id: &str) -> &str {
         .unwrap_or(function_id)
 }
 
-fn list_contains_function(raw: &Value, function_id: &str) -> bool {
+fn list_contains_function(raw: &Value, function_id: &str, namespace: &str) -> bool {
     let items: Vec<&Value> = match raw {
         Value::Array(items) => items.iter().collect(),
         Value::Object(map) => map
@@ -36,11 +36,17 @@ fn list_contains_function(raw: &Value, function_id: &str) -> bool {
         _ => return false,
     };
     items.iter().any(|item| {
-        item.get("function_id")
+        let id_matches = item
+            .get("function_id")
             .or_else(|| item.get("id"))
             .or_else(|| item.get("name"))
             .and_then(Value::as_str)
-            == Some(function_id)
+            == Some(function_id);
+        let namespace_matches = item
+            .get("namespace")
+            .and_then(Value::as_str)
+            .is_none_or(|value| value == namespace);
+        id_matches && namespace_matches
     })
 }
 
@@ -52,8 +58,9 @@ async fn function_available(iii: &IIIClient, function_id: &str) -> bool {
         json!({ "prefix": prefix }),
     )
     .await;
+    let namespace = iii.namespace().unwrap_or_else(|| "default".into());
     raw.as_ref()
-        .map(|raw| list_contains_function(raw, function_id))
+        .map(|raw| list_contains_function(raw, function_id, &namespace))
         .unwrap_or(false)
 }
 
@@ -170,15 +177,26 @@ mod tests {
     fn function_list_parser_accepts_engine_shapes() {
         assert!(list_contains_function(
             &json!({ "functions": [{ "function_id": "auth::get_token" }] }),
-            "auth::get_token"
+            "auth::get_token",
+            "default"
         ));
         assert!(list_contains_function(
             &json!([{ "id": "auth::set_token" }]),
-            "auth::set_token"
+            "auth::set_token",
+            "default"
         ));
         assert!(list_contains_function(
             &json!({ "items": [{ "name": "oauth::claude-code::refresh" }] }),
-            "oauth::claude-code::refresh"
+            "oauth::claude-code::refresh",
+            "default"
+        ));
+        assert!(!list_contains_function(
+            &json!({ "functions": [{
+                "function_id": "auth::get_token",
+                "namespace": "default"
+            }] }),
+            "auth::get_token",
+            "project-a"
         ));
     }
 
@@ -186,12 +204,18 @@ mod tests {
     fn function_list_parser_rejects_missing_or_malformed_entries() {
         assert!(!list_contains_function(
             &json!({ "functions": [{ "function_id": "auth::status" }] }),
-            "auth::get_token"
+            "auth::get_token",
+            "default"
         ));
         assert!(!list_contains_function(
             &json!({ "functions": [{ "id": 1 }] }),
-            "auth::get_token"
+            "auth::get_token",
+            "default"
         ));
-        assert!(!list_contains_function(&json!(null), "auth::get_token"));
+        assert!(!list_contains_function(
+            &json!(null),
+            "auth::get_token",
+            "default"
+        ));
     }
 }

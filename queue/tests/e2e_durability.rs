@@ -82,12 +82,11 @@ fn register_subscriber_with_config(
     if let Some(qc) = queue_config {
         config["queue_config"] = qc;
     }
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: TRIGGER_TYPE.to_string(),
-        function_id: function_id.to_string(),
+    iii.register_trigger(RegisterTriggerInput::new(
+        TRIGGER_TYPE.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-    })
+    ))
     .expect("register durable subscriber trigger");
 }
 
@@ -145,7 +144,7 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     };
 
     let dir = temp_store_dir();
-    let boot = iii_queue::boot::start(iii.clone(), file_config(&dir))
+    let boot = iii_queue::boot::start(iii.clone(), iii.clone(), file_config(&dir))
         .await
         .expect("queue worker should boot");
 

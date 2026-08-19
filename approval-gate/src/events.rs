@@ -81,6 +81,7 @@ pub fn binding_matches(
 pub struct Binding {
     pub id: String,
     pub function_id: String,
+    pub namespace: Option<String>,
     pub filter: BindingConfig,
 }
 
@@ -111,6 +112,7 @@ impl SubscriberSet {
         let binding = Binding {
             id: config.id.clone(),
             function_id: config.function_id,
+            namespace: config.namespace,
             filter,
         };
         self.lock().insert(config.id, binding);
@@ -253,15 +255,14 @@ impl Emitter {
     ) {
         for binding in set.snapshot() {
             if binding_matches(&binding.filter, session_id, session_metadata) {
-                let res = self
-                    .iii
-                    .trigger(TriggerRequest {
-                        function_id: binding.function_id.clone(),
-                        payload: payload.clone(),
-                        action: Some(TriggerAction::Void),
-                        timeout_ms: None,
-                    })
-                    .await;
+                let request = TriggerRequest {
+                    function_id: binding.function_id.clone(),
+                    payload: payload.clone(),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                };
+                let namespace = binding.namespace.as_deref().unwrap_or("default");
+                let res = self.iii.trigger(request.namespace(namespace)).await;
                 if let Err(e) = res {
                     tracing::warn!(
                         function_id = %binding.function_id,
@@ -314,6 +315,7 @@ mod tests {
             function_id: function_id.into(),
             config,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -418,8 +420,11 @@ mod tests {
     #[test]
     fn subscriber_set_add_remove() {
         let set = SubscriberSet::new(PENDING_CREATED);
-        set.add(trigger_config("b1", "f::1", json!({}))).unwrap();
+        let mut config = trigger_config("b1", "f::1", json!({}));
+        config.namespace = Some("project-a".into());
+        set.add(config).unwrap();
         assert_eq!(set.len(), 1);
+        assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
         set.remove("b1");
         assert!(set.is_empty());
         // Malformed config rejected.

@@ -49,6 +49,9 @@ pub struct QueueMessage {
     pub traceparent: Option<String>,
     /// W3C baggage header for context propagation.
     pub baggage: Option<String>,
+    /// Target namespace captured at enqueue. `None` identifies a legacy
+    /// namespace-less message, which the consumer resolves in `default`.
+    pub namespace: Option<String>,
 }
 
 pub const DEFAULT_FUNCTION_QUEUE_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
@@ -275,6 +278,9 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        // Target namespace captured at enqueue; adapters persist it in their
+        // native message so consumers can resolve the queued function there.
+        _namespace: Option<String>,
         // AMQP message priority (`None` = default). Honored by adapters whose
         // queues are declared as priority queues; others ignore it.
         _priority: Option<u8>,
@@ -463,6 +469,7 @@ impl QueueAdapter for SwappableAdapter {
         backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         priority: Option<u8>,
     ) -> anyhow::Result<()> {
         self.current()
@@ -476,6 +483,7 @@ impl QueueAdapter for SwappableAdapter {
                 backoff_ms,
                 traceparent,
                 baggage,
+                namespace,
                 priority,
             )
             .await
@@ -607,6 +615,7 @@ mod tests {
             _backoff_ms: u64,
             _traceparent: Option<String>,
             _baggage: Option<String>,
+            _namespace: Option<String>,
             _priority: Option<u8>,
         ) -> anyhow::Result<()> {
             self.function_publish_calls.fetch_add(1, Ordering::SeqCst);
@@ -676,6 +685,7 @@ mod tests {
                 "receipt-1",
                 3,
                 1_000,
+                None,
                 None,
                 None,
                 None,

@@ -946,12 +946,11 @@ async fn register_post_turn_hook(
         .map_err(|e| HarnessError::InvalidRequest(format!("hook config serialize: {e}")))?;
     let handle = deps
         .iii
-        .register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-            trigger_type: crate::hooks::POST_TURN.to_string(),
-            function_id: function_id.clone(),
+        .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+            crate::hooks::POST_TURN.to_string(),
+            function_id.clone(),
             config,
-            metadata: None,
-        })
+        ))
         .map_err(|e| {
             HarnessError::InvalidRequest(format!("post-turn hook registration failed: {e}"))
         })?;

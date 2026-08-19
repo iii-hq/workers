@@ -130,6 +130,7 @@ pub struct HookTriggerConfig {
 #[derive(Debug, Clone)]
 pub struct HookBinding {
     pub function_id: String,
+    pub namespace: Option<String>,
     /// Static system-prompt contribution declared in trigger metadata. New
     /// harnesses apply it directly; the bound function remains the fallback
     /// for older harnesses that ignore the metadata.
@@ -168,6 +169,7 @@ impl HookBinding {
             .map(str::to_string);
         Ok(HookBinding {
             function_id: config.function_id,
+            namespace: config.namespace,
             inject_prompt,
             functions: cfg.functions,
             sessions: cfg.sessions,
@@ -384,6 +386,7 @@ mod tests {
             function_id: function_id.into(),
             config: body,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -407,6 +410,15 @@ mod tests {
         .unwrap();
         let order: Vec<String> = set.ordered().into_iter().map(|b| b.function_id).collect();
         assert_eq!(order, vec!["m::hook", "a::hook", "z::hook"]);
+    }
+
+    #[test]
+    fn binding_preserves_target_namespace() {
+        let set = HookSet::default();
+        let mut config = cfg("a", "audit::hook", json!({}));
+        config.namespace = Some("project-a".into());
+        set.add(HookPoint::PostTrigger, config).unwrap();
+        assert_eq!(set.ordered()[0].namespace.as_deref(), Some("project-a"));
     }
 
     #[test]

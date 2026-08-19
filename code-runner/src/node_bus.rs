@@ -72,10 +72,8 @@ impl IIIEngine {
 fn guest_trigger_input(input: Value) -> Result<RegisterTriggerInput, String> {
     let guest = parse_guest_trigger(input)?;
     Ok(RegisterTriggerInput {
-        trigger_type: guest.r#type,
-        function_id: guest.function_id,
-        config: guest.config,
         metadata: guest.metadata,
+        ..RegisterTriggerInput::new(guest.r#type, guest.function_id, guest.config)
     })
 }
 

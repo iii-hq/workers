@@ -29,7 +29,25 @@ use crate::config::WorkerConfig;
 /// whole-snapshot replaces the inner `Arc` under the write lock.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "approval-gate";
+pub const DEFAULT_CONFIG_ID: &str = "approval-gate";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "approval::on-config-change";
 const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries; multiplied by the
@@ -59,7 +77,7 @@ const FILESYSTEM_ACCESS_WATCH_ON_ERROR: &str = "fail_open";
 /// value, so this is safe to call every boot).
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Approval Gate",
         "description": "Policy and decision surface settings: the deployment \
                         approval defaults (permission mode for new sessions \
@@ -72,7 +90,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -96,16 +114,21 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+    try_get_config_value(iii).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 /// Returns `Ok(None)` when the entry does not exist. The engine's
 /// missing-entry codes vary in case (`function_not_found`,
 /// `STATEMENT_NOT_FOUND`, `NOT_FOUND`), so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -119,16 +142,15 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
 
 /// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
 pub fn bind_hook(iii: &IIIClient) {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::hook::pre-trigger".to_string(),
-        function_id: "approval::gate".to_string(),
-        config: json!({
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::pre-trigger".to_string(),
+        "approval::gate".to_string(),
+        json!({
             "functions": HOOK_FUNCTIONS,
             "timeout_ms": HOOK_TIMEOUT_MS,
             "on_error": HOOK_ON_ERROR,
         }),
-        metadata: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::pre-trigger",
             function_id = "approval::gate",
@@ -148,16 +170,15 @@ pub fn bind_hook(iii: &IIIClient) {
 /// best-effort discipline (a standalone deployment without the harness
 /// still boots; a missing binding surfaces as a log, never an `Err` here).
 pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::hook::post-trigger".to_string(),
-        function_id: "approval::filesystem-access-watch".to_string(),
-        config: json!({
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::post-trigger".to_string(),
+        "approval::filesystem-access-watch".to_string(),
+        json!({
             "functions": FILESYSTEM_ACCESS_WATCH_FUNCTIONS,
             "timeout_ms": FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS,
             "on_error": FILESYSTEM_ACCESS_WATCH_ON_ERROR,
         }),
-        metadata: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::post-trigger",
             function_id = "approval::filesystem-access-watch",
@@ -254,15 +275,14 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         ),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-    })?;
+    ))?;
     Ok(())
 }
 
@@ -289,7 +309,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
     tracing::info!("approval-gate configuration reloaded");
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -297,12 +317,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: None,
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: None,
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

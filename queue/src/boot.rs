@@ -39,10 +39,14 @@ impl BootHandle {
     }
 }
 
-pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
-    guard_against_builtin_iii_queue(&iii).await?;
+pub async fn start(
+    project_iii: Arc<IIIClient>,
+    default_iii: Arc<IIIClient>,
+    config: QueueConfig,
+) -> anyhow::Result<BootHandle> {
+    guard_against_builtin_iii_queue(&project_iii).await?;
 
-    let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(project_iii.clone()));
     // No fallback to builtin on a bad config: an adapter that fails to build
     // at boot (e.g. redis/rabbitmq unreachable) must fail the boot itself,
     // matching the engine's `make_adapter` behavior for `iii-queue`.
@@ -52,7 +56,7 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
     let apply_lock = Arc::new(RwLock::new(()));
 
     let runtime = FunctionQueueRuntime::new(
-        iii.clone(),
+        project_iii.clone(),
         adapter.clone(),
         invoker,
         config.clone(),
@@ -66,8 +70,8 @@ pub async fn start(iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<B
     // target function to appear, so starting before dependent workers is safe.
     runtime.start().await?;
 
-    crate::functions::register_all(&iii, adapter.clone(), runtime.clone());
-    let _ = iii.register_trigger_type(
+    crate::functions::register_all(&project_iii, &default_iii, adapter.clone(), runtime.clone());
+    let _ = project_iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,
             "Durable queue subscriber",

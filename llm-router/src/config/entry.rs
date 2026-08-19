@@ -20,17 +20,20 @@ pub async fn register_entry(
     iii: &IIIClient,
     provider_schemas: &BTreeMap<String, Value>,
 ) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
-        function_id: "configuration::register".into(),
-        payload: json!({
-            "id": ENTRY_ID,
-            "name": "LLM Router",
-            "description": "Provider credentials, routing heuristics, and stream budgets for llm-router.",
-            "schema": compose_entry_schema(provider_schemas),
-        }),
-        action: None,
-        timeout_ms: None,
-    })
+    iii.trigger(
+        TriggerRequest {
+            function_id: "configuration::register".into(),
+            payload: json!({
+                "id": ENTRY_ID,
+                "name": "LLM Router",
+                "description": "Provider credentials, routing heuristics, and stream budgets for llm-router.",
+                "schema": compose_entry_schema(provider_schemas),
+            }),
+            action: None,
+            timeout_ms: None,
+        }
+        .namespace("default"),
+    )
     .await?;
     Ok(())
 }
@@ -42,23 +45,29 @@ pub async fn register_entry(
 /// in-memory snapshot with `null`.
 pub async fn read_entry_value(iii: &IIIClient) -> Result<Value, Error> {
     let response: Value = iii
-        .trigger(TriggerRequest {
-            function_id: "configuration::get".into(),
-            payload: json!({ "id": ENTRY_ID }),
-            action: None,
-            timeout_ms: None,
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: "configuration::get".into(),
+                payload: json!({ "id": ENTRY_ID }),
+                action: None,
+                timeout_ms: None,
+            }
+            .namespace("default"),
+        )
         .await?;
     Ok(response.get("value").cloned().unwrap_or(Value::Null))
 }
 
 pub async fn write_entry_value(iii: &IIIClient, value: Value) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
-        function_id: "configuration::set".into(),
-        payload: json!({ "id": ENTRY_ID, "value": value }),
-        action: None,
-        timeout_ms: None,
-    })
+    iii.trigger(
+        TriggerRequest {
+            function_id: "configuration::set".into(),
+            payload: json!({ "id": ENTRY_ID, "value": value }),
+            action: None,
+            timeout_ms: None,
+        }
+        .namespace("default"),
+    )
     .await?;
     Ok(())
 }

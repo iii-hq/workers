@@ -7,6 +7,7 @@
 //! the connection is up, exactly like the builtin behaved.
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -122,46 +123,61 @@ pub async fn start(iii: Arc<IIIClient>, config: BridgeConfig) -> anyhow::Result<
 /// `bridge.invoke` + `bridge.invoke_async` on the local engine — exact
 /// function ids and descriptions from the builtin (mod.rs:96-191).
 ///
-/// Both use `new_async_with_bad_request` with the typed [`functions::
-/// InvokeInput`]: the SDK auto-extracts a real request schema instead of the
-/// permissive `AnyValue` a `Value` closure param would emit, while
-/// [`functions::invoke_bad_request`] keeps owning the `deserialization_error`
-/// / "Failed to parse invoke input: {err}" contract for malformed payloads.
+/// Both use [`invoke_registration`], which publishes the typed
+/// [`functions::InvokeInput`] schema and preserves the bridge's stable
+/// `deserialization_error` contract for malformed payloads.
 pub fn register_bridge_functions(iii: &Arc<IIIClient>, remote: RemoteCell) {
     let caller = Arc::new(RemoteCaller { cell: remote });
     {
         let caller = caller.clone();
         iii.register_function(
             functions::INVOKE_FN,
-            RegisterFunction::new_async_with_bad_request(
-                move |req: functions::InvokeInput| {
-                    let caller = caller.clone();
-                    async move {
-                        functions::handle_invoke_typed(caller.as_ref(), req)
-                            .await
-                            .map_err(Error::from)
-                    }
-                },
-                functions::invoke_bad_request,
-            )
+            invoke_registration(move |req: functions::InvokeInput| {
+                let caller = caller.clone();
+                async move {
+                    functions::handle_invoke_typed(caller.as_ref(), req)
+                        .await
+                        .map_err(Error::from)
+                }
+            })
             .description("Invoke a function on the remote III instance"),
         );
     }
     iii.register_function(
         functions::INVOKE_ASYNC_FN,
-        RegisterFunction::new_async_with_bad_request(
-            move |req: functions::InvokeInput| {
-                let caller = caller.clone();
-                async move {
-                    functions::handle_invoke_async_typed(caller.as_ref(), req)
-                        .await
-                        .map_err(Error::from)
-                }
-            },
-            functions::invoke_bad_request,
-        )
+        invoke_registration(move |req: functions::InvokeInput| {
+            let caller = caller.clone();
+            async move {
+                functions::handle_invoke_async_typed(caller.as_ref(), req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
         .description("Fire-and-forget invoke on the remote III instance"),
     );
+}
+
+fn invoke_registration<F, Fut, R>(handler: F) -> RegisterFunction
+where
+    F: Fn(functions::InvokeInput) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
+    R: serde::Serialize + schemars::JsonSchema + Send + 'static,
+{
+    let handler = Arc::new(handler);
+    let registration = RegisterFunction::new_async(move |payload: serde_json::Value| {
+        let handler = Arc::clone(&handler);
+        async move {
+            let input = serde_json::from_value(payload).map_err(functions::invoke_bad_request)?;
+            handler(input).await
+        }
+    });
+    let request_format = serde_json::to_value(
+        schemars::r#gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<functions::InvokeInput>(),
+    )
+    .expect("bridge invoke request schema serializes");
+    registration.request_format(request_format)
 }
 
 /// One local proxy function per `forward` entry (mod.rs:193-237).

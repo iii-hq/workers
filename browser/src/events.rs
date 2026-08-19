@@ -440,6 +440,7 @@ mod tests {
             function_id: "console::on-event".to_string(),
             config,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -494,6 +495,7 @@ mod tests {
             function_id: "fn::match".to_string(),
             config: json!({ "session_id": "b1" }),
             metadata: None,
+            namespace: None,
         })
         .unwrap();
         set.add(TriggerConfig {
@@ -501,6 +503,7 @@ mod tests {
             function_id: "fn::other".to_string(),
             config: json!({ "session_id": "b2" }),
             metadata: None,
+            namespace: None,
         })
         .unwrap();
 

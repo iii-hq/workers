@@ -17,7 +17,25 @@ use serde_json::json;
 use crate::config::{SharedConfig, WebConfig};
 use crate::functions::inject_guidance;
 
-pub const CONFIG_ID: &str = "web";
+pub const DEFAULT_CONFIG_ID: &str = "web";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 pub const CONFIG_FN_ID: &str = "web::on-config-change";
 
 #[derive(Clone)]
@@ -47,12 +65,12 @@ pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
         || {
             config_client::try_bind(
                 iii,
-                RegisterTriggerInput {
-                    trigger_type: "harness::hook::pre-generate".to_string(),
-                    function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-                    config: json!({ "on_error": "fail_open" }),
-                    metadata: Some(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
-                },
+                RegisterTriggerInput::new(
+                    "harness::hook::pre-generate".to_string(),
+                    inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+                    json!({ "on_error": "fail_open" }),
+                )
+                .with_metadata(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
             )
         },
         "inject_guidance on: appending web::fetch guidance to agent system prompts",
@@ -62,7 +80,7 @@ pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
 
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
-        id: CONFIG_ID,
+        id: config_id(),
         name: "web",
         description:
             "Timeouts, byte caps, user-agent, and loopback policy for the web::fetch worker.",
@@ -80,7 +98,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WebConfig>) -> Resul
 }
 
 pub async fn fetch_config(iii: &IIIClient) -> Result<WebConfig, String> {
-    match config_client::fetch(iii, CONFIG_ID).await? {
+    match config_client::fetch(iii, config_id()).await? {
         Some(v) => WebConfig::from_json(&v),
         None => {
             tracing::info!("no configuration value found; using built-in defaults");
@@ -106,7 +124,7 @@ pub fn register_config_trigger(
     let engine = iii.clone();
     config_client::on_change(
         iii,
-        CONFIG_ID,
+        config_id(),
         CONFIG_FN_ID,
         "Internal: reload web settings from the authoritative configuration on change.",
         move || {

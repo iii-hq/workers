@@ -9,8 +9,10 @@ test('config has sane defaults', () => {
 });
 
 test('fetchConfig merges the stored value over defaults', async () => {
+  let namespace;
   const worker = {
-    async trigger({ function_id }) {
+    async trigger({ function_id, namespace: requestNamespace }) {
+      namespace = requestNamespace;
       if (function_id === 'configuration::get') return { value: { max_parallel: 7 } };
       return {};
     },
@@ -18,6 +20,19 @@ test('fetchConfig merges the stored value over defaults', async () => {
   const c = await configuration.fetchConfig(worker);
   assert.equal(c.max_parallel, 7);
   assert.ok(c.model, 'default model preserved when not overridden');
+  assert.equal(namespace, 'default');
+});
+
+test('registerConfig writes the schema in default', async () => {
+  let request;
+  await configuration.registerConfig({
+    async trigger(value) {
+      request = value;
+      return {};
+    },
+  });
+  assert.equal(request.function_id, 'configuration::register');
+  assert.equal(request.namespace, 'default');
 });
 
 test('fetchConfig falls back to defaults when the config worker errors', async () => {

@@ -42,12 +42,11 @@ pub fn apply(iii: &iii_sdk::IIIClient, state: &HintBindingState, enabled: bool) 
         || {
             iii_config_client::try_bind(
                 iii,
-                iii_sdk::protocol::RegisterTriggerInput {
-                    trigger_type: "harness::hook::pre-generate".to_string(),
-                    function_id: "directory::pre-generate".to_string(),
-                    config: serde_json::json!({ "priority": 100, "timeout_ms": 5000, "on_error": "fail_open" }),
-                    metadata: None,
-                },
+                iii_sdk::protocol::RegisterTriggerInput::new(
+                    "harness::hook::pre-generate",
+                    "directory::pre-generate",
+                    serde_json::json!({ "priority": 100, "timeout_ms": 5000, "on_error": "fail_open" }),
+                ),
             )
         },
         "inject_hint on: the search hint can join agent generations",

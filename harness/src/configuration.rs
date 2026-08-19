@@ -33,7 +33,25 @@ use crate::subscriptions::ON_SESSION_DELETED_ID;
 /// Hot-swappable config snapshot shared with every handler.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "harness";
+pub const DEFAULT_CONFIG_ID: &str = "harness";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "harness::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -46,7 +64,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     discard_legacy_harness_config_if_needed(iii).await?;
 
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Harness",
         "description": "Durable turn-loop settings: default turn cap and pending-call timeout, \
                         sub-agent depth/fan-out budgets, output-contract validation retries, the \
@@ -59,7 +77,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -83,14 +101,19 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+    try_get_config_value(iii).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 /// Returns `Ok(None)` when the entry does not exist (codes vary in case).
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -141,11 +164,11 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
          llm-router entry, approval defaults belong in the approval-gate entry"
     );
 
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::register",
         json!({
-            "id": CONFIG_ID,
+            "id": config_id(),
             "name": "Harness",
             "description": "Legacy harness configuration placeholder (discarding pre-Rust entry).",
             "schema": {
@@ -156,11 +179,11 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
     )
     .await?;
 
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::set",
         json!({
-            "id": CONFIG_ID,
+            "id": config_id(),
             "value": WorkerConfig::default().to_json(),
         }),
     )
@@ -193,12 +216,11 @@ impl TriggerHandles {
 /// but a transient failure must not brick boot — it surfaces as a `None`
 /// handle.
 fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    match iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-    }) {
+    )) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
             Some(handle)
@@ -282,15 +304,14 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-    })?;
+    ))?;
     Ok(())
 }
 
@@ -315,7 +336,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerH
     tracing::info!("harness configuration reloaded");
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -323,12 +344,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

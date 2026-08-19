@@ -1069,12 +1069,9 @@ pub fn required_bindings() -> Vec<(&'static str, &'static str, Value)> {
 
 pub fn bind_best_effort(iii: &IIIClient) {
     for (trigger_type, function_id, config) in required_bindings() {
-        if let Err(error) = iii.register_trigger(RegisterTriggerInput {
-            trigger_type: trigger_type.to_string(),
-            function_id: function_id.to_string(),
-            config,
-            metadata: None,
-        }) {
+        if let Err(error) =
+            iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config))
+        {
             tracing::warn!(%trigger_type, %function_id, %error, "trigger binding failed");
         }
     }

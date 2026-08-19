@@ -335,6 +335,15 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
             };
         }
 
+        // Try Rust constructor context: RegisterTriggerInput::new(type, function_id, config)
+        let context = determine_context_rust_constructor(string_node, source);
+        if context != CompletionContext::None {
+            return AnalysisResult {
+                context,
+                current_text,
+            };
+        }
+
         // Check known value fields (works for pair, kwarg, and field_initializer)
         if let Some(context) = check_known_value_field(string_node, source) {
             return AnalysisResult {
@@ -551,6 +560,40 @@ fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionCo
         ("RegisterTriggerInput", "trigger_type") => CompletionContext::TriggerType,
         _ => CompletionContext::None,
     }
+}
+
+// --- Rust constructor argument context ---
+// Chain: string_literal → ... → arguments → call_expression
+
+fn determine_context_rust_constructor(string_node: Node, source: &str) -> CompletionContext {
+    let mut current = string_node;
+    while let Some(parent) = current.parent() {
+        if is_arguments(parent.kind()) {
+            let Some(call) = parent.parent().filter(|node| is_call(node.kind())) else {
+                return CompletionContext::None;
+            };
+            let Some(function) = call.child_by_field_name("function") else {
+                return CompletionContext::None;
+            };
+            let function_name = function.utf8_text(source.as_bytes()).unwrap_or("");
+            if !function_name.ends_with("RegisterTriggerInput::new") {
+                return CompletionContext::None;
+            }
+
+            let mut cursor = parent.walk();
+            let argument_index = parent.named_children(&mut cursor).position(|argument| {
+                argument.start_byte() <= string_node.start_byte()
+                    && argument.end_byte() >= string_node.end_byte()
+            });
+            return match argument_index {
+                Some(0) => CompletionContext::TriggerType,
+                Some(1) => CompletionContext::FunctionId,
+                _ => CompletionContext::None,
+            };
+        }
+        current = parent;
+    }
+    CompletionContext::None
 }
 
 // --- Known value fields ---
@@ -1050,16 +1093,24 @@ mod tests {
 
     #[test]
     fn rs_register_trigger_type() {
-        let source = r#"iii.register_trigger(RegisterTriggerInput { trigger_type: "http".to_string(), function_id: "x".to_string(), config: json!({}), metadata: None })"#;
-        let result = analyze(source, pos(0, 59), Language::Rust);
+        let source = r#"iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "x".to_string(),
+            json!({}),
+        ))"#;
+        let result = analyze(source, pos(1, 14), Language::Rust);
         assert_eq!(result.context, CompletionContext::TriggerType);
         assert_eq!(result.current_text, "http");
     }
 
     #[test]
     fn rs_register_trigger_function_id() {
-        let source = r#"iii.register_trigger(RegisterTriggerInput { trigger_type: "http".to_string(), function_id: "greet".to_string(), config: json!({}), metadata: None })"#;
-        let result = analyze(source, pos(0, 92), Language::Rust);
+        let source = r#"iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "greet".to_string(),
+            json!({}),
+        ))"#;
+        let result = analyze(source, pos(2, 14), Language::Rust);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "greet");
     }

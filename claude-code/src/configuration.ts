@@ -27,6 +27,7 @@ export type ConfigHolder = { current: Config };
 export async function registerClaudeConfig(iii: IIIClient, seed: Config): Promise<void> {
   await iii.trigger({
     function_id: 'configuration::register',
+    namespace: 'default',
     payload: {
       id: CONFIG_ID,
       name: 'Claude Code',
@@ -44,6 +45,7 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
   try {
     const res = await iii.trigger<unknown, { value?: unknown }>({
       function_id: 'configuration::get',
+      namespace: 'default',
       payload: { id: CONFIG_ID, raw: false },
       timeoutMs: TIMEOUT_MS,
     });

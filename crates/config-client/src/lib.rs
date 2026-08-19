@@ -16,6 +16,10 @@
 //!   fetch INSIDE it, so overlapping `configuration:updated` deliveries
 //!   converge on the latest authoritative value instead of racing
 //!   (docs/sops/configuration.md §6).
+//! - **Control-plane routing**: `configuration::*` is a worker-owned API,
+//!   not an `engine::*` builtin. Its client calls therefore name `default`
+//!   explicitly while registered callbacks still target the caller's
+//!   project namespace.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -62,7 +66,7 @@ pub async fn register(
     if fetch(iii, spec.id).await?.is_none() {
         payload["initial_value"] = seed.unwrap_or_else(|| spec.default_value.clone());
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -76,14 +80,14 @@ pub async fn register(
 /// configuration worker that is absent or unroutable must surface as an
 /// error, never read as "nothing stored yet".
 pub async fn fetch(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": id })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": id })).await {
         Ok(resp) => Ok(resp.get("value").cloned().filter(|v| !v.is_null())),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -91,12 +95,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),
@@ -261,12 +268,11 @@ where
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: fn_id.to_string(),
-        config: json!({ "configuration_id": config_id, "event_types": ["configuration:updated"] }),
-        metadata: None,
-    })?;
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        fn_id.to_string(),
+        json!({ "configuration_id": config_id, "event_types": ["configuration:updated"] }),
+    ))?;
     Ok(reload)
 }
 
@@ -285,12 +291,11 @@ mod tests {
     fn some_binding(iii: &IIIClient) -> Option<Trigger> {
         try_bind(
             iii,
-            RegisterTriggerInput {
-                trigger_type: "harness::hook::pre-generate".to_string(),
-                function_id: "test::hook".to_string(),
-                config: json!({ "on_error": "fail_open" }),
-                metadata: None,
-            },
+            RegisterTriggerInput::new(
+                "harness::hook::pre-generate".to_string(),
+                "test::hook".to_string(),
+                json!({ "on_error": "fail_open" }),
+            ),
         )
     }
 

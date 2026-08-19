@@ -47,6 +47,7 @@ fn registry_fan_out_keying() {
         "INBOX".into(),
         "trig-1".into(),
         "h::on_mail".into(),
+        Some("project-a".into()),
         30_000,
     );
     reg.register(
@@ -54,6 +55,7 @@ fn registry_fan_out_keying() {
         "INBOX".into(),
         "trig-2".into(),
         "audit::log".into(),
+        None,
         5_000,
     );
     reg.register(
@@ -61,6 +63,7 @@ fn registry_fan_out_keying() {
         "INBOX".into(),
         "trig-3".into(),
         "billing::ingest".into(),
+        Some("project-b".into()),
         30_000,
     );
 
@@ -69,6 +72,12 @@ fn registry_fan_out_keying() {
     let fns: Vec<_> = subs.iter().map(|s| s.function_id.as_str()).collect();
     assert!(fns.contains(&"h::on_mail"));
     assert!(fns.contains(&"audit::log"));
+    assert_eq!(
+        subs.iter()
+            .find(|s| s.function_id == "h::on_mail")
+            .and_then(|s| s.namespace.as_deref()),
+        Some("project-a")
+    );
 
     reg.unregister("trig-1");
     let subs = reg.subscribers_for("support", "INBOX");

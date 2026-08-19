@@ -15,7 +15,7 @@ name = "computer"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.23.0-rc.2"
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
@@ -38,7 +38,7 @@ base64 = "0.22"
 # build with the computer-server backend only.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 enigo = "0.3"
-xcap = "0.4"
+xcap = "0.9"
 image = "0.25"
 
 [dev-dependencies]

@@ -42,6 +42,20 @@ compatibility, including `maxRetries` and `backoffDelayMs`.
 | `engine::queue::dlq_topics` | `{}` | DLQ topic list |
 | `engine::queue::dlq_messages` | `{ "topic" \| "queue", "offset", "limit" }` | DLQ messages |
 
+### Namespace connections
+
+When the worker runs in a project namespace, the process opens two engine
+connections. This keeps project functions isolated while engine queue provider
+functions remain available from `default`.
+
+| Worker name | Namespace | Registered functions |
+|---|---|---|
+| `queue` | project namespace | `queue::define`, publish, redrive, redrive-message, and discard functions |
+| `queue-engine` | `default` | `engine::queue::enqueue`, list, stats, and DLQ query functions |
+
+Both names therefore appear in `engine::workers::list`. They belong to one
+queue process and stop together.
+
 ## Configuration
 
 Configuration is owned by the `configuration` worker under id `queue`.

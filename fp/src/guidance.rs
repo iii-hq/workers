@@ -200,12 +200,12 @@ pub fn apply(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
         || {
             iii_config_client::try_bind(
                 iii,
-                RegisterTriggerInput {
-                    trigger_type: PRE_GENERATE_TRIGGER_TYPE.to_string(),
-                    function_id: GUIDANCE_HOOK_ID.to_string(),
-                    config: json!({ "on_error": "fail_open" }),
-                    metadata: Some(json!({ "inject_prompt": GUIDANCE })),
-                },
+                RegisterTriggerInput::new(
+                    PRE_GENERATE_TRIGGER_TYPE.to_string(),
+                    GUIDANCE_HOOK_ID.to_string(),
+                    json!({ "on_error": "fail_open" }),
+                )
+                .with_metadata(json!({ "inject_prompt": GUIDANCE })),
             )
         },
         "inject_guidance on: appending fp::pipe guidance to agent system prompts",

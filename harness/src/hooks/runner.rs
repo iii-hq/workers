@@ -371,15 +371,15 @@ impl HookRegistry {
         payload: Value,
     ) -> Result<Value, String> {
         let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
-        let fut = iii_helpers::observability::run_with_baggage(
-            &baggage,
-            self.iii.trigger(TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload,
-                action: None,
-                timeout_ms: Some(binding.timeout_ms),
-            }),
-        );
+        let request = TriggerRequest {
+            function_id: binding.function_id.clone(),
+            payload,
+            action: None,
+            timeout_ms: Some(binding.timeout_ms),
+        };
+        let namespace = binding.namespace.as_deref().unwrap_or("default");
+        let request = request.namespace(namespace);
+        let fut = iii_helpers::observability::run_with_baggage(&baggage, self.iii.trigger(request));
         let bounded = tokio::time::timeout(
             Duration::from_millis(binding.timeout_ms.saturating_add(1_000)),
             fut,
@@ -651,6 +651,7 @@ mod tests {
     fn binding(function_id: &str, priority: i64) -> HookBinding {
         HookBinding {
             function_id: function_id.into(),
+            namespace: None,
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
@@ -769,6 +770,7 @@ mod tests {
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
             function_id: "gate".into(),
+            namespace: None,
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,

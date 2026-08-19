@@ -49,6 +49,7 @@ pub fn parse_binding_config(raw: &Value) -> Result<BindingConfig, String> {
 #[derive(Debug, Clone)]
 struct Binding {
     function_id: String,
+    namespace: Option<String>,
     filter: BindingConfig,
 }
 
@@ -73,6 +74,7 @@ impl SubscriberSet {
             config.id,
             Binding {
                 function_id: config.function_id,
+                namespace: config.namespace,
                 filter,
             },
         );
@@ -206,15 +208,14 @@ impl Emitter {
             if !matches {
                 continue;
             }
-            let res = self
-                .iii
-                .trigger(TriggerRequest {
-                    function_id: binding.function_id.clone(),
-                    payload: payload.clone(),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
+            let request = TriggerRequest {
+                function_id: binding.function_id.clone(),
+                payload: payload.clone(),
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            };
+            let namespace = binding.namespace.as_deref().unwrap_or("default");
+            let res = self.iii.trigger(request.namespace(namespace)).await;
             if let Err(e) = res {
                 tracing::warn!(function_id = %binding.function_id, error = %e, "void fan-out failed");
             }
@@ -240,5 +241,19 @@ mod tests {
     fn bank_filter_parses() {
         let cfg = parse_binding_config(&json!({ "bank": "blog" })).unwrap();
         assert_eq!(cfg.bank.as_deref(), Some("blog"));
+    }
+
+    #[test]
+    fn subscriber_preserves_target_namespace() {
+        let set = SubscriberSet::new(ITEM_CHANGED);
+        set.add(TriggerConfig {
+            id: "sub-1".into(),
+            function_id: "ui::refresh".into(),
+            config: json!({}),
+            metadata: None,
+            namespace: Some("project-a".into()),
+        })
+        .unwrap();
+        assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
     }
 }

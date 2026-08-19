@@ -32,6 +32,7 @@ class FakeIII:
         self.store = store
         self.error = error
         self.calls = 0
+        self.requests: list[dict[str, Any]] = []
         self.registered_payloads: list[dict[str, Any]] = []
         self.functions: dict[str, Any] = {}
         self.trigger_binds: list[dict[str, Any]] = []
@@ -39,6 +40,7 @@ class FakeIII:
 
     def trigger(self, req):
         self.calls += 1
+        self.requests.append(req)
         if self.error is not None:
             raise self.error
         if req["function_id"] == "configuration::get":
@@ -79,10 +81,12 @@ def test_register_config_seeds_default_only_when_nothing_stored():
     empty = FakeIII(store=None)
     configuration.register_config(empty)
     assert empty.registered_payloads[0]["initial_value"] == {"inject_guidance": True}
+    assert all(request["namespace"] == "default" for request in empty.requests)
 
     populated = FakeIII(store={"inject_guidance": False})
     configuration.register_config(populated)
     assert "initial_value" not in populated.registered_payloads[0]
+    assert all(request["namespace"] == "default" for request in populated.requests)
 
 
 def test_fetch_config_defaults_when_missing_and_reads_stored():
@@ -126,6 +130,7 @@ def test_config_change_handler_reconciles_the_binding():
 
         # Stored value on → the handler binds the guidance hook.
         assert await handler({}) == {"ok": True}
+        assert iii.requests[-1]["namespace"] == "default"
         assert state.trigger is not None
         bound = state.trigger
         assert any(b["type"] == guidance.HOOK_TRIGGER_TYPE for b in iii.trigger_binds)

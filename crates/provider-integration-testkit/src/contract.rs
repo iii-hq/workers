@@ -6,13 +6,13 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 use axum::http::StatusCode;
 use iii_sdk::errors::Error as IiiError;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, IIIClient, RegisterFunction};
 use llm_router::register::register_router;
 use serde_json::{json, Value};
 
 use crate::case::{CredentialMode, ProtocolFamily, ProviderCase};
 use crate::protocol::{auth_response, happy_sse, quota_response};
-use crate::runtime::{call, Engine};
+use crate::runtime::{call, test_init_options, Engine};
 use crate::stub::{CapturedRequest, StubResponse, StubUpstream};
 
 const API_KEY: &str = "provider-contract-api-key";
@@ -36,7 +36,7 @@ async fn register_fake_vault(engine_url: &str, mode: CredentialMode) -> Option<I
             "provider_extra": { "account_id": ACCOUNT_ID }
         }),
     };
-    let vault = register_worker(engine_url, InitOptions::default());
+    let vault = register_worker(engine_url, test_init_options());
     vault.register_function(
         "auth::get_token",
         RegisterFunction::new_async(move |_input: Value| {
@@ -123,7 +123,7 @@ async fn chat(
     model: &str,
     request_id: &str,
 ) -> anyhow::Result<ChatResult> {
-    let consumer = register_worker(engine_url, InitOptions::default());
+    let consumer = register_worker(engine_url, test_init_options());
     let channel = iii_sdk::helpers::create_channel(&consumer, None).await?;
     let frames = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = frames.clone();
@@ -186,13 +186,13 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
 
     let stub = StubUpstream::start(case.family).await?;
     stub.respond([StubResponse::sse(happy_sse(case.family))]);
-    let router = register_worker(&engine.url, InitOptions::default());
+    let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone())
         .await
         .context("register router")?;
     configure(&router, case, &stub.endpoint(case.generation_path)).await?;
     let vault = register_fake_vault(&engine.url, case.credential).await;
-    let provider = register_worker(&engine.url, InitOptions::default());
+    let provider = register_worker(&engine.url, test_init_options());
     (case.register)(provider.clone()).await?;
 
     let listed = wait_for_provider(&router, case.id).await?;

@@ -272,9 +272,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -943,9 +943,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.21.6"
+version = "0.23.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0d84d5c149ae4404365a79feca28aa66f6a7dbed56423b4b8c4e2421e0b5add"
+checksum = "e2443aa052dc9ec4cdf47d16610d16b33db0535f7aa94145b2612a5e848b0b24"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -964,9 +964,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.6"
+version = "0.23.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07dd060fddcc9153b0dd07c038a14cf172ce15ce1d4edb98155563ed55b2caba"
+checksum = "cf3b3688765a07605d732ad6bb7ae99a417c1552a3a4e612945fc3b1c7f225f1"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1471,9 +1471,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

@@ -13,6 +13,7 @@
  */
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
+import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
@@ -77,6 +78,10 @@ export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
   deny: ['approval::*', 'configuration::*', 'shell::workspace::*'],
   expose: 'agent_trigger',
+}
+
+export function toHarnessSendError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(errText(err))
 }
 
 function resolveRunParams(model: ModelId): RunParams {
@@ -417,7 +422,7 @@ async function* realStream(
     void sendTurn(client, sendRequest)
       .then((response) => push({ kind: 'send-resolved', response }))
       .catch((err) => {
-        kickoffError = err instanceof Error ? err : new Error(String(err))
+        kickoffError = toHarnessSendError(err)
         if (import.meta.env.DEV) {
           console.warn('[real-backend] harness::send failed', err)
         }
@@ -733,7 +738,7 @@ async function realCompactSession(
   } catch (err) {
     return {
       status: 'error',
-      message: err instanceof Error ? err.message : String(err),
+      message: errText(err),
     }
   }
 }
