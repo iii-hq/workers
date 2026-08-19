@@ -1191,8 +1191,8 @@ mod tests {
                 tool("email::send"),
                 tool("telegram::send"),
                 tool("email::read"),
-                tool("slack::send"),   // third worker: over the cap, dropped
-                tool("orphan::fn"),    // no owner: skipped
+                tool("slack::send"), // third worker: over the cap, dropped
+                tool("orphan::fn"),  // no owner: skipped
             ],
             &owners,
         );
@@ -1240,7 +1240,10 @@ mod tests {
             },
         ];
         let ranked = rank_registry_contracts("send an email", contracts.clone(), 6);
-        assert_eq!(ranked.first().map(|tool| tool.name.as_str()), Some("email::send"));
+        assert_eq!(
+            ranked.first().map(|tool| tool.name.as_str()),
+            Some("email::send")
+        );
         assert!(rank_registry_contracts("send an email", contracts, 0).is_empty());
         assert!(rank_registry_contracts("send an email", Vec::new(), 6).is_empty());
     }

@@ -15,7 +15,9 @@ use tokio::sync::RwLock;
 
 use crate::config::SkillsConfig;
 use crate::functions::registry::RegistryCache;
-use crate::functions::search::{search_functions, Deps, SearchFunctionsRequest, SearchFunctionsResponse};
+use crate::functions::search::{
+    search_functions, Deps, SearchFunctionsRequest, SearchFunctionsResponse,
+};
 use crate::functions::search_index::ToolSchema;
 
 const CATALOG_FIXTURE: &str = include_str!("../../tests/fixtures/discover_catalog.json");
@@ -186,8 +188,7 @@ async fn engine_and_the_search_itself_never_appear_in_results() {
         let response = ask(&deps, query).await;
         for id in function_ids(&response) {
             assert!(
-                !id.starts_with("engine::")
-                    && id != crate::functions::search_index::SEARCH_FN,
+                !id.starts_with("engine::") && id != crate::functions::search_index::SEARCH_FN,
                 "query {query:?} leaked {id}"
             );
         }

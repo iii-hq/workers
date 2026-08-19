@@ -220,8 +220,7 @@ fn operating_evidence(messages: &[Value]) -> bool {
                 .get("function_id")
                 .and_then(Value::as_str)
                 .is_some_and(|id| {
-                    !id.starts_with("engine::")
-                        && id != crate::functions::search_index::SEARCH_FN
+                    !id.starts_with("engine::") && id != crate::functions::search_index::SEARCH_FN
                 })
     })
 }
