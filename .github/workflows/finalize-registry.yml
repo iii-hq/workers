@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   finalize:
-    name: Commit ${{ inputs.worker }} latest and next
+    name: Set ${{ inputs.worker }} latest tag
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -91,7 +91,16 @@ jobs:
 
           next=$(resolve next)
           latest=$(resolve latest)
-          if [[ "$next" == "$STABLE" && "$latest" == "$STABLE" ]]; then
+          if [[ "$next" != "$EXPECTED_NEXT" ]]; then
+            echo "::error::next points to ${next:-nothing}, expected $EXPECTED_NEXT"
+            exit 1
+          fi
+          stable=$(resolve "$STABLE")
+          if [[ "$stable" != "$STABLE" ]]; then
+            echo "::error::stable version $STABLE is not present in the Registry"
+            exit 1
+          fi
+          if [[ "$next" == "$EXPECTED_NEXT" && "$latest" == "$STABLE" ]]; then
             echo 'state=unchanged' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -100,17 +109,16 @@ jobs:
           if [[ "$EXPECTED_LATEST" != 'none' ]]; then
             expected_latest_json=$(jq -cn --arg value "$EXPECTED_LATEST" '$value')
           fi
-          payload=$(jq -cn \
-            --arg candidate "$CANDIDATE" --arg stable "$STABLE" --arg next "$EXPECTED_NEXT" \
-            --argjson latest "$expected_latest_json" \
-            '{candidate_version:$candidate,stable_version:$stable,expected_next_version:$next,expected_latest_version:$latest}')
+          payload=$(jq -cn --arg stable "$STABLE" --argjson latest "$expected_latest_json" \
+            '{version:$stable} + (if $latest == null then {expected_current_version:null} else {expected_current_version:$latest} end)')
           http=$(curl -sS -o finalize-response.json -w '%{http_code}' \
             -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-            -H 'Idempotency-Key: ${{ inputs.operation_id }}-${{ inputs.worker }}' \
-            -X POST "https://api.workers.iii.dev/w/$WORKER/releases/finalize" \
+            -X PUT "https://api.workers.iii.dev/w/$WORKER/tags/latest" \
             --data "$payload")
           cat finalize-response.json
           test "$http" = 200
+          test "$(resolve latest)" = "$STABLE"
+          test "$(resolve next)" = "$EXPECTED_NEXT"
           echo 'state=changed' >> "$GITHUB_OUTPUT"
 
       - name: Write factual Registry result

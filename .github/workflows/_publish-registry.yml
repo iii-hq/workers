@@ -323,12 +323,13 @@ jobs:
           printf '{}\n' > bundle.json
 
       - name: Build payload
+        # Keep immutable publication separate from mutable channel assignment.
+        # The Registry already exposes the latter as PUT /w/:slug/tags/:tag
+        # with an optional compare-and-swap precondition.
         env:
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
           DEPLOY: ${{ inputs.deploy }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
-          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
           EXPERIMENTAL: ${{ inputs.experimental }}
@@ -336,8 +337,7 @@ jobs:
           python3 .github/scripts/build_publish_payload.py \
             --worker "$WORKER" \
             --version "$VERSION" \
-            --registry-tag "$REGISTRY_TAG" \
-            --expected-current-version "$EXPECTED_CURRENT_VERSION" \
+            --registry-tag none \
             --experimental "$EXPERIMENTAL" \
             --deploy "$DEPLOY" \
             --repo-url "$REPO_URL" \
@@ -368,22 +368,16 @@ jobs:
           echo "HTTP $http"
           cat response.json
           if [[ "$http" == "409" ]]; then
-            resolve_version="$REGISTRY_TAG"
-            if [[ "$REGISTRY_TAG" == "none" ]]; then
-              resolve_version="$VERSION"
-            fi
             resolve_http=$(curl -sS -o resolve-response.json -w '%{http_code}' \
               -H "Content-Type: application/json" \
               -X POST "$API_URL/resolve" \
-              --data "$(jq -cn --arg worker "$WORKER" --arg version "$resolve_version" \
+              --data "$(jq -cn --arg worker "$WORKER" --arg version "$VERSION" \
                 '{worker: $worker, version: $version}')")
             resolved=$(jq -r '.root.version // empty' resolve-response.json)
-            if [[ "$REGISTRY_TAG" == "none" && "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
-              echo "::notice::$WORKER@$VERSION already exists without a mutable Registry channel; continuing idempotently"
-            elif [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
-              echo "::notice::$WORKER@$VERSION already exists and $REGISTRY_TAG still points to it; continuing idempotently"
+            if [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
+              echo "::notice::$WORKER@$VERSION already exists; continuing idempotently"
             else
-              echo "::error::duplicate publish is not a safe retry: $WORKER@$resolve_version resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
+              echo "::error::duplicate publish is not a safe retry: $WORKER@$VERSION resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
               cat resolve-response.json
               exit 1
             fi
@@ -391,6 +385,44 @@ jobs:
             echo "::error::publish failed with HTTP $http"
             exit 1
           fi
+
+      - name: Assign Registry tag with existing CAS
+        if: inputs.registry_tag != 'none'
+        env:
+          API_URL: https://api.workers.iii.dev
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          if [[ "$EXPECTED_CURRENT_VERSION" == "none" ]]; then
+            payload=$(jq -cn --arg version "$VERSION" \
+              '{version:$version,expected_current_version:null}')
+          elif [[ -n "$EXPECTED_CURRENT_VERSION" ]]; then
+            payload=$(jq -cn --arg version "$VERSION" --arg expected "$EXPECTED_CURRENT_VERSION" \
+              '{version:$version,expected_current_version:$expected}')
+          else
+            payload=$(jq -cn --arg version "$VERSION" '{version:$version}')
+          fi
+          http=$(curl -sS -o tag-response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -X PUT "$API_URL/w/$WORKER/tags/$REGISTRY_TAG" \
+            --data "$payload")
+          echo "HTTP $http"
+          cat tag-response.json
+          if [[ "$http" != "200" ]]; then
+            echo "::error::Registry tag assignment failed with HTTP $http"
+            exit 1
+          fi
+          assigned=$(jq -r '.tag.version // empty' tag-response.json)
+          test "$assigned" = "$VERSION"
 
       - name: Build skills payload
         id: skills_payload
