@@ -241,6 +241,7 @@ def verify(archive_dir: Path | None) -> None:
             },
         }
     if current != expected:
+        report_diff(expected, current)
         raise SystemExit("oracle environment differs from oracle/manifest.json")
     if archive_dir:
         verify_archives(expected, archive_dir)
@@ -280,8 +281,38 @@ def verify_parser_runtime() -> None:
         "assets": expected["assets"],
     }
     if current != frozen:
+        report_diff(frozen, current)
         raise SystemExit("parser oracle runtime differs from oracle/manifest.json")
     print("parser oracle runtime verified")
+
+
+def report_diff(frozen: object, current: object, path: str = "", budget: list[int] | None = None) -> None:
+    """Print the leaf paths where the snapshots disagree (first 20)."""
+    if budget is None:
+        budget = [20]
+    if budget[0] <= 0:
+        return
+    if isinstance(frozen, dict) and isinstance(current, dict):
+        for key in sorted(set(frozen) | set(current)):
+            if key not in frozen:
+                budget[0] -= 1
+                print(f"diff {path}.{key}: only in current", file=sys.stderr)
+            elif key not in current:
+                budget[0] -= 1
+                print(f"diff {path}.{key}: only frozen", file=sys.stderr)
+            else:
+                report_diff(frozen[key], current[key], f"{path}.{key}", budget)
+        return
+    if isinstance(frozen, list) and isinstance(current, list):
+        if len(frozen) != len(current):
+            budget[0] -= 1
+            print(f"diff {path}: {len(frozen)} frozen items vs {len(current)} current", file=sys.stderr)
+        for index, (a, b) in enumerate(zip(frozen, current)):
+            report_diff(a, b, f"{path}[{index}]", budget)
+        return
+    if frozen != current:
+        budget[0] -= 1
+        print(f"diff {path}: frozen={frozen!r} current={current!r}", file=sys.stderr)
 
 
 def main() -> None:

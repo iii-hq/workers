@@ -60,9 +60,22 @@ PY
 if [[ $mode == fetch ]]; then
   chrome_dir=$(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -name 'chrome-linux*' ! -name 'chrome-headless*' | head -1)
   headless_dir=$(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -name 'chrome-headless-shell-linux*' | head -1)
+  # The x64 archives are Chrome-for-Testing builds with distinct roots
+  # (chrome-linux64/, chrome-headless-shell-linux64/), but the arm64 ones are
+  # Playwright chromium builds that BOTH unpack into chrome-linux/ — after the
+  # merged extraction the headless shell lives inside the chrome directory,
+  # and that merged directory is what Playwright's arm64 layout expects at
+  # both pw/ locations (chrome-linux/chrome, chrome-linux/headless_shell).
+  if [[ -z $headless_dir && -n $chrome_dir && -f "$chrome_dir/headless_shell" ]]; then
+    headless_dir=$chrome_dir
+  fi
+  [[ -n $chrome_dir && -n $headless_dir ]] || {
+    echo "extracted chromium layout not recognized under $target_dir" >&2
+    exit 1
+  }
   mkdir -p "$target_dir/pw/chromium-1223" "$target_dir/pw/chromium_headless_shell-1223"
-  # rm before ln: a restored CI cache can materialize the link destination as
-  # a real directory, and `ln -sfn` refuses to overwrite one.
+  # rm before ln: `ln -sfn` refuses to overwrite a destination that already
+  # exists as a real directory (e.g. restored from a CI cache).
   rm -rf "$target_dir/pw/chromium-1223/$(basename "$chrome_dir")" \
     "$target_dir/pw/chromium_headless_shell-1223/$(basename "$headless_dir")"
   ln -sfn "$chrome_dir" "$target_dir/pw/chromium-1223/$(basename "$chrome_dir")"
