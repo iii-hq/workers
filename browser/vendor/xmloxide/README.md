@@ -1,5 +1,14 @@
 # xmloxide
 
+> **Scrapling-compatibility fork, trimmed.** This tree is the repository-owned
+> fork the browser worker parses with (lxml-parity patches on top of upstream)
+> and is cut down to the modules the worker consumes: `html`, `tree`, `serial`,
+> `xpath`, `parser`, `validation::dtd`, `encoding`, `error`. Upstream's WHATWG
+> html5 parser, CSS engine, SAX/reader APIs, RelaxNG/XSD/Schematron validators,
+> XInclude, catalogs, serde/async integration, FFI layer, and xmllint CLI are
+> removed — restore them from upstream if ever needed. The feature list below
+> is upstream's, kept for provenance.
+
 [![CI](https://github.com/jonwiggins/xmloxide/actions/workflows/ci.yml/badge.svg)](https://github.com/jonwiggins/xmloxide/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/xmloxide.svg)](https://crates.io/crates/xmloxide)
 [![docs.rs](https://docs.rs/xmloxide/badge.svg)](https://docs.rs/xmloxide)

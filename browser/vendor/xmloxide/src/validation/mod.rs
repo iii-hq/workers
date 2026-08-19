@@ -1,7 +1,6 @@
 //! Document validation framework.
 //!
-//! This module provides schema validation for XML documents, supporting
-//! DTD, `RelaxNG`, XML Schema (XSD), and ISO Schematron. Each validator
+//! This module provides schema validation for XML documents. Each validator
 //! parses its schema format and checks document conformance, returning a
 //! `ValidationResult` with errors and warnings.
 //!
@@ -10,14 +9,11 @@
 //! The validation module is organized into:
 //! - Common types (`ValidationResult`, `ValidationError`) used across all validators
 //! - DTD validation (`dtd` submodule) for XML 1.0 DTD processing
-//! - `RelaxNG` validation (`relaxng` submodule) for `RelaxNG` schema validation
-//! - XML Schema validation (`xsd` submodule) for XSD 1.0 validation
-//! - Schematron validation (`schematron` submodule) for ISO Schematron rule-based validation
+//!
+//! This fork keeps only the DTD submodule (the XML parser depends on it);
+//! upstream's `RelaxNG`, XSD, and Schematron validators are trimmed away.
 
 pub mod dtd;
-pub mod relaxng;
-pub mod schematron;
-pub mod xsd;
 
 use std::fmt;
 
