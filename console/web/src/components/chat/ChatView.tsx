@@ -21,6 +21,7 @@ import {
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
+import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import { expandAttachments, hasExpandableAttachments } from '@/lib/attachments'
@@ -212,6 +213,9 @@ export function ChatView({
     : false
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
+  // This view is keyed by conversation, so mounting IS opening a session:
+  // the caret belongs in the composer, on the devices where that is free.
+  const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
 
   /* What the model on the other end can do with a picture, read at send time
      rather than closed over: the send and edit-queued callbacks are built
@@ -2082,6 +2086,7 @@ export function ChatView({
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}
+            autoFocus={focusComposerOnOpen && !harnessBlocked}
             blockedPlaceholder={
               conversationsCtx
                 ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)

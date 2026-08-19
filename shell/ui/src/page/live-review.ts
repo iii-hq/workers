@@ -5,6 +5,13 @@ export interface LiveReviewEventInput {
   rawKind: string
   /** `null` means known missing; `undefined` means no tree snapshot. */
   priorKind: PriorFilesystemKind
+  /**
+   * Whether the inventory PROVED `priorKind` rather than inferring it. A
+   * truncated inventory cannot tell an omitted file from a new one, so it
+   * guesses `file`; that guess must not outrank a creation the watcher
+   * actually saw during this turn.
+   */
+  priorKindExact?: boolean
   /** Undefined means uncaptured. An empty string is a real baseline. */
   priorBaseline?: string
   /** Whether the changed path is a readable file after the event burst. */
@@ -24,6 +31,16 @@ export type LiveReviewEventDecision =
 export function normalizeLiveReviewEvent(input: LiveReviewEventInput): LiveReviewEventDecision {
   if (input.priorKind === 'dir' && !input.existsNow) {
     return { action: 'ignore-directory', path: input.path }
+  }
+
+  // A guessed "it existed" loses to a witnessed creation with no captured
+  // body: the watcher saw this path appear, the inventory never listed it.
+  const guessedExisting =
+    input.priorKind === 'file' &&
+    input.priorKindExact === false &&
+    input.priorBaseline === undefined
+  if (guessedExisting && input.rawKind === 'created' && input.existsNow) {
+    return { action: 'created', path: input.path, baseline: '' }
   }
 
   const existedBefore =

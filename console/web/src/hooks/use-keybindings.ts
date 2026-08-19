@@ -30,6 +30,25 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
 
+/**
+ * A field may hand specific shortcuts back with
+ * `data-keybindings-allow="workspace.selectByIndex panel.split"`. A search box
+ * that opens focused would otherwise swallow the navigation keys for as long
+ * as it holds the caret: after `t` opens a workspace, its page search has the
+ * focus, so `\` and the workspace digits typed characters instead of moving.
+ * Opt in per field and per action, never wholesale, so a field keeps every
+ * key it actually needs to spell its own query.
+ */
+export function allowsWhileTyping(
+  target: EventTarget | null,
+  actionId: KeybindingActionId,
+): boolean {
+  const element = target as HTMLElement | null
+  const allow = element?.dataset?.keybindingsAllow
+  if (!allow) return false
+  return allow.split(/[\s,]+/).includes(actionId)
+}
+
 export function useKeybindings(handlers: KeybindingHandlers): void {
   // Read through a ref so the listener binds once: handlers are rebuilt every
   // render by every caller that passes inline arrows.
@@ -46,7 +65,12 @@ export function useKeybindings(handlers: KeybindingHandlers): void {
       const typing = isTyping(event.target)
       for (const definition of KEYBINDINGS) {
         if (definition.scope !== 'global') continue
-        if (typing && !definition.firesWhileTyping) continue
+        if (
+          typing &&
+          !definition.firesWhileTyping &&
+          !allowsWhileTyping(event.target, definition.id)
+        )
+          continue
         const run = handlersRef.current[definition.id]
         if (!run) continue
         if (definition.digitIndex) {

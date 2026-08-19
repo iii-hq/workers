@@ -19,6 +19,25 @@ export function insertIntoComposer(text: string): void {
   for (const listener of listeners) listener(text)
 }
 
+type ComposerFocusListener = () => void
+
+const focusListeners = new Set<ComposerFocusListener>()
+
+/** Ask the mounted composer for the caret. Unlike an insert this is not
+    buffered: a focus nobody is around to take is a focus nobody wanted. */
+export function requestComposerFocus(): void {
+  for (const listener of focusListeners) listener()
+}
+
+export function onComposerFocusRequest(
+  listener: ComposerFocusListener,
+): () => void {
+  focusListeners.add(listener)
+  return () => {
+    focusListeners.delete(listener)
+  }
+}
+
 export function onComposerInsert(listener: ComposerInsertListener): () => void {
   listeners.add(listener)
   if (pending.length > 0) {

@@ -6,6 +6,7 @@ import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  isUntouchedDraft,
   markBackgroundedStale,
   mergeConversationMeta,
   mergeHydratedTranscript,
@@ -471,5 +472,41 @@ describe('mergeConversationMeta / system_prompt', () => {
       }),
     )
     expect(next.systemPrompt?.strategy).toBe('enrich')
+  })
+})
+
+describe('isUntouchedDraft', () => {
+  it('recognises the chat nobody has written in yet', () => {
+    expect(isUntouchedDraft(conversation({ draft: true, messages: [] }))).toBe(
+      true,
+    )
+  })
+
+  it('refuses a draft that already carries work', () => {
+    expect(
+      isUntouchedDraft(
+        conversation({
+          draft: true,
+          messages: [],
+          draftText: 'half a thought',
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      isUntouchedDraft(
+        conversation({
+          draft: true,
+          messages: [
+            { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
+          ] as Conversation['messages'],
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('refuses a real session, which is never interchangeable', () => {
+    expect(isUntouchedDraft(conversation({ draft: false, messages: [] }))).toBe(
+      false,
+    )
   })
 })

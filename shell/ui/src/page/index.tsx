@@ -50,6 +50,7 @@ import { errorMessage } from '../lib/format'
 import {
   captureWorkspaceBaseline,
   classifyWorkspaceBaselinePath,
+  type WorkspaceBaselineCoverage,
 } from './baseline'
 import { ChangeDiffPane } from './ChangeDiffPane'
 import {
@@ -444,6 +445,9 @@ export function ShellExplorerPage({
   const baselineCompleteRef = useRef(false)
   const baselineCapturedRef = useRef(false)
   const baselineReadyRef = useRef<Promise<void>>(Promise.resolve())
+  // A capped snapshot degrades quietly per row, so the toolbar says so once.
+  const [baselineCoverage, setBaselineCoverage] =
+    useState<WorkspaceBaselineCoverage | null>(null)
   const preparedTurnRef = useRef<string | null>(null)
   const lastReviewKeyRef = useRef<string | null>(observedReviewKey ?? null)
   const reviewEpochRef = useRef(0)
@@ -610,6 +614,7 @@ export function ShellExplorerPage({
       baselineCompleteRef.current = false
       baselineCapturedRef.current = false
       baselineReadyRef.current = Promise.resolve()
+      setBaselineCoverage(null)
       reviewEntriesRef.current = new Map()
       setReviewEntries(new Map())
       scopeEntriesRef.current = new Map()
@@ -650,7 +655,7 @@ export function ShellExplorerPage({
     baselineCompleteRef.current = false
     baselineCapturedRef.current = false
     const snapshot = captureWorkspaceBaseline(host, currentRoot, reviewablePath)
-      .then(({ contents, kinds, complete }) => {
+      .then(({ contents, kinds, complete, coverage }) => {
         if (
           rootGenerationRef.current !== generation ||
           reviewEpochRef.current !== epoch ||
@@ -662,6 +667,7 @@ export function ShellExplorerPage({
         baselineKindsRef.current = kinds
         baselineCompleteRef.current = complete
         baselineCapturedRef.current = true
+        setBaselineCoverage(coverage)
       })
       .catch(() => {
         // Git can still provide HEAD; non-Git rows fail closed with a clear
@@ -1506,6 +1512,7 @@ export function ShellExplorerPage({
               path: rel,
               rawKind,
               priorKind,
+              priorKindExact: baselinePath?.exact,
               priorBaseline: baseline,
               existsNow:
                 results === null
@@ -1799,6 +1806,7 @@ export function ShellExplorerPage({
         baselineCompleteRef.current = false
         baselineCapturedRef.current = false
         baselineReadyRef.current = Promise.resolve()
+        setBaselineCoverage(null)
         preparedTurnRef.current = null
         reviewEntriesRef.current = new Map()
         reviewEditBackupsRef.current.clear()
@@ -2544,6 +2552,15 @@ export function ShellExplorerPage({
                 {scopeError ? (
                   <span className="shui-review-scope-error" title={scopeError}>
                     unavailable
+                  </span>
+                ) : null}
+                {reviewScope.kind === 'last-turn' && baselineCoverage?.capped ? (
+                  <span
+                    className="shui-review-count"
+                    title={`This workspace holds ${baselineCoverage.candidates} reviewable files; the pre-turn snapshot captured the ${baselineCoverage.captured} most recently modified. Rows outside it fall back to the last commit, or say so when there is none. Open a narrower folder for full coverage.`}
+                  >
+                    snapshot {baselineCoverage.captured}/
+                    {baselineCoverage.candidates}
                   </span>
                 ) : null}
                 {reviewTotals.ready > 0 ? (
