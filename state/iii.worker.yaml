@@ -13,4 +13,4 @@ config:
     config:
       store_method: in_memory
 dependencies:
-  configuration: "^0.21.6"
+  configuration: "0.x"
