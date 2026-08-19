@@ -1,22 +1,25 @@
 /**
- * Owns ⌘K: the shortcut, the console-side rows, and where each row goes.
+ * The console-side palette rows, and where each one goes.
  *
  * It lives inside the conversations provider because chats are one of the
  * things you search for; everything else it needs (the workspace, the settings
- * overlay, the theme) arrives as props from `App`.
+ * overlay, the theme) arrives as props from `App`, which also owns the
+ * shortcut that opens it.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useMemo } from 'react'
 import { CommandPalette } from '@/components/CommandPalette'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import { useConversationsCtx } from '@/lib/conversations-context'
+import { shortcutPlatform } from '@/lib/keybindings/bindings'
+import { bindingsFor } from '@/lib/keybindings/registry'
 import type { PaletteEntry } from '@/lib/palette/sources'
 import type { TabScreen } from '@/lib/workspace-tabs'
 import { setPendingWorkerSearch } from '@/pages/Workers/pending-selection'
 
 export interface PaletteHostProps {
-  /** Owned by `App`: the shortcut is one way in, the phone header's search
-   *  affordance is the other, and only one of them can live here. */
+  /** Owned by `App`, which dispatches `palette.toggle` from the keybinding
+   *  registry and hands the phone header the same opener. */
   open: boolean
   onOpenChange: (open: boolean) => void
   openScreen: (screen: TabScreen) => void
@@ -37,25 +40,6 @@ export function PaletteHost({
 }: PaletteHostProps) {
   const { screenOptions } = useScreenOptions()
   const { conversations, select, createNew } = useConversationsCtx()
-
-  // Read through a ref so the global listener is bound once, not rebound on
-  // every open and close.
-  const openRef = useRef(open)
-  openRef.current = open
-
-  // ⌘K / ctrl+K anywhere, including from inside the composer — the palette is
-  // how you leave wherever you are, so it must not be shadowed by focus.
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'k' && event.key !== 'K') return
-      if (!event.metaKey && !event.ctrlKey) return
-      event.preventDefault()
-      onOpenChange(!openRef.current)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onOpenChange])
 
   // Both land on the workers page, filtered to what was picked: a worker by
   // its name, a function by the worker that registers it, falling back to the
@@ -125,6 +109,7 @@ export function PaletteHost({
         title: 'Keyboard shortcuts',
         detail: 'Show the shortcut overlay',
         keywords: ['keys', 'help'],
+        shortcut: bindingsFor('shortcuts.open', shortcutPlatform())[0],
         run: onOpenShortcuts,
       },
       {

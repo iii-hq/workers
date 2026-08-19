@@ -18,7 +18,6 @@
 
 import {
   Boxes,
-  CornerDownLeft,
   FunctionSquare,
   MessageSquareText,
   Search,
@@ -34,7 +33,14 @@ import {
   useRef,
   useState,
 } from 'react'
+import { KeyCombo } from '@/components/ui/KeyCombo'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { shortcutPlatform } from '@/lib/keybindings/bindings'
+import {
+  bindingsFor,
+  type KeybindingActionId,
+  matchesKeybinding,
+} from '@/lib/keybindings/registry'
 import {
   type EngineSnapshot,
   filterEntries,
@@ -54,12 +60,15 @@ const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
   { id: 'action', label: 'Actions' },
 ]
 
-/** The hint has to name the key the reader actually has. */
-const MODIFIER_LABEL =
-  typeof navigator !== 'undefined' &&
-  /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
-    ? '⌘K'
-    : 'ctrl K'
+/** The footer's key hints, in the order they read. The chords come from the
+ *  registry; only the wording is local. */
+const HINTS: Array<{ ids: KeybindingActionId[]; label: string }> = [
+  { ids: ['palette.choose'], label: 'open' },
+  // Both arrows: one direction is not a hint about moving through a list.
+  { ids: ['palette.previous', 'palette.next'], label: 'select' },
+  { ids: ['palette.cycleFilter'], label: 'filter' },
+  { ids: ['palette.close'], label: 'close' },
+]
 
 /** Icon plus the tint its chip carries. Colour is category, not severity —
  *  worker status gets its own dot below, where severity belongs. */
@@ -170,6 +179,7 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const viewportStyle = useKeyboardInset(open)
+  const platform = shortcutPlatform()
 
   // Reset per opening: a palette that reopens on the last query is a palette
   // you have to clear before you can use it. Closing returns focus to whatever
@@ -256,23 +266,26 @@ export function CommandPalette({
       ?.scrollIntoView({ block: 'nearest' })
   }
 
+  // The palette's own keys live in the registry too, under the `palette`
+  // scope: documented in the shortcut overlay, dispatched here, because only
+  // one of us is listening at a time.
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
+    if (matchesKeybinding('palette.close', event, platform)) {
       event.preventDefault()
       onClose()
       return
     }
-    if (event.key === 'ArrowDown' || (event.key === 'n' && event.ctrlKey)) {
+    if (matchesKeybinding('palette.next', event, platform)) {
       event.preventDefault()
       move(1)
       return
     }
-    if (event.key === 'ArrowUp' || (event.key === 'p' && event.ctrlKey)) {
+    if (matchesKeybinding('palette.previous', event, platform)) {
       event.preventDefault()
       move(-1)
       return
     }
-    if (event.key === 'Tab') {
+    if (matchesKeybinding('palette.cycleFilter', event, platform)) {
       event.preventDefault()
       const step = event.shiftKey ? -1 : 1
       const index = FILTERS.findIndex((option) => option.id === filter)
@@ -281,7 +294,7 @@ export function CommandPalette({
       setActive(0)
       return
     }
-    if (event.key === 'Enter') {
+    if (matchesKeybinding('palette.choose', event, platform)) {
       event.preventDefault()
       choose(flat[active])
     }
@@ -334,9 +347,11 @@ export function CommandPalette({
             autoComplete="off"
             spellCheck={false}
           />
-          <kbd className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost sm:block">
-            {MODIFIER_LABEL}
-          </kbd>
+          <KeyCombo
+            binding={bindingsFor('palette.toggle', platform)[0]}
+            platform={platform}
+            className="hidden shrink-0 sm:inline-flex"
+          />
           <button
             type="button"
             onClick={onClose}
@@ -444,7 +459,13 @@ export function CommandPalette({
                       </span>
                       {/* The right-hand tag is the first thing to give up when
                           the row has to fit a phone. */}
-                      {entry.meta ? (
+                      {entry.shortcut ? (
+                        <KeyCombo
+                          binding={entry.shortcut}
+                          platform={platform}
+                          className="hidden shrink-0 sm:inline-flex"
+                        />
+                      ) : entry.meta ? (
                         <span className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost sm:block">
                           {entry.meta}
                         </span>
@@ -459,30 +480,18 @@ export function CommandPalette({
         <div className="flex shrink-0 items-center gap-3 border-t border-edge px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[0.68rem] text-ink-ghost sm:pb-2">
           {/* Key hints are noise on a surface with no keys to press. */}
           <div className="hidden items-center gap-3 sm:flex">
-            <span className="flex items-center gap-1.5">
-              <kbd className="rounded border border-edge px-1 py-px font-mono">
-                <CornerDownLeft aria-hidden className="size-2.5" />
-              </kbd>
-              open
-            </span>
-            <span className="flex items-center gap-1.5">
-              <kbd className="rounded border border-edge px-1 py-px font-mono">
-                ↑↓
-              </kbd>
-              select
-            </span>
-            <span className="flex items-center gap-1.5">
-              <kbd className="rounded border border-edge px-1 py-px font-mono">
-                tab
-              </kbd>
-              filter
-            </span>
-            <span className="flex items-center gap-1.5">
-              <kbd className="rounded border border-edge px-1 py-px font-mono">
-                esc
-              </kbd>
-              close
-            </span>
+            {HINTS.map((hint) => (
+              <span key={hint.label} className="flex items-center gap-1.5">
+                {hint.ids.map((id) => (
+                  <KeyCombo
+                    key={id}
+                    binding={bindingsFor(id, platform)[0]}
+                    platform={platform}
+                  />
+                ))}
+                {hint.label}
+              </span>
+            ))}
           </div>
           <span className="ml-auto font-mono">
             {flat.length} result{flat.length === 1 ? '' : 's'}
