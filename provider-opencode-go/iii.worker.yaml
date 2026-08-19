@@ -10,4 +10,4 @@ description: OpenCode Go Chat Completions provider worker; implements provider::
 
 dependencies:
   state: "0.x"
-  llm-router: "1.x"
+  llm-router: "^1.0.0"

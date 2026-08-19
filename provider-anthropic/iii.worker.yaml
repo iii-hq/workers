@@ -10,4 +10,4 @@ description: Anthropic Messages API provider worker; implements provider::anthro
 
 dependencies:
   state: "0.x"
-  llm-router: "1.x"
+  llm-router: "^1.0.0"

@@ -16,7 +16,7 @@ dependencies:
   iii-observability: "^0.21.6"
   iii-stream: "^0.21.6"
   iii-directory: "^1.2.0"
-  llm-router: "1.x"
+  llm-router: "^1.0.0"
   session-manager: "^1.0.0"
   context-manager: "^1.0.0"
   provider-anthropic: "^1.0.0"

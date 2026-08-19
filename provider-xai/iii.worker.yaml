@@ -10,4 +10,4 @@ description: xAI Chat Completions provider worker; implements provider::xai::str
 
 dependencies:
   state: "0.x"
-  llm-router: "1.x"
+  llm-router: "^1.0.0"

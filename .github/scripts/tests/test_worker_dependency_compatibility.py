@@ -10,7 +10,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SHARED_DEPENDENCY_RANGES = {
     "configuration": "0.x",
-    "llm-router": "1.x",
+    "llm-router": "^1.0.0",
     "state": "0.x",
 }
 
@@ -21,7 +21,7 @@ def dependencies(worker: str) -> dict[str, str]:
     return data.get("dependencies", {})
 
 
-def test_shared_dependencies_use_major_wildcard_ranges() -> None:
+def test_shared_dependencies_use_compatible_ranges() -> None:
     consumers: dict[str, list[str]] = {
         dependency: [] for dependency in SHARED_DEPENDENCY_RANGES
     }
