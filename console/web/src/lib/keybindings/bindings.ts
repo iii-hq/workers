@@ -131,8 +131,13 @@ export function bindingMatchesEvent(
   if (wanted.meta !== event.metaKey) return false
   if (wanted.ctrl !== event.ctrlKey) return false
   if (wanted.alt !== event.altKey) return false
-  // See isPunctuationToken: the key value already encodes the shift.
-  if (!isPunctuationToken(parsed.key) && wanted.shift !== event.shiftKey) {
+  // See isPunctuationToken: the key value already encodes the shift, so `?`
+  // matches however the layout produces it. A binding that NAMES Shift means
+  // the physical chord, and gets the ordinary comparison.
+  if (
+    (!isPunctuationToken(parsed.key) || parsed.shift) &&
+    wanted.shift !== event.shiftKey
+  ) {
     return false
   }
   if (isAlphanumericToken(parsed.key)) {
@@ -173,8 +178,9 @@ export function conflictIdentity(binding: string, platform: Platform): string {
     resolved.meta ? 'meta' : '',
     resolved.ctrl ? 'ctrl' : '',
     resolved.alt ? 'alt' : '',
-    // Punctuation ignores shift when matching, so it must ignore it here too,
-    // or `?` and `Shift+?` would read as two free chords and both fire.
+    // Deliberately NOT the matching rule. `?` matches with or without shift,
+    // so it overlaps `Shift+?` even though the two match differently: register
+    // both and one keystroke fires both. They have to collide here.
     resolved.shift && !isPunctuationToken(parsed.key) ? 'shift' : '',
     parsed.key,
   ].join('+')
@@ -199,6 +205,10 @@ export const BROWSER_RESERVED: readonly string[] = [
   'Mod+T',
   'Mod+N',
   'Mod+Q',
+  // Print is the odd one out: the page does receive it and could preventDefault
+  // it. It is listed because taking Print away from the reader is its own kind
+  // of broken, not because the keystroke never arrives.
+  'Mod+P',
   'Mod+Shift+W',
   'Mod+Shift+N',
   'Mod+Shift+T',

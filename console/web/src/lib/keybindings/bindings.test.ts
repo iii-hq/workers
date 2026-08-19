@@ -108,6 +108,14 @@ describe('bindingMatchesEvent', () => {
     )
   })
 
+  it('honours Shift when the binding names it', () => {
+    // `?` is layout-independent; `Shift+/` is a physical chord and means it.
+    expect(
+      bindingMatchesEvent('Shift+/', press('/', { shiftKey: true }), 'mac'),
+    ).toBe(true)
+    expect(bindingMatchesEvent('Shift+/', press('/'), 'mac')).toBe(false)
+  })
+
   it('does not match a different key', () => {
     expect(
       bindingMatchesEvent('Mod+K', press('j', { metaKey: true }), 'mac'),
@@ -143,6 +151,9 @@ describe('conflictIdentity', () => {
   })
 
   it('treats punctuation as one chord however it is shifted', () => {
+    // Not the matching rule, on purpose: `?` matches shifted or not, so it
+    // overlaps `Shift+?`. Registering both would fire both on one keystroke,
+    // which is exactly what the conflict check exists to refuse.
     expect(conflictIdentity('?', 'mac')).toBe(
       conflictIdentity('Shift+?', 'mac'),
     )
@@ -160,6 +171,9 @@ describe('isBrowserReserved', () => {
     expect(isBrowserReserved('Mod+W', 'mac')).toBe(true)
     expect(isBrowserReserved('Mod+T', 'other')).toBe(true)
     expect(isBrowserReserved('Mod+1', 'mac')).toBe(true)
+    // Print: delivered to the page, but not ours to take.
+    expect(isBrowserReserved('Mod+P', 'mac')).toBe(true)
+    expect(isBrowserReserved('Mod+P', 'other')).toBe(true)
     // Same chord written the platform-specific way.
     expect(isBrowserReserved('Cmd+W', 'mac')).toBe(true)
     expect(isBrowserReserved('Ctrl+W', 'other')).toBe(true)
