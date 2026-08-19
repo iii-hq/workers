@@ -35,6 +35,16 @@ function markerFromText(text: string, prefix: string): string | null {
   return match?.[1] ?? null
 }
 
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error) ?? String(error)
+  } catch {
+    return String(error)
+  }
+}
+
 async function markerValue(pane: Locator, prefix: string): Promise<string> {
   await expect
     .poll(async () =>
@@ -426,11 +436,9 @@ test('runs multi-terminal PTYs, replay, tmux, Claude, and cleanup', async ({
         },
       })
       .catch((error: unknown) => error)
-    expect(
-      closedAttachError instanceof Error
-        ? closedAttachError.message
-        : String(closedAttachError),
-    ).toContain('terminal session does not exist')
+    expect(errorText(closedAttachError)).toContain(
+      'terminal session does not exist',
+    )
   } finally {
     await probe.shutdown()
   }
