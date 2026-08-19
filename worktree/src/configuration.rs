@@ -62,7 +62,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -97,7 +97,9 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// `Ok(None)` when the entry does not exist; missing-entry codes vary in
 /// case across engine versions, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -226,7 +228,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, cron: &CronSlot) {
     tracing::info!(structural, "worktree configuration reloaded");
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -234,12 +236,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: None,
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: None,
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

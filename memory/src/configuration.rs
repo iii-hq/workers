@@ -65,7 +65,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -100,7 +100,9 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// Returns `Ok(None)` when the entry does not exist. The engine's
 /// missing-entry codes vary in case, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         // A successful reply MUST carry `value`; treating its absence as
         // "no entry" would let a malformed response seed defaults over an
         // intended configuration.
@@ -210,7 +212,7 @@ async fn on_config_change(
     Ok(())
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -218,12 +220,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

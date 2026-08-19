@@ -44,7 +44,7 @@ pub async fn register_config(
     } else if should_seed_default(iii).await? {
         payload["initial_value"] = CodeRunnerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -69,7 +69,9 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
 /// `Ok(None)` when the entry does not exist yet. The engine's missing-entry
 /// codes vary in case, so match case-insensitively.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -146,7 +148,7 @@ pub async fn refresh(iii: &IIIClient, config: &SharedConfig) {
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -154,12 +156,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

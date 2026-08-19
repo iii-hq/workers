@@ -81,7 +81,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -117,7 +117,9 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// missing-entry codes vary in case (`function_not_found`,
 /// `STATEMENT_NOT_FOUND`, `NOT_FOUND`), so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -236,7 +238,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, leases: &LeaseCell
     tracing::info!("context-manager configuration reloaded");
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

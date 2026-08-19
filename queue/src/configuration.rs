@@ -57,7 +57,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&QueueConfig>) -> Res
             .normalized();
         payload["initial_value"] = seed.to_json();
     }
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::register",
         payload,
@@ -85,7 +85,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<QueueConfig, String> {
 /// snapshot before invoking this helper.
 pub async fn persist_config(iii: &IIIClient, config: &QueueConfig) -> Result<(), String> {
     config.validate()?;
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::set",
         json!({ "id": config_id(), "value": config.to_json() }),
@@ -170,7 +170,7 @@ async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(
+    match trigger_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -184,7 +184,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

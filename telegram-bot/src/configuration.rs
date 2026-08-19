@@ -55,7 +55,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::register",
         payload,
@@ -97,7 +97,7 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn try_get_config_value(iii: &IIIClient, timeout_ms: u64) -> Result<Option<Value>, String> {
-    match trigger_with_retry(
+    match trigger_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -185,7 +185,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, deps: &Arc<Deps>) 
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -194,12 +194,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

@@ -124,13 +124,15 @@ pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Va
             ));
         }
         let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-        let request = iii_sdk::protocol::TriggerRequest {
-            function_id: condition.function_id.clone(),
-            payload,
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        };
-        let raw = deps.iii.trigger(request).await;
+        let raw = deps
+            .iii
+            .trigger(iii_sdk::protocol::TriggerRequest {
+                function_id: condition.function_id.clone(),
+                payload,
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            })
+            .await;
 
         let decision = match raw {
             Ok(v) => parse_decision(&v),

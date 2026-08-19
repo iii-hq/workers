@@ -48,7 +48,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Resu
         let seed = seed.cloned().unwrap_or_default().normalized();
         payload["initial_value"] = seed.to_json();
     }
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::register",
         payload,
@@ -79,7 +79,7 @@ async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(
+    match trigger_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -177,7 +177,7 @@ fn swap_needed(current: &CronConfig, next: &CronConfig) -> bool {
             != next.adapter.as_ref().and_then(|a| a.config.clone())
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

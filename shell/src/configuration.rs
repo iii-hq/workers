@@ -222,7 +222,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
             ),
         }
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -284,7 +284,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 }
 
 async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
-    match trigger_with_retry(
+    match trigger_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id(), "raw": raw }),
@@ -292,7 +292,7 @@ async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        // `trigger_with_retry` flattens the structured `Error` to its
+        // `trigger_configuration_with_retry` flattens the structured `Error` to its
         // Display string, so we substring-match the recovered message rather
         // than branch on `Error::Remote { code }`. The engine's missing-entry
         // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
@@ -506,7 +506,7 @@ where
 
 /// Shared by the config bootstrap here and `ui.rs`'s `shell-ui`
 /// UI-state entry registration.
-pub(crate) async fn trigger_with_retry(
+pub(crate) async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -514,12 +514,15 @@ pub(crate) async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

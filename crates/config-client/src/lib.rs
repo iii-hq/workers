@@ -66,7 +66,7 @@ pub async fn register(
     if fetch(iii, spec.id).await?.is_none() {
         payload["initial_value"] = seed.unwrap_or_else(|| spec.default_value.clone());
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -80,14 +80,14 @@ pub async fn register(
 /// configuration worker that is absent or unroutable must surface as an
 /// error, never read as "nothing stored yet".
 pub async fn fetch(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": id })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": id })).await {
         Ok(resp) => Ok(resp.get("value").cloned().filter(|v| !v.is_null())),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
