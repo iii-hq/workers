@@ -36,6 +36,8 @@ import {
   defaultCollapsedReviewPaths,
   desiredReviewEntries,
   exactCoderText,
+  gitLookupTarget,
+  loadReviewContents,
   expandedReviewPaths,
   LARGE_REVIEW_EAGER_FILE_COUNT,
   LARGE_REVIEW_THRESHOLD,
@@ -408,5 +410,113 @@ describe('orderedReviewSummaries', () => {
         newContents: null,
       },
     ])
+  })
+})
+
+describe('gitLookupTarget', () => {
+  it('runs Git in the file own directory so a nested repository answers', () => {
+    expect(gitLookupTarget('/root', 'nested/repo/src/app.ts')).toEqual({
+      cwd: '/root/nested/repo/src',
+      name: 'app.ts',
+    })
+    expect(gitLookupTarget('/root', 'top.ts')).toEqual({
+      cwd: '/root',
+      name: 'top.ts',
+    })
+  })
+})
+
+function execHost(replies: Record<string, unknown>) {
+  const trigger = vi.fn(async (functionId: string, input: unknown) => {
+    const reply = replies[functionId]
+    if (reply === undefined) throw new Error(`unexpected function ${functionId}`)
+    return typeof reply === 'function'
+      ? (reply as (value: unknown) => unknown)(input)
+      : reply
+  })
+  return {
+    host: { iii: { trigger } } as unknown as Parameters<typeof loadReviewContents>[0],
+    trigger,
+  }
+}
+
+describe('loadReviewContents without a captured baseline', () => {
+  const uncaptured: ReviewEntry = {
+    path: 'nested/repo/src/app.ts',
+    change: { path: 'nested/repo/src/app.ts', status: 'modified', staged: false },
+    baseline: null,
+  }
+
+  it('falls back to the committed body and labels it', async () => {
+    const { host, trigger } = execHost({
+      'shell::exec': {
+        exit_code: 0,
+        stdout: 'committed\n',
+        stderr: '',
+        timed_out: false,
+        stdout_truncated: false,
+        stderr_truncated: false,
+      },
+      'coder::read-file': {
+        content: 'current\n',
+        is_utf8: true,
+        more_lines: false,
+        revision: 'r1',
+        mode: 420,
+      },
+    })
+
+    await expect(loadReviewContents(host, '/root', uncaptured)).resolves.toEqual({
+      oldContents: 'committed\n',
+      newContents: 'current\n',
+      worktreeRevision: 'r1',
+      mode: 420,
+      baselineSource: 'committed',
+    })
+    expect(trigger).toHaveBeenCalledWith(
+      'shell::exec',
+      expect.objectContaining({ cwd: '/root/nested/repo/src' }),
+    )
+  })
+
+  it('keeps failing closed when there is no committed body either', async () => {
+    const { host } = execHost({
+      'shell::exec': {
+        exit_code: 128,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        timed_out: false,
+        stdout_truncated: false,
+        stderr_truncated: false,
+      },
+    })
+
+    await expect(loadReviewContents(host, '/root', uncaptured)).rejects.toThrow(
+      'earlier content was not captured for this turn',
+    )
+  })
+
+  it('compares a deleted file against its committed body', async () => {
+    const { host } = execHost({
+      'shell::exec': {
+        exit_code: 0,
+        stdout: 'committed\n',
+        stderr: '',
+        timed_out: false,
+        stdout_truncated: false,
+        stderr_truncated: false,
+      },
+    })
+
+    await expect(
+      loadReviewContents(host, '/root', {
+        ...uncaptured,
+        change: { ...uncaptured.change, status: 'deleted' },
+      }),
+    ).resolves.toEqual({
+      oldContents: 'committed\n',
+      newContents: '',
+      baselineSource: 'committed',
+    })
   })
 })

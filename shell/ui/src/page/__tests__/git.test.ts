@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   gitBranchComparison,
   gitChanges,
+  gitHeadBaseline,
   gitCommitComparison,
   gitComparison,
   gitReadSource,
@@ -879,5 +880,47 @@ describe('git metadata', () => {
       kind: 'error',
       message: 'git for-each-ref returned an unexpected ref',
     })
+  })
+})
+
+describe('gitHeadBaseline', () => {
+  it("reads the committed body from the file's own directory", async () => {
+    const { host, trigger } = mockedHost(reply({ stdout: 'committed\n' }))
+
+    await expect(
+      gitHeadBaseline(host, '/root/nested/src', 'app.ts'),
+    ).resolves.toBe('committed\n')
+    expect(trigger).toHaveBeenCalledWith('shell::exec', {
+      command: 'git',
+      args: ['show', 'HEAD:./app.ts'],
+      cwd: '/root/nested/src',
+      timeout_ms: 15_000,
+    })
+  })
+
+  it('reports absence instead of an empty body', async () => {
+    const untracked = mockedHost(
+      reply({ exit_code: 128, stderr: "fatal: path 'app.ts' does not exist" }),
+    )
+    await expect(
+      gitHeadBaseline(untracked.host, '/root', 'app.ts'),
+    ).resolves.toBeNull()
+
+    const truncated = mockedHost(
+      reply({ stdout: 'partial', stdout_truncated: true }),
+    )
+    await expect(
+      gitHeadBaseline(truncated.host, '/root', 'app.ts'),
+    ).resolves.toBeNull()
+
+    const binary = mockedHost(reply({ stdout: 'PNG\0data' }))
+    await expect(
+      gitHeadBaseline(binary.host, '/root', 'logo.png'),
+    ).resolves.toBeNull()
+
+    const failed = mockedHost(new Error('exec unavailable'))
+    await expect(
+      gitHeadBaseline(failed.host, '/root', 'app.ts'),
+    ).resolves.toBeNull()
   })
 })
