@@ -339,7 +339,7 @@ fn canonical_value(value: &serde_json::Value) -> serde_json::Value {
 // built from the full request contracts elsewhere — so it keeps just the
 // matching signal: the name, the description's first sentence, and argument
 // names. Proposed payloads stay coarse as a consequence.
-fn slim_description(description: &str) -> String {
+pub(crate) fn slim_description(description: &str) -> String {
     let line = description.lines().next().unwrap_or_default();
     let sentence = match line.find(". ") {
         Some(position) => &line[..=position],

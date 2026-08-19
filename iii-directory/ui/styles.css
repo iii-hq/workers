@@ -1692,14 +1692,16 @@
 }
 
 [data-iii-ui="iii-directory"] .discovery-search-install-fn .fn-id {
+  flex-shrink: 0;
   color: var(--color-ink);
-  word-break: break-all;
 }
 
 [data-iii-ui="iii-directory"] .discovery-search-install-fn .fn-desc {
+  flex: 1;
   min-width: 0;
   color: var(--color-ink-faint);
   font-size: 11.5px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 

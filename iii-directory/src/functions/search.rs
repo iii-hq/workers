@@ -566,7 +566,9 @@ fn assemble_installable(
         };
         let function = InstallableFunction {
             function_id: tool.name.clone(),
-            description: tool.description,
+            // First sentence only — enough to decide whether the worker
+            // fits; the full contract arrives after installing.
+            description: crate::functions::search_index::slim_description(&tool.description),
         };
         match section
             .iter()
