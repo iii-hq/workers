@@ -31,6 +31,10 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def canonical_sha256(value: Any) -> str:
+    return f"sha256:{hashlib.sha256(canonical(value).encode()).hexdigest()}"
+
+
 def require_uuid(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a UUID")
@@ -53,9 +57,150 @@ def require_digest(value: Any, label: str) -> str:
     return value
 
 
+def require_version_map(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"{label} must be a non-empty object")
+    result: dict[str, str] = {}
+    for worker, version in value.items():
+        if not isinstance(worker, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", worker):
+            raise ValueError(f"{label} contains an invalid worker name")
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            raise ValueError(f"{label} contains an invalid version for {worker}")
+        result[worker] = version
+    return result
+
+
+def require_positive_integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def v2_target_member(contract: dict[str, Any], target: dict[str, Any], name: str) -> Any:
+    """Accept the early top-level draft while emitting target-scoped v2 contracts."""
+    return target.get(name) if name in target else contract.get(name)
+
+
+def validate_v2_contract(contract: dict[str, Any], target: dict[str, Any], runner: dict[str, Any]) -> None:
+    stack = v2_target_member(contract, target, "stack")
+    if not isinstance(stack, dict):
+        raise ValueError("target.stack must be an object")
+    requested = require_version_map(stack.get("requested_versions"), "target.stack.requested_versions")
+    resolved = require_version_map(stack.get("resolved_versions"), "target.stack.resolved_versions")
+    if requested != resolved:
+        raise ValueError("target stack requested_versions must equal resolved_versions")
+    if resolved != target["stack_versions"]:
+        raise ValueError("target stack resolved_versions must match target.stack_versions")
+    resolution_sha256 = require_digest(stack.get("resolution_sha256"), "target.stack.resolution_sha256")
+    if resolution_sha256 != canonical_sha256(resolved):
+        raise ValueError("target stack resolution_sha256 does not match resolved_versions")
+    if resolution_sha256 != target["stack_digest"]:
+        raise ValueError("target stack resolution_sha256 must match target.stack_digest")
+
+    origin = v2_target_member(contract, target, "origin")
+    if not isinstance(origin, dict):
+        raise ValueError("target.origin must be an object")
+    require_uuid(origin.get("operation_id"), "target.origin.operation_id")
+    require_uuid(origin.get("step_id"), "target.origin.step_id")
+    origin_worker = require_text(origin.get("worker"), "target.origin.worker")
+    origin_version = require_text(origin.get("version"), "target.origin.version")
+    if resolved.get(origin_worker) != origin_version:
+        raise ValueError("target origin worker/version must be present in the resolved stack")
+    origin_sha = require_text(origin.get("source_sha"), "target.origin.source_sha")
+    if not re.fullmatch(r"[0-9a-f]{40}", origin_sha):
+        raise ValueError("target.origin.source_sha must be a full lowercase git SHA")
+    require_positive_integer(origin.get("release_run_id"), "target.origin.release_run_id")
+    require_positive_integer(origin.get("release_run_attempt"), "target.origin.release_run_attempt")
+
+    base = v2_target_member(contract, target, "base")
+    if not isinstance(base, dict) or base.get("kind") not in {"deployment", "snapshot"}:
+        raise ValueError("target.base.kind must be deployment or snapshot")
+    require_uuid(base.get("id"), "target.base.id")
+
+    provenance = stack.get("provenance")
+    if not isinstance(provenance, list) or len(provenance) != len(resolved):
+        raise ValueError("target.stack.provenance must describe every resolved worker")
+    provenance_workers: list[str] = []
+    for index, item in enumerate(provenance):
+        if not isinstance(item, dict):
+            raise ValueError(f"target.stack.provenance[{index}] must be an object")
+        worker = require_text(item.get("worker"), f"target.stack.provenance[{index}].worker")
+        version = require_text(item.get("version"), f"target.stack.provenance[{index}].version")
+        if resolved.get(worker) != version:
+            raise ValueError(f"target stack provenance does not match resolved version for {worker}")
+        provenance_workers.append(worker)
+        source_sha = item.get("source_sha")
+        if source_sha is not None and (not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha)):
+            raise ValueError(f"target.stack.provenance[{index}].source_sha is invalid")
+        for field in ("operation_id", "step_id"):
+            if item.get(field) is not None:
+                require_uuid(item[field], f"target.stack.provenance[{index}].{field}")
+        run_id = item.get("release_run_id")
+        run_attempt = item.get("release_run_attempt")
+        if (run_id is None) != (run_attempt is None):
+            raise ValueError("target stack provenance release run id and attempt must be paired")
+        if run_id is not None:
+            require_positive_integer(run_id, f"target.stack.provenance[{index}].release_run_id")
+            require_positive_integer(run_attempt, f"target.stack.provenance[{index}].release_run_attempt")
+    if provenance_workers != sorted(provenance_workers) or len(set(provenance_workers)) != len(provenance_workers):
+        raise ValueError("target.stack.provenance must be unique and ordered by worker")
+    origin_provenance = next((item for item in provenance if item.get("worker") == origin_worker), None)
+    if not origin_provenance or any(
+        origin_provenance.get(field) != origin.get(field)
+        for field in (
+            "worker",
+            "version",
+            "source_sha",
+            "operation_id",
+            "step_id",
+            "release_run_id",
+            "release_run_attempt",
+        )
+    ):
+        raise ValueError("target origin must match its stack provenance entry")
+
+    runtime = contract.get("runtime")
+    if not isinstance(runtime, dict):
+        raise ValueError("runtime must be an object")
+    cli = runtime.get("cli")
+    if not isinstance(cli, dict):
+        raise ValueError("runtime.cli must be an object")
+    cli_version = require_text(cli.get("version"), "runtime.cli.version")
+    if not VERSION.fullmatch(cli_version):
+        raise ValueError("runtime.cli.version must be an exact version")
+    runtime_versions = require_version_map(runtime.get("stack_versions"), "runtime.stack_versions")
+    runtime_digest = require_digest(runtime.get("stack_digest"), "runtime.stack_digest")
+    if runtime_digest != canonical_sha256(runtime_versions):
+        raise ValueError("runtime.stack_digest does not match runtime.stack_versions")
+    conflicts = sorted(
+        worker for worker in runtime_versions.keys() & resolved.keys() if runtime_versions[worker] != resolved[worker]
+    )
+    if conflicts:
+        raise ValueError(f"runtime and target stack pins conflict: {', '.join(conflicts)}")
+
+    runner_ref = require_text(runner.get("registry_ref"), "runner.registry_ref")
+    if not VERSION.fullmatch(runner_ref):
+        raise ValueError("runner.registry_ref must be an exact version for schema v2")
+    runner_revision = runner.get("revision")
+    if runner_revision is not None and (
+        not isinstance(runner_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", runner_revision)
+    ):
+        raise ValueError("runner.revision must be a full lowercase git SHA")
+    if runner.get("catalog_sha256") is not None:
+        require_digest(runner["catalog_sha256"], "runner.catalog_sha256")
+
+    security = contract.get("security")
+    if not isinstance(security, dict):
+        raise ValueError("security must be an object")
+    audience = require_text(security.get("oidc_audience"), "security.oidc_audience")
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", audience):
+        raise ValueError("security.oidc_audience contains unsupported characters")
+
+
 def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
-    if contract.get("schema_version") != 1:
-        raise ValueError("execution contract schema_version must be 1")
+    schema_version = contract.get("schema_version")
+    if schema_version not in {1, 2}:
+        raise ValueError("execution contract schema_version must be 1 or 2")
     require_uuid(contract.get("campaign_id"), "campaign_id")
     require_uuid(contract.get("execution_id"), "execution_id")
     attempt = contract.get("attempt")
@@ -73,14 +218,7 @@ def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise ValueError("target.source_sha must be a full lowercase git SHA")
     require_uuid(target.get("deployment_id"), "target.deployment_id")
-    stack = target.get("stack_versions")
-    if not isinstance(stack, dict) or not stack:
-        raise ValueError("target.stack_versions must be a non-empty object")
-    for worker, version in stack.items():
-        if not isinstance(worker, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", worker):
-            raise ValueError("target.stack_versions contains an invalid worker name")
-        if not isinstance(version, str) or not VERSION.fullmatch(version):
-            raise ValueError(f"target.stack_versions contains an invalid version for {worker}")
+    stack = require_version_map(target.get("stack_versions"), "target.stack_versions")
     if stack.get("harness") != target.get("version"):
         raise ValueError("target version must match stack_versions.harness")
     require_digest(target.get("stack_digest"), "target.stack_digest")
@@ -121,6 +259,8 @@ def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     runner_ref = require_text(runner.get("registry_ref"), "runner.registry_ref")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", runner_ref):
         raise ValueError("runner.registry_ref is invalid")
+    if schema_version == 2:
+        validate_v2_contract(contract, target, runner)
     return contract
 
 
@@ -134,6 +274,14 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
     for field in ("name", "version", "revision"):
         require_text(runner.get(field), f"catalog.runner.{field}")
     catalog_sha256 = require_digest(catalog.get("catalog_sha256"), "catalog.catalog_sha256")
+    if contract["schema_version"] == 2:
+        expected_runner = contract["runner"]
+        if runner.get("name") != expected_runner["registry_worker"] or runner.get("version") != expected_runner["registry_ref"]:
+            raise ValueError("scenario catalog runner does not match the exact runner pin")
+        if expected_runner.get("revision") is not None and runner.get("revision") != expected_runner["revision"]:
+            raise ValueError("scenario catalog runner revision does not match the contract")
+        if expected_runner.get("catalog_sha256") is not None and catalog_sha256 != expected_runner["catalog_sha256"]:
+            raise ValueError("scenario catalog digest does not match the contract")
     descriptors = catalog.get("scenarios")
     if not isinstance(descriptors, list):
         raise ValueError("scenario catalog scenarios must be a list")
@@ -169,6 +317,12 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
             }
         )
 
+    target_stack = contract["target"]["stack_versions"]
+    target_stack_digest = contract["target"]["stack_digest"]
+    if contract["schema_version"] == 2:
+        stack = v2_target_member(contract, contract["target"], "stack")
+        target_stack = stack["resolved_versions"]
+        target_stack_digest = stack["resolution_sha256"]
     run_contract = {
         "schema_version": 1,
         "mode": {"environment": "demonstration", "decision": "observe_only"},
@@ -177,8 +331,8 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
             "version": contract["target"]["version"],
             "stack": {
                 "mode": "registry",
-                "stack_versions": contract["target"]["stack_versions"],
-                "stack_lock_digest": contract["target"]["stack_digest"],
+                "stack_versions": target_stack,
+                "stack_lock_digest": target_stack_digest,
             },
         },
         "plan": {
@@ -214,6 +368,79 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
     }
 
 
+def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
+    validate_contract(contract)
+    try:
+        import yaml
+    except ImportError as error:  # pragma: no cover - CI installs PyYAML explicitly.
+        raise ValueError("PyYAML is required to verify iii.lock") from error
+
+    lock = yaml.safe_load(lock_path.read_text()) or {}
+    workers = lock.get("workers") if isinstance(lock, dict) else None
+    if not isinstance(workers, dict):
+        raise ValueError("iii.lock workers must be an object")
+    observed = {
+        str(worker): str(record.get("version"))
+        for worker, record in workers.items()
+        if isinstance(record, dict) and isinstance(record.get("version"), str)
+    }
+
+    target = contract["target"]
+    if contract["schema_version"] == 2:
+        stack = v2_target_member(contract, target, "stack")
+        expected_target = stack["resolved_versions"]
+        target_digest = stack["resolution_sha256"]
+        runtime = contract["runtime"]
+        expected_runtime = runtime["stack_versions"]
+        runtime_digest = runtime["stack_digest"]
+    else:
+        expected_target = target["stack_versions"]
+        target_digest = target["stack_digest"]
+        expected_runtime = {}
+        runtime_digest = None
+
+    expected = {**expected_runtime, **expected_target, contract["runner"]["registry_worker"]: contract["runner"]["registry_ref"]}
+    mismatches = [
+        f"{worker}: expected {version}, resolved {observed.get(worker, 'missing')}"
+        for worker, version in sorted(expected.items())
+        if observed.get(worker) != version
+    ]
+    if mismatches:
+        raise ValueError("stack_version_mismatch: " + "; ".join(mismatches))
+
+    target_stack = v2_target_member(contract, target, "stack") if contract["schema_version"] == 2 else None
+    return {
+        "schema": "e2e-stack-manifest/v1",
+        "contract_schema_version": contract["schema_version"],
+        "target": {
+            "application": target["application"],
+            "version": target["version"],
+            "requested_versions": target_stack["requested_versions"] if target_stack else expected_target,
+            "resolved_versions": expected_target,
+            "observed_versions": {worker: observed[worker] for worker in sorted(expected_target)},
+            "resolution_sha256": target_digest,
+            "provenance": target_stack.get("provenance", []) if target_stack else [],
+        },
+        "runtime": {
+            "cli": contract.get("runtime", {}).get("cli"),
+            "stack_versions": expected_runtime,
+            "observed_versions": {worker: observed[worker] for worker in sorted(expected_runtime)},
+            "stack_digest": runtime_digest,
+        },
+        "runner": {
+            **contract["runner"],
+            "observed_version": observed[contract["runner"]["registry_worker"]],
+        },
+        "lock": {
+            "sha256": f"sha256:{hashlib.sha256(lock_path.read_bytes()).hexdigest()}",
+            "worker_count": len(observed),
+            "resolved_versions": dict(sorted(observed.items())),
+        },
+        "origin": v2_target_member(contract, target, "origin") if contract["schema_version"] == 2 else None,
+        "base": v2_target_member(contract, target, "base") if contract["schema_version"] == 2 else None,
+    }
+
+
 def package_bundle(root: Path, contract: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     validate_contract(contract)
     files = []
@@ -236,6 +463,7 @@ def package_bundle(root: Path, contract: dict[str, Any], workflow: dict[str, Any
         "campaign_id": contract["campaign_id"],
         "execution_id": contract["execution_id"],
         "attempt": contract["attempt"],
+        "execution_contract_sha256": canonical_sha256(contract),
         "workflow": workflow,
         "terminal_payload": "results.json" if terminal.is_file() else None,
         "failure_payload": "failure.json" if failure.is_file() else None,
@@ -248,10 +476,16 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate")
     validate.add_argument("--contract", type=Path, required=True)
+    digest = commands.add_parser("digest")
+    digest.add_argument("--contract", type=Path, required=True)
     materialize = commands.add_parser("materialize")
     materialize.add_argument("--contract", type=Path, required=True)
     materialize.add_argument("--catalog", type=Path, required=True)
     materialize.add_argument("--output", type=Path, required=True)
+    lock = commands.add_parser("verify-lock")
+    lock.add_argument("--contract", type=Path, required=True)
+    lock.add_argument("--lock", type=Path, required=True)
+    lock.add_argument("--output", type=Path, required=True)
     package = commands.add_parser("package")
     package.add_argument("--root", type=Path, required=True)
     package.add_argument("--contract", type=Path, required=True)
@@ -262,9 +496,14 @@ def main() -> int:
         contract = validate_contract(load_object(args.contract, "execution contract"))
         if args.command == "validate":
             print(canonical(contract))
+        elif args.command == "digest":
+            print(canonical_sha256(contract))
         elif args.command == "materialize":
             request = materialize_request(contract, load_object(args.catalog, "scenario catalog"))
             args.output.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
+        elif args.command == "verify-lock":
+            manifest = verify_lock(contract, args.lock)
+            args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         else:
             workflow = json.loads(args.workflow)
             if not isinstance(workflow, dict):
