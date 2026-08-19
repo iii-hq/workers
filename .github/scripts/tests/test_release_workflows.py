@@ -10,6 +10,7 @@ WORKFLOWS = ROOT / "workflows"
 COMMON = {"operation_id", "step_id"}
 
 EXPECTED_INPUTS = {
+    "harness-e2e-shadow.yml": {"campaign_id", "execution_id", "attempt", "execution_contract"},
     "create-tag.yml": COMMON | {"worker", "target_version", "registry_tag", "experimental", "expected_current_version", "source_sha"},
     "create-prerelease-tag.yml": COMMON | {"worker", "target_version", "source_sha", "experimental"},
     "release.yml": COMMON | {"source_tag_step_id", "tag", "publish_registry"},
@@ -124,7 +125,11 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         body = (WORKFLOWS / name).read_text()
         assert "release_control_contract.py validate-dispatch" in body, name
         assert "RELEASE_CONTROL_BOT_LOGIN" in body, name
-        assert "execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}" in body, name
+        if name == "harness-e2e-shadow.yml":
+            assert "e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}" in body, name
+            assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in body, name
+        else:
+            assert "execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}" in body, name
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
