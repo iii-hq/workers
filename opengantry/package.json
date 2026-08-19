@@ -4,6 +4,10 @@
   "private": true,
   "description": "OpenGantry governance worker for iii: kernel verify and middleware gate.",
   "license": "Apache-2.0",
+  "author": "Jürgen Eger <jeger@commitly.com> (https://github.com/jeger-at)",
+  "contributors": [
+    "Jürgen Eger <jeger@commitly.com> (https://github.com/jeger-at)"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"

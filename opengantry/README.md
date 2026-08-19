@@ -282,3 +282,7 @@ Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in 
 | `src/repo-path.js` | Absolute repo resolution. Lease-path jail under `.gitagent/`. |
 | `src/formats.js` | Zod → JSON Schema for `registerFunction`. |
 | `src/denied.js` | `GantryDenied`. Throw so iii records `InvocationResult.error`. |
+
+## Credits
+
+Originally contributed by [@jeger-at](https://github.com/jeger-at).
