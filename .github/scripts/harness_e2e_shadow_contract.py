@@ -98,19 +98,21 @@ def validate_v2_contract(contract: dict[str, Any], target: dict[str, Any], runne
         raise ValueError("target stack resolution_sha256 must match target.stack_digest")
 
     origin = v2_target_member(contract, target, "origin")
-    if not isinstance(origin, dict):
-        raise ValueError("target.origin must be an object")
-    require_uuid(origin.get("operation_id"), "target.origin.operation_id")
-    require_uuid(origin.get("step_id"), "target.origin.step_id")
-    origin_worker = require_text(origin.get("worker"), "target.origin.worker")
-    origin_version = require_text(origin.get("version"), "target.origin.version")
-    if resolved.get(origin_worker) != origin_version:
-        raise ValueError("target origin worker/version must be present in the resolved stack")
-    origin_sha = require_text(origin.get("source_sha"), "target.origin.source_sha")
-    if not re.fullmatch(r"[0-9a-f]{40}", origin_sha):
-        raise ValueError("target.origin.source_sha must be a full lowercase git SHA")
-    require_positive_integer(origin.get("release_run_id"), "target.origin.release_run_id")
-    require_positive_integer(origin.get("release_run_attempt"), "target.origin.release_run_attempt")
+    origin_worker = None
+    if origin is not None:
+        if not isinstance(origin, dict):
+            raise ValueError("target.origin must be an object or null")
+        require_uuid(origin.get("operation_id"), "target.origin.operation_id")
+        require_uuid(origin.get("step_id"), "target.origin.step_id")
+        origin_worker = require_text(origin.get("worker"), "target.origin.worker")
+        origin_version = require_text(origin.get("version"), "target.origin.version")
+        if resolved.get(origin_worker) != origin_version:
+            raise ValueError("target origin worker/version must be present in the resolved stack")
+        origin_sha = require_text(origin.get("source_sha"), "target.origin.source_sha")
+        if not re.fullmatch(r"[0-9a-f]{40}", origin_sha):
+            raise ValueError("target.origin.source_sha must be a full lowercase git SHA")
+        require_positive_integer(origin.get("release_run_id"), "target.origin.release_run_id")
+        require_positive_integer(origin.get("release_run_attempt"), "target.origin.release_run_attempt")
 
     base = v2_target_member(contract, target, "base")
     if not isinstance(base, dict) or base.get("kind") not in {"deployment", "snapshot"}:
@@ -144,20 +146,21 @@ def validate_v2_contract(contract: dict[str, Any], target: dict[str, Any], runne
             require_positive_integer(run_attempt, f"target.stack.provenance[{index}].release_run_attempt")
     if provenance_workers != sorted(provenance_workers) or len(set(provenance_workers)) != len(provenance_workers):
         raise ValueError("target.stack.provenance must be unique and ordered by worker")
-    origin_provenance = next((item for item in provenance if item.get("worker") == origin_worker), None)
-    if not origin_provenance or any(
-        origin_provenance.get(field) != origin.get(field)
-        for field in (
-            "worker",
-            "version",
-            "source_sha",
-            "operation_id",
-            "step_id",
-            "release_run_id",
-            "release_run_attempt",
-        )
-    ):
-        raise ValueError("target origin must match its stack provenance entry")
+    if origin_worker is not None:
+        origin_provenance = next((item for item in provenance if item.get("worker") == origin_worker), None)
+        if not origin_provenance or any(
+            origin_provenance.get(field) != origin.get(field)
+            for field in (
+                "worker",
+                "version",
+                "source_sha",
+                "operation_id",
+                "step_id",
+                "release_run_id",
+                "release_run_attempt",
+            )
+        ):
+            raise ValueError("target origin must match its stack provenance entry")
 
     runtime = contract.get("runtime")
     if not isinstance(runtime, dict):
@@ -214,14 +217,26 @@ def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(target, dict) or target.get("application") != "harness":
         raise ValueError("target application must be harness")
     require_text(target.get("version"), "target.version")
-    source_sha = require_text(target.get("source_sha"), "target.source_sha")
-    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
-        raise ValueError("target.source_sha must be a full lowercase git SHA")
-    require_uuid(target.get("deployment_id"), "target.deployment_id")
-    stack = require_version_map(target.get("stack_versions"), "target.stack_versions")
-    if stack.get("harness") != target.get("version"):
-        raise ValueError("target version must match stack_versions.harness")
-    require_digest(target.get("stack_digest"), "target.stack_digest")
+    if schema_version == 1:
+        source_sha = require_text(target.get("source_sha"), "target.source_sha")
+        if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+            raise ValueError("target.source_sha must be a full lowercase git SHA")
+        require_uuid(target.get("deployment_id"), "target.deployment_id")
+        stack = require_version_map(target.get("stack_versions"), "target.stack_versions")
+        if stack.get("harness") != target.get("version"):
+            raise ValueError("target version must match stack_versions.harness")
+        require_digest(target.get("stack_digest"), "target.stack_digest")
+    else:
+        if target.get("source_sha") is not None and not re.fullmatch(r"[0-9a-f]{40}", target["source_sha"]):
+            raise ValueError("target.source_sha must be a full lowercase git SHA when present")
+        if target.get("deployment_id") is not None:
+            require_uuid(target["deployment_id"], "target.deployment_id")
+        if target.get("stack_versions") is not None:
+            stack = require_version_map(target["stack_versions"], "target.stack_versions")
+            if stack.get("harness") != target.get("version"):
+                raise ValueError("target version must match stack_versions.harness")
+        if target.get("stack_digest") is not None:
+            require_digest(target["stack_digest"], "target.stack_digest")
 
     plan = contract.get("plan")
     if not isinstance(plan, dict):
@@ -346,7 +361,7 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
         "selected_cases": selected_cases,
         "correlation": {
             "system": "release-control",
-            "deployment_id": contract["target"]["deployment_id"],
+            "deployment_id": contract["target"].get("deployment_id") or contract["campaign_id"],
             "operation_id": contract["campaign_id"],
         },
     }
