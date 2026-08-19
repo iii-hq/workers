@@ -3,6 +3,18 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
@@ -270,36 +282,26 @@ const components: Components = {
     )
   },
   table: ({ className, ...rest }) => (
-    <div className="my-4 overflow-x-auto rounded-md border border-rule-2">
-      <table
-        className={cn(
-          'w-full border-collapse font-mono text-[13px] text-ink',
-          className,
-        )}
-        {...rest}
-      />
-    </div>
+    <TableViewport className="my-4">
+      <TableFrame>
+        <Table density="compact" className={className} {...rest} />
+      </TableFrame>
+    </TableViewport>
   ),
   thead: ({ className, ...rest }) => (
-    <thead className={cn('bg-surface', className)} {...rest} />
+    <TableHeader className={className} {...rest} />
   ),
-  th: ({ className, ...rest }) => (
-    <th
-      className={cn(
-        'text-left px-3 py-2 border-b border-rule font-medium text-[11px] uppercase tracking-[0.06em] text-ink-faint',
-        className,
-      )}
-      {...rest}
-    />
+  tbody: ({ className, ...rest }) => (
+    <TableBody className={className} {...rest} />
   ),
-  td: ({ className, ...rest }) => (
-    <td
-      className={cn(
-        'px-3 py-2 border-b border-rule-2 last:border-b-0',
-        className,
-      )}
-      {...rest}
-    />
+  tfoot: ({ className, ...rest }) => (
+    <TableFooter className={className} {...rest} />
+  ),
+  tr: ({ className, ...rest }) => <TableRow className={className} {...rest} />,
+  th: ({ className, ...rest }) => <TableHead className={className} {...rest} />,
+  td: ({ className, ...rest }) => <TableCell className={className} {...rest} />,
+  caption: ({ className, ref: _ref, ...rest }) => (
+    <TableCaption className={className} {...rest} />
   ),
 }
 

@@ -107,18 +107,18 @@ export function SessionAddonsPicker({
         aria-label="session skills"
         disabled={disabled}
         className={cn(
-          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-mono text-[13px] lowercase hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
+          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-sans text-[13px] hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
           disabled && 'opacity-40 pointer-events-none',
           className,
         )}
       >
         <span className="inline-flex items-center gap-2 min-w-0">
-          <Blocks size={14} className="text-ink-faint" aria-hidden />
+          <Blocks size={16} className="text-ink-faint" aria-hidden />
           <span className="truncate">
-            {count > 0 ? `skills (${count})` : 'skills'}
+            {count > 0 ? `Skills (${count})` : 'Skills'}
           </span>
         </span>
-        <ChevronDown size={12} aria-hidden />
+        <ChevronDown size={16} aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
@@ -130,9 +130,9 @@ export function SessionAddonsPicker({
         className="min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(24rem,var(--radix-dropdown-menu-content-available-width))] max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto text-[13px]"
       >
         {entries === null ? (
-          <DropdownMenuItem disabled>loading skills…</DropdownMenuItem>
+          <DropdownMenuItem disabled>Loading skills…</DropdownMenuItem>
         ) : entries.length === 0 ? (
-          <DropdownMenuItem disabled>no skills available</DropdownMenuItem>
+          <DropdownMenuItem disabled>No skills available</DropdownMenuItem>
         ) : (
           entries.map((e) => (
             <DropdownMenuCheckboxItem
@@ -141,12 +141,12 @@ export function SessionAddonsPicker({
               /* Keep the menu open across toggles: multi-select. */
               onSelect={(ev) => ev.preventDefault()}
               onCheckedChange={() => void toggle(e.name)}
-              /* Same accent ✓ as the StrategyToggle beside this picker. */
+              /* Selection indicators stay neutral across themes. */
               indicator={
                 <Check
-                  size={12}
+                  size={16}
                   strokeWidth={2.5}
-                  className="text-accent"
+                  className="text-ink"
                   aria-hidden
                 />
               }

@@ -80,7 +80,6 @@ interface View {
   z: number
 }
 
-
 interface MermaidPaneProps {
   host: Host
   record: CanvasRecord
@@ -217,7 +216,10 @@ export function MermaidPane({
         initMermaidOnce(mermaid, theme)
         await mermaid.parse(source)
         if (seqRef.current !== seq) return
-        const { svg } = await mermaid.render(`cv-mmd-${record.id}-${seq}`, source)
+        const { svg } = await mermaid.render(
+          `cv-mmd-${record.id}-${seq}`,
+          source,
+        )
         setPreview((s) => renderSucceeded(s, seq, svg))
       } catch (err) {
         setPreview((s) => renderFailed(s, seq, errorMessage(err)))
@@ -254,7 +256,8 @@ export function MermaidPane({
     const svg = el.querySelector('svg')
     if (!svg) return
     const box = svg.viewBox.baseVal
-    const w = box && box.width > 0 ? box.width : svg.getBoundingClientRect().width
+    const w =
+      box && box.width > 0 ? box.width : svg.getBoundingClientRect().width
     const h =
       box && box.height > 0 ? box.height : svg.getBoundingClientRect().height
     if (w > 0 && h > 0) {
@@ -378,7 +381,11 @@ export function MermaidPane({
     const d = dragRef.current
     if (!d) return
     const v = viewRef.current
-    viewRef.current = { ...v, x: v.x + (e.clientX - d.px), y: v.y + (e.clientY - d.py) }
+    viewRef.current = {
+      ...v,
+      x: v.x + (e.clientX - d.px),
+      y: v.y + (e.clientY - d.py),
+    }
     dragRef.current = { px: e.clientX, py: e.clientY }
     schedule()
   }
@@ -465,7 +472,7 @@ export function MermaidPane({
           disabled={!contentSize}
           title="fit the diagram in the frame"
         >
-          <Maximize size={13} aria-hidden />
+          <Maximize size={16} aria-hidden />
           fit
         </Button>
         <Button
@@ -553,7 +560,7 @@ export function MermaidPane({
 
           {preview.error !== null ? (
             <div className="cv-diag" role="status">
-              <AlertCircle size={13} aria-hidden className="cv-diag-icon" />
+              <AlertCircle size={16} aria-hidden className="cv-diag-icon" />
               <div className="cv-diag-body">
                 {preview.errorLine !== null ? (
                   <span className="cv-diag-line">line {preview.errorLine}</span>

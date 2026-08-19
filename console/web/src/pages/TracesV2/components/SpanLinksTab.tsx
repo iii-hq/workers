@@ -73,7 +73,7 @@ export function SpanLinksTab({
             onClick={handleClick}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-sm bg-surface hover:bg-surface-hover transition-colors text-left group"
           >
-            <ExternalLink className="w-3 h-3 text-ink-faint group-hover:text-accent flex-shrink-0" />
+            <ExternalLink className="size-4 text-ink-faint group-hover:text-accent flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="font-mono text-[11px] text-ink-faint truncate group-hover:text-ink tabular-nums lowercase">
                 {link.trace_id.slice(0, 16)}…

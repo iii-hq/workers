@@ -8,6 +8,7 @@
 @import "@fontsource/geist-mono/500.css";
 @import "@fontsource/geist-mono/600.css";
 @import "tailwindcss";
+@import "./styles/ui-recipes.css";
 
 @theme {
   --font-sans:
@@ -38,7 +39,7 @@
   --color-paper-2: #ebe8e3;
   --color-surface: rgba(20, 16, 8, 0.055);
   --color-surface-hover: rgba(20, 16, 8, 0.085);
-  --color-surface-selected: rgba(184, 66, 15, 0.12);
+  --color-surface-selected: rgba(20, 16, 8, 0.12);
   --color-surface-active: rgba(20, 16, 8, 0.12);
 
   /* ── Ink ramp ──────────────────────────────────────────────────────── */
@@ -115,7 +116,14 @@
   --shadow-floating: 0 2px 4px #1410081a, 0 10px 24px #1410081a;
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
-  --ease-glide: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-duration-instant: 0ms;
+  --motion-duration-fast: 120ms;
+  --motion-duration-control: 160ms;
+  --motion-duration-panel: 220ms;
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-glide: var(--motion-ease-enter);
 
   --spacing-gutter: 24px;
   --spacing-section-x: 36px;
@@ -128,9 +136,9 @@
   color-scheme: dark;
   /* Neutral grays derived from black — no blue cast in the base ramp. The
      component fills (surface*) are white-alpha so a step reads identically
-     over any base layer; the ONLY chromatic surface is surface-selected,
-     the blue selection tint. Borders are gone: rule/rule-2/rule-strong
-     resolve to transparent, and hierarchy is carried entirely by fills. */
+     over any base layer, including selection. Borders are gone:
+     rule/rule-2/rule-strong resolve to transparent, and hierarchy is carried
+     entirely by fills. */
 
   /* Elevation carries more weight here — on near-black the shadow is the
      only depth cue, plus an inset white hairline for the lit top edge. */
@@ -145,7 +153,7 @@
   --color-paper-2: #171717;
   --color-surface: rgba(255, 255, 255, 0.055);
   --color-surface-hover: rgba(255, 255, 255, 0.085);
-  --color-surface-selected: rgba(40, 168, 247, 0.14);
+  --color-surface-selected: rgba(255, 255, 255, 0.12);
   --color-surface-active: rgba(255, 255, 255, 0.12);
   --color-ink: #ededed;
   --color-ink-faint: #a6a6a6;
@@ -324,6 +332,23 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-duration-fast: 0ms;
+    --motion-duration-control: 0ms;
+    --motion-duration-panel: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-delay: 0ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .pulse-dot {
     animation: none;
   }
@@ -499,7 +524,8 @@
 }
 
 @utility timeline-enter {
-  animation: timeline-enter 240ms ease-out both;
+  animation: timeline-enter var(--motion-duration-panel) var(--motion-ease-exit)
+    both;
 }
 
 /* live-timeline re-packs — geometry changes glide instead of teleporting.
@@ -508,11 +534,11 @@
    moves smoothly. */
 @utility timeline-glide {
   transition:
-    left 300ms ease,
-    top 300ms ease,
-    width 300ms ease,
-    height 300ms ease,
-    max-width 300ms ease;
+    left var(--motion-duration-panel) var(--motion-ease-standard),
+    top var(--motion-duration-panel) var(--motion-ease-standard),
+    width var(--motion-duration-panel) var(--motion-ease-standard),
+    height var(--motion-duration-panel) var(--motion-ease-standard),
+    max-width var(--motion-duration-panel) var(--motion-ease-standard);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -647,7 +673,7 @@
 }
 .iii-details > summary .iii-chev {
   display: inline-block;
-  transition: transform 150ms ease-out;
+  transition: transform var(--motion-duration-control) var(--motion-ease-exit);
 }
 .iii-details[open] > summary .iii-chev {
   transform: rotate(90deg);

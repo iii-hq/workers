@@ -58,7 +58,7 @@ export function FilesystemAccessDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
-        <DialogTitle className="text-[14px]">filesystem access</DialogTitle>
+        <DialogTitle className="text-[14px]">Filesystem access</DialogTitle>
         <DialogDescription className="mt-1">
           {workspaceScoped
             ? 'folders the agent can read and write in this conversation.'
@@ -77,7 +77,7 @@ export function FilesystemAccessDialog({
             {workingDir ? (
               <div className="flex items-start gap-2 px-2 py-1.5">
                 <Folder
-                  size={13}
+                  size={16}
                   className="mt-0.5 shrink-0 text-ink-faint"
                   aria-hidden
                 />
@@ -123,7 +123,7 @@ export function FilesystemAccessDialog({
                       className="group flex items-center gap-2 px-2 py-1.5 hover:bg-panel"
                     >
                       <Folder
-                        size={13}
+                        size={16}
                         className="shrink-0 text-ink-faint"
                         aria-hidden
                       />
@@ -141,7 +141,7 @@ export function FilesystemAccessDialog({
                         onClick={() => void onRevoke(dir)}
                         className="shrink-0 p-1 text-ink-ghost opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
                       >
-                        <X size={12} aria-hidden />
+                        <X size={16} aria-hidden />
                       </button>
                     </div>
                   ))}
@@ -167,7 +167,7 @@ export function FilesystemAccessDialog({
                     className="flex items-center gap-2 px-2 py-1.5"
                   >
                     <Folder
-                      size={13}
+                      size={16}
                       className="shrink-0 text-ink-faint"
                       aria-hidden
                     />

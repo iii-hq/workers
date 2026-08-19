@@ -40,7 +40,15 @@ import {
 
 const MAX_ROWS = 50
 
-function Chip({ k, v, tone }: { k?: string; v: string; tone?: 'ok' | 'alert' }) {
+function Chip({
+  k,
+  v,
+  tone,
+}: {
+  k?: string
+  v: string
+  tone?: 'ok' | 'alert'
+}) {
   return (
     <span className={`db-ui-chip${tone ? ` ${tone}` : ''}`}>
       {k ? <span className="k">{k} </span> : null}
@@ -53,7 +61,9 @@ function RequestChips({ req }: { req: DbRequest }) {
   return (
     <>
       {req.db ? <Chip k="db" v={req.db} /> : null}
-      {req.transactionId ? <Chip k="tx" v={shortId(req.transactionId)} /> : null}
+      {req.transactionId ? (
+        <Chip k="tx" v={shortId(req.transactionId)} />
+      ) : null}
       {req.handleId ? <Chip k="handle" v={shortId(req.handleId)} /> : null}
       {req.isolation ? <Chip k="isolation" v={req.isolation} /> : null}
     </>
@@ -76,7 +86,7 @@ function CardShell({
       <div className="db-ui-msg-head">
         <span className={`db-ui-pill${running ? ' quiet' : ''}`}>{op}</span>
         {head}
-        <span className="db-ui-msg-tag">database ui</span>
+        <span className="db-ui-msg-tag">Database UI</span>
       </div>
       {children}
     </div>
@@ -92,7 +102,7 @@ function SqlBlock({ req }: { req: DbRequest }) {
       </div>
       {req.params ? (
         <div className="db-ui-params">
-          <span className="k">params </span>
+          <span className="k">Params </span>
           {JSON.stringify(req.params)}
         </div>
       ) : null}
@@ -100,7 +110,13 @@ function SqlBlock({ req }: { req: DbRequest }) {
   )
 }
 
-function RowsTable({ columns, rows }: { columns: string[]; rows: Record<string, unknown>[] }) {
+function RowsTable({
+  columns,
+  rows,
+}: {
+  columns: string[]
+  rows: Record<string, unknown>[]
+}) {
   if (rows.length === 0 || columns.length === 0) return null
   const shown = rows.slice(0, MAX_ROWS)
   return (
@@ -119,7 +135,11 @@ function RowsTable({ columns, rows }: { columns: string[]; rows: Record<string, 
               {columns.map((c) => {
                 const { text, isNull } = cellText(row[c])
                 return (
-                  <td key={c} className={isNull ? 'null' : undefined} title={text}>
+                  <td
+                    key={c}
+                    className={isNull ? 'null' : undefined}
+                    title={text}
+                  >
                     {text}
                   </td>
                 )
@@ -129,7 +149,9 @@ function RowsTable({ columns, rows }: { columns: string[]; rows: Record<string, 
         </tbody>
       </table>
       {rows.length > MAX_ROWS ? (
-        <div className="db-ui-msg-note">+{rows.length - MAX_ROWS} more rows</div>
+        <div className="db-ui-msg-note">
+          +{rows.length - MAX_ROWS} more rows
+        </div>
       ) : null}
     </div>
   )
@@ -170,11 +192,14 @@ function ExecuteView({ req, details }: { req: DbRequest; details: unknown }) {
       <div className="db-ui-msg-note">
         {resp.affectedRows !== undefined
           ? `${resp.affectedRows} row${resp.affectedRows === 1 ? '' : 's'} affected`
-          : 'done'}
+          : 'Done'}
         {resp.lastInsertId ? ` · last insert id ${resp.lastInsertId}` : ''}
       </div>
       {resp.returnedRows.length > 0 ? (
-        <RowsTable columns={Object.keys(resp.returnedRows[0])} rows={resp.returnedRows} />
+        <RowsTable
+          columns={Object.keys(resp.returnedRows[0])}
+          rows={resp.returnedRows}
+        />
       ) : null}
     </>
   )
@@ -197,7 +222,11 @@ function TxView({ req, details }: { req: DbRequest; details: unknown }) {
                 <span className="idx">{i + 1}</span>
                 <span className="sql">{sql ?? '—'}</span>
                 <span className="meta">
-                  {failed ? 'failed' : affected !== undefined ? `${affected} affected` : ''}
+                  {failed
+                    ? 'Failed'
+                    : affected !== undefined
+                      ? `${affected} affected`
+                      : ''}
                 </span>
               </div>
             )
@@ -212,14 +241,17 @@ function TxView({ req, details }: { req: DbRequest; details: unknown }) {
 
 function ListDatabasesView({ details }: { details: unknown }) {
   const dbs = parseListDatabases(details)
-  if (dbs.length === 0) return <div className="db-ui-msg-note">· no databases configured</div>
+  if (dbs.length === 0)
+    return <div className="db-ui-msg-note">No databases configured</div>
   const rows = dbs.map((d) => ({
     name: d.name,
     driver: d.driver,
     url: d.url,
     'pool max': d.poolMax,
   }))
-  return <RowsTable columns={['name', 'driver', 'url', 'pool max']} rows={rows} />
+  return (
+    <RowsTable columns={['name', 'driver', 'url', 'pool max']} rows={rows} />
+  )
 }
 
 function HandleView({ details, label }: { details: unknown; label: string }) {
@@ -260,22 +292,25 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
         return (
           <>
             <SqlBlock req={req} />
-            <HandleView details={details} label="statement prepared" />
+            <HandleView details={details} label="Statement prepared" />
           </>
         )
       case 'beginTransaction':
-        return <HandleView details={details} label="transaction open" />
+        return <HandleView details={details} label="Transaction open" />
       case 'commitTransaction':
-        return <div className="db-ui-msg-note">committed</div>
+        return <div className="db-ui-msg-note">Committed</div>
       case 'rollbackTransaction':
-        return <div className="db-ui-msg-note">rolled back</div>
+        return <div className="db-ui-msg-note">Rolled back</div>
       default:
         // Anything else under database:: (e.g. on-config-change).
         return <RawDetails details={details} />
     }
   })()
 
-  const tx = op === 'executeBatch' || op === 'transaction' ? parseTxResp(details) : undefined
+  const tx =
+    op === 'executeBatch' || op === 'transaction'
+      ? parseTxResp(details)
+      : undefined
   return (
     <CardShell
       op={op}
@@ -283,7 +318,9 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
         <>
           <RequestChips req={req} />
           {tx?.committed === true ? <Chip v="committed" tone="ok" /> : null}
-          {tx?.committed === false ? <Chip v="rolled back" tone="alert" /> : null}
+          {tx?.committed === false ? (
+            <Chip v="rolled back" tone="alert" />
+          ) : null}
         </>
       }
     >
@@ -298,7 +335,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
   return (
     <CardShell op={op} running head={<RequestChips req={req} />}>
       <SqlBlock req={req} />
-      <div className="db-ui-msg-note pulse">· running…</div>
+      <div className="db-ui-msg-note pulse">Running…</div>
     </CardShell>
   )
 }
@@ -338,7 +375,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-export function createDatabaseTriggerRenderer(host: Host): FunctionTriggerRenderer {
+export function createDatabaseTriggerRenderer(
+  host: Host,
+): FunctionTriggerRenderer {
   const render = (
     message: FunctionTriggerMessage,
     running: boolean,
@@ -359,9 +398,10 @@ export function createDatabaseTriggerRenderer(host: Host): FunctionTriggerRender
     tryRenderPreview: (message) =>
       message.pendingApproval &&
       message.functionId.startsWith(DB_PREFIX) &&
-      (parseRequest(message.input).sql || parseRequest(message.input).statements)
-        ? <Preview message={message} />
-        : null,
+      (parseRequest(message.input).sql ||
+        parseRequest(message.input).statements) ? (
+        <Preview message={message} />
+      ) : null,
     FunctionIdLabel,
   }
 }

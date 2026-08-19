@@ -109,7 +109,13 @@ async function validateShim(file, content) {
       ReactDOM: {},
       ReactDOMClient: {},
       JsxRuntime: {},
-      api: { iii: {}, components: {}, useTheme() {}, tokens: [] },
+      api: {
+        iii: {},
+        components: {},
+        useTheme() {},
+        tokens: [],
+        uiClasses: {},
+      },
     },
   }
   const url = `data:text/javascript;base64,${Buffer.from(content).toString('base64')}`
@@ -160,6 +166,7 @@ const consoleUi =
   `export const components = api.components\n` +
   `export const useTheme = api.useTheme\n` +
   `export const tokens = api.tokens\n` +
+  `export const uiClasses = api.uiClasses\n` +
   `export const {\n  ${componentNames.join(',\n  ')},\n} = api.components\n` +
   `export default api\n`
 await validateShim('console-ui.js', consoleUi)

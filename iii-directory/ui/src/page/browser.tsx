@@ -24,10 +24,23 @@
  * in localStorage.
  */
 
-import { Button, CodeEditor, type Host, Input, MarkdownPreview } from '@iii-dev/console-ui'
+import {
+  Button,
+  CodeEditor,
+  type Host,
+  Input,
+  MarkdownPreview,
+  SegmentedControl,
+} from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { BackButton, MarkdownFileIcon, PlusIcon, SearchIcon, XIcon } from '../lib/widgets'
+import {
+  BackButton,
+  MarkdownFileIcon,
+  PlusIcon,
+  SearchIcon,
+  XIcon,
+} from '../lib/widgets'
 import {
   frontmatterBody,
   readFrontmatterField,
@@ -88,6 +101,12 @@ const SLUG_NAME = /^[a-z0-9_-]+$/
 
 type EditorMode = 'edit' | 'split' | 'preview'
 
+const EDITOR_MODE_LABELS: Record<EditorMode, string> = {
+  edit: 'Edit',
+  split: 'Split',
+  preview: 'Preview',
+}
+
 interface Loaded {
   key: string
   content: string
@@ -117,7 +136,9 @@ const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none — the inactive collection) are ignored so a
  * hidden browser keeps its last real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -252,7 +273,10 @@ export function CollectionBrowser({
         // Re-clicking the open entry must not clobber the draft; switching
         // away from an unsaved draft asks first.
         if (key === selectedRef.current) return
-        if (dirtyRef.current && !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)) {
+        if (
+          dirtyRef.current &&
+          !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)
+        ) {
           return
         }
       }
@@ -314,7 +338,9 @@ export function CollectionBrowser({
     adapter
       .load(host, key)
       .then((content) => {
-        setLoaded((prev) => (prev && prev.key === key ? { key, content } : prev))
+        setLoaded((prev) =>
+          prev && prev.key === key ? { key, content } : prev,
+        )
         setDraft((prev) => {
           const current = selectedRef.current
           return current === key ? content : prev
@@ -468,7 +494,10 @@ export function CollectionBrowser({
     if (rect.width <= 0) return
     setSplit(clampRatio((clientX - rect.left) / rect.width))
   }
-  const persistSplit = useCallback((value: number) => writeStored(`${storageKey}:split`, String(value)), [storageKey])
+  const persistSplit = useCallback(
+    (value: number) => writeStored(`${storageKey}:split`, String(value)),
+    [storageKey],
+  )
   const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -490,7 +519,8 @@ export function CollectionBrowser({
     })
   }
   const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
+    const step =
+      e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
     if (step !== null) {
       e.preventDefault()
       setSplit((v) => {
@@ -523,10 +553,12 @@ export function CollectionBrowser({
   const docKey = loaded?.key ?? selected
   const docSegments = docKey ? docKey.split('/') : []
   const docName = creating
-    ? `new ${adapter.noun}`
+    ? `New ${adapter.noun}`
     : (docSegments[docSegments.length - 1] ?? '')
 
-  const modeOptions: EditorMode[] = narrow ? ['edit', 'preview'] : ['edit', 'split', 'preview']
+  const modeOptions: EditorMode[] = narrow
+    ? ['edit', 'preview']
+    : ['edit', 'split', 'preview']
 
   const row = rows?.find((item) => item.key === (loaded?.key || selected))
   const nameField = readFrontmatterField(
@@ -562,7 +594,13 @@ export function CollectionBrowser({
   const draftLines = loaded === null ? 0 : draft.split('\n').length
   const draftBytes = loaded === null ? 0 : new Blob([draft]).size
 
-  const saveStatus = saving ? 'saving…' : savedFlash ? '✓ saved' : dirty ? 'unsaved' : ''
+  const saveStatus = saving
+    ? 'Saving…'
+    : savedFlash
+      ? '✓ Saved'
+      : dirty
+        ? 'Unsaved'
+        : ''
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay ('/' jumps to the filter) around real controls
@@ -587,7 +625,7 @@ export function CollectionBrowser({
                 <span className="dir-ui-new-mark">
                   <PlusIcon className="dir-ui-new-icon" />
                 </span>
-                <span>new {adapter.noun}</span>
+                <span>New {adapter.noun}</span>
               </Button>
             ) : null}
             <div className="dir-ui-search">
@@ -637,7 +675,7 @@ export function CollectionBrowser({
                   <span className="detail">{listError}</span>
                 </p>
                 <Button variant="ghost" size="sm" onClick={refreshList}>
-                  retry
+                  Retry
                 </Button>
               </div>
             ) : rows === null ? (
@@ -657,8 +695,12 @@ export function CollectionBrowser({
                     <p>
                       No {adapter.noun}s match “{search.trim()}”.
                     </p>
-                    <Button variant="ghost" size="sm" onClick={() => setSearch('')}>
-                      clear filter
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSearch('')}
+                    >
+                      Clear filter
                     </Button>
                   </>
                 ) : (
@@ -677,9 +719,13 @@ export function CollectionBrowser({
                         aria-current={r.key === selected ? 'true' : undefined}
                         onClick={() => open(r.key)}
                       >
-                        <span className={`name${isTitled ? '' : ' mono'}`}>{isTitled ? r.title : r.key}</span>
+                        <span className={`name${isTitled ? '' : ' mono'}`}>
+                          {isTitled ? r.title : r.key}
+                        </span>
                         {isTitled ? <span className="id">{r.key}</span> : null}
-                        {r.description ? <span className="desc">{r.description}</span> : null}
+                        {r.description ? (
+                          <span className="desc">{r.description}</span>
+                        ) : null}
                         <span className="fine">{r.fine}</span>
                       </button>
                     </li>
@@ -692,7 +738,11 @@ export function CollectionBrowser({
       ) : null}
 
       {showDoc ? (
-        <section className="dir-ui-doc" onKeyDown={onWorkspaceKeyDown} aria-label={`${adapter.noun} workspace`}>
+        <section
+          className="dir-ui-doc"
+          onKeyDown={onWorkspaceKeyDown}
+          aria-label={`${adapter.noun} workspace`}
+        >
           {selected === null && !creating ? (
             <div className="dir-ui-hero">
               <MarkdownFileIcon className="dir-ui-hero-icon" />
@@ -705,30 +755,39 @@ export function CollectionBrowser({
           ) : (
             <>
               <header className="dir-ui-doc-head">
-                {narrow ? <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} /> : null}
+                {narrow ? (
+                  <BackButton
+                    onClick={goBack}
+                    label={`back to ${adapter.noun} list`}
+                  />
+                ) : null}
                 <div className="dir-ui-doc-identity">
                   <span className="dir-ui-doc-name" title={docKey ?? ''}>
                     <span className="txt">{docName}</span>
-                    {dirty ? <span className="dir-ui-dirty-dot" title="unsaved changes" aria-hidden /> : null}
+                    {dirty ? (
+                      <span
+                        className="dir-ui-dirty-dot"
+                        title="unsaved changes"
+                        aria-hidden
+                      />
+                    ) : null}
                   </span>
                   {!narrow ? (
-                    <span className="dir-ui-doc-crumb">{[adapter.crumbRoot, ...docSegments].join(' / ')}</span>
+                    <span className="dir-ui-doc-crumb">
+                      {[adapter.crumbRoot, ...docSegments].join(' / ')}
+                    </span>
                   ) : null}
                 </div>
-                {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the header row */}
-                <div className="dir-ui-seg" role="group" aria-label="editor mode">
-                  {modeOptions.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      className={`dir-ui-seg-btn${effMode === m ? ' active' : ''}`}
-                      aria-pressed={effMode === m}
-                      onClick={() => setMode(m)}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl<EditorMode>
+                  value={effMode}
+                  onChange={setMode}
+                  options={modeOptions.map((mode) => ({
+                    value: mode,
+                    label: EDITOR_MODE_LABELS[mode],
+                  }))}
+                  className="dir-ui-editor-tabs"
+                  aria-label="Editor mode"
+                />
                 <div className="dir-ui-save-area">
                   {adapter.remove && !creating ? (
                     <Button
@@ -738,7 +797,7 @@ export function CollectionBrowser({
                       disabled={!loaded || saving || deleting}
                       onClick={remove}
                     >
-                      {deleting ? 'deleting…' : 'delete'}
+                      {deleting ? 'Deleting…' : 'Delete'}
                     </Button>
                   ) : null}
                   <span className="dir-ui-save-note" aria-live="polite">
@@ -754,18 +813,25 @@ export function CollectionBrowser({
                         setSaveError(null)
                       }}
                     >
-                      revert
+                      Revert
                     </Button>
                   ) : null}
-                  <Button variant="primary" size="sm" disabled={!dirty || saving || deleting} onClick={save}>
-                    {saving ? 'saving…' : 'save'}
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={!dirty || saving || deleting}
+                    onClick={save}
+                  >
+                    {saving ? 'Saving…' : 'Save'}
                   </Button>
                 </div>
               </header>
 
               {staleOnDisk ? (
                 <div className="dir-ui-banner warn" role="status">
-                  <span>This {adapter.noun} changed on disk while you were editing.</span>
+                  <span>
+                    This {adapter.noun} changed on disk while you were editing.
+                  </span>
                   <button
                     type="button"
                     className="dir-ui-linkish"
@@ -782,10 +848,18 @@ export function CollectionBrowser({
                     Save failed.
                     <span className="detail">{saveError}</span>
                   </span>
-                  <button type="button" className="dir-ui-linkish" onClick={save}>
-                    retry
+                  <button
+                    type="button"
+                    className="dir-ui-linkish"
+                    onClick={save}
+                  >
+                    Retry
                   </button>
-                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setSaveError(null)}>
+                  <button
+                    type="button"
+                    className="dir-ui-linkish quiet"
+                    onClick={() => setSaveError(null)}
+                  >
                     dismiss
                   </button>
                 </div>
@@ -797,10 +871,18 @@ export function CollectionBrowser({
                     Delete failed.
                     <span className="detail">{deleteError}</span>
                   </span>
-                  <button type="button" className="dir-ui-linkish" onClick={remove}>
-                    retry
+                  <button
+                    type="button"
+                    className="dir-ui-linkish"
+                    onClick={remove}
+                  >
+                    Retry
                   </button>
-                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setDeleteError(null)}>
+                  <button
+                    type="button"
+                    className="dir-ui-linkish quiet"
+                    onClick={() => setDeleteError(null)}
+                  >
                     dismiss
                   </button>
                 </div>
@@ -812,8 +894,12 @@ export function CollectionBrowser({
                     {docKey} could not be loaded.
                     <span className="detail">{loadError}</span>
                   </p>
-                  <Button variant="ghost" size="sm" onClick={() => docKey && open(docKey, { reload: true })}>
-                    retry
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => docKey && open(docKey, { reload: true })}
+                  >
+                    Retry
                   </Button>
                 </div>
               ) : loaded === null ? (
@@ -826,14 +912,27 @@ export function CollectionBrowser({
                 </div>
               ) : (
                 <>
-                  <div className={`dir-ui-doc-body mode-${effMode}${dragging ? ' dragging' : ''}`} ref={bodyRef}>
-                    <div className="dir-ui-pane editor" style={effMode === 'split' ? { flexGrow: split } : undefined}>
+                  <div
+                    className={`dir-ui-doc-body mode-${effMode}${dragging ? ' dragging' : ''}`}
+                    ref={bodyRef}
+                  >
+                    <div
+                      className="dir-ui-pane editor"
+                      style={
+                        effMode === 'split' ? { flexGrow: split } : undefined
+                      }
+                    >
                       <div className="dir-ui-edit-fields">
-                        <label className="dir-ui-edit-field" htmlFor={`${fieldId}-name`}>
+                        <label
+                          className="dir-ui-edit-field"
+                          htmlFor={`${fieldId}-name`}
+                        >
                           <span className="dir-ui-edit-label">
                             name
                             {adapter.slugName ? (
-                              <span className="dir-ui-edit-hint">a–z · 0–9 · - · _</span>
+                              <span className="dir-ui-edit-hint">
+                                a–z · 0–9 · - · _
+                              </span>
                             ) : null}
                           </span>
                           <Input
@@ -852,7 +951,9 @@ export function CollectionBrowser({
                             placeholder={`${adapter.noun} name`}
                             preserveCase={!adapter.slugName}
                             required={adapter.slugName}
-                            pattern={adapter.slugName ? '[a-z0-9_-]+' : undefined}
+                            pattern={
+                              adapter.slugName ? '[a-z0-9_-]+' : undefined
+                            }
                             spellCheck={false}
                             className="dir-ui-edit-input"
                           />
@@ -861,7 +962,7 @@ export function CollectionBrowser({
                           className="dir-ui-edit-field"
                           htmlFor={`${fieldId}-description`}
                         >
-                          <span className="dir-ui-edit-label">description</span>
+                          <span className="dir-ui-edit-label">Description</span>
                           <textarea
                             id={`${fieldId}-description`}
                             value={descriptionValue}
@@ -882,8 +983,8 @@ export function CollectionBrowser({
                         </label>
                       </div>
                       <div className="dir-ui-source-head" aria-hidden>
-                        <span>content</span>
-                        <span>markdown</span>
+                        <span>Content</span>
+                        <span>Markdown</span>
                       </div>
                       <CodeEditor
                         value={editorSource}
@@ -923,22 +1024,31 @@ export function CollectionBrowser({
                     {effMode !== 'edit' ? (
                       <div
                         className="dir-ui-pane preview"
-                        style={effMode === 'split' ? { flexGrow: 1 - split } : undefined}
+                        style={
+                          effMode === 'split'
+                            ? { flexGrow: 1 - split }
+                            : undefined
+                        }
                       >
                         <div className="dir-ui-reading">
-                          <MarkdownPreview markdown={frontmatterBody(draft)} className="dir-ui-preview" />
+                          <MarkdownPreview
+                            markdown={frontmatterBody(draft)}
+                            className="dir-ui-preview"
+                          />
                         </div>
                       </div>
                     ) : null}
                   </div>
                   <footer className="dir-ui-statusbar">
-                    <span className="fact">markdown</span>
+                    <span className="fact">Markdown</span>
                     <span className="fact">
                       {draftLines} line{draftLines === 1 ? '' : 's'}
                     </span>
                     <span className="fact">{formatKb(draftBytes)}</span>
                     <span className="spacer" />
-                    <span className="fact">{dirty ? '⌘S saves' : 'all changes saved'}</span>
+                    <span className="fact">
+                      {dirty ? '⌘S saves' : 'all changes saved'}
+                    </span>
                   </footer>
                 </>
               )}

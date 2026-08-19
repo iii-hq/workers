@@ -185,10 +185,10 @@ export function FunctionsPage({
       header={
         <PageHeader
           icon={<span aria-hidden>ƒ</span>}
-          title="functions"
+          title="Functions"
           description={
             <span className="console-catalog-header-desc">
-              registered functions, grouped by worker
+              Registered functions, grouped by worker
             </span>
           }
           onClose={onRequestClose}
@@ -441,7 +441,7 @@ function FunctionDocument({
             onRetry={detail.reload}
           />
         ) : detail.data === null ? (
-          <Note>loading detail…</Note>
+          <Note>Loading detail…</Note>
         ) : (
           <Tabs
             value={tab}
@@ -449,17 +449,17 @@ function FunctionDocument({
             className="console-catalog-tabs"
           >
             <TabsList>
-              <TabsTrigger value="overview">overview</TabsTrigger>
-              <TabsTrigger value="invoke">trigger</TabsTrigger>
-              <TabsTrigger value="input">input</TabsTrigger>
-              <TabsTrigger value="output">output</TabsTrigger>
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="invoke">Trigger</TabsTrigger>
+              <TabsTrigger value="input">Input</TabsTrigger>
+              <TabsTrigger value="output">Output</TabsTrigger>
               <TabsTrigger value="triggers">
-                triggers
+                Triggers
                 {detail.data.registered_triggers.length > 0 ? (
                   <Badge>{detail.data.registered_triggers.length}</Badge>
                 ) : null}
               </TabsTrigger>
-              <TabsTrigger value="activity">activity</TabsTrigger>
+              <TabsTrigger value="activity">Activity</TabsTrigger>
             </TabsList>
             <TabsContent value="overview">
               <FunctionOverview detail={detail.data} />
@@ -477,13 +477,13 @@ function FunctionDocument({
             <TabsContent value="input">
               <SchemaTable
                 schema={detail.data.request_schema}
-                empty="this function registered no input schema."
+                empty="This function registered no input schema."
               />
             </TabsContent>
             <TabsContent value="output">
               <SchemaTable
                 schema={detail.data.response_schema}
-                empty="this function registered no output schema."
+                empty="This function registered no output schema."
               />
             </TabsContent>
             <TabsContent value="triggers">
@@ -629,7 +629,7 @@ function FunctionOverview({ detail }: { detail: FunctionDetail }) {
 
   return hasMetadata ? (
     <div className="console-catalog-overview">
-      <span className="console-catalog-field-label">metadata</span>
+      <span className="console-catalog-field-label">Metadata</span>
       <JsonHighlight
         code={pretty(detail.metadata)}
         className="console-catalog-json"
@@ -637,7 +637,7 @@ function FunctionOverview({ detail }: { detail: FunctionDetail }) {
       />
     </div>
   ) : (
-    <Note>this function registered no additional metadata.</Note>
+    <Note>This function registered no additional metadata.</Note>
   )
 }
 

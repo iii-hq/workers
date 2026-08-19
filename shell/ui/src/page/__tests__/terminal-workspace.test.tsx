@@ -1,5 +1,11 @@
+import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('../HoverTip', () => ({
+  HoverTip: ({ children }: { children: ReactNode }) => children,
+}))
+
 import {
   pruneTerminalConnectionCoordinators,
   reconcileTerminalWorkspaceLeases,

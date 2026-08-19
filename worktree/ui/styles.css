@@ -139,7 +139,7 @@
   stroke: var(--color-edge);
 }
 [data-iii-ui="worktree"] .wt-ui-edge.selected {
-  stroke: var(--color-accent);
+  stroke: var(--color-ink-faint);
 }
 [data-iii-ui="worktree"] .wt-ui-edge-label {
   fill: var(--color-ink-ghost);
@@ -191,8 +191,8 @@
   font-family: inherit;
   cursor: pointer;
   transition:
-    background-color 120ms ease,
-    border-color 120ms ease;
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="worktree"] .wt-ui-node:hover {
   background: var(--color-surface-hover);
@@ -201,7 +201,7 @@
   outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
 }
-/* Selection = wash + accent indicator + stronger branch, not color alone. */
+/* Selection stays neutral: wash + edge indicator + stronger branch. */
 [data-iii-ui="worktree"] .wt-ui-node.selected {
   background: var(--color-surface-selected);
 }
@@ -213,7 +213,7 @@
   bottom: 6px;
   width: 2px;
   border-radius: 1px;
-  background: var(--color-accent);
+  background: var(--color-edge);
 }
 [data-iii-ui="worktree"] .wt-ui-node.selected .wt-ui-branch {
   font-weight: 600;
@@ -422,7 +422,7 @@
   padding: 2px;
   cursor: pointer;
   color: var(--color-ink-ghost);
-  transition: color 120ms ease;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="worktree"] .wt-ui-copy:hover {
   color: var(--color-ink);

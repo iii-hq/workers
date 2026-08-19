@@ -42,7 +42,7 @@ function crawlChips(req: CrawlRequest) {
         <FilterChip label="domains" value={req.allowed_domains.join(', ')} />
       ) : req.same_domain === false ? (
         <Chip className="text-warn border-warn/40">
-          <span className="uppercase tracking-[0.06em]">off-domain</span>
+          <span>Off-domain</span>
         </Chip>
       ) : null}
     </>

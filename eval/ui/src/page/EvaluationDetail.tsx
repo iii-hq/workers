@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Badge, Button, JsonHighlight, Markdown, Skeleton, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  JsonHighlight,
+  Markdown,
+  Skeleton,
+  StatusPanel,
+} from '@iii-dev/console-ui'
 import { formatDate, formatMetric, shortId, StatusBadge } from '../components'
 import { isTerminal } from '../api'
 import type {
@@ -57,22 +64,28 @@ export function EvaluationDetail({
         <div>
           <div className="eval-ui-title-row">
             <h1>
-              {summary.control_label ?? 'control'} vs {summary.treatment_label ?? 'treatment'}
+              {summary.control_label ?? 'control'} vs{' '}
+              {summary.treatment_label ?? 'treatment'}
             </h1>
             <StatusBadge status={currentStatus} />
             {report?.eligible !== undefined ? (
               <Badge variant={report.eligible ? 'accent' : 'warn'}>
-                {report.eligible ? 'candidate eligible' : 'candidate not eligible'}
+                {report.eligible
+                  ? 'candidate eligible'
+                  : 'candidate not eligible'}
               </Badge>
             ) : null}
           </div>
           <p>
             {summary.model}
-            {summary.provider ? ` · ${summary.provider}` : ''} · {summary.dimension.replace('_', ' ')}
+            {summary.provider ? ` · ${summary.provider}` : ''} ·{' '}
+            {summary.dimension.replace('_', ' ')}
           </p>
           <div className="eval-ui-id">
             <span className="eval-ui-label">evaluation id</span>
-            <code title={summary.evaluation_id}>{shortId(summary.evaluation_id)}</code>
+            <code title={summary.evaluation_id}>
+              {shortId(summary.evaluation_id)}
+            </code>
             <button
               type="button"
               onClick={() => void copyEvaluationId()}
@@ -88,18 +101,38 @@ export function EvaluationDetail({
         </div>
         <div className="eval-ui-actions">
           {!isTerminal(currentStatus) ? (
-            <Button variant="ghost" size="sm" onClick={onCancel} disabled={actionPending}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onCancel}
+              disabled={actionPending}
+            >
               cancel
             </Button>
           ) : (
             <>
-              <Button variant="ghost" size="sm" onClick={() => onRerun(false)} disabled={actionPending}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onRerun(false)}
+                disabled={actionPending}
+              >
                 run again
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => onRerun(true)} disabled={actionPending}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onRerun(true)}
+                disabled={actionPending}
+              >
                 run reversed
               </Button>
-              <Button variant="ghost" size="sm" onClick={onDelete} disabled={actionPending}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDelete}
+                disabled={actionPending}
+              >
                 delete
               </Button>
             </>
@@ -115,7 +148,11 @@ export function EvaluationDetail({
       />
 
       {error ? (
-        <StatusPanel variant="alert" headline="evaluation details unavailable" detail={error} />
+        <StatusPanel
+          variant="alert"
+          headline="evaluation details unavailable"
+          detail={error}
+        />
       ) : loading && !result ? (
         <div className="eval-ui-loading">
           <Skeleton />
@@ -143,7 +180,9 @@ export function EvaluationDetail({
       ) : null}
 
       {request ? <Definition result={result} /> : null}
-      {result ? <Report result={result} activeRunId={status?.active?.run_id} /> : null}
+      {result ? (
+        <Report result={result} activeRunId={status?.active?.run_id} />
+      ) : null}
     </div>
   )
 }
@@ -182,14 +221,19 @@ function Progress({
 function Definition({ result }: { result: EvalResultResponse }) {
   const { request } = result
   const varied = request.dimension === 'prompt' ? 'prompt' : 'system prompt'
-  const shared = request.dimension === 'prompt' ? request.control.system_prompt : request.control.prompt
+  const shared =
+    request.dimension === 'prompt'
+      ? request.control.system_prompt
+      : request.control.prompt
   return (
     <section className="eval-ui-panel">
       <div className="eval-ui-panel-title">definition</div>
       <div className="eval-ui-definition-meta">
         <span>{request.runs} runs per variant</span>
         <span>{orderLabel(request.execution_order)}</span>
-        {request.source_evaluation_id ? <span>rerun of {shortId(request.source_evaluation_id)}</span> : null}
+        {request.source_evaluation_id ? (
+          <span>rerun of {shortId(request.source_evaluation_id)}</span>
+        ) : null}
         <span>{request.evaluator?.function_id ?? 'no success criteria'}</span>
         <span>
           {request.limits.execution.max_total_tokens === undefined
@@ -197,12 +241,17 @@ function Definition({ result }: { result: EvalResultResponse }) {
             : `max ${formatMetric(request.limits.execution.max_total_tokens)} tokens`}
         </span>
         {request.limits.execution.max_cost_usd !== undefined ? (
-          <span>max {formatMetric(request.limits.execution.max_cost_usd, 'cost')}</span>
+          <span>
+            max {formatMetric(request.limits.execution.max_cost_usd, 'cost')}
+          </span>
         ) : null}
       </div>
       <div className="eval-ui-order">
         <span className="eval-ui-label">execution sequence</span>
-        <span className="eval-ui-hint">Runs execute from left to right. A is the baseline; B is the candidate.</span>
+        <span className="eval-ui-hint">
+          Runs execute from left to right. A is the baseline; B is the
+          candidate.
+        </span>
         <div className="eval-ui-order-list">
           {result.progress.effective_execution_order.map((value, index) => {
             const step = executionStep(
@@ -211,8 +260,15 @@ function Definition({ result }: { result: EvalResultResponse }) {
               request.treatment.label ?? 'candidate',
             )
             return (
-              <div className="eval-ui-order-item-wrap" key={`${value}-${index}`}>
-                {index > 0 ? <span className="eval-ui-order-arrow" aria-hidden="true">→</span> : null}
+              <div
+                className="eval-ui-order-item-wrap"
+                key={`${value}-${index}`}
+              >
+                {index > 0 ? (
+                  <span className="eval-ui-order-arrow" aria-hidden="true">
+                    →
+                  </span>
+                ) : null}
                 <div className="eval-ui-order-item" title={value}>
                   <strong>{step.marker}</strong>
                   <span>{step.label}</span>
@@ -223,7 +279,11 @@ function Definition({ result }: { result: EvalResultResponse }) {
         </div>
       </div>
       <div className="eval-ui-shared">
-        <span>{request.dimension === 'prompt' ? 'shared system prompt' : 'shared prompt'}</span>
+        <span>
+          {request.dimension === 'prompt'
+            ? 'shared system prompt'
+            : 'shared prompt'}
+        </span>
         <pre>
           {request.dimension === 'prompt' && shared === null
             ? '— no system prompt —'
@@ -257,7 +317,13 @@ function Definition({ result }: { result: EvalResultResponse }) {
   )
 }
 
-function Report({ result, activeRunId }: { result: EvalResultResponse; activeRunId?: string }) {
+function Report({
+  result,
+  activeRunId,
+}: {
+  result: EvalResultResponse
+  activeRunId?: string
+}) {
   const report = result.report
   const progress = result.progress
   return (
@@ -275,7 +341,9 @@ function Report({ result, activeRunId }: { result: EvalResultResponse; activeRun
       </div>
       <div className="eval-ui-report-section">
         <div className="eval-ui-label">summary</div>
-        <div className="eval-ui-report-note">A is the baseline. B is the candidate. Delta is B − A.</div>
+        <div className="eval-ui-report-note">
+          A is the baseline. B is the candidate. Delta is B − A.
+        </div>
         <AggregateTable
           control={progress.control_aggregate}
           treatment={progress.treatment_aggregate}
@@ -293,10 +361,14 @@ function Report({ result, activeRunId }: { result: EvalResultResponse; activeRun
       </div>
       {report ? (
         <div className="eval-ui-report-foot">
-          completed {formatDate(report.completed_at)} · efficiency metrics are descriptive and do not select a winner.
+          completed {formatDate(report.completed_at)} · efficiency metrics are
+          descriptive and do not select a winner.
         </div>
       ) : (
-        <div className="eval-ui-report-foot">Summary includes completed runs only and updates while the evaluation runs.</div>
+        <div className="eval-ui-report-foot">
+          Summary includes completed runs only and updates while the evaluation
+          runs.
+        </div>
       )}
     </section>
   )
@@ -395,8 +467,14 @@ function AggregateTable({
   return (
     <div className="eval-ui-metrics">
       <div className="eval-ui-success-counts">
-        <span>A · {control.passed}/{control.evaluated_runs} passed · {control.runs} completed</span>
-        <span>B · {treatment.passed}/{treatment.evaluated_runs} passed · {treatment.runs} completed</span>
+        <span>
+          A · {control.passed}/{control.evaluated_runs} passed · {control.runs}{' '}
+          completed
+        </span>
+        <span>
+          B · {treatment.passed}/{treatment.evaluated_runs} passed ·{' '}
+          {treatment.runs} completed
+        </span>
       </div>
       <div className="eval-ui-metric header">
         <span>metric</span>
@@ -414,19 +492,28 @@ function AggregateTable({
             ? undefined
             : (treatment[metric.control] as number | undefined)
         const deltaValue =
-          metric.control === 'pass_rate' && (control.evaluated_runs === 0 || treatment.evaluated_runs === 0)
+          metric.control === 'pass_rate' &&
+          (control.evaluated_runs === 0 || treatment.evaluated_runs === 0)
             ? undefined
             : (delta[metric.delta] as number | undefined)
         const positive =
-          deltaValue !== undefined && deltaValue !== 0 && (metric.higherIsBetter ? deltaValue > 0 : deltaValue < 0)
+          deltaValue !== undefined &&
+          deltaValue !== 0 &&
+          (metric.higherIsBetter ? deltaValue > 0 : deltaValue < 0)
         const negative =
-          deltaValue !== undefined && deltaValue !== 0 && (metric.higherIsBetter ? deltaValue < 0 : deltaValue > 0)
+          deltaValue !== undefined &&
+          deltaValue !== 0 &&
+          (metric.higherIsBetter ? deltaValue < 0 : deltaValue > 0)
         return (
           <div className="eval-ui-metric" key={metric.label}>
             <span>{metric.label}</span>
             <span>{formatMetric(controlValue, metric.format)}</span>
             <span>{formatMetric(treatmentValue, metric.format)}</span>
-            <span className={positive ? 'positive' : negative ? 'negative' : undefined}>
+            <span
+              className={
+                positive ? 'positive' : negative ? 'negative' : undefined
+              }
+            >
               {deltaValue !== undefined && deltaValue > 0 ? '+' : ''}
               {formatMetric(deltaValue, metric.format)}
             </span>
@@ -450,13 +537,18 @@ function Runs({
   activeRunId?: string
   orderSensitive: boolean
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(runs[0]?.run_id ?? null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    runs[0]?.run_id ?? null,
+  )
   useEffect(() => {
     if (!runs.some((run) => run.run_id === selectedId)) {
       setSelectedId(runs[0]?.run_id ?? null)
     }
   }, [runs, selectedId])
-  const selected = useMemo(() => runs.find((run) => run.run_id === selectedId) ?? null, [runs, selectedId])
+  const selected = useMemo(
+    () => runs.find((run) => run.run_id === selectedId) ?? null,
+    [runs, selectedId],
+  )
   const iterations = useMemo(() => {
     const values = new Map<number, { control?: EvalRun; treatment?: EvalRun }>()
     for (const run of runs) {
@@ -470,7 +562,10 @@ function Runs({
     <div className="eval-ui-runs">
       <div className="eval-ui-run-pairs">
         {iterations.map(([iteration, pair]) => (
-          <div className={`eval-ui-run-pair${orderSensitive ? ' order-sensitive' : ''}`} key={iteration}>
+          <div
+            className={`eval-ui-run-pair${orderSensitive ? ' order-sensitive' : ''}`}
+            key={iteration}
+          >
             <div className="eval-ui-run-pair-head">iteration {iteration}</div>
             <div className="eval-ui-run-pair-grid">
               {pair.control ? (
@@ -523,17 +618,27 @@ function RunCard({
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
   }, [active])
-  const elapsed = active ? Math.max(0, now - run.started_at) : run.benchmark?.wall_time_ms
+  const elapsed = active
+    ? Math.max(0, now - run.started_at)
+    : run.benchmark?.wall_time_ms
   return (
     <button
       type="button"
       className={`eval-ui-run-card${active ? ' running' : ''}${selected ? ' selected' : ''}`}
       onClick={() => onSelect(run.run_id)}
     >
-      <span className="eval-ui-run-card-title">{marker} · {label}</span>
+      <span className="eval-ui-run-card-title">
+        {marker} · {label}
+      </span>
       <span>{runStatus(run)}</span>
-      <span>{run.pair_position === 1 ? 'ran first' : 'ran second'} · #{run.execution_position}</span>
-      <span>{formatMetric(run.benchmark?.total_tokens)} tokens · {formatMetric(elapsed, 'duration')}</span>
+      <span>
+        {run.pair_position === 1 ? 'ran first' : 'ran second'} · #
+        {run.execution_position}
+      </span>
+      <span>
+        {formatMetric(run.benchmark?.total_tokens)} tokens ·{' '}
+        {formatMetric(elapsed, 'duration')}
+      </span>
     </button>
   )
 }
@@ -558,25 +663,35 @@ function RunDetail({ run }: { run: EvalRun }) {
           {failures.map((failure, index) => (
             <div key={`${failure.phase}-${index}`}>
               <strong>{failure.phase}</strong>
-              {failure.function_id ? ` · ${failure.function_id}` : ''} — {failure.message}
+              {failure.function_id ? ` · ${failure.function_id}` : ''} —{' '}
+              {failure.message}
             </div>
           ))}
         </div>
       ) : null}
       <div className="eval-ui-label">output</div>
-      <Markdown className="eval-ui-markdown-output">{outputAsMarkdown(run.output)}</Markdown>
+      <Markdown className="eval-ui-markdown-output">
+        {outputAsMarkdown(run.output)}
+      </Markdown>
       {run.evaluation?.details !== undefined ? (
         <>
           <div className="eval-ui-label">evaluator details</div>
-          <JsonHighlight code={JSON.stringify(run.evaluation.details, null, 2)} wrap />
+          <JsonHighlight
+            code={JSON.stringify(run.evaluation.details, null, 2)}
+            wrap
+          />
         </>
       ) : null}
     </div>
   )
 }
 
-function orderLabel(order: EvalResultResponse['request']['execution_order']): string {
-  return order === 'balanced_treatment_first' ? 'balanced · B first' : 'balanced · A first'
+function orderLabel(
+  order: EvalResultResponse['request']['execution_order'],
+): string {
+  return order === 'balanced_treatment_first'
+    ? 'balanced · B first'
+    : 'balanced · A first'
 }
 
 function executionStep(
@@ -596,7 +711,15 @@ function executionStep(
 
 function CopyIcon() {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden
+    >
       <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
     </svg>
@@ -605,7 +728,15 @@ function CopyIcon() {
 
 function CheckIcon() {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden
+    >
       <path d="m20 6-11 11-5-5" />
     </svg>
   )
@@ -627,7 +758,11 @@ async function copyText(value: string): Promise<void> {
   if (!copied) throw new Error('copy command failed')
 }
 
-function ArtifactHashes({ report }: { report: NonNullable<EvalResultResponse['report']> }) {
+function ArtifactHashes({
+  report,
+}: {
+  report: NonNullable<EvalResultResponse['report']>
+}) {
   const values = [
     ['A prompt', report.control.prompt_sha256],
     ['A system', report.control.system_prompt_sha256 ?? 'none'],

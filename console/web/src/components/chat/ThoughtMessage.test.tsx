@@ -20,7 +20,7 @@ describe('ThoughtMessage', () => {
       <ThoughtMessage message={thought(true)} />,
     )
 
-    expect(html).toContain('thought…')
+    expect(html).toContain('Thought…')
     expect(html).toContain('Inspecting the message stream')
   })
 

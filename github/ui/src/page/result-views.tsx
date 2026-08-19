@@ -26,7 +26,15 @@ export type PreviewKind = 'list' | 'object' | 'text' | 'diff' | 'outcome'
 
 /** Render one event's `result_preview` by its `kind`. `ok` tints an error
  *  text block (errors arrive as `kind: "text"`). */
-export function ResultView({ kind, preview, ok }: { kind: string; preview: unknown; ok: boolean }): ReactNode {
+export function ResultView({
+  kind,
+  preview,
+  ok,
+}: {
+  kind: string
+  preview: unknown
+  ok: boolean
+}): ReactNode {
   switch (kind) {
     case 'list':
       return <ListView preview={preview} />
@@ -46,8 +54,9 @@ export function ResultView({ kind, preview, ok }: { kind: string; preview: unkno
 function ListView({ preview }: { preview: unknown }) {
   const rec = asRecord(preview)
   const items = Array.isArray(rec?.items) ? (rec.items as unknown[]) : []
-  const total = typeof rec?.total === 'number' ? (rec.total as number) : items.length
-  if (items.length === 0) return <Empty>no items</Empty>
+  const total =
+    typeof rec?.total === 'number' ? (rec.total as number) : items.length
+  if (items.length === 0) return <Empty>No items</Empty>
 
   const shape = listShape(items[0])
   return (
@@ -57,7 +66,9 @@ function ListView({ preview }: { preview: unknown }) {
           {shape === 'generic' ? (
             <GenericRows items={items} />
           ) : (
-            items.map((item, i) => <ListRow key={i} item={item} shape={shape} />)
+            items.map((item, i) => (
+              <ListRow key={i} item={item} shape={shape} />
+            ))
           )}
         </tbody>
       </table>
@@ -109,10 +120,12 @@ function IssueRow({ r }: { r: Record<string, unknown> }) {
         ) : (
           title
         )}
-        {draft ? <span className="gh-ui-rv-flag">draft</span> : null}
+        {draft ? <span className="gh-ui-rv-flag">Draft</span> : null}
       </td>
       <td className="gh-ui-rv-state">
-        {state ? <Badge variant={stateVariant(state)}>{state.toLowerCase()}</Badge> : null}
+        {state ? (
+          <Badge variant={stateVariant(state)}>{state.toLowerCase()}</Badge>
+        ) : null}
       </td>
       <td className="gh-ui-rv-author">
         {author ? <span>@{author}</span> : null}
@@ -175,13 +188,18 @@ function GenericRows({ items }: { items: unknown[] }) {
 /* ── object / text / diff / outcome ────────────────────────────────────── */
 
 function ObjectView({ preview }: { preview: unknown }) {
-  if (preview == null) return <Empty>no result</Empty>
+  if (preview == null) return <Empty>No result</Empty>
   return <JsonHighlight code={JSON.stringify(preview, null, 2)} wrap />
 }
 
 function TextView({ preview, error }: { preview: unknown; error: boolean }) {
   const r = asRecord(preview)
-  const text = typeof r?.text === 'string' ? (r.text as string) : typeof preview === 'string' ? preview : ''
+  const text =
+    typeof r?.text === 'string'
+      ? (r.text as string)
+      : typeof preview === 'string'
+        ? preview
+        : ''
   const truncated = r?.truncated === true
   if (!text) return <Empty>{error ? 'error' : 'no output'}</Empty>
   return (
@@ -202,7 +220,7 @@ function DiffView({ preview }: { preview: unknown }) {
   const r = asRecord(preview)
   const diff = typeof r?.diff === 'string' ? (r.diff as string) : ''
   const truncated = r?.truncated === true
-  if (!diff) return <Empty>no diff</Empty>
+  if (!diff) return <Empty>No diff</Empty>
   const lines = diff.split('\n')
   const shown = lines.slice(0, MAX_DIFF_LINES)
   const overflow = lines.length - shown.length
@@ -214,7 +232,9 @@ function DiffView({ preview }: { preview: unknown }) {
         </div>
       ))}
       {overflow > 0 ? (
-        <div className="gh-ui-rv-trunc">… {overflow} more lines (truncated)</div>
+        <div className="gh-ui-rv-trunc">
+          … {overflow} more lines (truncated)
+        </div>
       ) : truncated ? (
         <TruncMark />
       ) : null}
@@ -231,17 +251,24 @@ function diffClass(line: string): string {
 
 function OutcomeView({ preview }: { preview: unknown }) {
   const r = asRecord(preview)
-  if (!r) return <Empty>no outcome</Empty>
+  if (!r) return <Empty>No outcome</Empty>
   const exit = r.exit_code
   const timedOut = r.timed_out === true
   const stdout = typeof r.stdout === 'string' ? (r.stdout as string) : ''
   const stderr = typeof r.stderr === 'string' ? (r.stderr as string) : ''
   const truncated = r.truncated === true
-  const label = timedOut ? 'timed out' : exit == null ? 'killed' : `exit ${exit as ReactNode}`
-  const failed = timedOut || exit == null || (typeof exit === 'number' && exit !== 0)
+  const label = timedOut
+    ? 'timed out'
+    : exit == null
+      ? 'killed'
+      : `exit ${exit as ReactNode}`
+  const failed =
+    timedOut || exit == null || (typeof exit === 'number' && exit !== 0)
   return (
     <div className="gh-ui-rv-outcome">
-      <div className={`gh-ui-rv-exit${failed ? ' gh-ui-rv-errtext' : ''}`}>{label}</div>
+      <div className={`gh-ui-rv-exit${failed ? ' gh-ui-rv-errtext' : ''}`}>
+        {label}
+      </div>
       {stdout ? (
         <div className="gh-ui-rv-stream">
           <div className="gh-ui-rv-slabel">stdout</div>
@@ -270,7 +297,9 @@ function TruncMark() {
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
-  return v != null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+  return v != null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null
 }
 
 function str(v: unknown): string {
@@ -312,7 +341,10 @@ function cellText(v: unknown): string {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   if (Array.isArray(v)) return v.map(cellText).join(', ')
   const r = asRecord(v)
-  if (r) return str(r.login) || str(r.nameWithOwner) || str(r.name) || JSON.stringify(v)
+  if (r)
+    return (
+      str(r.login) || str(r.nameWithOwner) || str(r.name) || JSON.stringify(v)
+    )
   return JSON.stringify(v)
 }
 

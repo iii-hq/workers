@@ -20,8 +20,8 @@ const MODE_META: Record<
   Mode,
   { icon: LucideIcon; iconClassName: string; label: string }
 > = {
-  agent: { icon: Bot, iconClassName: 'text-ink-faint', label: 'agent' },
-  ask: { icon: MessageSquare, iconClassName: 'text-ok', label: 'ask' },
+  agent: { icon: Bot, iconClassName: 'text-ink-faint', label: 'Agent' },
+  ask: { icon: MessageSquare, iconClassName: 'text-ok', label: 'Ask' },
 }
 
 function ModeIcon({ mode, size = 16 }: { mode: Mode; size?: number }) {
@@ -41,7 +41,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
       <SelectPrimitive.Trigger
         aria-label="agent mode"
         className={cn(
-          'inline-flex h-12 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-mono text-base lowercase text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
+          'inline-flex h-12 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
           className,
         )}
       >
@@ -51,7 +51,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
         </span>
 
         <SelectPrimitive.Icon asChild>
-          <ChevronDown size={12} aria-hidden />
+          <ChevronDown size={16} aria-hidden />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
 
@@ -60,7 +60,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
           position="popper"
           sideOffset={4}
           className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised font-mono text-base lowercase text-ink shadow-floating sm:text-[13px]',
+            'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           )}
@@ -77,10 +77,12 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
                 )}
               >
                 <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-                  <Check size={12} aria-hidden />
+                  <Check size={16} aria-hidden />
                 </SelectPrimitive.ItemIndicator>
                 <ModeIcon mode={m.id} />
-                <SelectPrimitive.ItemText>{m.label}</SelectPrimitive.ItemText>
+                <SelectPrimitive.ItemText>
+                  {MODE_META[m.id].label}
+                </SelectPrimitive.ItemText>
               </SelectPrimitive.Item>
             ))}
           </SelectPrimitive.Viewport>
@@ -112,7 +114,7 @@ export function ModePickerPanel({
       className={className}
       options={MODES.map((mode) => ({
         value: mode.id,
-        label: <span className="capitalize">{mode.label}</span>,
+        label: MODE_META[mode.id].label,
         icon: <ModeIcon mode={mode.id} size={18} />,
       }))}
     />

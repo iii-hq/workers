@@ -175,7 +175,7 @@ function FieldShell({
       <label htmlFor={`dir-cfg-${field}`}>
         {label}
         {TOPOLOGY_FIELDS.has(field) ? (
-          <span className="dir-ui-restart-chip">restart required</span>
+          <span className="dir-ui-restart-chip">Restart required</span>
         ) : null}
       </label>
       {children}
@@ -280,7 +280,7 @@ function CheckField({
         <label htmlFor={`dir-cfg-${field}`}>
           {label}
           {TOPOLOGY_FIELDS.has(field) ? (
-            <span className="dir-ui-restart-chip">restart required</span>
+            <span className="dir-ui-restart-chip">Restart required</span>
           ) : null}
         </label>
       </span>

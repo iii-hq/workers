@@ -142,7 +142,7 @@ function ReadyBody({
         </ul>
       </div>
       <div className="flex flex-col gap-2">
-        <p className={BODY_CLASS}>start by exploring what's available:</p>
+        <p className={BODY_CLASS}>Start by exploring what's available:</p>
         <ul className="flex flex-col gap-1.5 font-sans text-base/7 text-ink-faint">
           {EXPLORE_FUNCTIONS.map(({ id, hint }) => (
             <li key={id}>
@@ -167,10 +167,10 @@ function ReadyBody({
               id="session-system-prompt"
               className="font-sans text-base font-semibold text-ink sm:text-sm"
             >
-              system prompt
+              System prompt
             </h2>
             <p className="font-sans text-base/6 text-ink-faint sm:text-sm/6">
-              choose the instructions the agent follows in this session.
+              Choose the instructions the agent follows in this session.
             </p>
           </div>
           <div className="flex items-start gap-2">
@@ -187,7 +187,7 @@ function ReadyBody({
           </div>
           <div className="flex flex-col gap-1.5">
             <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
-              optionally add skills to the system prompt:
+              Optionally add skills to the system prompt:
             </p>
             <SessionAddonsPicker
               value={systemPrompt}
@@ -198,12 +198,12 @@ function ReadyBody({
           <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
             {systemPrompt.choice === 'default'
               ? systemPrompt.addons.length > 0
-                ? 'selected skills are added to the built-in prompt'
-                : "default uses the provider's built-in prompt"
+                ? 'Selected skills are added to the built-in prompt'
+                : "Default uses the provider's built-in prompt"
               : systemPrompt.strategy === 'enrich'
-                ? 'enrich adds this prompt to the built-in prompt'
-                : 'replace uses this prompt instead of the built-in prompt'}
-            {' · locked after your first message'}
+                ? 'Enrich adds this prompt to the built-in prompt'
+                : 'Replace uses this prompt instead of the built-in prompt'}
+            {' · Locked after your first message'}
           </p>
         </section>
       ) : null}
@@ -220,7 +220,7 @@ function NoProviderBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>configure a provider.</h1>
+      <h1 className={HEADING_CLASS}>Configure a provider.</h1>
       <p className={BODY_CLASS}>
         the harness worker is running, but no model providers are set up yet.
         add an api key — or point at a local server — then pick a model and
@@ -244,7 +244,7 @@ function NoHarnessBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>install the harness worker.</h1>
+      <h1 className={HEADING_CLASS}>Install the harness worker.</h1>
       <p className={BODY_CLASS}>
         chat runs on the <span className="text-ink">harness</span> worker, and
         it isn't connected yet. add it to start a session.

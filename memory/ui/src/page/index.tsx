@@ -22,17 +22,20 @@
  * script is loaded, which already tracks worker connectedness via trigger GC.
  */
 
-import { useCallback, useRef, useState } from 'react'
 import {
   Button,
   type Host,
   PageHeader,
   type PageRenderProps,
   PageShell,
+  SegmentedControl,
   StatusDot,
 } from '@iii-dev/console-ui'
+import { useCallback, useRef, useState } from 'react'
 import { BankRail } from './BankRail'
 import { Brain, RefreshCw } from './icons'
+import { MemoriesPanel } from './MemoriesPanel'
+import { MemoryGraph } from './MemoryGraph'
 import {
   createBank,
   deleteMemory,
@@ -44,9 +47,6 @@ import {
   setRule,
   updateMemory,
 } from './memory-data'
-import { MemoriesPanel } from './MemoriesPanel'
-import { MemoryGraph } from './MemoryGraph'
-import { ModeToggle } from './ModeToggle'
 import { RecallPanel } from './RecallPanel'
 import { RulesPanel } from './RulesPanel'
 import { useMemoryLive } from './useMemoryLive'
@@ -61,10 +61,10 @@ type Panel = 'memories' | 'graph' | 'rules' | 'recall'
 // Team review decision: rules are the most important surface — what goes
 // in the system prompt — so they lead the tab order.
 const PANEL_OPTIONS: { value: Panel; label: string }[] = [
-  { value: 'rules', label: 'rules' },
-  { value: 'memories', label: 'memories' },
-  { value: 'graph', label: 'graph' },
-  { value: 'recall', label: 'preview' },
+  { value: 'rules', label: 'Rules' },
+  { value: 'memories', label: 'Memories' },
+  { value: 'graph', label: 'Graph' },
+  { value: 'recall', label: 'Preview' },
 ]
 
 const isPanel = (v: string | null): v is Panel =>
@@ -92,7 +92,9 @@ function writeStored(key: string, value: string) {
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none) are ignored so a hidden page keeps its last
  * real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -213,8 +215,8 @@ export function MemoryPage({
     <PageShell className="mem-ui-shell">
       <PageHeader
         icon={<Brain size={16} />}
-        title="memory"
-        description="banks of rules + memories, injected per turn"
+        title="Memory"
+        description="Banks of rules and memories, injected per turn"
         actions={
           <>
             <span
@@ -237,7 +239,7 @@ export function MemoryPage({
               title="re-read every bank from disk — picks up hand-edited rules/memories files (live events already keep this page current otherwise)"
             >
               <RefreshCw
-                size={14}
+                size={16}
                 className={loading || busy ? 'mem-ui-spin' : undefined}
                 aria-hidden
               />
@@ -278,7 +280,7 @@ export function MemoryPage({
             ) : selected === null ? (
               <div className="mem-ui-hero">
                 <Brain size={28} className="mem-ui-hero-icon" aria-hidden />
-                <h2 className="mem-ui-hero-title">no banks yet</h2>
+                <h2 className="mem-ui-hero-title">No banks yet</h2>
                 <p className="mem-ui-hero-body">
                   create one on the left, or just chat: the default bank
                   materializes when the first memory is saved.
@@ -301,7 +303,7 @@ export function MemoryPage({
                       </span>
                     ) : null}
                   </div>
-                  <ModeToggle<Panel>
+                  <SegmentedControl<Panel>
                     value={panel}
                     onChange={setPanel}
                     options={PANEL_OPTIONS}

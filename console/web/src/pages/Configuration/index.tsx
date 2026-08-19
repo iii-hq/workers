@@ -19,8 +19,8 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
     >
       <div className="px-6 pt-8 pb-4 shrink-0">
         <header className="pb-4">
-          <h1 className="font-sans text-[20px] text-ink lowercase tracking-[-0.01em]">
-            console settings
+          <h1 className="font-sans text-[20px] text-ink tracking-[-0.01em]">
+            Console settings
           </h1>
         </header>
       </div>

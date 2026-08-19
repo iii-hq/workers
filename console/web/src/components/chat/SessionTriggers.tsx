@@ -135,9 +135,9 @@ function CopyableId({ value }: { value: string }) {
         title={copied ? 'copied' : 'copy'}
       >
         {copied ? (
-          <Check size={11} aria-hidden />
+          <Check size={16} aria-hidden />
         ) : (
-          <Copy size={11} aria-hidden />
+          <Copy size={16} aria-hidden />
         )}
       </button>
     </span>
@@ -167,7 +167,7 @@ function TriggerRow({
     <div
       className={`flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0${trigger.fired ? ' opacity-55' : ''}`}
     >
-      <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
+      <Zap size={16} className="shrink-0 text-ink-ghost" aria-hidden />
       <button
         type="button"
         onClick={onOpen}
@@ -309,7 +309,7 @@ export function SessionTriggers({
       >
         {clearArming ? (
           <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-            <Trash2 size={12} className="shrink-0 text-alert" aria-hidden />
+            <Trash2 size={16} className="shrink-0 text-alert" aria-hidden />
             <span className="min-w-0 flex-1 truncate">
               unregister all {registeredCount} triggers?
               <span className="text-ink-ghost">
@@ -342,7 +342,7 @@ export function SessionTriggers({
               aria-expanded={expanded}
               className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-[12px] hover:text-ink transition-colors"
             >
-              <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
+              <Zap size={16} className="shrink-0 text-ink-ghost" aria-hidden />
               <span className="min-w-0 flex-1 truncate text-left">
                 {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
                 registered
@@ -359,7 +359,7 @@ export function SessionTriggers({
                   className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-alert transition-colors"
                   title="unregister every trigger"
                 >
-                  <Trash2 size={12} aria-hidden />
+                  <Trash2 size={16} aria-hidden />
                   clear all
                 </button>
               </div>
@@ -371,9 +371,9 @@ export function SessionTriggers({
               className="shrink-0 px-2 py-1.5 text-ink-ghost hover:text-ink transition-colors"
             >
               {expanded ? (
-                <ChevronDown size={12} aria-hidden />
+                <ChevronDown size={16} aria-hidden />
               ) : (
-                <ChevronRight size={12} aria-hidden />
+                <ChevronRight size={16} aria-hidden />
               )}
             </button>
           </div>
@@ -406,7 +406,7 @@ export function SessionTriggers({
               className="mr-2 inline-flex align-baseline text-ink-ghost"
               aria-hidden
             >
-              <Zap size={13} />
+              <Zap size={16} />
             </span>
             {selected ? selected.label || selected.triggerType : ''}
           </DialogTitle>
@@ -416,11 +416,11 @@ export function SessionTriggers({
           {selected ? (
             <div className="mt-4 space-y-4 font-mono text-[12px]">
               <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-4 gap-y-1.5">
-                <dt className="lowercase text-ink-ghost">fires on</dt>
+                <dt className="text-ink-ghost">Fires on</dt>
                 <dd className="text-ink">{selected.triggerType}</dd>
-                <dt className="lowercase text-ink-ghost">delivers</dt>
+                <dt className="text-ink-ghost">Delivers</dt>
                 <dd className="text-ink">{deliveryLabel(selected)}</dd>
-                <dt className="lowercase text-ink-ghost">lifetime</dt>
+                <dt className="text-ink-ghost">Lifetime</dt>
                 <dd className="text-ink">
                   {selected.fired
                     ? 'fired — already unregistered'
@@ -430,19 +430,19 @@ export function SessionTriggers({
                 </dd>
                 {selected.createdAt !== undefined ? (
                   <>
-                    <dt className="lowercase text-ink-ghost">registered</dt>
+                    <dt className="text-ink-ghost">Registered</dt>
                     <dd className="text-ink-faint">
                       {new Date(selected.createdAt).toLocaleString()}
                     </dd>
                   </>
                 ) : null}
-                <dt className="lowercase text-ink-ghost">subscription</dt>
+                <dt className="text-ink-ghost">Subscription</dt>
                 <dd className="text-ink-faint">
                   <CopyableId value={selected.id} />
                 </dd>
                 {selected.triggerId ? (
                   <>
-                    <dt className="lowercase text-ink-ghost">trigger id</dt>
+                    <dt className="text-ink-ghost">Trigger ID</dt>
                     <dd className="text-ink-faint">
                       <CopyableId value={selected.triggerId} />
                     </dd>

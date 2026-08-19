@@ -415,20 +415,20 @@ export function FunctionTriggerCard({
               <Loader2
                 aria-hidden
                 strokeWidth={2}
-                className="size-3.5 h-lh shrink-0 animate-spin stroke-trigger-running motion-reduce:animate-none"
+                className="size-4 h-lh shrink-0 animate-spin stroke-trigger-running motion-reduce:animate-none"
               />
             ) : errored ? (
               <X
                 aria-hidden
                 strokeWidth={2.5}
-                className="size-3.5 shrink-0 stroke-alert"
+                className="size-4 shrink-0 stroke-alert"
               />
             ) : (
               <Check
                 aria-hidden
                 strokeWidth={2.5}
                 className={cn(
-                  'size-3.5 shrink-0',
+                  'size-4 shrink-0',
                   expandedSurface ? 'stroke-ok' : 'stroke-muted-foreground',
                 )}
               />
@@ -459,11 +459,11 @@ export function FunctionTriggerCard({
                   </span>{' '}
                 </>
               ) : hideGenericVerb ? null : running ? (
-                <>triggering </>
+                <>Triggering </>
               ) : errored && !denied ? (
-                <>failed </>
+                <>Failed </>
               ) : ran ? (
-                <>triggered </>
+                <>Triggered </>
               ) : null}
               {!description ? (
                 <>
@@ -569,8 +569,8 @@ export function FunctionTriggerCard({
                 className="border-t border-rule-2"
               >
                 <TabsList className="px-3">
-                  <TabsTrigger value="terminal">terminal</TabsTrigger>
-                  <TabsTrigger value="json">raw json</TabsTrigger>
+                  <TabsTrigger value="terminal">Terminal</TabsTrigger>
+                  <TabsTrigger value="json">Raw JSON</TabsTrigger>
                 </TabsList>
                 <TabsContent value="terminal">{customTerminal}</TabsContent>
                 <TabsContent value="json">
@@ -728,9 +728,9 @@ function PaneShell({
           title={copied ? 'copied' : 'copy'}
         >
           {copied ? (
-            <Check size={12} aria-hidden />
+            <Check size={16} aria-hidden />
           ) : (
-            <Copy size={12} aria-hidden />
+            <Copy size={16} aria-hidden />
           )}
         </button>
       </div>

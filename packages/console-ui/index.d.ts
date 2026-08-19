@@ -274,6 +274,8 @@ export interface Host {
   /** The curated component record — same components as the named exports below. */
   components: Record<string, React.ComponentType<any>>
   useTheme(): 'light' | 'dark'
+  /** Stable namespaced CSS recipes for lists, cards, panels and controls. */
+  uiClasses: UiClasses
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   pages: { register(page: PageRegistration): () => void }
@@ -326,6 +328,50 @@ export declare const components: Record<string, React.ComponentType<any>>
 export declare function useTheme(): 'light' | 'dark'
 /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
 export declare const tokens: readonly string[]
+/** Stable namespaced CSS recipes; state is expressed through `data-*` attributes. */
+export declare const uiClasses: UiClasses
+
+export interface UiClasses {
+  readonly list: 'iii-ui-list'
+  readonly listGroup: 'iii-ui-list-group'
+  readonly listGroupLabel: 'iii-ui-list-group__label'
+  readonly listItem: 'iii-ui-list-item'
+  readonly listItemIcon: 'iii-ui-list-item__icon'
+  readonly listItemContent: 'iii-ui-list-item__content'
+  readonly listItemTitle: 'iii-ui-list-item__title'
+  readonly listItemDescription: 'iii-ui-list-item__description'
+  readonly listItemMeta: 'iii-ui-list-item__meta'
+  readonly card: 'iii-ui-card'
+  readonly cardHeader: 'iii-ui-card__header'
+  readonly cardBody: 'iii-ui-card__body'
+  readonly panel: 'iii-ui-panel'
+  readonly panelHeader: 'iii-ui-panel__header'
+  readonly panelBody: 'iii-ui-panel__body'
+  readonly chip: 'iii-ui-chip'
+  readonly icon: 'iii-ui-icon'
+  readonly tableViewport: 'iii-ui-table-viewport'
+  readonly tableFrame: 'iii-ui-table-frame'
+  readonly table: 'iii-ui-table'
+  readonly tableHeader: 'iii-ui-table__header'
+  readonly tableBody: 'iii-ui-table__body'
+  readonly tableFooter: 'iii-ui-table__footer'
+  readonly tableRow: 'iii-ui-table__row'
+  readonly tableHead: 'iii-ui-table__head'
+  readonly tableCell: 'iii-ui-table__cell'
+  readonly tableCaption: 'iii-ui-table__caption'
+  readonly tabsList: 'iii-ui-tabs-list'
+  readonly tab: 'iii-ui-tab'
+  readonly tabIcon: 'iii-ui-tab__icon'
+  readonly segmentedControl: 'iii-ui-segmented'
+  readonly segmentedItem: 'iii-ui-segmented__item'
+  readonly field: 'iii-ui-field'
+  readonly fieldLabel: 'iii-ui-field__label'
+  readonly fieldDescription: 'iii-ui-field__description'
+  readonly fieldError: 'iii-ui-field__error'
+  readonly motionControl: 'iii-ui-motion-control'
+  readonly motionPanel: 'iii-ui-motion-panel'
+  readonly motionOverlay: 'iii-ui-motion-overlay'
+}
 
 /* ── the shared component library ───────────────────────────────────── */
 
@@ -358,6 +404,87 @@ export interface ButtonProps
 }
 export declare const Button: React.ComponentType<
   ButtonProps & React.RefAttributes<HTMLButtonElement>
+>
+
+export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Neutral selected treatment: surface, edge and ink; never accent. */
+  selected?: boolean
+  interactive?: boolean
+}
+export declare const Card: React.ComponentType<
+  CardProps & React.RefAttributes<HTMLDivElement>
+>
+export declare const CardHeader: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const CardBody: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+
+export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger'
+export interface ChipProps extends React.HTMLAttributes<HTMLSpanElement> {
+  tone?: ChipTone
+  selected?: boolean
+}
+export declare const Chip: React.ComponentType<
+  ChipProps & React.RefAttributes<HTMLSpanElement>
+>
+
+export type TableDensity = 'comfortable' | 'compact'
+export interface TableProps
+  extends React.TableHTMLAttributes<HTMLTableElement> {
+  density?: TableDensity
+}
+export declare const TableViewport: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const TableFrame: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const Table: React.ComponentType<
+  TableProps & React.RefAttributes<HTMLTableElement>
+>
+export declare const TableHeader: React.ComponentType<
+  React.HTMLAttributes<HTMLTableSectionElement> &
+    React.RefAttributes<HTMLTableSectionElement>
+>
+export declare const TableBody: React.ComponentType<
+  React.HTMLAttributes<HTMLTableSectionElement> &
+    React.RefAttributes<HTMLTableSectionElement>
+>
+export declare const TableFooter: React.ComponentType<
+  React.HTMLAttributes<HTMLTableSectionElement> &
+    React.RefAttributes<HTMLTableSectionElement>
+>
+export interface TableRowProps
+  extends React.HTMLAttributes<HTMLTableRowElement> {
+  interactive?: boolean
+  selected?: boolean
+}
+export declare const TableRow: React.ComponentType<
+  TableRowProps & React.RefAttributes<HTMLTableRowElement>
+>
+export declare const TableHead: React.ComponentType<
+  React.ThHTMLAttributes<HTMLTableCellElement> &
+    React.RefAttributes<HTMLTableCellElement>
+>
+export declare const TableCell: React.ComponentType<
+  React.TdHTMLAttributes<HTMLTableCellElement> &
+    React.RefAttributes<HTMLTableCellElement>
+>
+export declare const TableCaption: React.ComponentType<
+  React.HTMLAttributes<HTMLTableCaptionElement> &
+    React.RefAttributes<HTMLTableCaptionElement>
+>
+
+export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
+  /** Required accessible name; also the default tooltip content. */
+  label: string
+  tooltip?: React.ReactNode | false
+  tooltipSide?: 'top' | 'right' | 'bottom' | 'left'
+}
+export declare const IconButton: React.ComponentType<
+  IconButtonProps & React.RefAttributes<HTMLButtonElement>
 >
 
 /** Root is state-only; compose with `DialogTrigger`/`DialogContent`. */
@@ -479,11 +606,32 @@ export interface InputProps
   > {
   value: string
   onChange: (next: string) => void
-  /** Opt out of the default `lowercase` text-transform (verbatim values: keys, URLs). */
+  /** @deprecated Inputs preserve case by default; retained for compatibility. */
   preserveCase?: boolean
 }
 export declare const Input: React.ComponentType<
   InputProps & React.RefAttributes<HTMLInputElement>
+>
+
+export declare const List: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const ListGroup: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const ListGroupLabel: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export interface ListItemProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  selected?: boolean
+  leading?: React.ReactNode
+  label?: React.ReactNode
+  description?: React.ReactNode
+  trailing?: React.ReactNode
+}
+export declare const ListItem: React.ComponentType<
+  ListItemProps & React.RefAttributes<HTMLButtonElement>
 >
 
 /* ── page chrome: THE layout design system for injected pages ─────────
@@ -508,7 +656,7 @@ export declare const PageShell: React.ComponentType<PageShellProps>
 export interface PageHeaderProps {
   /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
   icon?: React.ReactNode
-  /** The page's name — console chrome vocabulary: mono, lowercase. */
+  /** The page's human-readable name. Technical identifiers belong in `description`. */
   title?: React.ReactNode
   /** One short descriptor; truncates before anything else gives. */
   description?: React.ReactNode
@@ -544,11 +692,22 @@ export declare const PageMain: React.ComponentType<
   React.HTMLAttributes<HTMLElement>
 >
 
+export declare const Panel: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const PanelHeader: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+export declare const PanelBody: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+
 export interface SelectOption<T extends string = string> {
   value: T
   label: string
   /** Optional hover tooltip on the option row. */
   title?: string
+  disabled?: boolean
 }
 export interface SelectGroup<T extends string = string> {
   label: string
@@ -573,6 +732,73 @@ export interface SelectProps<T extends string = string> {
 }
 export declare const Select: <T extends string = string>(
   props: SelectProps<T>,
+) => React.ReactNode
+
+export interface SegmentedControlOption<T extends string = string> {
+  value: T
+  label: React.ReactNode
+  title?: string
+  /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
+  icon?: React.ReactNode | false
+}
+export interface SegmentedControlProps<T extends string = string> {
+  value: T
+  onChange: (next: T) => void
+  options: SegmentedControlOption<T>[]
+  className?: string
+  itemClassName?: string
+  activeItemClassName?: string
+  variant?: 'tabs' | 'radio'
+  'aria-label'?: string
+}
+export declare const SegmentedControl: <T extends string = string>(
+  props: SegmentedControlProps<T>,
+) => React.ReactNode
+
+export interface SelectorOption<T extends string = string> {
+  value: T
+  label: string
+  description?: string
+  keywords?: readonly string[]
+  disabled?: boolean
+}
+export interface SelectorGroup<T extends string = string> {
+  label: string
+  options: readonly SelectorOption<T>[]
+}
+export interface SelectorProps<T extends string = string> {
+  value: T | undefined
+  options?: readonly SelectorOption<T>[]
+  groups?: readonly SelectorGroup<T>[]
+  onChange: (next: T) => void
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  query?: string
+  onQueryChange?: (query: string) => void
+  shouldFilter?: boolean
+  loading?: boolean
+  error?: React.ReactNode
+  validationMessage?: React.ReactNode
+  disabled?: boolean
+  invalid?: boolean
+  className?: string
+  contentClassName?: string
+  placeholder?: string
+  searchPlaceholder?: string
+  emptyMessage?: React.ReactNode
+  loadingMessage?: React.ReactNode
+  allowEmpty?: boolean
+  emptyLabel?: string
+  onClear?: () => void
+  /** Optional free-form commit for selectors such as arbitrary attribute keys. */
+  onCreate?: (query: string) => void
+  createOptionLabel?: (query: string) => React.ReactNode
+  triggerIcon?: React.ReactNode
+  'aria-label': string
+  'aria-describedby'?: string
+}
+export declare const Selector: <T extends string = string>(
+  props: SelectorProps<T>,
 ) => React.ReactNode
 
 export declare const Skeleton: React.ComponentType<
@@ -603,12 +829,15 @@ export interface TabsProps
   dir?: 'ltr' | 'rtl'
 }
 export declare const Tabs: React.ComponentType<TabsProps>
-export declare const TabsList: React.ComponentType<
-  React.HTMLAttributes<HTMLDivElement>
->
+export interface TabsListProps extends React.HTMLAttributes<HTMLDivElement> {
+  variant?: 'line'
+}
+export declare const TabsList: React.ComponentType<TabsListProps>
 export interface TabsTriggerProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   value: string
+  /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
+  icon?: React.ReactNode | false
 }
 export declare const TabsTrigger: React.ComponentType<TabsTriggerProps>
 export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -678,6 +907,8 @@ export interface TooltipContentProps
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
+  collisionPadding?: number
+  avoidCollisions?: boolean
 }
 export declare const TooltipContent: React.ComponentType<TooltipContentProps>
 

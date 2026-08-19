@@ -18,7 +18,7 @@ export interface IconProps {
 }
 
 function Svg({
-  size = 12,
+  size = 16,
   children,
   className,
   style,

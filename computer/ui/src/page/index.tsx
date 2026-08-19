@@ -52,7 +52,9 @@ const NARROW_BELOW = 720
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none) are ignored so a hidden page keeps its last
  * real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -206,8 +208,8 @@ export function ComputerPage({
     <PageShell className="cp-ui-shell">
       <PageHeader
         icon={<MonitorIcon />}
-        title="computer"
-        description="live desktops you can watch and drive"
+        title="Computer"
+        description="Live desktops you can watch and drive"
         actions={<LivePill live={live} />}
         onClose={onRequestClose}
       />
@@ -322,7 +324,9 @@ export function ComputerPage({
                     click to focus — clicks, scroll, typing and shortcuts
                     forward as act
                   </span>
-                  <span className="fact hint">shift+esc leaves the surface</span>
+                  <span className="fact hint">
+                    shift+esc leaves the surface
+                  </span>
                 </footer>
               </>
             ) : (
@@ -330,8 +334,8 @@ export function ComputerPage({
                 <MonitorIcon className="cp-ui-hero-icon" />
                 <h2 className="cp-ui-hero-title">no desktop yet</h2>
                 <p className="cp-ui-hero-body">
-                  start a session to drive this machine, a sandboxed desktop,
-                  or a remote one.
+                  start a session to drive this machine, a sandboxed desktop, or
+                  a remote one.
                 </p>
               </div>
             )}

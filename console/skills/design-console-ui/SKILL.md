@@ -121,8 +121,9 @@ available width changes.
   `--color-surface-active`.
 - Use `--color-ink`, `--color-ink-faint`, and `--color-ink-ghost` for content
   hierarchy. Never use ghost ink for load-bearing text.
-- Use `--color-accent`, `--color-alert`, `--color-warn`, and `--color-ok`, plus
-  their muted variants, only for meaningful state.
+- Use `--color-alert`, `--color-warn`, and `--color-ok`, plus their muted
+  variants, only for meaningful status. Reserve `--color-accent` for primary
+  actions, form focus, live activity, or semantic domain data.
 - Use `--color-edge` for structural boundaries and `--color-rule-focus` for
   focus. Ordinary rule tokens may be transparent; do not rely on divider soup
   to create hierarchy.
@@ -130,17 +131,20 @@ available width changes.
   leaves its layer.
 - Keep the system radius near 6 px. Reserve full rounding for status dots,
   pills, and circular primary actions.
+- Render selection with `--color-surface-selected`, stronger
+  `--color-ink`, and an optional neutral `--color-edge`. Never change a
+  selected row, card, tab, chip, or segment to accent text or an accent edge.
 
 ### Use type by meaning
 
 - Use `--font-sans` for titles, labels, prose, menus, settings, status, and
   explanations.
-- Use `--font-mono` for ids, paths, schemas, counts, data values, and compact
-  technical chrome.
+- Use `--font-mono` only for machine-produced ids, paths, schemas, counts,
+  data values, and payloads. Never make a whole panel or its controls mono.
 - Use `--font-code` for source, structured payloads, terminal output, and
   editors.
-- Prefer sentence case and direct product language. Reserve uppercase tracking
-  for short section labels.
+- Prefer sentence/title case and direct product language. Do not apply CSS
+  `lowercase` or `uppercase` transforms to tabs, buttons, menus, or forms.
 - Keep phone body and control copy near 16 px. Use 17–18 px semibold titles,
   13–14 px desktop body copy, and 10–12 px metadata where contrast remains AA.
 - Keep explanatory prose within roughly 60–72 characters per line.
@@ -160,6 +164,39 @@ available width changes.
   menu.
 - Render loading, empty, error, and success in the space the content will
   occupy so the silhouette remains stable.
+
+### Reuse the public UI contracts
+
+- Compose page chrome and the shared `List`/`ListItem`, `Card`, `Panel`,
+  `Chip`, `IconButton`, semantic `Table` parts, line `Tabs`, and
+  `SegmentedControl` primitives before adding local structure. Use stable
+  `uiClasses` recipes when a worker needs semantic markup without another
+  React wrapper.
+- Build simple tables as `TableViewport` → `TableFrame` → `Table`, with the
+  shared semantic sections, rows, headings, and cells. Use natural-case sans
+  headers, horizontal dividers, comfortable page density or compact chat
+  density, and mono only for technical cell values. Only interactive rows get
+  hover treatment; selected rows remain neutral.
+- Use `TabsList variant="line"`/`TabsTrigger` or `SegmentedControl
+  variant="tabs"` for peer content views. Shared tabs use a bottom rule,
+  neutral active underline, 600 weight, natural case, and a semantic 16 px
+  icon by default. Reserve `variant="radio"` and its surface track for a
+  persisted mutually exclusive choice; do not carry private boxed-tab CSS.
+- Use application icons at the shared 16 px baseline. Never author an icon
+  usage, component default, or root SVG below 16 px. Use `IconButton` for icon-only actions so the glyph
+  keeps an accessible name and shared tooltip.
+- Use `Selector` for searchable single choice, including grouped or disabled
+  options, caller-owned async search, loading/empty/error/validation states,
+  and explicitly enabled free-form creation. Use `Select` for a small finite
+  non-searchable list.
+- Use shared `Tooltip` parts or `IconButton`; do not create local hover timers,
+  collision logic, or tooltip portals.
+- Keep a local selector only when its interaction is materially different,
+  such as hierarchical drill-in, multi-select, or a persistent command
+  palette. Document the exception in the Console UI conformance inventory.
+- Use `--motion-duration-*` and `--motion-ease-*`, or the shared motion recipe
+  classes, for control, panel, and overlay transitions. Streaming text,
+  rapidly updating meters, and pointer-following geometry update immediately.
 
 ## Build runtime-injected worker UI
 
@@ -235,7 +272,7 @@ function WorkerPage({
   return (
     <PageShell className="mywork-ui">
       <PageHeader
-        title="mywork"
+        title="Mywork"
         description="Operator workspace"
         onClose={onRequestClose}
       />
@@ -249,7 +286,7 @@ function WorkerPage({
 export default function setup(host: Host) {
   host.pages.register({
     id: 'mywork-manager',
-    title: 'mywork',
+    title: 'Mywork',
     render: (props) => <WorkerPage host={host} {...props} />,
   })
   host.functionTriggers.register(createMyworkRenderer(host))
@@ -318,10 +355,14 @@ Prefix every selector with the worker wrapper:
 Never use unscoped `:root`, `html`, `body`, `*`, bare element selectors, or
 `@font-face`. Never hardcode theme colors. Do not use Tailwind utilities in
 injected markup because worker classes are absent from the Console's compiled
-Tailwind output. Use shared components plus scoped CSS.
+Tailwind output. Use shared components and `uiClasses` recipes plus scoped CSS
+for domain-specific layout. Shared motion recipes honor the Console's global
+reduced-motion contract; custom animation still needs a scoped override.
 
-If creating a portal into `document.body`, stamp `data-iii-ui="mywork"` on the
-portal root; otherwise the scoped stylesheet will not reach it.
+Shared `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and
+`BottomSheet` portals carry the current worker scope automatically. If custom
+domain UI portals directly into `document.body`, stamp
+`data-iii-ui="mywork"` on that portal root.
 
 ### Preserve state through async work and reload
 
@@ -480,6 +521,9 @@ Exercise all of the following:
 - left and right split positions and multiple horizontal phone panels;
 - light and dark themes;
 - touch, pointer, keyboard-only, visible focus, and reduced motion;
+- neutral selected rows, cards, tabs, chips, and segments in both themes;
+- responsive control/panel/overlay transitions and immediate high-frequency
+  updates;
 - long names, paths, model ids, descriptions, and payloads;
 - loading, empty, unavailable, unconfigured, success, error, reconnect, and
   hot-reload states;
@@ -496,4 +540,7 @@ action remains reachable without hover; page and configuration state cannot be
 lost silently; async work cannot overwrite newer intent; styles remain scoped
 and token-based; secrets never appear in editable provider configuration; the
 host still owns validation and persistence; the manifest is warning-free; and
-the browser reports no injected-UI errors.
+the browser reports no injected-UI errors. Content tabs use the shared line
+recipe with natural casing and default 16 px icons; UI chrome is sans; mono is
+limited to machine-readable content; and no application icon is authored below
+16 px.

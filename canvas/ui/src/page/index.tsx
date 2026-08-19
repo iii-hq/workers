@@ -396,8 +396,8 @@ export function CanvasPage({
     <PageShell className="canvas-ui">
       <PageHeader
         icon={<Shapes />}
-        title="canvas"
-        description="diagrams stored as editable source"
+        title="Canvas"
+        description="Diagrams stored as editable source"
         onClose={onRequestClose}
       />
       <PageBody side={panelSide}>
@@ -425,7 +425,7 @@ export function CanvasPage({
               disabled={creating}
               title="new canvas (starter flowchart)"
             >
-              <Plus size={13} aria-hidden />
+              <Plus size={16} aria-hidden />
               new
             </Button>
           </div>
@@ -477,7 +477,7 @@ export function CanvasPage({
                     title="delete"
                     onClick={() => remove(c)}
                   >
-                    <Trash2 size={12} aria-hidden />
+                    <Trash2 size={16} aria-hidden />
                   </button>
                 </li>
               ))}

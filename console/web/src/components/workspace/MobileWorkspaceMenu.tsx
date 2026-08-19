@@ -91,7 +91,7 @@ export function MobileWorkspaceMenu({
                       <PanelsTopLeft
                         className={cn(
                           'size-5 shrink-0',
-                          active ? 'text-accent' : 'text-ink-faint',
+                          active ? 'text-ink' : 'text-ink-faint',
                         )}
                         aria-hidden
                       />
@@ -114,7 +114,7 @@ export function MobileWorkspaceMenu({
                       </span>
                       {active ? (
                         <Check
-                          className="size-5 shrink-0 text-accent"
+                          className="size-5 shrink-0 text-ink"
                           aria-hidden
                         />
                       ) : null}

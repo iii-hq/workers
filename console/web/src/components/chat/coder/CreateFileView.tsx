@@ -79,14 +79,14 @@ export function CreateFileView({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                      <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
+                      <TriangleAlert aria-hidden className="size-4" />
                       {result.error.code}
                     </span>
                   </TooltipTrigger>
                   <TooltipContent>{result.error.message}</TooltipContent>
                 </Tooltip>
               ) : (
-                <span className="text-warn">err</span>
+                <span className="text-warn">Error</span>
               )}
             </div>
           )

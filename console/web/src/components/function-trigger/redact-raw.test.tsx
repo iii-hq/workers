@@ -181,7 +181,7 @@ describe('a renderer that declares redactRaw', () => {
     })
     const out = html()
     expect(out).toContain('custom terminal')
-    expect(out).toContain('raw json')
+    expect(out).toContain('Raw JSON')
     expect(out).not.toContain(SECRET)
     expect(out).toContain(MASKED)
   })

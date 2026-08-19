@@ -13,6 +13,7 @@
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import type { IiiClient } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtConfigForm,
   registerExtPage,
@@ -80,13 +81,15 @@ export function ScopedExtension({
   children: React.ReactNode
 }) {
   return (
-    <div data-iii-ui={scope} style={{ display: 'contents' }}>
-      <ErrorBoundary
-        fallback={(error) => <ExtErrorChip path={path} error={error} />}
-      >
-        {children}
-      </ErrorBoundary>
-    </div>
+    <ExtensionScopeProvider scope={scope}>
+      <div data-iii-ui={scope} style={{ display: 'contents' }}>
+        <ErrorBoundary
+          fallback={(error) => <ExtErrorChip path={path} error={error} />}
+        >
+          {children}
+        </ErrorBoundary>
+      </div>
+    </ExtensionScopeProvider>
   )
 }
 
@@ -115,6 +118,7 @@ function makeHost(
     iii: api.iii,
     components: api.components,
     useTheme: api.useTheme,
+    uiClasses: api.uiClasses,
     path,
     pages: {
       register(page) {

@@ -22,6 +22,7 @@ import {
   PageMain,
   PageShell,
   PageSidebar,
+  uiClasses,
 } from '@iii-dev/console-ui'
 import { Fragment, type ReactNode, useCallback, useState } from 'react'
 import type { Family, Tone } from './trigger-kinds'
@@ -188,7 +189,7 @@ export function FilterChips<T extends string>({
     <div className="console-catalog-filters">
       <button
         type="button"
-        className="console-catalog-filter"
+        className={`${uiClasses.chip} console-catalog-filter`}
         data-selected={selected === null}
         aria-pressed={selected === null}
         onClick={() => onSelect(null)}
@@ -199,7 +200,7 @@ export function FilterChips<T extends string>({
         <button
           key={key}
           type="button"
-          className="console-catalog-filter"
+          className={`${uiClasses.chip} console-catalog-filter`}
           data-selected={selected === key}
           aria-pressed={selected === key}
           onClick={() => onSelect(selected === key ? null : key)}
@@ -405,19 +406,27 @@ export function CatalogRow({
   return (
     <button
       type="button"
-      className={`console-catalog-row${flash ? ' flash' : ''}`}
+      className={`${uiClasses.listItem} console-catalog-row${flash ? ' flash' : ''}`}
       data-selected={selected}
       aria-pressed={selected}
       onClick={onClick}
       title={typeof primary === 'string' ? primary : undefined}
     >
-      {icon ? <span className="row-glyph">{icon}</span> : null}
-      <span className="row-copy">
+      {icon ? (
+        <span className={`${uiClasses.listItemIcon} row-glyph`}>{icon}</span>
+      ) : null}
+      <span className={`${uiClasses.listItemContent} row-copy`}>
         <span className="primary-line">
-          <span className="primary">{primary}</span>
+          <span className={`${uiClasses.listItemTitle} primary`}>
+            {primary}
+          </span>
           {meta}
         </span>
-        {secondary ? <span className="secondary">{secondary}</span> : null}
+        {secondary ? (
+          <span className={`${uiClasses.listItemDescription} secondary`}>
+            {secondary}
+          </span>
+        ) : null}
       </span>
     </button>
   )
@@ -817,7 +826,7 @@ export function Chip({
   tone?: string
 }) {
   return (
-    <span className="console-catalog-chip" data-tone={tone}>
+    <span className={`${uiClasses.chip} console-catalog-chip`} data-tone={tone}>
       <span className="k">{k}</span>
       {v}
     </span>

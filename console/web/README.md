@@ -40,8 +40,8 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   pickers, or slash menus can be added later without restructuring the
   editor.
 - **Markdown** rendering via `react-markdown` + `remark-gfm`, with element
-  renderers that follow the iii Schematic (lowercase headings, monospace
-  body, bordered code blocks and tables).
+  renderers that follow the iii Schematic (natural-case sans headings and
+  prose, with monospace reserved for code and technical values).
 - **Backend seam** in [`src/lib/backend/`](src/lib/backend/). `ChatView`
   consumes a `ChatBackend` interface that yields a documented stream of
   events; the mock (dev) and the stub real backend (prod) both implement it.
@@ -54,6 +54,9 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   of scenarios (errors, aborts, multi-function runs, slow/fast streams, long
   markdown) that stress every corner of the streaming contract. Useful before
   swapping in a real backend.
+- **Shared UI recipes** keep content tabs on the line variant with default
+  16 px icons, neutral selection, natural-case sans labels, and shared
+  responsive motion across native and injected worker surfaces.
 - **Model picker** and **mode picker** (`ask` / `agent`) wired into
   the canned response so you can see the values flow through.
 - **File attachments** via a hidden file input. Previewable text/image
@@ -171,8 +174,17 @@ If they all render correctly, your backend is contract-clean.
 
 ## Design system
 
-Every primitive in [`src/components/ui`](src/components/ui) is ported
-verbatim from §10 of [`../DESIGN.md`](../DESIGN.md). The theme tokens in
-[`src/index.css`](src/index.css) are from §0 of the same document. If you
-change anything visual, mirror the change in `DESIGN.md` — the doc is the
-source of truth, not the code.
+[`../DESIGN.md`](../DESIGN.md) is the canonical visual contract and this
+directory's `DESIGN.md` is a synchronized copy for local discovery. Theme and
+motion tokens live in [`src/index.css`](src/index.css); stable list, card,
+panel, chip, field, segmented-control, and motion recipes live in
+[`src/styles/ui-recipes.css`](src/styles/ui-recipes.css).
+
+Shared behavior belongs in [`src/components/ui`](src/components/ui) and is
+exported to injected workers through `@iii-dev/console-ui`. Prefer the shared
+`Selector`, `Tooltip`, `SegmentedControl`, `List`, `Card`, `Panel`, `Chip`, and
+`IconButton` contracts over local copies. Selection is neutral in light and
+dark themes; reserve accent for primary actions, form focus, live activity,
+and semantic domain data. Update the canonical design guide, public
+declarations/manifests, stories, and conformance tests when extending this
+surface.

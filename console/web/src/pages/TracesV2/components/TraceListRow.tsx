@@ -79,7 +79,7 @@ export function TraceListRow({
       <div className="flex items-center gap-2 mb-1">
         <ChevronRight
           className={cn(
-            'w-3 h-3 flex-shrink-0 text-ink-faint transition-transform',
+            'size-4 flex-shrink-0 text-ink-faint transition-transform',
             isSelected && 'rotate-90',
           )}
         />
@@ -116,20 +116,20 @@ export function TraceListRow({
             }}
             className="opacity-0 group-hover/row:opacity-100 focus:opacity-100 text-ink-faint hover:text-ink transition-opacity flex-shrink-0"
           >
-            <EyeOff className="w-3 h-3" />
+            <EyeOff className="size-4" />
           </span>
         )}
       </div>
       <div className="flex items-center gap-3 font-mono text-[11px] text-ink-faint">
         <code className="tabular-nums">{trace.traceId.slice(0, 8)}</code>
         <span className="flex items-center gap-1 tabular-nums">
-          <Timer className="w-2.5 h-2.5" />
+          <Timer className="size-4" />
           {trace.status === 'pending' && trace.duration === undefined
             ? 'running…'
             : formatDuration(trace.duration ?? 0)}
         </span>
         <span className="flex items-center gap-1">
-          <Zap className="w-2.5 h-2.5" />
+          <Zap className="size-4" />
           {trace.workers.join(', ')}
         </span>
         <span className="ml-auto tabular-nums">

@@ -183,7 +183,7 @@
   inset: 5px auto 5px 0;
   width: 2px;
   border-radius: 0 2px 2px 0;
-  background: var(--color-accent);
+  background: var(--color-edge);
   content: "";
 }
 
@@ -348,8 +348,13 @@
 }
 
 @keyframes storage-ui-skeleton-pulse {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 0.9; }
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -596,7 +601,9 @@
 }
 
 [data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-inspector-head,
-[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-inspector-actions,
+[data-iii-ui="storage"]
+  .storage-ui-browser.narrow
+  .storage-ui-inspector-actions,
 [data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-facts {
   padding-right: 14px;
   padding-left: 14px;
@@ -729,7 +736,7 @@
   inset: 5px auto 5px -8px;
   width: 2px;
   border-radius: 0 2px 2px 0;
-  background: var(--color-accent);
+  background: var(--color-edge);
   content: "";
 }
 

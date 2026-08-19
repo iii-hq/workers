@@ -46,7 +46,7 @@ export function PageShell({
 export interface PageHeaderProps {
   /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
   icon?: React.ReactNode
-  /** The page's name — console chrome vocabulary: mono, lowercase. */
+  /** The page's human-readable name. Technical identifiers belong in `description`. */
   title?: React.ReactNode
   /** One short descriptor; truncates before anything else gives. */
   description?: React.ReactNode
@@ -87,12 +87,12 @@ export function PageHeader({
         </span>
       ) : null}
       {title ? (
-        <span className="shrink-0 font-mono text-[12px] lowercase font-medium text-ink">
+        <span className="shrink-0 font-sans text-[14px] font-medium text-ink">
           {title}
         </span>
       ) : null}
       {description ? (
-        <span className="font-mono text-[11px] text-ink-ghost truncate min-w-0">
+        <span className="min-w-0 truncate font-sans text-[12px] text-ink-ghost">
           {description}
         </span>
       ) : null}

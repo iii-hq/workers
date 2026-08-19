@@ -93,7 +93,9 @@ function useRailWidth(side: 'left' | 'right') {
       const dx = e.clientX - drag.current.startX
       // With the panel docked right the rail sits on the right, so dragging
       // the handle left grows it.
-      setWidth(clampRailWidth(drag.current.startWidth + (side === 'right' ? -dx : dx)))
+      setWidth(
+        clampRailWidth(drag.current.startWidth + (side === 'right' ? -dx : dx)),
+      )
     },
     [side],
   )
@@ -146,7 +148,9 @@ export function SandboxPage({
   const [selected, setSelected] = useState<string | null>(null)
   // A cross-link can arrive before the first list lands — hold it until
   // the fleet can confirm the id, instead of selecting a ghost.
-  const [pending, setPending] = useState<string | null>(() => takeSelectedSandbox())
+  const [pending, setPending] = useState<string | null>(() =>
+    takeSelectedSandbox(),
+  )
   const [tab, setTab] = useState<TabId>('overview')
   const [createOpen, setCreateOpen] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
@@ -226,7 +230,10 @@ export function SandboxPage({
             icon={BoxIcon}
             title="no sandboxes running"
             description="create a microVM from a catalog image, or let an agent's next sandbox::create populate the fleet."
-            action={{ label: 'create sandbox', onClick: () => setCreateOpen(true) }}
+            action={{
+              label: 'create sandbox',
+              onClick: () => setCreateOpen(true),
+            }}
           />
         )
       }
@@ -245,9 +252,9 @@ export function SandboxPage({
         className="cr-page-tabs"
       >
         <TabsList className="cr-page-tabs-list">
-          <TabsTrigger value="overview">overview</TabsTrigger>
-          <TabsTrigger value="console">console</TabsTrigger>
-          <TabsTrigger value="files">files</TabsTrigger>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="console">Console</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="cr-page-tab-body">
           <OverviewTab
@@ -281,8 +288,8 @@ export function SandboxPage({
     <PageShell className="cr-page-shell">
       <PageHeader
         icon={<BoxIcon size={16} />}
-        title="sandbox"
-        description="microVM fleet · exec console · files"
+        title="Sandbox"
+        description="MicroVM fleet · exec console · files"
         actions={
           <>
             <span
@@ -296,8 +303,16 @@ export function SandboxPage({
               <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />
               {live ? 'live' : 'static'}
             </span>
-            <Button variant="ghost" size="sm" onClick={refresh} disabled={state.loading}>
-              <RefreshIcon className={state.loading ? 'cr-page-spin' : undefined} aria-hidden />{' '}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={refresh}
+              disabled={state.loading}
+            >
+              <RefreshIcon
+                className={state.loading ? 'cr-page-spin' : undefined}
+                aria-hidden
+              />{' '}
               refresh
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setRunOpen(true)}>

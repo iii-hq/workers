@@ -2,7 +2,8 @@
 
 The compile-time surface of the console's injectable-UI runtime module —
 types for `setup(host)`, the slot contracts, the extension engine client,
-and the shared component library (`Button`, `Dialog`, `Tabs`, `Markdown`, …).
+the shared component library, stable CSS recipes, and the canonical token
+inventory.
 
 **There is no bundleable runtime here, by design.** At runtime the console's
 import map resolves `@iii-dev/console-ui` to `/vendor/console-ui.js`, which
@@ -23,8 +24,50 @@ copying types around:
 ```
 
 ```tsx
-import { Button, EmptyState, type Host } from '@iii-dev/console-ui'
+import {
+  List,
+  ListItem,
+  Selector,
+  SegmentedControl,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  type Host,
+  uiClasses,
+} from '@iii-dev/console-ui'
 ```
+
+Use the shared contracts for repeated Console interactions:
+
+- `List`/`ListItem`, `Card`, `Panel`, `Chip`, `IconButton`, and the `Table`
+  family provide the common structural language. `uiClasses` exposes
+  equivalent stable recipes for semantic markup that does not need another
+  React wrapper.
+- Compose simple tables as `TableViewport` → `TableFrame` → `Table`, then use
+  the semantic header/body/row/head/cell parts. Tables use natural-case sans
+  headers, horizontal row dividers, responsive overflow, and no outer card or
+  border. Use `density="compact"` in chat; reserve mono for technical cell
+  values such as identifiers, paths, types, and code.
+- `TabsList variant="line"`/`TabsTrigger` and `SegmentedControl
+  variant="tabs"` switch peer content views with a bottom rule, neutral active
+  underline, 600-weight natural-case labels, and semantic 16 px icons by
+  default. Use `SegmentedControl variant="radio"` for persisted exclusive
+  choices. Selected rows, cards, tabs, chips, and segments remain neutral in
+  both themes; accent is not a selection token.
+- `Selector` is the searchable single-choice control, with grouped/disabled
+  options, caller-owned async filtering, loading/empty/error/validation
+  states, and optional free-form creation. `Select` is for small finite lists.
+- Shared `Tooltip`, `Dialog`, `DropdownMenu`, `Select`, and `Selector` portals
+  preserve an injected worker's `data-iii-ui` scope. `IconButton` combines an
+  accessible label with the shared tooltip contract.
+- Human-facing chrome uses sans and authored sentence/title case. Mono is only
+  for machine-readable identifiers, paths, values, payloads, code, and tabular
+  data. Application icons use a 16 px baseline; do not author icons below
+  16 px.
+- `tokens` names the CSS variables workers may use, including the
+  `--motion-duration-*` and `--motion-ease-*` vocabulary. Shared motion
+  recipes honor reduced motion; high-frequency streaming updates should be
+  immediate.
 
 Function-trigger renderers receive the harness's optional user-facing
 `message.description`. A renderer can declare `metadata: { display: true }`
@@ -61,10 +104,16 @@ The declarations are hand-modeled on the console's real components; two
 guards in `console/web` fail the build/tests when they drift:
 
 - `src/lib/console-ui-conformance.test.ts` — type-level check that every
-  declared component export is satisfied by the real component, plus a
-  runtime check that the curated `components` record matches
-  `component-names.mjs` (the manifest the `/vendor/console-ui.js` shim
-  generator consumes).
+  declared component export is satisfied by the real component, plus runtime
+  checks that the curated `components` record matches `component-names.mjs`
+  and the public token/class manifests match the Console stylesheet.
+- `src/lib/selection-conformance.test.ts` — protects neutral selection from
+  accidental accent text, border, outline, or ring regressions.
+- `src/lib/icon-size-conformance.test.ts` — prevents application icon usages,
+  component defaults, and root SVGs below 16 px from re-entering Console or
+  checked-in worker UI.
+- `src/lib/typography-conformance.test.ts` — keeps human-facing shared chrome
+  sans and prevents CSS case transforms from returning to common recipes.
 - `scripts/generate-vendor-shims.mjs` — evaluates the generated shim, so a
   bad export name fails the console build, never a browser tab.
 

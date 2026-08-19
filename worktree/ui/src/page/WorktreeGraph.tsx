@@ -81,7 +81,7 @@ export function WorktreeGraph({
           title={repo.repoPath}
         >
           <span className="wt-ui-repo-name">
-            <FolderGit2 size={13} className="wt-ui-icon-faint" aria-hidden />
+            <FolderGit2 size={16} className="wt-ui-icon-faint" aria-hidden />
             <span className="wt-ui-truncate">{repo.label}</span>
           </span>
           <span className="wt-ui-repo-path">{repo.repoPath}</span>
@@ -108,22 +108,30 @@ export function WorktreeGraph({
             style={{ left: node.x, top: node.y, width: node.w, height: node.h }}
           >
             <span className="wt-ui-node-branch">
-              <GitBranch size={12} className="wt-ui-icon-faint" aria-hidden />
+              <GitBranch size={16} className="wt-ui-icon-faint" aria-hidden />
               <span className="wt-ui-truncate wt-ui-branch">{wt.branch}</span>
-              <span className="wt-ui-node-id">{shortWorktreeId(wt.worktree_id)}</span>
+              <span className="wt-ui-node-id">
+                {shortWorktreeId(wt.worktree_id)}
+              </span>
               {dirty ? (
                 <span className="wt-ui-dirty" title="uncommitted changes">
                   *
                 </span>
               ) : null}
               {ahead > 0 ? (
-                <span className="wt-ui-ahead" title={`${ahead} commit(s) ahead of base`}>
+                <span
+                  className="wt-ui-ahead"
+                  title={`${ahead} commit(s) ahead of base`}
+                >
                   +{ahead}
                 </span>
               ) : null}
               {wt.status?.integrated ? (
-                <span className="wt-ui-icon-ghost" title={integrationLabel(wt.status)}>
-                  <GitMerge size={11} aria-hidden />
+                <span
+                  className="wt-ui-icon-ghost"
+                  title={integrationLabel(wt.status)}
+                >
+                  <GitMerge size={16} aria-hidden />
                 </span>
               ) : null}
             </span>
@@ -133,7 +141,10 @@ export function WorktreeGraph({
                 {wt.lifecycle}
               </span>
               {wt.session_id ? (
-                <span className="wt-ui-session" title={`claimed by ${wt.session_id}`}>
+                <span
+                  className="wt-ui-session"
+                  title={`claimed by ${wt.session_id}`}
+                >
                   {wt.session_id}
                 </span>
               ) : null}

@@ -26,7 +26,7 @@ export function MarkdownView({
       {req.css_selector ? (
         <FilterChip label="scope" value={req.css_selector} />
       ) : null}
-      {req.main_content_only ? <Chip>main only</Chip> : null}
+      {req.main_content_only ? <Chip>Main only</Chip> : null}
       {req.html != null ? (
         <FilterChip label="html in" value={formatChars(req.html.length)} />
       ) : null}
@@ -61,7 +61,7 @@ export function MarkdownView({
         </Chip>
         {truncated ? (
           <Chip className="text-warn border-warn/40">
-            <span className="uppercase tracking-[0.06em]">truncated</span>
+            <span>Truncated</span>
           </Chip>
         ) : null}
       </MetaRow>

@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, EmptyState, type Host, Input } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  type Host,
+  Input,
+} from '@iii-dev/console-ui'
 import { ChevronDown, ChevronRight, Search } from './icons'
 import { type MemoryItem, preview, type TurnPreview } from './memory-data'
 
@@ -100,14 +106,14 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
           disabled={!query.trim() || running}
           className="mem-ui-gap1"
         >
-          <Search size={14} aria-hidden />
+          <Search size={16} aria-hidden />
           preview turn
         </Button>
       </form>
 
       {result === null && !error ? (
         <div className="mem-ui-row wrap">
-          <span className="mem-ui-caption">try</span>
+          <span className="mem-ui-caption">Try</span>
           {examples.map((example) => (
             <button
               key={example}
@@ -135,9 +141,9 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
               className="mem-ui-prompt-head"
             >
               {showPrompt ? (
-                <ChevronDown size={14} style={ghost} aria-hidden />
+                <ChevronDown size={16} style={ghost} aria-hidden />
               ) : (
-                <ChevronRight size={14} style={ghost} aria-hidden />
+                <ChevronRight size={16} style={ghost} aria-hidden />
               )}
               <span className="mem-ui-prompt-label">
                 system prompt gets: {result.rules} rule
@@ -145,7 +151,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                 {result.rulesTruncated ? ' · over budget, truncated' : ''}
               </span>
               <span className="mem-ui-spacer" />
-              <span className="mem-ui-subhint">every turn, guaranteed</span>
+              <span className="mem-ui-subhint">Every turn, guaranteed</span>
             </button>
             {showPrompt ? (
               <pre className="mem-ui-prompt-body">
@@ -180,7 +186,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                         {score > 0 ? score.toFixed(2) : 'ambient'}
                       </span>
                       {memory.pinned ? (
-                        <Badge variant="accent">pinned</Badge>
+                        <Badge variant="accent">Pinned</Badge>
                       ) : null}
                     </div>
                     <p className="mem-ui-fact-text">{memory.text}</p>

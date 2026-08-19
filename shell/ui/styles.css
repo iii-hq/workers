@@ -10,13 +10,27 @@
 
 /* ── shared text tones ──────────────────────────────────────────────── */
 
-[data-iii-ui="shell"] .t-ink { color: var(--color-ink); }
-[data-iii-ui="shell"] .t-faint { color: var(--color-ink-faint); }
-[data-iii-ui="shell"] .t-ghost { color: var(--color-ink-ghost); }
-[data-iii-ui="shell"] .t-accent { color: var(--color-accent); }
-[data-iii-ui="shell"] .t-warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .t-alert { color: var(--color-alert); }
-[data-iii-ui="shell"] .num { font-variant-numeric: tabular-nums; }
+[data-iii-ui="shell"] .t-ink {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .t-faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .t-ghost {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .t-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .t-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .t-alert {
+  color: var(--color-alert);
+}
+[data-iii-ui="shell"] .num {
+  font-variant-numeric: tabular-nums;
+}
 
 /* ── card chrome (function-trigger views) ───────────────────────────── */
 
@@ -25,8 +39,12 @@
   background: var(--color-bg);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="shell"] .shui-card.pad { padding: 12px; }
-[data-iii-ui="shell"] .shui-card.scroll-x { overflow-x: auto; }
+[data-iii-ui="shell"] .shui-card.pad {
+  padding: 12px;
+}
+[data-iii-ui="shell"] .shui-card.scroll-x {
+  overflow-x: auto;
+}
 
 [data-iii-ui="shell"] .shui-head {
   display: flex;
@@ -38,7 +56,9 @@
   border-bottom: 1px solid var(--color-rule-2);
   background: var(--color-paper-2);
 }
-[data-iii-ui="shell"] .shui-head.preview { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-head.preview {
+  border-bottom: 0;
+}
 
 [data-iii-ui="shell"] .shui-cmd {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -47,7 +67,9 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
-[data-iii-ui="shell"] .shui-cmd .cmd-text { margin-left: 8px; }
+[data-iii-ui="shell"] .shui-cmd .cmd-text {
+  margin-left: 8px;
+}
 
 [data-iii-ui="shell"] .shui-prompt {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -57,8 +79,13 @@
   animation: shui-pulse 1.2s ease-in-out infinite;
 }
 @keyframes shui-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 [data-iii-ui="shell"] .shui-chips {
@@ -67,7 +94,9 @@
   align-items: center;
   gap: 6px;
 }
-[data-iii-ui="shell"] .shui-chips.end { margin-left: auto; }
+[data-iii-ui="shell"] .shui-chips.end {
+  margin-left: auto;
+}
 
 [data-iii-ui="shell"] .shui-chip {
   display: inline-flex;
@@ -85,12 +114,16 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
-[data-iii-ui="shell"] .shui-chip .v { font-variant-numeric: tabular-nums; }
+[data-iii-ui="shell"] .shui-chip .v {
+  font-variant-numeric: tabular-nums;
+}
 [data-iii-ui="shell"] .shui-chip.warn {
   border-color: var(--color-warn);
   color: var(--color-warn);
 }
-[data-iii-ui="shell"] .shui-chip.warn .k { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-chip.warn .k {
+  color: var(--color-warn);
+}
 
 /* Badge add-on: numerals without the badge's uppercase tracking. */
 [data-iii-ui="shell"] .shui-pill-flat {
@@ -113,7 +146,9 @@
   gap: 6px;
   padding: 12px;
 }
-[data-iii-ui="shell"] .shui-stream-gap { height: 4px; }
+[data-iii-ui="shell"] .shui-stream-gap {
+  height: 4px;
+}
 
 [data-iii-ui="shell"] .shui-running {
   background: var(--color-bg);
@@ -150,8 +185,12 @@
   font-size: inherit;
   line-height: inherit;
 }
-[data-iii-ui="shell"] .shui-pre.out { color: var(--color-ink); }
-[data-iii-ui="shell"] .shui-pre.err { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-pre.out {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-pre.err {
+  color: var(--color-warn);
+}
 [data-iii-ui="shell"] .shui-pre.detail {
   color: var(--color-ink-faint);
   font-size: 12px;
@@ -167,9 +206,15 @@
   font-size: 12.5px;
   line-height: 1.55;
 }
-[data-iii-ui="shell"] .shui-slab.warn { border-left: 2px solid var(--color-warn); }
-[data-iii-ui="shell"] .shui-slab.accent { border-left: 2px solid var(--color-accent); }
-[data-iii-ui="shell"] .shui-slab.alert { border-left: 2px solid var(--color-alert); }
+[data-iii-ui="shell"] .shui-slab.warn {
+  border-left: 2px solid var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-slab.accent {
+  border-left: 2px solid var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-slab.alert {
+  border-left: 2px solid var(--color-alert);
+}
 
 [data-iii-ui="shell"] .shui-line {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -182,7 +227,9 @@
   align-items: center;
   gap: 6px;
 }
-[data-iii-ui="shell"] .shui-row.gap8 { gap: 8px; }
+[data-iii-ui="shell"] .shui-row.gap8 {
+  gap: 8px;
+}
 [data-iii-ui="shell"] .shui-baseline-row {
   display: flex;
   flex-wrap: wrap;
@@ -210,7 +257,9 @@
   color: var(--color-ink-faint);
   font-style: italic;
 }
-[data-iii-ui="shell"] .shui-note.plain { font-style: normal; }
+[data-iii-ui="shell"] .shui-note.plain {
+  font-style: normal;
+}
 
 [data-iii-ui="shell"] .shui-resolved-argv {
   color: var(--color-ink-faint);
@@ -227,10 +276,19 @@
   background: var(--color-bg);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="shell"] .shui-action-line .sym { font-weight: 600; flex-shrink: 0; }
-[data-iii-ui="shell"] .shui-action-line .sym.tone-accent { color: var(--color-accent); }
-[data-iii-ui="shell"] .shui-action-line .sym.tone-warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .shui-action-line .sym.tone-ink { color: var(--color-ink); }
+[data-iii-ui="shell"] .shui-action-line .sym {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-ink {
+  color: var(--color-ink);
+}
 [data-iii-ui="shell"] .shui-action-line .body {
   min-width: 0;
   color: var(--color-ink);
@@ -256,18 +314,34 @@
   padding: 6px 8px;
   border-bottom: 1px solid var(--color-rule-2);
 }
-[data-iii-ui="shell"] .shui-table thead tr.head-paper { background: var(--color-paper-2); }
+[data-iii-ui="shell"] .shui-table thead tr.head-paper {
+  background: var(--color-paper-2);
+}
 [data-iii-ui="shell"] .shui-table td {
   padding: 6px 8px;
   border-bottom: 1px solid var(--color-rule-2);
 }
-[data-iii-ui="shell"] .shui-table tbody tr:last-child td { border-bottom: 0; }
-[data-iii-ui="shell"] .shui-table .r { text-align: right; }
-[data-iii-ui="shell"] .shui-table .pad-l { padding-left: 12px; }
-[data-iii-ui="shell"] .shui-table .pad-r { padding-right: 12px; }
-[data-iii-ui="shell"] .shui-table td.icon { width: 20px; }
-[data-iii-ui="shell"] .shui-table tr.total { background: var(--color-paper-2); }
-[data-iii-ui="shell"] .shui-table tr.total td { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-table .r {
+  text-align: right;
+}
+[data-iii-ui="shell"] .shui-table .pad-l {
+  padding-left: 12px;
+}
+[data-iii-ui="shell"] .shui-table .pad-r {
+  padding-right: 12px;
+}
+[data-iii-ui="shell"] .shui-table td.icon {
+  width: 20px;
+}
+[data-iii-ui="shell"] .shui-table tr.total {
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-table tr.total td {
+  border-bottom: 0;
+}
 [data-iii-ui="shell"] .shui-table tr.total .label {
   color: var(--color-ink-faint);
   text-transform: uppercase;
@@ -287,8 +361,8 @@
   gap: 6px;
 }
 [data-iii-ui="shell"] .shui-fs-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   color: var(--color-ink-faint);
   vertical-align: text-bottom;
 }
@@ -311,9 +385,15 @@
   border-bottom: 1px solid var(--color-rule-2);
   padding: 6px 12px;
 }
-[data-iii-ui="shell"] .shui-match:last-child { border-bottom: 0; }
-[data-iii-ui="shell"] .shui-match .loc { color: var(--color-ink-faint); }
-[data-iii-ui="shell"] .shui-match .shui-pre { margin-top: 2px; }
+[data-iii-ui="shell"] .shui-match:last-child {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-match .loc {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-match .shui-pre {
+  margin-top: 2px;
+}
 [data-iii-ui="shell"] .shui-hl {
   background: color-mix(in oklab, var(--color-accent) 15%, transparent);
   color: var(--color-accent);
@@ -337,7 +417,9 @@
   text-decoration: none;
   width: fit-content;
 }
-[data-iii-ui="shell"] .shui-doclink:hover { text-decoration: underline; }
+[data-iii-ui="shell"] .shui-doclink:hover {
+  text-decoration: underline;
+}
 [data-iii-ui="shell"] .shui-streams {
   margin-top: 4px;
   border: 1px solid var(--color-rule-2);
@@ -367,7 +449,8 @@
     var(--color-ink-faint) 80%,
     var(--shui-explorer-bg)
   );
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: var(--shui-explorer-bg);
   position: relative;
 }
@@ -386,8 +469,12 @@
   z-index: 2;
   touch-action: none;
 }
-[data-iii-ui="shell"] .shui-resize-handle.left { left: 0; }
-[data-iii-ui="shell"] .shui-resize-handle.right { right: 0; }
+[data-iii-ui="shell"] .shui-resize-handle.left {
+  left: 0;
+}
+[data-iii-ui="shell"] .shui-resize-handle.right {
+  right: 0;
+}
 [data-iii-ui="shell"] .shui-resize-handle:hover,
 [data-iii-ui="shell"] .shui-resize-handle:active {
   background: var(--color-surface-active);
@@ -423,7 +510,9 @@
   border-bottom: 1px solid var(--color-edge);
 }
 [data-iii-ui="shell"] .shui-side-tabs .spacer,
-[data-iii-ui="shell"] .shui-editor-head .spacer { flex: 1; }
+[data-iii-ui="shell"] .shui-editor-head .spacer {
+  flex: 1;
+}
 
 [data-iii-ui="shell"] .shui-side-tab {
   display: inline-flex;
@@ -447,8 +536,8 @@
   background: var(--color-surface-active);
 }
 [data-iii-ui="shell"] .shui-side-tab-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 [data-iii-ui="shell"] .shui-page-header {
@@ -461,32 +550,6 @@
   gap: 2px;
   overflow: visible;
 }
-[data-iii-ui="shell"] .shui-hover-tip {
-  display: inline-flex;
-  align-items: center;
-  min-inline-size: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.shui-hover-tip-bubble {
-  position: fixed;
-  z-index: 10000;
-  box-sizing: border-box;
-  max-width: calc(100vw - 16px);
-  padding: 5px 8px;
-  border-radius: 4px;
-  background: var(--color-ink, #111);
-  color: var(--color-bg, #f5f5f5);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.25;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  pointer-events: none;
-  box-shadow: 0 4px 12px color-mix(in srgb, #000 22%, transparent);
-}
-
 [data-iii-ui="shell"] .shui-header-root-select {
   display: block;
   max-width: min(220px, 24vw);
@@ -538,7 +601,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-[data-iii-ui="shell"] .shui-root-select { width: calc(100% - 12px); }
+[data-iii-ui="shell"] .shui-root-select {
+  width: calc(100% - 12px);
+}
 
 [data-iii-ui="shell"] .shui-side-body {
   flex: 1;
@@ -576,8 +641,8 @@
   border-color: color-mix(in srgb, var(--color-ink) 20%, transparent);
 }
 [data-iii-ui="shell"] .shui-tree-filter-search {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   margin-left: 8px;
   flex: none;
   color: var(--shui-tree-file-muted);
@@ -591,7 +656,12 @@
   outline: 0;
   color: var(--color-ink);
   background: transparent;
-  font: 400 14px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 14px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 [data-iii-ui="shell"] .shui-tree-filter input::placeholder {
   color: var(--shui-tree-file-muted);
@@ -620,8 +690,8 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-tree-filter-clear svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-tree-stage {
   flex: 1;
@@ -649,7 +719,8 @@
 [data-iii-ui="shell"] .shui-tree-stage .shui-side-note {
   align-self: flex-start;
   padding: 8px 6px;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
 }
 
@@ -663,15 +734,21 @@
   gap: 8px;
   flex-wrap: wrap;
 }
-[data-iii-ui="shell"] .shui-side-note.warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .shui-side-note.ghost { color: var(--color-ink-ghost); }
+[data-iii-ui="shell"] .shui-side-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-side-note.ghost {
+  color: var(--color-ink-ghost);
+}
 [data-iii-ui="shell"] .shui-side-note.head {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 11px;
   padding-bottom: 4px;
 }
-[data-iii-ui="shell"] .shui-side-note.pad { padding: 24px; }
+[data-iii-ui="shell"] .shui-side-note.pad {
+  padding: 24px;
+}
 
 [data-iii-ui="shell"] .shui-linkish {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -725,7 +802,9 @@
   color: var(--color-ink-faint);
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-search-opts .shui-linkish { margin-left: auto; }
+[data-iii-ui="shell"] .shui-search-opts .shui-linkish {
+  margin-left: auto;
+}
 [data-iii-ui="shell"] .shui-search-results {
   display: flex;
   flex-direction: column;
@@ -745,14 +824,18 @@
   cursor: pointer;
   min-width: 0;
 }
-[data-iii-ui="shell"] .shui-search-row:hover { background: var(--color-surface-hover); }
+[data-iii-ui="shell"] .shui-search-row:hover {
+  background: var(--color-surface-hover);
+}
 [data-iii-ui="shell"] .shui-search-row .loc {
   color: var(--color-accent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="shell"] .shui-search-row .loc .line { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .shui-search-row .loc .line {
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="shell"] .shui-search-row .text {
   color: var(--color-ink);
   white-space: pre-wrap;
@@ -777,8 +860,8 @@
   flex-shrink: 0;
 }
 [data-iii-ui="shell"] .shui-etab.active {
-  background: var(--color-panel);
-  box-shadow: inset 0 2px 0 var(--color-accent);
+  background: var(--color-surface-selected);
+  box-shadow: inset 0 2px 0 var(--color-edge);
 }
 [data-iii-ui="shell"] .shui-etab .open {
   display: inline-flex;
@@ -796,8 +879,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-[data-iii-ui="shell"] .shui-etab.active .open { color: var(--color-ink); }
-[data-iii-ui="shell"] .shui-etab.preview .open { font-style: italic; }
+[data-iii-ui="shell"] .shui-etab.active .open {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-etab.preview .open {
+  font-style: italic;
+}
 [data-iii-ui="shell"] .shui-etab .close {
   display: inline-flex;
   align-items: center;
@@ -818,8 +905,8 @@
   background: var(--color-surface-hover);
 }
 [data-iii-ui="shell"] .shui-x-icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-main-empty {
   flex: 1;
@@ -869,7 +956,9 @@
   color: var(--color-ink-faint);
   flex-shrink: 0;
 }
-[data-iii-ui="shell"] .shui-ro-note.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-ro-note.warn {
+  color: var(--color-warn);
+}
 [data-iii-ui="shell"] .shui-save-btn {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
@@ -901,8 +990,12 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
 }
-[data-iii-ui="shell"] .shui-diff-stats .add { color: var(--color-git-added, #4d9a57); }
-[data-iii-ui="shell"] .shui-diff-stats .del { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-diff-stats .add {
+  color: var(--color-git-added, #4d9a57);
+}
+[data-iii-ui="shell"] .shui-diff-stats .del {
+  color: var(--color-git-deleted, #c05353);
+}
 [data-iii-ui="shell"] .shui-diff {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
@@ -938,19 +1031,39 @@
   min-width: 0;
 }
 [data-iii-ui="shell"] .shui-diff-line.add {
-  background: color-mix(in srgb, var(--color-git-added, #4d9a57) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-added, #4d9a57) 12%,
+    transparent
+  );
 }
-[data-iii-ui="shell"] .shui-diff-line.add .mark { color: var(--color-git-added, #4d9a57); }
+[data-iii-ui="shell"] .shui-diff-line.add .mark {
+  color: var(--color-git-added, #4d9a57);
+}
 [data-iii-ui="shell"] .shui-diff-line.del {
-  background: color-mix(in srgb, var(--color-git-deleted, #c05353) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-deleted, #c05353) 12%,
+    transparent
+  );
 }
-[data-iii-ui="shell"] .shui-diff-line.del .mark { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-diff-line.del .mark {
+  color: var(--color-git-deleted, #c05353);
+}
 [data-iii-ui="shell"] .shui-diff-line.add .shui-dl-emph {
-  background: color-mix(in srgb, var(--color-git-added, #4d9a57) 30%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-added, #4d9a57) 30%,
+    transparent
+  );
   border-radius: 2px;
 }
 [data-iii-ui="shell"] .shui-diff-line.del .shui-dl-emph {
-  background: color-mix(in srgb, var(--color-git-deleted, #c05353) 30%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-deleted, #c05353) 30%,
+    transparent
+  );
   border-radius: 2px;
 }
 [data-iii-ui="shell"] .shui-diff-fold {
@@ -968,11 +1081,22 @@
   cursor: pointer;
   margin: 2px 0;
 }
-[data-iii-ui="shell"] .shui-diff-fold:hover { color: var(--color-ink); }
-[data-iii-ui="shell"] .shui-tok-str { color: var(--color-syn-string, #7a9646); }
-[data-iii-ui="shell"] .shui-tok-com { color: var(--color-ink-ghost); font-style: italic; }
-[data-iii-ui="shell"] .shui-tok-num { color: var(--color-syn-number, #b0803c); }
-[data-iii-ui="shell"] .shui-tok-kw { color: var(--color-syn-keyword, #7b6bb0); }
+[data-iii-ui="shell"] .shui-diff-fold:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-tok-str {
+  color: var(--color-syn-string, #7a9646);
+}
+[data-iii-ui="shell"] .shui-tok-com {
+  color: var(--color-ink-ghost);
+  font-style: italic;
+}
+[data-iii-ui="shell"] .shui-tok-num {
+  color: var(--color-syn-number, #b0803c);
+}
+[data-iii-ui="shell"] .shui-tok-kw {
+  color: var(--color-syn-keyword, #7b6bb0);
+}
 
 /* Multi-file review. The shell owns navigation and file collapse while the
    Console-owned diff renderer provides syntax, hunks, and intraline changes. */
@@ -988,9 +1112,16 @@
   border-bottom: 1px solid var(--color-edge);
   background: var(--color-panel-raised);
   color: var(--color-ink-faint);
-  font: 400 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
-[data-iii-ui="shell"] .shui-review-toolbar .spacer { flex: 1; }
+[data-iii-ui="shell"] .shui-review-toolbar .spacer {
+  flex: 1;
+}
 [data-iii-ui="shell"] .shui-review-scope {
   color: var(--color-ink);
   font-weight: 500;
@@ -1009,7 +1140,12 @@
   border-radius: 8px;
   background: transparent;
   color: var(--color-ink);
-  font: 500 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    500 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-review-scope-button:hover,
@@ -1021,8 +1157,8 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-review-scope-button svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="shell"] .shui-review-scope-menu {
@@ -1065,8 +1201,8 @@
 }
 [data-iii-ui="shell"] .shui-review-scope-menu button > svg,
 [data-iii-ui="shell"] .shui-review-scope-menu .menu-icon-gap {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 [data-iii-ui="shell"] .shui-review-scope-menu .submenu-back {
@@ -1102,15 +1238,19 @@
 [data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main code,
 [data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main small {
   color: var(--color-ink-ghost);
-  font: 400 10px/14px var(--font-mono, ui-monospace, monospace);
+  font: 400 10px / 14px var(--font-mono, ui-monospace, monospace);
 }
 [data-iii-ui="shell"] .shui-review-scope-note {
   padding: 9px;
   color: var(--color-ink-ghost);
   font-size: 12px;
 }
-[data-iii-ui="shell"] .shui-review-scope-note.warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .shui-review-count { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .shui-review-scope-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-review-count {
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="shell"] .shui-review-scope-error {
   max-width: 130px;
   overflow: hidden;
@@ -1122,8 +1262,12 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="shell"] .shui-review-total.add { color: var(--color-git-added, #40c977); }
-[data-iii-ui="shell"] .shui-review-total.del { color: var(--color-git-deleted, #fa423e); }
+[data-iii-ui="shell"] .shui-review-total.add {
+  color: var(--color-git-added, #40c977);
+}
+[data-iii-ui="shell"] .shui-review-total.del {
+  color: var(--color-git-deleted, #fa423e);
+}
 [data-iii-ui="shell"] .shui-review-action {
   display: inline-flex;
   align-items: center;
@@ -1148,10 +1292,12 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-review-action svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
-[data-iii-ui="shell"] .shui-review-menu-wrap { position: relative; }
+[data-iii-ui="shell"] .shui-review-menu-wrap {
+  position: relative;
+}
 [data-iii-ui="shell"] .shui-review-menu {
   position: absolute;
   top: calc(100% + 5px);
@@ -1180,7 +1326,9 @@
   text-align: left;
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-review-option:hover { background: var(--color-surface-hover); }
+[data-iii-ui="shell"] .shui-review-option:hover {
+  background: var(--color-surface-hover);
+}
 [data-iii-ui="shell"] .shui-review-option .check {
   display: inline-flex;
   align-items: center;
@@ -1190,8 +1338,8 @@
   margin-left: auto;
 }
 [data-iii-ui="shell"] .shui-review-option .check svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-review-body {
   flex: 1;
@@ -1220,7 +1368,12 @@
   border-bottom: 1px solid var(--color-edge);
   background: var(--color-panel-raised);
   color: var(--color-ink-faint);
-  font: 400 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   text-align: left;
 }
 [data-iii-ui="shell"] .shui-review-file.active > .shui-review-file-head,
@@ -1244,18 +1397,22 @@
   cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-review-file-toggle > svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
-[data-iii-ui="shell"] .shui-review-file-head .file-icon { color: var(--color-accent); }
+[data-iii-ui="shell"] .shui-review-file-head .file-icon {
+  color: var(--color-accent);
+}
 [data-iii-ui="shell"] .shui-review-file-toggle .path {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="shell"] .shui-review-file-head .shui-diff-stats { margin-left: auto; }
+[data-iii-ui="shell"] .shui-review-file-head .shui-diff-stats {
+  margin-left: auto;
+}
 [data-iii-ui="shell"] .shui-review-file-action {
   display: inline-flex;
   align-items: center;
@@ -1288,8 +1445,8 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-review-file-action svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-review-message {
   display: flex;
@@ -1297,9 +1454,11 @@
   gap: 8px;
   padding: 14px 16px;
   color: var(--color-ink-ghost);
-  font: 400 12px/18px var(--font-mono, ui-monospace, monospace);
+  font: 400 12px / 18px var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="shell"] .shui-review-message.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-review-message.warn {
+  color: var(--color-warn);
+}
 [data-iii-ui="shell"] .shui-review-inline-action {
   padding: 0;
   border: 0;
@@ -1309,7 +1468,9 @@
   font: inherit;
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-review-diff { display: block; }
+[data-iii-ui="shell"] .shui-review-diff {
+  display: block;
+}
 [data-iii-ui="shell"] .shui-rich-preview {
   display: block;
   width: 100%;
@@ -1330,10 +1491,19 @@
   margin: 0 auto;
   padding: 28px 32px 48px;
   color: var(--color-ink);
-  font: 400 15px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 15px / 1.65 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
-[data-iii-ui="shell"] .shui-markdown-preview :first-child { margin-top: 0; }
-[data-iii-ui="shell"] .shui-markdown-preview :last-child { margin-bottom: 0; }
+[data-iii-ui="shell"] .shui-markdown-preview :first-child {
+  margin-top: 0;
+}
+[data-iii-ui="shell"] .shui-markdown-preview :last-child {
+  margin-bottom: 0;
+}
 
 /* Chat footer summary. The button is deliberately compact because it shares
    the composer's high-density control band; the elevated surface exists only
@@ -1341,7 +1511,7 @@
 [data-iii-ui="shell"] .shui-chat-summary {
   position: relative;
   margin: 0 0 4px auto;
-  font: 400 11px/16px var(--font-mono, ui-monospace, monospace);
+  font: 400 11px / 16px var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-faint);
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill {
@@ -1372,8 +1542,8 @@
   outline-offset: 2px;
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill .files-icon {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   color: var(--color-accent);
 }
 [data-iii-ui="shell"] .shui-chat-summary .add {
@@ -1385,9 +1555,9 @@
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill .chevron {
-  width: 12px;
-  height: 12px;
-  transition: transform 120ms ease;
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill .chevron.open {
   transform: rotate(180deg);
@@ -1486,8 +1656,8 @@
   outline-offset: 2px;
 }
 [data-iii-ui="shell"] .shui-view-file-btn svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
 }
 
@@ -1607,8 +1777,8 @@
   color: var(--color-ink);
 }
 [data-iii-ui="shell"] .shui-file-change-view svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
 }
 [data-iii-ui="shell"] .shui-file-changes .is-added {
@@ -1651,9 +1821,10 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-file-changes-more svg {
-  width: 14px;
-  height: 14px;
-  transition: transform 150ms ease;
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-duration-control)
+    var(--motion-ease-standard);
 }
 [data-iii-ui="shell"] .shui-file-changes-more svg.is-expanded {
   transform: rotate(180deg);
@@ -1796,7 +1967,7 @@
 [data-iii-ui="shell"] .shui-terminal-tab.active {
   color: var(--color-ink);
   background: var(--color-surface-active);
-  box-shadow: inset 0 -1px 0 var(--color-accent);
+  box-shadow: inset 0 -1px 0 var(--color-edge);
 }
 [data-iii-ui="shell"] .shui-terminal-tab .shui-terminal-tab-action[aria-label^="Rename"] {
   opacity: 0;
@@ -1810,8 +1981,9 @@
   padding: 7px 2px 7px 10px;
   overflow: hidden;
   color: inherit;
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-sans);
   font-size: 11px;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
   border: 0;
@@ -1845,15 +2017,15 @@
 }
 [data-iii-ui="shell"] .shui-terminal-tab-action svg,
 [data-iii-ui="shell"] .shui-terminal-tab-new svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-terminal-tab-input {
   width: 110px;
   margin: 3px;
   padding: 3px 5px;
   color: var(--color-ink);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-sans);
   font-size: 11px;
   border: 1px solid var(--color-rule-focus);
   border-radius: 2px;
@@ -1893,11 +2065,15 @@
   background: var(--color-edge);
   touch-action: none;
 }
-[data-iii-ui="shell"] .shui-terminal-split.horizontal > .shui-terminal-split-separator {
+[data-iii-ui="shell"]
+  .shui-terminal-split.horizontal
+  > .shui-terminal-split-separator {
   width: 5px;
   cursor: ew-resize;
 }
-[data-iii-ui="shell"] .shui-terminal-split.vertical > .shui-terminal-split-separator {
+[data-iii-ui="shell"]
+  .shui-terminal-split.vertical
+  > .shui-terminal-split-separator {
   height: 5px;
   cursor: ns-resize;
 }
@@ -1915,14 +2091,16 @@
   box-shadow: inset 0 0 0 1px transparent;
 }
 [data-iii-ui="shell"] .shui-terminal-pane-slot.focused {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--color-accent) 55%, transparent);
 }
 [data-iii-ui="shell"] .shui-terminal-workspace-error {
   flex: none;
   padding: 5px 9px;
   color: var(--color-warn);
   font-size: 11px;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-warn) 25%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-warn) 25%, transparent);
 }
 [data-iii-ui="shell"] .shui-terminal-empty {
   display: grid;
@@ -1930,7 +2108,7 @@
   height: 100%;
   place-items: center;
   color: var(--color-ink-ghost);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-sans);
   font-size: 12px;
 }
 [data-iii-ui="shell"] .shui-terminal-resize {
@@ -1949,25 +2127,35 @@
   border-radius: 999px;
   background: var(--color-ink-ghost);
 }
-[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="bottom"] > .shui-terminal-resize {
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="bottom"]
+  > .shui-terminal-resize {
   top: -4px;
   left: 0;
   width: 100%;
   height: 9px;
   cursor: ns-resize;
 }
-[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="bottom"] > .shui-terminal-resize span {
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="bottom"]
+  > .shui-terminal-resize
+  span {
   width: 36px;
   height: 3px;
 }
-[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="right"] > .shui-terminal-resize {
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="right"]
+  > .shui-terminal-resize {
   top: 0;
   left: -4px;
   width: 9px;
   height: 100%;
   cursor: ew-resize;
 }
-[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="right"] > .shui-terminal-resize span {
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="right"]
+  > .shui-terminal-resize
+  span {
   width: 3px;
   height: 36px;
 }
@@ -1991,9 +2179,8 @@
   gap: 8px;
   padding: 4px 10px;
   color: var(--color-ink-faint);
+  font-family: var(--font-sans);
   font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
   background: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
 [data-iii-ui="shell"] .shui-terminal-status.error,
@@ -2017,8 +2204,8 @@
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
 [data-iii-ui="shell"] .shui-terminal-status-action svg {
-  width: 11px;
-  height: 11px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-terminal-hud {
   position: absolute;
@@ -2082,8 +2269,8 @@
   cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-terminal-jump svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-terminal-action {
   flex: none;
@@ -2098,7 +2285,7 @@
   color: var(--color-ink-faint);
   background: transparent;
   cursor: pointer;
-  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-enter);
 }
 [data-iii-ui="shell"] .shui-terminal-action:hover,
 [data-iii-ui="shell"] .shui-terminal-action.active {
@@ -2118,8 +2305,8 @@
   cursor: not-allowed;
 }
 [data-iii-ui="shell"] .shui-terminal-action svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-terminal-error {
   flex: none;
@@ -2129,7 +2316,8 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-warn) 25%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-warn) 25%, transparent);
 }
 [data-iii-ui="shell"] .shui-xterm {
   flex: 1;
@@ -2152,8 +2340,8 @@
   scrollbar-color: var(--color-ink-ghost) transparent;
 }
 [data-iii-ui="shell"] .shui-etab-icon {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 
@@ -2328,8 +2516,8 @@
 }
 
 [data-iii-ui='shell'] .shui-browser-crumb-group svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 
 [data-iii-ui='shell'] .shui-browser-crumb {
@@ -2387,8 +2575,8 @@
 
 [data-iii-ui='shell'] .shui-browser-entry-icon {
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 [data-iii-ui='shell'] .shui-browser-empty {

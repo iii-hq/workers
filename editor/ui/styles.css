@@ -12,7 +12,7 @@
  * than 300, 22px rows, 12px monospace. Give the code the room.
  */
 
-[data-iii-ui='editor'] .ed-root {
+[data-iii-ui="editor"] .ed-root {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -24,7 +24,7 @@
 
 /* ---------------------------------------------------------------- header */
 
-[data-iii-ui='editor'] .ed-head {
+[data-iii-ui="editor"] .ed-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -35,20 +35,20 @@
 
 /* The console prefixes its section headers with a dim `$`; matching it is
    most of what makes an injected page read as part of the same product. */
-[data-iii-ui='editor'] .ed-brand {
+[data-iii-ui="editor"] .ed-brand {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: 16px;
   letter-spacing: 0.08em;
   color: var(--color-ink-faint);
   flex: none;
 }
 
-[data-iii-ui='editor'] .ed-brand::before {
-  content: '$ ';
+[data-iii-ui="editor"] .ed-brand::before {
+  content: "$ ";
   color: var(--color-accent);
 }
 
-[data-iii-ui='editor'] .ed-rootpath {
+[data-iii-ui="editor"] .ed-rootpath {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -59,7 +59,7 @@
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='editor'] .ed-icon {
+[data-iii-ui="editor"] .ed-icon {
   flex: none;
   width: 22px;
   height: 22px;
@@ -74,14 +74,14 @@
   cursor: pointer;
 }
 
-[data-iii-ui='editor'] .ed-icon:hover {
+[data-iii-ui="editor"] .ed-icon:hover {
   background: var(--color-panel);
   color: var(--color-ink);
 }
 
 /* ------------------------------------------------------------------ body */
 
-[data-iii-ui='editor'] .ed-body {
+[data-iii-ui="editor"] .ed-body {
   display: flex;
   flex: 1;
   min-height: 0;
@@ -92,7 +92,7 @@
    row carries a path, a mark, two counts and an age — the folder truncated to
    "in ch…", which is no information at all. Rather than pick a new number
    that is wrong for a different tab, the pane is draggable. */
-[data-iii-ui='editor'] .ed-side {
+[data-iii-ui="editor"] .ed-side {
   width: var(--ed-side-width, 200px);
   flex: none;
   display: flex;
@@ -106,7 +106,7 @@
 /* The handle sits *on* the border rather than beside it, so the divider the
    eye already reads as the edge is the thing you grab. Wider than it looks:
    a 1px target is a target you miss. */
-[data-iii-ui='editor'] .ed-side-handle {
+[data-iii-ui="editor"] .ed-side-handle {
   position: absolute;
   top: 0;
   right: -3px;
@@ -119,31 +119,31 @@
   z-index: 2;
 }
 
-[data-iii-ui='editor'] .ed-side-handle::after {
-  content: '';
+[data-iii-ui="editor"] .ed-side-handle::after {
+  content: "";
   position: absolute;
   top: 0;
   bottom: 0;
   left: 3px;
   width: 1px;
   background: var(--color-rule);
-  transition: background 150ms ease-out;
+  transition: background var(--motion-duration-control) var(--motion-ease-exit);
 }
 
-[data-iii-ui='editor'] .ed-side-handle:hover::after,
-[data-iii-ui='editor'] .ed-side-handle:focus-visible::after,
-[data-iii-ui='editor'] .ed-side-handle[data-dragging='true']::after {
+[data-iii-ui="editor"] .ed-side-handle:hover::after,
+[data-iii-ui="editor"] .ed-side-handle:focus-visible::after,
+[data-iii-ui="editor"] .ed-side-handle[data-dragging="true"]::after {
   background: var(--color-accent);
 }
 
 /* While dragging, the pointer owns the whole page: without this a fast drag
    selects text in the editor and the resize stutters. */
-[data-iii-ui='editor'][data-resizing='true'] {
+[data-iii-ui="editor"][data-resizing="true"] {
   cursor: col-resize;
   user-select: none;
 }
 
-[data-iii-ui='editor'] .ed-main {
+[data-iii-ui="editor"] .ed-main {
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -153,7 +153,7 @@
 
 /* ------------------------------------------------- segmented mode switch */
 
-[data-iii-ui='editor'] .ed-seg {
+[data-iii-ui="editor"] .ed-seg {
   display: flex;
   border: 1px solid var(--color-rule);
   border-radius: 4px;
@@ -161,7 +161,7 @@
   flex: none;
 }
 
-[data-iii-ui='editor'] .ed-seg button {
+[data-iii-ui="editor"] .ed-seg button {
   flex: 1;
   padding: 4px 6px;
   border: 0;
@@ -174,28 +174,28 @@
   cursor: pointer;
 }
 
-/* Active reads as the nav tabs do: ink fill, paper text. */
-[data-iii-ui='editor'] .ed-seg button[data-active='true'] {
-  background: var(--color-ink);
-  color: var(--color-bg);
+/* Active reads as a neutral selected control. */
+[data-iii-ui="editor"] .ed-seg button[data-active="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
 }
 
 /* -------------------------------------------------------------- the tree */
 
-[data-iii-ui='editor'] .ed-scroll {
+[data-iii-ui="editor"] .ed-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   margin: 0 -4px;
 }
 
-[data-iii-ui='editor'] .ed-list {
+[data-iii-ui="editor"] .ed-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-[data-iii-ui='editor'] .ed-row {
+[data-iii-ui="editor"] .ed-row {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -212,18 +212,18 @@
   cursor: pointer;
 }
 
-[data-iii-ui='editor'] .ed-row:hover {
+[data-iii-ui="editor"] .ed-row:hover {
   background: var(--color-panel);
 }
 
-[data-iii-ui='editor'] .ed-row[data-active='true'] {
-  background: var(--color-panel);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+[data-iii-ui="editor"] .ed-row[data-active="true"] {
+  background: var(--color-surface-selected);
+  box-shadow: inset 2px 0 0 var(--color-edge);
 }
 
 /* An edit that just landed. The accent expires on a timer in the page, not in
    CSS, so a row that changes twice re-lights instead of finishing its run. */
-[data-iii-ui='editor'] .ed-row[data-fresh='true'] {
+[data-iii-ui="editor"] .ed-row[data-fresh="true"] {
   animation: ed-land 700ms ease-out;
 }
 
@@ -238,20 +238,21 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-iii-ui='editor'] .ed-row[data-fresh='true'] {
+  [data-iii-ui="editor"] .ed-row[data-fresh="true"] {
     animation: none;
     box-shadow: inset 2px 0 0 var(--color-accent);
   }
 }
 
-[data-iii-ui='editor'] .ed-caret {
+[data-iii-ui="editor"] .ed-caret {
   flex: none;
-  width: 10px;
+  width: 16px;
+  height: 16px;
   color: var(--color-ink-ghost);
-  font-size: 9px;
+  font-size: 16px;
 }
 
-[data-iii-ui='editor'] .ed-name {
+[data-iii-ui="editor"] .ed-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -259,12 +260,12 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='editor'] .ed-dir {
+[data-iii-ui="editor"] .ed-dir {
   color: var(--color-ink-faint);
 }
 
 /* One-letter git mark, the vocabulary git itself uses. */
-[data-iii-ui='editor'] .ed-mark {
+[data-iii-ui="editor"] .ed-mark {
   flex: none;
   width: 1em;
   text-align: center;
@@ -272,25 +273,25 @@
   font-weight: 600;
 }
 
-[data-iii-ui='editor'] .ed-mark[data-s='modified'] {
+[data-iii-ui="editor"] .ed-mark[data-s="modified"] {
   color: var(--color-warn);
 }
-[data-iii-ui='editor'] .ed-mark[data-s='added'],
-[data-iii-ui='editor'] .ed-mark[data-s='untracked'] {
+[data-iii-ui="editor"] .ed-mark[data-s="added"],
+[data-iii-ui="editor"] .ed-mark[data-s="untracked"] {
   color: var(--color-ok);
 }
-[data-iii-ui='editor'] .ed-mark[data-s='deleted'],
-[data-iii-ui='editor'] .ed-mark[data-s='conflicted'] {
+[data-iii-ui="editor"] .ed-mark[data-s="deleted"],
+[data-iii-ui="editor"] .ed-mark[data-s="conflicted"] {
   color: var(--color-alert);
 }
 
-[data-iii-ui='editor'] .ed-hint {
+[data-iii-ui="editor"] .ed-hint {
   padding: 6px;
   color: var(--color-ink-faint);
   font-size: 11.5px;
 }
 
-[data-iii-ui='editor'] .ed-count {
+[data-iii-ui="editor"] .ed-count {
   flex: none;
   color: var(--color-ink-ghost);
   font-size: 10.5px;
@@ -301,14 +302,14 @@
 /* A feed row carries more than a name, and the name is still the thing being
    scanned: the metadata sits to the right at a smaller size and gives up its
    space last, so a long path truncates before the counts disappear. */
-[data-iii-ui='editor'] .ed-change {
+[data-iii-ui="editor"] .ed-change {
   height: auto;
   min-height: 22px;
   padding-top: 3px;
   padding-bottom: 3px;
 }
 
-[data-iii-ui='editor'] .ed-change-meta {
+[data-iii-ui="editor"] .ed-change-meta {
   flex: none;
   display: flex;
   align-items: baseline;
@@ -317,7 +318,7 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='editor'] .ed-change-by {
+[data-iii-ui="editor"] .ed-change-by {
   color: var(--color-ink-faint);
 }
 
@@ -327,7 +328,7 @@
    the *text inside* the parts was wrapping — "changes-demo" broke across two
    lines and the header became a three-line block that read as noise. Each
    part now refuses to wrap and the folder gives up its width first. */
-[data-iii-ui='editor'] .ed-group {
+[data-iii-ui="editor"] .ed-group {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -342,27 +343,27 @@
 }
 
 /* The label names the run and is never sacrificed. */
-[data-iii-ui='editor'] .ed-group > .ed-change-by {
+[data-iii-ui="editor"] .ed-group > .ed-change-by {
   flex: none;
   color: var(--color-ink);
 }
 
 /* The age belongs at the far end: it is the least important thing here and
    a fixed right edge makes the column of ages scannable down the feed. */
-[data-iii-ui='editor'] .ed-group > .ed-change-age {
+[data-iii-ui="editor"] .ed-group > .ed-change-age {
   margin-left: auto;
   flex: none;
   padding-left: 4px;
 }
 
-[data-iii-ui='editor'] .ed-group-files {
+[data-iii-ui="editor"] .ed-group-files {
   color: var(--color-ink-ghost);
 }
 
 /* A run that happened outside the open workspace. Accented because it is the
    answer to "why is that file not in my tree", and the first to truncate
    because the folder is recoverable from the row beneath it. */
-[data-iii-ui='editor'] .ed-group-root {
+[data-iii-ui="editor"] .ed-group-root {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -372,7 +373,7 @@
 
 /* The path splits so the folder can be dropped before the name is: at sidebar
    widths a truncated name identifies nothing. */
-[data-iii-ui='editor'] .ed-change-path {
+[data-iii-ui="editor"] .ed-change-path {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -380,7 +381,7 @@
   overflow: hidden;
 }
 
-[data-iii-ui='editor'] .ed-change-dir {
+[data-iii-ui="editor"] .ed-change-dir {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -390,14 +391,14 @@
   font-size: 11px;
 }
 
-[data-iii-ui='editor'] .ed-change-name {
+[data-iii-ui="editor"] .ed-change-name {
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
 /* Fixed width so the marks, and the counts after them, line up as columns
    down the feed rather than ragging with each filename's length. */
-[data-iii-ui='editor'] .ed-change-kind {
+[data-iii-ui="editor"] .ed-change-kind {
   flex: none;
   width: 8px;
   text-align: center;
@@ -406,27 +407,27 @@
 
 /* Same idea for the counts: a right-aligned pair of fixed columns reads as a
    table, which is what a list of "+n -n" actually is. */
-[data-iii-ui='editor'] .ed-change-meta .ed-add,
-[data-iii-ui='editor'] .ed-change-meta .ed-del {
+[data-iii-ui="editor"] .ed-change-meta .ed-add,
+[data-iii-ui="editor"] .ed-change-meta .ed-del {
   flex: none;
   min-width: 22px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui='editor'] .ed-change-kind[data-kind='created'] {
+[data-iii-ui="editor"] .ed-change-kind[data-kind="created"] {
   color: var(--color-ok);
 }
-[data-iii-ui='editor'] .ed-change-kind[data-kind='deleted'] {
+[data-iii-ui="editor"] .ed-change-kind[data-kind="deleted"] {
   color: var(--color-alert);
 }
 
-[data-iii-ui='editor'] .ed-change-age {
+[data-iii-ui="editor"] .ed-change-age {
   color: var(--color-ink-ghost);
 }
 
 /* The diff card's header: the path takes the room, provenance sits after it,
    and the close button is pushed to the far end by the spacer. */
-[data-iii-ui='editor'] .ed-change-title {
+[data-iii-ui="editor"] .ed-change-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -435,18 +436,18 @@
   font-size: 12px;
 }
 
-[data-iii-ui='editor'] .ed-change-session {
+[data-iii-ui="editor"] .ed-change-session {
   color: var(--color-ink-faint);
   font-size: 10.5px;
 }
 
-[data-iii-ui='editor'] .ed-bar-spacer {
+[data-iii-ui="editor"] .ed-bar-spacer {
   flex: 1;
 }
 
 /* ------------------------------------------------------------------ tabs */
 
-[data-iii-ui='editor'] .ed-tabs {
+[data-iii-ui="editor"] .ed-tabs {
   display: flex;
   align-items: stretch;
   gap: 1px;
@@ -457,11 +458,11 @@
   scrollbar-width: none;
 }
 
-[data-iii-ui='editor'] .ed-tabs::-webkit-scrollbar {
+[data-iii-ui="editor"] .ed-tabs::-webkit-scrollbar {
   display: none;
 }
 
-[data-iii-ui='editor'] .ed-tab {
+[data-iii-ui="editor"] .ed-tab {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -470,12 +471,12 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='editor'] .ed-tab[data-active='true'] {
-  background: var(--color-panel);
-  border-bottom-color: var(--color-accent);
+[data-iii-ui="editor"] .ed-tab[data-active="true"] {
+  background: var(--color-surface-selected);
+  border-bottom-color: var(--color-edge);
 }
 
-[data-iii-ui='editor'] .ed-tab-name {
+[data-iii-ui="editor"] .ed-tab-name {
   border: 0;
   background: transparent;
   color: var(--color-ink-faint);
@@ -485,11 +486,11 @@
   padding: 0;
 }
 
-[data-iii-ui='editor'] .ed-tab[data-active='true'] .ed-tab-name {
+[data-iii-ui="editor"] .ed-tab[data-active="true"] .ed-tab-name {
   color: var(--color-ink);
 }
 
-[data-iii-ui='editor'] .ed-dot {
+[data-iii-ui="editor"] .ed-dot {
   color: var(--color-accent);
   font-size: 14px;
   line-height: 1;
@@ -497,29 +498,29 @@
 
 /* Faded rather than `visibility: hidden`: hiding it removes the button from
    the focus order, so a keyboard user could not close an inactive tab. */
-[data-iii-ui='editor'] .ed-close {
+[data-iii-ui="editor"] .ed-close {
   border: 0;
   background: transparent;
   color: transparent;
-  font-size: 13px;
+  font-size: 16px;
   line-height: 1;
   padding: 0 2px;
   cursor: pointer;
 }
 
-[data-iii-ui='editor'] .ed-tab:hover .ed-close,
-[data-iii-ui='editor'] .ed-tab[data-active='true'] .ed-close,
-[data-iii-ui='editor'] .ed-close:focus-visible {
+[data-iii-ui="editor"] .ed-tab:hover .ed-close,
+[data-iii-ui="editor"] .ed-tab[data-active="true"] .ed-close,
+[data-iii-ui="editor"] .ed-close:focus-visible {
   color: var(--color-ink-ghost);
 }
 
-[data-iii-ui='editor'] .ed-close:hover {
+[data-iii-ui="editor"] .ed-close:hover {
   color: var(--color-alert);
 }
 
 /* ---------------------------------------------------------- editor + bar */
 
-[data-iii-ui='editor'] .ed-bar {
+[data-iii-ui="editor"] .ed-bar {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -527,7 +528,7 @@
   flex: none;
 }
 
-[data-iii-ui='editor'] .ed-spacer {
+[data-iii-ui="editor"] .ed-spacer {
   flex: 1;
 }
 
@@ -551,7 +552,7 @@
  * pierre's element stretches to the pane's width so its horizontal scroller
  * never makes the pane overflow sideways as well.
  */
-[data-iii-ui='editor'] .ed-pane {
+[data-iii-ui="editor"] .ed-pane {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -560,7 +561,7 @@
 
 /* The edit view's box, on top of `.ed-pane`. Monaco is chrome-less, so the
    border is what separates the code from the page. */
-[data-iii-ui='editor'] .ed-surface {
+[data-iii-ui="editor"] .ed-surface {
   border: 1px solid var(--color-rule);
   border-radius: 4px;
 }
@@ -570,7 +571,7 @@
    and injects its own stylesheet there from the theme it was handed, so there
    is nothing here to colour and no CSS asset to ship for it. The gap is for
    the multi-file case, where each file is its own element. */
-[data-iii-ui='editor'] .ed-reader {
+[data-iii-ui="editor"] .ed-reader {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -580,7 +581,7 @@
    CodeEditor is deliberately chrome-less (no line numbers, no glyph margin),
    so the file's language, size and git deltas are surfaced here instead. The
    read view has pierre's own gutter, and this line still agrees with it. */
-[data-iii-ui='editor'] .ed-status {
+[data-iii-ui="editor"] .ed-status {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -593,7 +594,7 @@
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='editor'] .ed-status-path {
+[data-iii-ui="editor"] .ed-status-path {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -602,13 +603,13 @@
   color: var(--color-ink);
 }
 
-[data-iii-ui='editor'] .ed-add {
+[data-iii-ui="editor"] .ed-add {
   color: var(--color-ok);
 }
-[data-iii-ui='editor'] .ed-del {
+[data-iii-ui="editor"] .ed-del {
   color: var(--color-alert);
 }
-[data-iii-ui='editor'] .ed-unsaved {
+[data-iii-ui="editor"] .ed-unsaved {
   color: var(--color-accent);
 }
 
@@ -616,7 +617,7 @@
 
 /* The strip has to survive a narrow pane: this page shares the viewport with
    the chat column, so the actions wrap rather than clip. */
-[data-iii-ui='editor'] .ed-git {
+[data-iii-ui="editor"] .ed-git {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -627,7 +628,7 @@
   background: var(--color-panel);
 }
 
-[data-iii-ui='editor'] .ed-branch {
+[data-iii-ui="editor"] .ed-branch {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -636,17 +637,17 @@
   font-size: 11.5px;
 }
 
-[data-iii-ui='editor'] .ed-ab {
+[data-iii-ui="editor"] .ed-ab {
   color: var(--color-ink-faint);
   font-size: 10.5px;
 }
 
-[data-iii-ui='editor'] .ed-commit {
+[data-iii-ui="editor"] .ed-commit {
   flex: 1 1 120px;
   min-width: 100px;
 }
 
-[data-iii-ui='editor'] .ed-gitnote {
+[data-iii-ui="editor"] .ed-gitnote {
   position: relative;
   display: flex;
   align-items: flex-start;
@@ -657,7 +658,7 @@
   max-height: 96px;
 }
 
-[data-iii-ui='editor'] .ed-gitnote-text {
+[data-iii-ui="editor"] .ed-gitnote-text {
   flex: 1;
   min-width: 0;
   margin: 0;
@@ -669,7 +670,7 @@
   white-space: pre-wrap;
 }
 
-[data-iii-ui='editor'] .ed-gitnote-x {
+[data-iii-ui="editor"] .ed-gitnote-x {
   flex: none;
   border: 1px solid var(--color-rule);
   border-radius: 4px;
@@ -682,12 +683,12 @@
   cursor: pointer;
 }
 
-[data-iii-ui='editor'] .ed-gitnote-x:hover {
+[data-iii-ui="editor"] .ed-gitnote-x:hover {
   background: var(--color-panel);
   color: var(--color-ink);
 }
 
-[data-iii-ui='editor'] .ed-error {
+[data-iii-ui="editor"] .ed-error {
   padding: 6px 10px;
   flex: none;
   border-top: 1px solid var(--color-alert);
@@ -696,7 +697,7 @@
   white-space: pre-wrap;
 }
 
-[data-iii-ui='editor'] .ed-warn {
+[data-iii-ui="editor"] .ed-warn {
   margin: 6px 8px 0;
   padding: 5px 8px;
   border: 1px solid var(--color-warn);
@@ -706,7 +707,7 @@
 
 /* --------------------------------------------------- chat + trace cards */
 
-[data-iii-ui='editor'] .ed-card {
+[data-iii-ui="editor"] .ed-card {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -717,14 +718,14 @@
   font-size: 12px;
 }
 
-[data-iii-ui='editor'] .ed-card-head {
+[data-iii-ui="editor"] .ed-card-head {
   display: flex;
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
 }
 
-[data-iii-ui='editor'] .ed-card-path {
+[data-iii-ui="editor"] .ed-card-path {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   overflow: hidden;
@@ -732,21 +733,21 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='editor'] .ed-stat {
+[data-iii-ui="editor"] .ed-stat {
   display: inline-flex;
   gap: 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
 
-[data-iii-ui='editor'] .ed-card-patch {
+[data-iii-ui="editor"] .ed-card-patch {
   max-height: 380px;
   overflow: auto;
   border-top: 1px solid var(--color-rule);
   padding-top: 5px;
 }
 
-[data-iii-ui='editor'] .ed-hits {
+[data-iii-ui="editor"] .ed-hits {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -757,7 +758,7 @@
   font-size: 11.5px;
 }
 
-[data-iii-ui='editor'] .ed-muted {
+[data-iii-ui="editor"] .ed-muted {
   color: var(--color-ink-faint);
 }
 
@@ -768,7 +769,7 @@
 
 /* The most recent observed edit. Pushed by `editor::changed`, so this updates
    as an agent works rather than on a timer. */
-[data-iii-ui='editor'] .ed-live {
+[data-iii-ui="editor"] .ed-live {
   color: var(--color-accent);
   overflow: hidden;
   text-overflow: ellipsis;

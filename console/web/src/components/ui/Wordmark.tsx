@@ -11,7 +11,7 @@ interface WordmarkProps {
   tone?: 'auto' | 'ink' | 'inverse'
 }
 
-const IMG_CLASS = 'h-[19px] w-auto shrink-0'
+const IMG_CLASS = 'h-[32px] mx-[6px] w-auto shrink-0'
 
 /**
  * The "iii" wordmark from brand SVGs (`iii-ink.svg` / `iii-white.svg`).

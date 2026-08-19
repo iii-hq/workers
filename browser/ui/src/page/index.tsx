@@ -20,12 +20,27 @@
  * SessionView), so a narrow pane parked on the list streams nothing.
  */
 
-import { Button, type Host, PageHeader, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import {
+  Button,
+  type Host,
+  PageHeader,
+  type PageRenderProps,
+  PageShell,
+} from '@iii-dev/console-ui'
 import type { ComponentType } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage, readBrowserDoctor, startBrowserSession } from '../lib/browser'
+import {
+  errorMessage,
+  readBrowserDoctor,
+  startBrowserSession,
+} from '../lib/browser'
 import { Plus } from '../lib/icons'
-import { GlobeIcon, LivePill, RefreshButton, useContainerNarrow } from '../lib/widgets'
+import {
+  GlobeIcon,
+  LivePill,
+  RefreshButton,
+  useContainerNarrow,
+} from '../lib/widgets'
 import { SessionRail } from './SessionRail'
 import { SessionView } from './SessionView'
 import { useBrowserSessionsLive } from './useBrowserSessionsLive'
@@ -47,7 +62,10 @@ export function BrowserPage({
         onClose: () => void
       }>
     | undefined
-  const { sessions, loading, error, live, refresh } = useBrowserSessionsLive(host, true)
+  const { sessions, loading, error, live, refresh } = useBrowserSessionsLive(
+    host,
+    true,
+  )
   const [chromiumVersion, setChromiumVersion] = useState<string | null>(null)
 
   useEffect(() => {
@@ -91,7 +109,10 @@ export function BrowserPage({
     })
   }, [loading, sessions])
 
-  const selected = useMemo(() => sessions.find((s) => s.session_id === selectedId) ?? null, [sessions, selectedId])
+  const selected = useMemo(
+    () => sessions.find((s) => s.session_id === selectedId) ?? null,
+    [sessions, selectedId],
+  )
 
   // The drilled-into session can die underneath us (stopped from chat or
   // another tab): drill back out to the list rather than silently showing
@@ -138,12 +159,16 @@ export function BrowserPage({
       <PageHeader
         icon={<GlobeIcon />}
         title="Browser"
-        description="live Chromium sessions you can watch and drive"
+        description="Live Chromium sessions you can watch and drive"
         actions={
           <div className="br-ui-header-actions">
             <LivePill live={live} />
             {ConfigurationDialog ? (
-              <Button variant="ghost" size="sm" onClick={() => setConfigOpen(true)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfigOpen(true)}
+              >
                 Configure
               </Button>
             ) : null}
@@ -164,7 +189,10 @@ export function BrowserPage({
         </div>
       ) : null}
 
-      <div className={`br-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`} ref={rootRef}>
+      <div
+        className={`br-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
+        ref={rootRef}
+      >
         {railVisible ? (
           <aside className="br-ui-rail" aria-label="session list">
             <div className="br-ui-rail-top">
@@ -173,21 +201,40 @@ export function BrowserPage({
                   <h2>Sessions</h2>
                   <p>Active local and attached browsers.</p>
                 </div>
-                <Button variant="primary" size="sm" onClick={() => void handleNewSession()} disabled={starting}>
-                  <Plus size={14} aria-hidden />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void handleNewSession()}
+                  disabled={starting}
+                >
+                  <Plus size={16} aria-hidden />
                   {starting ? 'Starting...' : 'New session'}
                 </Button>
               </div>
-              {startError ? <p className="br-ui-rail-err">{startError}</p> : null}
+              {startError ? (
+                <p className="br-ui-rail-err">{startError}</p>
+              ) : null}
             </div>
             <header className="br-ui-col-head">
-              <span className="label">active now</span>
+              <span className="label">Active now</span>
               <span className="spacer" />
-              {loading && sessions.length === 0 ? null : <span className="count">{sessions.length}</span>}
-              <RefreshButton onClick={refresh} label="refresh sessions" disabled={loading} spinning={loading} />
+              {loading && sessions.length === 0 ? null : (
+                <span className="count">{sessions.length}</span>
+              )}
+              <RefreshButton
+                onClick={refresh}
+                label="refresh sessions"
+                disabled={loading}
+                spinning={loading}
+              />
             </header>
             <div className="br-ui-rail-scroll">
-              <SessionRail sessions={sessions} selectedId={selectedId} loading={loading} onSelect={openSession} />
+              <SessionRail
+                sessions={sessions}
+                selectedId={selectedId}
+                loading={loading}
+                onSelect={openSession}
+              />
             </div>
           </aside>
         ) : null}
@@ -217,8 +264,9 @@ export function BrowserPage({
                 <GlobeIcon className="br-ui-hero-icon" />
                 <h2 className="br-ui-hero-title">No browser sessions</h2>
                 <p className="br-ui-hero-body">
-                  Sessions started by agents appear here automatically. Start one from the session rail, or ask an agent
-                  to call <code>browser::sessions::start</code>.
+                  Sessions started by agents appear here automatically. Start
+                  one from the session rail, or ask an agent to call{' '}
+                  <code>browser::sessions::start</code>.
                 </p>
               </div>
             </section>
@@ -226,7 +274,10 @@ export function BrowserPage({
         ) : null}
       </div>
       {ConfigurationDialog ? (
-        <ConfigurationDialog configurationId={configOpen ? 'browser' : null} onClose={() => setConfigOpen(false)} />
+        <ConfigurationDialog
+          configurationId={configOpen ? 'browser' : null}
+          onClose={() => setConfigOpen(false)}
+        />
       ) : null}
     </PageShell>
   )

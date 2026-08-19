@@ -28,7 +28,15 @@ import {
   Input,
 } from '@iii-dev/console-ui'
 import { useState } from 'react'
-import { type FilterOp, type FilterSpec, isComplete, OP_LABEL, opsFor, SET_OPS, typeCategory } from '../lib/rpc'
+import {
+  type FilterOp,
+  type FilterSpec,
+  isComplete,
+  OP_LABEL,
+  opsFor,
+  SET_OPS,
+  typeCategory,
+} from '../lib/rpc'
 import { Eye, EyeOff, Plus, X } from './icons'
 
 /** The minimum a column must expose to be filterable. */
@@ -46,13 +54,17 @@ export function FilterBar({
   filters: FilterSpec[]
   onChange: (next: FilterSpec[]) => void
 }) {
-  const replace = (i: number, f: FilterSpec) => onChange(filters.map((x, j) => (j === i ? f : x)))
+  const replace = (i: number, f: FilterSpec) =>
+    onChange(filters.map((x, j) => (j === i ? f : x)))
   const remove = (i: number) => onChange(filters.filter((_, j) => j !== i))
 
   const add = () => {
     const first = columns[0]
     if (!first) return
-    onChange([...filters, { column: first.name, op: opsFor(typeCategory(first.type))[0] }])
+    onChange([
+      ...filters,
+      { column: first.name, op: opsFor(typeCategory(first.type))[0] },
+    ])
   }
 
   const active = filters.filter((f) => !f.disabled && isComplete(f)).length
@@ -72,9 +84,14 @@ export function FilterBar({
         />
       ))}
 
-      <Button variant="ghost" size="sm" onClick={add} disabled={columns.length === 0}>
-        <Plus size={12} aria-hidden />
-        filter
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={add}
+        disabled={columns.length === 0}
+      >
+        <Plus size={16} aria-hidden />
+        Filter
       </Button>
 
       {filters.length > 0 ? (
@@ -83,8 +100,12 @@ export function FilterBar({
             {active} applied
             {drafts > 0 ? ` · ${drafts} draft` : ''}
           </span>
-          <button type="button" className="db-filters-clear" onClick={() => onChange([])}>
-            clear all
+          <button
+            type="button"
+            className="db-filters-clear"
+            onClick={() => onChange([])}
+          >
+            Clear all
           </button>
         </>
       ) : null}
@@ -126,7 +147,8 @@ function Chip({
     // reads as complete while holding a value its operator ignores.
     const carry: FilterSpec = { ...filter, op }
     if (SET_OPS.has(op)) {
-      carry.values = filter.values ?? (filter.value != null ? [filter.value] : [])
+      carry.values =
+        filter.values ?? (filter.value != null ? [filter.value] : [])
       carry.value = undefined
       carry.value2 = undefined
     } else {
@@ -138,21 +160,35 @@ function Chip({
   }
 
   return (
-    <span className={`db-chip${draft ? ' draft' : ''}${filter.disabled ? ' off' : ''}`}>
+    <span
+      className={`db-chip${draft ? ' draft' : ''}${filter.disabled ? ' off' : ''}`}
+    >
       <button
         type="button"
         className="db-chip-seg toggle"
         aria-pressed={!filter.disabled}
-        title={filter.disabled ? 'apply this filter' : 'switch this filter off without removing it'}
+        title={
+          filter.disabled
+            ? 'apply this filter'
+            : 'switch this filter off without removing it'
+        }
         onClick={() => onChange({ ...filter, disabled: !filter.disabled })}
       >
-        {filter.disabled ? <EyeOff size={11} aria-hidden /> : <Eye size={11} aria-hidden />}
+        {filter.disabled ? (
+          <EyeOff size={16} aria-hidden />
+        ) : (
+          <Eye size={16} aria-hidden />
+        )}
       </button>
 
       <Picker
-        label={filter.column || 'column'}
+        label={filter.column || 'Column'}
         className="col"
-        items={columns.map((c) => ({ value: c.name, label: c.name, hint: c.type.toLowerCase() }))}
+        items={columns.map((c) => ({
+          value: c.name,
+          label: c.name,
+          hint: c.type,
+        }))}
         onPick={setColumn}
       />
 
@@ -171,26 +207,41 @@ function Chip({
           />
         ) : (
           <>
-            <ValueInput value={filter.value} onChange={(value) => onChange({ ...filter, value })} label="value" />
+            <ValueInput
+              value={filter.value}
+              onChange={(value) => onChange({ ...filter, value })}
+              label="Value"
+            />
             {filter.op === 'between' ? (
               <ValueInput
                 value={filter.value2}
                 onChange={(value2) => onChange({ ...filter, value2 })}
-                label="upper bound"
+                label="Upper bound"
               />
             ) : null}
           </>
         )
       ) : null}
 
-      <button type="button" className="db-chip-seg remove" onClick={onRemove} aria-label="remove filter">
-        <X size={11} aria-hidden />
+      <button
+        type="button"
+        className="db-chip-seg remove"
+        onClick={onRemove}
+        aria-label="remove filter"
+      >
+        <X size={16} aria-hidden />
       </button>
     </span>
   )
 }
 
-const NO_VALUE: ReadonlySet<FilterOp> = new Set(['is_true', 'is_false', 'is_null', 'is_not_null', 'is_empty'])
+const NO_VALUE: ReadonlySet<FilterOp> = new Set([
+  'is_true',
+  'is_false',
+  'is_null',
+  'is_not_null',
+  'is_empty',
+])
 
 function Picker({
   label,
@@ -222,7 +273,15 @@ function Picker({
   )
 }
 
-function ValueInput({ value, onChange, label }: { value: unknown; onChange: (v: string) => void; label: string }) {
+function ValueInput({
+  value,
+  onChange,
+  label,
+}: {
+  value: unknown
+  onChange: (v: string) => void
+  label: string
+}) {
   return (
     <span className="db-chip-seg val">
       <Input
@@ -238,7 +297,13 @@ function ValueInput({ value, onChange, label }: { value: unknown; onChange: (v: 
 }
 
 /** Comma-separated entry for `in` / `not_in`. */
-function SetValue({ values, onChange }: { values: unknown[]; onChange: (v: unknown[]) => void }) {
+function SetValue({
+  values,
+  onChange,
+}: {
+  values: unknown[]
+  onChange: (v: unknown[]) => void
+}) {
   const [text, setText] = useState(values.map((v) => String(v)).join(', '))
   return (
     <span className="db-chip-seg val set">

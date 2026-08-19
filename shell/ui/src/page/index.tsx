@@ -142,7 +142,7 @@ import {
   normalizeTerminalWorkspace,
   reduceTerminalWorkspace,
 } from './terminal-layout'
-import { createTerminalOutputRouter } from './terminal-output-router'
+import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
 import { useHarnessPreTurn, useHarnessTurn } from './turn'
 import {
@@ -283,13 +283,14 @@ const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
 
 export function ShellExplorerPage({
   host,
+  terminalRouter,
   panelSide,
   tabId,
   onRequestClose,
   workingDir,
   panelContext,
   conversationId,
-}: { host: Host } & PageRenderProps) {
+}: { host: Host; terminalRouter: TerminalOutputRouter } & PageRenderProps) {
   const theme = host.useTheme()
   const observedReview = useHarnessTurn(host, conversationId)
   const observedReviewKey = observedReview.turnId
@@ -339,11 +340,9 @@ export function ShellExplorerPage({
     '/',
     createTerminalWorkspace,
   )
-  const terminalRouter = useMemo(() => createTerminalOutputRouter(host), [host])
   const terminalConnectionCoordinators = useRef(
     new Map<string, TerminalConnectionCoordinator>(),
   ).current
-  useEffect(() => () => terminalRouter.dispose(), [terminalRouter])
   const terminalLeaseStore = useMemo(() => {
     try {
       return window.localStorage
@@ -2275,7 +2274,7 @@ export function ShellExplorerPage({
     <PageHeader
       className="shui-page-header"
       icon={<SquareTerminal />}
-      title="shell"
+      title="Shell"
       description={
         root ? (
           rootOptions.length > 1 ? (
@@ -2865,7 +2864,7 @@ export function ShellExplorerPage({
             ) : scopeEmpty ? (
               <div className="shui-main-empty">
                 <span className="t-ghost">
-                  no changes in {reviewScopeLabel(reviewScope)}
+                  No changes in {reviewScopeLabel(reviewScope)}
                 </span>
               </div>
             ) : tabs.active !== null ? (

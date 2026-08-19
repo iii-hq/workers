@@ -35,7 +35,7 @@ export function BankRail({
   return (
     <aside className="mem-ui-rail" aria-label="bank list">
       <header className="mem-ui-col-head">
-        <span className="label">banks</span>
+        <span className="label">Banks</span>
         <span className="spacer" />
         {initialLoad ? null : <span className="count">{banks.length}</span>}
       </header>
@@ -57,8 +57,8 @@ export function BankRail({
           <div className="mem-ui-rail-empty">
             <p>No banks yet.</p>
             <p className="dim">
-              Create one below, or just chat: the default bank materializes
-              when the first memory is saved.
+              Create one below, or just chat: the default bank materializes when
+              the first memory is saved.
             </p>
           </div>
         ) : (
@@ -106,7 +106,7 @@ export function BankRail({
           disabled={!valid || creating}
           aria-label="create bank"
         >
-          <Plus size={14} aria-hidden />
+          <Plus size={16} aria-hidden />
         </Button>
       </form>
     </aside>
