@@ -109,6 +109,7 @@ import {
 } from './ReviewPane'
 import {
   ReviewScopePicker,
+  reviewScopeLabel,
   type ReviewScopeSelection,
 } from './ReviewScopePicker'
 import {
@@ -120,6 +121,8 @@ import {
 import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
+import { ShellLauncher } from './ShellLauncher'
+import { WorkspaceBrowser } from './WorkspaceBrowser'
 import { TerminalPanel } from './TerminalPanel'
 import {
   activateTab,
@@ -320,6 +323,7 @@ export function ShellExplorerPage({
   const rootResolveSeqRef = useRef(0)
   const rootTransitionRef = useRef(false)
   const [sideTab, setSideTab] = useState<SideTab>('files')
+  const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
   const [terminalActive, setTerminalActive] = useState(false)
@@ -348,6 +352,11 @@ export function ShellExplorerPage({
   }, [])
   const terminalStorageKey = `iii::shell-ui::terminal-leases::${tabId}`
   const [collapsed, setCollapsed] = useState(false)
+  const [narrow, setNarrow] = useState(false)
+  // A callback ref, not useRef: the page renders a placeholder shell before
+  // the workspace frame exists, so an effect that reads a ref once would
+  // observe nothing.
+  const [frameEl, setFrameEl] = useState<HTMLDivElement | null>(null)
   const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const [tree, setTree] = useState<FlatTree | null>(null)
   // Dot entries are filtered by default (Finder/VS Code convention) —
@@ -887,6 +896,36 @@ export function ShellExplorerPage({
     () => [...visibleReviewEntries.values()].map((entry) => entry.change),
     [visibleReviewEntries],
   )
+  const scopeEmpty =
+    reviewScope.kind !== 'last-turn' &&
+    !scopeLoading &&
+    scopeError === null &&
+    scopeEntries.size === 0
+
+  // The panel, not the viewport, decides what fits: a shell page shares the
+  // console with other panels. Below the same width the stylesheet treats as
+  // narrow, the sidebar becomes an overlay, so it starts out of the way.
+  useEffect(() => {
+    if (!frameEl) return
+    const measure = () =>
+      setNarrow(frameEl.getBoundingClientRect().width <= 720)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(frameEl)
+    return () => observer.disconnect()
+  }, [frameEl])
+
+  const narrowRef = useRef(narrow)
+  useEffect(() => {
+    if (narrow && !narrowRef.current) setCollapsed(true)
+    narrowRef.current = narrow
+  }, [narrow])
+
+  const rootLabel = useMemo(
+    () => root?.split('/').filter(Boolean).slice(-1)[0] ?? 'workspace',
+    [root],
+  )
+
   const orderedReviewEntries = useMemo<readonly ReviewEntry[]>(
     () => [...visibleReviewEntries.values()],
     [visibleReviewEntries],
@@ -2117,6 +2156,25 @@ export function ShellExplorerPage({
     [reviewSaveBarrier, root],
   )
 
+  // The browser card is only honest when that worker is actually on the bus.
+  const [browserAvailable, setBrowserAvailable] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    void host.iii
+      .trigger<{ workers?: Array<{ name?: unknown }> }>('engine::workers::list', {})
+      .then((response) => {
+        if (cancelled) return
+        const workers = Array.isArray(response?.workers) ? response.workers : []
+        setBrowserAvailable(workers.some((worker) => worker?.name === 'browser'))
+      })
+      .catch(() => {
+        if (!cancelled) setBrowserAvailable(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host])
+
   const appliedContextRef = useRef(0)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
@@ -2128,6 +2186,24 @@ export function ShellExplorerPage({
     if (context.type === 'file') {
       if (!openContextFile(context.path)) return
       appliedContextRef.current = panelContext.id
+      return
+    }
+    if (context.type === 'agent-terminal') {
+      // The agent's own CLI is the interface; shell just provides the terminal
+      // it wants. An existing terminal keeps the directory it was opened in,
+      // so this opens a NEW tab rooted where the run worked — otherwise the
+      // pane says pi-demo while the shell inside it sits somewhere else.
+      appliedContextRef.current = panelContext.id
+      changeRoot(context.cwd)
+      const stamp = `${Date.now().toString(36)}`
+      dispatchTerminalWorkspace({
+        type: 'tab-created',
+        tabId: `tab-agent-${stamp}`,
+        paneId: `pane-agent-${stamp}`,
+        root: context.cwd,
+      })
+      setTerminalOpen(true)
+      setTerminalActive(true)
       return
     }
     if (!confirmDiscardReviewEdits()) return
@@ -2326,7 +2402,18 @@ export function ShellExplorerPage({
   return (
     <PageShell>
       {header}
-      <div className={`shui-workspace-frame terminal-${terminalDock}`}>
+      <div
+        ref={setFrameEl}
+        className={`shui-workspace-frame terminal-${terminalDock}`}
+      >
+        {narrow && !collapsed ? (
+          <button
+            type="button"
+            className="shui-sidebar-scrim"
+            aria-label="Hide file sidebar"
+            onClick={() => setCollapsed(true)}
+          />
+        ) : null}
         <PageBody side={panelSide}>
           {!collapsed ? (
             <PageSidebar width={sideWidth} className="shui-sidebar">
@@ -2758,6 +2845,12 @@ export function ShellExplorerPage({
               <div className="shui-main-empty">
                 <span className="t-warn">{scopeError}</span>
               </div>
+            ) : scopeEmpty ? (
+              <div className="shui-main-empty">
+                <span className="t-ghost">
+                  no changes in {reviewScopeLabel(reviewScope)}
+                </span>
+              </div>
             ) : tabs.active !== null ? (
               <EditorPane
                 // fileBump remounts after an agent-side write to the active
@@ -2770,10 +2863,43 @@ export function ShellExplorerPage({
                 onSaved={onSaved}
                 onDirtyChange={onDirtyChange}
               />
+            ) : browsePath !== null ? (
+              <WorkspaceBrowser
+                tree={tree}
+                path={browsePath}
+                rootLabel={rootLabel}
+                onOpenFolder={(relPath) => {
+                  setBrowsePath(relPath)
+                  if (relPath !== '') revealFolder(relPath)
+                }}
+                onOpenFile={pinFile}
+              />
             ) : (
-              <div className="shui-main-empty">
-                <span className="t-ghost">select a file to edit or review</span>
-              </div>
+              <ShellLauncher
+                host={host}
+                browserAvailable={browserAvailable}
+                // Changes is the navbar's review scope: the last turn when it
+                // touched anything, otherwise everything the working tree has
+                // that HEAD does not.
+                onOpenChanges={() =>
+                  selectReviewScope(
+                    reviewEntriesRef.current.size > 0
+                      ? LAST_TURN_SCOPE
+                      : { kind: 'uncommitted' },
+                  )
+                }
+                onOpenTerminal={() => {
+                  setTerminalOpen(true)
+                  setTerminalActive(true)
+                }}
+                // File opens the workspace browser in this pane and shows the
+                // sidebar tree beside it.
+                onOpenFiles={() => {
+                  setBrowsePath('')
+                  setSideTab('files')
+                  setCollapsed(false)
+                }}
+              />
             )}
           </PageMain>
         </PageBody>
