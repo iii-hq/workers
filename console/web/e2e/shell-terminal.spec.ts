@@ -302,25 +302,34 @@ test('runs multi-terminal PTYs, replay, tmux, Claude, and cleanup', async ({
   await runInPane(
     page,
     reloadedPane,
-    `${tmux} new-session -s terminal-acceptance`,
+    `${tmux} new-session -d -s terminal-acceptance \\; set-option -t terminal-acceptance status-right '__TMUX_PANES__:#{window_panes}:#{pane_index}' \\; attach-session -t terminal-acceptance`,
   )
-  await page.waitForTimeout(500)
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_PANES__:1:0',
+  )
   await page.keyboard.press('Control+b')
   await page.keyboard.insertText('%')
-  await page.waitForTimeout(300)
-  await page.keyboard.type(`printf '%s%s\\n' '__TMUX_' 'RIGHT__'; sleep 0.2`, {
-    delay: 1,
-  })
-  await page.keyboard.press('Enter')
-  await page.waitForTimeout(300)
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_PANES__:2:1',
+  )
+  await runInPane(
+    page,
+    reloadedPane,
+    `printf '%s%s\\n' '__TMUX_' 'RIGHT__'; sleep 0.2`,
+  )
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_RIGHT__',
+  )
   await page.keyboard.press('Control+b')
   await page.keyboard.insertText('o')
-  await page.waitForTimeout(200)
-  await page.keyboard.type(`printf '%s%s\\n' '__TMUX_' 'LEFT__'; sleep 0.2`, {
-    delay: 1,
-  })
-  await page.keyboard.press('Enter')
-  await page.waitForTimeout(300)
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_PANES__:2:0',
+  )
+  await runInPane(
+    page,
+    reloadedPane,
+    `printf '%s%s\\n' '__TMUX_' 'LEFT__'; sleep 0.2`,
+  )
   await expect(reloadedPane.locator('.xterm-rows')).toContainText(
     '__TMUX_LEFT__',
   )
@@ -330,30 +339,47 @@ test('runs multi-terminal PTYs, replay, tmux, Claude, and cleanup', async ({
   await captureEvidence(page, testInfo, 'task8-tmux-attached')
   await page.keyboard.press('Control+b')
   await page.keyboard.insertText('d')
+  await runInPane(page, reloadedPane, `printf '%s%s\\n' '__TMUX_' 'DETACHED__'`)
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_DETACHED__',
+  )
   await runInPane(
     page,
     reloadedPane,
     `${tmux} capture-pane -pt terminal-acceptance:0.0; ${tmux} capture-pane -pt terminal-acceptance:0.1; sleep 0.2`,
+  )
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_RIGHT__',
+  )
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_LEFT__',
   )
   await runInPane(
     page,
     reloadedPane,
     `${tmux} attach-session -t terminal-acceptance`,
   )
-  await page.waitForTimeout(300)
-  await page.keyboard.type(
-    `printf '%s%s\\n' '__TMUX_' 'REATTACHED__'; sleep 0.2`,
-    {
-      delay: 1,
-    },
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_PANES__:2:0',
   )
-  await page.keyboard.press('Enter')
-  await page.waitForTimeout(300)
+  await runInPane(
+    page,
+    reloadedPane,
+    `printf '%s%s\\n' '__TMUX_' 'REATTACHED__'; sleep 0.2`,
+  )
   await expect(reloadedPane.locator('.xterm-rows')).toContainText(
     '__TMUX_REATTACHED__',
   )
   await page.keyboard.press('Control+b')
   await page.keyboard.insertText('d')
+  await runInPane(
+    page,
+    reloadedPane,
+    `printf '%s%s\\n' '__TMUX_' 'DETACHED_AGAIN__'`,
+  )
+  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
+    '__TMUX_DETACHED_AGAIN__',
+  )
   await runInPane(
     page,
     reloadedPane,
