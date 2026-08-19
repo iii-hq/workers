@@ -60,15 +60,47 @@ describe('discoverQuery', () => {
 
 describe('parseDiscoverResponse', () => {
   it('parses a flat response and an enveloped one identically', () => {
-    expect(parseDiscoverResponse(response)).toEqual(response)
+    const parsed = { ...response, installable: [] }
+    expect(parseDiscoverResponse(response)).toEqual(parsed)
     expect(
       parseDiscoverResponse({ content: [{ type: 'text', text: 'x' }], details: response }),
-    ).toEqual(response)
+    ).toEqual(parsed)
   })
 
   it('keeps empty worker lists (the refine-guidance card)', () => {
     const empty = { guidance: 'No functions matched…', workers: [], latency_ms: 3 }
-    expect(parseDiscoverResponse(empty)).toEqual(empty)
+    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [] })
+  })
+
+  it('parses the installable registry section when present', () => {
+    const installable = [
+      {
+        name: 'image-resize',
+        version: '0.1.13',
+        description: 'III engine image resize worker.',
+        functions: [contract],
+      },
+    ]
+    const parsed = parseDiscoverResponse({
+      guidance: 'No INSTALLED function matched…',
+      workers: [],
+      installable,
+      latency_ms: 5,
+    })
+    expect(parsed?.installable).toEqual(installable)
+    expect(parsed?.workers).toEqual([])
+  })
+
+  it('rejects a malformed installable section', () => {
+    for (const installable of [
+      {},
+      [{ version: '1', description: '', functions: [] }], // no name
+      [{ name: 'x', version: '1', description: '', functions: [{}] }], // bad contract
+    ]) {
+      expect(
+        parseDiscoverResponse({ guidance: 'g', workers: [], installable, latency_ms: 1 }),
+      ).toBeNull()
+    }
   })
 
   it.each([
@@ -121,6 +153,7 @@ describe('functionCount', () => {
       functionCount({
         guidance: 'g',
         latency_ms: 1,
+        installable: [],
         workers: [
           { namespace: 'a', functions: [contract, contract] },
           { namespace: 'b', functions: [contract] },

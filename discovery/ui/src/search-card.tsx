@@ -16,6 +16,7 @@ import {
 import { type ReactNode, useState } from 'react'
 import {
   type DiscoverContractView,
+  type DiscoverInstallableView,
   type DiscoverView,
   discoverQuery,
   functionCount,
@@ -108,6 +109,49 @@ function ContractBlock({ contract }: { contract: DiscoverContractView }) {
   )
 }
 
+/** One installable registry worker: header names it as NOT installed, a
+ * description line, its matched contracts, and the exact install call. */
+function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
+  return (
+    <section>
+      <div className="discovery-search-section-head">
+        <span>
+          registry · {worker.name}
+          {worker.version ? ` @ ${worker.version}` : ''}
+          <span className="discovery-search-install-tag">not installed</span>
+        </span>
+        <span className="count">{worker.functions.length}</span>
+      </div>
+      {worker.description.length > 0 ? (
+        <div className="discovery-search-install-desc">{worker.description}</div>
+      ) : null}
+      {worker.functions.map((contract) => (
+        <ContractBlock contract={contract} key={contract.function_id} />
+      ))}
+      <div className="discovery-search-install-cmd">
+        <span aria-hidden="true" className="sym">
+          $
+        </span>
+        <code>{`worker::add { "source": { "kind": "registry", "name": "${worker.name}" }, "wait": false }`}</code>
+      </div>
+    </section>
+  )
+}
+
+function GuidanceDetails({ guidance }: { guidance: string }) {
+  return (
+    <details className="discovery-search-guidance">
+      <summary>
+        <span aria-hidden="true" className="caret">
+          ▸
+        </span>
+        guidance sent to the model
+      </summary>
+      <p>{guidance}</p>
+    </details>
+  )
+}
+
 export function DiscoverCard({
   query,
   view,
@@ -115,7 +159,7 @@ export function DiscoverCard({
   query: string | null
   view: DiscoverView
 }) {
-  const empty = view.workers.length === 0
+  const empty = view.workers.length === 0 && view.installable.length === 0
   return (
     <div className="discovery-search-card">
       <MetaRow>
@@ -124,6 +168,9 @@ export function DiscoverCard({
         </Badge>
         <KvChip label="workers">{view.workers.length}</KvChip>
         <KvChip label="functions">{functionCount(view)}</KvChip>
+        {view.installable.length > 0 ? (
+          <KvChip label="installable">{view.installable.length}</KvChip>
+        ) : null}
         <KvChip label="latency">{`${Math.round(view.latency_ms)}ms`}</KvChip>
       </MetaRow>
       {query ? (
@@ -149,15 +196,10 @@ export function DiscoverCard({
               ))}
             </section>
           ))}
-          <details className="discovery-search-guidance">
-            <summary>
-              <span aria-hidden="true" className="caret">
-                ▸
-              </span>
-              guidance sent to the model
-            </summary>
-            <p>{view.guidance}</p>
-          </details>
+          {view.installable.map((worker) => (
+            <InstallableSection key={worker.name} worker={worker} />
+          ))}
+          <GuidanceDetails guidance={view.guidance} />
         </>
       )}
     </div>

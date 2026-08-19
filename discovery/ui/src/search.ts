@@ -12,9 +12,20 @@ export interface DiscoverWorkerView {
   functions: DiscoverContractView[]
 }
 
+/** A registry worker the search offered as installable: not on the stack,
+ * but its functions matched the query. `name` is the registry slug
+ * `worker::add` installs. */
+export interface DiscoverInstallableView {
+  name: string
+  version: string
+  description: string
+  functions: DiscoverContractView[]
+}
+
 export interface DiscoverView {
   guidance: string
   workers: DiscoverWorkerView[]
+  installable: DiscoverInstallableView[]
   latency_ms: number
 }
 
@@ -59,8 +70,30 @@ export function discoverQuery(input: unknown): string | null {
   return query.length > 0 ? query : null
 }
 
+/** Strict parse of one contract list. Null on any shape drift. */
+function parseContracts(value: unknown): DiscoverContractView[] | null {
+  if (!Array.isArray(value)) return null
+  const functions: DiscoverContractView[] = []
+  for (const contract of value) {
+    if (!isRecord(contract)) return null
+    if (typeof contract.function_id !== 'string' || contract.function_id.length === 0) {
+      return null
+    }
+    if (typeof contract.description !== 'string') return null
+    if (!('request_schema' in contract)) return null
+    functions.push({
+      function_id: contract.function_id,
+      description: contract.description,
+      request_schema: contract.request_schema as JsonValue,
+    })
+  }
+  return functions
+}
+
 /** Strict parse of a settled discover output (envelope tolerated). Null on
- * any shape drift so the card falls back to the generic JSON panes. */
+ * any shape drift so the card falls back to the generic JSON panes. The
+ * `installable` section is optional — workers predating the registry
+ * fallback never send it. */
 export function parseDiscoverResponse(output: unknown): DiscoverView | null {
   const value = unwrapEnvelope(output)
   if (!isRecord(value)) return null
@@ -71,24 +104,29 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
   for (const worker of value.workers) {
     if (!isRecord(worker)) return null
     if (typeof worker.namespace !== 'string' || worker.namespace.length === 0) return null
-    if (!Array.isArray(worker.functions)) return null
-    const functions: DiscoverContractView[] = []
-    for (const contract of worker.functions) {
-      if (!isRecord(contract)) return null
-      if (typeof contract.function_id !== 'string' || contract.function_id.length === 0) {
-        return null
-      }
-      if (typeof contract.description !== 'string') return null
-      if (!('request_schema' in contract)) return null
-      functions.push({
-        function_id: contract.function_id,
-        description: contract.description,
-        request_schema: contract.request_schema as JsonValue,
-      })
-    }
+    const functions = parseContracts(worker.functions)
+    if (!functions) return null
     workers.push({ namespace: worker.namespace, functions })
   }
-  return { guidance: value.guidance, workers, latency_ms: value.latency_ms }
+  const installable: DiscoverInstallableView[] = []
+  if ('installable' in value && value.installable !== undefined) {
+    if (!Array.isArray(value.installable)) return null
+    for (const candidate of value.installable) {
+      if (!isRecord(candidate)) return null
+      if (typeof candidate.name !== 'string' || candidate.name.length === 0) return null
+      if (typeof candidate.version !== 'string') return null
+      if (typeof candidate.description !== 'string') return null
+      const functions = parseContracts(candidate.functions)
+      if (!functions) return null
+      installable.push({
+        name: candidate.name,
+        version: candidate.version,
+        description: candidate.description,
+        functions,
+      })
+    }
+  }
+  return { guidance: value.guidance, workers, installable, latency_ms: value.latency_ms }
 }
 
 /** Schemas that constrain nothing (missing/empty/bare `type: object`) —
