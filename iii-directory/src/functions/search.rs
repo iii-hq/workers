@@ -27,6 +27,8 @@ use crate::surface::search_catalog as catalog;
 
 /// Timeout for one engine catalog call during a refresh.
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
+/// Function ids per `functions::info` batch — the engine's documented max.
+const CATALOG_INFO_BATCH: usize = 32;
 /// Workers returned by one `directory::search_functions` call.
 const MAX_SEARCH_WORKERS: usize = 3;
 /// Contracts returned by one call — the ranked guards usually select a
@@ -913,38 +915,45 @@ fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-fn catalog_from_responses(
-    list: &Value,
-    responses: Vec<Result<Value, String>>,
-) -> Result<Vec<ToolSchema>, String> {
-    let ids = listed_ids(list)?;
-    if ids.len() != responses.len() {
-        return Err("catalog info response count was incomplete".into());
+/// Pool one `functions::info` batch response's entries by function id.
+/// Each entry is either a FunctionDetail or `{ function_id, error }` for an
+/// id this caller cannot see; both carry the id, so association survives
+/// any ordering.
+fn pool_info_entries(response: &Value, pool: &mut HashMap<String, Value>) {
+    let Some(functions) = response.get("functions").and_then(Value::as_array) else {
+        tracing::warn!("catalog info batch response was malformed; skipping batch");
+        return;
+    };
+    for entry in functions {
+        let Some(id) = entry
+            .get("function_id")
+            .or_else(|| entry.get("id"))
+            .or_else(|| entry.get("name"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        pool.insert(id.to_string(), entry.clone());
     }
-    ids.into_iter()
-        .zip(responses)
-        .filter_map(|(expected_id, response)| {
-            let response = match response {
-                Ok(response) => response,
-                Err(_) => return Some(Err("catalog info response failed".to_string())),
-            };
-            let id = match response
-                .get("function_id")
-                .or_else(|| response.get("id"))
-                .or_else(|| response.get("name"))
-                .and_then(Value::as_str)
-            {
-                Some(id) => id,
-                None => return Some(Err("catalog info response was malformed".to_string())),
-            };
-            if id != expected_id {
-                return Some(Err("catalog info response did not match its request".into()));
+}
+
+/// Build the catalog from pooled per-function entries, in listed-id order.
+/// Resilient by design: an errored, missing, or malformed entry only drops
+/// THAT function — the surviving contracts still make a working catalog.
+fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec<ToolSchema> {
+    ids.iter()
+        .filter_map(|id| {
+            let entry = entries.get(id)?;
+            // Per-entry batch errors ({ function_id, error: "forbidden" |
+            // "not_found" }) mean this caller cannot see the function.
+            if entry.get("error").is_some() {
+                return None;
             }
             // Internal plumbing (hooks, config handlers, on-change
             // listeners) is not a capability an agent should discover —
             // exclusion is by metadata, not by namespace, so the worker's
             // own public directory::* functions stay searchable.
-            if response
+            if entry
                 .get("metadata")
                 .and_then(|metadata| metadata.get("internal"))
                 .and_then(Value::as_bool)
@@ -952,20 +961,20 @@ fn catalog_from_responses(
             {
                 return None;
             }
-            Some(Ok(ToolSchema {
-                name: expected_id,
-                description: response
+            Some(ToolSchema {
+                name: id.clone(),
+                description: entry
                     .get("description")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                parameters: response
+                parameters: entry
                     .get("parameters")
-                    .or_else(|| response.get("request_format"))
-                    .or_else(|| response.get("request_schema"))
+                    .or_else(|| entry.get("request_format"))
+                    .or_else(|| entry.get("request_schema"))
                     .cloned()
                     .unwrap_or_else(|| json!({ "type": "object" })),
-            }))
+            })
         })
         .collect()
 }
@@ -981,20 +990,42 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
         .await
         .map_err(|_| "catalog list failed".to_string())?;
     let ids = listed_ids(&list)?;
-    let mut responses = Vec::with_capacity(ids.len());
-    for id in ids {
-        responses.push(
+    // Contracts arrive in `functions::info` batches (`function_ids`, engine
+    // max 32 per call) fired concurrently — fan-out is bounded to
+    // ceil(ids/32) in-flight calls, each under the same per-call timeout.
+    let mut batches = tokio::task::JoinSet::new();
+    for chunk in ids.chunks(CATALOG_INFO_BATCH) {
+        let iii = iii.clone();
+        let chunk: Vec<String> = chunk.to_vec();
+        batches.spawn(async move {
             iii.trigger(TriggerRequest {
                 function_id: "engine::functions::info".into(),
-                payload: json!({ "function_id": id }),
+                payload: json!({ "function_ids": chunk }),
                 action: None,
                 timeout_ms: Some(CATALOG_TIMEOUT_MS),
             })
             .await
-            .map_err(|_| "catalog info failed".to_string()),
-        );
+        });
     }
-    catalog_from_responses(&list, responses)
+    let mut entries: HashMap<String, Value> = HashMap::with_capacity(ids.len());
+    while let Some(joined) = batches.join_next().await {
+        match joined {
+            Ok(Ok(response)) => pool_info_entries(&response, &mut entries),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "catalog info batch failed; skipping its functions")
+            }
+            Err(error) => {
+                tracing::warn!(%error, "catalog info batch task failed; skipping its functions")
+            }
+        }
+    }
+    let catalog = catalog_from_entries(&ids, &entries);
+    // A listed-but-empty catalog means every batch failed: erroring keeps
+    // the previous catalog live instead of activating an empty one.
+    if catalog.is_empty() && !ids.is_empty() {
+        return Err("catalog info failed for every function".into());
+    }
+    Ok(catalog)
 }
 
 /// Swap the catalog cell when the fingerprint changed; `true` = changed.
@@ -1200,6 +1231,44 @@ mod tests {
         assert_eq!(section[0].name, "email");
         assert_eq!(section[0].functions.len(), 2);
         assert_eq!(section[1].name, "telegram-bot");
+    }
+
+    #[test]
+    fn catalog_entries_skip_errors_internals_and_missing_but_keep_order() {
+        let ids: Vec<String> = ["state::set", "gone::fn", "email::send", "hooks::internal"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut entries = HashMap::new();
+        let mut batch_pool = HashMap::new();
+        pool_info_entries(
+            &json!({ "functions": [
+                { "function_id": "email::send", "description": "send",
+                  "request_schema": { "type": "object" } },
+                { "function_id": "state::set", "description": "set a value" },
+                { "function_id": "gone::fn", "error": "not_found" },
+                { "function_id": "hooks::internal", "description": "internal",
+                  "metadata": { "internal": true } },
+                { "description": "no id, skipped" },
+            ]}),
+            &mut batch_pool,
+        );
+        entries.extend(batch_pool);
+        let catalog = catalog_from_entries(&ids, &entries);
+        let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
+        // Listed order, minus the errored, internal, and id-less entries.
+        assert_eq!(names, ["state::set", "email::send"]);
+        assert_eq!(catalog[1].parameters, json!({ "type": "object" }));
+        // A schema-less entry falls back to the open object schema.
+        assert_eq!(catalog[0].parameters, json!({ "type": "object" }));
+    }
+
+    #[test]
+    fn malformed_batch_responses_pool_nothing() {
+        let mut pool = HashMap::new();
+        pool_info_entries(&json!({ "nope": true }), &mut pool);
+        pool_info_entries(&json!("not an object"), &mut pool);
+        assert!(pool.is_empty());
     }
 
     #[test]
