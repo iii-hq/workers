@@ -55,16 +55,11 @@ tags:
 
 Example: [`harness/iii.worker.yaml`](../../harness/iii.worker.yaml).
 
-Shared dependencies that are still on a `0.x` release line use a bounded range
-such as `>=0.22.0 <1.0.0`. Unlike a fully specified caret range such as
-`^0.22.0`, this preserves the minimum compatible version, accepts later minor
-releases, and still excludes `1.0.0` and above. This is the common form for
-`state` and `configuration`, whose compatible `0.x` releases are consumed by
-many workers.
-
-Stable shared dependencies use the same explicit form. For example, consumers
-of `llm-router` declare `>=1.0.0 <2.0.0`, making the supported major boundary
-clear without relying on caret syntax.
+Shared dependencies use npm-style major wildcards. Workers declare `0.x` for
+`state` and `configuration`, accepting every stable `0.x` release while still
+excluding `1.0.0` and above. Consumers of `llm-router` use `1.x`, which accepts
+stable `1.x` releases and excludes `2.0.0` and above. These wildcard ranges are
+understood directly by both iii and the Registry.
 
 ## Example (minimal Rust binary)
 

@@ -8,7 +8,7 @@ tags: [nodejs, python, run, sandbox, microvm]
 description: Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. Guest code gets the real iii-sdk client as a global `iii`, lazily connected to the engine.
 
 dependencies:
-  configuration: ">=0.21.6 <1.0.0"
+  configuration: "0.x"
 
 # sandbox-code-runner has no V8 (or any other platform-restricted)
 # dependency — everything it links (iii-sdk, tokio, serde, schemars, clap,

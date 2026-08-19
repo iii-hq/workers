@@ -1,7 +1,6 @@
 """Regression tests for shared worker dependency ranges."""
 from __future__ import annotations
 
-import re
 import tomllib
 from pathlib import Path
 
@@ -9,10 +8,10 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BOUNDED_SHARED_DEPENDENCIES = {
-    "configuration": 0,
-    "llm-router": 1,
-    "state": 0,
+SHARED_DEPENDENCY_RANGES = {
+    "configuration": "0.x",
+    "llm-router": "1.x",
+    "state": "0.x",
 }
 
 
@@ -22,26 +21,21 @@ def dependencies(worker: str) -> dict[str, str]:
     return data.get("dependencies", {})
 
 
-def test_shared_dependencies_use_explicit_bounded_ranges() -> None:
+def test_shared_dependencies_use_major_wildcard_ranges() -> None:
     consumers: dict[str, list[str]] = {
-        dependency: [] for dependency in BOUNDED_SHARED_DEPENDENCIES
+        dependency: [] for dependency in SHARED_DEPENDENCY_RANGES
     }
 
     for manifest in sorted(REPO_ROOT.glob("*/iii.worker.yaml")):
         worker_dependencies = dependencies(manifest.parent.name)
-        for dependency, major in BOUNDED_SHARED_DEPENDENCIES.items():
+        for dependency, expected_range in SHARED_DEPENDENCY_RANGES.items():
             if dependency in worker_dependencies:
                 consumers[dependency].append(manifest.parent.name)
                 dependency_range = worker_dependencies[dependency]
-                next_major = major + 1
-                assert re.fullmatch(
-                    rf">={major}\.\d+\.\d+ <{next_major}\.0\.0",
-                    dependency_range,
-                ), (
+                assert dependency_range == expected_range, (
                     f"{manifest.relative_to(REPO_ROOT)} pins shared dependency "
-                    f"{dependency} to {dependency_range!r}; use a bounded range such as "
-                    f">={major}.0.0 <{next_major}.0.0 so compatible minor releases "
-                    f"remain allowed without crossing into {next_major}.x"
+                    f"{dependency} to {dependency_range!r}; use {expected_range!r} so "
+                    "compatible releases remain allowed without crossing majors"
                 )
 
     for dependency, workers in consumers.items():

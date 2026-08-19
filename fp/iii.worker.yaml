@@ -9,4 +9,4 @@ tags: [fp, functional, pipeline, transform, lodash]
 description: Lodash-style value transforms (fp::get/pick/take/…) and fp::pipe — worker-side pipelines that move big values function→function without routing them through the model.
 
 dependencies:
-  configuration: ">=0.21.6 <1.0.0"
+  configuration: "0.x"

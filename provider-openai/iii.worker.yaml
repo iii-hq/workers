@@ -9,5 +9,5 @@ tags: [llm, openai, responses, chat-completions, provider]
 description: OpenAI Responses provider worker with Chat Completions compatibility; implements provider::openai::stream and provider::openai::refresh_models behind llm-router.
 
 dependencies:
-  state: ">=0.22.0 <1.0.0"
-  llm-router: ">=1.0.0 <2.0.0"
+  state: "0.x"
+  llm-router: "1.x"
