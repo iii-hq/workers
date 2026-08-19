@@ -4,6 +4,9 @@ import { resolve } from 'node:path'
 import { once } from 'node:events'
 import type { ISdk } from 'iii-sdk'
 import { CASES, ORIGIN_PAGE_HTML, type CaseContext, type TestCase } from './cases.ts'
+import { HARDENING_CASES } from './cases-hardening.ts'
+
+const ALL_CASES: TestCase[] = [...CASES, ...HARDENING_CASES]
 
 interface CaseResult {
   case: string
@@ -58,8 +61,19 @@ export class Runner {
     // harness at all, but the harness is also runnable standalone).
     await this.callWithRetry('browser::css', { html: '<p>x</p>', query: 'p' })
 
+    // Claim the pre-generate hook trigger type, as a real agent-harness stack
+    // would. Without an owner the browser worker's guidance binding stays
+    // parked in the engine's pending map, which registered-triggers::list
+    // does not expose — with one, the binding goes live and the
+    // inject_guidance hot-apply case can observe it bind and unbind. The
+    // handler never fires: nothing in this suite emits pre-generate events.
+    this.opts.iii.registerTriggerType(
+      { id: 'harness::hook::pre-generate', description: 'E2E stand-in for the agent harness pre-generate hook.' },
+      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+    )
+
     const server = await this.startOrigin()
-    const cases = this.opts.filter ? CASES.filter((c) => c.name.includes(this.opts.filter!)) : CASES
+    const cases = this.opts.filter ? ALL_CASES.filter((c) => c.name.includes(this.opts.filter!)) : ALL_CASES
 
     // Stream each case result to stdout as it completes, colored green/red
     // only when stdout is a TTY — run-tests.sh redirects stdout to a log
@@ -93,6 +107,76 @@ export class Runner {
   private async startOrigin(): Promise<Server> {
     const server = createServer((req, res) => {
       const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+      const address = server.address()
+      const port = address && typeof address !== 'string' ? address.port : 0
+
+      // Hardening-case endpoints own their complete response (status, headers,
+      // body); everything below them keeps the legacy uniform header block so
+      // the frozen-envelope assertions of the original cases stay byte-stable.
+      const html = (content: string, headers: Record<string, string | string[]> = {}, contentType = 'text/html; charset=utf-8') => {
+        const buf = Buffer.from(content)
+        res.statusCode = 200
+        res.setHeader('Content-Type', contentType)
+        for (const [k, v] of Object.entries(headers)) res.setHeader(k, v)
+        res.setHeader('Content-Length', buf.length)
+        res.setHeader('Connection', 'close')
+        res.end(buf)
+      }
+      const redirect = (location: string, headers: Record<string, string | string[]> = {}) => {
+        res.statusCode = 302
+        res.setHeader('Location', location)
+        for (const [k, v] of Object.entries(headers)) res.setHeader(k, v)
+        res.setHeader('Content-Length', 0)
+        res.setHeader('Connection', 'close')
+        res.end()
+      }
+      res.sendDate = false
+      switch (path) {
+        case '/loop':
+          return redirect(`http://127.0.0.1:${port}/loop`)
+        case '/hop-a':
+          return redirect(`http://127.0.0.1:${port}/hop-b`, { 'Set-Cookie': 'hop=1; Path=/' })
+        case '/hop-x':
+          // Same server, different hostname: exercises the hostname-only
+          // scoping of redirect cookie replay (127.0.0.1 vs localhost).
+          return redirect(`http://localhost:${port}/hop-b`, { 'Set-Cookie': 'hopx=1; Path=/' })
+        case '/hop-b':
+          return html(`<html><body><p>${req.headers.cookie ?? 'none'}</p></body></html>`)
+        case '/multi-cookie':
+          return html('<html><body><p>mc</p></body></html>', {
+            'Set-Cookie': ['a=1; Path=/', 'b=2; Path=/'],
+            'X-Test': ['one', 'two'],
+          })
+        case '/echo-headers':
+          // rawHeaders preserves duplicates and original casing — the egress
+          // gate case counts Connection headers, which req.headers would fold.
+          return html(
+            `<html><body><pre>${JSON.stringify({ url: req.url, rawHeaders: req.rawHeaders })}</pre></body></html>`,
+          )
+        case '/cf-managed':
+          // Fake Cloudflare managed challenge: the cType marker routes
+          // solve_cloudflare into its managed branch, and the "Verifying"
+          // text keeps it spinning until the solve deadline expires.
+          return html(
+            "<html><head><title>E2E CF</title></head><body><script>/* cType: 'managed' */</script><p>Verifying you are human.</p></body></html>",
+          )
+        case '/cf-clean':
+          // Same marker but no spin text and no challenge iframe: the solve
+          // loop must fall through and return the page normally.
+          return html(
+            "<html><head><title>fine</title></head><body><script>/* cType: 'managed' */</script><p>done</p></body></html>",
+          )
+        case '/worker-page':
+          return html(
+            '<html><body><div id="out">pending</div><script>const w=new Worker("/w.js");w.onmessage=(e)=>{document.getElementById("out").textContent=e.data}</script></body></html>',
+          )
+        case '/w.js':
+          return html("postMessage('worker-ran')", {}, 'application/javascript')
+        case '/idn':
+          return html('<html><body><a href="http://xn--mnchen-3ya.example/">m</a></body></html>')
+        default:
+          break
+      }
       const body =
         path === '/plain'
           ? Buffer.from([0x63, 0x61, 0x66, 0xe9])

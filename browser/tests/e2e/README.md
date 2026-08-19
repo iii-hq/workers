@@ -111,18 +111,23 @@ overridden:
 | `run-tests.sh` | Orchestrator |
 | `config.yaml` | Engine infra only (worker-manager port override + observability) |
 | `workers/harness/` | TypeScript smoke-test worker (runs as a host process) |
-| `workers/harness/src/cases.ts` | All 27 cases; parse expectations come from `../../../../tests/golden/behavior/**`, while outbound cases exercise hermetic validation/state paths |
+| `workers/harness/src/cases.ts` | The 27 base cases; parse expectations come from `../../../../tests/golden/behavior/**`, while outbound cases exercise hermetic validation/state paths |
+| `workers/harness/src/cases-hardening.ts` | 18 hardening-feature cases (SSRF v6 embeds, egress gate, redirects/cookies, safe-mode policy, CDP child targets, parse parity fixes, session capacity, config hot-apply, crawl IDN); its header documents the internals that are unit-test-only by necessity |
 | `workers/harness/src/runner.ts` | Runs the cases, records pass/fail, writes `reports/report.json` |
 | `workers/harness/src/worker.ts` | Entry point; registers with the bus, emits the `HARNESS_DONE` sentinel |
 | `reports/report.json` | Per-case results (latest run) |
 
 ## Cases
 
-The suite currently contains 27 cases: ten parse-function examples, adaptive
-and XPath compatibility, limit/error cases, outbound security policy, crawl
-validation, and a private HTTP-session lifecycle. The authoritative names and
-assertions live in `workers/harness/src/cases.ts`; keep this summary grouped so
-it does not become a second manually numbered source of truth.
+The suite currently contains 45 cases: 27 base cases (ten parse-function
+examples, adaptive and XPath compatibility, limit/error cases, outbound
+security policy, crawl validation, and a private HTTP-session lifecycle) plus
+18 hardening-feature cases in `cases-hardening.ts` (one per wire-observable
+fix from the hardening pass, including three configuration-mutating cases that
+restore the `browser` configuration entry in `finally`). The authoritative
+names and assertions live in `workers/harness/src/cases.ts` and
+`cases-hardening.ts`; keep this summary grouped so it does not become a second
+manually numbered source of truth.
 
 | # | Case | Asserts |
 |---|---|---|
@@ -141,6 +146,7 @@ it does not become a second manually numbered source of truth.
 | 13 | `xpath` ancestor axis | reverse-axis positional semantics |
 | 14 | `find` limit 0 | items clamp to `[]`; `count` stays the true (pre-cap) total |
 | 15–27 | outbound/browser/session | SSRF and safe-policy errors, dynamic/stealthy rendering, screenshot wire shape, crawl delivery, HTTP cookie state, UUID session metadata, persistent browser sessions, foreign-id rejection |
+| 28–45 | hardening features | v6-embedded-v4 SSRF forms, egress-gate header forcing + 403 page, redirect clamp/refusal, hop cookie replay + hostname scoping, header flattening, duration clamps, compat-only/`real_chrome` refusals, Cloudflare solve deadline, dedicated-worker resume, `limit` coercion, `describe kind:null`, PI stripping, markdownify parity, session pending-slot rollback, `inject_guidance` hot-apply, safe-mode config-proxy omission, crawl IDN normalization |
 
 ## CI
 

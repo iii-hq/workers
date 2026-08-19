@@ -33,7 +33,7 @@ TS=$(date +%Y%m%d-%H%M%S)
 ENGINE_LOG="$ROOT_DIR/reports/engine-$TS.log"
 WORKER_LOG="$ROOT_DIR/reports/browser-$TS.log"
 HARNESS_LOG="$ROOT_DIR/reports/harness-$TS.log"
-SENTINEL_TIMEOUT="${HARNESS_TIMEOUT:-120}"
+SENTINEL_TIMEOUT="${HARNESS_TIMEOUT:-240}"
 
 KEEP=0
 NO_BUILD=0
@@ -62,7 +62,7 @@ Env overrides:
   WORKER_SRC          Path to the browser crate (default: ../..).
   III_BIN             Path to the iii engine binary (default: \$(command -v iii) or \$HOME/.local/bin/iii).
   WORKER_BIN_TARGET   Path to the built worker binary (default: \$WORKER_SRC/target/release/browser).
-  HARNESS_TIMEOUT     Seconds to wait for the harness sentinel (default: 120).
+  HARNESS_TIMEOUT     Seconds to wait for the harness sentinel (default: 240).
 EOF
       exit 0
       ;;
