@@ -74,8 +74,8 @@ pub fn make_complete(
                 Some(AssistantMessageEvent::Error { error }) => error,
                 _ => {
                     return Err(RouterError::new(
-                        RouterCode::InvalidRequest,
-                        "stream produced no terminal frame",
+                        RouterCode::StreamIncomplete,
+                        "The provider ended the response before completion. Try again; if it continues, check the provider worker.",
                     )
                     .into())
                 }

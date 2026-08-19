@@ -1,6 +1,7 @@
 //! llm-router entry schema composition (spec § router::provider::register).
 use std::collections::BTreeMap;
 
+use crate::settings::MAX_RETRY_MAX;
 use crate::types::errors::{RouterCode, RouterError};
 use serde_json::{json, Value};
 
@@ -120,7 +121,12 @@ pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value
                 "properties": {
                     "stream_timeout_ms": { "type": "number", "default": 300000 },
                     "idle_timeout_ms": { "type": "number", "default": 120000 },
-                    "retry_max": { "type": "number", "default": 2 },
+                    "retry_max": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MAX_RETRY_MAX,
+                        "default": 2
+                    },
                     "output_token_max": { "type": "number", "default": 32000 }
                 }
             },
@@ -210,5 +216,14 @@ mod tests {
         let good = json!({ "type": "object", "properties": { "api_key": { "type": "string", "writeOnly": true } } });
         assert!(validate_custom_schema(&good).is_ok());
         assert!(validate_custom_schema(&json!({ "type": "object" })).is_ok());
+    }
+
+    #[test]
+    fn retry_setting_is_an_operationally_bounded_integer() {
+        let schema = compose_entry_schema(&BTreeMap::new());
+        let retry = &schema["properties"]["settings"]["properties"]["retry_max"];
+        assert_eq!(retry["type"], "integer");
+        assert_eq!(retry["minimum"], 0);
+        assert_eq!(retry["maximum"], MAX_RETRY_MAX);
     }
 }

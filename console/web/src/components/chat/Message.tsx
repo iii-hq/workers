@@ -133,6 +133,12 @@ export function Message({
 
 function SystemNotice({ message }: { message: SystemMessageType }) {
   const tone = message.tone ?? 'info'
+  const detailRows: Array<[string, string]> = message.technicalDetails
+    ? Object.entries(message.technicalDetails).flatMap(([key, value]) =>
+        typeof value === 'string' && value.length > 0 ? [[key, value]] : [],
+      )
+    : []
+  const structured = Boolean(message.nextActions?.length || detailRows.length)
   const toneCls =
     tone === 'error'
       ? 'border-l-danger text-danger'
@@ -144,11 +150,50 @@ function SystemNotice({ message }: { message: SystemMessageType }) {
       data-message-role="system-notice"
       data-message-tone={tone}
       className={cn(
-        'border-l-2 pl-3 py-1 font-mono text-[12px] uppercase tracking-[0.04em]',
+        'border-l-2 pl-3 py-1 font-mono text-[12px]',
+        structured ? 'tracking-normal' : 'uppercase tracking-[0.04em]',
         toneCls,
       )}
     >
-      {message.content}
+      <div data-message-summary>{message.content}</div>
+      {message.nextActions?.length ? (
+        <div
+          data-message-next-actions
+          className="mt-2 text-ink-faint normal-case"
+        >
+          <div className="text-[10px] uppercase tracking-[0.08em]">
+            What you can do
+          </div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {message.nextActions.map((action) => (
+              <li key={action}>{action}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {detailRows.length > 0 ? (
+        <details
+          data-message-technical-details
+          className="mt-2 text-ink-faint normal-case"
+        >
+          <summary className="cursor-pointer select-none text-[10px] uppercase tracking-[0.08em] hover:text-ink">
+            Technical details
+          </summary>
+          <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-rule-2 pl-3 text-[11px]">
+            {detailRows.map(([key, value]) => (
+              <div key={key} className="contents">
+                <dt className="uppercase text-ink-ghost">{key}</dt>
+                <dd
+                  data-technical-detail={key}
+                  className="break-words text-ink-faint"
+                >
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
     </article>
   )
 }
