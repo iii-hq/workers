@@ -91,7 +91,7 @@ export function ActivityFeed({
       </div>
     )
   }
-  if (calls.data === null) return <Note>reading recent calls…</Note>
+  if (calls.data === null) return <Note>Reading recent calls…</Note>
   if (calls.data.length === 0) {
     return (
       <Note>
@@ -183,7 +183,7 @@ function CallRow({
             className="console-catalog-json"
             wrap
           />
-          <div className="console-catalog-field-label">output</div>
+          <div className="console-catalog-field-label">Output</div>
           <JsonHighlight
             code={
               call.output === undefined ? '(not recorded)' : pretty(call.output)

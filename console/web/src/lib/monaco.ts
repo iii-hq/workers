@@ -25,9 +25,9 @@ import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker'
 
 export const CONSOLE_THEME = 'iii-console'
 
-/** Mirrors `--font-mono` in index.css — used only if the token is unreadable. */
-const FALLBACK_MONO =
-  '"Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+/** Mirrors `--font-code` in index.css — used only if the token is unreadable. */
+const FALLBACK_CODE =
+  'Monaco, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace'
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
@@ -74,11 +74,11 @@ function toHex(css: string, fallback: string, base?: string): string {
   return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
 }
 
-export function monoFontFamily(): string {
+export function codeFontFamily(): string {
   const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue('--font-mono')
+    .getPropertyValue('--font-code')
     .trim()
-  return raw || FALLBACK_MONO
+  return raw || FALLBACK_CODE
 }
 
 /**
@@ -104,6 +104,14 @@ function syncTheme(): void {
   const inkGhost = token('--color-ink-ghost', dark ? '#6f6f6f' : '#a3a09c')
   const accent = token('--color-accent', dark ? '#28a8f7' : '#b8420f')
   const panel = token('--color-panel', dark ? '#111111' : '#fafafa')
+  const surface = token(
+    '--color-surface',
+    dark ? 'rgba(255,255,255,0.055)' : 'rgba(20,16,8,0.055)',
+  )
+  const surfaceSelected = token(
+    '--color-surface-selected',
+    dark ? 'rgba(255,255,255,0.12)' : 'rgba(20,16,8,0.12)',
+  )
   // rule is transparent in the no-lines system; composited over bg it
   // resolves to the background, so Monaco widget "borders" disappear too.
   const rule = token('--color-rule', dark ? '#0a0a0a' : '#f2f0ed')
@@ -137,8 +145,8 @@ function syncTheme(): void {
       'editor.background': bg,
       'editor.foreground': ink,
       'editorCursor.foreground': ink,
-      'editor.selectionBackground': `${accent}40`,
-      'editor.inactiveSelectionBackground': `${accent}26`,
+      'editor.selectionBackground': surfaceSelected,
+      'editor.inactiveSelectionBackground': surface,
       'editor.lineHighlightBackground': '#00000000',
       'editorLineNumber.foreground': inkGhost,
       'editorLineNumber.activeForeground': inkFaint,
@@ -152,7 +160,7 @@ function syncTheme(): void {
       'editorSuggestWidget.background': panel,
       'editorSuggestWidget.border': rule,
       'editorSuggestWidget.foreground': ink,
-      'editorSuggestWidget.selectedBackground': `${accent}26`,
+      'editorSuggestWidget.selectedBackground': surfaceSelected,
       'editorSuggestWidget.highlightForeground': accent,
       'input.background': bg,
       'input.foreground': ink,

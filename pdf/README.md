@@ -151,6 +151,11 @@ It does not rasterize pages, so it cannot OCR anything. Scanned and image-based
 documents get classified and routed, not read. Image content is reported as a
 placeholder with a real bounding box and no pixels.
 
+Routed where, in practice: [`document::ocr`](https://github.com/iii-hq/workers/tree/main/document) renders those pages
+through the `browser` worker and reads them with a vision model. It costs money
+per page, which is exactly why `pdf::classify` exists — pass it the
+`pages_needing_ocr` named here rather than the whole document.
+
 It is a parser, not a renderer: it walks the document's content streams and
 reconstructs the geometry, which is why it is fast and why it needs no service
 behind it.

@@ -22,7 +22,9 @@ use tokio::sync::mpsc;
 use tokio::sync::{watch, Notify};
 
 use crate::error::HarnessError;
-use crate::types::event::{AssistantMessageEvent, StopReason};
+use crate::types::event::{
+    AssistantMessageEvent, ErrorKind, FunctionCallArgumentsPreview, StopReason,
+};
 use crate::types::message::{empty_assistant, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
 
@@ -47,12 +49,95 @@ pub struct ChatParams {
     pub provider_options: Option<Value>,
 }
 
+/// Structured failure returned by `router::chat`.
+///
+/// `message` is safe public copy. `detail` retains provider/transport context
+/// for the durable operator record without making it the user-facing summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatError {
+    pub code: Option<String>,
+    pub message: String,
+    pub detail: Option<String>,
+    pub kind: Option<ErrorKind>,
+    pub retryable: Option<bool>,
+}
+
+impl ChatError {
+    fn with_terminal_fallback(
+        mut self,
+        terminal_detail: Option<&str>,
+        terminal_kind: Option<ErrorKind>,
+    ) -> Self {
+        if self.detail.is_none() {
+            self.detail = terminal_detail.map(str::to_string);
+        }
+        if self.kind.is_none() {
+            self.kind = terminal_kind;
+        }
+        if self.retryable.is_none() {
+            self.retryable = self.kind.map(ErrorKind::is_retryable);
+        }
+        self
+    }
+}
+
 /// The assembled result of one stream.
 pub struct ChatOutcome {
     pub message: AssistantMessage,
     pub ok: bool,
     pub stop_reason: Option<StopReason>,
-    pub error: Option<String>,
+    pub error: Option<ChatError>,
+}
+
+fn response_chat_error(response: &Value) -> Option<ChatError> {
+    let error = response.get("error")?.as_object()?;
+    Some(ChatError {
+        code: error
+            .get("code")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        message: error.get("message")?.as_str()?.to_string(),
+        detail: error
+            .get("detail")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        kind: error
+            .get("kind")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        retryable: error.get("retryable").and_then(Value::as_bool),
+    })
+}
+
+fn dispatch_chat_error(error: &iii_sdk::errors::Error) -> ChatError {
+    match error {
+        iii_sdk::errors::Error::Remote { code, message, .. } => ChatError {
+            code: Some(code.clone()),
+            message: message.clone(),
+            detail: Some(error.to_string()),
+            kind: None,
+            retryable: None,
+        },
+        _ => ChatError {
+            code: None,
+            message: "The model request could not be completed.".into(),
+            detail: Some(error.to_string()),
+            kind: None,
+            retryable: None,
+        },
+    }
+}
+
+fn fallback_chat_message(kind: Option<ErrorKind>) -> &'static str {
+    match kind {
+        Some(ErrorKind::AuthExpired) => "The provider needs to be configured again.",
+        Some(ErrorKind::RateLimited) => {
+            "The provider is rate-limiting requests. Try again shortly."
+        }
+        Some(ErrorKind::ContextOverflow) => "The conversation is too large for the selected model.",
+        Some(ErrorKind::Transient) => "The provider was temporarily interrupted. Try again.",
+        Some(ErrorKind::Permanent) | None => "The provider rejected this request.",
+    }
 }
 
 /// Ceiling for `count_tokens`, independent of the generation-sized router
@@ -188,12 +273,11 @@ impl RouterClient {
             .unwrap_or_else(Instant::now);
         let mut final_message: Option<AssistantMessage> = None;
         let mut terminal_error: Option<String> = None;
-        // Raw in-flight tool-call arguments per call id: providers degrade
-        // incomplete args to a placeholder object (replay safety), so the
-        // delta text accumulated here is the only live view of a long
-        // arguments stream — injected into coalesced partials as
-        // `_streaming` so UIs can show the command being formed.
-        let mut args_acc: std::collections::HashMap<String, String> =
+        // Incremental tool-call arguments per call id. Block snapshots keep a
+        // replay-safe placeholder until FunctioncallEnd; llm-router adds a
+        // bounded identity preview so even an open `function`/`description`
+        // string can be persisted into the coalesced assistant entry.
+        let mut args_acc: std::collections::HashMap<String, StreamingArguments> =
             std::collections::HashMap::new();
         // Cumulative message across slim delta frames (boundary snapshot +
         // open-block deltas); fat frames just refresh the snapshot.
@@ -317,7 +401,12 @@ impl RouterClient {
                     terminal_error.get_or_insert(msg);
                 }
                 other => {
-                    if let AssistantMessageEvent::FunctioncallDelta { partial, delta, id } = &other
+                    if let AssistantMessageEvent::FunctioncallDelta {
+                        partial,
+                        delta,
+                        id,
+                        arguments_preview,
+                    } = &other
                     {
                         // Pre-id producers: guess from the frame's own fat
                         // partial or, on slim frames, from the last boundary
@@ -332,7 +421,10 @@ impl RouterClient {
                             Some(id.clone())
                         };
                         if let Some(id) = id {
-                            args_acc.entry(id).or_default().push_str(delta);
+                            args_acc
+                                .entry(id)
+                                .or_default()
+                                .push(delta, arguments_preview.as_ref());
                         }
                     }
                     tracker.apply(&other);
@@ -360,55 +452,74 @@ impl RouterClient {
                 .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
         };
 
+        let terminal_kind = final_message
+            .as_ref()
+            .and_then(|message| message.error_kind);
         let (ok, response_error) = match &response {
             Ok(v) => {
                 let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
-                let err = v
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                (ok, err)
+                (ok, response_chat_error(v))
             }
-            Err(e) => (false, Some(e.to_string())),
+            Err(e) => (false, Some(dispatch_chat_error(e))),
         };
+        let response_error = response_error
+            .map(|error| error.with_terminal_fallback(terminal_error.as_deref(), terminal_kind));
 
-        let message = final_message.unwrap_or_else(|| {
+        let mut message = final_message.unwrap_or_else(|| {
             let mut m = empty_assistant(params.provider.as_deref().unwrap_or(""), &params.model);
             m.stop_reason = StopReason::Error;
             m.error_message = response_error
-                .clone()
+                .as_ref()
+                .map(|error| error.message.clone())
                 .or_else(|| terminal_error.clone())
-                .or_else(|| Some("router produced no terminal frame".to_string()));
+                .or_else(|| Some("The provider rejected this request.".to_string()));
             // A dispatch/ack rejection (e.g. provider unavailable) is
             // authoritative — retrying in-turn cannot help. Only a
             // frame-less-but-acked stream stays classified transient.
-            m.error_kind = Some(if response_error.is_some() {
-                crate::types::event::ErrorKind::Permanent
+            m.error_kind = Some(if let Some(error) = &response_error {
+                error.kind.unwrap_or_else(|| {
+                    if error.retryable == Some(true) {
+                        ErrorKind::Transient
+                    } else {
+                        ErrorKind::Permanent
+                    }
+                })
             } else {
-                crate::types::event::ErrorKind::Transient
+                ErrorKind::Transient
             });
             m
         });
+
+        // Error terminal frames can carry raw provider/transport text. Once the
+        // held-open chat response arrives, its ErrorShape message is the public
+        // copy; retain the terminal text only on ChatError.detail.
+        if let Some(error) = &response_error {
+            if message.stop_reason == StopReason::Error {
+                message.error_message = Some(error.message.clone());
+                message.error_kind = error.kind.or(message.error_kind);
+            }
+        }
 
         let stop_reason = Some(message.stop_reason);
         // A frame-less-but-acked stream synthesizes an Error message above
         // with no terminal_error/response_error set — derive the outcome
         // error from it so the turn fails instead of completing "ok" around
         // an empty error-stopped message.
-        let error = terminal_error
-            .or(response_error)
-            .or_else(|| {
-                (message.stop_reason == StopReason::Error).then(|| {
-                    message
-                        .error_message
-                        .clone()
-                        .unwrap_or_else(|| "router produced no terminal frame".to_string())
-                })
+        let failed = !ok || message.stop_reason == StopReason::Error;
+        let error = failed.then(|| {
+            response_error.unwrap_or_else(|| {
+                let kind = message.error_kind;
+                ChatError {
+                    code: None,
+                    message: fallback_chat_message(kind).to_string(),
+                    detail: terminal_error.or_else(|| message.error_message.clone()),
+                    kind,
+                    retryable: kind.map(ErrorKind::is_retryable),
+                }
             })
-            .filter(|_| !ok || message.stop_reason == StopReason::Error);
+        });
         Ok(ChatOutcome {
-            ok: ok && message.stop_reason != StopReason::Error && error.is_none(),
+            ok: !failed,
             message,
             stop_reason,
             error,
@@ -727,14 +838,28 @@ fn open_call_id(partial: &AssistantMessage) -> Option<&str> {
     })
 }
 
-/// Inject the in-flight raw-arguments tail into a coalesced partial as a
-/// `_streaming` field beside the provider's placeholder, so UIs can render
-/// the command being formed. Injected only while the accumulated text does
-/// not yet parse — once it parses, the provider partial already carries the
-/// real arguments. Returns None when nothing was injected.
+#[derive(Debug, Default)]
+struct StreamingArguments {
+    raw: String,
+    preview: Option<FunctionCallArgumentsPreview>,
+}
+
+impl StreamingArguments {
+    fn push(&mut self, delta: &str, preview: Option<&FunctionCallArgumentsPreview>) {
+        self.raw.push_str(delta);
+        if let Some(preview) = preview {
+            self.preview = Some(preview.clone());
+        }
+    }
+}
+
+/// Inject the router-produced in-flight identity into a coalesced partial.
+/// `_streaming` keeps a bounded raw tail for diagnostics and the request-pane
+/// live marker; `_partial` prevents a truncated snapshot from ever looking
+/// executable.
 fn enrich_streaming_args(
     partial: &AssistantMessage,
-    acc: &std::collections::HashMap<String, String>,
+    acc: &std::collections::HashMap<String, StreamingArguments>,
 ) -> Option<AssistantMessage> {
     use crate::types::content::ContentBlock;
     if acc.is_empty() {
@@ -745,19 +870,40 @@ fn enrich_streaming_args(
         let ContentBlock::FunctionCall { id, arguments, .. } = block else {
             continue;
         };
-        let Some(raw) = acc.get(id) else { continue };
-        if raw.is_empty() || serde_json::from_str::<Value>(raw).is_ok() {
+        let Some(args) = acc.get(id) else { continue };
+        if args.raw.is_empty() {
             continue;
         }
-        // Degraded placeholders are always objects; anything else is final.
-        let Value::Object(map) = arguments else {
-            continue;
-        };
-        let mut map = map.clone();
-        map.insert(
-            "_streaming".into(),
-            Value::String(utf8_tail(raw, 1500).to_string()),
-        );
+        // A closing root brace makes a strict parse worth attempting. During
+        // the normal incomplete case, use the router's bounded identity
+        // preview without reparsing the cumulative document in the harness.
+        let complete_map = args
+            .raw
+            .trim_end()
+            .ends_with('}')
+            .then(|| serde_json::from_str::<Value>(&args.raw).ok())
+            .flatten()
+            .and_then(|value| value.as_object().cloned());
+        let complete = complete_map.is_some();
+        let mut map = complete_map.unwrap_or_else(|| match arguments {
+            Value::Object(map) => map.clone(),
+            _ => serde_json::Map::new(),
+        });
+        if !complete {
+            if let Some(preview) = &args.preview {
+                if let Some(function) = &preview.function {
+                    map.insert("function".into(), Value::String(function.clone()));
+                }
+                if let Some(description) = &preview.description {
+                    map.insert("description".into(), Value::String(description.clone()));
+                }
+            }
+            map.insert("_partial".into(), Value::Bool(true));
+            map.insert(
+                "_streaming".into(),
+                Value::String(utf8_tail(&args.raw, 1500).to_string()),
+            );
+        }
         let msg = out.get_or_insert_with(|| partial.clone());
         if let ContentBlock::FunctionCall { arguments, .. } = &mut msg.content[i] {
             *arguments = Value::Object(map);
@@ -778,13 +924,96 @@ fn utf8_tail(s: &str, max: usize) -> &str {
 }
 
 #[cfg(test)]
+mod error_contract_tests {
+    use super::*;
+    use iii_sdk::errors::Error;
+    use serde_json::json;
+
+    #[test]
+    fn response_error_preserves_the_extended_router_contract() {
+        let parsed = response_chat_error(&json!({
+            "ok": false,
+            "error": {
+                "code": "router/provider_unavailable",
+                "message": "The selected provider is temporarily unavailable.",
+                "detail": "provider openai stream ended without a terminal frame",
+                "kind": "transient",
+                "retryable": true
+            }
+        }))
+        .expect("structured error");
+
+        assert_eq!(parsed.code.as_deref(), Some("router/provider_unavailable"));
+        assert_eq!(
+            parsed.message,
+            "The selected provider is temporarily unavailable."
+        );
+        assert_eq!(
+            parsed.detail.as_deref(),
+            Some("provider openai stream ended without a terminal frame")
+        );
+        assert_eq!(parsed.kind, Some(ErrorKind::Transient));
+        assert_eq!(parsed.retryable, Some(true));
+    }
+
+    #[test]
+    fn legacy_response_keeps_code_and_message_and_uses_terminal_fallbacks() {
+        let parsed = response_chat_error(&json!({
+            "ok": false,
+            "error": {
+                "code": "router/not_configured",
+                "message": "Provider setup is incomplete."
+            }
+        }))
+        .expect("legacy structured error")
+        .with_terminal_fallback(
+            Some("provider credentials are not configured"),
+            Some(ErrorKind::Permanent),
+        );
+
+        assert_eq!(parsed.code.as_deref(), Some("router/not_configured"));
+        assert_eq!(parsed.message, "Provider setup is incomplete.");
+        assert_eq!(
+            parsed.detail.as_deref(),
+            Some("provider credentials are not configured")
+        );
+        assert_eq!(parsed.kind, Some(ErrorKind::Permanent));
+        assert_eq!(parsed.retryable, Some(false));
+    }
+
+    #[test]
+    fn remote_dispatch_keeps_the_code_and_moves_the_raw_wrapper_to_detail() {
+        let parsed = dispatch_chat_error(&Error::Remote {
+            code: "router/ambiguous_model".into(),
+            message: "Choose a provider for this model.".into(),
+            stacktrace: None,
+        });
+
+        assert_eq!(parsed.code.as_deref(), Some("router/ambiguous_model"));
+        assert_eq!(parsed.message, "Choose a provider for this model.");
+        assert!(parsed
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("router/ambiguous_model")));
+    }
+
+    #[test]
+    fn permanent_fallback_copy_is_stable() {
+        assert_eq!(
+            fallback_chat_message(Some(ErrorKind::Permanent)),
+            "The provider rejected this request."
+        );
+    }
+}
+
+#[cfg(test)]
 mod streaming_args_tests {
     use super::*;
     use crate::types::content::ContentBlock;
     use std::collections::HashMap;
 
     #[test]
-    fn enrich_injects_tail_only_while_args_are_unparsed() {
+    fn enrich_replaces_the_placeholder_with_streamed_arguments() {
         let mut m = empty_assistant("p", "m");
         m.content = vec![ContentBlock::FunctionCall {
             id: "c1".into(),
@@ -798,23 +1027,73 @@ mod streaming_args_tests {
         // Incomplete raw args → the live tail rides beside the salvaged
         // fields so the UI can show the command being formed.
         let mut acc = HashMap::new();
-        acc.insert(
-            "c1".to_string(),
-            r#"{"function":"state::set","payload":{"value":"grow"#.to_string(),
+        let mut streamed = StreamingArguments::default();
+        streamed.push(
+            r#"{"function":"state::set","payload":{"value":"grow"#,
+            Some(&FunctionCallArgumentsPreview {
+                function: Some("state::set".into()),
+                description: None,
+            }),
+        );
+        acc.insert("c1".to_string(), streamed);
+        let enriched = enrich_streaming_args(&m, &acc).unwrap();
+        let ContentBlock::FunctionCall { arguments, .. } = &enriched.content[0] else {
+            panic!("want function_call");
+        };
+        assert_eq!(arguments["function"], "state::set");
+        assert_eq!(arguments["_partial"], true);
+        assert!(arguments["_streaming"].as_str().unwrap().ends_with("grow"));
+
+        // Complete raw args replace the provider's start-placeholder too.
+        let mut complete = StreamingArguments::default();
+        complete.push(r#"{"function":"state::set","payload":{}}"#, None);
+        acc.insert("c1".to_string(), complete);
+        let enriched = enrich_streaming_args(&m, &acc).unwrap();
+        let ContentBlock::FunctionCall { arguments, .. } = &enriched.content[0] else {
+            panic!("want function_call");
+        };
+        assert_eq!(arguments, &json!({"function": "state::set", "payload": {}}));
+    }
+
+    #[test]
+    fn enrich_exposes_open_agent_trigger_identity_across_deltas() {
+        let mut m = empty_assistant("p", "m");
+        m.content = vec![ContentBlock::FunctionCall {
+            id: "c1".into(),
+            function_id: "agent_trigger".into(),
+            arguments: json!({}),
+        }];
+        let mut acc = HashMap::new();
+        let mut streamed = StreamingArguments::default();
+        streamed.push(
+            r#"{"function":"state::se"#,
+            Some(&FunctionCallArgumentsPreview {
+                function: Some("state::se".into()),
+                description: None,
+            }),
+        );
+        acc.insert("c1".to_string(), streamed);
+
+        let enriched = enrich_streaming_args(&m, &acc).unwrap();
+        let ContentBlock::FunctionCall { arguments, .. } = &enriched.content[0] else {
+            panic!("want function_call");
+        };
+        assert_eq!(arguments["function"], "state::se");
+
+        acc.get_mut("c1").unwrap().push(
+            r#"t","description":"Updating arti"#,
+            Some(&FunctionCallArgumentsPreview {
+                function: Some("state::set".into()),
+                description: Some("Updating arti".into()),
+            }),
         );
         let enriched = enrich_streaming_args(&m, &acc).unwrap();
         let ContentBlock::FunctionCall { arguments, .. } = &enriched.content[0] else {
             panic!("want function_call");
         };
         assert_eq!(arguments["function"], "state::set");
-        assert!(arguments["_streaming"].as_str().unwrap().ends_with("grow"));
-
-        // Complete raw args → the provider partial already carries them.
-        acc.insert(
-            "c1".to_string(),
-            r#"{"function":"state::set","payload":{}}"#.to_string(),
-        );
-        assert!(enrich_streaming_args(&m, &acc).is_none());
+        assert_eq!(arguments["description"], "Updating arti");
+        assert_eq!(arguments["_partial"], true);
     }
 
     #[test]
@@ -968,6 +1247,7 @@ mod streaming_args_tests {
             partial: None,
             delta: r#"{"x":1"#.into(),
             id: "c1".into(),
+            arguments_preview: None,
         });
         let cum = tracker.current().unwrap();
         assert_eq!(cum.content, with_call.content);

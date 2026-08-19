@@ -306,6 +306,7 @@ pub fn handle_chunk(
                             partial: None,
                             delta: args.to_string(),
                             id: state.function_calls[index].id.clone(),
+                            arguments_preview: None,
                         });
                     }
                 }
@@ -467,6 +468,7 @@ fn handle_responses_event(
                 partial: None,
                 delta: delta.to_string(),
                 id,
+                arguments_preview: None,
             });
         }
         "response.output_item.done" => {

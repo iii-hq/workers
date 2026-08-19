@@ -12,6 +12,7 @@ type Closer = Arc<dyn Fn() + Send + Sync>;
 pub struct InflightEntry {
     pub aborted: Arc<AtomicBool>,
     closer: Arc<Mutex<Option<Closer>>>,
+    abort_notify: Arc<tokio::sync::Notify>,
 }
 
 impl InflightEntry {
@@ -29,10 +30,26 @@ impl InflightEntry {
         if self.aborted.swap(true, Ordering::SeqCst) {
             return false;
         }
+        // A stored permit wakes a retry backoff even when abort races the
+        // waiter being installed.
+        self.abort_notify.notify_one();
         if let Some(close) = self.closer.lock().unwrap().clone() {
             close();
         }
         true
+    }
+
+    /// Wait for the retry delay while remaining immediately abortable.
+    /// Returns true when cancellation won (including a cancellation that
+    /// landed before this method was called).
+    pub async fn wait_for_abort(&self, delay: std::time::Duration) -> bool {
+        if self.aborted.load(Ordering::SeqCst) {
+            return true;
+        }
+        tokio::select! {
+            _ = self.abort_notify.notified() => true,
+            _ = tokio::time::sleep(delay) => self.aborted.load(Ordering::SeqCst),
+        }
     }
 }
 
@@ -151,5 +168,27 @@ mod tests {
         }));
 
         assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn abort_wakes_a_retry_delay_immediately() {
+        let map = Arc::new(InflightMap::default());
+        let entry = map.reserve("r1").unwrap();
+        let waiter = {
+            let entry = entry.clone();
+            tokio::spawn(async move {
+                entry
+                    .wait_for_abort(std::time::Duration::from_secs(60))
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(map.abort("r1"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+                .await
+                .expect("abort must wake the retry waiter")
+                .expect("waiter task joins")
+        );
     }
 }

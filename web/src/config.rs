@@ -30,6 +30,12 @@ pub struct WebConfig {
     /// Allow requests to loopback (`127.0.0.0/8`, `::1`). Other private
     /// ranges stay blocked regardless.
     pub allow_loopback: bool,
+    /// Append the `web::fetch` usage guidance to every agent system prompt
+    /// via the harness `pre-generate` hook. On by default; turn it off to
+    /// shrink prompts (the harness's `# Granted functions` catalog still
+    /// advertises `web::fetch`). Hot-applies — the worker binds or unbinds
+    /// the hook on change.
+    pub inject_guidance: bool,
 }
 
 impl Default for WebConfig {
@@ -43,6 +49,7 @@ impl Default for WebConfig {
             max_redirects: 5,
             user_agent: "iii-harness/0.1 (+web::fetch)".to_string(),
             allow_loopback: true,
+            inject_guidance: true,
         }
     }
 }
@@ -52,12 +59,11 @@ impl WebConfig {
         serde_json::to_value(schemars::schema_for!(WebConfig)).expect("WebConfig schema serializes")
     }
 
-    /// Parse from a JSON object; missing keys fall back to defaults
-    /// (`#[serde(default)]`). The configuration worker may store the value
-    /// under a `web` wrapper or flat — accept both.
+    /// Parse from the flat JSON object the configuration worker stores (and
+    /// the `--config` seed file uses); missing keys fall back to defaults
+    /// (`#[serde(default)]`).
     pub fn from_json(v: &serde_json::Value) -> Result<WebConfig, String> {
-        let inner = v.get("web").unwrap_or(v);
-        serde_json::from_value(inner.clone()).map_err(|e| format!("invalid web config: {e}"))
+        serde_json::from_value(v.clone()).map_err(|e| format!("invalid web config: {e}"))
     }
 
     pub fn to_json(&self) -> serde_json::Value {
@@ -84,6 +90,7 @@ mod tests {
         assert_eq!(c.max_redirects, 5);
         assert_eq!(c.user_agent, "iii-harness/0.1 (+web::fetch)");
         assert!(c.allow_loopback);
+        assert!(c.inject_guidance, "guidance injection defaults on");
     }
 
     #[test]

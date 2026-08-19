@@ -326,6 +326,28 @@ fn default_variant_step_by_step() {
     assert!(out.contains("Step 1."));
 }
 
+#[test]
+fn progress_updates_are_phase_scoped_and_keep_descriptions_and_final_text() {
+    for out in [variants::DEFAULT, variants::SUBAGENT] {
+        let normalized = out.replace('\n', " ");
+        assert!(normalized.contains("# User-visible progress"));
+        assert!(normalized.contains("materially new investigative or action phase"));
+        assert!(normalized.contains("One update may cover any number of related function calls"));
+        assert!(normalized.contains("Do not emit a new update for every call"));
+        assert!(normalized.contains("lead with its concrete result"));
+        assert!(normalized.contains("do not merely list calls"));
+        assert!(normalized.contains("summary of that whole batch"));
+        assert!(
+            normalized.contains("separate the result and next action into two short paragraphs")
+        );
+        assert!(normalized.contains("still needs its concise `description`"));
+        assert!(normalized
+            .contains("return the final result through the turn's required output contract"));
+        assert!(normalized.contains("For the ordinary text contract, use normal assistant text"));
+        assert!(normalized.contains("a progress update never replaces the final answer"));
+    }
+}
+
 /// The reactive surface the prompt teaches must be the one the harness
 /// actually accepts: `harness::spawn` is the only subscription target, and
 /// Spawn targets, join barriers, and the fire-rate gate no longer exist, and
@@ -416,9 +438,10 @@ fn default_variant_invariants() {
 #[test]
 fn subagent_variant_invariants() {
     let out = variants::SUBAGENT;
+    let normalized = out.replace('\n', " ");
     assert!(out.starts_with("You are an iii sub-agent."));
     assert!(out.contains("agent_trigger"));
-    assert!(out.contains("JSON OBJECT, never a JSON-encoded string"));
+    assert!(normalized.contains("JSON OBJECT, never a JSON-encoded string"));
     assert!(out.contains("state::set"));
     assert!(out.contains("BEFORE your final reply"));
     assert!(out.contains("format the task specifies"));

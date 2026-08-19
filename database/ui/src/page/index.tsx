@@ -4,10 +4,10 @@
  * row inspector, an ad-hoc SQL panel, a schema diagram, connection health, and
  * the writes landing in the selected table as they commit.
  *
- * Chrome is the shared page shell (PageShell/PageHeader from
+ * Chrome is the shared page shell (PageShell/PageHeader/PageSidebar from
  * @iii-dev/console-ui): identity and database-level controls in the header, a
- * segmented panel switcher under it, then the schema tree as the fixed
- * navigation column beside the active panel. Layout adapts to the width the
+ * segmented panel switcher under it, then the schema tree as the navigation
+ * column beside the active panel. Layout adapts to the width the
  * page HAS (a ResizeObserver on its own root, not a viewport media query — the
  * console hosts pages in panes of any size): under NARROW_BELOW px it becomes
  * a drill-in flow — the tree fills the pane, opening a table (or picking a
@@ -31,24 +31,52 @@
 
 import {
   Badge,
-  Button,
   EmptyState,
   type Host,
+  IconButton,
   PageHeader,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
+  SegmentedControl,
   Select,
   Skeleton,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { type ComponentType, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ALL, type Capabilities, MIN_VERSION_HINT, probe } from '../lib/capabilities'
+import {
+  type ComponentType,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import {
+  ALL,
+  type Capabilities,
+  MIN_VERSION_HINT,
+  probe,
+} from '../lib/capabilities'
 import { DB } from '../lib/rpc'
 import { ChangesPanel } from './ChangesPanel'
-import { type DbInfo, listDbs, listTables, PAGE_SIZE, quoteTableRef } from './db-data'
+import {
+  type DbInfo,
+  listDbs,
+  listTables,
+  PAGE_SIZE,
+  quoteTableRef,
+} from './db-data'
 import { ErdPanel } from './ErdPanel'
 import { HealthPanel } from './HealthPanel'
-import { AlertCircle, ChevronLeft, ChevronRight, Database, type IconProps, RefreshCw, Settings, Table2 } from './icons'
+import {
+  AlertCircle,
+  ChevronLeft,
+  Database,
+  type IconProps,
+  RefreshCw,
+  Settings,
+  Table2,
+} from './icons'
 import { SchemaTree } from './SchemaTree'
 import { SqlPanel } from './SqlPanel'
 import { TableDataPanel } from './TableDataPanel'
@@ -67,6 +95,25 @@ const MODE_REQUIRES: Partial<Record<PanelMode, string>> = {
 }
 
 const ALWAYS: PanelMode[] = ['data', 'sql']
+
+const PANEL_LABELS: Record<PanelMode, string> = {
+  data: 'Data',
+  sql: 'SQL',
+  diagram: 'Diagram',
+  health: 'Health',
+  changes: 'Changes',
+}
+
+const DRIVER_LABELS: Readonly<Record<string, string>> = {
+  mysql: 'MySQL',
+  postgres: 'PostgreSQL',
+  postgresql: 'PostgreSQL',
+  sqlite: 'SQLite',
+}
+
+function driverLabel(driver: string) {
+  return DRIVER_LABELS[driver.toLowerCase()] ?? driver
+}
 
 /** Container width (px) below which the page collapses to the drill-in
  * tree ⇄ panel flow. */
@@ -95,7 +142,9 @@ const TableIcon = (p: IconProps) => <Table2 size={28} {...p} />
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none) are ignored so a hidden page keeps its last
  * real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -118,9 +167,21 @@ function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) =
 }
 
 /** ← back affordance for the drill-in flow. */
-function BackButton({ onClick, label }: { onClick: () => void; label: string }) {
+function BackButton({
+  onClick,
+  label,
+}: {
+  onClick: () => void
+  label: string
+}) {
   return (
-    <button type="button" className="db-ui-back" onClick={onClick} aria-label={label} title={label}>
+    <button
+      type="button"
+      className="db-ui-back"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+    >
       <ChevronLeft size={16} aria-hidden />
     </button>
   )
@@ -168,35 +229,14 @@ export function DatabasePage({
     sqlDirtyRef.current = dirty
   }, [])
 
-  // At dock widths the table rail costs every tab its first screenful, and
-  // two of the five modes barely use it — so it collapses, and stays where
-  // you left it (per workspace tab; narrow mode ignores it — the drill-in
-  // tree IS the pane there).
-  const asideKey = `database-ui:${tabId || 'page'}:aside`
-  const [asideOpen, setAsideOpen] = useState(() => {
-    try {
-      return window.localStorage.getItem(asideKey) !== 'closed'
-    } catch {
-      return true
-    }
-  })
-
-  const toggleAside = () => {
-    setAsideOpen((open) => {
-      try {
-        window.localStorage.setItem(asideKey, open ? 'closed' : 'open')
-      } catch {
-        // remembering the rail is a convenience, not state
-      }
-      return !open
-    })
-  }
-
-  const follow = useCallback((table: string, column: string, value: unknown) => {
-    setTrail((prev) => [...prev, { table, column, value }])
-    setSelectedTable(table)
-    setMode('data')
-  }, [])
+  const follow = useCallback(
+    (table: string, column: string, value: unknown) => {
+      setTrail((prev) => [...prev, { table, column, value }])
+      setSelectedTable(table)
+      setMode('data')
+    },
+    [],
+  )
 
   /** Truncate the trail at `depth`, the way a breadcrumb behaves. */
   const goBackTo = useCallback((depth: number) => {
@@ -249,7 +289,10 @@ export function DatabasePage({
   // Hidden-not-broken leaves a trace: an older worker's page looks smaller,
   // and this one line says why (MIN_VERSION_HINT exists for exactly this).
   const hiddenModes = useMemo(
-    () => (['diagram', 'health', 'changes'] as const).filter((m) => !modes.includes(m)),
+    () =>
+      (['diagram', 'health', 'changes'] as const).filter(
+        (m) => !modes.includes(m),
+      ),
     [modes],
   )
 
@@ -261,7 +304,8 @@ export function DatabasePage({
   const dbsFetcher = useCallback(() => listDbs(host), [host])
   const dbsRead = useDatabaseRead(true, dbsFetcher)
   const dbs = dbsRead.data ?? []
-  const activeDb: DbInfo | undefined = dbs.find((db) => db.name === selectedDb) ?? dbs[0]
+  const activeDb: DbInfo | undefined =
+    dbs.find((db) => db.name === selectedDb) ?? dbs[0]
 
   // The list travels with the name of the database it came from. The read
   // hook keeps its previous data while a switch's fetch is in flight or
@@ -274,7 +318,10 @@ export function DatabasePage({
     return listTables(host, db, activeDb.driver).then((list) => ({ db, list }))
   }, [host, activeDb])
   const tablesRead = useDatabaseRead(!!activeDb, tablesFetcher)
-  const tables = tablesRead.data && tablesRead.data.db === activeDb?.name ? tablesRead.data.list : []
+  const tables =
+    tablesRead.data && tablesRead.data.db === activeDb?.name
+      ? tablesRead.data.list
+      : []
   const tableCount = tables.filter((t) => t.kind === 'table').length
   const viewCount = tables.length - tableCount
 
@@ -299,8 +346,6 @@ export function DatabasePage({
     if (!activeDb) return undefined
     const target = tables.find((t) => t.name === selectedTable) ?? tables[0]
     if (!target) return undefined
-    // Lowercase like every other string on the page — the panel speaks one
-    // case.
     return `select * from ${quoteTableRef(activeDb.driver, target.name)} limit ${PAGE_SIZE}`
   }, [activeDb, tables, selectedTable])
 
@@ -323,23 +368,22 @@ export function DatabasePage({
   const subtitle = activeDb
     ? (activeDb.url ?? activeDb.name)
     : dbsRead.error
-      ? 'worker not connected'
-      : 'no database configured'
+      ? 'Worker not connected'
+      : 'No database configured'
 
   // Narrow: one pane at a time. Wide: both, with an optionally collapsed rail.
   const showSide = !narrow || !drilled
   const showMain = !narrow || drilled
-  const sideCollapsed = !narrow && !asideOpen
 
   return (
     <PageShell className="db-ui-shell">
       <PageHeader
         icon={<Database size={16} />}
-        title="database"
+        title="Database"
         description={subtitle}
         actions={
           <>
-            {activeDb ? <Badge variant="accent">{activeDb.driver}</Badge> : null}
+            {activeDb ? <Badge>{driverLabel(activeDb.driver)}</Badge> : null}
             {activeDb && dbs.length > 1 ? (
               <Select
                 value={activeDb.name}
@@ -352,21 +396,23 @@ export function DatabasePage({
                   if (next === activeDb.name) return
                   // The SQL panel is per-database (remounted on switch), so an
                   // unsaved statement would vanish — ask first.
-                  if (sqlDirtyRef.current && !window.confirm('Discard the unsaved SQL statement?')) return
+                  if (
+                    sqlDirtyRef.current &&
+                    !window.confirm('Discard the unsaved SQL statement?')
+                  )
+                    return
                   setSelectedDb(next)
                   setSelectedTable(null)
                 }}
                 aria-label="database"
               />
             ) : null}
-            <Button variant="ghost" size="sm" onClick={refresh}>
-              <RefreshCw size={14} aria-hidden />
-              refresh
-            </Button>
-            <Button variant="ghost" size="sm" onClick={openConfiguration}>
-              <Settings size={14} aria-hidden />
-              configure
-            </Button>
+            <IconButton label="Refresh database" onClick={refresh}>
+              <RefreshCw size={16} aria-hidden />
+            </IconButton>
+            <IconButton label="Configure database" onClick={openConfiguration}>
+              <Settings size={16} aria-hidden />
+            </IconButton>
           </>
         }
         onClose={onRequestClose}
@@ -389,47 +435,46 @@ export function DatabasePage({
           <StatusPanel
             variant="alert"
             icon={<AlertCircle size={18} />}
-            headline="database worker unavailable"
+            headline="Database worker unavailable"
             detail={dbsRead.error}
           />
         </div>
       ) : dbsRead.loading && dbs.length === 0 ? (
         <div className="db-ui-state">
-          <div className="db-msg db-pulse">· loading databases…</div>
+          <div className="db-msg db-pulse">Loading databases…</div>
         </div>
       ) : dbs.length === 0 ? (
         <div className="db-ui-state">
           <EmptyState
             icon={DatabaseIcon}
-            title="no databases configured"
-            description="databases are defined in the worker's configuration (databases: { name: { url } }) and appear here as soon as one connects."
+            title="No databases configured"
+            description="Databases are defined in the worker's configuration (databases: { name: { url } }) and appear here as soon as one connects."
             action={{
-              label: 'open configuration',
+              label: 'Open configuration',
               onClick: openConfiguration,
             }}
           />
         </div>
       ) : (
-        <div className={`db-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`} ref={rootRef}>
+        <div
+          className={`db-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
+          ref={rootRef}
+        >
           <div className="db-ui-modesbar">
-            {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the bar row */}
-            <div className="db-ui-seg" role="group" aria-label="panel">
-              {modes.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className={`db-ui-seg-btn${mode === m ? ' active' : ''}`}
-                  aria-pressed={mode === m}
-                  onClick={() => pickMode(m)}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-            <span className="db-ui-modesbar-spacer" />
+            <SegmentedControl<PanelMode>
+              value={mode}
+              onChange={pickMode}
+              options={modes.map((panelMode) => ({
+                value: panelMode,
+                label: PANEL_LABELS[panelMode],
+              }))}
+              className="db-ui-tabs"
+              aria-label="Database panel"
+            />
             {hiddenModes.length > 0 ? (
               <span className="db-ui-modes-hint">
-                {hiddenModes.join(' · ')} hidden: {MIN_VERSION_HINT}
+                {hiddenModes.map((item) => PANEL_LABELS[item]).join(' · ')}{' '}
+                hidden: {MIN_VERSION_HINT}
               </span>
             ) : null}
           </div>
@@ -438,92 +483,106 @@ export function DatabasePage({
             {/* Both panes stay in the tree and hide with [hidden] — narrow
                 drill-in must not unmount the workspace (sql drafts, filters,
                 the diagram's hand-arranged nodes all live there). */}
-            {sideCollapsed ? (
-              <aside className="db-ui-side collapsed">
-                <button
-                  type="button"
-                  className="db-ui-iconbtn"
-                  onClick={toggleAside}
-                  aria-label="show the table list"
-                  title="show the table list"
-                >
-                  <ChevronRight size={12} aria-hidden />
-                </button>
-              </aside>
-            ) : (
-              <aside className={`db-ui-side${passiveAside ? ' passive' : ''}`} hidden={!showSide} aria-label="table list">
-                <header className="db-ui-side-head">
-                  <span className="label">tables</span>
-                  {tableCount > 0 ? <span className="count">{tableCount}</span> : null}
+            <PageSidebar
+              label="table list"
+              side={panelSide}
+              collapsible
+              storageKey={`database:${tabId || 'page'}:schema`}
+              defaultWidth={240}
+              narrow={narrow}
+              className={`db-ui-side${passiveAside ? ' passive' : ''}`}
+              hidden={!showSide}
+              header={
+                <div className="db-ui-side-head">
+                  <span className="label">Tables</span>
+                  {tableCount > 0 ? (
+                    <span className="count">{tableCount}</span>
+                  ) : null}
                   <span className="spacer" />
-                  {!narrow ? (
-                    <button
-                      type="button"
-                      className="db-ui-iconbtn"
-                      onClick={toggleAside}
-                      aria-label="hide the table list"
-                      title="hide the table list"
-                    >
-                      <ChevronLeft size={12} aria-hidden />
-                    </button>
-                  ) : null}
-                </header>
-                {passiveAside ? (
-                  <p className="db-ui-side-note">
-                    {mode === 'health' ? 'selection is not used on health' : 'selection only seeds the sql starter'}
-                  </p>
-                ) : null}
-                <div className="db-ui-side-scroll">
-                  {tablesRead.error ? (
-                    <p className="db-tree-msg alert" style={{ padding: '8px 12px' }}>
-                      {tablesRead.error}
-                    </p>
-                  ) : tablesRead.loading && tables.length === 0 ? (
-                    <div className="db-skel">
-                      <Skeleton style={{ display: 'block', height: 20, width: '100%' }} />
-                      <Skeleton style={{ display: 'block', height: 20, width: '75%' }} />
-                      <Skeleton style={{ display: 'block', height: 20, width: '83%' }} />
-                    </div>
-                  ) : tables.length === 0 ? (
-                    <p className="db-msg">no tables</p>
-                  ) : activeDb ? (
-                    // Remount on db/refresh so lazily-cached columns re-read.
-                    <SchemaTree
-                      key={`${activeDb.name}:${bump}`}
-                      host={host}
-                      db={activeDb.name}
-                      driver={activeDb.driver}
-                      tables={tables}
-                      selectedTable={selectedTable}
-                      onSelectTable={(t) => {
-                        // Choosing from the tree is a fresh start, not another hop.
-                        setTrail([])
-                        setSelectedTable(t)
-                        if (narrow) {
-                          // Opening a table shows its rows; sql/health don't
-                          // render the selection, so drilling into them
-                          // would look like nothing happened.
-                          if (mode === 'sql' || mode === 'health') setMode('data')
-                          setDrilled(true)
-                        }
-                      }}
-                    />
-                  ) : null}
                 </div>
-              </aside>
-            )}
+              }
+            >
+              {passiveAside ? (
+                <p className="db-ui-side-note">
+                  {mode === 'health'
+                    ? 'Selection is not used on Health.'
+                    : 'Selection only seeds the SQL starter.'}
+                </p>
+              ) : null}
+              <div className="db-ui-side-scroll">
+                {tablesRead.error ? (
+                  <p
+                    className="db-tree-msg alert"
+                    style={{ padding: '8px 12px' }}
+                  >
+                    {tablesRead.error}
+                  </p>
+                ) : tablesRead.loading && tables.length === 0 ? (
+                  <div className="db-skel">
+                    <Skeleton
+                      style={{ display: 'block', height: 20, width: '100%' }}
+                    />
+                    <Skeleton
+                      style={{ display: 'block', height: 20, width: '75%' }}
+                    />
+                    <Skeleton
+                      style={{ display: 'block', height: 20, width: '83%' }}
+                    />
+                  </div>
+                ) : tables.length === 0 ? (
+                  <p className="db-msg">No tables</p>
+                ) : activeDb ? (
+                  // Remount on db/refresh so lazily-cached columns re-read.
+                  <SchemaTree
+                    key={`${activeDb.name}:${bump}`}
+                    host={host}
+                    db={activeDb.name}
+                    driver={activeDb.driver}
+                    tables={tables}
+                    selectedTable={selectedTable}
+                    onSelectTable={(t) => {
+                      // Choosing from the tree is a fresh start, not another hop.
+                      setTrail([])
+                      setSelectedTable(t)
+                      if (narrow) {
+                        // Opening a table shows its rows; sql/health don't
+                        // render the selection, so drilling into them
+                        // would look like nothing happened.
+                        if (mode === 'sql' || mode === 'health') setMode('data')
+                        setDrilled(true)
+                      }
+                    }}
+                  />
+                ) : null}
+              </div>
+            </PageSidebar>
 
-            <section className="db-ui-main" hidden={!showMain} aria-label="database workspace">
+            <section
+              className="db-ui-main"
+              hidden={!showMain}
+              aria-label="database workspace"
+            >
               {narrow ? (
                 <div className="db-ui-backbar">
-                  <BackButton onClick={() => setDrilled(false)} label="back to the table list" />
-                  <span className="title">{mode === 'data' && selectedTable ? selectedTable : mode}</span>
+                  <BackButton
+                    onClick={() => setDrilled(false)}
+                    label="back to the table list"
+                  />
+                  <span className="title">
+                    {mode === 'data' && selectedTable
+                      ? selectedTable
+                      : PANEL_LABELS[mode]}
+                  </span>
                 </div>
               ) : null}
               {trail.length > 0 && mode === 'data' ? (
                 <nav className="db-trail" aria-label="foreign key trail">
-                  <button type="button" className="db-trail-step" onClick={() => goBackTo(0)}>
-                    {trail[0].table === selectedTable ? 'all tables' : 'start'}
+                  <button
+                    type="button"
+                    className="db-trail-step"
+                    onClick={() => goBackTo(0)}
+                  >
+                    {trail[0].table === selectedTable ? 'All tables' : 'Start'}
                   </button>
                   {trail.map((hop, i) => (
                     <span key={`${hop.table}-${i}`} className="db-trail-seg">
@@ -568,13 +627,15 @@ export function DatabasePage({
                       <div className="db-pad">
                         <EmptyState
                           icon={TableIcon}
-                          title="select a table"
+                          title="Select a table"
                           description={
                             tableCount > 0
                               ? `${tableCount} table${tableCount === 1 ? '' : 's'}${
-                                  viewCount > 0 ? ` and ${viewCount} view${viewCount === 1 ? '' : 's'}` : ''
+                                  viewCount > 0
+                                    ? ` and ${viewCount} view${viewCount === 1 ? '' : 's'}`
+                                    : ''
                                 } in ${activeDb.name} — pick one to browse its rows, sort columns, and inspect values.`
-                              : `no tables in ${activeDb.name} yet`
+                              : `No tables in ${activeDb.name} yet`
                           }
                         />
                       </div>
@@ -594,7 +655,9 @@ export function DatabasePage({
                         enabled
                         refreshToken={bump}
                         onOpenInSql={(table) => {
-                          setSeedSql(`select * from ${quoteTableRef(activeDb.driver, table)} limit ${PAGE_SIZE}`)
+                          setSeedSql(
+                            `select * from ${quoteTableRef(activeDb.driver, table)} limit ${PAGE_SIZE}`,
+                          )
                           setMode('sql')
                         }}
                       />
@@ -624,7 +687,9 @@ export function DatabasePage({
                         host={host}
                         db={activeDb.name}
                         table={selectedTable}
-                        kind={tables.find((t) => t.name === selectedTable)?.kind}
+                        kind={
+                          tables.find((t) => t.name === selectedTable)?.kind
+                        }
                         onRefresh={refresh}
                       />
                     </div>
@@ -633,7 +698,12 @@ export function DatabasePage({
                       workspace — its auto-refresh must not poll a pane the
                       user drilled out of. */}
                   {mode === 'health' && showMain ? (
-                    <HealthPanel key={activeDb.name} host={host} db={activeDb.name} refreshToken={bump} />
+                    <HealthPanel
+                      key={activeDb.name}
+                      host={host}
+                      db={activeDb.name}
+                      refreshToken={bump}
+                    />
                   ) : null}
                 </>
               ) : null}

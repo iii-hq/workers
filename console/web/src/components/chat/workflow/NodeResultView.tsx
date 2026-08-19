@@ -34,7 +34,7 @@ export function NodeResultView({
           variant="default"
         />
         <span className="font-mono text-[11px] text-ink-faint">
-          <span className="text-ink-ghost">node</span>{' '}
+          <span className="text-ink-ghost">Node</span>{' '}
           <span className="text-accent break-all">{req.node_uid}</span>
         </span>
       </MetaRow>

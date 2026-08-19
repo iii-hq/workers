@@ -49,7 +49,7 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
             aria-label="close trace detail"
             title="close (esc)"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="size-4" />
           </Button>
         </div>
 
@@ -57,11 +57,11 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
           <Skeleton className="h-3 w-[72px] bg-surface-active" />
           <span aria-hidden className="w-px h-3 bg-surface-active-2" />
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Clock className="w-2.5 h-2.5 text-ink-faint" />
+            <Clock className="size-4 text-ink-faint" />
             <Skeleton className="h-3 w-12" />
           </span>
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Layers className="w-2.5 h-2.5 text-ink-faint" />
+            <Layers className="size-4 text-ink-faint" />
             <Skeleton className="h-3 w-14" />
           </span>
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
@@ -93,7 +93,7 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
           {(['cp-0', 'cp-1', 'cp-2', 'cp-3'] as const).map((k, i) => (
             <span key={k} className="flex items-center gap-1">
               {i > 0 && (
-                <ChevronRight className="w-3 h-3 text-ink-ghost flex-shrink-0" />
+                <ChevronRight className="size-4 text-ink-ghost flex-shrink-0" />
               )}
               <span className="px-1 py-0.5">
                 <Skeleton className="h-3 w-20 bg-surface-active" />
@@ -149,7 +149,7 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
       {/* ── collapsed workers footer ── */}
       <div className="border-t border-rule-2 flex-shrink-0">
         <div className="flex items-center gap-2 px-4 py-2.5">
-          <ChevronRight className="w-3 h-3 text-ink-faint" />
+          <ChevronRight className="size-4 text-ink-faint" />
           <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
             workers
           </span>

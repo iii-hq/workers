@@ -20,7 +20,7 @@ import {
   type ReadFileResponse,
 } from './coder'
 import { diffLines, diffTotals } from './diff'
-import { gitReadSource, gitShowHead } from './git'
+import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
 import type { ReviewEntry } from './review'
 
 export interface ReviewOptions {
@@ -72,13 +72,7 @@ type FileState =
   | { phase: 'idle' }
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
-  | {
-      phase: 'ready'
-      oldContents: string
-      newContents: string
-      worktreeRevision?: string
-      mode?: number | null
-    }
+  | ({ phase: 'ready' } & ReviewContents)
 
 interface FileLoadDescriptor {
   host: Host
@@ -338,16 +332,61 @@ export function exactCoderText(out: ReadFileResponse, path: string): string {
   return out.content ?? ''
 }
 
-async function loadReviewContents(
-  host: Host,
+/** Split a root-relative path into the directory to run Git in and the name
+    to ask it about. Running in the file's own directory is what lets Git
+    discover a repository nested under a non-repository workspace root. */
+export function gitLookupTarget(
   root: string,
-  entry: ReviewEntry,
-): Promise<{
+  path: string,
+): { cwd: string; name: string } {
+  const slash = path.lastIndexOf('/')
+  return slash === -1
+    ? { cwd: root, name: path }
+    : { cwd: joinPath(root, path.slice(0, slash)), name: path.slice(slash + 1) }
+}
+
+export interface ReviewContents {
   oldContents: string
   newContents: string
   worktreeRevision?: string
   mode?: number | null
-}> {
+  /** Set when the old side is the last commit rather than this turn's
+      pre-turn snapshot. */
+  baselineSource?: 'committed'
+}
+
+/** Last-resort baseline for a row whose pre-turn body was never captured:
+    the file's committed body. It is a weaker claim than the snapshot — any
+    edit already uncommitted before the turn is attributed to this turn — so
+    the caller labels the diff instead of presenting it as a turn diff. */
+async function loadCommittedFallback(
+  host: Host,
+  root: string,
+  entry: ReviewEntry,
+): Promise<ReviewContents | null> {
+  const { change } = entry
+  const oldPath = change.from ?? change.path
+  const target = gitLookupTarget(root, oldPath)
+  const oldContents = await gitHeadBaseline(host, target.cwd, target.name)
+  if (oldContents === null) return null
+  if (change.status === 'deleted') {
+    return { oldContents, newContents: '', baselineSource: 'committed' }
+  }
+  const out = await coderReadFile(host, joinPath(root, change.path))
+  return {
+    oldContents,
+    newContents: exactCoderText(out, change.path),
+    worktreeRevision: out.revision ?? undefined,
+    mode: out.mode,
+    baselineSource: 'committed',
+  }
+}
+
+export async function loadReviewContents(
+  host: Host,
+  root: string,
+  entry: ReviewEntry,
+): Promise<ReviewContents> {
   if (entry.before !== undefined && entry.after !== undefined) {
     const oldSide = gitReadSource(host, root, entry.before)
     if (entry.after.kind === 'worktree') {
@@ -369,7 +408,11 @@ async function loadReviewContents(
     return { oldContents, newContents }
   }
   if (entry.baseline === null) {
-    throw new Error('earlier content was not captured for this turn')
+    const committed = await loadCommittedFallback(host, root, entry)
+    if (committed !== null) return committed
+    throw new Error(
+      'earlier content was not captured for this turn, and this file has no committed version to compare against',
+    )
   }
   const { change } = entry
   const oldPath = change.from ?? change.path
@@ -1112,6 +1155,15 @@ function ReviewFile({
           role={editStatus.role}
         >
           {editStatus.message}
+        </div>
+      ) : null}
+      {!collapsed &&
+      renderBody &&
+      state.phase === 'ready' &&
+      state.baselineSource === 'committed' ? (
+        <div className="shui-review-message" role="status">
+          compared against the last commit — this turn's earlier content was
+          not captured, so edits made before it are included
         </div>
       ) : null}
       {collapsed ? null : !renderBody ? (

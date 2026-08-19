@@ -82,15 +82,34 @@ export default function setup(host: Host) {
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
   host.configForms.register('state', StateConfigForm)
+  host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
   // optional: return a teardown fn; the loader runs it on dispose
 }
 ```
 
-`Button`, `EmptyState`, `Dialog`, `Markdown`, … are the console's own
-components, re-exported by name with typed props — at runtime they come from
-the running console's single React tree (via `/vendor/console-ui.js`), so
-importing them adds **zero bytes** to your bundle. Use them instead of
-copying base components into your worker.
+`Button`, `List`, `Card`, `Panel`, `Chip`, `Table`, `Tabs`,
+`SegmentedControl`, `Selector`, `Tooltip`, `EmptyState`, `Dialog`, `Markdown`,
+… are the console's own components, re-exported by name with typed props — at
+runtime they come from the running console's single React tree (via
+`/vendor/console-ui.js`), so importing them adds **zero bytes** to your
+bundle. `uiClasses` exposes the same stable
+list/card/panel/chip/table/field/motion recipes to injected markup. Use these
+contracts instead of copying base components into a worker.
+
+Use `TabsList variant="line"`/`TabsTrigger` or `SegmentedControl
+variant="tabs"` for peer content views. Shared line tabs use a bottom rule,
+neutral active underline, 600-weight natural-case sans labels, and semantic
+16 px icons by default. Reserve `SegmentedControl variant="radio"` for a
+persisted exclusive choice. Do not carry private boxed-tab CSS.
+
+Compose a simple responsive table as `TableViewport` → `TableFrame` →
+`Table`, with `TableHeader`, `TableBody`, `TableRow`, `TableHead`, and
+`TableCell`. The shared visual uses natural-case sans headers and horizontal
+row dividers without an outer card or border. Use comfortable density on
+pages and `density="compact"` in chat. Apply mono only to technical values
+inside cells; ordinary labels and explanatory copy remain sans. Hover belongs
+only on `TableRow interactive`, and selected rows use the neutral selection
+ramp.
 
 ### 2. The style asset (`ui/styles.css`)
 
@@ -103,13 +122,17 @@ Plain CSS, **every rule scoped under your worker's wrapper attribute**:
 
 The console mounts every injected render inside
 `<div data-iii-ui="<first path segment>" style="display:contents">`, so
-scoped rules apply to your UI and nothing else. Use the console's design
-tokens (`--color-bg`, `--color-ink`, `--color-ink-faint`, `--color-ink-ghost`,
-`--color-accent`, `--color-accent-fg`, `--color-alert`, `--color-ok`,
-`--color-warn`, `--color-panel`, `--color-paper-2`, `--color-ring`,
-`--color-rule`, `--color-rule-2`; also exported as `tokens` from
-`@iii-dev/console-ui`) — dark mode is a variable flip on `html[data-theme]`,
-so token-based styles theme for free. Never hardcode theme colors.
+scoped rules apply to your UI and nothing else. Use the canonical `tokens`
+inventory exported by `@iii-dev/console-ui`: surface and ink tokens for
+hierarchy, `--color-edge` for structure, semantic status tokens, font tokens,
+and `--motion-duration-*`/`--motion-ease-*` for transitions. Dark mode is a
+variable flip on `html[data-theme]`, so token-based styles theme for free.
+Never hardcode theme colors.
+
+Selection is neutral in both themes: `--color-surface-selected`, stronger
+`--color-ink`, and an optional `--color-edge`. Do not change selected names,
+tabs, chips, cards, or rows to `--color-accent`; reserve accent for a primary
+action, form focus, live activity, or semantic domain data.
 
 What must NOT be in the sheet: unscoped selectors (`:root`, `html`, `body`,
 `*`, bare element names) and `@font-face` — injected CSS is unlayered, so an
@@ -117,6 +140,22 @@ unscoped rule silently beats the console's fully-layered CSS document-wide.
 The console runs a warn-only lint on every `console:style` fetch
 (`lint_style`, `workers/console/src/ui_assets.rs`) and puts findings in the
 manifest's `warnings` array; keep it empty.
+
+Injected Tailwind utility names are not part of the Console build. Compose
+the named components and public `uiClasses` recipes, then add scoped CSS only
+for worker-specific layout and data presentation. Shared motion recipes
+already honor reduced motion. Custom transitions use the public motion tokens;
+streaming text, rapidly updating meters, and cursor-following geometry update
+without transitions. Scope custom reduced-motion overrides under the worker
+attribute and prefix keyframe names because keyframes remain global.
+
+Use `Selector` for searchable single-choice input, including grouped,
+disabled, async, loading, empty, error, validation, and declared free-form
+states. Keep `Select` for a small finite list. Use shared `Tooltip` parts or
+`IconButton` instead of local hover timers and portal geometry. A local
+selector is justified only by a materially different interaction such as
+hierarchical drill-in, multi-select, or a persistent command palette; record
+the exception in the Console UI conformance inventory.
 
 ### 3. The build (`ui/build.mjs`)
 
@@ -266,6 +305,9 @@ valid and simply ignores them:
   column; a single-column tab detaches back to the attach affordance).
   Wire it to `PageHeader`'s `onClose` — every page header carries the
   standard ✕. Absent when the page renders outside a closable pane.
+- `panelContext`: the latest ephemeral event sent to this page through
+  `host.panels.open()`. Its monotonic `id` changes for every click, including
+  repeated identical payloads; `context` is worker-defined JSON.
 
 #### The page chrome — MANDATORY layout for pages
 
@@ -277,13 +319,27 @@ console's own screens (chat, traces):
 <PageShell>
   <PageHeader
     icon={<MyIcon />}                 // 16px glyph, faint ink
-    title="myworker"                  // mono lowercase — console chrome
-    description="what this page is"   // truncates first
+    title="My worker"                 // sans, human-readable title
+    description="What this page is"   // natural case; truncates first
     actions={<Button …/>}             // optional right-side controls
     onClose={onRequestClose}          // the standard ✕
   />
   <PageBody side={panelSide}>         {/* mirrors for right-side panes */}
-    <PageSidebar>…navigation…</PageSidebar>  {/* gray, fixed width */}
+    <PageSidebar
+      label="projects"
+      side={panelSide}
+      collapsible
+      resizable
+      storageKey="my-worker:projects"
+      defaultWidth={260}
+      minWidth={200}
+      maxWidth={420}
+      narrowBelow={700}
+      header={<>Projects</>}
+      collapsedActions={<IconButton label="New project" … />}
+    >
+      …navigation…
+    </PageSidebar>
     <PageMain>…workspace…</PageMain>         {/* white, flexes */}
   </PageBody>
 </PageShell>
@@ -298,6 +354,66 @@ own its body but MUST keep `PageShell` + `PageHeader`. The shell
 explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
 composition.
 
+`PageSidebar` is implemented by the Console host and resolves through the
+shared `/vendor/console-ui.js` module, so importing its behavior adds no bytes
+to a worker bundle. Use its declarative API instead of local collapse DOM,
+pointer handlers, width clamps, `localStorage`, focus management, or motion.
+It keeps one `aside` and its children mounted while collapsed; the host owns
+the 220 ms width transition, content fade/offset, reduced-motion behavior,
+accessible toggle, pointer/keyboard resize, and best-effort persistence.
+Instances with the same `storageKey` share one preference. Pass `narrow` when
+your page's own drill-in state already knows the pane is narrow, or
+`narrowBelow` when only the sidebar chrome needs a container breakpoint; both
+temporarily force the full-width presentation without overwriting the saved
+wide preference. Drag resize and wide↔narrow changes remain instant.
+
+All human-facing chrome uses sans and authored sentence/title case; do not use
+CSS case transforms on tabs, buttons, menus, fields, or labels. Reserve mono
+for machine-readable ids, paths, values, payloads, source, terminal output,
+and tabular data. Application icons use a 16 px baseline globally;
+icon-only actions use `IconButton`, which retains an accessible label and the
+shared tooltip. Do not author application icons below 16 px.
+
+### `host.panels.open({ pageId, context })`
+
+Open contextual worker content beside chat without teaching the console what
+that content means:
+
+```tsx
+function ScreenshotResult({ host, screenshotId }: Props) {
+  return (
+    <button
+      onClick={() =>
+        host.panels?.open({
+          pageId: 'browser',
+          context: { type: 'screenshot', screenshotId },
+        })
+      }
+    >
+      inspect screenshot
+    </button>
+  )
+}
+
+function BrowserPage({ panelContext }: PageRenderProps) {
+  useEffect(() => {
+    if (panelContext) showContext(panelContext.context)
+  }, [panelContext?.id])
+  // …
+}
+```
+
+The console owns placement: it reuses and activates an already-mounted page;
+otherwise it fills an empty column or inserts the page beside chat. It never
+replaces an existing pane. If the active tab is full, it creates a fresh
+chat + context split. The console stores context before mounting the page, so
+the first render receives the event that opened it.
+
+Context is JSON-only and ephemeral: it is not persisted with workspace tabs.
+Use opaque ids for large or sensitive bodies and let the page fetch the data
+from its worker on demand. Feature-detect `host.panels` when a worker bundle
+must remain compatible with older consoles.
+
 ### `host.functionTriggers.register(renderer)`
 
 Custom rendering for function-trigger messages in chat and traces:
@@ -310,6 +426,7 @@ interface FunctionTriggerRenderer {
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
+  metadata?: { display?: boolean }
   redactRaw?(value: unknown): unknown
 }
 ```
@@ -322,6 +439,19 @@ so you can override built-in rendering for your worker's functions. Return
 function ids) and let errors and everything else keep the default cards.
 Renderer callbacks are fenced: a throwing `isMatch` counts as no-match, a
 throwing `tryRender` degrades to an error chip, never a broken feed.
+
+`FunctionTriggerMessage.description` is the short user-facing action supplied
+by the harness `agent_trigger` wrapper. The host shows it in the collapsed
+activity row and reveals the concrete function id when the row is expanded;
+historic messages without it retain the function-id fallback.
+
+Set `metadata: { display: true }` when a successful custom result is a
+first-class chat artifact (file-change summaries, screenshots, images). The
+host keeps that winning renderer's non-null node visible while the raw
+request/response remain collapsed. Metadata is tied to the renderer that
+actually produced the node: a focused renderer can return `null` for errors
+or unsupported output and safely fall through to a general renderer. Do not
+mark ordinary terminal/status cards for display.
 
 #### `redactRaw` — your card is not the only exit
 
@@ -371,6 +501,33 @@ interface ConfigFormProps {
 The form is render-level only: dirty tracking, validation, save/reset and the
 SaveBar stay host-owned. You draw the fields and call `onChange`.
 
+### `host.providerConfigForms.register(providerId, component)`
+
+Replace the provider editor opened from the chat model picker (exact
+`llm-router` provider id; last registration wins). This is the preferred
+surface for provider-owned authentication nuances such as OAuth, a device
+flow, or importing a login from a companion app. Feature-detect it when a
+worker must support older consoles: `host.providerConfigForms?.register`.
+
+```ts
+interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+```
+
+The console still owns the authoritative `llm-router.providers[providerId]`
+slice, schema validation, dirty guard, save/reset, and model refresh. The
+provider owns only the form body and may call its own login/refresh functions
+through `host.iii`. Never render a plaintext API-key field: tell operators to
+use the provider's declared environment variable instead.
+
 ### `host.chat.registerSessionChip({ id, render })`
 
 A small per-session status chip in the chat header's right cluster (beside
@@ -397,7 +554,8 @@ Feature-detect on older consoles: `host.chat?.registerSessionChip`.
 | Surface | What it is |
 |---|---|
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
-| shared components | The curated, pre-styled component library: `AnsiText`, `Badge`, `Button`, `Dialog`(+`Trigger/Close/Content/Title/Description`), `DropdownMenu`(+parts), `EmptyState`, `ErrorBoundary`, `FileDiff`, `Input`, `PageShell`/`PageHeader`/`PageBody`/`PageSidebar`/`PageMain` (the mandatory page chrome — see the pages section), `Select`, `Skeleton`, `StatusDot`, `StatusPanel`, `Tabs`(+parts), `TerminalCommandLine`, `TerminalStream`, `Tooltip`(+parts), `CodeEditor`, `CodeHighlight`, `JsonHighlight`, `Markdown`, `MarkdownPreview`. Import them by name from `@iii-dev/console-ui` (typed props); `host.components` carries the same objects as an untyped record. `CodeEditor` is **Monaco** — the console's one code editor, global by contract: every editing surface uses it (see the build-footgun note above; never ship your own). `FileDiff` is the console's one **file-diff** surface under the same contract — pass two full file bodies (`{ name, contents }` each) and the console computes and renders the themed diff; never bundle a diff renderer. The **terminal atoms** are shared under the same contract: `AnsiText` (ANSI SGR colors mapped onto the design tokens — red→alert, green→ok, yellow→warn, blue/cyan/magenta→accent, bold→semibold; extended-color params consumed, other CSI/OSC stripped), `TerminalStream` (labeled stdout/stderr pane, whitespace preserved, clamped behind an `expand · N lines` toggle, `tone="err"` tints warn), and `TerminalCommandLine` (the `$ command` header with chips and a copy affordance) — never bundle an ANSI parser or carry private terminal-rendering copies in a worker asset. For richer components, copy the pattern into your worker — small duplication across workers is the accepted cost; `@iii-dev/console-ui` is deliberately the only versioned contract. |
+| `host.panels` | Optional compatibility-gated contextual navigation: `open({ pageId, context })` places/reuses a registered page beside chat and sends it JSON context. |
+| shared UI | Typed, zero-bundle-cost components include page chrome; `List`/`ListItem`, `Card`, `Panel`, `Chip`, `IconButton`; line `Tabs` and `SegmentedControl`; `Selector` and `Select`; buttons, inputs, dialogs, menus, tooltips; status/empty/loading surfaces; Markdown/JSON; `CodeEditor`, `FileDiff`; and terminal atoms. `uiClasses` supplies stable recipes and `tokens` supplies the canonical CSS-variable inventory. Import from `@iii-dev/console-ui`; `host.components` mirrors React components as an untyped compatibility record. Promote repeated cross-worker behavior here instead of carrying private copies. Monaco, diff, ANSI parsing, selector behavior, tooltip geometry, and portal scope are single shared contracts. |
 | `host.useTheme()` | `'light' \| 'dark'`, reactive. Extensions follow the theme, never set it. |
 | `host.path` | Your script's asset path. |
 
@@ -415,6 +573,11 @@ Every injected render is wrapped in the scope element plus an
 `import()`, missing default export, or throwing `setup()` logs to the browser
 console and your contributions simply drop out until the next good version
 arrives — a broken extension never takes the console down.
+
+Shared `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and
+`BottomSheet` portals carry the current `data-iii-ui` scope automatically.
+Only custom domain portals mounted directly under `document.body` must stamp
+that attribute themselves.
 
 ## The dev loop (hot reload)
 
@@ -479,7 +642,7 @@ Common failures:
 | Registration rejected with a fetch error | your content function threw, returned no string `content`, or timed out (2 × 3 s budget) |
 | "Invalid hook call" in the tab | your bundle contains a second React — a missing `external` |
 | `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the five shared specifiers |
-| Styles apply on your page but not in a portal you created yourself | DOM you portal to `document.body` must carry `data-iii-ui="<worker>"` on its root |
+| Styles apply on your page but not in a custom portal | Shared portalled components preserve scope; a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
 | Whole console restyled | your sheet has unscoped rules — check `warnings` in the manifest |
 | Asset gone after console restart | replay fetch failed (worker down at replay) — re-register, or just restart the worker |
 | Registered without errors but never loads | the worker is toggled off — check `workers[].enabled` in the manifest / `injectableUi.disabledWorkers` in the `console` configuration entry |
@@ -489,8 +652,8 @@ disables the trigger types, the `/ui` + `/vendor` routes, and the SPA loader
 (manifest answers `disabled: true`).
 
 Per-worker toggle: the Workers tab's **Console** entry renders a toggle
-board — one bordered card per UI-shipping worker (title, description, and a
-switch; active cards carry the accent border, disabled ones dim) — editing
+board — one card per UI-shipping worker (title, description, and a switch;
+enabled cards use the neutral selected recipe, disabled ones dim) — editing
 `injectableUi.disabledWorkers` in the `console` configuration entry. Saving
 applies live: the console worker subscribes to `configuration:updated` for
 its own entry and pushes `delete`/`set` to every tab. The board is itself
@@ -519,6 +682,15 @@ its own board: the registry refuses to disable it.
 - Rendering correctness stays a browser concern — Storybook in your worker's
   UI project against the workspace-linked `@iii-dev/console-ui` types is the
   recommended harness.
+- Exercise light and dark themes at 320–430 px, narrow split-pane, and wide
+  widths; keyboard and touch; reduced motion; loading/empty/error/success;
+  streaming or rapidly updating data; and long content. Selected rows, cards,
+  tabs, chips, and segments must remain neutral in both themes.
+- Verify content tabs use the shared line recipe, natural-case sans labels,
+  and default 16 px icons; global workspace tabs use weight 500. Verify there
+  are no application icons below 16 px or panel-wide mono chrome.
+- Record reusable-primitive coverage and justified local exceptions in
+  `workers/docs/sops/console-ui-conformance.md`.
 - The package's declarations are themselves pinned to the real console
   components by `console/web/src/lib/console-ui-conformance.test.ts`
   (type-level + name-manifest checks) — extend all three (manifest, record,
@@ -539,7 +711,7 @@ them):
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |
-| Per-script `Dialog` re-export with scope-stamped portals | not implemented — stamp `data-iii-ui` yourself on DOM you portal outside the wrapper |
+| Scope-preserving shared portals | shipped for `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and `BottomSheet`; stamp only custom domain portals |
 
 Naming note: the renderer slot is `host.functionTriggers` and the message
 role is `function-trigger` — the console web codebase deliberately does not

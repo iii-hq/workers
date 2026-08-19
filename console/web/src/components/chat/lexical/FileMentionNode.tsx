@@ -145,8 +145,8 @@ interface PillProps {
 export function PathGlyph({ path }: { path: string }) {
   return (
     <svg
-      width="9"
-      height="11"
+      width="16"
+      height="16"
       viewBox="0 0 10 12"
       fill="none"
       stroke="currentColor"

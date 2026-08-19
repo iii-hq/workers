@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::types::credential::Credential;
-use crate::types::events::{StopReason, Usage};
+use crate::types::events::{ErrorKind, StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
 use iii_sdk::channel::StreamChannelRef;
@@ -51,6 +51,14 @@ pub struct ChatRequest {
 pub struct ErrorShape {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    /// Provider/transport diagnostics for logs and expandable UI details.
+    /// `message` remains the stable, user-facing explanation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -90,6 +98,9 @@ pub struct AbortResponse {
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
+    /// Environment variable declared by API-key providers. `None` means the
+    /// provider owns authentication (OAuth, local app login, device flow).
+    pub credential_env_var: Option<String>,
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,

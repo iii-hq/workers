@@ -3,53 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
-
-/// A signature of everything the boot-time notification/sidecar wiring depends
-/// on. See [`WorkerConfig::topology`]. Two configs with equal topology differ
-/// only in backend-connection settings that can be hot-applied; any other
-/// difference requires a worker restart.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Topology {
-    /// The configured rustfs data dir (may be relative) captured only when at
-    /// least one `provider: local` bucket exists; `None` otherwise.
-    pub local_data_dir: Option<String>,
-    pub buckets: BTreeMap<String, BucketTopology>,
-}
-
-/// Topology projection of one bucket — provider, underlying name, and
-/// notification source. Compared by value; backend-connection fields like
-/// credentials/endpoint are intentionally excluded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BucketTopology {
-    /// One of "s3", "gcs", "r2", or "local".
-    pub provider: &'static str,
-    /// The underlying object-store bucket name override, if set.
-    pub underlying: Option<String>,
-    /// The bucket's notification source identity; `None` when the bucket has no
-    /// notifications.
-    pub notifications: Option<NotificationKey>,
-}
-
-/// Canonical identity of a bucket's notification source — exactly what the
-/// boot-time pollers/webhook key on. Compared by value; never logged.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotificationKey {
-    Sqs {
-        queue_url: String,
-        region: String,
-    },
-    Pubsub {
-        subscription: String,
-    },
-    CfQueue {
-        account_id: String,
-        queue_id: String,
-        api_token: String,
-    },
-    RustfsWebhook,
-}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct WorkerConfig {
@@ -68,10 +22,27 @@ pub struct ProvidersConfig {
 pub struct LocalProviderConfig {
     #[serde(default = "default_local_data_dir")]
     pub data_dir: String,
+    /// Optional direct-transfer HTTP server. Inline getObject/putObject work
+    /// without it; signed upload/download endpoints require it.
+    pub http: Option<LocalHttpConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct LocalHttpConfig {
+    /// Socket the worker listens on. Use `0.0.0.0` to expose it to a LAN/VPN.
+    #[serde(default = "default_local_http_bind_address")]
+    pub bind_address: String,
+    /// Browser-facing base URL. This may differ from the listener when a VPN,
+    /// reverse proxy, or another machine provides access.
+    pub public_url: Option<String>,
 }
 
 fn default_local_data_dir() -> String {
     "./data/storage".to_string()
+}
+
+fn default_local_http_bind_address() -> String {
+    "127.0.0.1:0".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -218,8 +189,45 @@ impl WorkerConfig {
     /// install, in which case the worker runs with no backends until the
     /// operator configures one.
     fn validate_bucket_names(&self) -> Result<(), String> {
-        for name in self.buckets.keys() {
+        for (name, bucket) in &self.buckets {
             validate_bucket_name(name).map_err(|e| format!("bucket `{name}`: {e}"))?;
+            if let BucketConfig::Local(local) = bucket {
+                if let Some(underlying) = local.bucket.as_deref() {
+                    validate_bucket_name(underlying)
+                        .map_err(|e| format!("bucket `{name}` local bucket `{underlying}`: {e}"))?;
+                }
+            }
+        }
+        if let Some(http) = self
+            .providers
+            .local
+            .as_ref()
+            .and_then(|local| local.http.as_ref())
+        {
+            http.bind_address
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| {
+                    format!(
+                        "providers.local.http.bind_address `{}` is not a socket address: {e}",
+                        http.bind_address
+                    )
+                })?;
+            if let Some(public_url) = http.public_url.as_deref() {
+                let parsed = url::Url::parse(public_url).map_err(|e| {
+                    format!("providers.local.http.public_url `{public_url}` is invalid: {e}")
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(format!(
+                        "providers.local.http.public_url `{public_url}` must use http or https"
+                    ));
+                }
+                if parsed.query().is_some() || parsed.fragment().is_some() {
+                    return Err(
+                        "providers.local.http.public_url must not contain a query or fragment"
+                            .into(),
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -235,66 +243,6 @@ impl WorkerConfig {
 
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).expect("WorkerConfig serializes")
-    }
-
-    /// Build the topology signature used to decide whether a live config update
-    /// can be hot-applied (backends only) or requires a restart. Captures the
-    /// bucket set, each bucket's provider + underlying name + notification
-    /// source, and the rustfs data dir — i.e. exactly what `main.rs` reads once
-    /// at startup to wire `wired_buckets`, the webhook receiver, and the
-    /// SQS/Pub-Sub/CF-Queue pollers.
-    pub fn topology(&self) -> Topology {
-        let needs_local = self
-            .buckets
-            .values()
-            .any(|b| matches!(b, BucketConfig::Local(_)));
-        let local_data_dir = needs_local.then(|| {
-            self.providers
-                .local
-                .as_ref()
-                .map(|l| l.data_dir.clone())
-                .unwrap_or_else(default_local_data_dir)
-        });
-        let mut buckets = BTreeMap::new();
-        for (name, bc) in &self.buckets {
-            let entry = match bc {
-                BucketConfig::S3(s) => BucketTopology {
-                    provider: "s3",
-                    underlying: s.bucket.clone(),
-                    notifications: s.notifications.as_ref().map(|n| NotificationKey::Sqs {
-                        queue_url: n.sqs_queue_url.clone(),
-                        region: s.region.clone(),
-                    }),
-                },
-                BucketConfig::Gcs(g) => BucketTopology {
-                    provider: "gcs",
-                    underlying: g.bucket.clone(),
-                    notifications: g.notifications.as_ref().map(|n| NotificationKey::Pubsub {
-                        subscription: n.pubsub_subscription.clone(),
-                    }),
-                },
-                BucketConfig::R2(r) => BucketTopology {
-                    provider: "r2",
-                    underlying: r.bucket.clone(),
-                    notifications: r.notifications.as_ref().map(|n| NotificationKey::CfQueue {
-                        account_id: r.account_id.clone(),
-                        queue_id: n.queue_id.clone(),
-                        api_token: n.api_token.clone(),
-                    }),
-                },
-                BucketConfig::Local(l) => BucketTopology {
-                    provider: "local",
-                    underlying: l.bucket.clone(),
-                    // Local buckets are always wired to the rustfs webhook.
-                    notifications: Some(NotificationKey::RustfsWebhook),
-                },
-            };
-            buckets.insert(name.clone(), entry);
-        }
-        Topology {
-            local_data_dir,
-            buckets,
-        }
     }
 
     pub fn json_schema() -> Value {
@@ -590,6 +538,48 @@ buckets:
     }
 
     #[test]
+    fn local_http_config_parses_network_public_url() {
+        let yaml = r#"
+providers:
+  local:
+    data_dir: /tmp/storage
+    http:
+      bind_address: 0.0.0.0:49200
+      public_url: https://storage.vpn.example
+buckets:
+  scratch:
+    provider: local
+"#;
+        let cfg = WorkerConfig::from_yaml(yaml).unwrap();
+        let http = cfg
+            .providers
+            .local
+            .as_ref()
+            .and_then(|local| local.http.as_ref())
+            .unwrap();
+        assert_eq!(http.bind_address, "0.0.0.0:49200");
+        assert_eq!(
+            http.public_url.as_deref(),
+            Some("https://storage.vpn.example")
+        );
+    }
+
+    #[test]
+    fn local_http_rejects_invalid_listener_and_public_url() {
+        let invalid_listener = WorkerConfig::from_yaml(
+            "providers:\n  local:\n    data_dir: /tmp/storage\n    http:\n      bind_address: localhost:49200\nbuckets:\n  scratch:\n    provider: local\n",
+        )
+        .unwrap_err();
+        assert!(invalid_listener.contains("bind_address"));
+
+        let invalid_public = WorkerConfig::from_yaml(
+            "providers:\n  local:\n    data_dir: /tmp/storage\n    http:\n      bind_address: 127.0.0.1:0\n      public_url: ftp://example.test\nbuckets:\n  scratch:\n    provider: local\n",
+        )
+        .unwrap_err();
+        assert!(invalid_public.contains("http or https"));
+    }
+
+    #[test]
     fn env_var_expansion_in_strings() {
         std::env::set_var("IIISTORE_TEST_REGION", "eu-west-1");
         let yaml = r#"
@@ -715,91 +705,5 @@ buckets:
             .get("properties")
             .and_then(|p| p.get("buckets"))
             .is_some());
-    }
-
-    #[test]
-    fn topology_ignores_credential_changes() {
-        let a = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: r2\n    account_id: acc\n    access_key_id: k1\n    secret_access_key: s1\n",
-        )
-        .unwrap();
-        let b = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: r2\n    account_id: acc\n    access_key_id: k2\n    secret_access_key: s2\n",
-        )
-        .unwrap();
-        assert_eq!(a.topology(), b.topology());
-    }
-
-    #[test]
-    fn topology_ignores_s3_endpoint_change() {
-        let a = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: us-east-1\n    bucket: b\n",
-        )
-        .unwrap();
-        let b = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: us-east-1\n    bucket: b\n    endpoint_url: http://minio:9000\n",
-        )
-        .unwrap();
-        assert_eq!(a.topology(), b.topology());
-    }
-
-    #[test]
-    fn topology_changes_when_bucket_added() {
-        let a =
-            WorkerConfig::from_yaml("buckets:\n  up:\n    provider: s3\n    region: us-east-1\n")
-                .unwrap();
-        let b = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: us-east-1\n  extra:\n    provider: s3\n    region: us-east-1\n",
-        )
-        .unwrap();
-        assert_ne!(a.topology(), b.topology());
-    }
-
-    #[test]
-    fn topology_changes_when_notification_source_changes() {
-        let a = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: us-east-1\n    notifications:\n      sqs_queue_url: https://sqs/old\n",
-        )
-        .unwrap();
-        let b = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: us-east-1\n    notifications:\n      sqs_queue_url: https://sqs/new\n",
-        )
-        .unwrap();
-        assert_ne!(a.topology(), b.topology());
-    }
-
-    #[test]
-    fn topology_changes_when_s3_region_changes_with_notifications() {
-        let a = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: us-east-1\n    notifications:\n      sqs_queue_url: https://sqs/q\n",
-        )
-        .unwrap();
-        let b = WorkerConfig::from_yaml(
-            "buckets:\n  up:\n    provider: s3\n    region: eu-west-1\n    notifications:\n      sqs_queue_url: https://sqs/q\n",
-        )
-        .unwrap();
-        assert_ne!(a.topology(), b.topology());
-    }
-
-    #[test]
-    fn topology_changes_when_local_data_dir_changes() {
-        let a = WorkerConfig::from_yaml(
-            "providers:\n  local:\n    data_dir: /a\nbuckets:\n  up:\n    provider: local\n",
-        )
-        .unwrap();
-        let b = WorkerConfig::from_yaml(
-            "providers:\n  local:\n    data_dir: /b\nbuckets:\n  up:\n    provider: local\n",
-        )
-        .unwrap();
-        assert_ne!(a.topology(), b.topology());
-    }
-
-    #[test]
-    fn topology_changes_when_provider_changes() {
-        let a =
-            WorkerConfig::from_yaml("buckets:\n  up:\n    provider: s3\n    region: us-east-1\n")
-                .unwrap();
-        let b = WorkerConfig::from_yaml("buckets:\n  up:\n    provider: local\n").unwrap();
-        assert_ne!(a.topology(), b.topology());
     }
 }

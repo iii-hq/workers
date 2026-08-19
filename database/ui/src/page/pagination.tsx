@@ -31,8 +31,12 @@ export function Pagination({
   return (
     <div className="db-pager">
       <div className="db-pager-group">
-        <span className="db-pager-cap">show</span>
-        <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} aria-label="rows per page">
+        <span className="db-pager-cap">Show</span>
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(Number(e.target.value))}
+          aria-label="rows per page"
+        >
           {pageSizeOptions.map((opt) => (
             <option key={opt} value={opt}>
               {opt}
@@ -51,12 +55,10 @@ export function Pagination({
           disabled={currentPage <= 1}
           onClick={() => onPageChange(currentPage - 1)}
         >
-          <ChevronLeft size={14} />
+          <ChevronLeft size={16} />
         </Button>
-        {/* A value phrase, not a label — it stays in the pager's lowercase
-            voice ("show" above is a label and keeps the caps). */}
         <span>
-          page {currentPage} of {totalPages}
+          Page {currentPage} of {totalPages}
         </span>
         <Button
           variant="icon"
@@ -65,7 +67,7 @@ export function Pagination({
           disabled={currentPage >= totalPages}
           onClick={() => onPageChange(currentPage + 1)}
         >
-          <ChevronRight size={14} />
+          <ChevronRight size={16} />
         </Button>
       </div>
     </div>

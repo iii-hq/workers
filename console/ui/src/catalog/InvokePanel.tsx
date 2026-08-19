@@ -160,7 +160,7 @@ export function InvokePanel({
     <div className="console-catalog-invoke">
       <div className="console-catalog-invoke-head">
         <div>
-          <h3>trigger function</h3>
+          <h3>Trigger function</h3>
           <p className="invoke-description">
             Provide the input payload and trigger this function.
           </p>
@@ -176,7 +176,7 @@ export function InvokePanel({
         </Button>
       </div>
       {hint ? <div className="console-catalog-note">{hint}</div> : null}
-      <span className="console-catalog-field-label">input payload (json)</span>
+      <span className="console-catalog-field-label">Input payload (JSON)</span>
       <CodeEditor
         value={body}
         onChange={setBody}
@@ -233,7 +233,7 @@ export function InvokePanel({
 
       {attempts.length > 1 ? (
         <div className="console-catalog-attempts">
-          <span className="console-catalog-field-label">this session</span>
+          <span className="console-catalog-field-label">This session</span>
           {attempts.slice(1).map((attempt) => (
             <button
               key={attempt.id}

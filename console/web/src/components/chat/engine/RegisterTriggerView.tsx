@@ -92,7 +92,7 @@ export function RegisterTriggerView({
         ) : null}
       </MetaRow>
 
-      <PaneLabel>when</PaneLabel>
+      <PaneLabel>When</PaneLabel>
       <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
         <span className="font-mono text-[13px] text-ink break-all">
           {req.trigger_type}
@@ -122,7 +122,7 @@ export function RegisterTriggerView({
 
       {req.conditions?.length ? (
         <>
-          <PaneLabel>only if</PaneLabel>
+          <PaneLabel>Only if</PaneLabel>
           {req.conditions.map((c, i) => (
             <ConditionRow
               // Conditions have no id of their own; order is the identity.
@@ -133,7 +133,7 @@ export function RegisterTriggerView({
         </>
       ) : null}
 
-      <PaneLabel>then</PaneLabel>
+      <PaneLabel>Then</PaneLabel>
       <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
@@ -252,7 +252,7 @@ function shortenId(id: string): string {
 
 function PaneLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-sans text-[11px] font-semibold text-ink-faint">
       {children}
     </div>
   )
@@ -261,7 +261,7 @@ function PaneLabel({ children }: { children: ReactNode }) {
 function LabeledJson({ label, value }: { label: string; value: unknown }) {
   return (
     <div>
-      <PaneLabel>{label}</PaneLabel>
+      <PaneLabel>{label.charAt(0).toUpperCase() + label.slice(1)}</PaneLabel>
       <JsonHighlight code={JSON.stringify(value ?? null, null, 2)} />
     </div>
   )

@@ -70,6 +70,7 @@ workers can appear without a manual download.
 - `directory::prompts::get` — read one prompt template's body by name; `raw: true` also returns the full on-disk file for round-tripping.
 - `directory::prompts::create` — create a NEW command template at `<skills_folder>/prompts/<name>.md` from full-file content; refuses a name already in the command scan and an existing target path.
 - `directory::prompts::update` — overwrite one EXISTING command template; the frontmatter must keep a non-empty `description` (a declared `name` renames it).
+- `directory::prompts::delete` — permanently remove one EXISTING command template by name.
 - `directory::system-prompts::list` — list the system prompts the chat picker offers (same shape as `prompts::list`, including the `prompts` field name).
 - `directory::system-prompts::get` — read one system prompt's body by name; `raw: true` as above.
 - `directory::system-prompts::create` — create a NEW system prompt at `<skills_folder>/system-prompts/<name>.md`; same rules and refusals as `prompts::create`, scoped to the system scan.

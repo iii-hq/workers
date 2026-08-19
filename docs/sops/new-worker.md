@@ -125,10 +125,6 @@ slug against this catalog, so there is no second tag-pattern list to maintain.
 | # | Location | Action |
 |---|---|---|
 | 1 | Release Control typed release policy | Add the worker capability, manifest exception if any, channel policy, and required validation |
-| 2 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
-
-**Worked example:** `session-manager` is a standard catalog entry and has no
-`BOOTSTRAP_WORKERS` entry because Harness does not require its skill at boot.
 
 ## 7. Agent permissions
 
@@ -150,8 +146,8 @@ Ship `skills/SKILL.md` when agents should discover **when** to use the worker
 (intent, boundaries, function catalogue — not JSON schemas). Author per
 [`DOCUMENTATION_GUIDELINES.md`](../../DOCUMENTATION_GUIDELINES.md).
 
-- **Bootstrap workers** (`shell`, `iii-directory`): `skills/SKILL.md` is
-  **required** (≤ 256 KiB) — the harness stack expects these skills at boot.
+- **Optional:** workers may publish other markdown under `skills/` without a
+  canonical `skills/SKILL.md` entrypoint.
 - **On release:** skills are auto-uploaded via `POST /w/<worker>/skills` when
   markdown is present; skipped cleanly when absent.
 

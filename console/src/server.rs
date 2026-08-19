@@ -16,6 +16,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::ui_assets::UiRegistry;
 use crate::{assets, proxy};
@@ -56,7 +57,29 @@ pub fn router(state: AppState) -> Router {
             .route("/vendor/*path", get(assets::vendor_handler));
     }
 
-    router.fallback(not_found).with_state(state)
+    router
+        .fallback(not_found)
+        .with_state(state)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
 }
 
 async fn not_found() -> (StatusCode, &'static str) {
@@ -243,5 +266,35 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let response = get_response(router(state), "/vendor/react.js", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn every_http_response_carries_defensive_browser_headers() {
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None);
+        for uri in ["/", "/missing"] {
+            let response = get_response(router(state.clone()), uri, &[]).await;
+            assert_eq!(
+                response.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+                Some(&HeaderValue::from_static("nosniff"))
+            );
+            assert_eq!(
+                response.headers().get(header::X_FRAME_OPTIONS),
+                Some(&HeaderValue::from_static("DENY"))
+            );
+            assert_eq!(
+                response.headers().get("referrer-policy"),
+                Some(&HeaderValue::from_static("no-referrer"))
+            );
+            assert_eq!(
+                response.headers().get("cross-origin-resource-policy"),
+                Some(&HeaderValue::from_static("same-origin"))
+            );
+            assert_eq!(
+                response.headers().get("content-security-policy"),
+                Some(&HeaderValue::from_static(
+                    "frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
+                ))
+            );
+        }
     }
 }

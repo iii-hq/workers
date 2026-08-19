@@ -144,7 +144,7 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
   return (
     <div className="p-5 space-y-3">
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-faint" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-faint" />
         <input
           type="text"
           placeholder="filter attributes..."
@@ -166,7 +166,7 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
                 className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-hover transition-colors text-left"
               >
                 <ChevronRight
-                  className={`w-3 h-3 text-ink-faint transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                  className={`size-4 text-ink-faint transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
                 />
                 <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
                   {group.label}
@@ -264,7 +264,7 @@ function AttributeRow({
             copied
           </span>
         ) : (
-          <Copy className="w-3 h-3 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
+          <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
         )}
       </div>
     </button>

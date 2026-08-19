@@ -176,7 +176,7 @@ function TaskPane({ task }: { task: SpawnRequest['task'] }) {
   const text = taskText(task)
   return (
     <>
-      <PaneHeader>task</PaneHeader>
+      <PaneHeader>Task</PaneHeader>
       {text ? (
         <div className="px-3 py-2 border-b border-rule-2 bg-bg text-[13px] leading-[1.6]">
           <Markdown>{text}</Markdown>
@@ -193,7 +193,7 @@ function ResultPane({ output }: { output: unknown }) {
   if (direct.success) {
     return (
       <>
-        <PaneHeader>spawned child</PaneHeader>
+        <PaneHeader>Spawned child</PaneHeader>
         <ActionLine symbol="→" tone="ink">
           <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mr-2">
             session
@@ -217,7 +217,7 @@ function ResultPane({ output }: { output: unknown }) {
   if (output == null || output === '') {
     return (
       <>
-        <PaneHeader>child result</PaneHeader>
+        <PaneHeader>Child result</PaneHeader>
         <GhostLine>· no result</GhostLine>
       </>
     )
@@ -226,7 +226,7 @@ function ResultPane({ output }: { output: unknown }) {
   if (typeof output === 'string') {
     return (
       <>
-        <PaneHeader>child result</PaneHeader>
+        <PaneHeader>Child result</PaneHeader>
         <div className="px-3 py-2 bg-bg text-[13px] leading-[1.6]">
           <Markdown>{output}</Markdown>
         </div>
@@ -236,7 +236,7 @@ function ResultPane({ output }: { output: unknown }) {
 
   return (
     <>
-      <PaneHeader>child result · json</PaneHeader>
+      <PaneHeader>Child result · JSON</PaneHeader>
       <JsonHighlight
         code={JSON.stringify(output, null, 2)}
         className="max-h-80 overflow-auto"

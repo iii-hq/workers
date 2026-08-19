@@ -111,7 +111,7 @@ export function GroupedTraceList({
     return (
       <div className="flex flex-col items-center justify-center py-12 px-6 text-center font-mono text-[12px] text-ink-faint lowercase">
         <Layers className="w-6 h-6 mb-2 opacity-50" />
-        <div className="font-medium text-ink mb-1">group-by not available</div>
+        <div className="font-medium text-ink mb-1">Group-by not available</div>
         <div className="max-w-md leading-[1.7]">
           the engine doesn't expose{' '}
           <code className="text-warn">engine::traces::group_by</code>. either
@@ -137,7 +137,7 @@ export function GroupedTraceList({
     return (
       <div className="flex flex-col items-center justify-center py-12 px-6 text-center font-mono text-[12px] text-ink-faint lowercase">
         <Layers className="w-6 h-6 mb-2 opacity-50" />
-        <div>no traces carry this attribute yet.</div>
+        <div>No traces carry this attribute yet.</div>
       </div>
     )
   }
@@ -222,13 +222,13 @@ function GroupHeaderRow({
     >
       <ChevronRight
         className={cn(
-          'w-3 h-3 flex-shrink-0 text-ink-faint transition-transform',
+          'size-4 flex-shrink-0 text-ink-faint transition-transform',
           isExpanded && 'rotate-90',
         )}
       />
       <Layers
         className={cn(
-          'w-3.5 h-3.5 flex-shrink-0',
+          'size-4 flex-shrink-0',
           group.error_count > 0 ? 'text-alert' : 'text-ink-faint',
         )}
       />
@@ -296,7 +296,7 @@ function GroupMembers({
   if (isLoading && !data) {
     return (
       <div className="flex items-center gap-2 pl-8 py-2 font-mono text-[11px] text-ink-faint lowercase">
-        <Loader2 className="w-3 h-3 animate-spin" />
+        <Loader2 className="size-4 animate-spin" />
         loading traces…
       </div>
     )

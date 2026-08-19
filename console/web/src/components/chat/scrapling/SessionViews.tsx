@@ -5,6 +5,16 @@ import {
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { JsonHighlight } from '@/lib/syntax'
 import {
   pageResultSchema,
@@ -39,16 +49,16 @@ function openChips(input: unknown): React.ReactNode {
       ) : null}
       {req.solve_cloudflare ? (
         <Chip className="text-warn border-warn/40">
-          <span className="uppercase tracking-[0.06em]">cloudflare</span>
+          <span>Cloudflare</span>
         </Chip>
       ) : null}
-      {req.real_chrome ? <Chip>real chrome</Chip> : null}
+      {req.real_chrome ? <Chip>Real Chrome</Chip> : null}
       {req.headless === false ? (
         <Chip className="text-warn border-warn/40">
-          <span className="uppercase tracking-[0.06em]">headed</span>
+          <span>Headed</span>
         </Chip>
       ) : null}
-      {req.proxy ? <Chip>proxy</Chip> : null}
+      {req.proxy ? <Chip>Proxy</Chip> : null}
     </>
   )
 }
@@ -247,13 +257,24 @@ export function SessionListView({ output }: { output: unknown }) {
           · no open sessions
         </div>
       ) : (
-        <table className="w-full font-mono text-[11.5px] text-ink">
-          <tbody>
-            {res.sessions.map((s) => (
-              <SessionRow key={s.session_id} s={s} />
-            ))}
-          </tbody>
-        </table>
+        <TableViewport>
+          <TableFrame className="px-3">
+            <Table density="compact" aria-label="Open sessions">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Session</TableHead>
+                  <TableHead className="text-right">Idle</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {res.sessions.map((s) => (
+                  <SessionRow key={s.session_id} s={s} />
+                ))}
+              </TableBody>
+            </Table>
+          </TableFrame>
+        </TableViewport>
       )}
     </SectionShell>
   )
@@ -261,12 +282,16 @@ export function SessionListView({ output }: { output: unknown }) {
 
 function SessionRow({ s }: { s: SessionSummary }) {
   return (
-    <tr className="border-b border-rule-2 last:border-b-0">
-      <td className="px-3 py-1 text-accent w-[22%]">{s.type ?? 'http'}</td>
-      <td className="px-3 py-1 text-ink break-all">{s.session_id}</td>
-      <td className="px-3 py-1 text-ink-faint tabular-nums text-right whitespace-nowrap">
+    <TableRow>
+      <TableCell className="w-[22%] font-code text-accent">
+        {s.type ?? 'http'}
+      </TableCell>
+      <TableCell className="break-all font-code text-ink">
+        {s.session_id}
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-right text-ink-faint tabular-nums">
         {typeof s.idle_s === 'number' ? `idle ${s.idle_s}s` : ''}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   )
 }

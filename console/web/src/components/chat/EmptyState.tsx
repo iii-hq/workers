@@ -2,10 +2,10 @@ import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNo
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
-import { Prompt } from '@/components/ui/Prompt'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
+import { SessionAddonsPicker } from './SessionAddonsPicker'
 import { StrategyToggle, SystemPromptPicker } from './SystemPromptPicker'
 import type { SystemPromptState } from './system-prompt-selection'
 
@@ -42,7 +42,7 @@ export interface EmptyStateProps {
   onInstallHarness?: () => void
   /** `install-failed` retry CTA. */
   onRetryInstall?: () => void
-  /** `no-provider` CTA (defaults to opening the harness configuration). */
+  /** `no-provider` CTA (opens the model/provider picker). */
   onConfigureProvider?: () => void
   /**
    * `ready` system-prompt control. This screen is where the choice is made —
@@ -56,9 +56,8 @@ export interface EmptyStateProps {
 const HARNESS_INSTALL_COMMAND = 'iii worker add harness'
 
 const HEADING_CLASS =
-  'font-mono text-[28px] font-medium tracking-[-0.01em] text-ink lowercase'
-const BODY_CLASS =
-  'font-mono text-[14px] leading-[1.7] text-ink-faint lowercase'
+  'text-balance font-sans text-3xl font-semibold tracking-tight text-ink'
+const BODY_CLASS = 'text-pretty font-sans text-base/7 text-ink-faint'
 
 export function EmptyState({
   variant,
@@ -71,7 +70,7 @@ export function EmptyState({
   systemPrompt,
   onSystemPromptChange,
 }: EmptyStateProps) {
-  const emptyPad = density === 'dock' ? 'px-4' : 'px-9'
+  const emptyPad = density === 'dock' ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
   const eyebrow =
     variant === 'ready' || variant === 'no-provider' ? 'new session' : 'setup'
 
@@ -82,9 +81,9 @@ export function EmptyState({
         emptyPad,
       )}
     >
-      <div className="my-auto max-w-[520px] w-full flex flex-col gap-6">
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          <Prompt symbol="$">{eyebrow}</Prompt>
+      <div className="my-auto flex w-full max-w-[520px] flex-col gap-6 py-6">
+        <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
+          {eyebrow === 'new session' ? 'New session' : 'Setup'}
         </div>
 
         {variant === 'ready' ? (
@@ -129,13 +128,13 @@ function ReadyBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>welcome to iii! 👋</h1>
+      <h1 className={HEADING_CLASS}>Welcome to iii</h1>
       <div className="flex flex-col gap-2">
         <p className={BODY_CLASS}>
           You're in an agent-oriented workspace where you can leverage the power
           of a full-featured agentic system:
         </p>
-        <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
+        <ul className="flex flex-col gap-1 font-sans text-base/7 text-ink-faint">
           <li>· trigger functions via the function registry</li>
           <li>· spawn sub-agents for parallel/async work</li>
           <li>· register triggers for callbacks &amp; automation</li>
@@ -143,8 +142,8 @@ function ReadyBody({
         </ul>
       </div>
       <div className="flex flex-col gap-2">
-        <p className={BODY_CLASS}>start by exploring what's available:</p>
-        <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1.5">
+        <p className={BODY_CLASS}>Start by exploring what's available:</p>
+        <ul className="flex flex-col gap-1.5 font-sans text-base/7 text-ink-faint">
           {EXPLORE_FUNCTIONS.map(({ id, hint }) => (
             <li key={id}>
               <FunctionMentionPill functionId={id} /> — {hint}
@@ -166,12 +165,12 @@ function ReadyBody({
           <div className="flex flex-col gap-1">
             <h2
               id="session-system-prompt"
-              className="font-mono text-[13px] font-semibold text-ink lowercase"
+              className="font-sans text-base font-semibold text-ink sm:text-sm"
             >
-              system prompt
+              System prompt
             </h2>
-            <p className="font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">
-              choose the instructions the agent follows in this session.
+            <p className="font-sans text-base/6 text-ink-faint sm:text-sm/6">
+              Choose the instructions the agent follows in this session.
             </p>
           </div>
           <div className="flex items-start gap-2">
@@ -186,13 +185,25 @@ function ReadyBody({
               onChange={onSystemPromptChange}
             />
           </div>
-          <p className="font-mono text-[11px] leading-[1.5] text-ink-faint lowercase">
+          <div className="flex flex-col gap-1.5">
+            <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
+              Optionally add skills to the system prompt:
+            </p>
+            <SessionAddonsPicker
+              value={systemPrompt}
+              onChange={onSystemPromptChange}
+              className="min-w-0"
+            />
+          </div>
+          <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
             {systemPrompt.choice === 'default'
-              ? "default uses the provider's built-in prompt"
+              ? systemPrompt.addons.length > 0
+                ? 'Selected skills are added to the built-in prompt'
+                : "Default uses the provider's built-in prompt"
               : systemPrompt.strategy === 'enrich'
-                ? 'enrich adds this prompt to the built-in prompt'
-                : 'replace uses this prompt instead of the built-in prompt'}
-            {' · locked after your first message'}
+                ? 'Enrich adds this prompt to the built-in prompt'
+                : 'Replace uses this prompt instead of the built-in prompt'}
+            {' · Locked after your first message'}
           </p>
         </section>
       ) : null}
@@ -209,7 +220,7 @@ function NoProviderBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>configure a provider.</h1>
+      <h1 className={HEADING_CLASS}>Configure a provider.</h1>
       <p className={BODY_CLASS}>
         the harness worker is running, but no model providers are set up yet.
         add an api key — or point at a local server — then pick a model and
@@ -233,7 +244,7 @@ function NoHarnessBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>install the harness worker.</h1>
+      <h1 className={HEADING_CLASS}>Install the harness worker.</h1>
       <p className={BODY_CLASS}>
         chat runs on the <span className="text-ink">harness</span> worker, and
         it isn't connected yet. add it to start a session.

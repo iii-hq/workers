@@ -178,7 +178,7 @@ export function TabStrip({
       ref={stripRef}
       role="tablist"
       aria-label="workspace tabs"
-      className="flex items-center gap-1 min-w-0 overflow-x-auto"
+      className="flex min-w-0 items-center gap-1.5 overflow-x-auto"
     >
       {tabs.map((tab, index) => {
         const active = tab.id === activeTabId
@@ -316,10 +316,10 @@ export function TabStrip({
             }}
             style={transform ? { transform } : undefined}
             className={cn(
-              'group/tab flex items-center gap-1 h-7 pl-2.5 rounded-sm font-mono text-[12px] lowercase cursor-pointer select-none whitespace-nowrap transition-colors',
-              tabs.length > 1 ? 'pr-1' : 'pr-2.5',
+              'group/tab flex h-12 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md pl-4 font-sans text-sm font-medium sm:h-9 sm:gap-1.5 sm:pl-3',
+              tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
               active
-                ? 'bg-accent-muted text-ink'
+                ? 'bg-surface-selected text-ink'
                 : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
               dragging && !isDragged && 'transition-transform duration-150',
               isDragged &&
@@ -348,11 +348,16 @@ export function TabStrip({
                   onClose(tab.id)
                 }}
                 className={cn(
-                  'flex items-center justify-center size-4.5 rounded-xs text-ink-ghost hover:text-ink hover:bg-surface-hover transition-[color,opacity]',
-                  !active && 'opacity-0 group-hover/tab:opacity-100',
+                  'relative flex size-10 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink sm:size-7',
+                  !active &&
+                    'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100',
                 )}
               >
-                <X className="size-3" />
+                <span
+                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                  aria-hidden="true"
+                />
+                <X className="size-4 shrink-0" aria-hidden />
               </button>
             ) : null}
           </div>
@@ -364,9 +369,13 @@ export function TabStrip({
         aria-label="new tab"
         title="new tab"
         onClick={onCreate}
-        className="flex items-center justify-center size-7 shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+        className="relative flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink sm:size-9"
       >
-        <Plus className="size-4" />
+        <span
+          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+          aria-hidden="true"
+        />
+        <Plus className="size-4 shrink-0" aria-hidden />
       </button>
 
       {menu ? (
@@ -415,7 +424,8 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
       }}
       onBlur={onCancel}
       aria-label="rename tab"
-      className="w-[140px] bg-transparent font-mono text-[12px] text-ink outline-none lowercase"
+      name="tab-name"
+      className="w-[160px] bg-transparent font-sans text-sm text-ink outline-none"
     />
   )
 }
@@ -460,7 +470,7 @@ function TabContextMenu({
   }, [onDismiss])
 
   const itemCls =
-    'w-full flex items-center gap-2 rounded-xs px-2 py-1.5 text-left font-mono text-[12px] lowercase text-ink cursor-pointer hover:bg-surface-hover transition-colors'
+    'w-full flex items-center gap-2 rounded-xs px-2 py-1.5 text-left font-sans text-[12px] text-ink cursor-pointer hover:bg-surface-hover transition-colors'
 
   return createPortal(
     <div

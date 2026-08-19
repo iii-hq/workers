@@ -1,6 +1,6 @@
 /**
  * Workspace tabs — the header's closable tab strip. Each tab shows one or
- * two SCREENS side by side; a screen is any routed page (`traces`,
+ * more SCREENS; a screen is any routed page (`traces`,
  * `workers`, …), a worker-injected page (`ext:<page-id>`), or the chat
  * view (`chat`).
  *
@@ -17,8 +17,8 @@ import type { View } from '@/hooks/use-hash-route'
 /** `chat`, a routed first-party view, or `ext:<page-id>`. */
 export type TabScreen = string
 
-/** Split ceiling — the edge-add affordance hides once a tab hits it. */
-export const MAX_COLUMNS = 3
+/** Defensive persistence ceiling; the UI no longer has a three-panel cap. */
+export const MAX_COLUMNS = 64
 
 export interface WorkspaceTab {
   id: string
@@ -101,6 +101,41 @@ export function withColumnAdded(
     scaled.push(newFraction)
   }
   return { ...tab, columns: columns + 1, screens, sizes: scaled }
+}
+
+/**
+ * Place `screen` in an existing empty column or insert a new column beside
+ * `anchor`. Returns `null` only when the tab is full and has no empty column.
+ * Existing screens are never replaced.
+ */
+export function withScreenOpenedBeside(
+  tab: WorkspaceTab,
+  screen: TabScreen,
+  anchor: TabScreen = CHAT_SCREEN,
+): WorkspaceTab | null {
+  const columns = tabColumns(tab)
+  const screens: (TabScreen | null)[] = Array.from(
+    { length: columns },
+    (_, i) => tab.screens[i] ?? null,
+  )
+  if (screens.includes(screen)) return tab
+
+  const anchorIndex = screens.indexOf(anchor)
+  const adjacentEmpty =
+    anchorIndex >= 0 && screens[anchorIndex + 1] === null ? anchorIndex + 1 : -1
+  const emptyIndex = adjacentEmpty >= 0 ? adjacentEmpty : screens.indexOf(null)
+  if (emptyIndex >= 0) {
+    screens[emptyIndex] = screen
+    return { ...tab, columns, screens }
+  }
+  if (columns >= MAX_COLUMNS) return null
+
+  const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : columns
+  screens.splice(insertAt, 0, screen)
+  const newFraction = 1 / (columns + 1)
+  const sizes = tabSizes(tab).map((size) => size * (1 - newFraction))
+  sizes.splice(insertAt, 0, newFraction)
+  return { ...tab, columns: columns + 1, screens, sizes }
 }
 
 /**
@@ -328,6 +363,51 @@ export function newTabId(): string {
     return `tab-${crypto.randomUUID()}`
   }
   return `tab-${Math.random().toString(36).slice(2, 10)}`
+}
+
+export interface OpenWorkspaceScreenResult {
+  tabs: WorkspaceTab[]
+  activeTabId: string
+}
+
+/**
+ * Reuse a screen wherever it is already mounted; otherwise place it beside
+ * chat in the active tab without replacing any pane. A saturated workspace
+ * gets a fresh chat + context tab.
+ */
+export function withWorkspaceScreenOpened(
+  tabs: WorkspaceTab[],
+  activeTabId: string,
+  screen: TabScreen,
+  makeTabId: () => string = newTabId,
+): OpenWorkspaceScreenResult {
+  const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
+  // Where you already are beats where it happens to be mounted: opening chat
+  // from a workspace that shows chat should stay put, not send you to
+  // whichever other tab was created first.
+  if (active?.screens.includes(screen)) {
+    return { tabs, activeTabId: active.id }
+  }
+
+  const existing = tabs.find((tab) => tab.screens.includes(screen))
+  if (existing) return { tabs, activeTabId: existing.id }
+
+  if (active) {
+    const placed = withScreenOpenedBeside(active, screen)
+    if (placed) {
+      return {
+        tabs: tabs.map((tab) => (tab.id === active.id ? placed : tab)),
+        activeTabId: active.id,
+      }
+    }
+  }
+
+  const tab: WorkspaceTab = {
+    id: makeTabId(),
+    columns: 2,
+    screens: [CHAT_SCREEN, screen],
+  }
+  return { tabs: [...tabs, tab], activeTabId: tab.id }
 }
 
 /** Display label for one screen; ext screens resolve through the registry. */

@@ -540,7 +540,7 @@ export function TracesV2({ initialTraceId, onRequestClose }: TracesV2Props) {
                 size="sm"
                 onClick={() => loadTraceSpans(selectedTraceId)}
               >
-                <RefreshCw className="w-3 h-3" />
+                <RefreshCw className="size-4" />
                 retry
               </Button>
               <Button
@@ -608,7 +608,7 @@ export function TracesV2({ initialTraceId, onRequestClose }: TracesV2Props) {
     >
       <PageHeader
         icon={<GitBranch />}
-        title="traces"
+        title="Traces"
         onClose={onRequestClose}
       />
       <TimelineStrip

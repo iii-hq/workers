@@ -1,5 +1,6 @@
 import * as SelectPrimitive from '@radix-ui/react-select'
 import type * as React from 'react'
+import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
 interface SelectOption<T extends string> {
@@ -7,6 +8,7 @@ interface SelectOption<T extends string> {
   label: string
   /** Optional hover tooltip on the option row. */
   title?: string
+  disabled?: boolean
 }
 
 interface SelectGroup<T extends string> {
@@ -63,7 +65,7 @@ const EMPTY_VALUE = '\u0000empty'
 
 /**
  * Radix-based dropdown. Replaces the native `<select>` so the panel can be
- * themed consistently with the rest of the console (font-mono, lowercase,
+ * themed consistently with the rest of the console (sans interface text and
  * ink/bg/rule tokens) instead of inheriting the OS' dark-mode default look.
  *
  * Keeps the same external API the native version had: pass either `options`
@@ -115,7 +117,7 @@ export function Select<T extends string>({
         aria-label={aria['aria-label']}
         aria-busy={aria['aria-busy']}
         className={cn(
-          'inline-flex items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 h-9 text-ink font-mono text-[13px] lowercase hover:bg-surface-hover focus:outline-none focus:border-rule-focus data-[state=open]:border-rule-focus transition-colors max-w-full min-w-0 data-[placeholder]:text-ink-ghost',
+          'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none data-[state=open]:border-rule-focus data-[placeholder]:text-ink-ghost sm:h-9 sm:text-[13px]',
           disabled && 'opacity-40 pointer-events-none',
           className,
         )}
@@ -135,8 +137,8 @@ export function Select<T extends string>({
         <SelectPrimitive.Icon asChild>
           <span aria-hidden className="shrink-0 text-ink-faint">
             <svg
-              width="8"
-              height="6"
+              width="16"
+              height="16"
               viewBox="0 0 8 6"
               fill="none"
               stroke="currentColor"
@@ -150,75 +152,78 @@ export function Select<T extends string>({
       </SelectPrimitive.Trigger>
 
       <SelectPrimitive.Portal>
-        <SelectPrimitive.Content
-          position="popper"
-          sideOffset={4}
-          className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised text-ink font-mono text-[13px] lowercase shadow-floating',
-            'data-[state=open]:animate-in data-[state=closed]:animate-out',
-            'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-          )}
-        >
-          <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-            <svg
-              width="8"
-              height="6"
-              viewBox="0 0 8 6"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-              aria-hidden="true"
-            >
-              <path d="M1 5L4 1L7 5" />
-            </svg>
-          </SelectPrimitive.ScrollUpButton>
-          <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
-            {allowEmpty ? (
-              <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'none'} />
-            ) : null}
-            {groups
-              ? groups.map((g) => (
-                  <SelectPrimitive.Group key={g.label}>
-                    {renderGroupHeader ? (
-                      renderGroupHeader(g)
-                    ) : (
-                      <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-[0.12em] text-ink-faint">
-                        {g.label}
-                      </SelectPrimitive.Label>
-                    )}
-                    {g.options.map((opt) => (
-                      <SelectItem
-                        key={opt.value}
-                        value={opt.value}
-                        label={opt.label}
-                        title={opt.title}
-                      />
-                    ))}
-                  </SelectPrimitive.Group>
-                ))
-              : (options ?? []).map((opt) => (
-                  <SelectItem
-                    key={opt.value}
-                    value={opt.value}
-                    label={opt.label}
-                    title={opt.title}
-                  />
-                ))}
-          </SelectPrimitive.Viewport>
-          <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-            <svg
-              width="8"
-              height="6"
-              viewBox="0 0 8 6"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-              aria-hidden="true"
-            >
-              <path d="M1 1L4 5L7 1" />
-            </svg>
-          </SelectPrimitive.ScrollDownButton>
-        </SelectPrimitive.Content>
+        <PortalScope>
+          <SelectPrimitive.Content
+            position="popper"
+            sideOffset={4}
+            collisionPadding={8}
+            className={cn(
+              'iii-ui-motion-overlay z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
+            )}
+          >
+            <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 8 6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1"
+                aria-hidden="true"
+              >
+                <path d="M1 5L4 1L7 5" />
+              </svg>
+            </SelectPrimitive.ScrollUpButton>
+            <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
+              {allowEmpty ? (
+                <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'None'} />
+              ) : null}
+              {groups
+                ? groups.map((g) => (
+                    <SelectPrimitive.Group key={g.label}>
+                      {renderGroupHeader ? (
+                        renderGroupHeader(g)
+                      ) : (
+                        <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-[12px] font-semibold text-ink-faint">
+                          {g.label}
+                        </SelectPrimitive.Label>
+                      )}
+                      {g.options.map((opt) => (
+                        <SelectItem
+                          key={opt.value}
+                          value={opt.value}
+                          label={opt.label}
+                          title={opt.title}
+                          disabled={opt.disabled}
+                        />
+                      ))}
+                    </SelectPrimitive.Group>
+                  ))
+                : (options ?? []).map((opt) => (
+                    <SelectItem
+                      key={opt.value}
+                      value={opt.value}
+                      label={opt.label}
+                      title={opt.title}
+                      disabled={opt.disabled}
+                    />
+                  ))}
+            </SelectPrimitive.Viewport>
+            <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 8 6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1"
+                aria-hidden="true"
+              >
+                <path d="M1 1L4 5L7 1" />
+              </svg>
+            </SelectPrimitive.ScrollDownButton>
+          </SelectPrimitive.Content>
+        </PortalScope>
       </SelectPrimitive.Portal>
     </SelectPrimitive.Root>
   )
@@ -228,15 +233,17 @@ interface SelectItemProps {
   value: string
   label: string
   title?: string
+  disabled?: boolean
 }
 
-function SelectItem({ value, label, title }: SelectItemProps) {
+function SelectItem({ value, label, title, disabled }: SelectItemProps) {
   return (
     <SelectPrimitive.Item
       value={value}
       title={title}
+      disabled={disabled}
       className={cn(
-        'relative flex items-center pl-7 pr-3 py-1.5 rounded-xs cursor-pointer outline-none select-none',
+        'relative flex min-h-12 cursor-pointer select-none items-center rounded-xs py-2 pr-3 pl-7 outline-none sm:min-h-0 sm:py-1.5',
         'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
         'data-[state=checked]:text-ink',
         'data-[disabled]:opacity-40 data-[disabled]:pointer-events-none',

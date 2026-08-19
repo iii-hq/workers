@@ -1,15 +1,33 @@
-import { CircleQuestionMark, SettingsIcon, X } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import {
+  CircleQuestionMark,
+  Menu,
+  Plus,
+  Search,
+  SettingsIcon,
+  SquarePen,
+  X,
+} from 'lucide-react'
+import {
+  type CSSProperties,
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { PaletteHost } from '@/components/PaletteHost'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
+import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
 import { EdgeAddZone, ResizeHandle } from '@/components/workspace/pane-controls'
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
@@ -19,6 +37,7 @@ import {
   useHashRoute,
   type View,
 } from '@/hooks/use-hash-route'
+import { useKeybindings } from '@/hooks/use-keybindings'
 import { useTheme } from '@/hooks/use-theme'
 import {
   type UseWorkspaceTabsReturn,
@@ -28,6 +47,9 @@ import {
   ConversationsProvider,
   useConversationsCtx,
 } from '@/lib/conversations-context'
+import { shortcutPlatform } from '@/lib/keybindings/bindings'
+import { keybindingGroups, resolveBindings } from '@/lib/keybindings/registry'
+import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
@@ -51,8 +73,19 @@ export function App() {
   const [view, setView] = useHashRoute()
   const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
+  // search affordance is the other, so the state has to sit above both.
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
+  const [mobilePanelIndex, setMobilePanelIndex] = useState(0)
+
+  const mobileActiveTabRef = useRef(activeTabId)
+  useEffect(() => {
+    if (mobileActiveTabRef.current === activeTabId) return
+    mobileActiveTabRef.current = activeTabId
+    setMobilePanelIndex(0)
+  }, [activeTabId])
 
   // An active extension page that disappears (hot-reload failure, worker
   // disconnect, unregister) falls back to the default view.
@@ -84,6 +117,13 @@ export function App() {
   )
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
+  useEffect(
+    () =>
+      subscribePanelOpen((event) => {
+        workspaceRef.current.openScreen(`ext:${event.pageId}`)
+      }),
+    [],
+  )
   // Closing settings routes back to the ACTIVE tab's own screen (never to
   // whichever tab happens to own the previous view — that would switch
   // tabs under the user). Pre-marking keeps the hash-inbound effect quiet.
@@ -143,34 +183,45 @@ export function App() {
     else setView(primary as View)
   }, [activeTabId, activeTab, hashScreen, setView])
 
-  /* `?` opens the shortcuts overlay. Ignored when the user is typing into
-     editable elements so we don't fight the composer. */
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== '?') return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      const target = e.target as HTMLElement | null
-      if (target?.isContentEditable) return
-      const tag = target?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      e.preventDefault()
-      setShortcutsOpen(true)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  /* Every global shortcut the console has, dispatched from the registry.
+     Which keys reach here while the caret is in a field, and which stand
+     down, is the registry's call — not this component's. */
+  useKeybindings({
+    'palette.toggle': () => setPaletteOpen((current) => !current),
+    'shortcuts.open': () => setShortcutsOpen(true),
+    'app.settings': toggleSettings,
+    'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    'panel.split': () =>
+      workspaceRef.current.addColumn(
+        workspaceRef.current.activeTab.id,
+        'right',
+      ),
+    // Out of range is a no-op rather than a wrap: pressing 7 with four
+    // workspaces open should do nothing, not land somewhere surprising.
+    'workspace.selectByIndex': (index) => {
+      const tab = workspaceRef.current.tabs[index]
+      if (tab) workspaceRef.current.activateTab(tab.id)
+    },
+  })
 
   return (
     <ConversationsProvider>
       <Sheet>
         <Header
           workspace={workspace}
+          mobilePanelIndex={mobilePanelIndex}
+          onMobilePanelIndexChange={setMobilePanelIndex}
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
-        <WorkspacePanes workspace={workspace} onExtMissing={onExtMissing} />
+        <WorkspacePanes
+          workspace={workspace}
+          mobilePanelIndex={mobilePanelIndex}
+          onMobilePanelIndexChange={setMobilePanelIndex}
+          onExtMissing={onExtMissing}
+        />
         {view === 'configuration' ? (
           <ConfigurationOverlay
             theme={theme}
@@ -179,6 +230,15 @@ export function App() {
           />
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <PaletteHost
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          openScreen={workspace.openScreen}
+          onOpenSettings={() => setView('configuration')}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
+          theme={theme}
+          onThemeChange={setTheme}
+        />
       </Sheet>
     </ConversationsProvider>
   )
@@ -186,6 +246,8 @@ export function App() {
 
 interface WorkspacePanesProps {
   workspace: UseWorkspaceTabsReturn
+  mobilePanelIndex: number
+  onMobilePanelIndexChange: (index: number) => void
   onExtMissing: () => void
 }
 
@@ -199,24 +261,96 @@ interface WorkspacePanesProps {
  * on release). The container's edge slivers grow the split — hover (or
  * tap) one to reveal the add-panel affordance.
  */
-function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
+function WorkspacePanes({
+  workspace,
+  mobilePanelIndex,
+  onMobilePanelIndexChange,
+  onExtMissing,
+}: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
   const { activeTab } = workspace
   const columns = tabColumns(activeTab)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLElement>(null)
+  const pendingMobileColumnRef = useRef<{
+    tabId: string
+    index: number
+  } | null>(null)
 
   // First-run discoverability for the edge add zones: nudge until the user
   // adds a panel THROUGH a zone (either side), then remember in localStorage
   // so it never plays again. Deliberately not inferred from existing splits —
   // the default workspace already ships a 2-column tab.
   const [edgeNudge, setEdgeNudge] = useState(() => !loadEdgeAddDiscovered())
-  const addEdgeColumn = (side: 'left' | 'right') => {
-    if (edgeNudge) {
-      saveEdgeAddDiscovered()
-      setEdgeNudge(false)
+  const addEdgeColumn = useCallback(
+    (side: 'left' | 'right') => {
+      if (edgeNudge) {
+        saveEdgeAddDiscovered()
+        setEdgeNudge(false)
+      }
+      workspace.addColumn(activeTab.id, side)
+    },
+    [activeTab.id, edgeNudge, workspace],
+  )
+
+  const addMobileColumn = useCallback(() => {
+    if (columns >= MAX_COLUMNS || pendingMobileColumnRef.current) return
+    pendingMobileColumnRef.current = {
+      tabId: activeTab.id,
+      index: columns,
     }
-    workspace.addColumn(activeTab.id, side)
-  }
+    addEdgeColumn('right')
+  }, [activeTab.id, addEdgeColumn, columns])
+
+  // A tab switch always lands on its first panel. Inside a tab, native
+  // horizontal scrolling does the gesture work and this index only mirrors
+  // the snapped position for the header indicator.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || container.dataset.activeTab === activeTab.id) return
+    pendingMobileColumnRef.current = null
+    container.dataset.activeTab = activeTab.id
+    container.scrollTo({ left: 0, behavior: 'auto' })
+  }, [activeTab.id])
+
+  useEffect(() => {
+    const pending = pendingMobileColumnRef.current
+    if (pending?.tabId === activeTab.id && pending.index < columns) {
+      pendingMobileColumnRef.current = null
+      onMobilePanelIndexChange(pending.index)
+      const container = containerRef.current
+      if (container) {
+        container.scrollTo({
+          left: container.clientWidth * pending.index,
+          behavior: 'auto',
+        })
+      }
+      return
+    }
+    if (mobilePanelIndex < columns) return
+    const next = Math.max(0, columns - 1)
+    onMobilePanelIndexChange(next)
+    const container = containerRef.current
+    if (container) container.scrollTo({ left: container.clientWidth * next })
+  }, [activeTab.id, columns, mobilePanelIndex, onMobilePanelIndexChange])
+
+  const handleMobileScroll = useCallback(
+    (element: HTMLElement) => {
+      if (window.matchMedia('(min-width: 640px)').matches) return
+      const width = element.clientWidth
+      if (width <= 0) return
+      const position = element.scrollLeft / width
+      // The extra snap page after the last real panel is a creation gesture.
+      // Wait until it is effectively reached so an ordinary partial drag does
+      // not create panels accidentally.
+      if (columns < MAX_COLUMNS && position >= columns - 0.05) {
+        addMobileColumn()
+        return
+      }
+      const next = Math.max(0, Math.min(columns - 1, Math.round(position)))
+      if (next !== mobilePanelIndex) onMobilePanelIndexChange(next)
+    },
+    [addMobileColumn, columns, mobilePanelIndex, onMobilePanelIndexChange],
+  )
 
   // Fractions while a divider drag is live. Committing does NOT clear
   // them: the store notifies through useSyncExternalStore, which doesn't
@@ -255,10 +389,13 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
 
   const resizePair = (index: number, delta: number) => {
     const current = dragSizesRef.current ?? tabSizes(activeTab)
-    // Clamp so neither neighbor dips under the minimum fraction.
+    // With many horizontally scrollable panels, an equal share can be below
+    // the normal split minimum. Scale the floor with the panel count so the
+    // resize math remains valid instead of forcing a pair in one direction.
+    const minFraction = Math.min(MIN_COLUMN_FRACTION, 1 / (columns * 2))
     const bounded = Math.max(
-      -(current[index] - MIN_COLUMN_FRACTION),
-      Math.min(current[index + 1] - MIN_COLUMN_FRACTION, delta),
+      -(current[index] - minFraction),
+      Math.min(current[index + 1] - minFraction, delta),
     )
     if (bounded === 0) return
     const next = [...current]
@@ -277,9 +414,11 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
   }
 
   return (
-    <div
+    <section
       ref={containerRef}
-      className="relative flex-1 flex min-h-0 px-3 pb-1.5 sm:px-4"
+      onScroll={(event) => handleMobileScroll(event.currentTarget)}
+      className="relative flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-4 sm:pb-1.5"
+      aria-label="workspace panels"
     >
       {Array.from({ length: columns }, (_, column) => {
         const screen = activeTab.screens[column] ?? null
@@ -295,13 +434,18 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
             ? workspace.removeColumn(activeTab.id, column)
             : workspace.detachScreen(activeTab.id, column)
         const pane = (
-          <div
+          <section
             // biome-ignore lint/suspicious/noArrayIndexKey: the column POSITION is the identity — the composite key deliberately remounts a pane when its tab or attached screen changes
             key={`${activeTab.id}:${column}:${screen ?? 'empty'}`}
             // ×1000: flex-grow sums below 1 only distribute that fraction
             // of the free space — scaling keeps the ratios AND fills the row.
-            style={{ flexGrow: sizes[column] * 1000 }}
-            className="basis-0 flex flex-col min-w-0 min-h-0 rounded-sm border border-edge bg-panel overflow-hidden"
+            style={
+              {
+                '--panel-grow': sizes[column] * 1000,
+              } as CSSProperties
+            }
+            className="flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden border-y border-edge bg-panel [scroll-snap-stop:always] sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)] sm:rounded-sm sm:border"
+            aria-label={`panel ${column + 1} of ${columns}`}
           >
             {screen === null ? (
               <EmptyPane
@@ -324,7 +468,7 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
                 onExtMissing={onExtMissing}
               />
             )}
-          </div>
+          </section>
         )
         if (column === 0) return pane
         return (
@@ -344,6 +488,23 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
       })}
 
       {columns < MAX_COLUMNS ? (
+        <section
+          aria-label="swipe to create a new panel"
+          className="flex min-h-0 min-w-full basis-full shrink-0 snap-center items-center justify-center border-y border-dashed border-edge bg-panel/60 px-6 text-center [scroll-snap-stop:always] sm:hidden"
+        >
+          <div className="flex flex-col items-center gap-2 font-sans text-ink-faint">
+            <span className="flex size-12 items-center justify-center rounded-sm bg-surface">
+              <Plus className="size-5 shrink-0" aria-hidden />
+            </span>
+            <span className="text-base">New panel</span>
+            <span className="text-base text-ink-ghost">
+              Keep swiping to add it
+            </span>
+          </div>
+        </section>
+      ) : null}
+
+      {columns < MAX_COLUMNS ? (
         <>
           <EdgeAddZone
             side="left"
@@ -357,7 +518,7 @@ function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
           />
         </>
       ) : null}
-    </div>
+    </section>
   )
 }
 
@@ -402,7 +563,13 @@ function ScreenBody({
     case CHAT_SCREEN:
       // The compact header variant — a tab column is width-constrained the
       // same way the old side dock was, especially in two-column layouts.
-      return <ChatPanel density="dock" onRequestClose={onClose} />
+      return (
+        <ChatPanel
+          density="dock"
+          panelSide={panelSide}
+          onRequestClose={onClose}
+        />
+      )
     case 'workers':
       return <Workers onRequestClose={onClose} />
     default:
@@ -412,62 +579,160 @@ function ScreenBody({
 
 interface HeaderProps {
   workspace: UseWorkspaceTabsReturn
+  mobilePanelIndex: number
+  onMobilePanelIndexChange: (index: number) => void
   settingsOpen: boolean
   onToggleSettings: () => void
   onOpenShortcuts: () => void
+  onOpenPalette: () => void
 }
 
 function Header({
   workspace,
+  mobilePanelIndex,
+  onMobilePanelIndexChange,
   settingsOpen,
   onToggleSettings,
   onOpenShortcuts,
+  onOpenPalette,
 }: HeaderProps) {
   const { extPageTitles } = useScreenOptions()
+  const { createNew } = useConversationsCtx()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const columns = tabColumns(workspace.activeTab)
+  const mobileScreen = workspace.activeTab.screens[mobilePanelIndex] ?? null
+
   return (
-    <header className="flex items-center justify-between gap-3 pl-3 pr-6 h-12 shrink-0">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <Wordmark />
-        <TabStrip
-          tabs={workspace.tabs}
-          activeTabId={workspace.activeTabId}
-          extPageTitles={extPageTitles}
-          onActivate={workspace.activateTab}
-          onClose={workspace.closeTab}
-          onCreate={() => workspace.createTab({ columns: 1 })}
-          onRename={workspace.renameTab}
-          onReorder={workspace.reorderTab}
-        />
-      </div>
-      <div className="flex items-center gap-3">
+    <>
+      <header className="grid h-16 shrink-0 grid-cols-[1fr_auto_1fr] items-center px-3 sm:hidden">
         <button
           type="button"
-          onClick={onOpenShortcuts}
-          aria-label="keyboard shortcuts (?)"
-          title="keyboard shortcuts (?)"
-          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border border-transparent bg-transparent text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:border-accent focus-visible:outline-none"
+          onClick={() => setMobileMenuOpen(true)}
+          aria-label="open workspace menu"
+          className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
         >
-          <span aria-hidden>
-            <CircleQuestionMark className="w-4 h-4" />
-          </span>
+          <Menu className="size-6" aria-hidden />
         </button>
-        <button
-          type="button"
-          onClick={onToggleSettings}
-          aria-pressed={settingsOpen}
-          aria-label="console settings"
-          title="console settings"
-          className={cn(
-            'font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border transition-colors',
-            settingsOpen
-              ? 'bg-ink text-bg border-transparent'
-              : 'bg-transparent text-ink-faint border-transparent hover:text-ink hover:bg-surface-hover',
-          )}
-        >
-          <SettingsIcon className="w-4 h-4" />
-        </button>
-      </div>
-    </header>
+
+        <div className="flex size-12 items-center justify-center">
+          {columns > 1 ? (
+            <span
+              className="flex items-center gap-1.5"
+              role="status"
+              aria-label={`panel ${mobilePanelIndex + 1} of ${columns}`}
+            >
+              {columns <= 7 ? (
+                Array.from({ length: columns }, (_, index) => (
+                  <span
+                    // biome-ignore lint/suspicious/noArrayIndexKey: panel dots are positional
+                    key={index}
+                    className={cn(
+                      'size-1.5 rounded-full',
+                      index === mobilePanelIndex ? 'bg-ink' : 'bg-ink-ghost/60',
+                    )}
+                    aria-hidden
+                  />
+                ))
+              ) : (
+                <span className="font-mono text-sm text-ink-faint" aria-hidden>
+                  {mobilePanelIndex + 1} / {columns}
+                </span>
+              )}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-end">
+          {/* A phone has no ⌘K. Search is the console's way of reaching
+              anything, so it gets a first-class affordance rather than a row
+              buried in the workspace menu. */}
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            aria-label="search the console"
+            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            <Search className="size-6" aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (mobileScreen === CHAT_SCREEN) createNew()
+              else workspace.createTab({ columns: 1 })
+            }}
+            aria-label={
+              mobileScreen === CHAT_SCREEN ? 'new chat' : 'new workspace'
+            }
+            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            {mobileScreen === CHAT_SCREEN ? (
+              <SquarePen className="size-6" aria-hidden />
+            ) : (
+              <Plus className="size-6" aria-hidden />
+            )}
+          </button>
+        </div>
+      </header>
+
+      <MobileWorkspaceMenu
+        open={mobileMenuOpen}
+        onOpenChange={setMobileMenuOpen}
+        workspace={workspace}
+        extPageTitles={extPageTitles}
+        settingsOpen={settingsOpen}
+        onActivate={(tabId) => {
+          onMobilePanelIndexChange(0)
+          workspace.activateTab(tabId)
+        }}
+        onToggleSettings={onToggleSettings}
+        onOpenShortcuts={onOpenShortcuts}
+        onOpenPalette={onOpenPalette}
+      />
+
+      <header className="hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <Wordmark />
+          <TabStrip
+            tabs={workspace.tabs}
+            activeTabId={workspace.activeTabId}
+            extPageTitles={extPageTitles}
+            onActivate={workspace.activateTab}
+            onClose={workspace.closeTab}
+            onCreate={() => workspace.createTab({ columns: 1 })}
+            onRename={workspace.renameTab}
+            onReorder={workspace.reorderTab}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenShortcuts}
+            aria-label="keyboard shortcuts (?)"
+            title="keyboard shortcuts (?)"
+            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
+          >
+            <span aria-hidden>
+              <CircleQuestionMark className="size-4 shrink-0" />
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleSettings}
+            aria-pressed={settingsOpen}
+            aria-label="console settings"
+            title="console settings"
+            className={cn(
+              'relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
+              settingsOpen
+                ? 'border-transparent bg-ink text-bg'
+                : 'border-transparent bg-transparent text-ink-faint hover:bg-surface-hover hover:text-ink',
+            )}
+          >
+            <SettingsIcon className="size-4 shrink-0" aria-hidden />
+          </button>
+        </div>
+      </header>
+    </>
   )
 }
 
@@ -522,32 +787,55 @@ interface ShortcutsDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-const SHORTCUTS: { combo: string; description: string }[] = [
-  { combo: '?', description: 'open this shortcut overlay' },
-]
-
+/* Generated from the registry, so the overlay cannot drift from what the
+   keys actually do, and each chord is spelled for the reader's keyboard. */
 function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
+  const platform = shortcutPlatform()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogTitle className="text-[11px] uppercase tracking-[0.18em] text-ink-faint">
-          keyboard shortcuts
+        <DialogTitle className="text-[11px] font-semibold text-ink-faint">
+          Keyboard shortcuts
         </DialogTitle>
         <DialogDescription className="mt-1">
-          press <kbd className="font-mono text-ink">?</kbd> any time to reopen
+          Press <kbd className="font-mono text-ink">?</kbd> any time to reopen
           this list.
         </DialogDescription>
-        <ul className="mt-4 divide-y divide-rule-2 border-t border-b border-rule-2">
-          {SHORTCUTS.map(({ combo, description }) => (
-            <li
-              key={combo}
-              className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
-            >
-              <span className="text-ink-faint">{description}</span>
-              <kbd className="text-ink tracking-[0.06em]">{combo}</kbd>
-            </li>
-          ))}
-        </ul>
+        {keybindingGroups().map(([group, entries]) => (
+          <section key={group} className="mt-4">
+            <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
+              {group}
+            </h3>
+            <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
+              {entries.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
+                >
+                  <span className="text-ink-faint">{entry.title}</span>
+                  {/* Alternatives, not one chord: without a separator `tab`
+                      and `shift tab` read as a single four-key press. */}
+                  <span className="flex shrink-0 items-center gap-2">
+                    {resolveBindings(entry.bindings, platform).map(
+                      (binding, index) => (
+                        <Fragment key={binding}>
+                          {index > 0 ? (
+                            <span className="text-ink-ghost">or</span>
+                          ) : null}
+                          <KeyCombo
+                            binding={binding}
+                            platform={platform}
+                            digitRange={entry.digitIndex}
+                          />
+                        </Fragment>
+                      ),
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
       </DialogContent>
     </Dialog>
   )

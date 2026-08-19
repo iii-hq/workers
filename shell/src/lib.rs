@@ -13,6 +13,7 @@ pub mod fs;
 pub mod functions;
 pub mod jobs;
 pub mod path;
+pub mod pty;
 pub mod scode;
 pub mod target;
 pub mod telemetry;

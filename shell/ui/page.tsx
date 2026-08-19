@@ -19,20 +19,44 @@
 
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { createShellTriggerRenderer } from './src/function-trigger'
+import { createAgentRunRenderer } from './src/function-trigger/AgentRunView'
+import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
 import { ShellExplorerPage } from './src/page'
 import { ShellTurnSummary } from './src/page/ShellTurnSummary'
+import { createTerminalOutputRouter } from './src/page/terminal-output-router'
 
 export default function setup(host: Host) {
+  // The output subscription belongs to the loaded UI asset, not to a React
+  // page instance. React Strict Mode intentionally replays effect cleanup on
+  // mount; component ownership would dispose a memoized router before the
+  // user opens the terminal. One module-scoped router also serves every Shell
+  // panel without duplicating the browser output subscription.
+  const terminalRouter = createTerminalOutputRouter(host)
+
   host.pages.register({
     id: 'shell',
     title: 'shell',
-    render: (props: PageRenderProps) => <ShellExplorerPage host={host} {...props} />,
+    render: (props: PageRenderProps) => (
+      <ShellExplorerPage
+        host={host}
+        terminalRouter={terminalRouter}
+        {...props}
+      />
+    ),
   })
 
+  // File mutations own a prominent chat artifact; register them before the
+  // general shell renderer so their non-null card and display metadata win.
+  // Agent runs are terminal-shaped work, so the terminal owner claims them —
+  // one control here instead of the same button in every agent worker.
+  host.functionTriggers.register(createAgentRunRenderer(host))
+  host.functionTriggers.register(createFileChangesRenderer(host))
   host.functionTriggers.register(createShellTriggerRenderer())
 
   host.chat?.registerTurnSummary?.({
     id: 'shell-last-turn',
     render: ShellTurnSummary,
   })
+
+  return () => terminalRouter.dispose()
 }

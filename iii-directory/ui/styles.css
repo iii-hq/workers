@@ -293,14 +293,6 @@
 /* ── navigation sidebar ─────────────────────────────────────────────── */
 
 [data-iii-ui="iii-directory"] .dir-ui-side {
-  width: 300px;
-  min-width: 260px;
-  max-width: 340px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--color-sidebar);
   border-right: 1px solid var(--color-edge);
 }
 [data-iii-ui="iii-directory"] .dir-ui-browser.right .dir-ui-side {
@@ -311,8 +303,6 @@
    not the viewport: one pane at a time — the JSX renders either the list
    or the opened document. */
 [data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-side {
-  width: 100%;
-  max-width: none;
   border-right: 0;
   border-left: 0;
 }
@@ -359,8 +349,8 @@
   color: var(--color-accent-fg);
 }
 [data-iii-ui="iii-directory"] .dir-ui-new-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="iii-directory"] .dir-ui-count {
   padding: 0 2px;
@@ -376,54 +366,10 @@
   padding: 4px 6px 12px;
 }
 
-/* segmented control — one control, mutually exclusive options */
-[data-iii-ui="iii-directory"] .dir-ui-seg {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  background: var(--color-surface);
-  border-radius: 6px;
+/* Shared line tabs own typography, icon sizing and active underline. */
+[data-iii-ui="iii-directory"] .dir-ui-collection-tabs {
+  width: 100%;
   flex-shrink: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-seg.block {
-  display: flex;
-}
-[data-iii-ui="iii-directory"] .dir-ui-seg-btn {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  height: 26px;
-  /* Fixed height, so a wrapped label overflows its own box instead of
-     growing it — keep every label on one line. */
-  white-space: nowrap;
-  padding: 0 12px;
-  border-radius: 4px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-[data-iii-ui="iii-directory"] .dir-ui-seg-btn:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="iii-directory"] .dir-ui-seg-btn.active {
-  color: var(--color-ink);
-  background: var(--color-panel-raised);
-  box-shadow: 0 0 0 1px var(--color-edge);
-}
-[data-iii-ui="iii-directory"] .dir-ui-seg-btn:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-seg.block .dir-ui-seg-btn {
-  flex: 1;
 }
 
 /* search */
@@ -435,8 +381,8 @@
   left: 10px;
   top: 50%;
   transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   color: var(--color-ink-ghost);
   pointer-events: none;
 }
@@ -465,8 +411,8 @@
   background: var(--color-surface-hover);
 }
 [data-iii-ui="iii-directory"] .dir-ui-x-icon {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 
 /* entry rows — the whole row is the button */
@@ -500,7 +446,7 @@
   outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
 }
-/* Selection = wash + accent indicator + stronger title, not color alone. */
+/* Selection stays neutral: wash + edge indicator + stronger title. */
 [data-iii-ui="iii-directory"] .dir-ui-nav-row.active {
   background: var(--color-surface-selected);
 }
@@ -512,7 +458,7 @@
   bottom: 8px;
   width: 2px;
   border-radius: 1px;
-  background: var(--color-accent);
+  background: var(--color-edge);
 }
 [data-iii-ui="iii-directory"] .dir-ui-nav-row .name {
   font-size: 13px;
@@ -663,10 +609,13 @@
   flex-wrap: wrap;
   gap: 8px 12px;
   min-height: 52px;
-  padding: 8px 16px;
+  padding: 8px 16px 0;
   flex-shrink: 0;
   background: var(--color-panel-raised);
-  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-ui-editor-tabs {
+  order: 3;
+  width: 100%;
 }
 [data-iii-ui="iii-directory"] .dir-ui-doc-identity {
   display: flex;
@@ -847,12 +796,8 @@
   background: var(--color-panel-raised);
   border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="iii-directory"]
-  .dir-ui-doc-body.mode-split
-  .dir-ui-edit-fields,
-[data-iii-ui="iii-directory"]
-  .dir-ui-browser.narrow
-  .dir-ui-edit-fields {
+[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-split .dir-ui-edit-fields,
+[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-edit-fields {
   grid-template-columns: minmax(0, 1fr);
 }
 [data-iii-ui="iii-directory"] .dir-ui-edit-field {
@@ -899,9 +844,9 @@
   line-height: 1.45;
   color: var(--color-ink);
   transition:
-    border-color 150ms ease,
-    box-shadow 150ms ease,
-    background-color 150ms ease;
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
 }
 [data-iii-ui="iii-directory"] .dir-ui-edit-textarea::placeholder {
   color: var(--color-ink-faint);
@@ -944,7 +889,8 @@
   cursor: col-resize;
   background: transparent;
   border-left: 1px solid var(--color-edge);
-  transition: background-color 120ms ease;
+  transition: background-color var(--motion-duration-fast)
+    var(--motion-ease-standard);
   touch-action: none;
 }
 [data-iii-ui="iii-directory"] .dir-ui-divider:hover,
@@ -1278,7 +1224,7 @@
   color: var(--color-ink-faint);
   cursor: pointer;
   white-space: nowrap;
-  transition: color 120ms ease;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="iii-directory"] .dir-ui-sysprompt-chip:hover {
   color: var(--color-ink);
@@ -1303,14 +1249,14 @@
    chrome. Two ghost glyphs in a row would read as one smudge. Slightly
    larger than the caret because it means something. */
 [data-iii-ui="iii-directory"] .dir-ui-sysprompt-strategy {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   flex: none;
   color: inherit;
 }
 [data-iii-ui="iii-directory"] .dir-ui-sysprompt-caret {
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
   flex: none;
   color: var(--color-ink-ghost);
 }
@@ -1395,7 +1341,7 @@
   letter-spacing: 0.06em;
   color: var(--color-ink-faint);
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="iii-directory"] .dir-ui-sysprompt-copy:hover {
   color: var(--color-ink);

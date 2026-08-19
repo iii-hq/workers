@@ -45,7 +45,9 @@
   animation: cr-page-spin 1s linear infinite;
 }
 @keyframes cr-page-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 [data-iii-ui="sandbox-code-runner"] .cr-page-faint {
@@ -156,7 +158,9 @@
 [data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row.reap-soon {
   background: var(--color-warn-muted);
 }
-[data-iii-ui="sandbox-code-runner"] .cr-page-fleet-row.reap-soon .cr-page-fleet-age {
+[data-iii-ui="sandbox-code-runner"]
+  .cr-page-fleet-row.reap-soon
+  .cr-page-fleet-age {
   color: var(--color-warn);
 }
 
@@ -199,7 +203,7 @@
 }
 
 [data-iii-ui="sandbox-code-runner"] .cr-page-chev {
-  transition: transform 120ms ease;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
   flex-shrink: 0;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-page-chev.open {
@@ -490,9 +494,9 @@
   white-space: nowrap;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-page-toggle.on {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-  background: var(--color-accent-muted);
+  border-color: var(--color-edge);
+  color: var(--color-ink);
+  background: var(--color-surface-selected);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-page-toggle:disabled {
   opacity: 0.5;
@@ -950,8 +954,13 @@
   color: var(--color-ink-ghost);
 }
 @keyframes cr-page-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 /* ── shared widgets ────────────────────────────────────────────────── */
@@ -1062,66 +1071,6 @@
 [data-iii-ui="sandbox-code-runner"] .cr-page-errcard-fix {
   font-size: 12px;
   color: var(--color-ink-faint);
-}
-
-/* ── configuration form ────────────────────────────────────────────── */
-
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-caption {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-label {
-  display: block;
-  font-size: 11.5px;
-  color: var(--color-ink-faint);
-  margin-bottom: 4px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-input {
-  width: 100%;
-  border: 1px solid var(--color-edge);
-  background: var(--color-panel);
-  color: var(--color-ink);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12.5px;
-  padding: 5px 8px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-input:focus-visible {
-  outline: 1px solid var(--color-rule-focus);
-  outline-offset: -1px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-echo {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  margin-top: 3px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-hint {
-  font-size: 11px;
-  color: var(--color-ink-faint);
-  margin-top: 2px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-warning {
-  font-size: 12px;
-  color: var(--color-warn);
-  background: var(--color-warn-muted);
-  padding: 6px 10px;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-cfg-errors {
-  font-size: 12px;
-  color: var(--color-alert);
 }
 
 /* ── session chip ──────────────────────────────────────────────────── */
@@ -1243,45 +1192,12 @@
   border-color: var(--color-accent);
 }
 
-/* ── rail resizer ─────────────────────────────────────────────────────
-   A slim col-resize splitter between the rail and the workspace. The
-   visible line only appears on hover/focus/drag so the resting layout
-   stays line-free like the rest of the console. */
-[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer {
-  flex-shrink: 0;
-  width: 6px;
-  margin: 0 -3px;
-  cursor: col-resize;
-  touch-action: none;
-  background: transparent;
-  position: relative;
-  z-index: 1;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer::after {
-  content: "";
-  position: absolute;
-  inset: 0 2px;
-  background: transparent;
-  transition: background 0.12s ease;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:hover::after,
-[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:active::after {
-  background: var(--color-accent);
-  opacity: 0.55;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:focus-visible {
-  outline: none;
-}
-[data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer:focus-visible::after {
-  background: var(--color-accent);
-  opacity: 0.9;
-}
-
 /* ── container queries — LAST in the file ──────────────────────────────
    `.cr-page-shell` is the `cr-page` inline-size container; below ~700px
    of PANE width (not viewport) the rail collapses above the workspace.
-   The sidebar's fixed width arrives as an inline style from the
-   PageSidebar `width` prop, so only `!important` can release it here. */
+   The sidebar's managed width arrives inline from PageSidebar, so only
+   `!important` can release it here. Its matching `narrowBelow` threshold
+   suppresses collapse and resize without changing the wide preference. */
 
 @container cr-page (max-width: 700px) {
   [data-iii-ui="sandbox-code-runner"] .cr-page-body {
@@ -1295,9 +1211,6 @@
   }
   [data-iii-ui="sandbox-code-runner"] .cr-page-body.right .cr-page-sidebar {
     border-left: 0;
-  }
-  [data-iii-ui="sandbox-code-runner"] .cr-page-rail-resizer {
-    display: none;
   }
   [data-iii-ui="sandbox-code-runner"] .cr-page-files-body {
     flex-direction: column;

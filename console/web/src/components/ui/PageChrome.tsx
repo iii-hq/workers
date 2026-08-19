@@ -26,6 +26,8 @@ import { X } from 'lucide-react'
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
+export { PageSidebar, type PageSidebarProps } from './PageSidebar'
+
 /** The pane's root column. Fills the pane whether the parent is a flex
     column (native screens) or a block scroller (the ext-page host). */
 export function PageShell({
@@ -46,7 +48,7 @@ export function PageShell({
 export interface PageHeaderProps {
   /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
   icon?: React.ReactNode
-  /** The page's name — console chrome vocabulary: mono, lowercase. */
+  /** The page's human-readable name. Technical identifiers belong in `description`. */
   title?: React.ReactNode
   /** One short descriptor; truncates before anything else gives. */
   description?: React.ReactNode
@@ -73,7 +75,7 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        'flex items-center gap-2.5 h-11 px-3 shrink-0 whitespace-nowrap',
+        'flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap px-3 sm:h-11',
         'bg-panel-raised border-b border-edge',
         className,
       )}
@@ -87,12 +89,12 @@ export function PageHeader({
         </span>
       ) : null}
       {title ? (
-        <span className="shrink-0 font-mono text-[12px] lowercase font-medium text-ink">
+        <span className="shrink-0 font-sans text-[14px] font-medium text-ink">
           {title}
         </span>
       ) : null}
       {description ? (
-        <span className="font-mono text-[11px] text-ink-ghost truncate min-w-0">
+        <span className="min-w-0 truncate font-sans text-[12px] text-ink-ghost">
           {description}
         </span>
       ) : null}
@@ -109,9 +111,13 @@ export function PageHeader({
           type="button"
           onClick={onClose}
           aria-label="close panel"
-          className="shrink-0 flex items-center justify-center size-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
         >
-          <X aria-hidden className="size-4" />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <X aria-hidden className="size-4 shrink-0" />
         </button>
       ) : null}
     </header>
@@ -132,30 +138,6 @@ export function PageBody({ side = 'left', className, ...rest }: PageBodyProps) {
       className={cn(
         'flex-1 min-h-0 min-w-0 flex gap-px bg-edge',
         side === 'right' && 'flex-row-reverse',
-        className,
-      )}
-      {...rest}
-    />
-  )
-}
-
-export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
-  /** Column width in px (fixed — navigation stays put while main flexes). */
-  width?: number
-}
-
-/** The navigation column: slightly gray, fixed width, own scroll. */
-export function PageSidebar({
-  width = 280,
-  className,
-  style,
-  ...rest
-}: PageSidebarProps) {
-  return (
-    <aside
-      style={{ width, ...style }}
-      className={cn(
-        'shrink-0 min-h-0 flex flex-col overflow-hidden bg-sidebar',
         className,
       )}
       {...rest}

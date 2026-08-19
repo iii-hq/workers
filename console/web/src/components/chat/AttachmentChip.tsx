@@ -1,6 +1,14 @@
-import { File, X } from 'lucide-react'
+import { Blocks, File, SquareSlash, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
+
+/* Same icons as the composer's slash palette sources: a collapsed
+ * `<command>` block reads as the command it came from, not as a file. */
+function chipIcon(type: string) {
+  if (type === 'text/x-slash-command') return SquareSlash
+  if (type === 'text/x-skill') return Blocks
+  return File
+}
 
 interface AttachmentChipProps {
   attachment: Attachment
@@ -8,7 +16,7 @@ interface AttachmentChipProps {
   className?: string
 }
 
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}b`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}kb`
   return `${(bytes / (1024 * 1024)).toFixed(1)}mb`
@@ -20,6 +28,7 @@ export function AttachmentChip({
   className,
 }: AttachmentChipProps) {
   const isImage = attachment.type.startsWith('image/') && attachment.dataUrl
+  const Icon = chipIcon(attachment.type)
   return (
     <div
       className={cn(
@@ -34,7 +43,7 @@ export function AttachmentChip({
           className="size-6 object-cover border border-rule-2"
         />
       ) : (
-        <File size={12} aria-hidden className="text-ink-faint shrink-0" />
+        <Icon size={16} aria-hidden className="text-ink-faint shrink-0" />
       )}
       <span className="truncate min-w-0">{attachment.name}</span>
       <span className="text-ink-ghost tabular-nums shrink-0">
@@ -47,7 +56,7 @@ export function AttachmentChip({
           className="text-ink-faint hover:text-accent transition-colors shrink-0"
           aria-label={`remove ${attachment.name}`}
         >
-          <X size={12} aria-hidden />
+          <X size={16} aria-hidden />
         </button>
       ) : null}
     </div>

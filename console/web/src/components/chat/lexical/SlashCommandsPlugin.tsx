@@ -8,9 +8,16 @@ import {
   type LexicalEditor,
   type TextNode,
 } from 'lexical'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { fuzzyFilterSlash, type SlashCommand } from '@/lib/slash-commands'
+import { listCommandPrompts, listSkills } from '@/lib/backend/directory-prompts'
+import { getIiiClient } from '@/lib/iii-client'
+import {
+  fuzzyFilterSlash,
+  mergeSlashEntries,
+  type SlashCommand,
+  setDynamicSlashEntries,
+} from '@/lib/slash-commands'
 import { FlipMenu } from './FlipMenu'
 
 class SlashCommandOption extends MenuOption {
@@ -26,8 +33,11 @@ interface SlashCommandsPluginProps {
   menuOpenRef?: React.RefObject<boolean>
 }
 
-// Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire.
-const SLASH_PATTERN = /^\/(\w*)$/
+// Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire. The
+// query is either a plain slug (built-ins + directory prompt names) or the
+// `/skill:<id>` form (ids are `/`-separated paths) — a bare second `/`
+// ("/home/…") disarms the palette at once instead of shadowing a typed path.
+const SLASH_PATTERN = /^\/(skill:[\w./-]*|[\w-]*)$/
 
 function slashTriggerFn(text: string, _editor: LexicalEditor) {
   const match = text.match(SLASH_PATTERN)
@@ -44,12 +54,49 @@ export function SlashCommandsPlugin({
 }: SlashCommandsPluginProps = {}) {
   const [query, setQuery] = useState<string | null>(null)
 
+  /* Directory-backed entries, refetched on EVERY open (SystemPromptPicker's
+     pattern) and kept while loading, so prompts/skills created or deleted
+     mid-session appear without a reload. The fetched list is also published
+     to the module registry that gates submit-time expansion. A failed or
+     absent directory worker degrades to built-ins only. */
+  const [dynamic, setDynamic] = useState<SlashCommand[] | null>(null)
+  const loadingRef = useRef(false)
+  const loadDynamic = useCallback(async () => {
+    if (loadingRef.current) return
+    loadingRef.current = true
+    try {
+      const client = await getIiiClient()
+      const [prompts, skills] = await Promise.all([
+        listCommandPrompts(client).catch(() => []),
+        listSkills(client).catch(() => []),
+      ])
+      const entries = [
+        ...prompts.map((p) => ({
+          command: `/${p.name}`,
+          description: p.description,
+          kind: 'prompt' as const,
+        })),
+        ...skills.map((s) => ({
+          command: `/skill:${s.id}`,
+          description: s.description || s.title,
+          kind: 'skill' as const,
+        })),
+      ]
+      setDynamic(entries)
+      setDynamicSlashEntries(entries)
+    } catch {
+      /* No client: keep whatever list the last open produced. */
+    } finally {
+      loadingRef.current = false
+    }
+  }, [])
+
   const options = useMemo(
     () =>
-      fuzzyFilterSlash(query ?? '').map(
+      fuzzyFilterSlash(query ?? '', mergeSlashEntries(dynamic ?? [])).map(
         (entry) => new SlashCommandOption(entry),
       ),
-    [query],
+    [query, dynamic],
   )
 
   const onSelectOption = useCallback(
@@ -75,6 +122,7 @@ export function SlashCommandsPlugin({
       onSelectOption={onSelectOption}
       onOpen={() => {
         if (menuOpenRef) menuOpenRef.current = true
+        void loadDynamic()
       }}
       onClose={() => {
         if (menuOpenRef) menuOpenRef.current = false

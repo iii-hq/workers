@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::catalog::queries::model_supports;
+use crate::catalog::queries::{effective_model_ref, model_supports};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
 use crate::config::state::{snapshot, ConfigCell};
@@ -105,6 +105,27 @@ fn is_router_coded(err: &Error) -> bool {
     matches!(err, Error::Remote { code, .. } if code.starts_with("router/"))
 }
 
+/// Dispatch failures that already carry a stable pre-stream error contract.
+///
+/// Provider typed-handler deserialization happens before the provider handler
+/// can open its stream channel. Retrying `provider/invalid_request` cannot
+/// succeed, and replacing it with a synthetic transient EOF error hides the
+/// actionable cause from the caller.
+fn terminal_dispatch_error(err: &Error) -> Option<(&str, ErrorKind)> {
+    let Error::Remote { code, message, .. } = err else {
+        return None;
+    };
+    if is_router_coded(err) {
+        let kind = if code == RouterCode::ProviderUnavailable.as_str() {
+            ErrorKind::Transient
+        } else {
+            ErrorKind::Permanent
+        };
+        return Some((message, kind));
+    }
+    (code == "provider/invalid_request").then_some((message, ErrorKind::Permanent))
+}
+
 type ProviderCallOutcome = Result<Value, Error>;
 const MAX_PROVIDER_CALLS: usize = 64;
 
@@ -149,6 +170,58 @@ fn pre_stream_error_kind(code: RouterCode) -> ErrorKind {
     match code {
         RouterCode::ProviderUnavailable => ErrorKind::Transient,
         _ => ErrorKind::Permanent,
+    }
+}
+
+fn error_shape(
+    code: RouterCode,
+    kind: ErrorKind,
+    message: String,
+    detail: Option<String>,
+) -> ErrorShape {
+    ErrorShape {
+        code: code.as_str().to_string(),
+        message,
+        kind: Some(kind),
+        retryable: Some(kind.is_retryable()),
+        detail,
+    }
+}
+
+fn provider_error_presentation(
+    kind: ErrorKind,
+    provider: &str,
+    model: &str,
+) -> (RouterCode, String) {
+    match kind {
+        ErrorKind::AuthExpired => (
+            RouterCode::ProviderAuthExpired,
+            format!(
+                "Authentication for provider \"{provider}\" needs attention. Update its credentials, then try again."
+            ),
+        ),
+        ErrorKind::RateLimited => (
+            RouterCode::ProviderRateLimited,
+            format!("Provider \"{provider}\" is busy right now. Try again shortly."),
+        ),
+        ErrorKind::ContextOverflow => (
+            RouterCode::ContextOverflow,
+            format!(
+                "This conversation is too large for model \"{model}\". Compact it, shorten the input, or choose a model with a larger context window."
+            ),
+        ),
+        ErrorKind::Transient => (
+            RouterCode::ProviderTransient,
+            format!(
+                "Provider \"{provider}\" temporarily failed while generating a response. Try again."
+            ),
+        ),
+        ErrorKind::Permanent => (
+            RouterCode::ProviderRejected,
+            format!(
+                "Provider \"{provider}\" rejected this request. Review the selected model and provider settings, then try again."
+            ),
+        ),
     }
 }
 
@@ -244,7 +317,10 @@ fn provider_call_saturated_response(
     provider: &str,
     usage: Option<crate::types::events::Usage>,
 ) -> ChatResponse {
-    let message = format!("provider {provider} call capacity is saturated; retry later");
+    let detail = format!("provider {provider} call capacity is saturated");
+    let message = format!(
+        "Provider \"{provider}\" is handling too many requests right now. Wait a moment and try again."
+    );
     let terminal = send_error_terminal(
         sink,
         partial,
@@ -263,19 +339,42 @@ fn provider_call_saturated_response(
         model: model.to_string(),
         stop_reason: Some(StopReason::Error),
         usage: error.usage,
-        error: Some(ErrorShape {
-            code: "transient".into(),
+        error: Some(error_shape(
+            RouterCode::CapacityExceeded,
+            ErrorKind::Transient,
             message,
-        }),
+            Some(detail),
+        )),
     }
 }
 
 impl ChatPipeline {
     pub async fn run(
         &self,
-        call: ChatCall,
+        mut call: ChatCall,
         sink: Arc<dyn FrameSink>,
     ) -> Result<ChatResponse, Error> {
+        // Composite `provider::model` ids — the console's display form —
+        // resolve in models::get/budget; dispatch must agree. Split once, up
+        // front, when the prefix names a registered or catalog provider, so
+        // routing, the structured-output gate, the output budget, and the
+        // provider payload all see the id the provider actually serves —
+        // exactly as if the caller had passed the pair. Unknown prefixes stay
+        // literal: an id may contain `::` without naming a provider.
+        let registered_providers = self.registry.ids().await;
+        let catalog_ids = self.catalog.model_ids().await;
+        {
+            let (provider, model) =
+                effective_model_ref(call.provider.as_deref(), &call.model, |p| {
+                    registered_providers.iter().any(|r| r == p)
+                        || catalog_ids.iter().any(|(owner, _)| owner == p)
+                });
+            let (provider, model) = (provider.map(str::to_owned), model.to_owned());
+            call.provider = provider;
+            call.model = model;
+        }
+        let call = call; // frozen: nothing below mutates the normalized pair
+
         // A pre-stream failure must still leave exactly one terminal frame on
         // the sink. Without it, `router::complete`'s drain blocks for its full
         // reader budget and `router::chat` consumers never see a terminal.
@@ -300,14 +399,14 @@ impl ChatPipeline {
             return Err(fail_pre_stream(
                 "",
                 RouterCode::InvalidRequest,
-                "model is required".into(),
+                "Select a model before sending the request.".into(),
             ));
         }
         if !call.messages.is_array() {
             return Err(fail_pre_stream(
                 "",
                 RouterCode::InvalidRequest,
-                "messages must be an array".into(),
+                "The chat history is invalid. Start a new chat and try again.".into(),
             ));
         }
 
@@ -317,16 +416,13 @@ impl ChatPipeline {
         let candidates = decide(&DecideInput {
             model: call.model.clone(),
             provider: call.provider.clone(),
-            registered_providers: provider_records
-                .iter()
-                .map(|record| record.declaration.id.clone())
-                .collect(),
+            registered_providers,
             available_providers: provider_records
                 .iter()
                 .filter(|record| record.available)
                 .map(|record| record.declaration.id.clone())
                 .collect(),
-            catalog: self.catalog.model_ids().await,
+            catalog: catalog_ids,
             heuristics: settings.routing_heuristics.clone(),
             default_provider: settings.default_provider.clone(),
         })
@@ -341,7 +437,9 @@ impl ChatPipeline {
                 return Err(fail_pre_stream(
                     &provider,
                     RouterCode::UnknownProvider,
-                    format!("unknown provider {provider}"),
+                    format!(
+                        "Provider \"{provider}\" is not registered. Choose a configured provider and try again."
+                    ),
                 ))
             }
         };
@@ -355,7 +453,10 @@ impl ChatPipeline {
                     return Err(fail_pre_stream(
                         &provider,
                         RouterCode::StructuredOutputUnsupported,
-                        format!("structured output unsupported for model {}", call.model),
+                        format!(
+                            "Model \"{}\" does not support structured output. Choose a compatible model or disable structured output.",
+                            call.model
+                        ),
                     ));
                 }
             }
@@ -385,8 +486,9 @@ impl ChatPipeline {
         let Some(entry_handle) = self.inflight.reserve(&request_id) else {
             return Err(fail_pre_stream(
                 &provider,
-                RouterCode::InvalidRequest,
-                format!("request_id {request_id} is already in flight"),
+                RouterCode::RequestInProgress,
+                "This request is already running. Wait for it to finish or stop it before trying again."
+                    .into(),
             ));
         };
         let result = self
@@ -437,16 +539,18 @@ impl ChatPipeline {
         let send_frame = |frame: &AssistantMessageEvent| {
             let _ = sink.send(&serde_json::to_string(frame).expect("serializable frame"));
         };
-        let respond_err = |stop: StopReason, code: &str, message: String, usage| ChatResponse {
+        let respond_err = |stop: StopReason,
+                           code: RouterCode,
+                           kind: ErrorKind,
+                           message: String,
+                           detail: Option<String>,
+                           usage| ChatResponse {
             ok: false,
             provider: provider.to_string(),
             model: call.model.clone(),
             stop_reason: Some(stop),
             usage,
-            error: Some(ErrorShape {
-                code: code.to_string(),
-                message,
-            }),
+            error: Some(error_shape(code, kind, message, detail)),
         };
 
         let max_attempts = 1 + settings.retry_max;
@@ -476,17 +580,19 @@ impl ChatPipeline {
             let channel = match create_router_channel(&self.iii).await {
                 Ok(channel) => channel,
                 Err(error) => {
-                    let message = format!("router channel creation failed: {error}");
-                    send_error_terminal(
+                    tracing::error!(%error, provider, model = %call.model, "router channel creation failed");
+                    let message =
+                        "The response stream could not be started. Try again.".to_string();
+                    return Err(fail_with_terminal(
                         sink.as_ref(),
                         last_partial.as_ref(),
                         &call.model,
                         provider,
-                        &message,
+                        RouterCode::StreamSetupFailed,
+                        message,
                         ErrorKind::Transient,
                         last_usage,
-                    );
-                    return Err(error);
+                    ));
                 }
             };
             let mut reader = channel.reader;
@@ -635,10 +741,12 @@ impl ChatPipeline {
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
+                        let delay = std::time::Duration::from_millis(backoff_ms(
                             attempt, 500, 8000, rand_unit,
-                        )))
-                        .await;
+                        ));
+                        if inflight.wait_for_abort(delay).await {
+                            break;
+                        }
                         continue;
                     }
                     if !terminal_forwarded {
@@ -647,16 +755,17 @@ impl ChatPipeline {
                     let AssistantMessageEvent::Error { error } = terminal else {
                         unreachable!()
                     };
-                    let code = kind
-                        .and_then(|k| serde_json::to_value(k).ok())
-                        .and_then(|v| v.as_str().map(String::from))
-                        .unwrap_or_else(|| "transient".into());
+                    let kind = kind.unwrap_or(ErrorKind::Transient);
+                    let detail = error
+                        .error_message
+                        .unwrap_or_else(|| "provider returned an error without details".into());
+                    let (code, message) = provider_error_presentation(kind, provider, &call.model);
                     return Ok(respond_err(
                         StopReason::Error,
-                        &code,
-                        error
-                            .error_message
-                            .unwrap_or_else(|| "provider error".into()),
+                        code,
+                        kind,
+                        message,
+                        Some(detail),
                         error.usage,
                     ));
                 }
@@ -686,31 +795,22 @@ impl ChatPipeline {
                     last_usage = usage.clone();
                     if let Some(Err(err)) = call_outcome {
                         if !forwarded {
-                            if is_router_coded(&err) {
-                                let (message, kind) = match &err {
-                                    Error::Remote { code, message, .. }
-                                        if code == RouterCode::ProviderUnavailable.as_str() =>
-                                    {
-                                        (message.clone(), ErrorKind::Transient)
-                                    }
-                                    Error::Remote { message, .. } => {
-                                        (message.clone(), ErrorKind::Permanent)
-                                    }
-                                    _ => unreachable!("is_router_coded only matches remote errors"),
-                                };
+                            if let Some((message, kind)) = terminal_dispatch_error(&err) {
                                 send_error_terminal(
                                     sink.as_ref(),
                                     last_partial.as_ref(),
                                     &call.model,
                                     provider,
-                                    &message,
+                                    message,
                                     kind,
                                     usage,
                                 );
                                 return Err(err);
                             }
                             if is_function_not_found(&err) {
-                                let message = format!("provider {provider} unavailable");
+                                let message = format!(
+                                    "Provider \"{provider}\" is temporarily unavailable. Try again or choose another provider."
+                                );
                                 let terminal_error = fail_with_terminal(
                                     sink.as_ref(),
                                     last_partial.as_ref(),
@@ -750,19 +850,35 @@ impl ChatPipeline {
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
+                        let delay = std::time::Duration::from_millis(backoff_ms(
                             attempt, 500, 8000, rand_unit,
-                        )))
-                        .await;
+                        ));
+                        if inflight.wait_for_abort(delay).await {
+                            break;
+                        }
                         continue;
                     }
-                    let message = if is_idle {
-                        format!(
-                            "provider {provider} stream idle past {}ms",
-                            settings.idle_timeout_ms
+                    let (code, message, detail) = if is_idle {
+                        (
+                            RouterCode::StreamIdleTimeout,
+                            format!(
+                                "Provider \"{provider}\" stopped responding before the answer completed. Try again."
+                            ),
+                            format!(
+                                "provider {provider} stream idle past {}ms",
+                                settings.idle_timeout_ms
+                            ),
                         )
                     } else {
-                        format!("provider {provider} stream ended without a terminal frame")
+                        (
+                            RouterCode::StreamIncomplete,
+                            format!(
+                                "Provider \"{provider}\" disconnected before completing the response. Try again."
+                            ),
+                            format!(
+                                "provider {provider} stream ended without a terminal frame"
+                            ),
+                        )
                     };
                     let terminal = synthesize_error(
                         last_partial.as_ref(),
@@ -779,8 +895,10 @@ impl ChatPipeline {
                     };
                     return Ok(respond_err(
                         StopReason::Error,
-                        "transient",
+                        code,
+                        ErrorKind::Transient,
                         message,
+                        Some(detail),
                         error.usage,
                     ));
                 }
@@ -906,6 +1024,11 @@ mod tests {
         assert!(!is_function_not_found(&Error::Timeout));
         assert!(is_router_coded(&remote("router/not_configured")));
         assert!(!is_router_coded(&remote("function_not_found")));
+        assert_eq!(
+            terminal_dispatch_error(&remote("provider/invalid_request")).map(|(_, kind)| kind),
+            Some(ErrorKind::Permanent)
+        );
+        assert!(terminal_dispatch_error(&remote("provider/upstream_unavailable")).is_none());
     }
 
     #[test]
@@ -922,6 +1045,16 @@ mod tests {
             RouterCode::NotConfigured,
             RouterCode::StructuredOutputUnsupported,
             RouterCode::RegistrationRejected,
+            RouterCode::RequestInProgress,
+            RouterCode::CapacityExceeded,
+            RouterCode::StreamSetupFailed,
+            RouterCode::StreamIdleTimeout,
+            RouterCode::StreamIncomplete,
+            RouterCode::ProviderAuthExpired,
+            RouterCode::ProviderRateLimited,
+            RouterCode::ContextOverflow,
+            RouterCode::ProviderTransient,
+            RouterCode::ProviderRejected,
         ] {
             assert_eq!(
                 pre_stream_error_kind(code),
@@ -929,6 +1062,44 @@ mod tests {
                 "{} must remain permanent",
                 code.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn provider_errors_have_stable_codes_and_actionable_public_messages() {
+        let cases = [
+            (
+                ErrorKind::AuthExpired,
+                RouterCode::ProviderAuthExpired,
+                "Update its credentials",
+            ),
+            (
+                ErrorKind::RateLimited,
+                RouterCode::ProviderRateLimited,
+                "Try again shortly",
+            ),
+            (
+                ErrorKind::ContextOverflow,
+                RouterCode::ContextOverflow,
+                "larger context window",
+            ),
+            (
+                ErrorKind::Transient,
+                RouterCode::ProviderTransient,
+                "Try again",
+            ),
+            (
+                ErrorKind::Permanent,
+                RouterCode::ProviderRejected,
+                "provider settings",
+            ),
+        ];
+
+        for (kind, code, action) in cases {
+            let (actual_code, message) = provider_error_presentation(kind, "openai", "gpt-5");
+            assert_eq!(actual_code, code);
+            assert!(message.contains(action), "missing action in {message}");
+            assert!(!message.contains("terminal frame"));
         }
     }
 
@@ -1014,7 +1185,12 @@ mod tests {
             provider_call_saturated_response(&ch.writer, None, "busy-model", "busy-provider", None);
         assert!(!response.ok);
         assert_eq!(response.stop_reason, Some(StopReason::Error));
-        assert_eq!(response.error.as_ref().unwrap().code, "transient");
+        let error = response.error.as_ref().unwrap();
+        assert_eq!(error.code, RouterCode::CapacityExceeded.as_str());
+        assert_eq!(error.kind, Some(ErrorKind::Transient));
+        assert_eq!(error.retryable, Some(true));
+        assert!(error.message.contains("try again"));
+        assert!(error.detail.as_deref().unwrap().contains("capacity"));
 
         let mut reader = ch.reader;
         let ReadEvent::Msg(frame) = reader.next(Duration::from_millis(50)).await else {

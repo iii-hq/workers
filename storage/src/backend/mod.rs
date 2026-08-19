@@ -21,7 +21,14 @@ pub trait Backend: Send + Sync {
     async fn get(&self, req: GetReq) -> Result<GetResp, BackendError>;
     async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError>;
     async fn delete(&self, req: DeleteReq) -> Result<DeleteResp, BackendError>;
+    async fn list(&self, req: ListReq) -> Result<ListResp, BackendError>;
     async fn presign(&self, req: PresignReq) -> Result<PresignResp, BackendError>;
+    async fn presign_post(&self, _req: PresignPostReq) -> Result<PresignPostResp, BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "presigned POST is not supported by this provider; use presignUrl with method PUT"
+                .into(),
+        ))
+    }
 
     /// Provider tag used in error envelopes.
     fn provider(&self) -> &'static str;
@@ -88,6 +95,30 @@ pub struct DeleteResp {
     pub deleted: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ListReq {
+    pub prefix: String,
+    pub delimiter: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectSummary {
+    pub key: String,
+    pub etag: String,
+    pub size: u64,
+    pub last_modified: DateTime<Utc>,
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListResp {
+    pub objects: Vec<ObjectSummary>,
+    pub common_prefixes: Vec<String>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresignMethod {
     Get,
@@ -114,6 +145,21 @@ pub struct PresignResp {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PresignPostReq {
+    pub key: String,
+    pub content_type: String,
+    pub expires_in_seconds: u64,
+    pub max_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PresignPostResp {
+    pub url: String,
+    pub fields: HashMap<String, String>,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Error)]
 pub enum BackendError {
     #[error("object not found")]
@@ -124,9 +170,6 @@ pub enum BackendError {
 
     #[error("presign unsupported: {0}")]
     PresignUnsupported(String),
-
-    #[error("local backend down: {0}")]
-    LocalBackendDown(String),
 
     /// The remote object exists but its size exceeds `max_inline_bytes`. Backends
     /// signal this BEFORE buffering the body, so callers can reject without
@@ -163,7 +206,9 @@ pub mod mock {
         Get(GetReq),
         Head(HeadReq),
         Delete(DeleteReq),
+        List(ListReq),
         Presign(PresignReq),
+        PresignPost(PresignPostReq),
     }
 
     #[derive(Default)]
@@ -172,7 +217,9 @@ pub mod mock {
         pub get: Option<Result<GetResp, BackendError>>,
         pub head: Option<Result<HeadResp, BackendError>>,
         pub delete: Option<Result<DeleteResp, BackendError>>,
+        pub list: Option<Result<ListResp, BackendError>>,
         pub presign: Option<Result<PresignResp, BackendError>>,
+        pub presign_post: Option<Result<PresignPostResp, BackendError>>,
     }
 
     #[async_trait]
@@ -236,6 +283,22 @@ pub mod mock {
                 .unwrap_or(Ok(DeleteResp { deleted: true }))
         }
 
+        async fn list(&self, req: ListReq) -> Result<ListResp, BackendError> {
+            self.calls.lock().unwrap().push(MockCall::List(req));
+            self.responses
+                .lock()
+                .unwrap()
+                .list
+                .clone()
+                .unwrap_or_else(|| {
+                    Ok(ListResp {
+                        objects: Vec::new(),
+                        common_prefixes: Vec::new(),
+                        next_cursor: None,
+                    })
+                })
+        }
+
         async fn presign(&self, req: PresignReq) -> Result<PresignResp, BackendError> {
             let expires_in = req.expires_in_seconds;
             self.calls.lock().unwrap().push(MockCall::Presign(req));
@@ -247,6 +310,28 @@ pub mod mock {
                 .unwrap_or_else(|| {
                     Ok(PresignResp {
                         url: "https://example.test/presigned".to_string(),
+                        expires_at: Utc::now() + chrono::Duration::seconds(expires_in as i64),
+                    })
+                })
+        }
+
+        async fn presign_post(&self, req: PresignPostReq) -> Result<PresignPostResp, BackendError> {
+            let expires_in = req.expires_in_seconds;
+            let key = req.key.clone();
+            let content_type = req.content_type.clone();
+            self.calls.lock().unwrap().push(MockCall::PresignPost(req));
+            self.responses
+                .lock()
+                .unwrap()
+                .presign_post
+                .clone()
+                .unwrap_or_else(|| {
+                    Ok(PresignPostResp {
+                        url: "https://example.test/presigned-post".to_string(),
+                        fields: HashMap::from([
+                            ("key".to_string(), key),
+                            ("Content-Type".to_string(), content_type),
+                        ]),
                         expires_at: Utc::now() + chrono::Duration::seconds(expires_in as i64),
                     })
                 })
@@ -265,7 +350,6 @@ pub mod mock {
                 BackendError::NotFound => BackendError::NotFound,
                 BackendError::AuthFailed(s) => BackendError::AuthFailed(s.clone()),
                 BackendError::PresignUnsupported(s) => BackendError::PresignUnsupported(s.clone()),
-                BackendError::LocalBackendDown(s) => BackendError::LocalBackendDown(s.clone()),
                 BackendError::ObjectTooLarge { actual_size, cap } => BackendError::ObjectTooLarge {
                     actual_size: *actual_size,
                     cap: *cap,

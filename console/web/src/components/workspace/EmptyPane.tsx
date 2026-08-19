@@ -1,3 +1,4 @@
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Search, X } from 'lucide-react'
 import {
   type KeyboardEvent,
@@ -131,6 +132,9 @@ export function EmptyPane({
                 setActiveIndex(0)
               }}
               onKeyDown={onSearchKeyDown}
+              // This box opens focused, so without these the workspace keys
+              // spell themselves into the query instead of moving anywhere.
+              data-keybindings-allow="workspace.selectByIndex panel.split"
               placeholder="search pages…"
               aria-label="search pages"
               role="combobox"
@@ -144,7 +148,7 @@ export function EmptyPane({
             />
           </div>
 
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-sm bg-surface">
+          <div className={cn(uiClasses.panel, 'flex min-h-0 flex-col')}>
             <div className="flex shrink-0 items-center justify-between gap-3 px-3 py-2 font-mono text-[0.6875rem] uppercase tracking-wide text-ink-faint">
               <div>{query ? 'results' : 'all pages'}</div>
               <div
@@ -159,7 +163,10 @@ export function EmptyPane({
               id={listId}
               role="listbox"
               aria-label="available pages"
-              className="min-h-0 max-h-72 overflow-y-auto p-1"
+              className={cn(
+                uiClasses.list,
+                'min-h-0 max-h-72 overflow-y-auto p-1',
+              )}
             >
               {filteredOptions.length > 0 ? (
                 filteredOptions.map((option, index) => {
@@ -176,28 +183,34 @@ export function EmptyPane({
                       role="option"
                       tabIndex={-1}
                       aria-selected={active}
+                      data-highlighted={active || undefined}
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => onAttach(option.value)}
                       className={cn(
-                        'flex w-full items-start gap-2 rounded-sm px-2 py-2 text-left',
-                        active
-                          ? 'bg-surface-selected'
-                          : 'hover:bg-surface-hover',
+                        uiClasses.listItem,
+                        'items-start gap-2 px-2 py-2',
                       )}
                     >
-                      <Icon
-                        aria-hidden
-                        className={cn(
-                          'size-4 shrink-0',
-                          active ? 'stroke-accent' : 'stroke-ink-faint',
-                        )}
-                      />
-                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <span className="truncate font-mono text-base lowercase text-ink sm:text-[0.8125rem]">
+                      <span className={uiClasses.listItemIcon}>
+                        <Icon
+                          aria-hidden
+                          className={cn(
+                            'size-4 shrink-0',
+                            active ? 'stroke-ink' : 'stroke-ink-faint',
+                          )}
+                        />
+                      </span>
+                      <span className={uiClasses.listItemContent}>
+                        <span className={uiClasses.listItemTitle}>
                           {option.label}
                         </span>
                         {option.description ? (
-                          <span className="hidden truncate font-mono text-sm text-ink-faint @md:inline">
+                          <span
+                            className={cn(
+                              uiClasses.listItemDescription,
+                              'hidden @md:inline',
+                            )}
+                          >
                             {option.description}
                           </span>
                         ) : null}

@@ -1,3 +1,5 @@
+@import "@xterm/xterm/css/xterm.css";
+
 /*
  * The shell worker's console stylesheet, shipped as its own
  * `console:style` asset (shell/styles.css). Every rule is scoped under
@@ -8,13 +10,27 @@
 
 /* ── shared text tones ──────────────────────────────────────────────── */
 
-[data-iii-ui="shell"] .t-ink { color: var(--color-ink); }
-[data-iii-ui="shell"] .t-faint { color: var(--color-ink-faint); }
-[data-iii-ui="shell"] .t-ghost { color: var(--color-ink-ghost); }
-[data-iii-ui="shell"] .t-accent { color: var(--color-accent); }
-[data-iii-ui="shell"] .t-warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .t-alert { color: var(--color-alert); }
-[data-iii-ui="shell"] .num { font-variant-numeric: tabular-nums; }
+[data-iii-ui="shell"] .t-ink {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .t-faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .t-ghost {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .t-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .t-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .t-alert {
+  color: var(--color-alert);
+}
+[data-iii-ui="shell"] .num {
+  font-variant-numeric: tabular-nums;
+}
 
 /* ── card chrome (function-trigger views) ───────────────────────────── */
 
@@ -23,8 +39,12 @@
   background: var(--color-bg);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="shell"] .shui-card.pad { padding: 12px; }
-[data-iii-ui="shell"] .shui-card.scroll-x { overflow-x: auto; }
+[data-iii-ui="shell"] .shui-card.pad {
+  padding: 12px;
+}
+[data-iii-ui="shell"] .shui-card.scroll-x {
+  overflow-x: auto;
+}
 
 [data-iii-ui="shell"] .shui-head {
   display: flex;
@@ -36,7 +56,9 @@
   border-bottom: 1px solid var(--color-rule-2);
   background: var(--color-paper-2);
 }
-[data-iii-ui="shell"] .shui-head.preview { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-head.preview {
+  border-bottom: 0;
+}
 
 [data-iii-ui="shell"] .shui-cmd {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -45,7 +67,9 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
-[data-iii-ui="shell"] .shui-cmd .cmd-text { margin-left: 8px; }
+[data-iii-ui="shell"] .shui-cmd .cmd-text {
+  margin-left: 8px;
+}
 
 [data-iii-ui="shell"] .shui-prompt {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -55,8 +79,13 @@
   animation: shui-pulse 1.2s ease-in-out infinite;
 }
 @keyframes shui-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 [data-iii-ui="shell"] .shui-chips {
@@ -65,7 +94,9 @@
   align-items: center;
   gap: 6px;
 }
-[data-iii-ui="shell"] .shui-chips.end { margin-left: auto; }
+[data-iii-ui="shell"] .shui-chips.end {
+  margin-left: auto;
+}
 
 [data-iii-ui="shell"] .shui-chip {
   display: inline-flex;
@@ -83,12 +114,16 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
-[data-iii-ui="shell"] .shui-chip .v { font-variant-numeric: tabular-nums; }
+[data-iii-ui="shell"] .shui-chip .v {
+  font-variant-numeric: tabular-nums;
+}
 [data-iii-ui="shell"] .shui-chip.warn {
   border-color: var(--color-warn);
   color: var(--color-warn);
 }
-[data-iii-ui="shell"] .shui-chip.warn .k { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-chip.warn .k {
+  color: var(--color-warn);
+}
 
 /* Badge add-on: numerals without the badge's uppercase tracking. */
 [data-iii-ui="shell"] .shui-pill-flat {
@@ -111,7 +146,9 @@
   gap: 6px;
   padding: 12px;
 }
-[data-iii-ui="shell"] .shui-stream-gap { height: 4px; }
+[data-iii-ui="shell"] .shui-stream-gap {
+  height: 4px;
+}
 
 [data-iii-ui="shell"] .shui-running {
   background: var(--color-bg);
@@ -148,8 +185,12 @@
   font-size: inherit;
   line-height: inherit;
 }
-[data-iii-ui="shell"] .shui-pre.out { color: var(--color-ink); }
-[data-iii-ui="shell"] .shui-pre.err { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-pre.out {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-pre.err {
+  color: var(--color-warn);
+}
 [data-iii-ui="shell"] .shui-pre.detail {
   color: var(--color-ink-faint);
   font-size: 12px;
@@ -165,9 +206,15 @@
   font-size: 12.5px;
   line-height: 1.55;
 }
-[data-iii-ui="shell"] .shui-slab.warn { border-left: 2px solid var(--color-warn); }
-[data-iii-ui="shell"] .shui-slab.accent { border-left: 2px solid var(--color-accent); }
-[data-iii-ui="shell"] .shui-slab.alert { border-left: 2px solid var(--color-alert); }
+[data-iii-ui="shell"] .shui-slab.warn {
+  border-left: 2px solid var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-slab.accent {
+  border-left: 2px solid var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-slab.alert {
+  border-left: 2px solid var(--color-alert);
+}
 
 [data-iii-ui="shell"] .shui-line {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -180,7 +227,9 @@
   align-items: center;
   gap: 6px;
 }
-[data-iii-ui="shell"] .shui-row.gap8 { gap: 8px; }
+[data-iii-ui="shell"] .shui-row.gap8 {
+  gap: 8px;
+}
 [data-iii-ui="shell"] .shui-baseline-row {
   display: flex;
   flex-wrap: wrap;
@@ -208,7 +257,9 @@
   color: var(--color-ink-faint);
   font-style: italic;
 }
-[data-iii-ui="shell"] .shui-note.plain { font-style: normal; }
+[data-iii-ui="shell"] .shui-note.plain {
+  font-style: normal;
+}
 
 [data-iii-ui="shell"] .shui-resolved-argv {
   color: var(--color-ink-faint);
@@ -225,10 +276,19 @@
   background: var(--color-bg);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="shell"] .shui-action-line .sym { font-weight: 600; flex-shrink: 0; }
-[data-iii-ui="shell"] .shui-action-line .sym.tone-accent { color: var(--color-accent); }
-[data-iii-ui="shell"] .shui-action-line .sym.tone-warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .shui-action-line .sym.tone-ink { color: var(--color-ink); }
+[data-iii-ui="shell"] .shui-action-line .sym {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-ink {
+  color: var(--color-ink);
+}
 [data-iii-ui="shell"] .shui-action-line .body {
   min-width: 0;
   color: var(--color-ink);
@@ -254,18 +314,34 @@
   padding: 6px 8px;
   border-bottom: 1px solid var(--color-rule-2);
 }
-[data-iii-ui="shell"] .shui-table thead tr.head-paper { background: var(--color-paper-2); }
+[data-iii-ui="shell"] .shui-table thead tr.head-paper {
+  background: var(--color-paper-2);
+}
 [data-iii-ui="shell"] .shui-table td {
   padding: 6px 8px;
   border-bottom: 1px solid var(--color-rule-2);
 }
-[data-iii-ui="shell"] .shui-table tbody tr:last-child td { border-bottom: 0; }
-[data-iii-ui="shell"] .shui-table .r { text-align: right; }
-[data-iii-ui="shell"] .shui-table .pad-l { padding-left: 12px; }
-[data-iii-ui="shell"] .shui-table .pad-r { padding-right: 12px; }
-[data-iii-ui="shell"] .shui-table td.icon { width: 20px; }
-[data-iii-ui="shell"] .shui-table tr.total { background: var(--color-paper-2); }
-[data-iii-ui="shell"] .shui-table tr.total td { border-bottom: 0; }
+[data-iii-ui="shell"] .shui-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-table .r {
+  text-align: right;
+}
+[data-iii-ui="shell"] .shui-table .pad-l {
+  padding-left: 12px;
+}
+[data-iii-ui="shell"] .shui-table .pad-r {
+  padding-right: 12px;
+}
+[data-iii-ui="shell"] .shui-table td.icon {
+  width: 20px;
+}
+[data-iii-ui="shell"] .shui-table tr.total {
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-table tr.total td {
+  border-bottom: 0;
+}
 [data-iii-ui="shell"] .shui-table tr.total .label {
   color: var(--color-ink-faint);
   text-transform: uppercase;
@@ -285,8 +361,8 @@
   gap: 6px;
 }
 [data-iii-ui="shell"] .shui-fs-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   color: var(--color-ink-faint);
   vertical-align: text-bottom;
 }
@@ -309,9 +385,15 @@
   border-bottom: 1px solid var(--color-rule-2);
   padding: 6px 12px;
 }
-[data-iii-ui="shell"] .shui-match:last-child { border-bottom: 0; }
-[data-iii-ui="shell"] .shui-match .loc { color: var(--color-ink-faint); }
-[data-iii-ui="shell"] .shui-match .shui-pre { margin-top: 2px; }
+[data-iii-ui="shell"] .shui-match:last-child {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-match .loc {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-match .shui-pre {
+  margin-top: 2px;
+}
 [data-iii-ui="shell"] .shui-hl {
   background: color-mix(in oklab, var(--color-accent) 15%, transparent);
   color: var(--color-accent);
@@ -335,7 +417,9 @@
   text-decoration: none;
   width: fit-content;
 }
-[data-iii-ui="shell"] .shui-doclink:hover { text-decoration: underline; }
+[data-iii-ui="shell"] .shui-doclink:hover {
+  text-decoration: underline;
+}
 [data-iii-ui="shell"] .shui-streams {
   margin-top: 4px;
   border: 1px solid var(--color-rule-2);
@@ -354,6 +438,10 @@
 
 /* ── the explorer page ──────────────────────────────────────────────── */
 
+[data-iii-ui="shell"] .shui-workspace-frame > * {
+  position: relative;
+}
+
 [data-iii-ui="shell"] .shui-sidebar {
   --shui-explorer-bg: var(--color-panel-raised);
   --shui-tree-file-muted: color-mix(
@@ -361,30 +449,10 @@
     var(--color-ink-faint) 80%,
     var(--shui-explorer-bg)
   );
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: var(--shui-explorer-bg);
   position: relative;
-}
-
-/* Resize handle on the sidebar's boundary toward the main pane. */
-[data-iii-ui="shell"] .shui-resize-handle {
-  appearance: none;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 5px;
-  cursor: col-resize;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  z-index: 2;
-  touch-action: none;
-}
-[data-iii-ui="shell"] .shui-resize-handle.left { left: 0; }
-[data-iii-ui="shell"] .shui-resize-handle.right { right: 0; }
-[data-iii-ui="shell"] .shui-resize-handle:hover,
-[data-iii-ui="shell"] .shui-resize-handle:active {
-  background: var(--color-surface-active);
 }
 
 /* Image preview — centered, contained, own scroll for oversized zooms. */
@@ -404,11 +472,6 @@
   border: 1px solid var(--color-edge);
   background: var(--color-surface);
 }
-[data-iii-ui="shell"] .shui-sidebar.collapsed {
-  align-items: center;
-  padding-top: 6px;
-}
-
 [data-iii-ui="shell"] .shui-side-tabs {
   display: flex;
   align-items: center;
@@ -417,7 +480,9 @@
   border-bottom: 1px solid var(--color-edge);
 }
 [data-iii-ui="shell"] .shui-side-tabs .spacer,
-[data-iii-ui="shell"] .shui-editor-head .spacer { flex: 1; }
+[data-iii-ui="shell"] .shui-editor-head .spacer {
+  flex: 1;
+}
 
 [data-iii-ui="shell"] .shui-side-tab {
   display: inline-flex;
@@ -441,16 +506,20 @@
   background: var(--color-surface-active);
 }
 [data-iii-ui="shell"] .shui-side-tab-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
+[data-iii-ui="shell"] .shui-page-header {
+  overflow: visible;
+  z-index: 8;
+}
 [data-iii-ui="shell"] .shui-page-actions {
   display: flex;
   align-items: center;
   gap: 2px;
+  overflow: visible;
 }
-
 [data-iii-ui="shell"] .shui-header-root-select {
   display: block;
   max-width: min(220px, 24vw);
@@ -469,14 +538,16 @@
 }
 
 [data-iii-ui="shell"] .shui-collapse-btn {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--color-ink-faint);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 2px;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-collapse-btn:hover {
@@ -500,7 +571,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-[data-iii-ui="shell"] .shui-root-select { width: calc(100% - 12px); }
+[data-iii-ui="shell"] .shui-root-select {
+  width: calc(100% - 12px);
+}
 
 [data-iii-ui="shell"] .shui-side-body {
   flex: 1;
@@ -515,6 +588,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 [data-iii-ui="shell"] .shui-tree-filter-shell {
   flex: none;
@@ -537,8 +611,8 @@
   border-color: color-mix(in srgb, var(--color-ink) 20%, transparent);
 }
 [data-iii-ui="shell"] .shui-tree-filter-search {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   margin-left: 8px;
   flex: none;
   color: var(--shui-tree-file-muted);
@@ -552,7 +626,12 @@
   outline: 0;
   color: var(--color-ink);
   background: transparent;
-  font: 400 14px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 14px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 [data-iii-ui="shell"] .shui-tree-filter input::placeholder {
   color: var(--shui-tree-file-muted);
@@ -581,8 +660,8 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-tree-filter-clear svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-tree-stage {
   flex: 1;
@@ -610,7 +689,8 @@
 [data-iii-ui="shell"] .shui-tree-stage .shui-side-note {
   align-self: flex-start;
   padding: 8px 6px;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
 }
 
@@ -624,15 +704,21 @@
   gap: 8px;
   flex-wrap: wrap;
 }
-[data-iii-ui="shell"] .shui-side-note.warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .shui-side-note.ghost { color: var(--color-ink-ghost); }
+[data-iii-ui="shell"] .shui-side-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-side-note.ghost {
+  color: var(--color-ink-ghost);
+}
 [data-iii-ui="shell"] .shui-side-note.head {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 11px;
   padding-bottom: 4px;
 }
-[data-iii-ui="shell"] .shui-side-note.pad { padding: 24px; }
+[data-iii-ui="shell"] .shui-side-note.pad {
+  padding: 24px;
+}
 
 [data-iii-ui="shell"] .shui-linkish {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -686,7 +772,9 @@
   color: var(--color-ink-faint);
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-search-opts .shui-linkish { margin-left: auto; }
+[data-iii-ui="shell"] .shui-search-opts .shui-linkish {
+  margin-left: auto;
+}
 [data-iii-ui="shell"] .shui-search-results {
   display: flex;
   flex-direction: column;
@@ -706,14 +794,18 @@
   cursor: pointer;
   min-width: 0;
 }
-[data-iii-ui="shell"] .shui-search-row:hover { background: var(--color-surface-hover); }
+[data-iii-ui="shell"] .shui-search-row:hover {
+  background: var(--color-surface-hover);
+}
 [data-iii-ui="shell"] .shui-search-row .loc {
   color: var(--color-accent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="shell"] .shui-search-row .loc .line { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .shui-search-row .loc .line {
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="shell"] .shui-search-row .text {
   color: var(--color-ink);
   white-space: pre-wrap;
@@ -738,8 +830,8 @@
   flex-shrink: 0;
 }
 [data-iii-ui="shell"] .shui-etab.active {
-  background: var(--color-panel);
-  box-shadow: inset 0 2px 0 var(--color-accent);
+  background: var(--color-surface-selected);
+  box-shadow: inset 0 2px 0 var(--color-edge);
 }
 [data-iii-ui="shell"] .shui-etab .open {
   display: inline-flex;
@@ -757,8 +849,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-[data-iii-ui="shell"] .shui-etab.active .open { color: var(--color-ink); }
-[data-iii-ui="shell"] .shui-etab.preview .open { font-style: italic; }
+[data-iii-ui="shell"] .shui-etab.active .open {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-etab.preview .open {
+  font-style: italic;
+}
 [data-iii-ui="shell"] .shui-etab .close {
   display: inline-flex;
   align-items: center;
@@ -779,8 +875,8 @@
   background: var(--color-surface-hover);
 }
 [data-iii-ui="shell"] .shui-x-icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-main-empty {
   flex: 1;
@@ -830,7 +926,9 @@
   color: var(--color-ink-faint);
   flex-shrink: 0;
 }
-[data-iii-ui="shell"] .shui-ro-note.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-ro-note.warn {
+  color: var(--color-warn);
+}
 [data-iii-ui="shell"] .shui-save-btn {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
@@ -862,8 +960,12 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
 }
-[data-iii-ui="shell"] .shui-diff-stats .add { color: var(--color-git-added, #4d9a57); }
-[data-iii-ui="shell"] .shui-diff-stats .del { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-diff-stats .add {
+  color: var(--color-git-added, #4d9a57);
+}
+[data-iii-ui="shell"] .shui-diff-stats .del {
+  color: var(--color-git-deleted, #c05353);
+}
 [data-iii-ui="shell"] .shui-diff {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
@@ -899,19 +1001,39 @@
   min-width: 0;
 }
 [data-iii-ui="shell"] .shui-diff-line.add {
-  background: color-mix(in srgb, var(--color-git-added, #4d9a57) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-added, #4d9a57) 12%,
+    transparent
+  );
 }
-[data-iii-ui="shell"] .shui-diff-line.add .mark { color: var(--color-git-added, #4d9a57); }
+[data-iii-ui="shell"] .shui-diff-line.add .mark {
+  color: var(--color-git-added, #4d9a57);
+}
 [data-iii-ui="shell"] .shui-diff-line.del {
-  background: color-mix(in srgb, var(--color-git-deleted, #c05353) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-deleted, #c05353) 12%,
+    transparent
+  );
 }
-[data-iii-ui="shell"] .shui-diff-line.del .mark { color: var(--color-git-deleted, #c05353); }
+[data-iii-ui="shell"] .shui-diff-line.del .mark {
+  color: var(--color-git-deleted, #c05353);
+}
 [data-iii-ui="shell"] .shui-diff-line.add .shui-dl-emph {
-  background: color-mix(in srgb, var(--color-git-added, #4d9a57) 30%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-added, #4d9a57) 30%,
+    transparent
+  );
   border-radius: 2px;
 }
 [data-iii-ui="shell"] .shui-diff-line.del .shui-dl-emph {
-  background: color-mix(in srgb, var(--color-git-deleted, #c05353) 30%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-git-deleted, #c05353) 30%,
+    transparent
+  );
   border-radius: 2px;
 }
 [data-iii-ui="shell"] .shui-diff-fold {
@@ -929,11 +1051,22 @@
   cursor: pointer;
   margin: 2px 0;
 }
-[data-iii-ui="shell"] .shui-diff-fold:hover { color: var(--color-ink); }
-[data-iii-ui="shell"] .shui-tok-str { color: var(--color-syn-string, #7a9646); }
-[data-iii-ui="shell"] .shui-tok-com { color: var(--color-ink-ghost); font-style: italic; }
-[data-iii-ui="shell"] .shui-tok-num { color: var(--color-syn-number, #b0803c); }
-[data-iii-ui="shell"] .shui-tok-kw { color: var(--color-syn-keyword, #7b6bb0); }
+[data-iii-ui="shell"] .shui-diff-fold:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-tok-str {
+  color: var(--color-syn-string, #7a9646);
+}
+[data-iii-ui="shell"] .shui-tok-com {
+  color: var(--color-ink-ghost);
+  font-style: italic;
+}
+[data-iii-ui="shell"] .shui-tok-num {
+  color: var(--color-syn-number, #b0803c);
+}
+[data-iii-ui="shell"] .shui-tok-kw {
+  color: var(--color-syn-keyword, #7b6bb0);
+}
 
 /* Multi-file review. The shell owns navigation and file collapse while the
    Console-owned diff renderer provides syntax, hunks, and intraline changes. */
@@ -949,9 +1082,16 @@
   border-bottom: 1px solid var(--color-edge);
   background: var(--color-panel-raised);
   color: var(--color-ink-faint);
-  font: 400 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
-[data-iii-ui="shell"] .shui-review-toolbar .spacer { flex: 1; }
+[data-iii-ui="shell"] .shui-review-toolbar .spacer {
+  flex: 1;
+}
 [data-iii-ui="shell"] .shui-review-scope {
   color: var(--color-ink);
   font-weight: 500;
@@ -970,7 +1110,12 @@
   border-radius: 8px;
   background: transparent;
   color: var(--color-ink);
-  font: 500 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    500 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-review-scope-button:hover,
@@ -982,8 +1127,8 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-review-scope-button svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="shell"] .shui-review-scope-menu {
@@ -1026,8 +1171,8 @@
 }
 [data-iii-ui="shell"] .shui-review-scope-menu button > svg,
 [data-iii-ui="shell"] .shui-review-scope-menu .menu-icon-gap {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 [data-iii-ui="shell"] .shui-review-scope-menu .submenu-back {
@@ -1063,15 +1208,19 @@
 [data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main code,
 [data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main small {
   color: var(--color-ink-ghost);
-  font: 400 10px/14px var(--font-mono, ui-monospace, monospace);
+  font: 400 10px / 14px var(--font-mono, ui-monospace, monospace);
 }
 [data-iii-ui="shell"] .shui-review-scope-note {
   padding: 9px;
   color: var(--color-ink-ghost);
   font-size: 12px;
 }
-[data-iii-ui="shell"] .shui-review-scope-note.warn { color: var(--color-warn); }
-[data-iii-ui="shell"] .shui-review-count { color: var(--color-ink-faint); }
+[data-iii-ui="shell"] .shui-review-scope-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-review-count {
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="shell"] .shui-review-scope-error {
   max-width: 130px;
   overflow: hidden;
@@ -1083,8 +1232,12 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="shell"] .shui-review-total.add { color: var(--color-git-added, #40c977); }
-[data-iii-ui="shell"] .shui-review-total.del { color: var(--color-git-deleted, #fa423e); }
+[data-iii-ui="shell"] .shui-review-total.add {
+  color: var(--color-git-added, #40c977);
+}
+[data-iii-ui="shell"] .shui-review-total.del {
+  color: var(--color-git-deleted, #fa423e);
+}
 [data-iii-ui="shell"] .shui-review-action {
   display: inline-flex;
   align-items: center;
@@ -1109,10 +1262,12 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-review-action svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
-[data-iii-ui="shell"] .shui-review-menu-wrap { position: relative; }
+[data-iii-ui="shell"] .shui-review-menu-wrap {
+  position: relative;
+}
 [data-iii-ui="shell"] .shui-review-menu {
   position: absolute;
   top: calc(100% + 5px);
@@ -1141,7 +1296,9 @@
   text-align: left;
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-review-option:hover { background: var(--color-surface-hover); }
+[data-iii-ui="shell"] .shui-review-option:hover {
+  background: var(--color-surface-hover);
+}
 [data-iii-ui="shell"] .shui-review-option .check {
   display: inline-flex;
   align-items: center;
@@ -1151,8 +1308,8 @@
   margin-left: auto;
 }
 [data-iii-ui="shell"] .shui-review-option .check svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-review-body {
   flex: 1;
@@ -1181,7 +1338,12 @@
   border-bottom: 1px solid var(--color-edge);
   background: var(--color-panel-raised);
   color: var(--color-ink-faint);
-  font: 400 13px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   text-align: left;
 }
 [data-iii-ui="shell"] .shui-review-file.active > .shui-review-file-head,
@@ -1205,18 +1367,22 @@
   cursor: pointer;
 }
 [data-iii-ui="shell"] .shui-review-file-toggle > svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
-[data-iii-ui="shell"] .shui-review-file-head .file-icon { color: var(--color-accent); }
+[data-iii-ui="shell"] .shui-review-file-head .file-icon {
+  color: var(--color-accent);
+}
 [data-iii-ui="shell"] .shui-review-file-toggle .path {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="shell"] .shui-review-file-head .shui-diff-stats { margin-left: auto; }
+[data-iii-ui="shell"] .shui-review-file-head .shui-diff-stats {
+  margin-left: auto;
+}
 [data-iii-ui="shell"] .shui-review-file-action {
   display: inline-flex;
   align-items: center;
@@ -1249,8 +1415,8 @@
   outline-offset: -2px;
 }
 [data-iii-ui="shell"] .shui-review-file-action svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-review-message {
   display: flex;
@@ -1258,9 +1424,11 @@
   gap: 8px;
   padding: 14px 16px;
   color: var(--color-ink-ghost);
-  font: 400 12px/18px var(--font-mono, ui-monospace, monospace);
+  font: 400 12px / 18px var(--font-mono, ui-monospace, monospace);
 }
-[data-iii-ui="shell"] .shui-review-message.warn { color: var(--color-warn); }
+[data-iii-ui="shell"] .shui-review-message.warn {
+  color: var(--color-warn);
+}
 [data-iii-ui="shell"] .shui-review-inline-action {
   padding: 0;
   border: 0;
@@ -1270,7 +1438,9 @@
   font: inherit;
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-review-diff { display: block; }
+[data-iii-ui="shell"] .shui-review-diff {
+  display: block;
+}
 [data-iii-ui="shell"] .shui-rich-preview {
   display: block;
   width: 100%;
@@ -1291,10 +1461,19 @@
   margin: 0 auto;
   padding: 28px 32px 48px;
   color: var(--color-ink);
-  font: 400 15px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font:
+    400 15px / 1.65 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
-[data-iii-ui="shell"] .shui-markdown-preview :first-child { margin-top: 0; }
-[data-iii-ui="shell"] .shui-markdown-preview :last-child { margin-bottom: 0; }
+[data-iii-ui="shell"] .shui-markdown-preview :first-child {
+  margin-top: 0;
+}
+[data-iii-ui="shell"] .shui-markdown-preview :last-child {
+  margin-bottom: 0;
+}
 
 /* Chat footer summary. The button is deliberately compact because it shares
    the composer's high-density control band; the elevated surface exists only
@@ -1302,7 +1481,7 @@
 [data-iii-ui="shell"] .shui-chat-summary {
   position: relative;
   margin: 0 0 4px auto;
-  font: 400 11px/16px var(--font-mono, ui-monospace, monospace);
+  font: 400 11px / 16px var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-faint);
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill {
@@ -1333,8 +1512,8 @@
   outline-offset: 2px;
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill .files-icon {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   color: var(--color-accent);
 }
 [data-iii-ui="shell"] .shui-chat-summary .add {
@@ -1346,9 +1525,9 @@
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill .chevron {
-  width: 12px;
-  height: 12px;
-  transition: transform 120ms ease;
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="shell"] .shui-chat-summary-pill .chevron.open {
   transform: rotate(180deg);
@@ -1420,4 +1599,1062 @@
   [data-iii-ui="shell"] .shui-chat-summary-pill .chevron {
     transition: none;
   }
+}
+
+/* Contextual file-change cards retained from the console improvements. */
+[data-iii-ui="shell"] .shui-view-file-btn {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  padding: 4px 9px 4px 7px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-view-file-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-view-file-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-view-file-btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+/* ── prominent file-change artifact (coder::* chat calls) ──────────── */
+
+[data-iii-ui="shell"] .shui-file-changes {
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-file-changes-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-file-changes-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-file-changes-title-group {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-file-changes-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-file-changes-totals,
+[data-iii-ui="shell"] .shui-file-change-stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-file-changes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="shell"] .shui-file-change-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-file-change-path {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] button.shui-file-change-path {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+[data-iii-ui="shell"] button.shui-file-change-path:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+[data-iii-ui="shell"] button.shui-file-change-path:focus-visible,
+[data-iii-ui="shell"] .shui-file-change-view:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-file-change-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+[data-iii-ui="shell"] .shui-file-change-view {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  padding: 4px 8px 4px 6px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-file-change-view:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-file-change-view svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+[data-iii-ui="shell"] .shui-file-changes .is-added {
+  color: var(--color-ok);
+}
+[data-iii-ui="shell"] .shui-file-changes .is-deleted,
+[data-iii-ui="shell"] .shui-file-changes .is-failed {
+  /* Small diff counters need AA contrast in both themes: mixing toward ink
+     darkens alert on light surfaces and lightens it on dark surfaces. */
+  color: color-mix(in oklab, var(--color-alert) 70%, var(--color-ink));
+}
+[data-iii-ui="shell"] .shui-file-changes .is-created,
+[data-iii-ui="shell"] .shui-file-changes .is-updated,
+[data-iii-ui="shell"] .shui-file-changes .is-unchanged,
+[data-iii-ui="shell"] .shui-file-changes .is-running {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-file-changes-more {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: var(--color-paper-2);
+  padding: 7px 12px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+[data-iii-ui="shell"] .shui-file-changes-more:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-file-changes-more:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-file-changes-more svg {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-file-changes-more svg.is-expanded {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 520px) {
+  [data-iii-ui="shell"] .shui-view-file-btn {
+    min-height: 48px;
+  }
+  [data-iii-ui="shell"] .shui-file-changes-title-group {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-row {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-actions {
+    gap: 6px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-view {
+    min-width: 48px;
+    min-height: 48px;
+    justify-content: center;
+    padding: 0;
+  }
+  [data-iii-ui="shell"] .shui-file-change-view span {
+    display: none;
+  }
+}
+[data-iii-ui="shell"] .shui-workspace-frame {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+  /* The page is injected into a console panel, so the viewport says nothing
+     about the room it actually has: two shell panels side by side on a
+     desktop are each narrower than a phone. Responsive rules key off this. */
+  container: shui-page / inline-size;
+}
+[data-iii-ui="shell"] .shui-workspace-frame.terminal-bottom {
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-workspace-frame.terminal-right {
+  flex-direction: row;
+}
+[data-iii-ui="shell"] .shui-workspace-frame > :first-child {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-panel {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg, #111);
+}
+[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="bottom"] {
+  width: 100%;
+  min-height: 160px;
+  max-height: calc(100% - 120px);
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="right"] {
+  height: 100%;
+  min-width: 160px;
+  max-width: calc(100% - 240px);
+  border-left: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="editor"] {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+[data-iii-ui="shell"] .shui-terminal-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 32px;
+  padding-right: 6px;
+  border-bottom: 1px solid var(--color-edge);
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-strip {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 5px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group .shui-terminal-action {
+  width: 22px;
+  height: 20px;
+  border-radius: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  /* One rhythm across the row: the label, its actions and the tab's right
+     edge share the same gap, so the close button never looks pushed against
+     the divider. */
+  gap: 2px;
+  padding-right: 4px;
+  min-width: 0;
+  color: var(--color-ink-faint);
+  border-right: 1px solid var(--color-edge);
+  background: var(--color-bg);
+}
+[data-iii-ui="shell"] .shui-terminal-tab.active {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+  box-shadow: inset 0 -1px 0 var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-tab .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tab:hover .shui-terminal-tab-action[aria-label^="Rename"],
+[data-iii-ui="shell"] .shui-terminal-tab:focus-within .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 1;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-select {
+  max-width: 150px;
+  padding: 7px 2px 7px 10px;
+  overflow: hidden;
+  color: inherit;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-action,
+[data-iii-ui="shell"] .shui-terminal-tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* The strip stretches its children, so an unsized button grows to the full
+     tab height and its icon stops sharing a centre line with the tab label.
+     Fixing the box and centring it with auto margins keeps rename, close and
+     new-tab optically aligned with the text beside them. */
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  margin: auto 0;
+  padding: 0;
+  color: var(--color-ink-ghost);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-action:hover,
+[data-iii-ui="shell"] .shui-terminal-tab-new:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-terminal-tab-action svg,
+[data-iii-ui="shell"] .shui-terminal-tab-new svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-input {
+  width: 110px;
+  margin: 3px;
+  padding: 3px 5px;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  border: 1px solid var(--color-rule-focus);
+  border-radius: 2px;
+  background: var(--color-bg);
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-terminal-layout {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-terminal-split.horizontal {
+  flex-direction: row;
+}
+[data-iii-ui="shell"] .shui-terminal-split.vertical {
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-terminal-split-child {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-terminal-split-separator {
+  z-index: 2;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: var(--color-edge);
+  touch-action: none;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-split.horizontal
+  > .shui-terminal-split-separator {
+  width: 5px;
+  cursor: ew-resize;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-split.vertical
+  > .shui-terminal-split-separator {
+  height: 5px;
+  cursor: ns-resize;
+}
+[data-iii-ui="shell"] .shui-terminal-split-separator:hover,
+[data-iii-ui="shell"] .shui-terminal-split-separator:focus-visible {
+  background: var(--color-accent);
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-slot {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-slot.focused {
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-workspace-error {
+  flex: none;
+  padding: 5px 9px;
+  color: var(--color-warn);
+  font-size: 11px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-warn) 25%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-empty {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-terminal-resize {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+[data-iii-ui="shell"] .shui-terminal-resize span {
+  display: block;
+  border-radius: 999px;
+  background: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="bottom"]
+  > .shui-terminal-resize {
+  top: -4px;
+  left: 0;
+  width: 100%;
+  height: 9px;
+  cursor: ns-resize;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="bottom"]
+  > .shui-terminal-resize
+  span {
+  width: 36px;
+  height: 3px;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="right"]
+  > .shui-terminal-resize {
+  top: 0;
+  left: -4px;
+  width: 9px;
+  height: 100%;
+  cursor: ew-resize;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="right"]
+  > .shui-terminal-resize
+  span {
+  width: 3px;
+  height: 36px;
+}
+[data-iii-ui="shell"] .shui-terminal-resize:hover span,
+[data-iii-ui="shell"] .shui-terminal-resize:focus-visible span {
+  background: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-terminal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+[data-iii-ui="shell"] .shui-terminal-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status.error,
+[data-iii-ui="shell"] .shui-terminal-status.exited {
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 10%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  color: inherit;
+  font: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-status-action:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-hud {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+[data-iii-ui="shell"] .shui-terminal:hover .shui-terminal-hud,
+[data-iii-ui="shell"] .shui-terminal-hud:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 4px 2px 9px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-pane-cwd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-bar .shui-terminal-action {
+  width: 20px;
+  height: 20px;
+}
+[data-iii-ui="shell"] .shui-terminal-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink);
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  background: var(--color-surface-active);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-jump svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-action {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  cursor: pointer;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-enter);
+}
+[data-iii-ui="shell"] .shui-terminal-action:hover,
+[data-iii-ui="shell"] .shui-terminal-action.active {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-terminal-action:active {
+  transform: scale(0.97);
+}
+[data-iii-ui="shell"] .shui-terminal-action:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="shell"] .shui-terminal-action:disabled,
+[data-iii-ui="shell"] .shui-terminal-tab-new:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+[data-iii-ui="shell"] .shui-terminal-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-error {
+  flex: none;
+  padding: 5px 10px;
+  overflow: hidden;
+  color: var(--color-warn);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-warn) 25%, transparent);
+}
+[data-iii-ui="shell"] .shui-xterm {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px 10px;
+  background: var(--color-bg, #111);
+}
+[data-iii-ui="shell"] .shui-xterm-host {
+  width: 100%;
+  height: 100%;
+}
+[data-iii-ui="shell"] .shui-xterm .xterm {
+  width: 100%;
+  height: 100%;
+}
+[data-iii-ui="shell"] .shui-xterm .xterm-viewport {
+  background-color: transparent;
+  scrollbar-color: var(--color-ink-ghost) transparent;
+}
+[data-iii-ui="shell"] .shui-etab-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  [data-iii-ui="shell"] .shui-terminal-bar-actions {
+    gap: 2px;
+    padding-left: 4px;
+  }
+  [data-iii-ui="shell"] .shui-terminal-tab-select {
+    max-width: 92px;
+  }
+  [data-iii-ui="shell"] .shui-terminal-tab-action {
+    width: 22px;
+    min-width: 22px;
+  }
+  [data-iii-ui="shell"] .shui-terminal-pane-cwd {
+    display: none;
+  }
+}
+
+/* Agent runs watched in the terminal surface ------------------------------ */
+
+[data-iii-ui='shell'] .shell-agent-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+[data-iii-ui='shell'] .shell-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-session,
+[data-iii-ui='shell'] .shell-agent-status {
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-status {
+  margin-left: auto;
+}
+
+[data-iii-ui='shell'] .shell-agent-prompt {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--color-ink-faint);
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-end,
+[data-iii-ui='shell'] .shell-agent-hint {
+  font-size: 0.76rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+[data-iii-ui='shell'] .shell-agent-card-note {
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-input {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-top: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-input > *:first-child {
+  flex: 1;
+}
+
+[data-iii-ui='shell'] .shui-launcher {
+  display: grid;
+  grid-template-columns: repeat(2, 8.5rem);
+  gap: 0.6rem;
+}
+
+[data-iii-ui='shell'] .shui-launcher-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 6.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-subtle);
+  color: var(--color-ink-faint);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-launcher-card:hover {
+  color: var(--color-ink);
+  border-color: var(--color-border-strong, var(--color-border));
+}
+
+[data-iii-ui='shell'] .shui-launcher-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* Workspace browser -------------------------------------------------------- */
+
+[data-iii-ui='shell'] .shui-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb {
+  padding: 1px 4px;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-list {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 2px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry.dir {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui='shell'] .shui-browser-empty {
+  grid-column: 1 / -1;
+  padding: 12px 8px;
+  font-size: 12px;
+}
+
+/* Narrow panels — phones, and desktop panels split small ------------------- */
+
+@container shui-page (max-width: 720px) {
+  [data-iii-ui='shell'] .shui-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 6;
+    width: min(100%, 320px) !important;
+  }
+
+  /* A side-by-side split at this width gives each pane a few characters, so
+     panes stack whichever way they were split. */
+  [data-iii-ui='shell'] .shui-terminal-split.horizontal {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-split.horizontal
+    > .shui-terminal-split-separator {
+    width: auto;
+    height: 5px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-workspace-frame.terminal-right {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-panel[data-terminal-dock='right'] {
+    width: 100% !important;
+    height: 45%;
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--color-edge);
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-panel[data-terminal-dock='right']
+    > .shui-terminal-resize {
+    top: 0;
+    right: auto;
+    left: 0;
+    width: 100%;
+    height: 7px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-new {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-dock-group .shui-terminal-action {
+    width: 28px;
+    height: 26px;
+  }
+
+  /* The rename pencil is a hover affordance; touch has no hover, and the tab
+     still renames on double tap. */
+  [data-iii-ui='shell']
+    .shui-terminal-tab
+    .shui-terminal-tab-action[aria-label^='Rename'] {
+    display: none;
+  }
+
+  /* Same for the pane cluster: hover never fires on touch, so it becomes a
+     bar of its own above the output. */
+  [data-iii-ui='shell'] .shui-terminal-hud {
+    position: static;
+    order: -1;
+    justify-content: flex-end;
+    opacity: 1;
+    border: 0;
+    border-bottom: 1px solid var(--color-edge);
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: auto;
+  }
+
+  [data-iii-ui='shell'] .shui-launcher {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: min(100%, 20rem);
+  }
+
+  [data-iii-ui='shell'] .shui-browser-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+[data-iii-ui='shell'] .shui-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, #000 42%, transparent);
 }

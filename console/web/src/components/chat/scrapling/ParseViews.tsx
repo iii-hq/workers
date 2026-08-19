@@ -22,7 +22,7 @@ const MAX_SIMILAR_ITEMS = 20
 function AdaptiveChip({ domain }: { domain?: string }) {
   return (
     <Chip className="text-accent border-accent/40">
-      <span className="uppercase tracking-[0.06em]">adaptive</span>
+      <span>Adaptive</span>
       {domain ? (
         <span className="ml-1 normal-case text-ink">{domain}</span>
       ) : null}
@@ -157,7 +157,7 @@ export function QueryView({
     <>
       <FilterChip label={op === 'regex' ? 'pattern' : op} value={query} />
       {req.attr ? <FilterChip label="attr" value={req.attr} /> : null}
-      {req.first ? <Chip>first</Chip> : null}
+      {req.first ? <Chip>First</Chip> : null}
       {req.adaptive ? <AdaptiveChip domain={req.adaptive_domain} /> : null}
       {req.html != null ? (
         <FilterChip label="html" value={formatChars(req.html.length)} />
@@ -259,7 +259,7 @@ export function FindSimilarView({
       {typeof req.similarity_threshold === 'number' ? (
         <FilterChip label="threshold" value={req.similarity_threshold} />
       ) : null}
-      {req.match_text ? <Chip>match text</Chip> : null}
+      {req.match_text ? <Chip>Match text</Chip> : null}
       {req.html != null ? (
         <FilterChip label="html" value={formatChars(req.html.length)} />
       ) : null}

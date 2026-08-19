@@ -47,7 +47,7 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
   if (query.isError || !query.data) {
     return (
       <div className="flex items-center gap-2 py-3 font-mono text-[12px] text-alert">
-        <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <AlertCircle className="size-4 shrink-0" aria-hidden />
         engine::workers::info returned nothing for {name} — the worker may have
         disconnected.
       </div>
@@ -60,7 +60,7 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
     <div className="grid gap-x-8 gap-y-6 py-3 md:grid-cols-2">
       <Section title="functions" count={functions.length}>
         {functions.length === 0 ? (
-          <Empty>this worker registered no functions.</Empty>
+          <Empty>This worker registered no functions.</Empty>
         ) : (
           functions.map((fn) => (
             <div key={fn.function_id} className="space-y-0.5">
@@ -79,7 +79,7 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
 
       <Section title="trigger types" count={triggerTypes.length}>
         {triggerTypes.length === 0 ? (
-          <Empty>this worker publishes no trigger types.</Empty>
+          <Empty>This worker publishes no trigger types.</Empty>
         ) : (
           triggerTypes.map((type) => (
             <div key={type.id} className="space-y-0.5">
@@ -111,7 +111,7 @@ function Section({
   return (
     <section className="min-w-0 space-y-2">
       <h3 className="flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-ink-faint">
-        <ChevronRight className="h-3 w-3" aria-hidden />
+        <ChevronRight className="size-4" aria-hidden />
         {title}
         <span className="tabular-nums text-ink-ghost">{count}</span>
       </h3>

@@ -24,6 +24,6 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'editor',
     title: 'editor',
-    render: () => <EditorPage host={host} />,
+    render: (props) => <EditorPage host={host} {...props} />,
   })
 }

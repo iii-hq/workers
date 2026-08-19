@@ -42,7 +42,7 @@ export function CopyCommandButton({ text, className }: CopyCommandButtonProps) {
         </span>
       ) : (
         <>
-          <Copy className="size-3 flex-shrink-0" aria-hidden />
+          <Copy className="size-4 flex-shrink-0" aria-hidden />
           <span className="font-mono text-[10px] uppercase tracking-[0.06em]">
             copy
           </span>

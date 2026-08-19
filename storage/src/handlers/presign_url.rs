@@ -106,16 +106,12 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     fn state() -> AppState {
         let m = Arc::new(MockBackend::default());
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), m as Arc<dyn Backend>);
-        AppState {
-            backends: Arc::new(RwLock::new(map)),
-            local_ctx: None,
-        }
+        AppState::new(map)
     }
 
     fn req(v: serde_json::Value) -> PresignReq {
@@ -183,10 +179,7 @@ mod tests {
         let m = Arc::new(MockBackend::default());
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), Arc::clone(&m) as Arc<dyn Backend>);
-        let st = AppState {
-            backends: Arc::new(RwLock::new(map)),
-            local_ctx: None,
-        };
+        let st = AppState::new(map);
         (st, m)
     }
 

@@ -87,8 +87,22 @@ mod tests {
         let cfg = WorkerConfig::default();
         assert!(check_scheme(&cfg, "http://localhost:3000").is_ok());
         assert!(check_scheme(&cfg, "https://example.com/a?b=c").is_ok());
-        assert!(check_scheme(&cfg, "file:///etc/passwd").is_err());
+        // `file` ships enabled so a local document can be rendered.
+        assert!(check_scheme(&cfg, "file:///tmp/report.pdf").is_ok());
         assert!(check_scheme(&cfg, "chrome://settings").is_err());
         assert!(check_scheme(&cfg, "not a url").is_err());
+    }
+
+    /// The list is what gates navigation, so an operator narrowing it has to
+    /// actually close the door — including on the scheme that now ships open.
+    #[test]
+    fn a_narrowed_list_still_refuses_what_it_drops() {
+        let cfg = WorkerConfig {
+            allowed_schemes: vec!["https".to_string()],
+            ..WorkerConfig::default()
+        };
+        assert!(check_scheme(&cfg, "https://example.com").is_ok());
+        assert!(check_scheme(&cfg, "file:///etc/passwd").is_err());
+        assert!(check_scheme(&cfg, "http://example.com").is_err());
     }
 }

@@ -18,6 +18,7 @@ const SLUG: &str = "router-midstream-terminal-error";
 const MESSAGE: &str = "Return an answer that exercises terminal failure handling.";
 const PARTIAL: &str = "useful partial answer";
 const ERROR: &str = "provider disappeared after streaming content";
+const PUBLIC_SUMMARY: &str = "The provider rejected this request.";
 
 pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
@@ -57,9 +58,51 @@ pub(super) fn scenario() -> ScenarioFixture {
         run.expect_no_duplicate_messages()?;
 
         anyhow::ensure!(
-            run.status.get("result_error").and_then(Value::as_str) == Some(ERROR),
-            "terminal error reason was not preserved: {}",
+            run.status.get("result_error").and_then(Value::as_str) == Some(PUBLIC_SUMMARY),
+            "terminal error status did not use stable public copy: {}",
             run.status
+        );
+        let durable_errors = run
+            .transcript
+            .iter()
+            .filter_map(|item| {
+                let custom = item.get("custom")?;
+                (custom.get("custom_type").and_then(Value::as_str) == Some("error"))
+                    .then_some(custom)
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            durable_errors.len() == 1,
+            "expected one durable error record, found {}: {:?}",
+            durable_errors.len(),
+            run.transcript
+        );
+        let error_data = durable_errors[0]
+            .get("data")
+            .cloned()
+            .unwrap_or(Value::Null);
+        anyhow::ensure!(
+            error_data.get("summary").and_then(Value::as_str) == Some(PUBLIC_SUMMARY),
+            "durable error summary did not use stable public copy: {error_data}"
+        );
+        anyhow::ensure!(
+            error_data
+                .get("detail")
+                .and_then(Value::as_str)
+                .is_some_and(|detail| detail.contains(ERROR)),
+            "durable error detail did not preserve the router diagnostic: {error_data}"
+        );
+        anyhow::ensure!(
+            error_data
+                .get("reason")
+                .and_then(Value::as_str)
+                .is_some_and(|reason| reason.contains(ERROR)),
+            "compatibility reason did not preserve the router diagnostic: {error_data}"
+        );
+        anyhow::ensure!(
+            error_data.get("class").and_then(Value::as_str) == Some("llm.permanent")
+                && error_data.get("retryable").and_then(Value::as_bool) == Some(false),
+            "terminal error was not durably classified as permanent: {error_data}"
         );
         anyhow::ensure!(
             run.status

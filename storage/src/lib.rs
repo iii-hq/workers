@@ -6,8 +6,8 @@ pub mod configuration;
 pub mod error;
 pub mod handlers;
 pub mod manifest;
-pub mod rustfs;
 pub mod triggers;
+pub mod ui;
 
 pub fn worker_name() -> &'static str {
     "storage"

@@ -10,6 +10,7 @@
  * UI projects link against; the conformance test holds the two together.
  */
 
+import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
 import type { IIIConnectionState, RegisterTriggerInput } from '@/lib/iii-client'
 import type { FunctionTriggerMessage } from '@/types/chat'
 
@@ -55,6 +56,8 @@ export interface ConsoleApi {
   useTheme(): 'light' | 'dark'
   /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
   tokens: readonly string[]
+  /** Stable namespaced CSS recipes for shared visual patterns. */
+  uiClasses: UiClasses
 }
 
 /**
@@ -63,6 +66,22 @@ export interface ConsoleApi {
  * so pages can treat `'left'` as the default orientation.
  */
 export type PanelSide = 'left' | 'right'
+
+/** JSON context sent by an injected renderer to an injected page. */
+export interface PanelContextEvent<T extends JsonValue = JsonValue> {
+  /** Monotonic per-console-tab id; repeated context still produces an event. */
+  id: number
+  /** Registered page id that owns this context. */
+  pageId: string
+  context: T
+}
+
+export interface PanelOpenRequest<T extends JsonValue = JsonValue> {
+  /** Registered extension page to place or reuse in the workspace. */
+  pageId: string
+  /** Worker-defined, JSON-serializable context delivered to that page. */
+  context?: T
+}
 
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
@@ -87,6 +106,13 @@ export interface PageRenderProps {
    * no conversation is active or none is set.
    */
   workingDir?: string | null
+  /**
+   * Latest context sent through `host.panels.open()` for this page. The event
+   * id changes even when the context value is identical, so pages can respond
+   * to every user action. Ephemeral: workspace persistence stores the page,
+   * not this payload.
+   */
+  panelContext?: PanelContextEvent
   /** Active chat session id. Reactive pages use it to subscribe to exact
       Harness turn boundaries without receiving another chat's events. */
   conversationId?: string | null
@@ -119,6 +145,14 @@ export interface FunctionTriggerRenderer {
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
+  /**
+   * Presentation hints owned by the worker. `display` makes a successful
+   * non-null render visible in the chat flow while the function's raw
+   * request/response details remain collapsed.
+   */
+  metadata?: {
+    display?: boolean
+  }
   /**
    * Redact the raw request/response before the card DISPLAYS OR COPIES it —
    * the `raw json` tab renders `message.input` / `message.output` verbatim
@@ -175,6 +209,34 @@ export interface ConfigFormProps {
   focusField?: readonly string[]
 }
 
+/** Layout the Console should reserve for a configuration-form override. */
+export type ConfigFormLayout = 'contained' | 'full'
+
+export interface ConfigFormRegistrationOptions {
+  /**
+   * `contained` keeps the standard centered form column and host scroll.
+   * `full` gives the override all available width and height; the override
+   * must then manage any scrolling inside its own layout.
+   */
+  layout?: ConfigFormLayout
+}
+
+/**
+ * Props for a provider-specific editor inside the chat model picker. Provider
+ * workers own authentication nuances while the console keeps the router
+ * slice, validation, dirty tracking, and save/reset lifecycle authoritative.
+ */
+export interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+
 /**
  * Props a session chip receives from the chat host. Chips fetch their own
  * data through `host.iii`; the host only identifies the session and what
@@ -227,6 +289,7 @@ export interface Host {
   iii: ExtensionIii
   components: ConsoleApi['components']
   useTheme: ConsoleApi['useTheme']
+  uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   pages: {
@@ -235,10 +298,21 @@ export interface Host {
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void
   }
+  panels: {
+    /** Place/reuse a registered page and deliver its worker-defined context. */
+    open(request: PanelOpenRequest): void
+  }
   configForms: {
     register(
       configurationId: string,
       component: React.ComponentType<ConfigFormProps>,
+      options?: ConfigFormRegistrationOptions,
+    ): () => void
+  }
+  providerConfigForms: {
+    register(
+      providerId: string,
+      component: React.ComponentType<ProviderConfigFormProps>,
     ): () => void
   }
   chat: {

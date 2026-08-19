@@ -34,8 +34,8 @@ export function WorkerConfigurationPanel({
     >
       <PageHeader
         icon={<SlidersHorizontal />}
-        title="worker configuration"
-        description="schemas & values registered by workers"
+        title="Worker Configuration"
+        description="Schemas and values registered by workers"
         onClose={() => guard.tryNavigate(onClose)}
       />
       <WorkersTab

@@ -1,5 +1,13 @@
 import { FilterChip } from '@/components/chat/engine/shared'
 import { Chip, MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { JsonHighlight } from '@/lib/syntax'
 import {
   describeRequestSchema,
@@ -58,8 +66,8 @@ function searchChips(functionId: string, input: unknown): React.ReactNode {
     return (
       <>
         {req.text ? <FilterChip label="text" value={req.text} /> : null}
-        {req.partial ? <Chip>partial</Chip> : null}
-        {req.case_sensitive ? <Chip>case</Chip> : null}
+        {req.partial ? <Chip>Partial</Chip> : null}
+        {req.case_sensitive ? <Chip>Case-sensitive</Chip> : null}
       </>
     )
   }
@@ -68,7 +76,7 @@ function searchChips(functionId: string, input: unknown): React.ReactNode {
   return (
     <>
       {req.pattern ? <FilterChip label="pattern" value={req.pattern} /> : null}
-      {req.case_sensitive ? <Chip>case</Chip> : null}
+      {req.case_sensitive ? <Chip>Case-sensitive</Chip> : null}
     </>
   )
 }
@@ -218,18 +226,24 @@ export function DescribeView({
           {el.text}
         </div>
       ) : null}
-      <table className="w-full font-mono text-[11.5px] text-ink">
-        <tbody>
-          {rows.map(([k, v]) => (
-            <tr key={k} className="border-b border-rule-2 last:border-b-0">
-              <td className="px-3 py-1 text-ink-faint align-top w-[26%] whitespace-nowrap">
-                {k}
-              </td>
-              <td className="px-3 py-1 text-ink break-all">{v}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TableViewport>
+        <TableFrame className="px-3">
+          <Table density="compact" aria-label="Element details">
+            <TableBody>
+              {rows.map(([k, v]) => (
+                <TableRow key={k}>
+                  <TableCell className="w-[26%] whitespace-nowrap font-code text-ink-faint">
+                    {k}
+                  </TableCell>
+                  <TableCell className="break-all font-code text-ink">
+                    {v}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
+      </TableViewport>
       {el.attrs && Object.keys(el.attrs).length > 0 ? (
         <div>
           <div className="px-3 py-1.5 border-y border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">

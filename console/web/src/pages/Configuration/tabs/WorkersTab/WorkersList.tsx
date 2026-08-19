@@ -57,7 +57,7 @@ export function WorkersList({
       <div className="px-3 pt-3 pb-2 shrink-0 space-y-2">
         <div className="relative">
           <Search
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-ink-ghost pointer-events-none"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-ink-ghost pointer-events-none"
             aria-hidden
           />
           <Input
@@ -82,7 +82,7 @@ export function WorkersList({
               }}
               className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center justify-center size-6 rounded-sm text-ink-ghost hover:text-ink hover:bg-surface-hover transition-colors"
             >
-              <X className="size-3.5" aria-hidden />
+              <X className="size-4" aria-hidden />
             </button>
           ) : null}
         </div>
@@ -158,14 +158,14 @@ function ConfigurationRow({
       onClick={onSelect}
       aria-current={selected ? 'true' : undefined}
       className={cn(
-        'relative w-full text-left rounded-md pl-3.5 pr-2.5 transition-colors',
+        'relative w-full rounded-md pr-2.5 pl-3.5 text-left transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus',
         // Touch-sized targets in the drill-in flow.
         narrow ? 'py-3' : 'py-2',
         selected ? 'bg-surface-selected' : 'hover:bg-surface-hover',
-        // Selection = wash + accent indicator, not color alone.
+        // Selection = neutral wash + neutral edge, never theme accent.
         selected &&
-          "before:content-[''] before:absolute before:left-1 before:top-2 before:bottom-2 before:w-0.5 before:rounded-full before:bg-accent",
+          "before:content-[''] before:absolute before:left-1 before:top-2 before:bottom-2 before:w-0.5 before:rounded-full before:bg-edge",
       )}
     >
       <div className="flex items-baseline gap-2 min-w-0">

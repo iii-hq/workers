@@ -22,8 +22,20 @@
  * observer of the bus.
  */
 
-import { Badge, Button, ErrorBoundary, type Host, StatusDot } from '@iii-dev/console-ui'
-import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
+import {
+  Badge,
+  Button,
+  ErrorBoundary,
+  type Host,
+  StatusDot,
+} from '@iii-dev/console-ui'
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { type CalledEvent, useGithubCalled } from './events'
 import { formatRelative } from './format'
 import { Activity } from './icons'
@@ -102,11 +114,25 @@ export function ActivityFeed({ host }: { host: Host }) {
             : 'live feed of github worker calls'}
         </span>
         <span className="spacer" />
-        <Button variant="ghost" size="sm" aria-pressed={!paused} onClick={() => setPaused((p) => !p)}>
-          <StatusDot tone={paused ? 'warn' : 'accent'} pulse={!paused} aria-hidden />
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={!paused}
+          onClick={() => setPaused((p) => !p)}
+        >
+          <StatusDot
+            tone={paused ? 'warn' : 'accent'}
+            pulse={!paused}
+            aria-hidden
+          />
           {paused ? 'paused' : 'live'}
         </Button>
-        <Button variant="ghost" size="sm" disabled={entries.length === 0} onClick={clear}>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={entries.length === 0}
+          onClick={clear}
+        >
           clear
         </Button>
       </div>
@@ -116,8 +142,8 @@ export function ActivityFeed({ host }: { host: Host }) {
           <Activity className="gh-ui-hero-icon" />
           <h2 className="gh-ui-hero-title">Waiting for github activity</h2>
           <p className="gh-ui-hero-body">
-            Trigger a github function and it shows here — pull requests, issues, runs, releases, searches, and any gh
-            command the agent runs.
+            Trigger a github function and it shows here — pull requests, issues,
+            runs, releases, searches, and any gh command the agent runs.
           </p>
         </div>
       ) : (
@@ -128,7 +154,9 @@ export function ActivityFeed({ host }: { host: Host }) {
               entry={entry}
               now={now}
               expanded={expanded === entry.key}
-              onToggle={() => setExpanded((cur) => (cur === entry.key ? null : entry.key))}
+              onToggle={() =>
+                setExpanded((cur) => (cur === entry.key ? null : entry.key))
+              }
             />
           ))}
         </div>
@@ -168,13 +196,21 @@ function ActivityRow({
           <Badge>{entry.function_id}</Badge>
         </span>
         <span className="gh-ui-feed-args">
-          {entry.repo ? <span className="gh-ui-feed-repo">{entry.repo}</span> : null}
-          <span className="gh-ui-feed-argtext">{entry.args_summary || '—'}</span>
+          {entry.repo ? (
+            <span className="gh-ui-feed-repo">{entry.repo}</span>
+          ) : null}
+          <span className="gh-ui-feed-argtext">
+            {entry.args_summary || '—'}
+          </span>
         </span>
         <span className="gh-ui-feed-status">
           <StatusDot tone={entry.ok ? 'accent' : 'alert'} aria-hidden />
-          <span className={entry.ok ? 'gh-ui-ok' : 'gh-ui-err'}>{entry.ok ? 'ok' : 'error'}</span>
-          <span className="gh-ui-feed-dur">{formatDuration(entry.duration_ms)}</span>
+          <span className={entry.ok ? 'gh-ui-ok' : 'gh-ui-err'}>
+            {entry.ok ? 'ok' : 'error'}
+          </span>
+          <span className="gh-ui-feed-dur">
+            {formatDuration(entry.duration_ms)}
+          </span>
         </span>
         <span className="gh-ui-feed-time" title={entry.timestamp || undefined}>
           {formatRelative((now - entry.receivedAt) / 1000)}
@@ -182,9 +218,19 @@ function ActivityRow({
       </div>
       {expanded ? (
         <div className="gh-ui-feed-detail">
-          {entry.result_summary ? <div className="gh-ui-feed-summary">{entry.result_summary}</div> : null}
-          <ErrorBoundary fallback={() => <div className="gh-ui-rv-empty">could not render this result</div>}>
-            <ResultView kind={entry.kind} preview={entry.result_preview} ok={entry.ok} />
+          {entry.result_summary ? (
+            <div className="gh-ui-feed-summary">{entry.result_summary}</div>
+          ) : null}
+          <ErrorBoundary
+            fallback={() => (
+              <div className="gh-ui-rv-empty">Could not render this result</div>
+            )}
+          >
+            <ResultView
+              kind={entry.kind}
+              preview={entry.result_preview}
+              ok={entry.ok}
+            />
           </ErrorBoundary>
         </div>
       ) : null}

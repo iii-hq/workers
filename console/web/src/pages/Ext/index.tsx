@@ -21,6 +21,7 @@ import { useEffect, useRef } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
+import { usePanelContext } from '@/lib/panel-context'
 import { useExtPages } from '@/lib/ui-slots'
 import type { PanelSide } from '@/types/injectable-ui'
 
@@ -68,6 +69,7 @@ export function ExtPage({
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
+  const panelContext = usePanelContext(pageId ?? '')
   const pages = useExtPages()
   const page = pageId
     ? [...pages].reverse().find((p) => p.id === pageId)
@@ -99,17 +101,17 @@ export function ExtPage({
     return (
       <PageShell aria-label={pageId ?? 'extension page'}>
         <PageHeader
-          title={pageId ?? 'extension'}
-          description="waiting for worker"
+          title={pageId ?? 'Extension'}
+          description="Waiting for worker"
           onClose={onRequestClose}
         />
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
-            title="extension page not loaded"
+            title="Extension page not loaded"
             description={
               pageId
-                ? `no worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
-                : 'missing extension page id.'
+                ? `No worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
+                : 'Missing extension page id.'
             }
           />
         </div>
@@ -125,6 +127,7 @@ export function ExtPage({
         tabId={tabId}
         onRequestClose={onRequestClose}
         workingDir={workingDir}
+        panelContext={panelContext}
         conversationId={conversationId}
       />
     </div>

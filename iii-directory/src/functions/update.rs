@@ -194,14 +194,14 @@ pub struct PromptCreateOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PromptDeleteInput {
-    /// Existing system-prompt name, as returned by
-    /// `directory::system-prompts::list`.
+    /// Existing prompt name, as returned by the matching list function for
+    /// this kind (`directory::prompts::list` / `directory::system-prompts::list`).
     pub name: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PromptDeleteOutput {
-    /// Name of the system prompt whose file was removed.
+    /// Name of the prompt whose file was removed.
     pub name: String,
 }
 
@@ -240,7 +240,20 @@ pub fn register(
         fs_source::PromptKind::System,
         "directory::system-prompts::create",
     );
-    register_delete_system_prompt(iii, cfg, &subscribers.system_prompts);
+    register_delete_prompt(
+        iii,
+        cfg,
+        &subscribers.prompts,
+        fs_source::PromptKind::Command,
+        "directory::prompts::delete",
+    );
+    register_delete_prompt(
+        iii,
+        cfg,
+        &subscribers.system_prompts,
+        fs_source::PromptKind::System,
+        "directory::system-prompts::delete",
+    );
 }
 
 fn register_update_skill(
@@ -391,35 +404,47 @@ fn register_create_prompt(
     );
 }
 
-fn register_delete_system_prompt(
+fn register_delete_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     subs: &trigger_types::SubscriberSet,
+    kind: fs_source::PromptKind,
+    function_id: &str,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let subs_inner = subs.clone();
+    let (description, label): (&str, &str) = match kind {
+        fs_source::PromptKind::Command => (
+            "Permanently delete one EXISTING filesystem-backed command-template prompt \
+             by name. Resolves against the same merged scan as \
+             directory::prompts::list, removes only that prompt's markdown file, and \
+             fans out directory::prompts::on-change with { op: \"delete\" }.",
+            "Delete prompt",
+        ),
+        fs_source::PromptKind::System => (
+            "Permanently delete one EXISTING filesystem-backed system prompt by name. \
+             Resolves against the same merged scan as directory::system-prompts::list, \
+             removes only that prompt's markdown file, and fans out \
+             directory::system-prompts::on-change with { op: \"delete\" }.",
+            "Delete system prompt",
+        ),
+    };
     iii.register_function(
-        "directory::system-prompts::delete",
+        function_id,
         RegisterFunction::new_async(move |req: PromptDeleteInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
             let subs = subs_inner.clone();
             async move {
-                let out = delete_prompt(&cfg, &req, fs_source::PromptKind::System)
-                    .map_err(Error::Handler)?;
+                let out = delete_prompt(&cfg, &req, kind).map_err(Error::Handler)?;
                 trigger_types::dispatch(&iii, &subs, json!({ "op": "delete", "name": out.name }))
                     .await;
                 Ok::<_, Error>(out)
             }
         })
-        .description(
-            "Permanently delete one EXISTING filesystem-backed system prompt by name. \
-             Resolves against the same merged scan as directory::system-prompts::list, \
-             removes only that prompt's markdown file, and fans out \
-             directory::system-prompts::on-change with { op: \"delete\" }.",
-        )
-        .metadata(json!({"tool": {"label": "Delete system prompt"}})),
+        .description(description)
+        .metadata(json!({"tool": {"label": label}})),
     );
 }
 

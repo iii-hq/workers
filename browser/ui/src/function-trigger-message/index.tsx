@@ -80,6 +80,23 @@ function ScreenshotBody({ output }: { output: unknown }) {
   )
 }
 
+function renderScreenshot(
+  message: FunctionTriggerMessage,
+): React.ReactNode | null {
+  if (
+    message.functionId !== 'browser::screenshot' ||
+    message.pendingApproval ||
+    message.running ||
+    message.output == null
+  ) {
+    return null
+  }
+  if (parseInfraErrorDisplay(message.output)) return null
+  const screenshot = parseScreenshotOutput(message.output)
+  if (!screenshot?.dataUrl) return null
+  return <ScreenshotBody output={message.output} />
+}
+
 /**
  * Per-function pretty body; null when the function is unknown or its
  * payload doesn't parse, in which case the caller falls back to the
@@ -148,13 +165,13 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
         )}
         {sessionId ? (
           <a href={BROWSER_PAGE_HASH} className="br-ui-call-link">
-            <ExternalLink size={11} aria-hidden />
+            <ExternalLink size={16} aria-hidden />
             open in browser tab
           </a>
         ) : null}
       </div>
       {running && message.output == null ? (
-        <p className="br-ui-call-running">running...</p>
+        <p className="br-ui-call-running">Running...</p>
       ) : body ? (
         body
       ) : fallback != null ? (
@@ -162,7 +179,7 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
           <JsonHighlight code={formatJson(fallback)} />
         </div>
       ) : (
-        <p className="br-ui-empty-line">no result</p>
+        <p className="br-ui-empty-line">No result</p>
       )}
     </div>
   )
@@ -193,5 +210,22 @@ export function createBrowserRenderer(_host: Host): FunctionTriggerRenderer {
     tryRenderRunning: (message) => renderCall(message),
     tryRenderPreview: () => null,
     FunctionIdLabel,
+  }
+}
+
+/**
+ * Focused renderer that promotes successful screenshots into the chat flow.
+ * Keeping it separate means other browser calls retain the compact card and
+ * a malformed/error response safely falls through to the general renderer.
+ */
+export function createBrowserScreenshotRenderer(): FunctionTriggerRenderer {
+  return {
+    id: 'browser/page.js#screenshot-display',
+    isMatch: (functionId) => functionId === 'browser::screenshot',
+    tryRender: renderScreenshot,
+    tryRenderRunning: () => null,
+    tryRenderPreview: () => null,
+    FunctionIdLabel,
+    metadata: { display: true },
   }
 }

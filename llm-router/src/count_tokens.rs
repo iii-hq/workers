@@ -17,6 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::catalog::queries::effective_model_ref;
 use crate::catalog::store::CatalogStore;
 use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::store::RegistryStore;
@@ -101,25 +102,38 @@ pub fn make_count_tokens(
                 )
                 .into());
             }
-            // Same inputs, same decide(), same error codes as the chat
-            // pipeline's routing step.
             let config = snapshot(&config);
             let heuristics = config.settings().routing_heuristics.clone();
             let default_provider = config.settings().default_provider.clone();
             let providers = registry.list().await;
+            let registered_providers: Vec<String> = providers
+                .iter()
+                .map(|record| record.declaration.id.clone())
+                .collect();
+            let available_providers: Vec<String> = providers
+                .iter()
+                .filter(|record| record.available)
+                .map(|record| record.declaration.id.clone())
+                .collect();
+            let catalog_ids = catalog.model_ids().await;
+            // Composite `provider::model` ids split exactly as `router::chat`'s
+            // entry does, so the provider counts the same split id a chat with
+            // this request would stream.
+            let (provider, model) = {
+                let (p, m) = effective_model_ref(req.provider.as_deref(), &model, |p| {
+                    registered_providers.iter().any(|r| r == p)
+                        || catalog_ids.iter().any(|(owner, _)| owner == p)
+                });
+                (p.map(str::to_owned), m.to_owned())
+            };
+            // Same inputs, same decide(), same error codes as the chat
+            // pipeline's routing step.
             let candidates = decide(&DecideInput {
                 model: model.clone(),
-                provider: req.provider,
-                registered_providers: providers
-                    .iter()
-                    .map(|record| record.declaration.id.clone())
-                    .collect(),
-                available_providers: providers
-                    .iter()
-                    .filter(|record| record.available)
-                    .map(|record| record.declaration.id.clone())
-                    .collect(),
-                catalog: catalog.model_ids().await,
+                provider,
+                registered_providers,
+                available_providers,
+                catalog: catalog_ids,
                 heuristics,
                 default_provider,
             })

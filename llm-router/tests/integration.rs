@@ -15,6 +15,8 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::register::register_router;
+use llm_router::registry::store::RegistryStore;
+use llm_router::types::router::ProviderDeclaration;
 use serde_json::{json, Value};
 
 // ── engine bootstrap ────────────────────────────────────────────────────────
@@ -404,7 +406,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 let token = token_for_refresh.lock().unwrap().clone();
                 let models: Vec<Value> = discovered
                     .iter()
-                    .map(|id| json!({ "id": id, "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }))
+                    .map(|id| json!({ "id": id, "provider": "real", "context_window": 100000, "max_output_tokens": 8192, "supports_vision": true }))
                     .collect();
                 async move {
                     iii.trigger(TriggerRequest {
@@ -616,6 +618,35 @@ async fn route_previews_the_same_provider_chat_executes() {
         .await
         .expect_err("ghost model cannot route");
     assert_eq!(remote_code(&err), "router/no_provider_for_model");
+
+    // a composite `provider::model` id (the console's display form) previews
+    // and executes on the embedded provider, with the split id on the wire —
+    // dispatch agrees with the models surface about what the id means.
+    let route = call(
+        &consumer,
+        "router::route",
+        json!({ "model": "real::live-1" }),
+    )
+    .await
+    .expect("composite id routes");
+    assert_eq!(route["provider"], "real");
+    let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
+    let res = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({ "writer_ref": writer_ref, "model": "real::live-1", "messages": [] }),
+            action: None,
+            timeout_ms: Some(30_000),
+        })
+        .await
+        .expect("composite chat succeeds");
+    assert_eq!(res["ok"], true, "chat response: {res}");
+    assert_eq!(res["provider"], "real");
+    assert_eq!(
+        res["model"], "live-1",
+        "the split id is what the provider served"
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
 
     consumer.shutdown();
     router_iii.shutdown();
@@ -1013,6 +1044,49 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     .unwrap();
     assert_eq!(sup["supported"], false); // flag absent on the discovered model
 
+    // Composite `provider::model` ids (the console's display form) resolve
+    // across the whole models surface, not just get: the same id must never
+    // resolve in get/budget yet read as unsupported or list nothing.
+    let got = call(
+        &router_iii,
+        "router::models::get",
+        json!({ "id": "real::disc-1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(got["model"]["id"], "disc-1");
+    let budget = call(
+        &router_iii,
+        "router::models::budget",
+        json!({ "provider": "real", "id": "real::disc-1" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(budget["model"]["id"], "disc-1");
+    let sup = call(
+        &router_iii,
+        "router::models::supports",
+        json!({ "provider": "real", "id": "real::disc-1", "capability": "vision" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sup["supported"], true); // discovered flag — proves resolution
+    let list = call(
+        &router_iii,
+        "router::models::list",
+        json!({ "provider": "real::disc-1" }),
+    )
+    .await
+    .unwrap();
+    let listed: Vec<&str> = list["models"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        listed.contains(&"disc-1"),
+        "composite provider filter lists the prefix's slice; have {listed:?}"
+    );
+
     router_iii.shutdown();
 }
 
@@ -1146,7 +1220,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
         .expect_err("duplicate live request id must be rejected");
     assert_eq!(
         remote_code(&duplicate),
-        "router/invalid_request",
+        "router/request_in_progress",
         "{duplicate:?}"
     );
     tokio::time::timeout(Duration::from_secs(2), second_pump)
@@ -1342,6 +1416,48 @@ async fn router_boots_its_interface_against_a_bare_engine() {
     );
 
     router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_registry_persist_does_not_poison_provider_retries() {
+    // Bundle workers start concurrently. A provider may declare itself after
+    // the router is ready but before the state worker exposes `state::set`.
+    // Both attempts below must fail for that transient dependency only; the
+    // first must not leave a token hash that turns the second into a takeover.
+    let engine = bare_engine_or_skip!();
+    let iii = register_worker(&engine.url, InitOptions::default());
+    let registry = RegistryStore::new(iii.clone());
+    let declaration: ProviderDeclaration =
+        serde_json::from_value(json!({ "id": "late-state" })).unwrap();
+
+    for attempt in 1..=2 {
+        let error = match registry
+            .upsert(
+                declaration.clone(),
+                Some("provider-late-state".into()),
+                None,
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("state persistence is unavailable on the bare engine"),
+        };
+        assert_eq!(
+            error.code,
+            llm_router::types::errors::RouterCode::InvalidRequest,
+            "attempt {attempt} must remain retryable, got: {error}"
+        );
+        assert!(
+            error.message.contains("registry persist failed"),
+            "attempt {attempt} failed for an unexpected reason: {error}"
+        );
+        assert!(
+            registry.ids().await.is_empty(),
+            "failed persistence must not publish a provider binding"
+        );
+    }
+
+    iii.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1636,6 +1752,431 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn provider_bad_request_is_permanent_and_is_not_retried() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let provider = register_worker(&engine.url, InitOptions::default());
+    let handler_calls = Arc::new(AtomicU64::new(0));
+    let bad_requests = Arc::new(AtomicU64::new(0));
+    let observed_handler_calls = handler_calls.clone();
+    let observed_bad_requests = bad_requests.clone();
+    provider.register_function(
+        "provider::typed::stream",
+        RegisterFunction::new_async_with_bad_request(
+            move |_input: llm_router::types::router::ProviderStreamInput| {
+                let handler_calls = observed_handler_calls.clone();
+                async move {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<llm_router::types::router::ProviderStreamOutput, Error>(
+                        llm_router::types::router::ProviderStreamOutput { ok: true },
+                    )
+                }
+            },
+            move |error| {
+                observed_bad_requests.fetch_add(1, Ordering::SeqCst);
+                Error::Remote {
+                    code: "provider/invalid_request".into(),
+                    message: format!("bad ProviderStreamInput: {error}"),
+                    stacktrace: None,
+                }
+            },
+        ),
+    );
+    call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": "typed",
+            "models": [{
+                "id": "typed-model",
+                "provider": "typed",
+                "context_window": 1_000,
+                "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await
+    .expect("typed provider registers");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let error = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "request_id": "malformed-provider-input",
+                "model": "typed-model",
+                "messages": [{
+                    "role": "user",
+                    "content": "content must be an array",
+                    "timestamp": 1
+                }]
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect_err("provider input rejection remains a typed bus error");
+    assert_eq!(remote_code(&error), "provider/invalid_request", "{error:?}");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel reaches EOF")
+        .expect("channel pump joins");
+
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        bad_requests.load(Ordering::SeqCst),
+        1,
+        "a permanent bad request must not be retried"
+    );
+    let parsed: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    let terminals: Vec<&Value> = parsed
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {parsed:?}");
+    assert_eq!(terminals[0]["type"], "error", "frames: {parsed:?}");
+    assert_eq!(
+        terminals[0]["error"]["error_kind"], "permanent",
+        "frames: {parsed:?}"
+    );
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let provider = register_worker(&engine.url, InitOptions::default());
+    let calls = Arc::new(AtomicU64::new(0));
+    let resolution_keys = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed_calls = calls.clone();
+    let observed_keys = resolution_keys.clone();
+    let address = engine.url.clone();
+    provider.register_function(
+        "provider::retryable::stream",
+        RegisterFunction::new_async(move |input: Value| {
+            let address = address.clone();
+            let calls = observed_calls.clone();
+            let resolution_keys = observed_keys.clone();
+            async move {
+                let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                resolution_keys.lock().unwrap().push(
+                    input["resolution_key"]
+                        .as_str()
+                        .expect("resolution key")
+                        .to_string(),
+                );
+                let writer_ref: StreamChannelRef =
+                    serde_json::from_value(input["writer_ref"].clone())
+                        .map_err(|error| Error::Serde(error.to_string()))?;
+                let writer = iii_sdk::channel::ChannelWriter::new(&address, &writer_ref);
+                let model = input["model"].clone();
+                if attempt == 1 {
+                    writer
+                        .send_message(
+                            &json!({
+                                "type": "error",
+                                "error": {
+                                    "role": "assistant",
+                                    "content": [],
+                                    "stop_reason": "error",
+                                    "model": model,
+                                    "provider": "retryable",
+                                    "timestamp": 1,
+                                    "error_message": "retry once",
+                                    "error_kind": "rate_limited"
+                                }
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .map_err(|error| Error::Handler(error.to_string()))?;
+                    let _ = writer.close().await;
+                    return Ok::<Value, Error>(json!({ "ok": true }));
+                }
+
+                let message = json!({
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "recovered" }],
+                    "stop_reason": "end",
+                    "model": model,
+                    "provider": "retryable",
+                    "timestamp": 2
+                });
+                for frame in [
+                    json!({
+                        "type": "start",
+                        "partial": {
+                            "role": "assistant",
+                            "content": [],
+                            "stop_reason": "end",
+                            "model": model,
+                            "provider": "retryable",
+                            "timestamp": 2
+                        }
+                    }),
+                    json!({ "type": "done", "message": message }),
+                ] {
+                    writer
+                        .send_message(&frame.to_string())
+                        .await
+                        .map_err(|error| Error::Handler(error.to_string()))?;
+                }
+                let _ = writer.close().await;
+                Ok::<Value, Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+    call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": "retryable",
+            "models": [{
+                "id": "retry-model",
+                "provider": "retryable",
+                "context_window": 1_000,
+                "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await
+    .expect("retryable provider registers");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let response = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "request_id": "stable-retry-id",
+                "model": "retry-model",
+                "messages": []
+            }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .expect("second attempt succeeds");
+    assert_eq!(response["ok"], true, "{response}");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel reaches EOF")
+        .expect("channel pump joins");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *resolution_keys.lock().unwrap(),
+        vec!["stable-retry-id", "stable-retry-id"]
+    );
+    let parsed: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    assert!(
+        parsed.iter().all(|frame| frame["type"] != "error"),
+        "the first attempt leaked to the caller: {parsed:?}"
+    );
+    let terminals = parsed
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .count();
+    assert_eq!(terminals, 1, "frames: {parsed:?}");
+    assert_eq!(parsed.last().unwrap()["type"], "done", "frames: {parsed:?}");
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+
+    let provider = register_worker(&engine.url, InitOptions::default());
+    let calls = Arc::new(AtomicU64::new(0));
+    let error_sent = Arc::new(tokio::sync::Semaphore::new(0));
+    let observed_calls = calls.clone();
+    let observed_error = error_sent.clone();
+    let address = engine.url.clone();
+    provider.register_function(
+        "provider::backoff::stream",
+        RegisterFunction::new_async(move |input: Value| {
+            let address = address.clone();
+            let calls = observed_calls.clone();
+            let error_sent = observed_error.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let writer_ref: StreamChannelRef =
+                    serde_json::from_value(input["writer_ref"].clone())
+                        .map_err(|error| Error::Serde(error.to_string()))?;
+                let writer = iii_sdk::channel::ChannelWriter::new(&address, &writer_ref);
+                writer
+                    .send_message(
+                        &json!({
+                            "type": "error",
+                            "error": {
+                                "role": "assistant",
+                                "content": [],
+                                "stop_reason": "error",
+                                "model": input["model"],
+                                "provider": "backoff",
+                                "timestamp": 1,
+                                "error_message": "retry later",
+                                "error_kind": "transient"
+                            }
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .map_err(|error| Error::Handler(error.to_string()))?;
+                let _ = writer.close().await;
+                error_sent.add_permits(1);
+                Ok::<Value, Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+    call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": "backoff",
+            "models": [{
+                "id": "backoff-model",
+                "provider": "backoff",
+                "context_window": 1_000,
+                "max_output_tokens": 100
+            }]
+        }),
+    )
+    .await
+    .expect("backoff provider registers");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let chat = {
+        let consumer = consumer.clone();
+        tokio::spawn(async move {
+            consumer
+                .trigger(TriggerRequest {
+                    function_id: "router::chat".into(),
+                    payload: json!({
+                        "writer_ref": writer_ref,
+                        "request_id": "abort-in-backoff",
+                        "model": "backoff-model",
+                        "messages": []
+                    }),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(3), error_sent.acquire())
+        .await
+        .expect("provider did not emit its retryable error")
+        .expect("error semaphore stays open")
+        .forget();
+    // Give the relay ample time to classify the frame and enter the first
+    // backoff, whose documented minimum is 500ms.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = Instant::now();
+    let aborted = call(
+        &router,
+        "router::abort",
+        json!({ "request_id": "abort-in-backoff" }),
+    )
+    .await
+    .expect("abort request succeeds");
+    assert_eq!(aborted["aborted"], true, "{aborted}");
+    let response = tokio::time::timeout(Duration::from_millis(350), chat)
+        .await
+        .unwrap_or_else(|_| panic!("abort waited for retry backoff: {:?}", started.elapsed()))
+        .expect("chat task joins")
+        .expect("chat returns an aborted response");
+    assert_eq!(response["stop_reason"], "aborted", "{response}");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel reaches EOF")
+        .expect("channel pump joins");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "abort started a retry");
+    let parsed: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| serde_json::from_str(frame).expect("valid frame"))
+        .collect();
+    let terminals: Vec<&Value> = parsed
+        .iter()
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {parsed:?}");
+    assert_eq!(terminals[0]["type"], "done", "frames: {parsed:?}");
+    assert_eq!(
+        terminals[0]["message"]["stop_reason"], "aborted",
+        "frames: {parsed:?}"
+    );
+
+    consumer.shutdown();
+    provider.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extreme_retry_configuration_is_rejected_without_disrupting_chat() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, InitOptions::default());
+    register_router(router.clone()).await.expect("router boots");
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+
+    call(
+        &router,
+        "configuration::set",
+        json!({
+            "id": "llm-router",
+            "value": { "settings": { "retry_max": u32::MAX } }
+        }),
+    )
+    .await
+    .expect_err("retry counts above the operational bound must be rejected");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let completed = call(
+        &consumer,
+        "router::complete",
+        json!({ "model": "live-1", "messages": [] }),
+    )
+    .await
+    .expect("rejected configuration must leave chat healthy");
+    assert_eq!(completed["message"]["content"][0]["text"], "live");
+    assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+
+    consumer.shutdown();
+    provider.iii.shutdown();
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     let engine = engine_or_skip!();
     let router = register_worker(&engine.url, InitOptions::default());
@@ -1763,7 +2304,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
         .expect_err("internal channel creation failure remains a bus error");
     assert_eq!(
         remote_code(&error),
-        "injected/channel_unavailable",
+        "router/stream_setup_failed",
         "{error:?}"
     );
     tokio::time::timeout(Duration::from_secs(2), pump)

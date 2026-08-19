@@ -95,19 +95,16 @@ else
   assert_eq "$rc" "1" "exit code"
   assert_contains "$out" "matched no cases" "FAIL message"
 
-  echo "[script-tests] SIGINT mid-run kills engine + rustfs"
+  echo "[script-tests] SIGINT mid-run stops the engine"
   sigint_root=$(mktemp -d "${TMPDIR:-/tmp}/storage-e2e-sigint.XXXXXX")
   sigint_log="$sigint_root/run.log"
-  rustfs_pid_file="$sigint_root/rustfs.pid"
-  ( STORAGE_E2E_RUSTFS_PID_FILE="$rustfs_pid_file" \
-      "$SCRIPT" --providers=local --no-build >"$sigint_log" 2>&1 ) &
+  ( "$SCRIPT" --providers=local --no-build >"$sigint_log" 2>&1 ) &
   SCRIPT_PID=$!
   deadline=$(( $(date +%s) + 60 ))
-  while [[ ! -s "$rustfs_pid_file" ]] && kill -0 "$SCRIPT_PID" 2>/dev/null; do
+  while ! (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null && kill -0 "$SCRIPT_PID" 2>/dev/null; do
     if (( $(date +%s) > deadline )); then break; fi
     sleep 0.2
   done
-  rustfs_pid=$(cat "$rustfs_pid_file" 2>/dev/null || true)
   kill -INT "$SCRIPT_PID" 2>/dev/null || true
   wait "$SCRIPT_PID" 2>/dev/null || true
   if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
@@ -115,15 +112,6 @@ else
     FAIL=$((FAIL+1))
   else
     echo "  PASS: engine port released"
-    PASS=$((PASS+1))
-  fi
-  state=$(ps -o state= -p "$rustfs_pid" 2>/dev/null | tr -d ' ')
-  if [[ -n "$rustfs_pid" && -n "$state" && "$state" != "Z" && "$state" != "X" ]]; then
-    echo "  FAIL: rustfs still running after SIGINT"
-    tail -100 "$sigint_log" 2>/dev/null || true
-    FAIL=$((FAIL+1))
-  else
-    echo "  PASS: owned rustfs process gone"
     PASS=$((PASS+1))
   fi
   rm -rf "$sigint_root"

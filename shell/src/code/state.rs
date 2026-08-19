@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
 use crate::code::path::PathResolver;
 
@@ -24,4 +25,5 @@ pub type ResolverCell = Arc<RwLock<Arc<PathResolver>>>;
 pub struct CodeCells {
     pub config: ConfigCell,
     pub resolver: ResolverCell,
+    pub changes: ChangeJournal,
 }

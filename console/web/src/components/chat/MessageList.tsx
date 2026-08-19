@@ -1,9 +1,16 @@
+import { ArrowDown, ChevronRight } from 'lucide-react'
 import {
   type ReactNode,
+  type TouchEvent,
+  type UIEvent,
+  useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
+  type WheelEvent,
 } from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
 import {
@@ -11,6 +18,8 @@ import {
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
+import { Button } from '@/components/ui/Button'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
@@ -21,14 +30,33 @@ import { triggerFiredName } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
+import {
+  collapsedFunctionTriggerCalls,
+  functionTriggerGroups,
+  type MessageListRow,
+} from './function-trigger-groups'
 import { Message } from './Message'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
 } from './system-prompt-selection'
+import {
+  nextTailScrollTop,
+  TAIL_GLIDE_SETTLE_DISTANCE_PX,
+  TAIL_REARM_DISTANCE_PX,
+  type TailScrollState,
+  tailScrollTarget,
+  tailStateAfterScroll,
+} from './tail-scroll'
 
 interface MessageListProps {
   messages: MessageType[]
+  /**
+   * False while an existing conversation is still loading its durable
+   * transcript. Initializing content stays pinned instantly until this flips,
+   * so opening a chat never glides through a partial history.
+   */
+  transcriptHydrated?: boolean
   /** Show "thinking…" shimmer at the bottom while the agent is between
       visible outputs (after submit, or between fcall-end and the next
       turn's first token). */
@@ -58,6 +86,8 @@ interface MessageListProps {
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
+  /** Open the model/provider picker from the empty provider state. */
+  onConfigureProvider?: () => void
   workingDir?: string | null
   /**
    * Render every function-call card (and group) already expanded. Off in the
@@ -180,6 +210,7 @@ export function resolveRegistrations(
 
 export function MessageList({
   messages,
+  transcriptHydrated = true,
   isThinking,
   thinkingDetail,
   density = 'route',
@@ -188,22 +219,46 @@ export function MessageList({
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
+  onConfigureProvider,
   workingDir,
   defaultOpenCalls,
   triggersById,
 }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const lastPendingIdRef = useRef<string | null>(null)
+  const containerRef = useRef<HTMLElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const didInitialScrollRef = useRef(false)
+  const animationFrameRef = useRef<number | null>(null)
+  const lastAnimationTimeRef = useRef<number | null>(null)
+  const lastScrollTopRef = useRef(0)
+  const lastTouchYRef = useRef<number | null>(null)
+  const tailStateRef = useRef<TailScrollState>('initializing')
+  const [tailState, setTailState] = useState<TailScrollState>('initializing')
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const reducedMotionRef = useRef(reducedMotion)
+  reducedMotionRef.current = reducedMotion
 
   const fcallsByAssistant = useMemo(
     () => functionTriggersByAssistant(messages),
     [messages],
   )
+  const rows = useMemo(() => functionTriggerGroups(messages), [messages])
   const registrations = useMemo(
     () => resolveRegistrations(messages, triggersById),
     [messages, triggersById],
   )
+  const newestPendingApprovalId = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]
+      if (
+        message.role === 'function-trigger' &&
+        message.pendingApproval === true
+      ) {
+        return message.id
+      }
+    }
+    return null
+  }, [messages])
+  const hasPendingApproval = newestPendingApprovalId !== null
   // Same registry `FunctionTriggerCard` uses for its own raw pane: an
   // assistant-turn copy serializes each call's arguments the same way the
   // call's own card does, so a worker's `redactRaw` (e.g.
@@ -216,133 +271,480 @@ export function MessageList({
   // ConversationsProvider; the empty state falls back to `ready` there.
   const ctx = useConversationsCtxOptional()
 
-  /* Opening a session lands on the latest exchange, not the beginning: one
-     instant jump to the bottom the first time the transcript has content —
-     on mount for an already-hydrated session, or when the first hydration
-     batch arrives otherwise. Layout effect so the jump happens before
-     paint (no flash of the top). After this, the near-bottom rule below
-     owns scrolling, so reading upward is never interrupted. */
-  const didInitialScrollRef = useRef(false)
-  useLayoutEffect(() => {
-    if (didInitialScrollRef.current || messages.length === 0) return
-    didInitialScrollRef.current = true
-    const c = containerRef.current
-    if (c) c.scrollTop = c.scrollHeight
-  }, [messages])
+  const transitionTailState = useCallback((next: TailScrollState) => {
+    if (tailStateRef.current === next) return
+    tailStateRef.current = next
+    setTailState(next)
+  }, [])
 
-  /* Auto-scroll only when the user is already near the bottom. The effect body
-     reads layout off refs but the trigger we care about is "messages changed"
-     or "thinking flipped", so list both explicitly. */
-  // biome-ignore lint/correctness/useExhaustiveDependencies: messages and isThinking are the triggers, not values read in the body.
-  useEffect(() => {
-    const c = containerRef.current
-    if (!c) return
-    const distanceFromBottom = c.scrollHeight - c.scrollTop - c.clientHeight
-    if (distanceFromBottom < 200) {
-      bottomRef.current?.scrollIntoView({ block: 'end' })
+  const cancelTailAnimation = useCallback(() => {
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
     }
-  }, [messages, isThinking])
+    lastAnimationTimeRef.current = null
+  }, [])
 
-  /* PR #150: a fresh approval modal demands attention even if the user
-     has scrolled up reading earlier content. Find the newest message with
-     pendingApproval and scroll it into view exactly once per pending id.
-     (We dedupe via lastPendingIdRef so React's re-renders don't keep
-     forcing the scroll while the user is reading the request body.) */
-  useEffect(() => {
-    // Walk backwards instead of spreading + reversing — the spread
-    // copies the whole array every render, which is a real cost on
-    // token-by-token re-renders during streaming.
-    let newestPending: (typeof messages)[number] | null = null
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.role === 'function-trigger' && m.pendingApproval === true) {
-        newestPending = m
-        break
-      }
-    }
-    if (!newestPending) {
-      lastPendingIdRef.current = null
+  const writeScrollTop = useCallback(
+    (container: HTMLElement, scrollTop: number) => {
+      container.scrollTop = scrollTop
+      // Programmatic scroll events arrive later. Recording the clamped value
+      // now keeps them from looking like manual upward movement.
+      lastScrollTopRef.current = container.scrollTop
+    },
+    [],
+  )
+
+  /**
+   * One retargetable animation follows the live tail. ResizeObserver callbacks
+   * only ask for this loop; they never create competing smooth-scroll jobs.
+   */
+  const scheduleTailFollow = useCallback(() => {
+    const container = containerRef.current
+    if (!container || tailStateRef.current !== 'following') return
+
+    const target = tailScrollTarget(container)
+    if (reducedMotionRef.current) {
+      cancelTailAnimation()
+      writeScrollTop(container, target)
       return
     }
-    if (newestPending.id === lastPendingIdRef.current) return
-    lastPendingIdRef.current = newestPending.id
-    // defer one frame so the DOM has the new node before we scroll
-    requestAnimationFrame(() => {
-      const node = containerRef.current?.querySelector(
-        `[data-message-id="${newestPending.id}"]`,
-      )
-      if (node && 'scrollIntoView' in node) {
-        ;(node as HTMLElement).scrollIntoView({
-          block: 'center',
-          behavior: 'smooth',
-        })
-      } else {
-        bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    if (animationFrameRef.current !== null) return
+
+    const step = (time: number) => {
+      animationFrameRef.current = null
+      const currentContainer = containerRef.current
+      if (!currentContainer || tailStateRef.current !== 'following') {
+        lastAnimationTimeRef.current = null
+        return
       }
+
+      const nextTarget = tailScrollTarget(currentContainer)
+      const current = currentContainer.scrollTop
+      const remaining = nextTarget - current
+      if (Math.abs(remaining) <= TAIL_GLIDE_SETTLE_DISTANCE_PX) {
+        writeScrollTop(currentContainer, nextTarget)
+        lastAnimationTimeRef.current = null
+        return
+      }
+
+      const previousTime = lastAnimationTimeRef.current
+      const elapsed = previousTime === null ? 1000 / 60 : time - previousTime
+      lastAnimationTimeRef.current = time
+      writeScrollTop(
+        currentContainer,
+        nextTailScrollTop(current, nextTarget, elapsed),
+      )
+      animationFrameRef.current = requestAnimationFrame(step)
+    }
+
+    animationFrameRef.current = requestAnimationFrame(step)
+  }, [cancelTailAnimation, writeScrollTop])
+
+  const hasScrollableContent = messages.length > 0 || Boolean(header)
+
+  /* Opening a session lands on the latest exchange before paint. ChatView is
+     keyed by conversation id, so every open gets a fresh initializing state;
+     the first hydrated content is always an instant jump, never a glide. */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: message identity and thinking are deliberate pre-paint layout triggers while a transcript hydrates.
+  useLayoutEffect(() => {
+    if (didInitialScrollRef.current || !hasScrollableContent) return
+    if (tailStateRef.current === 'paused') return
+    const container = containerRef.current
+    if (!container) return
+    cancelTailAnimation()
+    writeScrollTop(container, tailScrollTarget(container))
+    if (!transcriptHydrated) return
+    didInitialScrollRef.current = true
+    transitionTailState('following')
+  }, [
+    cancelTailAnimation,
+    hasScrollableContent,
+    isThinking,
+    messages,
+    transcriptHydrated,
+    transitionTailState,
+    writeScrollTop,
+  ])
+
+  /* Content height can change without a messages identity change: markdown
+     wraps, images load, results expand, the shimmer mounts, or the pane
+     resizes. Observe both the content and viewport, coalescing all of it into
+     the single follow loop. A paused reader is never moved. */
+  useEffect(() => {
+    if (!hasScrollableContent || typeof ResizeObserver === 'undefined') return
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || !content) return
+
+    const observer = new ResizeObserver(() => {
+      if (tailStateRef.current === 'paused') return
+      if (!didInitialScrollRef.current) {
+        // Hydration can include late layout (images, rich cards, fonts). Keep
+        // initialization pinned with direct writes; never animate partial data.
+        writeScrollTop(container, tailScrollTarget(container))
+        return
+      }
+      scheduleTailFollow()
     })
-  }, [messages])
+    observer.observe(container)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [hasScrollableContent, scheduleTailFollow, writeScrollTop])
+
+  useEffect(() => {
+    if (reducedMotion && tailStateRef.current === 'following') {
+      scheduleTailFollow()
+    }
+  }, [reducedMotion, scheduleTailFollow])
+
+  useEffect(() => cancelTailAnimation, [cancelTailAnimation])
+
+  const pauseTailFollow = useCallback(() => {
+    const container = containerRef.current
+    if (
+      !container ||
+      container.scrollHeight <= container.clientHeight + TAIL_REARM_DISTANCE_PX
+    ) {
+      return
+    }
+    cancelTailAnimation()
+    transitionTailState('paused')
+  }, [cancelTailAnimation, transitionTailState])
+
+  const handleScroll = useCallback(
+    (event: UIEvent<HTMLElement>) => {
+      const container = event.currentTarget
+      const currentScrollTop = container.scrollTop
+      const nextState = tailStateAfterScroll(
+        tailStateRef.current,
+        lastScrollTopRef.current,
+        container,
+      )
+      if (nextState === 'paused') cancelTailAnimation()
+      transitionTailState(nextState)
+      lastScrollTopRef.current = currentScrollTop
+    },
+    [cancelTailAnimation, transitionTailState],
+  )
+
+  const handleWheel = useCallback(
+    (event: WheelEvent<HTMLElement>) => {
+      if (event.deltaY < 0) pauseTailFollow()
+    },
+    [pauseTailFollow],
+  )
+
+  const handleTouchStart = useCallback((event: TouchEvent<HTMLElement>) => {
+    lastTouchYRef.current = event.touches[0]?.clientY ?? null
+  }, [])
+
+  const handleTouchMove = useCallback(
+    (event: TouchEvent<HTMLElement>) => {
+      const nextY = event.touches[0]?.clientY
+      const previousY = lastTouchYRef.current
+      if (nextY !== undefined && previousY !== null && nextY > previousY) {
+        pauseTailFollow()
+      }
+      lastTouchYRef.current = nextY ?? null
+    },
+    [pauseTailFollow],
+  )
+
+  const clearTouchPosition = useCallback(() => {
+    lastTouchYRef.current = null
+  }, [])
+
+  const handleJumpToLatest = useCallback(() => {
+    didInitialScrollRef.current = true
+    transitionTailState('following')
+    containerRef.current?.focus({ preventScroll: true })
+    scheduleTailFollow()
+  }, [scheduleTailFollow, transitionTailState])
+
+  const handleJumpToAction = useCallback(() => {
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || !content || !newestPendingApprovalId) {
+      handleJumpToLatest()
+      return
+    }
+
+    const approval = Array.from(
+      content.querySelectorAll<HTMLElement>('[data-message-id]'),
+    ).find((node) => node.dataset.messageId === newestPendingApprovalId)
+    if (!approval) {
+      handleJumpToLatest()
+      return
+    }
+
+    cancelTailAnimation()
+    const containerRect = container.getBoundingClientRect()
+    const approvalRect = approval.getBoundingClientRect()
+    const centeredTop =
+      container.scrollTop +
+      approvalRect.top -
+      containerRect.top -
+      (container.clientHeight - approvalRect.height) / 2
+    const target = Math.max(
+      0,
+      Math.min(tailScrollTarget(container), centeredTop),
+    )
+
+    if (reducedMotionRef.current) writeScrollTop(container, target)
+    else container.scrollTo({ top: target, behavior: 'smooth' })
+
+    const action = approval.querySelector<HTMLElement>(
+      '[data-approval-actions] button:not([disabled])',
+    )
+    const focusTarget = action ?? approval
+    focusTarget.focus({ preventScroll: true })
+  }, [
+    cancelTailAnimation,
+    handleJumpToLatest,
+    newestPendingApprovalId,
+    writeScrollTop,
+  ])
 
   if (messages.length === 0 && !header) {
-    return <EmptyState {...resolveEmptyState(ctx, density)} />
+    return (
+      <EmptyState {...resolveEmptyState(ctx, density, onConfigureProvider)} />
+    )
   }
 
-  const listPad = density === 'dock' ? 'px-4 py-6' : 'px-9 py-8'
+  const listPad =
+    density === 'dock'
+      ? 'px-3 py-5 sm:px-4 sm:py-6'
+      : 'px-3 py-5 sm:px-6 sm:py-7 lg:px-9 lg:py-8'
 
   return (
-    <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
-      <div className="mx-auto max-w-[720px] flex flex-col gap-y-8">
-        {header}
-        {messages.map((m, i) => {
-          // Assistant turns copy their prose plus the calls that follow them;
-          // the thunk defers building that string until the copy click. Left
-          // undefined when the turn has nothing to copy (no prose, no calls)
-          // so the header shows no copy affordance.
-          const calls =
-            m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
-          const copyText =
-            m.role === 'assistant' && (m.content || calls?.length)
-              ? () => assistantCopyText(m.content, calls ?? [], redactFor)
-              : undefined
-          // A call that directly follows another call belongs to the same
-          // burst of agent activity — pull it up against its predecessor so
-          // the run reads as one tight stack instead of scattered boxes.
-          // Trigger-fired notices share the card language and ride along.
-          // (Safe as a conditional wrapper: a message's predecessor is fixed
-          // at insert time, so `tight` never flips on an existing node.)
-          const callLike = (x: MessageType | undefined) =>
-            x?.role === 'function-trigger' ||
-            (x?.role === 'system' && x.kind === 'trigger-fired')
-          const tight = callLike(m) && callLike(messages[i - 1])
-          const node = (
-            <Message
-              key={m.id}
-              message={m}
-              copyText={copyText}
-              defaultOpenCalls={defaultOpenCalls}
-              onResolveApproval={onResolveApproval}
-              onAlwaysAllow={onAlwaysAllow}
-              onResolveFilesystemAccess={onResolveFilesystemAccess}
-              onManageFilesystemAccess={onManageFilesystemAccess}
-              workingDir={workingDir}
-              registration={registrations.get(m.id)}
-            />
-          )
-          return tight ? (
-            <div key={m.id} className="-mt-[26px]">
-              {node}
+    <div className="relative flex min-h-0 min-w-0 flex-1">
+      <section
+        ref={containerRef}
+        data-tail-scroll={tailState}
+        aria-label="conversation messages"
+        tabIndex={-1}
+        className={cn(
+          'min-h-0 min-w-0 flex-1 overflow-y-auto focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
+          listPad,
+        )}
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={clearTouchPosition}
+        onTouchCancel={clearTouchPosition}
+      >
+        <div
+          ref={contentRef}
+          className="mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
+        >
+          {header}
+          {rows.map((row, i) => {
+            if (row.kind === 'function-trigger-group') {
+              return (
+                <FunctionTriggerGroup
+                  key={row.id}
+                  row={row}
+                  renderers={renderers}
+                  defaultOpenCalls={defaultOpenCalls}
+                  onResolveApproval={onResolveApproval}
+                  onAlwaysAllow={onAlwaysAllow}
+                  onResolveFilesystemAccess={onResolveFilesystemAccess}
+                  onManageFilesystemAccess={onManageFilesystemAccess}
+                  workingDir={workingDir}
+                  summaryCopyText={
+                    row.summary
+                      ? (() => {
+                          const calls = fcallsByAssistant.get(row.summary.id)
+                          return calls?.length
+                            ? () =>
+                                assistantCopyText(
+                                  row.summary?.content ?? '',
+                                  calls,
+                                  redactFor,
+                                )
+                            : row.summary.content
+                        })()
+                      : undefined
+                  }
+                />
+              )
+            }
+
+            const m = row.message
+            // Assistant turns copy their prose plus the calls that follow them;
+            // the thunk defers building that string until the copy click. Left
+            // undefined when the turn has nothing to copy (no prose, no calls)
+            // so the header shows no copy affordance.
+            const calls =
+              m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
+            const copyText =
+              m.role === 'assistant' && (m.content || calls?.length)
+                ? () => assistantCopyText(m.content, calls ?? [], redactFor)
+                : undefined
+            // Consecutive trigger-fired notices share the same compact visual
+            // language as call groups, so keep those system rows close too.
+            const triggerFired = (x: MessageListRow | undefined) =>
+              x?.kind === 'message' &&
+              x.message.role === 'system' &&
+              x.message.kind === 'trigger-fired'
+            const tight = triggerFired(row) && triggerFired(rows[i - 1])
+            const node = (
+              <Message
+                key={m.id}
+                message={m}
+                copyText={copyText}
+                defaultOpenCalls={defaultOpenCalls}
+                onResolveApproval={onResolveApproval}
+                onAlwaysAllow={onAlwaysAllow}
+                onResolveFilesystemAccess={onResolveFilesystemAccess}
+                onManageFilesystemAccess={onManageFilesystemAccess}
+                workingDir={workingDir}
+                registration={registrations.get(m.id)}
+              />
+            )
+            return tight ? (
+              <div key={m.id} className="-mt-6.5">
+                {node}
+              </div>
+            ) : (
+              node
+            )
+          })}
+          {isThinking ? (
+            <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
+              {thinkingDetail ?? 'thinking…'}
             </div>
-          ) : (
-            node
-          )
-        })}
-        {isThinking ? (
-          <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
-            {thinkingDetail ?? 'thinking…'}
-          </div>
-        ) : null}
-        <div ref={bottomRef} />
-      </div>
+          ) : null}
+        </div>
+      </section>
+      {tailState === 'paused' ? (
+        <Button
+          type="button"
+          variant="pill"
+          size="sm"
+          className={cn(
+            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md sm:h-8 sm:text-[0.8125rem]',
+            hasPendingApproval && 'text-warn',
+          )}
+          onClick={hasPendingApproval ? handleJumpToAction : handleJumpToLatest}
+          aria-label={
+            hasPendingApproval
+              ? 'jump to action required'
+              : 'jump to latest message'
+          }
+        >
+          <span
+            className="absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <ArrowDown aria-hidden="true" className="stroke-current" />
+          <span>{hasPendingApproval ? 'action required' : 'latest'}</span>
+        </Button>
+      ) : null}
     </div>
+  )
+}
+
+interface FunctionTriggerGroupProps {
+  row: Extract<MessageListRow, { kind: 'function-trigger-group' }>
+  renderers: ReturnType<typeof useFunctionTriggerRenderers>
+  defaultOpenCalls?: boolean
+  summaryCopyText?: string | (() => string)
+  onResolveApproval?: MessageListProps['onResolveApproval']
+  onAlwaysAllow?: MessageListProps['onAlwaysAllow']
+  onResolveFilesystemAccess?: MessageListProps['onResolveFilesystemAccess']
+  onManageFilesystemAccess?: MessageListProps['onManageFilesystemAccess']
+  workingDir?: string | null
+}
+
+/**
+ * A sequence of agent calls reads as one phase. Collapsed groups keep the
+ * latest call plus any rich-display, approval, or live call visible; expanding
+ * restores every call in chronological order. The assistant's intermediate
+ * prose stays normal prose after the stack and doubles as the batch summary.
+ */
+function FunctionTriggerGroup({
+  row,
+  renderers,
+  defaultOpenCalls,
+  summaryCopyText,
+  onResolveApproval,
+  onAlwaysAllow,
+  onResolveFilesystemAccess,
+  onManageFilesystemAccess,
+  workingDir,
+}: FunctionTriggerGroupProps) {
+  const [expanded, setExpanded] = useState(!!defaultOpenCalls)
+  const contentId = useId()
+  const collapsedCalls = collapsedFunctionTriggerCalls(row.calls, (call) =>
+    renderers.some(
+      (renderer) =>
+        renderer.metadata?.display === true &&
+        renderer.isMatch(call.functionId),
+    ),
+  )
+  const hiddenCount = row.calls.length - collapsedCalls.length
+  const visibleCalls = expanded ? row.calls : collapsedCalls
+  const canCollapse = hiddenCount > 0
+
+  return (
+    <section
+      className="flex flex-col gap-y-8"
+      data-function-trigger-group=""
+      data-function-trigger-count={row.calls.length}
+    >
+      <div className="flex flex-col gap-y-8">
+        {canCollapse ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={contentId}
+            onClick={() => setExpanded((value) => !value)}
+            className="group relative flex w-fit cursor-pointer items-center gap-2 font-mono text-base text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-[0.8125rem]"
+          >
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
+            />
+            <ChevronRight
+              aria-hidden="true"
+              className={cn(
+                'size-5 shrink-0 transition-transform duration-150 motion-reduce:transition-none sm:size-4',
+                expanded && 'rotate-90',
+              )}
+            />
+            <span className="tabular-nums">{row.calls.length} triggers</span>
+            <span className="text-ink-ghost">
+              · {expanded ? 'show latest' : 'show all'}
+            </span>
+          </button>
+        ) : null}
+        <div
+          id={contentId}
+          className={cn('flex flex-col gap-y-8', canCollapse && '-mt-6.5')}
+          data-function-trigger-group-calls=""
+        >
+          {visibleCalls.map((call, index) => (
+            <div key={call.id} className={cn(index > 0 && '-mt-6.5')}>
+              <Message
+                message={call}
+                defaultOpenCalls={defaultOpenCalls}
+                onResolveApproval={onResolveApproval}
+                onAlwaysAllow={onAlwaysAllow}
+                onResolveFilesystemAccess={onResolveFilesystemAccess}
+                onManageFilesystemAccess={onManageFilesystemAccess}
+                workingDir={workingDir}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+      {row.summary ? (
+        <Message message={row.summary} copyText={summaryCopyText} />
+      ) : null}
+    </section>
   )
 }
 
@@ -356,6 +758,7 @@ type ChatCtx = ReturnType<typeof useConversationsCtxOptional>
 function resolveEmptyState(
   ctx: ChatCtx,
   density: 'route' | 'dock',
+  onConfigureProvider?: () => void,
 ): EmptyStateProps {
   if (!ctx) return { variant: 'ready', density }
 
@@ -367,9 +770,7 @@ function resolveEmptyState(
     errorMessage: harnessStatus.error,
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,
-    onConfigureProvider: () => {
-      window.location.hash = '#/workers/configuration/llm-router'
-    },
+    onConfigureProvider,
     /* The system prompt is chosen here and nowhere else. It persists on the
        conversation record, so it survives this view being keyed away and
        back on a chat-tab switch. */

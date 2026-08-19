@@ -234,12 +234,12 @@ async fn main() -> Result<()> {
         }
     };
 
-    // 19 unconditional: 3 skills reads + 4 prompts reads (2 kinds) + 3 downloads +
-    // 5 updates/creates (skill update, prompt/system-prompt update, prompt/system-prompt
-    // create) + 2 registry proxy + 1 engine-functions-info + 1 configuration-change
+    // 21 unconditional: 3 skills reads + 4 prompts reads (2 kinds) + 3 downloads +
+    // 7 writes (skill update, prompt/system-prompt update, create, and delete) +
+    // 2 registry proxy + 1 engine-functions-info + 1 configuration-change
     // handler (registered above, outside functions::register_all_with_cache).
     // +1 when auto_download also registers directory::__on_worker_added.
-    let fn_count = if auto_download { 20 } else { 19 };
+    let fn_count = if auto_download { 22 } else { 21 };
     tracing::info!(
         "iii-directory ready: {} directory::* functions + 3 custom trigger types + \
          configuration hot-reload",

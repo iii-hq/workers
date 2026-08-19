@@ -7,7 +7,12 @@
  * fanned out to whichever views are mounted.
  */
 
-import { type Host, PageHeader, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import {
+  type Host,
+  PageHeader,
+  type PageRenderProps,
+  PageShell,
+} from '@iii-dev/console-ui'
 import { useStateEventHub } from '../lib/events'
 import { DatabaseIcon, LiveDot } from '../lib/widgets'
 import { StateBrowser } from './browser'
@@ -23,8 +28,8 @@ export function StateManagerPage({
     <PageShell className="state-ui-shell">
       <PageHeader
         icon={<DatabaseIcon />}
-        title="state"
-        description="scoped key–value store, live"
+        title="State"
+        description="Scoped key–value store, live"
         actions={<LiveDot />}
         onClose={onRequestClose}
       />

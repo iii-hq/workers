@@ -73,18 +73,24 @@ export function SessionRail({
               className={cn('br-ui-rail-row', selected && 'active')}
             >
               <span className="br-ui-rail-head">
-                <Globe size={12} aria-hidden className="br-ui-rail-icon" />
+                <Globe size={16} aria-hidden className="br-ui-rail-icon" />
                 <span className="br-ui-rail-title">
-                  {session.title?.trim() || hostOf(session.url) || 'about:blank'}
+                  {session.title?.trim() ||
+                    hostOf(session.url) ||
+                    'about:blank'}
+                </span>
+                <span className="br-ui-rail-mode">
+                  {session.headless ? 'headless' : 'headful'}
                 </span>
               </span>
               <span className="br-ui-rail-url">{session.url}</span>
               <span className="br-ui-rail-meta">
-                <span className="br-ui-num">{session.session_id}</span>
-                <span>·</span>
-                <span>{session.headless ? 'headless' : 'headful'}</span>
-                <span>·</span>
-                <span>{formatMtime(Math.floor(session.last_used_ms / 1000))}</span>
+                <span className="br-ui-rail-status-dot" aria-hidden />
+                <span>Live</span>
+                <span className="br-ui-rail-meta-separator">·</span>
+                <span>
+                  {formatMtime(Math.floor(session.last_used_ms / 1000))}
+                </span>
               </span>
             </button>
           </li>

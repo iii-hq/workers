@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, EmptyState, type Host, Input } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  type Host,
+  Input,
+} from '@iii-dev/console-ui'
 import {
   ChevronLeft,
   ChevronRight,
@@ -160,7 +166,7 @@ function FactRow({
             title="open the conversation this memory came from"
             className="mem-ui-fromchat"
           >
-            <MessageSquare size={12} aria-hidden />
+            <MessageSquare size={16} aria-hidden />
             from chat
           </button>
         ) : null}
@@ -178,9 +184,9 @@ function FactRow({
           }
         >
           {memory.pinned ? (
-            <PinOff size={14} aria-hidden />
+            <PinOff size={16} aria-hidden />
           ) : (
-            <Pin size={14} aria-hidden />
+            <Pin size={16} aria-hidden />
           )}
         </Button>
         <Button
@@ -193,7 +199,7 @@ function FactRow({
           disabled={busy || superseded}
           aria-label="edit memory"
         >
-          <Pencil size={14} aria-hidden />
+          <Pencil size={16} aria-hidden />
         </Button>
         <Button
           variant="icon"
@@ -203,7 +209,7 @@ function FactRow({
           aria-label="delete memory"
           title="tombstone (leaves recall; stays on disk under show history)"
         >
-          <Trash2 size={14} aria-hidden />
+          <Trash2 size={16} aria-hidden />
         </Button>
       </div>
     </li>
@@ -261,7 +267,11 @@ export function MemoriesPanel({
   const pages = Math.max(1, Math.ceil(total / pageSize))
 
   const buckets = useMemo(
-    () => activityBuckets(memories.map((m) => m.created_at), 30),
+    () =>
+      activityBuckets(
+        memories.map((m) => m.created_at),
+        30,
+      ),
     [memories],
   )
   const capturedThisWeek = useMemo(
@@ -274,8 +284,8 @@ export function MemoriesPanel({
     <div className="mem-ui-stack">
       <p className="mem-ui-hint">
         one line per durable thing said in chat — captured automatically after
-        each turn, each with the conversation it came from. a memory reaches
-        the agent only when it matches the question being asked; rules are the
+        each turn, each with the conversation it came from. a memory reaches the
+        agent only when it matches the question being asked; rules are the
         always-on half.
       </p>
 
@@ -361,7 +371,7 @@ export function MemoriesPanel({
           disabled={!query.trim() || searching}
           className="mem-ui-gap1"
         >
-          <Search size={14} aria-hidden />
+          <Search size={16} aria-hidden />
           search
         </Button>
         {searchMode ? (
@@ -375,7 +385,7 @@ export function MemoriesPanel({
             }}
             className="mem-ui-gap1"
           >
-            <X size={14} aria-hidden />
+            <X size={16} aria-hidden />
             clear
           </Button>
         ) : null}
@@ -383,7 +393,7 @@ export function MemoriesPanel({
 
       {tags.length > 0 ? (
         <div className="mem-ui-row wrap">
-          <span className="mem-ui-caption">tags</span>
+          <span className="mem-ui-caption">Tags</span>
           {tags.map(({ tag: t, count }) => (
             <button
               key={t}
@@ -422,7 +432,7 @@ export function MemoriesPanel({
                 onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}
                 aria-label="previous page"
               >
-                <ChevronLeft size={14} aria-hidden />
+                <ChevronLeft size={16} aria-hidden />
               </Button>
               <Button
                 variant="icon"
@@ -431,7 +441,7 @@ export function MemoriesPanel({
                 onClick={() => onOffsetChange(offset + pageSize)}
                 aria-label="next page"
               >
-                <ChevronRight size={14} aria-hidden />
+                <ChevronRight size={16} aria-hidden />
               </Button>
             </span>
           ) : null}

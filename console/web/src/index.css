@@ -8,6 +8,7 @@
 @import "@fontsource/geist-mono/500.css";
 @import "@fontsource/geist-mono/600.css";
 @import "tailwindcss";
+@import "./styles/ui-recipes.css";
 
 @theme {
   --font-sans:
@@ -16,6 +17,12 @@
   --font-mono:
     "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
     Consolas, "Liberation Mono", "Courier New", monospace;
+  /* Code is deliberately distinct from mono UI chrome. Monaco is a system
+     font on macOS; the remaining entries preserve a native mono fallback on
+     platforms where it is unavailable. */
+  --font-code:
+    Monaco, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   --font-geist-mono:
     "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
@@ -32,12 +39,14 @@
   --color-paper-2: #ebe8e3;
   --color-surface: rgba(20, 16, 8, 0.055);
   --color-surface-hover: rgba(20, 16, 8, 0.085);
-  --color-surface-selected: rgba(184, 66, 15, 0.12);
+  --color-surface-selected: rgba(20, 16, 8, 0.12);
   --color-surface-active: rgba(20, 16, 8, 0.12);
 
   /* ── Ink ramp ──────────────────────────────────────────────────────── */
   --color-ink: #0a0a0a;
   --color-ink-faint: #6b6865;
+  --color-muted-foreground: #6b6865;
+  --color-trigger-running: #57534f;
   --color-ink-ghost: #a3a09c;
   --color-ink-disabled: #b8b4ae;
 
@@ -107,7 +116,14 @@
   --shadow-floating: 0 2px 4px #1410081a, 0 10px 24px #1410081a;
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
-  --ease-glide: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-duration-instant: 0ms;
+  --motion-duration-fast: 120ms;
+  --motion-duration-control: 160ms;
+  --motion-duration-panel: 220ms;
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-glide: var(--motion-ease-enter);
 
   --spacing-gutter: 24px;
   --spacing-section-x: 36px;
@@ -117,12 +133,12 @@
 }
 
 [data-theme="dark"] {
-    color-scheme: dark;
+  color-scheme: dark;
   /* Neutral grays derived from black — no blue cast in the base ramp. The
      component fills (surface*) are white-alpha so a step reads identically
-     over any base layer; the ONLY chromatic surface is surface-selected,
-     the blue selection tint. Borders are gone: rule/rule-2/rule-strong
-     resolve to transparent, and hierarchy is carried entirely by fills. */
+     over any base layer, including selection. Borders are gone:
+     rule/rule-2/rule-strong resolve to transparent, and hierarchy is carried
+     entirely by fills. */
 
   /* Elevation carries more weight here — on near-black the shadow is the
      only depth cue, plus an inset white hairline for the lit top edge. */
@@ -137,10 +153,14 @@
   --color-paper-2: #171717;
   --color-surface: rgba(255, 255, 255, 0.055);
   --color-surface-hover: rgba(255, 255, 255, 0.085);
-  --color-surface-selected: rgba(40, 168, 247, 0.14);
+  --color-surface-selected: rgba(255, 255, 255, 0.12);
   --color-surface-active: rgba(255, 255, 255, 0.12);
   --color-ink: #ededed;
   --color-ink-faint: #a6a6a6;
+  /* Compact agent activity stays secondary, but remains comfortably legible
+     against the near-black chat canvas. */
+  --color-muted-foreground: #b8b8b8;
+  --color-trigger-running: #a6a6a6;
   --color-ink-ghost: #6f6f6f;
   --color-ink-disabled: #4d4d4d;
   --color-rule: transparent;
@@ -202,7 +222,7 @@
      here; disabled buttons keep the default and `cursor-not-allowed`
      utilities still win. */
   button:not(:disabled),
-  [role='button']:not([aria-disabled='true']) {
+  [role="button"]:not([aria-disabled="true"]) {
     cursor: pointer;
   }
 
@@ -219,6 +239,7 @@
   }
 
   .font-mono,
+  .font-code,
   pre,
   code {
     font-feature-settings:
@@ -227,9 +248,14 @@
       "calt" 0,
       "dlig" 0;
   }
+
+  pre,
+  code {
+    font-family: var(--font-code);
+  }
 }
 
-/* Configuration uses Inter for UI chrome; Chivo Mono only on code surfaces. */
+/* Configuration uses Inter for UI chrome; Monaco only on code surfaces. */
 .configuration-surface {
   font-family: var(--font-sans);
 }
@@ -241,12 +267,16 @@
 .configuration-surface pre,
 .configuration-surface pre.font-mono,
 .configuration-surface code,
+.configuration-surface code.font-mono {
+  font-family: var(--font-code);
+}
+
 .configuration-surface [data-keep-mono],
 .configuration-surface [data-keep-mono] .font-mono {
   font-family: var(--font-mono);
 }
 
-/* Chat uses Inter for UI chrome; Chivo Mono only on code/terminal surfaces. */
+/* Chat uses Inter for UI chrome; Monaco only on semantic code surfaces. */
 .chat-surface {
   font-family: var(--font-sans);
 }
@@ -258,24 +288,34 @@
 .chat-surface pre,
 .chat-surface pre.font-mono,
 .chat-surface code,
+.chat-surface code.font-mono {
+  font-family: var(--font-code);
+}
+
 .chat-surface [data-keep-mono],
 .chat-surface [data-keep-mono] .font-mono {
   font-family: var(--font-mono);
 }
 
-/* Function-trigger cards use Geist Mono throughout (overrides chat-surface sans remap). */
+/* Function-trigger chrome uses Geist Mono; request/response code uses Monaco. */
 .function-trigger-surface,
 .function-trigger-surface .font-mono,
-.function-trigger-surface pre,
-.function-trigger-surface code,
 .chat-surface .function-trigger-surface,
 .chat-surface .function-trigger-surface .font-mono,
-.chat-surface .function-trigger-surface pre,
-.chat-surface .function-trigger-surface pre.font-mono,
-.chat-surface .function-trigger-surface code,
 .chat-surface .function-trigger-surface [data-keep-mono],
 .chat-surface .function-trigger-surface [data-keep-mono] .font-mono {
   font-family: var(--font-geist-mono);
+}
+
+.function-trigger-surface pre,
+.function-trigger-surface pre.font-mono,
+.function-trigger-surface code,
+.function-trigger-surface code.font-mono,
+.chat-surface .function-trigger-surface pre,
+.chat-surface .function-trigger-surface pre.font-mono,
+.chat-surface .function-trigger-surface code,
+.chat-surface .function-trigger-surface code.font-mono {
+  font-family: var(--font-code);
 }
 
 @keyframes pulse-dot {
@@ -292,6 +332,23 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-duration-fast: 0ms;
+    --motion-duration-control: 0ms;
+    --motion-duration-panel: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-delay: 0ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .pulse-dot {
     animation: none;
   }
@@ -412,6 +469,28 @@
   animation: thinking-shimmer 2.4s linear infinite;
 }
 
+/* A quieter shimmer for an in-flight function description. Its resting tone
+   sits one step below muted foreground while the sweep supplies the motion. */
+@utility function-trigger-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-trigger-running) 0%,
+    color-mix(in oklab, var(--color-trigger-running) 68%, var(--color-ink)) 50%,
+    var(--color-trigger-running) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    background-image: none;
+    color: var(--color-trigger-running);
+    animation: none;
+  }
+}
+
 @utility deal-shadow {
   box-shadow:
     -2px 0 0 var(--color-rule),
@@ -445,7 +524,8 @@
 }
 
 @utility timeline-enter {
-  animation: timeline-enter 240ms ease-out both;
+  animation: timeline-enter var(--motion-duration-panel) var(--motion-ease-exit)
+    both;
 }
 
 /* live-timeline re-packs — geometry changes glide instead of teleporting.
@@ -454,11 +534,11 @@
    moves smoothly. */
 @utility timeline-glide {
   transition:
-    left 300ms ease,
-    top 300ms ease,
-    width 300ms ease,
-    height 300ms ease,
-    max-width 300ms ease;
+    left var(--motion-duration-panel) var(--motion-ease-standard),
+    top var(--motion-duration-panel) var(--motion-ease-standard),
+    width var(--motion-duration-panel) var(--motion-ease-standard),
+    height var(--motion-duration-panel) var(--motion-ease-standard),
+    max-width var(--motion-duration-panel) var(--motion-ease-standard);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -502,13 +582,27 @@
 }
 
 /* lexical editor surface — keep it boring so it inherits the rest of the system */
+.composer-editor[data-composer-height-ready] {
+  height: var(--composer-editor-height);
+  transition: height var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.composer-editor[data-composer-height-measuring] {
+  height: auto;
+}
+
+.composer-editor[data-composer-height-measuring],
+.composer-editor[data-composer-height-mode="instant"] {
+  transition-duration: var(--motion-duration-instant);
+}
+
 .composer-editor {
   outline: none;
-  min-height: 56px;
+  min-height: 96px;
   max-height: 240px;
   overflow-y: auto;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.7;
   color: var(--color-ink);
 }
@@ -517,8 +611,22 @@
   pointer-events: none;
   position: absolute;
   inset: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.7;
   color: var(--color-ink-ghost);
   user-select: none;
+}
+
+@media (min-width: 640px) {
+  .composer-editor,
+  .composer-placeholder {
+    font-size: 14px;
+  }
+
+  .composer-editor {
+    min-height: 56px;
+  }
 }
 
 /* single-line lexical input used by the worker configuration form for
@@ -579,7 +687,7 @@
 }
 .iii-details > summary .iii-chev {
   display: inline-block;
-  transition: transform 150ms ease-out;
+  transition: transform var(--motion-duration-control) var(--motion-ease-exit);
 }
 .iii-details[open] > summary .iii-chev {
   transform: rotate(90deg);

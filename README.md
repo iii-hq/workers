@@ -88,6 +88,7 @@ npx skills add iii-hq/iii --all
 | [`openwiki`](openwiki/) | Node | Source-grounded markdown wiki for any git repository — a lead agent plans the index and writer sub-agents store cited pages via `openwiki::write-page`, with router and heuristic fallback tiers, incremental refresh from git diffs on a per-wiki cron schedule, and a browser UI + JSON API under `/openwiki`. |
 | [`opengantry`](opengantry/) | Node | OpenGantry governance — `gantry::verify` runs the repo gate command and mints a verdict token; `gantry::middleware` on the governed port blocks promote-class calls until the token matches the current mission revision. |
 | [`pdf`](pdf/) | Rust | Read PDFs locally — `pdf::classify` routes text-based versus scanned in tens of milliseconds and names the pages that still need OCR, `pdf::to-markdown` converts with headings, lists and tables intact, and `pdf::extract-items` / `::extract-regions` expose positions and the text inside a box. Ships a console page. |
+| [`document`](document/) | Rust | Read office documents locally — `document::to-markdown` converts Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and text-based PDFs with their structure intact, `document::detect` names a format from its bytes in microseconds, `document::extract-assets` returns the images markdown cannot carry, and `document::ocr` transcribes a scan by rendering its pages through `browser` and reading them with a vision model. |
 
 ## SDK
 

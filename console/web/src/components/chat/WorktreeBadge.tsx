@@ -31,7 +31,7 @@ export function WorktreeBadge({ worktree, className }: WorktreeBadgeProps) {
       className={cn('flex min-w-0 items-center gap-1.5 font-mono', className)}
       title={`${worktree.path} — worktree ${worktree.worktree_id} on ${worktree.branch}`}
     >
-      <GitBranch size={12} className="shrink-0 text-ink-faint" aria-hidden />
+      <GitBranch size={16} className="shrink-0 text-ink-faint" aria-hidden />
       <span className="truncate text-ink">{worktree.branch}</span>
       <span className="shrink-0 text-ink-ghost tabular-nums">
         {shortWorktreeId(worktree.worktree_id)}

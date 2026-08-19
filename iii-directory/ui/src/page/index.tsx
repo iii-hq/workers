@@ -9,7 +9,13 @@
  * unsaved draft survives switching between skills and prompts.
  */
 
-import { type Host, PageHeader, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import {
+  type Host,
+  PageHeader,
+  type PageRenderProps,
+  PageShell,
+  SegmentedControl,
+} from '@iii-dev/console-ui'
 import { useState } from 'react'
 import { formatBytes, formatRelativeTime } from '../lib/format'
 import { MarkdownFileIcon } from '../lib/widgets'
@@ -39,7 +45,10 @@ const skillsAdapter: BrowserAdapter = {
   emptyBody:
     'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through downloads (directory::skills::download) or direct edits to the skills folder.',
   async list(host) {
-    const out = await host.iii.trigger<{ skills: SkillRow[] }>('directory::skills::list', { include_description: true })
+    const out = await host.iii.trigger<{ skills: SkillRow[] }>(
+      'directory::skills::list',
+      { include_description: true },
+    )
     return (out.skills ?? []).map((s) => ({
       key: s.id,
       title: s.title,
@@ -48,16 +57,22 @@ const skillsAdapter: BrowserAdapter = {
     }))
   },
   async load(host, id) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::skills::get', {
-      id,
-      raw: true,
-    })
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
+      'directory::skills::get',
+      {
+        id,
+        raw: true,
+      },
+    )
     // `raw` is the exact on-disk file; body (frontmatter-stripped) is the
     // fallback against a not-yet-updated worker.
     return out.raw ?? out.body
   },
   async save(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>('directory::skills::update', { id, content })
+    const out = await host.iii.trigger<{ id: string }>(
+      'directory::skills::update',
+      { id, content },
+    )
     return out.id ?? id
   },
 }
@@ -72,7 +87,9 @@ const promptsAdapter: BrowserAdapter = {
   emptyBody:
     'Choose a prompt from the sidebar to view and edit its markdown. Prompts are filesystem-backed — files added to the prompts folders appear here automatically.',
   async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>('directory::prompts::list')
+    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
+      'directory::prompts::list',
+    )
     return (out.prompts ?? []).map((p) => ({
       key: p.name,
       title: '',
@@ -81,16 +98,32 @@ const promptsAdapter: BrowserAdapter = {
     }))
   },
   async load(host, name) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::prompts::get', {
-      name,
-      raw: true,
-    })
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
+      'directory::prompts::get',
+      {
+        name,
+        raw: true,
+      },
+    )
     return out.raw ?? out.body
   },
   async save(host, name, content) {
     // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>('directory::prompts::update', { name, content })
+    const out = await host.iii.trigger<{ name: string }>(
+      'directory::prompts::update',
+      { name, content },
+    )
     return out.name ?? name
+  },
+  async create(host, name, content) {
+    const out = await host.iii.trigger<{ name: string }>(
+      'directory::prompts::create',
+      { name, content },
+    )
+    return out.name ?? name
+  },
+  async remove(host, name) {
+    await host.iii.trigger('directory::prompts::delete', { name })
   },
 }
 
@@ -144,13 +177,9 @@ const systemPromptsAdapter: BrowserAdapter = {
 type Collection = 'skills' | 'prompts' | 'system-prompts'
 
 const COLLECTIONS: { value: Collection; label: string }[] = [
-  { value: 'skills', label: 'skills' },
-  { value: 'prompts', label: 'prompts' },
-  /* One word, like its siblings: the segmented button is a fixed 26px and
-     "system prompts" wraps out of it in a narrow panel. The filter
-     placeholder, the row count, and the breadcrumb still say "system
-     prompt(s)" in full. */
-  { value: 'system-prompts', label: 'system' },
+  { value: 'skills', label: 'Skills' },
+  { value: 'prompts', label: 'Prompts' },
+  { value: 'system-prompts', label: 'System Prompts' },
 ]
 
 const ADAPTERS: Record<Collection, BrowserAdapter> = {
@@ -168,36 +197,29 @@ export function DirectoryPage({
   const [collection, setCollection] = useState<Collection>('skills')
 
   const switcher = (
-    // biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the sidebar column
-    <div
-      className="dir-ui-seg block"
-      role="group"
-      aria-label="browse skills, prompts or system prompts"
-    >
-      {COLLECTIONS.map((c) => (
-        <button
-          key={c.value}
-          type="button"
-          className={`dir-ui-seg-btn${collection === c.value ? ' active' : ''}`}
-          aria-pressed={collection === c.value}
-          onClick={() => setCollection(c.value)}
-        >
-          {c.label}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl<Collection>
+      value={collection}
+      onChange={setCollection}
+      options={COLLECTIONS}
+      className="dir-ui-collection-tabs"
+      aria-label="Browse skills, prompts or system prompts"
+    />
   )
 
   return (
     <PageShell className="dir-ui-shell">
       <PageHeader
         icon={<MarkdownFileIcon />}
-        title="directory"
-        description="filesystem-backed skills, prompts & system prompts"
+        title="Directory"
+        description="Filesystem-backed skills, prompts and system prompts"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (
-        <div key={c.value} className="dir-ui-shell-body" hidden={collection !== c.value}>
+        <div
+          key={c.value}
+          className="dir-ui-shell-body"
+          hidden={collection !== c.value}
+        >
           <CollectionBrowser
             host={host}
             adapter={ADAPTERS[c.value]}

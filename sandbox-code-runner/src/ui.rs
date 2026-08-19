@@ -34,6 +34,11 @@ use iii_sdk::IIIClient;
 
 pub const PAGE_PATH: &str = "sandbox-code-runner/page.js";
 pub const STYLES_PATH: &str = "sandbox-code-runner/styles.css";
+/// The console content function `iii-console-ui` registers for this worker
+/// (its `<worker>::ui-content` default). Named here so
+/// `functions::seeded_ids` can reserve it in the runtime-id registry before
+/// any guest-facing surface is live.
+pub const CONTENT_FUNCTION_ID: &str = "sandbox-code-runner::ui-content";
 
 /// Built by `build.rs` (esbuild over `ui/`).
 const PAGE_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js"));

@@ -50,7 +50,7 @@ export function OpenInEditorButton({
           aria-label="open in editor"
           title="open in editor"
         >
-          <SquareArrowOutUpRight size={12} aria-hidden />
+          <SquareArrowOutUpRight size={16} aria-hidden />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">

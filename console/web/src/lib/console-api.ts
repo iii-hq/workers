@@ -10,9 +10,12 @@
  * observe a null `api`.
  */
 
+import tokenNames from '@iii-dev/console-ui/token-names'
+import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
   Dialog,
@@ -33,8 +36,11 @@ import {
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { FileDiff } from '@/components/ui/FileDiff'
+import { IconButton } from '@/components/ui/IconButton'
 import { Input } from '@/components/ui/Input'
+import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import { SegmentedControl } from '@/components/ui/ModeToggle'
 import {
   PageBody,
   PageHeader,
@@ -43,9 +49,30 @@ import {
   PageSidebar,
 } from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
+import { Selector } from '@/components/ui/Selector'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  Panel,
+  PanelBody,
+  PanelHeader,
+} from '@/components/ui/Surface'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
 import { TerminalStream } from '@/components/ui/TerminalStream'
@@ -71,6 +98,10 @@ export const components: ConsoleApi['components'] = {
   AnsiText,
   Badge,
   Button,
+  Card,
+  CardBody,
+  CardHeader,
+  Chip,
   Dialog,
   DialogTrigger,
   DialogClose,
@@ -86,16 +117,36 @@ export const components: ConsoleApi['components'] = {
   EmptyState,
   ErrorBoundary,
   FileDiff,
+  IconButton,
   Input,
+  List,
+  ListGroup,
+  ListGroupLabel,
+  ListItem,
   PageShell,
   PageHeader,
   PageBody,
   PageSidebar,
   PageMain,
+  Panel,
+  PanelBody,
+  PanelHeader,
   Select,
+  SegmentedControl,
+  Selector,
   Skeleton,
   StatusDot,
   StatusPanel,
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
   Tabs,
   TabsList,
   TabsTrigger,
@@ -116,23 +167,9 @@ export const components: ConsoleApi['components'] = {
   WorkerConfigurationDialog,
 }
 
-/** Token names mirroring `index.css`'s `@theme` block (documentation aid). */
-const tokens: readonly string[] = [
-  '--color-bg',
-  '--color-ink',
-  '--color-ink-faint',
-  '--color-ink-ghost',
-  '--color-accent',
-  '--color-accent-fg',
-  '--color-alert',
-  '--color-ok',
-  '--color-warn',
-  '--color-panel',
-  '--color-paper-2',
-  '--color-ring',
-  '--color-rule',
-  '--color-rule-2',
-]
+/** Public token/recipe inventories are canonicalized in the workspace package. */
+export const tokens: readonly string[] = tokenNames
+export const uiClasses = sharedUiClasses
 
 /** Reactive theme, without the setter — extensions follow, never drive. */
 function useThemeValue(): 'light' | 'dark' {
@@ -160,5 +197,6 @@ export function buildConsoleApi(client: IiiClient): ConsoleApi {
     components: Object.freeze({ ...components }),
     useTheme: useThemeValue,
     tokens: Object.freeze([...tokens]),
+    uiClasses,
   })
 }

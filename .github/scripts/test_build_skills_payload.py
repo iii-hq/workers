@@ -21,13 +21,13 @@ class CollectSkillsTests(unittest.TestCase):
             skills = collect_skills(root)
             self.assertEqual(skills, {TOP_SKILL_KEY: "# My Worker\n"})
 
-    def test_nested_documents_require_the_canonical_entrypoint(self) -> None:
+    def test_nested_documents_do_not_require_the_canonical_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "incomplete-worker"
             (root / "skills").mkdir(parents=True)
             (root / "skills" / "topic.md").write_text("# Topic\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "skills/SKILL.md is required"):
-                collect_skills(root)
+            skills = collect_skills(root)
+            self.assertEqual(skills, {"skills/topic.md": "# Topic\n"})
 
     def test_skill_md_plus_nested_extra(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

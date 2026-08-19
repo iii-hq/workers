@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build the POST /w/<slug>/skills payload from a worker directory.
 
-Walks the canonical ``<worker>/skills/SKILL.md`` entrypoint plus
-``<worker>/skills/**/*.md`` and produces the JSON body expected by the
-workers-registry endpoint. Skill paths map to keys as:
+Walks the optional ``<worker>/skills/SKILL.md`` entrypoint plus every other
+``<worker>/skills/**/*.md`` document and produces the JSON body expected by
+the workers-registry endpoint. Skill paths map to keys as:
 
     <worker>/skills/SKILL.md      -> "SKILL.md"
     <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md)
@@ -35,17 +35,16 @@ def _read_nonempty(path: pathlib.Path) -> str | None:
 def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
     """Return a ``{payload-key: markdown-body}`` map for one worker directory.
 
-    The worker overview is always published as registry key ``SKILL.md``,
-    sourced from ``skills/SKILL.md`` when present.  Empty bodies are skipped
-    silently so blank placeholder files don't end up in the registry.
+    The optional worker overview is published as registry key ``SKILL.md``,
+    sourced from ``skills/SKILL.md`` when present. Other markdown documents do
+    not require that overview. Empty bodies are skipped silently so blank
+    placeholder files don't end up in the registry.
     """
     skills: dict[str, str] = {}
 
     leaves_dir = worker_root / "skills"
     skills_skill = leaves_dir / "SKILL.md"
     markdown = sorted(leaves_dir.rglob("*.md")) if leaves_dir.is_dir() else []
-    if markdown and not skills_skill.is_file():
-        raise ValueError(f"{worker_root.name}/skills/SKILL.md is required when skill documents are present")
 
     top_body = _read_nonempty(skills_skill) if skills_skill.is_file() else None
     if top_body is not None:

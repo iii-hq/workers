@@ -47,7 +47,7 @@ function PromptItem({
       )}
     >
       <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-        <Check size={12} aria-hidden />
+        <Check size={16} aria-hidden />
       </SelectPrimitive.ItemIndicator>
       <div className="min-w-0">
         <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>
@@ -103,9 +103,9 @@ export function SystemPromptPicker({
 
   const label =
     value.choice === 'default'
-      ? 'default'
+      ? 'Default'
       : value.choice === 'custom'
-        ? 'custom'
+        ? 'Custom'
         : value.choice.named
 
   return (
@@ -118,13 +118,13 @@ export function SystemPromptPicker({
       <SelectPrimitive.Trigger
         aria-label="system prompt"
         className={cn(
-          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-mono text-[13px] lowercase hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
+          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-sans text-[13px] hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
           disabled && 'opacity-40 pointer-events-none',
           className,
         )}
       >
         <span className="inline-flex items-center gap-2 min-w-0">
-          <ScrollText size={14} className="text-ink-faint" aria-hidden />
+          <ScrollText size={16} className="text-ink-faint" aria-hidden />
           {/* Radix strips `className` off Select.Value, so the truncation
               lives on this wrapper (a flex item, hence blockified). */}
           <span className="truncate max-w-[10rem]">
@@ -133,7 +133,7 @@ export function SystemPromptPicker({
         </span>
 
         <SelectPrimitive.Icon asChild>
-          <ChevronDown size={12} aria-hidden />
+          <ChevronDown size={16} aria-hidden />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
 
@@ -142,7 +142,7 @@ export function SystemPromptPicker({
           position="popper"
           sideOffset={4}
           className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised text-ink font-mono text-[13px] lowercase shadow-floating',
+            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised text-ink font-sans text-[13px] shadow-floating',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           )}
@@ -150,8 +150,8 @@ export function SystemPromptPicker({
           <SelectPrimitive.Viewport className="p-1">
             <PromptItem
               value="default"
-              label="default"
-              description="use the provider's built-in prompt"
+              label="Default"
+              description="Use the provider's built-in prompt"
             />
             {(entries ?? []).map((e) => (
               <PromptItem
@@ -161,7 +161,7 @@ export function SystemPromptPicker({
                 description={e.description}
               />
             ))}
-            {allowCustom ? <PromptItem value="custom" label="custom…" /> : null}
+            {allowCustom ? <PromptItem value="custom" label="Custom…" /> : null}
           </SelectPrimitive.Viewport>
         </SelectPrimitive.Content>
       </SelectPrimitive.Portal>
@@ -190,14 +190,14 @@ export function StrategyToggle({
         className,
       )}
     >
-      <legend className="sr-only">apply system prompt as</legend>
+      <legend className="sr-only">Apply system prompt as</legend>
       {(['enrich', 'override'] as const).map((strategy) => {
         const active = value.strategy === strategy
-        const label = strategy === 'enrich' ? 'enrich' : 'replace'
+        const label = strategy === 'enrich' ? 'Enrich' : 'Replace'
         const detail =
           strategy === 'enrich'
-            ? 'add this prompt to the built-in prompt'
-            : 'use this prompt instead of the built-in prompt'
+            ? 'Add this prompt to the built-in prompt'
+            : 'Use this prompt instead of the built-in prompt'
         return (
           <button
             key={strategy}
@@ -207,17 +207,17 @@ export function StrategyToggle({
             title={detail}
             onClick={() => onChange({ ...value, strategy })}
             className={cn(
-              'relative inline-flex h-8 min-w-[82px] items-center justify-center rounded-xs px-2 font-mono text-[13px] font-medium lowercase transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
+              'relative inline-flex h-8 min-w-[82px] items-center justify-center rounded-xs px-2 font-sans text-[13px] font-medium transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
               active
-                ? 'bg-accent-muted text-ink'
+                ? 'bg-surface-selected text-ink'
                 : 'bg-transparent text-ink-faint hover:bg-surface-hover hover:text-ink',
             )}
           >
             <Check
-              size={12}
+              size={16}
               aria-hidden
               className={cn(
-                'absolute left-2 shrink-0 text-accent transition-opacity',
+                'absolute left-2 shrink-0 text-ink transition-opacity',
                 active ? 'opacity-100' : 'opacity-0',
               )}
             />
