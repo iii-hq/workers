@@ -9,7 +9,8 @@ export { useTerminalSession } from './terminal-session'
 interface TerminalPaneProps {
   session: TerminalSession
   actions?: ReactNode
-  showCwd?: boolean
+  /** Split panes need identity and controls that never sit over output. */
+  docked?: boolean
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -20,7 +21,7 @@ const STATUS_LABEL: Record<string, string> = {
   error: 'session failed',
 }
 
-export function TerminalPane({ session, actions, showCwd }: TerminalPaneProps) {
+export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
   const {
     atBottom,
     cwd,
@@ -37,6 +38,14 @@ export function TerminalPane({ session, actions, showCwd }: TerminalPaneProps) {
 
   return (
     <div className="shui-terminal">
+      {docked ? (
+        <div className="shui-terminal-pane-bar">
+          <span className="shui-terminal-pane-cwd" title={cwd}>
+            {cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd}
+          </span>
+          {actions}
+        </div>
+      ) : null}
       {!settled ? (
         <div className={`shui-terminal-status ${status}`} role="status">
           <span>{STATUS_LABEL[status] ?? status}</span>
@@ -59,14 +68,7 @@ export function TerminalPane({ session, actions, showCwd }: TerminalPaneProps) {
         role="application"
         aria-label="Interactive zsh terminal"
       />
-      <div className="shui-terminal-hud">
-        {showCwd ? (
-          <span className="shui-terminal-hud-cwd" title={cwd}>
-            {cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd}
-          </span>
-        ) : null}
-        {actions}
-      </div>
+      {docked ? null : <div className="shui-terminal-hud">{actions}</div>}
       {!atBottom ? (
         <HoverTip label="Jump to latest output">
           <button

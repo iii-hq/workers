@@ -356,6 +356,10 @@
 
 /* ── the explorer page ──────────────────────────────────────────────── */
 
+[data-iii-ui="shell"] .shui-workspace-frame > * {
+  position: relative;
+}
+
 [data-iii-ui="shell"] .shui-sidebar {
   --shui-explorer-bg: var(--color-panel-raised);
   --shui-tree-file-muted: color-mix(
@@ -1687,6 +1691,10 @@
   min-width: 0;
   display: flex;
   overflow: hidden;
+  /* The page is injected into a console panel, so the viewport says nothing
+     about the room it actually has: two shell panels side by side on a
+     desktop are each narrower than a phone. Responsive rules key off this. */
+  container: shui-page / inline-size;
 }
 [data-iii-ui="shell"] .shui-workspace-frame.terminal-bottom {
   flex-direction: column;
@@ -2034,14 +2042,28 @@
   opacity: 1;
   pointer-events: auto;
 }
-[data-iii-ui="shell"] .shui-terminal-hud-cwd {
-  max-width: 160px;
-  padding-inline: 6px;
-  overflow: hidden;
+[data-iii-ui="shell"] .shui-terminal-pane-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 4px 2px 9px;
   color: var(--color-ink-faint);
-  font-size: 10.5px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-pane-cwd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-bar .shui-terminal-action {
+  width: 20px;
+  height: 20px;
 }
 [data-iii-ui="shell"] .shui-terminal-jump {
   position: absolute;
@@ -2147,7 +2169,7 @@
     width: 22px;
     min-width: 22px;
   }
-  [data-iii-ui="shell"] .shui-terminal-hud-cwd {
+  [data-iii-ui="shell"] .shui-terminal-pane-cwd {
     display: none;
   }
 }
@@ -2373,4 +2395,112 @@
   grid-column: 1 / -1;
   padding: 12px 8px;
   font-size: 12px;
+}
+
+/* Narrow panels — phones, and desktop panels split small ------------------- */
+
+@container shui-page (max-width: 720px) {
+  [data-iii-ui='shell'] .shui-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 6;
+    width: min(100%, 320px) !important;
+  }
+
+  [data-iii-ui='shell'] .shui-resize-handle {
+    display: none;
+  }
+
+  /* A side-by-side split at this width gives each pane a few characters, so
+     panes stack whichever way they were split. */
+  [data-iii-ui='shell'] .shui-terminal-split.horizontal {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-split.horizontal
+    > .shui-terminal-split-separator {
+    width: auto;
+    height: 5px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-workspace-frame.terminal-right {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-panel[data-terminal-dock='right'] {
+    width: 100% !important;
+    height: 45%;
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--color-edge);
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-panel[data-terminal-dock='right']
+    > .shui-terminal-resize {
+    top: 0;
+    right: auto;
+    left: 0;
+    width: 100%;
+    height: 7px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-new {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-dock-group .shui-terminal-action {
+    width: 28px;
+    height: 26px;
+  }
+
+  /* The rename pencil is a hover affordance; touch has no hover, and the tab
+     still renames on double tap. */
+  [data-iii-ui='shell']
+    .shui-terminal-tab
+    .shui-terminal-tab-action[aria-label^='Rename'] {
+    display: none;
+  }
+
+  /* Same for the pane cluster: hover never fires on touch, so it becomes a
+     bar of its own above the output. */
+  [data-iii-ui='shell'] .shui-terminal-hud {
+    position: static;
+    order: -1;
+    justify-content: flex-end;
+    opacity: 1;
+    border: 0;
+    border-bottom: 1px solid var(--color-edge);
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: auto;
+  }
+
+  [data-iii-ui='shell'] .shui-launcher {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: min(100%, 20rem);
+  }
+
+  [data-iii-ui='shell'] .shui-browser-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+[data-iii-ui='shell'] .shui-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, #000 42%, transparent);
 }

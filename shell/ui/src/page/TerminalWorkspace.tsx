@@ -167,7 +167,7 @@ function TerminalPaneSlot({
     >
       <TerminalPane
         session={session}
-        showCwd={context.tabPaneCount > 1}
+        docked={context.tabPaneCount > 1}
         actions={
           <>
             <HoverTip label="Split right">

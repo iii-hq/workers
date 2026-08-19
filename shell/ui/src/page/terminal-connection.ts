@@ -84,7 +84,12 @@ export function backendConfirmedSessionMissing(error: unknown): boolean {
   const message = errorMessage(error)
   return (
     message.includes('terminal session does not exist') ||
-    message.includes('terminal session is closed')
+    message.includes('terminal session is closed') ||
+    // A worker restart takes its sessions and its worker id with it, so a
+    // lease saved by the previous process authenticates as another worker's.
+    // The session is gone either way: recover it like any lost session
+    // instead of leaving the pane on a credential error it cannot act on.
+    message.includes('terminal session credentials are invalid')
   )
 }
 

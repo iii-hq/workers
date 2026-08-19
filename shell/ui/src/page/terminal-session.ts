@@ -493,7 +493,14 @@ export function useTerminalSession(
     for (const chunk of preMountOutputRef.current) terminal.write(chunk)
     preMountOutputRef.current = []
 
+    let fitFrame = 0
     const fitTerminal = () => {
+      // A pane mid-layout (docking, splitting, a collapsed sidebar) measures
+      // as a sliver. Fitting against that hands the PTY a 1-column terminal,
+      // and the shell redraws its prompt at that width — the stray "%" marks
+      // and clipped prompts that survive the pane growing back.
+      const rect = container.getBoundingClientRect()
+      if (rect.width < 40 || rect.height < 24) return
       try {
         fitAddon.fit()
       } catch {
@@ -504,7 +511,14 @@ export function useTerminalSession(
         terminal.rows,
       )
     }
-    const observer = new ResizeObserver(fitTerminal)
+    const scheduleFit = () => {
+      if (fitFrame) window.cancelAnimationFrame(fitFrame)
+      fitFrame = window.requestAnimationFrame(() => {
+        fitFrame = 0
+        fitTerminal()
+      })
+    }
+    const observer = new ResizeObserver(scheduleFit)
     observer.observe(container)
     const themeObserver = new MutationObserver(() => {
       terminal.options.theme = readTheme()
@@ -519,6 +533,7 @@ export function useTerminalSession(
 
     terminalCleanupRef.current = () => {
       window.cancelAnimationFrame(frame)
+      if (fitFrame) window.cancelAnimationFrame(fitFrame)
       themeObserver.disconnect()
       observer.disconnect()
       scrolled.dispose()

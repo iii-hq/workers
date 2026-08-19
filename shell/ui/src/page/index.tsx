@@ -352,6 +352,11 @@ export function ShellExplorerPage({
   }, [])
   const terminalStorageKey = `iii::shell-ui::terminal-leases::${tabId}`
   const [collapsed, setCollapsed] = useState(false)
+  const [narrow, setNarrow] = useState(false)
+  // A callback ref, not useRef: the page renders a placeholder shell before
+  // the workspace frame exists, so an effect that reads a ref once would
+  // observe nothing.
+  const [frameEl, setFrameEl] = useState<HTMLDivElement | null>(null)
   const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const [tree, setTree] = useState<FlatTree | null>(null)
   // Dot entries are filtered by default (Finder/VS Code convention) —
@@ -896,6 +901,25 @@ export function ShellExplorerPage({
     !scopeLoading &&
     scopeError === null &&
     scopeEntries.size === 0
+
+  // The panel, not the viewport, decides what fits: a shell page shares the
+  // console with other panels. Below the same width the stylesheet treats as
+  // narrow, the sidebar becomes an overlay, so it starts out of the way.
+  useEffect(() => {
+    if (!frameEl) return
+    const measure = () =>
+      setNarrow(frameEl.getBoundingClientRect().width <= 720)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(frameEl)
+    return () => observer.disconnect()
+  }, [frameEl])
+
+  const narrowRef = useRef(narrow)
+  useEffect(() => {
+    if (narrow && !narrowRef.current) setCollapsed(true)
+    narrowRef.current = narrow
+  }, [narrow])
 
   const rootLabel = useMemo(
     () => root?.split('/').filter(Boolean).slice(-1)[0] ?? 'workspace',
@@ -2378,7 +2402,18 @@ export function ShellExplorerPage({
   return (
     <PageShell>
       {header}
-      <div className={`shui-workspace-frame terminal-${terminalDock}`}>
+      <div
+        ref={setFrameEl}
+        className={`shui-workspace-frame terminal-${terminalDock}`}
+      >
+        {narrow && !collapsed ? (
+          <button
+            type="button"
+            className="shui-sidebar-scrim"
+            aria-label="Hide file sidebar"
+            onClick={() => setCollapsed(true)}
+          />
+        ) : null}
         <PageBody side={panelSide}>
           {!collapsed ? (
             <PageSidebar width={sideWidth} className="shui-sidebar">
