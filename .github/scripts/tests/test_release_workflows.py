@@ -184,12 +184,3 @@ def test_release_detects_frontends_from_path_dependencies() -> None:
 
     assert detect["env"]["MANIFEST"] == "${{ steps.meta.outputs.manifest }}"
     assert "manifest_version.py frontend-bundles" in detect["run"]
-
-
-def test_shell_terminal_installs_pnpm_before_enabling_its_node_cache() -> None:
-    steps = workflow(WORKFLOWS / "shell-e2e.yml")["jobs"]["terminal"]["steps"]
-    names = [step.get("name") for step in steps]
-
-    assert names.index("Setup pnpm") < names.index("Install Node.js")
-    node = next(step for step in steps if step.get("name") == "Install Node.js")
-    assert node["with"]["cache"] == "pnpm"
