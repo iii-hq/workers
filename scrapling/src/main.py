@@ -61,15 +61,7 @@ def main() -> None:
         idle_timeout=cfg.get("session_idle_timeout_s") or None,
     )
 
-    # namespace: register under III_NAMESPACE when set (the SDK also resolves the
-    # env; passed explicitly for visibility). Absent -> the engine's default.
-    iii = register_worker(
-        address=url,
-        options=InitOptions(
-            worker_name="scrapling",
-            namespace=os.environ.get("III_NAMESPACE") or None,
-        ),
-    )
+    iii = register_worker(address=url, options=InitOptions(worker_name="scrapling"))
     handlers = create_handlers(load_config, iii=iii)
 
     for spec in FUNCTIONS:

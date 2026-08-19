@@ -170,7 +170,7 @@ pub async fn register_console_config(iii: &IIIClient) {
         payload["initial_value"] = default_value();
     }
 
-    match trigger_with_retry(iii, "configuration::register", payload).await {
+    match trigger_configuration_with_retry(iii, "configuration::register", payload).await {
         Ok(_) => tracing::info!(id = config_id(), "console configuration registered"),
         Err(e) => tracing::warn!(
             error = %e,
@@ -284,14 +284,16 @@ pub struct ConfigChangeRequest {}
 
 /// `Ok(None)` when the entry does not exist or holds `null`.
 async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").filter(|v| !v.is_null()).cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

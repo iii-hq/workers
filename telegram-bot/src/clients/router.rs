@@ -27,13 +27,14 @@ pub struct ModelsListResponse {
 }
 
 pub async fn list_models(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<Model>, Error> {
-    let request = TriggerRequest {
-        function_id: "router::models::list".into(),
-        payload: json!({ "capability": "tools" }),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    };
-    let value = iii.trigger(request).await?;
+    let value = iii
+        .trigger(TriggerRequest {
+            function_id: "router::models::list".into(),
+            payload: json!({ "capability": "tools" }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await?;
     let resp: ModelsListResponse = serde_json::from_value(value)
         .map_err(|e| Error::Handler(format!("router::models::list: {e}")))?;
     Ok(resp.models)

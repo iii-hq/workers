@@ -31,13 +31,15 @@ pub async fn embed_texts(
     if !model.trim().is_empty() {
         payload["model"] = json!(model);
     }
-    let request = TriggerRequest {
-        function_id: "router::embed".into(),
-        payload,
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    };
-    let reply = iii.trigger(request).await.ok()?;
+    let reply = iii
+        .trigger(TriggerRequest {
+            function_id: "router::embed".into(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+        .ok()?;
     let embeddings: Vec<Vec<f32>> =
         serde_json::from_value(reply.get("embeddings").cloned().unwrap_or(Value::Null)).ok()?;
     if embeddings.len() == texts.len() {

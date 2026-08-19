@@ -171,15 +171,14 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
 }
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
-    let request = TriggerRequest {
+    iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
         timeout_ms: Some(CALL_TIMEOUT_MS),
-    };
-    iii.trigger(request)
-        .await
-        .map_err(|e| format!("{function_id}: {e}"))
+    })
+    .await
+    .map_err(|e| format!("{function_id}: {e}"))
 }
 
 /// Banks eligible for this pass (config allowlist applied).

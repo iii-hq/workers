@@ -8,7 +8,6 @@
 use crate::PROVIDER_ID;
 use iii_sdk::engine::EngineFunctions;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::router_client::{self as scaffold, call};
 use llm_router::types::model::Model;
@@ -53,14 +52,12 @@ fn list_contains_function(raw: &Value, function_id: &str, namespace: &str) -> bo
 
 async fn function_available(iii: &IIIClient, function_id: &str) -> bool {
     let prefix = format!("{}::", function_prefix(function_id));
-    let raw = iii
-        .trigger(TriggerRequest {
-            function_id: EngineFunctions::LIST_FUNCTIONS.into(),
-            payload: json!({ "prefix": prefix }),
-            action: None,
-            timeout_ms: Some(15_000),
-        })
-        .await;
+    let raw = call(
+        iii,
+        EngineFunctions::LIST_FUNCTIONS,
+        json!({ "prefix": prefix }),
+    )
+    .await;
     let namespace = iii.namespace().unwrap_or_else(|| "default".into());
     raw.as_ref()
         .map(|raw| list_contains_function(raw, function_id, &namespace))

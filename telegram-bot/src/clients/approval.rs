@@ -43,13 +43,14 @@ pub async fn resolve(
     req: ResolveRequest,
     timeout_ms: u64,
 ) -> Result<ResolveResponse, Error> {
-    let request = TriggerRequest {
-        function_id: "approval::resolve".into(),
-        payload: serde_json::to_value(&req).unwrap_or(json!({})),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    };
-    let value = iii.trigger(request).await?;
+    let value = iii
+        .trigger(TriggerRequest {
+            function_id: "approval::resolve".into(),
+            payload: serde_json::to_value(&req).unwrap_or(json!({})),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await?;
     serde_json::from_value(value).map_err(|e| Error::Handler(format!("approval::resolve: {e}")))
 }
 
@@ -59,7 +60,7 @@ pub async fn approve_always(
     function_id: &str,
     timeout_ms: u64,
 ) -> Result<(), Error> {
-    let request = TriggerRequest {
+    iii.trigger(TriggerRequest {
         function_id: "approval::approve-always".into(),
         payload: json!({
             "session_id": session_id,
@@ -67,8 +68,8 @@ pub async fn approve_always(
         }),
         action: None,
         timeout_ms: Some(timeout_ms),
-    };
-    iii.trigger(request).await?;
+    })
+    .await?;
     Ok(())
 }
 
@@ -77,13 +78,14 @@ pub async fn list_pending(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<Vec<PendingApprovalRecord>, Error> {
-    let request = TriggerRequest {
-        function_id: "approval::list-pending".into(),
-        payload: json!({ "session_id": session_id }),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    };
-    let value = iii.trigger(request).await?;
+    let value = iii
+        .trigger(TriggerRequest {
+            function_id: "approval::list-pending".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await?;
     let resp: ListPendingResponse = serde_json::from_value(value)
         .map_err(|e| Error::Handler(format!("approval::list-pending: {e}")))?;
     Ok(resp.pending)

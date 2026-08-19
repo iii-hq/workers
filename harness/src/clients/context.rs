@@ -132,13 +132,15 @@ impl ContextClient {
             payload["system_prompt"] = json!(sp);
         }
 
-        let request = TriggerRequest {
-            function_id: "context::assemble".into(),
-            payload,
-            action: None,
-            timeout_ms: Some(self.timeout_ms),
-        };
-        let resp = self.iii.trigger(request).await;
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "context::assemble".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
 
         match resp {
             Ok(v) => serde_json::from_value::<AssembleOutput>(v)
@@ -165,13 +167,15 @@ impl ContextClient {
             payload["system_prompt"] = json!(sp);
         }
 
-        let request = TriggerRequest {
-            function_id: "context::count-tokens".into(),
-            payload,
-            action: None,
-            timeout_ms: Some(self.timeout_ms),
-        };
-        let resp = self.iii.trigger(request).await;
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "context::count-tokens".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
 
         match resp {
             Ok(v) => serde_json::from_value::<CountTokensOutput>(v)

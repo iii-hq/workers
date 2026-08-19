@@ -68,13 +68,12 @@ impl EngineClient {
         // stale when the engine restarts while this worker is idle and would
         // falsely interrupt the first slow call made afterwards.
         let baseline = engine_epoch_ms(&self.iii).await;
-        let request = TriggerRequest {
+        let call = self.iii.trigger(TriggerRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
             timeout_ms: Some(self.timeout_ms),
-        };
-        let call = self.iii.trigger(request);
+        });
         let result = match baseline {
             Some(baseline) => {
                 tokio::select! {

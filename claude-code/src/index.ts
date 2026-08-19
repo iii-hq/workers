@@ -39,13 +39,7 @@ const bootConfig: Config = {
   claude_executable: resolveClaudeExecutable(seed.claude_executable),
 };
 
-// namespace: explicit III_NAMESPACE so the worker registers under a namespace
-// when one is set (the SDK also reads it, passed here for visibility). Absent,
-// the engine applies its default namespace.
-const iii = registerWorker(url, {
-  workerName: 'claude-code',
-  namespace: process.env.III_NAMESPACE || undefined,
-});
+const iii = registerWorker(url, { workerName: 'claude-code' });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
 // from registering claude::*; it falls back to the seed via fetchRuntime.

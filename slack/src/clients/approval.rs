@@ -12,7 +12,7 @@ pub async fn resolve(
     allow: bool,
     timeout_ms: u64,
 ) -> Result<(), Error> {
-    let request = TriggerRequest {
+    iii.trigger(TriggerRequest {
         function_id: "approval::resolve".into(),
         payload: json!({
             "session_id": session_id,
@@ -21,8 +21,8 @@ pub async fn resolve(
         }),
         action: None,
         timeout_ms: Some(timeout_ms),
-    };
-    iii.trigger(request).await?;
+    })
+    .await?;
     Ok(())
 }
 
@@ -32,12 +32,12 @@ pub async fn approve_always(
     function_id: &str,
     timeout_ms: u64,
 ) -> Result<(), Error> {
-    let request = TriggerRequest {
+    iii.trigger(TriggerRequest {
         function_id: "approval::approve-always".into(),
         payload: json!({ "session_id": session_id, "function_id": function_id }),
         action: None,
         timeout_ms: Some(timeout_ms),
-    };
-    iii.trigger(request).await?;
+    })
+    .await?;
     Ok(())
 }

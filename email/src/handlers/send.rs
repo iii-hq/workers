@@ -94,13 +94,14 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
                     }
                 }
 
-                let request = TriggerRequest {
-                    function_id: "auth::get_token".to_string(),
-                    payload: json!({ "provider": format!("email::{}", req.account) }),
-                    action: None,
-                    timeout_ms: Some(5_000),
-                };
-                let cred = iii.trigger(request).await
+                let cred = iii
+                    .trigger(TriggerRequest {
+                        function_id: "auth::get_token".to_string(),
+                        payload: json!({ "provider": format!("email::{}", req.account) }),
+                        action: None,
+                        timeout_ms: Some(5_000),
+                    })
+                    .await
                     .map_err(|e| {
                         Error::Handler(
                             json!({

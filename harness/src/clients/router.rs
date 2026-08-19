@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
+use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
@@ -91,7 +92,7 @@ impl RouterClient {
         sink: &dyn StreamSink,
         mut abort_rx: watch::Receiver<bool>,
     ) -> Result<ChatOutcome, HarnessError> {
-        let channel = iii_sdk::helpers::create_channel(&self.iii, None)
+        let channel = create_channel(&self.iii, None)
             .await
             .map_err(|e| HarnessError::Dependency(format!("create_channel: {e}")))?;
 
@@ -170,13 +171,13 @@ impl RouterClient {
         let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
         let mut trigger = tokio::spawn(
             async move {
-                let request = TriggerRequest {
+                iii.trigger(TriggerRequest {
                     function_id: "router::chat".into(),
                     payload,
                     action: None,
                     timeout_ms: Some(timeout_ms),
-                };
-                iii.trigger(request).await
+                })
+                .await
             }
             .with_context(parent_cx),
         );
@@ -423,13 +424,15 @@ impl RouterClient {
 
     /// Abort an in-flight stream by `request_id` (best-effort).
     pub async fn abort(&self, request_id: &str) -> bool {
-        let request = TriggerRequest {
-            function_id: "router::abort".into(),
-            payload: json!({ "request_id": request_id }),
-            action: None,
-            timeout_ms: Some(self.timeout_ms),
-        };
-        let res = self.iii.trigger(request).await;
+        let res = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::abort".into(),
+                payload: json!({ "request_id": request_id }),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
         match res {
             Ok(v) => v.get("aborted").and_then(Value::as_bool).unwrap_or(false),
             Err(e) => {
@@ -448,13 +451,16 @@ impl RouterClient {
         if let Some(p) = provider {
             payload["provider"] = json!(p);
         }
-        let request = TriggerRequest {
-            function_id: "router::system_prompt::get".into(),
-            payload,
-            action: None,
-            timeout_ms: Some(self.timeout_ms),
-        };
-        let resp = self.iii.trigger(request).await.ok()?;
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::system_prompt::get".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
         resp.get("system_prompt")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
@@ -510,13 +516,16 @@ impl RouterClient {
         if let Some(p) = provider {
             payload["provider"] = json!(p);
         }
-        let request = TriggerRequest {
-            function_id: "router::models::get".into(),
-            payload,
-            action: None,
-            timeout_ms: Some(self.timeout_ms),
-        };
-        let resp = self.iii.trigger(request).await.ok()?;
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::models::get".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
         if resp.is_null() {
             return None;
         }
@@ -530,13 +539,15 @@ impl RouterClient {
     /// Whether `model` supports a capability (false when the router is absent
     /// or the model is unknown — the caller falls back).
     pub async fn models_supports(&self, provider: &str, id: &str, capability: &str) -> bool {
-        let request = TriggerRequest {
-            function_id: "router::models::supports".into(),
-            payload: json!({ "provider": provider, "id": id, "capability": capability }),
-            action: None,
-            timeout_ms: Some(self.timeout_ms),
-        };
-        let resp = self.iii.trigger(request).await;
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::models::supports".into(),
+                payload: json!({ "provider": provider, "id": id, "capability": capability }),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
         match resp {
             Ok(v) => v.get("supported").and_then(Value::as_bool).unwrap_or(false),
             Err(_) => false,

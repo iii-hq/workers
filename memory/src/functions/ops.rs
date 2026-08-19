@@ -117,13 +117,15 @@ async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
 }
 
 async fn sibling_check(deps: &Deps, name: &str, function_id: &str, why: &str) -> DoctorCheck {
-    let request = TriggerRequest {
-        function_id: function_id.into(),
-        payload: json!({}),
-        action: None,
-        timeout_ms: Some(3_000),
-    };
-    let res = deps.iii.trigger(request).await;
+    let res = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: function_id.into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(3_000),
+        })
+        .await;
     match res {
         Ok(_) => DoctorCheck {
             name: name.into(),

@@ -9,15 +9,13 @@ use llm_router::types::router::ProviderResolveResponse;
 use serde_json::{json, Value};
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    let request = TriggerRequest {
+    iii.trigger(TriggerRequest {
         function_id: function_id.into(),
         payload,
         action: None,
         timeout_ms: Some(15_000),
-    };
-    // Route the cross-worker call to this worker's namespace so it reaches the
-    // router registered in the same namespace (None => the engine's default).
-    iii.trigger(request).await
+    })
+    .await
 }
 
 /// `router::provider::resolve` — credential + effective settings.

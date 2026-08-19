@@ -1,9 +1,9 @@
 //! Real iii channel plumbing for the relay (no abstraction — these are the
 //! concrete bridges over `iii_sdk` channels).
-//! `create_router_channel` mints a router-owned iii channel through the SDK;
-//! `open_sink` builds a `ChannelWriter` directly
-//! from a forwarded `writer_ref` (the Rust SDK does not hydrate refs in
-//! payloads).
+//! `create_router_channel` mints a router-owned iii channel via
+//! `iii_sdk::helpers::create_channel`; `open_sink` builds a `ChannelWriter`
+//! directly from a forwarded `writer_ref` (the Rust SDK does not hydrate refs
+//! in payloads).
 //!
 //! FrameSink::send is sync, bridging to the async ChannelWriter via an
 //! unbounded mpsc + forwarder task — a send failure is observed one frame

@@ -37,12 +37,7 @@ const bootConfig: Config = {
   opencode_executable: resolveOpencodeExecutable(seed.opencode_executable),
 };
 
-// namespace: register under III_NAMESPACE when set (the SDK also reads it,
-// passed here for visibility). Absent, the engine's default namespace is used.
-const iii = registerWorker(url, {
-  workerName: 'opencode',
-  namespace: process.env.III_NAMESPACE || undefined,
-});
+const iii = registerWorker(url, { workerName: 'opencode' });
 
 try {
   await registerOpencodeConfig(iii, bootConfig);

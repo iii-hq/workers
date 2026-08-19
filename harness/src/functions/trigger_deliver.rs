@@ -470,15 +470,14 @@ async fn call_target(
     // happen?" becomes unanswerable from the timeline. The dispatch timeout
     // bounds the wait.
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    let request = TriggerRequest {
-        function_id: target.to_string(),
-        payload: payload.clone(),
-        action: None,
-        timeout_ms: Some(timeout_ms),
-    };
     let outcome = deps
         .iii
-        .trigger(request)
+        .trigger(TriggerRequest {
+            function_id: target.to_string(),
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
         .await
         .map(|_| ())
         .map_err(|e| e.to_string());
