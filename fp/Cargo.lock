@@ -304,6 +304,7 @@ version = "0.2.6"
 dependencies = [
  "anyhow",
  "clap",
+ "iii-config-client",
  "iii-sdk",
  "schemars",
  "serde",
@@ -641,6 +642,18 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "iii-config-client"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

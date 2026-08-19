@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
@@ -86,14 +86,21 @@ async fn main() -> Result<()> {
         }
     });
 
-    configuration::register_config(&iii, seed.as_ref())
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("registering web configuration schema")?;
-    let cfg = configuration::fetch_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("loading web configuration")?;
+    // Best-effort on purpose: every WebConfig field has a safe default and
+    // hot-reloads, so unlike the full config integrations
+    // (docs/sops/configuration.md §4c) a configuration-worker failure must
+    // not take web::fetch off the bus — warn, run on defaults, and recover on
+    // the next configuration event or restart.
+    if let Err(e) = configuration::register_config(&iii, seed.as_ref()).await {
+        tracing::warn!(error = %e, "registering web configuration schema failed; continuing");
+    }
+    let cfg = match configuration::fetch_config(&iii).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "loading web configuration failed; using defaults");
+            WebConfig::default()
+        }
+    };
     tracing::info!(
         max_timeout_ms = cfg.max_timeout_ms,
         max_response_bytes = cfg.max_response_bytes,
@@ -101,6 +108,7 @@ async fn main() -> Result<()> {
         "loaded web configuration"
     );
 
+    let inject_guidance = cfg.inject_guidance;
     let shared = cfg.into_shared();
     functions::register_all(&iii, &shared);
 
@@ -108,22 +116,28 @@ async fn main() -> Result<()> {
     // responses) through the console's injectable UI contract.
     web::ui::register(&iii);
 
-    // Bind the harness pre-generate hook (web::inject-guidance). One shot: the engine
-    // parks the binding until the harness registers the trigger type (recoverable
-    // triggers, iii #1962). Presence-gated: the guidance is injected only while this
-    // worker is connected.
-    configuration::setup_harness_hooks(&iii);
+    // Reconcile the pre-generate guidance binding (web::inject-guidance) with
+    // the configured `inject_guidance` (on by default); config changes
+    // re-reconcile it live via the trigger below.
+    let state = configuration::SharedState {
+        config: shared.clone(),
+        guidance: configuration::GuidanceState::default(),
+    };
+    configuration::apply_guidance(&iii, &state.guidance, inject_guidance);
 
-    configuration::register_config_trigger(
-        &iii,
-        configuration::SharedState {
-            config: shared.clone(),
-        },
-    )
-    .context("registering configuration change trigger")?;
+    match configuration::register_config_trigger(&iii, state) {
+        // One serialized re-fetch to close the boot gap: an update landing
+        // between the fetch above and the binding just registered fired into
+        // nothing, and would otherwise stay invisible until the NEXT change.
+        Ok(reload) => reload.run().await,
+        Err(e) => {
+            tracing::warn!(error = %e, "registering configuration change trigger failed; config frozen until restart");
+        }
+    }
 
     tracing::info!(
-        "web ready: web::fetch + injectable console UI + guidance injection + configuration hot-reload"
+        inject_guidance,
+        "web ready: web::fetch + injectable console UI + configuration hot-reload"
     );
     tokio::signal::ctrl_c().await?;
     tracing::info!("web shutting down");

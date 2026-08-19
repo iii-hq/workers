@@ -16,7 +16,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:shell": "SHELL_E2E=1 playwright test e2e/shell-terminal.spec.ts",
     "test:e2e:install": "playwright install chromium",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",

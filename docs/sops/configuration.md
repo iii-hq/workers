@@ -191,6 +191,18 @@ Common to both tiers:
 aborts startup. Bind the configuration trigger **last** so handlers close over
 fully-built state.
 
+**Exception — cosmetic-knob entries.** Workers whose entry carries only
+defaulted tuning/prompt knobs (the `inject_guidance` workers: `fp`, `web`,
+`workflow`, `sandbox-code-runner`, `scrapling`) treat the whole config path as
+best-effort: register/fetch/bind failures warn and the worker runs on
+built-in defaults rather than taking its real function surface off the bus,
+recovering on the next configuration event or restart. Their shared plumbing
+(retry ladder, case-sensitive `NOT_FOUND` rule, seed-only-when-nothing-stored,
+serialized reload with the fetch inside the lock, and the post-bind boot
+refresh that closes the fetch→bind gap) lives in
+[`crates/config-client`](../../crates/config-client/src/lib.rs) — new
+integrations of this shape should link it rather than copying the pattern.
+
 ### d. No shipped `config.yaml`
 
 Integrated workers **omit** `config.yaml` from the repo. Defaults live in

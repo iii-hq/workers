@@ -84,13 +84,32 @@ pub const STATIC_IDS: &[&str] = &[
     inject_guidance::GUIDANCE_HOOK_ID,
 ];
 
+/// Every id this worker owns, for seeding the runtime manager's id registry.
+///
+/// STRICTLY LARGER than `STATIC_IDS`, which is only what `register_all`
+/// registers: the console UI's content function is published later by
+/// `crate::ui::register`, and the config reload hook later still by
+/// `configuration::register_config_trigger` — after two awaited
+/// configuration RPCs, a window in which a guest `register_function` could
+/// otherwise claim the id and drive the SDK's duplicate-id panic when the
+/// worker's own registration lands (aborting the whole process). Same
+/// pattern and reasoning as code-runner's `seeded_ids`.
+pub fn seeded_ids() -> Vec<&'static str> {
+    let mut ids = STATIC_IDS.to_vec();
+    ids.push(crate::ui::CONTENT_FUNCTION_ID);
+    ids.push(crate::configuration::CONFIG_FN_ID);
+    ids
+}
+
 pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<RuntimeManager>) {
-    // Seed the local claims registry with this worker's own ids BEFORE
+    // Seed the local claims registry with EVERY id this worker will register
+    // (`seeded_ids`, not `STATIC_IDS`: the ui-content and on-config-change
+    // registrations land after guest-facing `register` is live) BEFORE
     // registering anything, so `RuntimeManager::register`'s reservation
     // check refuses a caller-supplied `sandbox-code-runner::*` id from the
     // moment this function starts, rather than depending on the
     // `engine::functions::info` probe (a network round trip) to catch it.
-    manager.seed_static_ids(STATIC_IDS);
+    manager.seed_static_ids(&seeded_ids());
 
     let mut registered: Vec<&str> = Vec::new();
 
@@ -156,26 +175,6 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<RuntimeManager>) {
     );
 
     tracing::info!("sandbox-code-runner functions registered");
-}
-
-/// Bind the `pre_generate` hook so the guidance reaches the agent's system
-/// prompt while this worker is connected. `on_error: fail_open` is
-/// MANDATORY — `pre_generate` defaults to fail-CLOSED, and a missing
-/// guidance line must never abort an agent's turn.
-pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
-    match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-        trigger_type: "harness::hook::pre-generate".to_string(),
-        function_id: inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-        config: serde_json::json!({ "on_error": "fail_open" }),
-        metadata: Some(serde_json::json!({
-            "inject_prompt": inject_guidance::CODE_RUNNER_GUIDANCE
-        })),
-    }) {
-        Ok(_) => tracing::info!(
-            "sandbox-code-runner pre-generate hook bound (guidance injection active)"
-        ),
-        Err(e) => tracing::warn!(error = %e, "guidance hook binding failed; continuing without it"),
-    }
 }
 
 pub struct FunctionSpec {
@@ -250,5 +249,21 @@ mod tests {
             "ws://127.0.0.1:1",
         );
         register_all(&iii, &manager);
+    }
+
+    /// The ids registered OUTSIDE `register_all` (ui-content by
+    /// `ui::register`, on-config-change by `register_config_trigger`) must be
+    /// reserved by the seed all the same: an unseeded late registration is
+    /// claimable by a guest during the boot window, and the claim ends in the
+    /// SDK's duplicate-id process abort when the worker's own registration
+    /// lands.
+    #[test]
+    fn seeded_ids_cover_the_late_registrations() {
+        let ids = seeded_ids();
+        for id in STATIC_IDS {
+            assert!(ids.contains(id), "seed lost a static id: {id}");
+        }
+        assert!(ids.contains(&crate::ui::CONTENT_FUNCTION_ID));
+        assert!(ids.contains(&crate::configuration::CONFIG_FN_ID));
     }
 }

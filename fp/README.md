@@ -18,12 +18,19 @@ arguments burns its context window and stalls the provider stream mid-call.
 and its result lands in the next step's payload — so the value flows
 worker→worker and the chat only ever sees per-step sizes and a preview.
 
-While the worker is connected it also injects a usage section into the agent
-system prompt via the harness `pre-generate` hook (`fp::inject-guidance`),
-so the guidance is presence-gated: no fp worker, no prompt text. The
-binding is one-shot at startup and relies on the engine's recoverable
-triggers (iii #1962): bound before the harness is up, it parks as a pending
-intent and activates when the harness registers the trigger type.
+While connected (and unless turned off) the worker also injects a usage
+section into the agent system prompt via the harness `pre-generate` hook
+(`fp::inject-guidance`). The knob lives in the builtin `configuration`
+worker under the `fp` entry: `inject_guidance` is ON by default; turn it
+off in the console's config dialog (or via `configuration::set`) to save
+the ~750 tokens per generation (the harness's `# Granted functions` catalog
+still advertises the `fp::*` ids) — it hot-applies, the worker binds or
+unbinds the hook on the spot, no restart. The console renders the entry with
+its schema-generated form. The guidance stays presence-gated either way
+(no fp worker, no prompt text). When enabled, the binding relies on the
+engine's recoverable triggers (iii #1962): bound before the harness is up,
+it parks as a pending intent and activates when the harness registers the
+trigger type.
 
 ## Functions
 

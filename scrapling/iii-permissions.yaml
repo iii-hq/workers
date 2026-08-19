@@ -9,6 +9,9 @@
 version: 1
 
 rules:
+  # Internal hot-reload hook — engine trigger dispatch only, never
+  # agent-callable (the same pattern as the other on-config-change denies).
+  - '!scrapling::on-config-change'
   - scrapling::extract
   - scrapling::css
   - scrapling::xpath

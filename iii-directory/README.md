@@ -25,8 +25,8 @@ Skills and prompts are sourced from a single configured folder on disk
 functions, which pull markdown into `skills_folder` from either the
 [workers registry](https://workers.iii.dev) or a GitHub repo, plus the
 per-kind single-file editors — `directory::skills::update`,
-`directory::prompts::{create,update}` and
-`directory::system-prompts::{create,update}`. Once downloaded, files
+`directory::prompts::{create,update,delete}` and
+`directory::system-prompts::{create,update,delete}`. Once downloaded, files
 belong to the developer — edit them however you want, in the editor of
 your choice: a change made directly on disk fires the matching
 `on-change` with `op: "external"` (see [Custom trigger
@@ -284,6 +284,7 @@ other adapter.
 | `directory::prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw`. |
 | `directory::prompts::update` | Overwrite one EXISTING prompt file with new full-file content: `{ name, content }`. The frontmatter must keep a non-empty `description` (and a valid `name` when declared) — the same rules the scanner enforces. Atomic write; fans out `directory::prompts::on-change` with `op: "update"`. Returns the prompt's effective name after the write. |
 | `directory::prompts::create` | Create a NEW command-template prompt file at `<skills_folder>/prompts/<name>.md` from full-file content: `{ name, content }`, where `content` is the FULL file including frontmatter. The frontmatter must carry a non-empty `description` (and a `name` matching the request, when declared) — the same rules `update` enforces. Refuses a `name` that already exists anywhere in the merged command-prompt scan, and a target path that already exists on disk even if the scanner would skip it. Atomic write; fans out `directory::prompts::on-change` with `op: "create"`. Returns `{ name, description, bytes, modified_at }`. |
+| `directory::prompts::delete` | Permanently remove one EXISTING command-template prompt file by `{ name }`. Resolves against the same merged scan as `list`/`get`, fans out `directory::prompts::on-change` with `op: "delete"`, and returns `{ name }`. |
 
 ### `directory::system-prompts::*` (filesystem reader + editor)
 
@@ -340,7 +341,7 @@ There is **no** `directory::skills::register` /
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
 | `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "namespace": "<ns>", "id": "<id>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
-| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file, a `directory::prompts::update`, a `directory::prompts::create`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "name": "<name>" }`; create: `{ "op": "create", "name": "<name>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
+| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file, a `directory::prompts::update`, `create`, `delete`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
 | `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
 
 Dispatches are fire-and-forget (Void), so the write path doesn't
