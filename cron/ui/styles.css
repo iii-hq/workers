@@ -7,12 +7,6 @@
   min-height: 0;
 }
 
-[data-iii-ui='cron'] .cron-ui-icon {
-  width: 16px;
-  height: 16px;
-  flex: none;
-}
-
 [data-iii-ui='cron'] .cron-ui-sr {
   position: absolute;
   width: 1px;
@@ -31,17 +25,29 @@
   min-width: 0;
 }
 
+/* The glyph sits inside the field: the shared Input keeps its own surface,
+   focus ring and disabled treatment, and this only makes room for the icon. */
 [data-iii-ui='cron'] .cron-ui-search {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
   min-width: 0;
-  color: var(--color-ink-faint);
+  width: 220px;
+}
+
+[data-iii-ui='cron'] .cron-ui-search > svg {
+  position: absolute;
+  left: 10px;
+  color: var(--color-ink-ghost);
+  pointer-events: none;
 }
 
 [data-iii-ui='cron'] .cron-ui-search input {
-  width: 180px;
-  min-width: 0;
+  padding-left: 32px;
+}
+
+[data-iii-ui='cron'] .cron-ui-search input::-webkit-search-cancel-button {
+  appearance: none;
 }
 
 @media (max-width: 640px) {
@@ -136,15 +142,6 @@
 }
 
 /* ── table ──────────────────────────────────────────────────────────── */
-
-[data-iii-ui='cron'] .cron-ui-row {
-  cursor: pointer;
-}
-
-[data-iii-ui='cron'] .cron-ui-row[data-selected='true'] {
-  background: var(--color-surface-selected);
-  color: var(--color-ink);
-}
 
 [data-iii-ui='cron'] .cron-ui-cell-strong {
   color: var(--color-ink);
@@ -264,19 +261,19 @@
   margin: 0;
 }
 
-[data-iii-ui='cron'] .cron-ui-field {
+[data-iii-ui='cron'] .cron-ui-detail-row {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
 }
 
-[data-iii-ui='cron'] .cron-ui-field-label {
+[data-iii-ui='cron'] .cron-ui-detail-row-label {
   font-size: 12px;
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='cron'] .cron-ui-field-value {
+[data-iii-ui='cron'] .cron-ui-detail-row-value {
   margin: 0;
   font-size: 13px;
   color: var(--color-ink);
@@ -284,7 +281,7 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='cron'] .cron-ui-field-value.mono {
+[data-iii-ui='cron'] .cron-ui-detail-row-value.mono {
   font-family: var(--font-mono);
   font-size: 12px;
 }
@@ -293,7 +290,8 @@
   min-width: 0;
 }
 
-[data-iii-ui='cron'] .cron-ui-detail-actions {
+[data-iii-ui='cron'] .cron-ui-detail-actions,
+[data-iii-ui='cron'] .cron-ui-form-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -325,19 +323,35 @@
   max-width: 68ch;
 }
 
-[data-iii-ui='cron'] .cron-ui-field {
-  min-width: 0;
+[data-iii-ui='cron'] .cron-ui-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 76px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  transition:
+    border-color var(--motion-duration-control, 120ms),
+    background-color var(--motion-duration-control, 120ms);
 }
 
-[data-iii-ui='cron'] .cron-ui-form-panel label {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-}
-
-[data-iii-ui='cron'] .cron-ui-hint {
-  font-size: 11px;
+[data-iii-ui='cron'] .cron-ui-textarea::placeholder {
   color: var(--color-ink-ghost);
-  font-family: var(--font-mono);
+}
+
+[data-iii-ui='cron'] .cron-ui-textarea:hover {
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui='cron'] .cron-ui-textarea:focus {
+  outline: none;
+  border-color: var(--color-rule-focus);
 }
 
 @media (max-width: 640px) {
@@ -349,8 +363,38 @@
     padding: 12px;
   }
 
-  [data-iii-ui='cron'] .cron-ui-field {
+  [data-iii-ui='cron'] .cron-ui-detail-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
   }
+}
+
+/* The list rows a narrow pane falls back to: the schedule name stays the
+   primary line and the count sits quietly at the end. */
+[data-iii-ui='cron'] .cron-ui-list-meta {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* Forms: one column of shared fields, sized for reading rather than for the
+   full width of a wide pane. The inspector column already supplies the
+   padding and stacking. */
+[data-iii-ui='cron'] .cron-ui-form-panel,
+[data-iii-ui='cron'] .cron-ui-form {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+}
+
+[data-iii-ui='cron'] .cron-ui-form-caption {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+
+[data-iii-ui='cron'] .cron-ui-editor-field .cron-ui-code-editor {
+  min-height: 132px;
+  border: 1px solid var(--color-rule);
+  border-radius: 2px;
 }

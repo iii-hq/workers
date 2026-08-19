@@ -1,4 +1,4 @@
-import type { SessionCronTask } from '../lib/api'
+import type { SessionCronTask, SystemCronBinding } from '../lib/api'
 
 /** What a schedule is doing, from the only facts a subscription carries:
     its fire count, its cap, and its expiry. There is no paused state in the
@@ -36,10 +36,7 @@ export function statusView(task: SessionCronTask, now: number): StatusView {
 
 export type Filter = 'all' | TaskStatus
 
-export function countByStatus(
-  tasks: readonly SessionCronTask[],
-  now: number,
-): Record<Filter, number> {
+export function countByStatus(tasks: readonly SessionCronTask[], now: number): Record<Filter, number> {
   const counts: Record<Filter, number> = {
     all: tasks.length,
     active: 0,
@@ -50,33 +47,35 @@ export function countByStatus(
   return counts
 }
 
-export function matchesFilter(
-  task: SessionCronTask,
-  filter: Filter,
-  now: number,
-): boolean {
+export function matchesFilter(task: SessionCronTask, filter: Filter, now: number): boolean {
   return filter === 'all' || taskStatus(task, now) === filter
 }
 
 /** Free-text match over what an operator can actually read in the row. */
-export function matchesQuery(
-  task: SessionCronTask,
-  cadence: string,
-  query: string,
-): boolean {
+export function matchesQuery(task: SessionCronTask, cadence: string, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
-  return [task.label, task.target, task.expression, cadence, task.subscriptionId]
-    .some((value) => (value ?? '').toLowerCase().includes(needle))
+  return [task.label, task.target, task.expression, cadence, task.subscriptionId].some((value) =>
+    (value ?? '').toLowerCase().includes(needle),
+  )
 }
 
-/** Soonest next run first; a schedule with no computable next run sinks. */
-export function byNextRun(
-  next: (task: SessionCronTask) => Date | null,
-): (a: SessionCronTask, b: SessionCronTask) => number {
+/** The same contract for the bindings tab: every field the row shows. */
+export function matchesBindingQuery(binding: SystemCronBinding, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  return [binding.functionId, binding.workerName, binding.expression, binding.id].some((value) =>
+    value.toLowerCase().includes(needle),
+  )
+}
+
+/** Soonest next run first; a schedule with no computable next run sinks.
+    Takes the run times already computed for the list, because parsing an
+    expression inside a comparator repeats that work log n times per row. */
+export function byNextRun(next: (task: SessionCronTask) => number): (a: SessionCronTask, b: SessionCronTask) => number {
   return (a, b) => {
-    const left = next(a)?.getTime() ?? Number.POSITIVE_INFINITY
-    const right = next(b)?.getTime() ?? Number.POSITIVE_INFINITY
+    const left = next(a)
+    const right = next(b)
     if (left !== right) return left - right
     return b.createdAt - a.createdAt
   }

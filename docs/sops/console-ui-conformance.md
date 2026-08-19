@@ -47,6 +47,7 @@ selection, tooltip, or selector behavior.
 | `code-runner` | Shared tooltip and terminal contracts audited | Execution-result composition |
 | `computer` | Shared finite selects; neutral session rail; shared motion tokens | Remote-session viewport and controls |
 | `console` | Trigger/function filters and rows use public list/chip recipes; neutral selected names and edges | Key/value catalog chips and trigger metadata |
+| `cron` | Shared page chrome, line tabs, segmented status filter, table family, list fallback below 760 px, field recipe on every form, shared selector for the function catalog | Cron cadence and next-run labels, schedule status semantics |
 | `context-manager` | Minimal shared renderer audited; no selectable navigation | Context accounting payload |
 | `database` | Shared line tabs with default icons, icon-only header actions, selects, and tooltips; neutral tree/ERD selection; shared motion tokens | Data grid, query plan, ERD, health metrics, multi-filter chips |
 | `editor` | Neutral row/tab/mode selection; shared motion tokens | Editor tab strip and Monaco workspace |
@@ -87,6 +88,9 @@ selection, tooltip, or selector behavior.
 - `ReviewScopePicker` owns hierarchical submenu selection.
 - `EmptyPane` is a persistent, always-open command palette; it uses shared
   list/panel recipes without adopting popover lifecycle.
+- `cron` keeps a local multi-line input (`TextArea`) painted to match the
+  shared `Input`, because the library has no multi-line control yet; `eval`
+  and `iii-directory` carry the same local copy.
 - Graphs, charts, editors, terminals, file trees, ERDs, and canvas surfaces
   may use domain colors and direct-manipulation behavior. Their surrounding
   navigation and selection still follow the shared contract.

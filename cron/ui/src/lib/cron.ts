@@ -89,6 +89,10 @@ const WEEKDAY_NAMES: Record<string, number> = {
   saturday: 7,
 }
 
+function isEveryWeekday(field: string): boolean {
+  return field === '*' || field === '?'
+}
+
 function ordinal(value: string, rules: FieldRules): number | null {
   const numeric = numberIn(value, rules.minimum, rules.maximum)
   if (numeric !== null) return numeric
@@ -138,10 +142,18 @@ export function validateCron(expression: string): string | null {
   return null
 }
 
-export function describeCron(expression: string): string | null {
+/** The subset both readers below understand: a whole-minute expression with
+    no date arithmetic, where only the weekday can narrow the day. Anything
+    richer is left unlabelled rather than described wrongly. */
+function calendarFields(expression: string): CronFields | null {
   const parsed = fields(expression)
   if (!parsed || parsed.year !== '*' || numberIn(parsed.sec, 0, 59) !== 0) return null
-  if (parsed.dom !== '*' || parsed.month !== '*') return null
+  return parsed.dom === '*' && parsed.month === '*' ? parsed : null
+}
+
+export function describeCron(expression: string): string | null {
+  const parsed = calendarFields(expression)
+  if (!parsed) return null
 
   const hour = numberIn(parsed.hour, 0, 23)
   const minute = numberIn(parsed.min, 0, 59)
@@ -152,24 +164,54 @@ export function describeCron(expression: string): string | null {
   else if (parsed.hour === '*' && minute !== null) time = `hourly at :${pad(minute)} UTC`
   if (!time) return null
 
-  if (parsed.weekday === '*' || parsed.weekday === '?') {
+  if (isEveryWeekday(parsed.weekday)) {
     return hour !== null ? `every day at ${time}` : time
   }
+  const ordinals = weekdayOrdinals(parsed.weekday)
+  if (!ordinals || hour === null) return null
   const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  const days = parsed.weekday.split(',').map((value) => {
-    const numeric = numberIn(value, 1, 7)
-    return numeric !== null && numeric >= 1 ? names[numeric - 1] : null
-  })
-  if (days.some((value) => value === null) || hour === null) return null
-  return `${days.join(', ')} at ${time}`
+  return `${ordinals.map((ordinal) => names[ordinal - 1]).join(', ')} at ${time}`
+}
+
+/** Weekday ordinals as the Rust `cron` crate counts them: 1 is Sunday
+    through 7 for Saturday, one ahead of the Unix convention most people
+    carry in their head. Lists are understood; ranges and steps are not, and
+    say so by returning null rather than guessing. */
+function weekdayOrdinals(field: string): number[] | null {
+  const ordinals: number[] = []
+  for (const part of field.split(',')) {
+    const token = part.trim().toLowerCase()
+    const named = WEEKDAY_NAMES[token]
+    const ordinal = named ?? numberIn(token, 1, 7)
+    if (ordinal === null || ordinal === undefined) return null
+    ordinals.push(ordinal)
+  }
+  return ordinals.length > 0 ? ordinals : null
 }
 
 export function nextCronRun(expression: string, now: Date): Date | null {
-  const parsed = fields(expression)
-  if (!parsed || parsed.year !== '*' || numberIn(parsed.sec, 0, 59) !== 0) return null
-  if (parsed.dom !== '*' || parsed.month !== '*' || !['*', '?'].includes(parsed.weekday)) {
+  const parsed = calendarFields(expression)
+  if (!parsed) return null
+
+  // A weekday schedule: walk forward to the next matching day at that time.
+  if (!isEveryWeekday(parsed.weekday)) {
+    const weekdays = weekdayOrdinals(parsed.weekday)
+    if (!weekdays) return null
+    const hourOfDay = numberIn(parsed.hour, 0, 23)
+    const minuteOfHour = numberIn(parsed.min, 0, 59)
+    if (hourOfDay === null || minuteOfHour === null) return null
+    const candidate = new Date(now)
+    candidate.setUTCSeconds(0, 0)
+    candidate.setUTCHours(hourOfDay, minuteOfHour)
+    for (let day = 0; day <= 7; day += 1) {
+      const probe = new Date(candidate)
+      probe.setUTCDate(candidate.getUTCDate() + day)
+      if (probe <= now) continue
+      if (weekdays.includes(probe.getUTCDay() + 1)) return probe
+    }
     return null
   }
+
   const hour = numberIn(parsed.hour, 0, 23)
   const minute = numberIn(parsed.min, 0, 59)
   const next = new Date(now)

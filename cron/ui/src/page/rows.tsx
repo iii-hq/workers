@@ -5,9 +5,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   IconButton,
+  ListItem,
   StatusDot,
   TableCell,
   TableRow,
+  uiClasses,
 } from '@iii-dev/console-ui'
 import type { SessionCronTask, SystemCronBinding } from '../lib/api'
 import { describeCron, nextCronRun, untilLabel } from '../lib/cron'
@@ -15,7 +17,7 @@ import { statusView } from './status'
 
 export function MoreIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 16 16" className={className} aria-hidden fill="currentColor">
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true" fill="currentColor">
       <circle cx="8" cy="3.5" r="1.25" />
       <circle cx="8" cy="8" r="1.25" />
       <circle cx="8" cy="12.5" r="1.25" />
@@ -23,13 +25,20 @@ export function MoreIcon({ className }: { className?: string }) {
   )
 }
 
-/** A wake has no target function: the fire notifies the owning conversation. */
+/** A wake has no target function: the fire notifies the session that owns the
+    schedule, which for anything created here is a session of its own. */
 export function targetLabel(task: SessionCronTask): string {
-  return task.target ?? 'wakes this chat'
+  return task.target ?? (task.sessionTitle ? `wakes ${task.sessionTitle}` : 'wakes its session')
 }
 
+const cadenceCache = new Map<string, string>()
+
 export function cadenceLabel(expression: string): string {
-  return describeCron(expression) ?? expression
+  const cached = cadenceCache.get(expression)
+  if (cached !== undefined) return cached
+  const label = describeCron(expression) ?? expression
+  cadenceCache.set(expression, label)
+  return label
 }
 
 function nextRunLabel(expression: string, now: Date): string {
@@ -50,6 +59,7 @@ export function TaskRow({
   onReplace,
   onRemove,
   onCopyId,
+  onOpenConversation,
 }: {
   task: SessionCronTask
   now: Date
@@ -58,24 +68,18 @@ export function TaskRow({
   onReplace: () => void
   onRemove: () => void
   onCopyId: () => void
+  onOpenConversation: () => void
 }) {
   const view = statusView(task, now.getTime())
   return (
-    <TableRow
-      data-selected={selected ? 'true' : undefined}
-      aria-current={selected ? 'true' : undefined}
-      onClick={onOpen}
-      className="cron-ui-row"
-    >
+    <TableRow interactive selected={selected} aria-current={selected ? 'true' : undefined} onClick={onOpen}>
       <TableCell>
         <span className="cron-ui-status">
           <StatusDot tone={view.tone} aria-hidden />
           <span>{view.label}</span>
         </span>
       </TableCell>
-      <TableCell className="cron-ui-cell-strong">
-        {task.label ?? 'Untitled schedule'}
-      </TableCell>
+      <TableCell className="cron-ui-cell-strong">{task.label ?? 'Untitled schedule'}</TableCell>
       <TableCell>
         <Badge className="cron-ui-target">{targetLabel(task)}</Badge>
       </TableCell>
@@ -89,15 +93,14 @@ export function TaskRow({
               label={`Actions for ${task.label ?? task.subscriptionId}`}
               onClick={(event: React.MouseEvent) => event.stopPropagation()}
             >
-              <MoreIcon className="cron-ui-icon" />
+              <MoreIcon className={uiClasses.icon} />
             </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={onOpen}>Open details</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onOpenConversation}>Open conversation</DropdownMenuItem>
             <DropdownMenuItem onSelect={onReplace}>Replace…</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onCopyId}>
-              Copy subscription id
-            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onCopyId}>Copy subscription id</DropdownMenuItem>
             <DropdownMenuItem onSelect={onRemove}>Unregister</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -118,12 +121,7 @@ export function BindingRow({
   onOpen: () => void
 }) {
   return (
-    <TableRow
-      data-selected={selected ? 'true' : undefined}
-      aria-current={selected ? 'true' : undefined}
-      onClick={onOpen}
-      className="cron-ui-row"
-    >
+    <TableRow interactive selected={selected} aria-current={selected ? 'true' : undefined} onClick={onOpen}>
       <TableCell>
         <span className="cron-ui-status">
           <StatusDot tone="accent" aria-hidden />
@@ -139,5 +137,53 @@ export function BindingRow({
       <TableCell className="cron-ui-cell-numeric">—</TableCell>
       <TableCell className="cron-ui-cell-actions" />
     </TableRow>
+  )
+}
+
+/** Narrow panes get a list, not a squeezed table: the name stays readable and
+    the rest collapses into one supporting line. */
+export function TaskListRow({
+  task,
+  now,
+  selected,
+  onOpen,
+}: {
+  task: SessionCronTask
+  now: Date
+  selected: boolean
+  onOpen: () => void
+}) {
+  const view = statusView(task, now.getTime())
+  return (
+    <ListItem
+      selected={selected}
+      onClick={onOpen}
+      leading={<StatusDot tone={view.tone} aria-hidden />}
+      label={task.label ?? 'Untitled schedule'}
+      description={`${cadenceLabel(task.expression)} · ${nextRunLabel(task.expression, now)}`}
+      trailing={<span className="cron-ui-list-meta">{firesLabel(task)}</span>}
+    />
+  )
+}
+
+export function BindingListRow({
+  binding,
+  now,
+  selected,
+  onOpen,
+}: {
+  binding: SystemCronBinding
+  now: Date
+  selected: boolean
+  onOpen: () => void
+}) {
+  return (
+    <ListItem
+      selected={selected}
+      onClick={onOpen}
+      leading={<StatusDot tone="accent" aria-hidden />}
+      label={binding.functionId}
+      description={`${binding.workerName} · ${cadenceLabel(binding.expression)} · ${nextRunLabel(binding.expression, now)}`}
+    />
   )
 }
