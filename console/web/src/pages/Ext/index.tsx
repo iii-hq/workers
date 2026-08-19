@@ -101,17 +101,17 @@ export function ExtPage({
     return (
       <PageShell aria-label={pageId ?? 'extension page'}>
         <PageHeader
-          title={pageId ?? 'extension'}
-          description="waiting for worker"
+          title={pageId ?? 'Extension'}
+          description="Waiting for worker"
           onClose={onRequestClose}
         />
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
-            title="extension page not loaded"
+            title="Extension page not loaded"
             description={
               pageId
-                ? `no worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
-                : 'missing extension page id.'
+                ? `No worker has registered a page with id '${pageId}' (yet) — if its worker is starting up, this page appears as soon as its script loads.`
+                : 'Missing extension page id.'
             }
           />
         </div>

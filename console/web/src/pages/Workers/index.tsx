@@ -46,7 +46,7 @@ export function Workers({ onRequestClose }: WorkersProps) {
         <PageShell aria-label="workers">
           <PageHeader
             icon={<Blocks />}
-            title="workers"
+            title="Workers"
             description={`${countLabel} connected or installed`}
             onClose={onRequestClose}
             actions={
@@ -58,7 +58,7 @@ export function Workers({ onRequestClose }: WorkersProps) {
                 className="gap-1.5"
               >
                 <RefreshCw
-                  className={cn('w-3.5 h-3.5', isLoading && 'animate-spin')}
+                  className={cn('size-4', isLoading && 'animate-spin')}
                   aria-hidden
                 />
                 refresh

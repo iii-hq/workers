@@ -60,17 +60,12 @@ export function StatusPanel({
       ) : null}
       <div className="min-w-0 flex flex-col gap-y-0.5">
         <div
-          className={cn(
-            'font-mono text-[13px] font-semibold lowercase',
-            tone.headline,
-          )}
+          className={cn('font-sans text-[13px] font-semibold', tone.headline)}
         >
           {headline}
         </div>
         {detail ? (
-          <div className="font-mono text-[12px] text-ink-faint lowercase">
-            {detail}
-          </div>
+          <div className="font-sans text-[12px] text-ink-faint">{detail}</div>
         ) : null}
       </div>
     </div>

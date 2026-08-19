@@ -88,13 +88,13 @@ export function StatusView({ input, output, running }: StatusViewProps) {
         {counts.running > 0 ? (
           <Chip>
             <span className="text-accent tabular-nums">{counts.running}</span>
-            <span className="text-ink-faint ml-1">running</span>
+            <span className="text-ink-faint ml-1">Running</span>
           </Chip>
         ) : null}
         {counts.failed > 0 ? (
           <Chip className="text-alert">
             <span className="tabular-nums">{counts.failed}</span>
-            <span className="ml-1">failed</span>
+            <span className="ml-1">Failed</span>
           </Chip>
         ) : null}
       </MetaRow>

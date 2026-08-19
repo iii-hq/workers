@@ -65,7 +65,9 @@ function disabledWorkersOf(value: JsonValue): string[] {
   return list.filter((w): w is string => typeof w === 'string')
 }
 
-export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) {
+export function InjectableUiConfigForm(
+  props: ConfigFormProps & { host: Host },
+) {
   const { host } = props
   const [workers, setWorkers] = useState<WorkerRow[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -155,12 +157,11 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       </span>
 
       <div className="console-ui-form-section" data-field="injectableUi">
-        <span className="console-ui-form-title">injectable worker ui</span>
+        <span className="console-ui-form-title">Injectable worker UI</span>
         <span className="console-ui-form-hint">
           workers can ship pages, renderers, and forms into this console at
-          runtime. turn a worker off to hold its assets — every open tab
-          drops them on save, and turning it back on restores them without a
-          restart.
+          runtime. turn a worker off to hold its assets — every open tab drops
+          them on save, and turning it back on restores them without a restart.
         </span>
 
         {rows === null && loadError === null ? (
@@ -178,8 +179,8 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
 
         {rows !== null && rows.length === 0 ? (
           <div className="console-ui-form-empty">
-            no worker is shipping injectable ui right now — this board fills
-            in as workers register console:script / console:style assets.
+            no worker is shipping injectable ui right now — this board fills in
+            as workers register console:script / console:style assets.
           </div>
         ) : null}
 

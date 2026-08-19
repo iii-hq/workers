@@ -8,7 +8,7 @@
  * hold enough contrast against both the cream and the dark paper.
  *
  * Status still overrides identity: errors collapse onto `--color-alert`,
- * and the currently active trace/span carries the accent ring.
+ * and the currently active trace/span carries a neutral ink ring.
  *
  * `getWorkerColor` returns a CSS color (suitable for inline
  * `style={{ backgroundColor: ... }}` or as an SVG `stroke`/`fill`).

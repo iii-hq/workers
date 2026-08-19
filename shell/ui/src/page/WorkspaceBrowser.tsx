@@ -112,7 +112,7 @@ export function WorkspaceBrowser({
         ))}
         {entries.length === 0 ? (
           <span className="shui-browser-empty t-ghost">
-            {tree === null ? 'loading workspace…' : 'this folder is empty'}
+            {tree === null ? 'Loading workspace…' : 'This folder is empty'}
           </span>
         ) : null}
       </div>

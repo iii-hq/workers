@@ -63,11 +63,11 @@ const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
 /** The footer's key hints, in the order they read. The chords come from the
  *  registry; only the wording is local. */
 const HINTS: Array<{ ids: KeybindingActionId[]; label: string }> = [
-  { ids: ['palette.choose'], label: 'open' },
+  { ids: ['palette.choose'], label: 'Open' },
   // Both arrows: one direction is not a hint about moving through a list.
-  { ids: ['palette.previous', 'palette.next'], label: 'select' },
-  { ids: ['palette.cycleFilter'], label: 'filter' },
-  { ids: ['palette.close'], label: 'close' },
+  { ids: ['palette.previous', 'palette.next'], label: 'Select' },
+  { ids: ['palette.cycleFilter'], label: 'Filter' },
+  { ids: ['palette.close'], label: 'Close' },
 ]
 
 /** Icon plus the tint its chip carries. Colour is category, not severity —
@@ -322,7 +322,7 @@ export function CommandPalette({
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-edge bg-panel sm:h-auto sm:max-h-[70vh] sm:w-[min(44rem,92vw)] sm:rounded-lg sm:border sm:border-accent-border sm:shadow-2xl"
+        className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-edge bg-panel sm:h-auto sm:max-h-[70vh] sm:w-[min(44rem,92vw)] sm:rounded-lg sm:border sm:shadow-2xl"
         onKeyDown={onKeyDown}
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-edge pr-1 pl-4 sm:gap-3 sm:pr-4">
@@ -355,7 +355,7 @@ export function CommandPalette({
           <button
             type="button"
             onClick={onClose}
-            aria-label="close search"
+            aria-label="Close search"
             className="flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:hidden"
           >
             <X className="size-5" aria-hidden />
@@ -374,8 +374,8 @@ export function CommandPalette({
               }}
               className={`min-h-11 shrink-0 rounded-full border px-3 text-sm transition-colors sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-xs ${
                 filter === option.id
-                  ? 'border-accent-border bg-accent-muted text-accent'
-                  : 'border-transparent text-ink-faint hover:bg-surface-active hover:text-ink'
+                  ? 'border-edge bg-surface-selected text-ink'
+                  : 'border-transparent text-ink-faint hover:bg-surface-hover hover:text-ink'
               }`}
             >
               {option.label}
@@ -388,19 +388,19 @@ export function CommandPalette({
         >
           {engineError ? (
             <p className="px-4 py-2 text-sm text-warn sm:text-xs">
-              engine inventory unavailable: {engineError}
+              Engine inventory unavailable: {engineError}
             </p>
           ) : null}
           {flat.length === 0 ? (
             <p className="px-4 py-6 text-center text-base text-ink-faint sm:text-sm">
-              no matches
+              No matches
             </p>
           ) : (
             groups.map(([kind, entries]) => (
               <div key={kind}>
-                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-xs uppercase tracking-wider text-ink-ghost sm:text-[0.68rem]">
+                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-xs font-semibold text-ink-ghost sm:text-[0.68rem]">
                   <span>{KIND_LABEL[kind]}</span>
-                  <span className="rounded-full bg-surface-active px-1.5 py-px font-mono text-[0.62rem] normal-case tracking-normal">
+                  <span className="rounded-full bg-surface-active px-1.5 py-px text-[0.62rem] font-normal tracking-normal tabular-nums">
                     {entries.length}
                   </span>
                   <span className="h-px flex-1 bg-edge" />
@@ -420,14 +420,14 @@ export function CommandPalette({
                       onClick={() => choose(entry)}
                       className={`flex min-h-12 w-full items-center gap-3 border-l-2 py-2.5 pr-4 pl-3.5 text-left transition-colors sm:min-h-0 sm:py-2 ${
                         selected
-                          ? 'border-accent bg-accent-muted'
-                          : 'border-transparent hover:bg-surface-active'
+                          ? 'border-edge bg-surface-selected'
+                          : 'border-transparent hover:bg-surface-hover'
                       }`}
                     >
                       <span
                         className={`flex size-7 shrink-0 items-center justify-center rounded ${chip}`}
                       >
-                        <Icon aria-hidden className="size-3.5" />
+                        <Icon aria-hidden className="size-4" />
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-2 truncate">
@@ -493,7 +493,7 @@ export function CommandPalette({
               </span>
             ))}
           </div>
-          <span className="ml-auto font-mono">
+          <span className="ml-auto tabular-nums">
             {flat.length} result{flat.length === 1 ? '' : 's'}
           </span>
         </div>

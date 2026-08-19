@@ -14,9 +14,26 @@
     "./component-names": {
       "types": "./component-names.d.mts",
       "default": "./component-names.mjs"
+    },
+    "./token-names": {
+      "types": "./token-names.d.mts",
+      "default": "./token-names.mjs"
+    },
+    "./ui-classes": {
+      "types": "./ui-classes.d.mts",
+      "default": "./ui-classes.mjs"
     }
   },
-  "files": ["index.d.ts", "index.js", "component-names.mjs", "component-names.d.mts"],
+  "files": [
+    "index.d.ts",
+    "index.js",
+    "component-names.mjs",
+    "component-names.d.mts",
+    "token-names.mjs",
+    "token-names.d.mts",
+    "ui-classes.mjs",
+    "ui-classes.d.mts"
+  ],
   "devDependencies": {
     "@types/react": "^19.2.14"
   }

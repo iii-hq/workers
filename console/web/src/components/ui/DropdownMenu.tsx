@@ -1,13 +1,14 @@
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import { Check } from 'lucide-react'
 import type * as React from 'react'
+import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
 /**
  * Radix dropdown-menu adapted to the console design system — the shadcn
  * dropdown-menu anatomy (Root / Trigger / Content / Group / Label /
- * CheckboxItem / Separator) restyled with the house tokens (font-mono,
- * lowercase, ink/bg/rule), mirroring how `Select.tsx` adapts radix-select.
+ * CheckboxItem / Separator) restyled with the house tokens (sans interface
+ * text and ink/bg/rule), mirroring how `Select.tsx` adapts radix-select.
  *
  * Behavior (open on click, typeahead, arrow keys, Escape) is Radix's;
  * consumers that want hover-expansion control `open` themselves (see
@@ -25,16 +26,17 @@ export function DropdownMenuContent({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
     <DropdownMenuPrimitive.Portal>
-      <DropdownMenuPrimitive.Content
-        sideOffset={sideOffset}
-        className={cn(
-          'z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 text-ink font-mono text-[12px] lowercase shadow-floating',
-          'data-[state=open]:animate-in data-[state=closed]:animate-out',
-          'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-          className,
-        )}
-        {...props}
-      />
+      <PortalScope>
+        <DropdownMenuPrimitive.Content
+          sideOffset={sideOffset}
+          collisionPadding={8}
+          className={cn(
+            'iii-ui-motion-overlay z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-sans text-[12px] text-ink shadow-floating',
+            className,
+          )}
+          {...props}
+        />
+      </PortalScope>
     </DropdownMenuPrimitive.Portal>
   )
 }
@@ -46,7 +48,7 @@ export function DropdownMenuLabel({
   return (
     <DropdownMenuPrimitive.Label
       className={cn(
-        'px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-[0.12em] text-ink-faint',
+        'px-2 pt-1.5 pb-1 text-[12px] font-semibold text-ink-faint',
         className,
       )}
       {...props}
@@ -93,7 +95,7 @@ export function DropdownMenuCheckboxItem({
     >
       <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">
         {indicator ?? (
-          <Check aria-hidden className="h-3 w-3" strokeWidth={2.5} />
+          <Check aria-hidden className="size-4" strokeWidth={2.5} />
         )}
       </DropdownMenuPrimitive.ItemIndicator>
       {children}

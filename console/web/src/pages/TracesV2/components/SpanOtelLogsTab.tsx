@@ -139,9 +139,9 @@ function JsonValue({ value }: { value: unknown }) {
         className="flex items-center gap-1 font-mono text-[11px] text-ink-faint hover:text-ink transition-colors"
       >
         {expanded ? (
-          <ChevronDown className="w-3 h-3" />
+          <ChevronDown className="size-4" />
         ) : (
-          <ChevronRight className="w-3 h-3" />
+          <ChevronRight className="size-4" />
         )}
         <span className="lowercase">
           {expanded ? 'collapse' : `${lineCount} lines`}
@@ -176,7 +176,7 @@ function CopyableValue({ label, value }: { label: string; value: string }) {
           copied
         </span>
       ) : (
-        <Copy className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+        <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
       )}
     </button>
   )

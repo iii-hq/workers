@@ -32,46 +32,10 @@
   font-family: var(--font-sans, system-ui, sans-serif);
 }
 
-/* segmented control (header middle slot) — one control, mutually
-   exclusive graph | activity options */
-[data-iii-ui="github"] .gh-ui-seg {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  background: var(--color-surface);
-  border-radius: 6px;
+/* Shared line tabs fill the flexible middle slot in the page header. */
+[data-iii-ui="github"] .gh-ui-tabs {
+  width: 100%;
   flex-shrink: 0;
-}
-[data-iii-ui="github"] .gh-ui-seg-btn {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  height: 26px;
-  padding: 0 12px;
-  border-radius: 4px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-[data-iii-ui="github"] .gh-ui-seg-btn:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="github"] .gh-ui-seg-btn.active {
-  color: var(--color-ink);
-  background: var(--color-panel-raised);
-  box-shadow: 0 0 0 1px var(--color-edge);
-}
-[data-iii-ui="github"] .gh-ui-seg-btn:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
 }
 
 /* ── view container (one of graph | activity fills the shell body) ────── */
@@ -213,7 +177,8 @@
   column-gap: 12px;
   padding: 7px 16px;
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition: background-color var(--motion-duration-fast)
+    var(--motion-ease-standard);
 }
 [data-iii-ui="github"] .gh-ui-feed-row:hover {
   background: var(--color-surface-hover);
@@ -314,7 +279,7 @@
   color: var(--color-ink);
   background: var(--color-surface);
   border-left: 2px solid var(--color-accent);
-  animation: gh-ui-reveal 0.16s ease-out;
+  animation: gh-ui-reveal var(--motion-duration-control) var(--motion-ease-exit);
 }
 [data-iii-ui="github"] .gh-ui-feed-summary {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -524,14 +489,30 @@
   --gh-g6: #c9a227;
   --gh-g7: #f0503c;
 }
-[data-iii-ui="github"] .gh-ui-lane-c0 { color: var(--gh-g0); }
-[data-iii-ui="github"] .gh-ui-lane-c1 { color: var(--gh-g1); }
-[data-iii-ui="github"] .gh-ui-lane-c2 { color: var(--gh-g2); }
-[data-iii-ui="github"] .gh-ui-lane-c3 { color: var(--gh-g3); }
-[data-iii-ui="github"] .gh-ui-lane-c4 { color: var(--gh-g4); }
-[data-iii-ui="github"] .gh-ui-lane-c5 { color: var(--gh-g5); }
-[data-iii-ui="github"] .gh-ui-lane-c6 { color: var(--gh-g6); }
-[data-iii-ui="github"] .gh-ui-lane-c7 { color: var(--gh-g7); }
+[data-iii-ui="github"] .gh-ui-lane-c0 {
+  color: var(--gh-g0);
+}
+[data-iii-ui="github"] .gh-ui-lane-c1 {
+  color: var(--gh-g1);
+}
+[data-iii-ui="github"] .gh-ui-lane-c2 {
+  color: var(--gh-g2);
+}
+[data-iii-ui="github"] .gh-ui-lane-c3 {
+  color: var(--gh-g3);
+}
+[data-iii-ui="github"] .gh-ui-lane-c4 {
+  color: var(--gh-g4);
+}
+[data-iii-ui="github"] .gh-ui-lane-c5 {
+  color: var(--gh-g5);
+}
+[data-iii-ui="github"] .gh-ui-lane-c6 {
+  color: var(--gh-g6);
+}
+[data-iii-ui="github"] .gh-ui-lane-c7 {
+  color: var(--gh-g7);
+}
 
 /* graph over detail: the graph flexes, the detail docks under it (wide) or
    fills the whole pane (narrow drill-in — the graph unmounts) */
@@ -556,7 +537,7 @@
   overflow: visible;
 }
 [data-iii-ui="github"] .gh-ui-node-selected {
-  stroke: var(--color-accent);
+  stroke: var(--color-ink-faint);
   stroke-width: 2px;
 }
 
@@ -569,16 +550,17 @@
   gap: 10px;
   padding-right: 16px;
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition: background-color var(--motion-duration-fast)
+    var(--motion-ease-standard);
   overflow: hidden;
 }
 [data-iii-ui="github"] .gh-ui-graph-row:hover {
   background: var(--color-surface-hover);
 }
-/* Selection = wash + accent indicator, not color alone. */
+/* Selection stays neutral: wash + edge indicator. */
 [data-iii-ui="github"] .gh-ui-graph-row.selected {
   background: var(--color-surface-selected);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  box-shadow: inset 2px 0 0 var(--color-edge);
 }
 [data-iii-ui="github"] .gh-ui-graph-row:focus-visible {
   outline: 2px solid var(--color-rule-focus);

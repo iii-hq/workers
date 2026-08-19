@@ -56,7 +56,12 @@ export const OPTIONAL_FNS: readonly DbFunction[] = [
   DB.saveTableView,
 ]
 
-async function call<T>(host: Host, fn: DbFunction, payload: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
+async function call<T>(
+  host: Host,
+  fn: DbFunction,
+  payload: Record<string, unknown>,
+  schema: z.ZodType<T>,
+): Promise<T> {
   const raw = await host.iii.trigger<unknown>(fn, payload)
   const parsed = schema.safeParse(raw)
   if (!parsed.success) {
@@ -159,27 +164,32 @@ export interface FilterSpec {
 
 /** Human labels, grouped the way a picker should present them. */
 export const OP_LABEL: Record<FilterOp, string> = {
-  equals: 'is',
-  not_equals: 'is not',
-  contains: 'contains',
-  not_contains: 'does not contain',
-  starts_with: 'starts with',
-  ends_with: 'ends with',
-  gt: 'greater than',
-  gte: 'at least',
-  lt: 'less than',
-  lte: 'at most',
-  between: 'between',
-  in: 'is one of',
-  not_in: 'is none of',
-  is_true: 'is true',
-  is_false: 'is false',
-  is_null: 'is null',
-  is_not_null: 'is not null',
-  is_empty: 'is empty',
+  equals: 'Is',
+  not_equals: 'Is not',
+  contains: 'Contains',
+  not_contains: 'Does not contain',
+  starts_with: 'Starts with',
+  ends_with: 'Ends with',
+  gt: 'Greater than',
+  gte: 'At least',
+  lt: 'Less than',
+  lte: 'At most',
+  between: 'Between',
+  in: 'Is one of',
+  not_in: 'Is none of',
+  is_true: 'Is true',
+  is_false: 'Is false',
+  is_null: 'Is null',
+  is_not_null: 'Is not null',
+  is_empty: 'Is empty',
 }
 
-export type SortMode = 'default' | 'natural' | 'length' | 'absolute_value' | 'random'
+export type SortMode =
+  | 'default'
+  | 'natural'
+  | 'length'
+  | 'absolute_value'
+  | 'random'
 
 export interface SortSpec {
   column: string
@@ -195,7 +205,19 @@ export interface SortSpec {
 export function opsFor(category: TypeCategory): FilterOp[] {
   switch (category) {
     case 'numeric':
-      return ['equals', 'not_equals', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'not_in', 'is_null', 'is_not_null']
+      return [
+        'equals',
+        'not_equals',
+        'gt',
+        'gte',
+        'lt',
+        'lte',
+        'between',
+        'in',
+        'not_in',
+        'is_null',
+        'is_not_null',
+      ]
     case 'bool':
       return ['is_true', 'is_false', 'is_null', 'is_not_null']
     case 'date':
@@ -221,7 +243,13 @@ export function opsFor(category: TypeCategory): FilterOp[] {
 export const SET_OPS: ReadonlySet<FilterOp> = new Set(['in', 'not_in'])
 
 /** Operators taking no operand — a chip using one is complete immediately. */
-const NULLARY: ReadonlySet<FilterOp> = new Set(['is_true', 'is_false', 'is_null', 'is_not_null', 'is_empty'])
+const NULLARY: ReadonlySet<FilterOp> = new Set([
+  'is_true',
+  'is_false',
+  'is_null',
+  'is_not_null',
+  'is_empty',
+])
 
 /**
  * Whether a chip is ready to send. An incomplete chip stays in the bar as a
@@ -241,14 +269,22 @@ function hasValue(v: unknown): boolean {
   return v !== undefined && v !== null && v !== ''
 }
 
-export type TypeCategory = 'numeric' | 'text' | 'bool' | 'date' | 'json' | 'binary' | 'other'
+export type TypeCategory =
+  | 'numeric'
+  | 'text'
+  | 'bool'
+  | 'date'
+  | 'json'
+  | 'binary'
+  | 'other'
 
 /** Coarse category for a driver-reported column type. */
 export function typeCategory(type: string | undefined): TypeCategory {
   if (!type) return 'other'
   const t = type.toLowerCase()
   if (/bool/.test(t)) return 'bool'
-  if (/int|real|float|double|decimal|numeric|serial|money/.test(t)) return 'numeric'
+  if (/int|real|float|double|decimal|numeric|serial|money/.test(t))
+    return 'numeric'
   if (/date|time|year/.test(t)) return 'date'
   if (/json/.test(t)) return 'json'
   if (/blob|bytea|binary/.test(t)) return 'binary'
@@ -281,7 +317,9 @@ export interface DbInfo {
 }
 
 function parseDriver(raw: string | undefined): DbDriver {
-  return raw === 'sqlite' || raw === 'postgres' || raw === 'mysql' ? raw : 'unknown'
+  return raw === 'sqlite' || raw === 'postgres' || raw === 'mysql'
+    ? raw
+    : 'unknown'
 }
 
 export async function listDbs(host: Host): Promise<DbInfo[]> {
@@ -295,7 +333,12 @@ export async function listDbs(host: Host): Promise<DbInfo[]> {
 }
 
 export async function listTables(host: Host, db: string): Promise<TableRef[]> {
-  const res = await call(host, DB.listTables, { db }, z.object({ tables: z.array(tableRefSchema), count: z.number() }))
+  const res = await call(
+    host,
+    DB.listTables,
+    { db },
+    z.object({ tables: z.array(tableRefSchema), count: z.number() }),
+  )
   return res.tables
 }
 
@@ -305,10 +348,19 @@ export async function describeTable(
   table: string,
   schema?: string | null,
 ): Promise<TableDescription> {
-  return call(host, DB.describeTable, { db, table, schema }, tableDescriptionSchema)
+  return call(
+    host,
+    DB.describeTable,
+    { db, table, schema },
+    tableDescriptionSchema,
+  )
 }
 
-export async function describeSchema(host: Host, db: string, includeIndexes = false): Promise<TableDescription[]> {
+export async function describeSchema(
+  host: Host,
+  db: string,
+  includeIndexes = false,
+): Promise<TableDescription[]> {
   const res = await call(
     host,
     DB.describeSchema,
@@ -367,7 +419,11 @@ export async function browseTable(
 }
 
 /** Ad-hoc read SQL from the editor. Goes through `database::query`. */
-export async function runSql(host: Host, db: string, sql: string): Promise<QueryResponse> {
+export async function runSql(
+  host: Host,
+  db: string,
+  sql: string,
+): Promise<QueryResponse> {
   return call(host, DB.query, { db, sql }, queryResponseSchema)
 }
 
@@ -383,7 +439,11 @@ export type ExecuteResponse = z.infer<typeof executeResponseSchema>
 /** Ad-hoc write SQL from the editor. Goes through `database::execute` — the
     same surface agents use, so policy and `database::row-changed` both see
     it. */
-export async function execSql(host: Host, db: string, sql: string): Promise<ExecuteResponse> {
+export async function execSql(
+  host: Host,
+  db: string,
+  sql: string,
+): Promise<ExecuteResponse> {
   return call(host, DB.execute, { db, sql }, executeResponseSchema)
 }
 
@@ -439,7 +499,12 @@ const explainSchema = z.object({
 })
 export type ExplainResult = z.infer<typeof explainSchema>
 
-export async function explain(host: Host, db: string, sql: string, analyze = false): Promise<ExplainResult> {
+export async function explain(
+  host: Host,
+  db: string,
+  sql: string,
+  analyze = false,
+): Promise<ExplainResult> {
   return call(host, DB.explain, { db, sql, analyze }, explainSchema)
 }
 
@@ -609,7 +674,11 @@ export interface DiagramOptions {
   depth?: number
 }
 
-export async function schemaDiagram(host: Host, db: string, opts: DiagramOptions = {}): Promise<SchemaDiagram> {
+export async function schemaDiagram(
+  host: Host,
+  db: string,
+  opts: DiagramOptions = {},
+): Promise<SchemaDiagram> {
   return call(
     host,
     DB.schemaDiagram,
@@ -630,7 +699,10 @@ const savedQuerySchema = z.object({
 })
 export type SavedQuery = z.infer<typeof savedQuerySchema>
 
-export async function listSavedQueries(host: Host, db: string): Promise<SavedQuery[]> {
+export async function listSavedQueries(
+  host: Host,
+  db: string,
+): Promise<SavedQuery[]> {
   const res = await call(
     host,
     DB.listSavedQueries,
@@ -646,11 +718,25 @@ export async function saveQuery(
   name: string,
   sql: string,
 ): Promise<{ id: string; replaced: boolean }> {
-  return call(host, DB.saveQuery, { db, name, sql }, z.object({ id: z.string(), replaced: z.boolean() }))
+  return call(
+    host,
+    DB.saveQuery,
+    { db, name, sql },
+    z.object({ id: z.string(), replaced: z.boolean() }),
+  )
 }
 
-export async function deleteSavedQuery(host: Host, db: string, id: string): Promise<boolean> {
-  const res = await call(host, DB.deleteSavedQuery, { db, id }, z.object({ deleted: z.boolean() }))
+export async function deleteSavedQuery(
+  host: Host,
+  db: string,
+  id: string,
+): Promise<boolean> {
+  const res = await call(
+    host,
+    DB.deleteSavedQuery,
+    { db, id },
+    z.object({ deleted: z.boolean() }),
+  )
   return res.deleted
 }
 
@@ -684,16 +770,34 @@ const tableViewSchema = z.object({
 })
 export type TableView = z.infer<typeof tableViewSchema>
 
-export async function getTableView(host: Host, db: string, table: string): Promise<TableView> {
+export async function getTableView(
+  host: Host,
+  db: string,
+  table: string,
+): Promise<TableView> {
   return call(host, DB.getTableView, { db, table }, tableViewSchema)
 }
 
-export async function saveTableView(host: Host, db: string, table: string, view: TableView): Promise<boolean> {
-  const r = await call(host, DB.saveTableView, { db, table, ...view }, z.object({ saved: z.boolean() }))
+export async function saveTableView(
+  host: Host,
+  db: string,
+  table: string,
+  view: TableView,
+): Promise<boolean> {
+  const r = await call(
+    host,
+    DB.saveTableView,
+    { db, table, ...view },
+    z.object({ saved: z.boolean() }),
+  )
   return r.saved
 }
 
-export async function history(host: Host, db: string, limit = 25): Promise<HistoryEntry[]> {
+export async function history(
+  host: Host,
+  db: string,
+  limit = 25,
+): Promise<HistoryEntry[]> {
   const res = await call(host, DB.history, { db, limit }, historySchema)
   return res.entries
 }

@@ -443,18 +443,18 @@ export function DirectoryPicker({
     else if (view === 'browse') void jumpTo(query)
   }
 
-  const label = value ? basename(value) : 'choose directory'
+  const label = value ? basename(value) : 'Choose directory'
 
   if (locked && !embedded) {
     return (
       <span
         className={cn(
-          'inline-flex items-center gap-1 px-2 py-1 text-[11px] lowercase text-ink-faint',
+          'inline-flex items-center gap-1 px-2 py-1 font-sans text-[11px] text-ink-faint',
           className,
         )}
         title={value ?? 'no working directory'}
       >
-        <Folder size={12} aria-hidden />
+        <Folder size={16} aria-hidden />
         <span className="max-w-[160px] truncate">{label}</span>
       </span>
     )
@@ -480,7 +480,7 @@ export function DirectoryPicker({
           title={value ?? 'choose a working directory'}
           onClick={() => (open ? setOpen(false) : openPanel())}
           className={cn(
-            'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-mono text-base lowercase text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:h-9 sm:text-[13px]',
+            'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:h-9 sm:text-[13px]',
             externalError ? 'text-warn' : value ? 'text-ink' : 'text-ink-faint',
             'hover:border-ink hover:text-ink disabled:opacity-50',
           )}
@@ -755,14 +755,14 @@ export function DirectoryPicker({
                     aria-current={defaultDir === value ? 'true' : undefined}
                     className={cn(
                       'flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-10 md:gap-2 md:py-2',
-                      defaultDir === value && 'bg-accent-muted',
+                      defaultDir === value && 'bg-surface-selected',
                     )}
                     title={`${defaultDir} — the folder the stack was started from`}
                   >
                     <Folder
                       className={cn(
                         'size-4 shrink-0',
-                        defaultDir === value ? 'text-accent' : 'text-ink-faint',
+                        defaultDir === value ? 'text-ink' : 'text-ink-faint',
                       )}
                       aria-hidden
                     />
@@ -770,7 +770,7 @@ export function DirectoryPicker({
                       <span
                         className={cn(
                           'truncate font-sans text-base font-medium md:text-[12px]',
-                          defaultDir === value ? 'text-accent' : 'text-ink',
+                          'text-ink',
                         )}
                       >
                         {basename(defaultDir)}
@@ -783,10 +783,7 @@ export function DirectoryPicker({
                       default
                     </span>
                     {defaultDir === value ? (
-                      <Check
-                        className="size-4 shrink-0 text-accent"
-                        aria-hidden
-                      />
+                      <Check className="size-4 shrink-0 text-ink" aria-hidden />
                     ) : null}
                   </button>
                 ) : null}
@@ -798,7 +795,7 @@ export function DirectoryPicker({
                       key={p}
                       className={cn(
                         'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
-                        isSelected && 'bg-accent-muted',
+                        isSelected && 'bg-surface-selected',
                       )}
                     >
                       <button
@@ -812,7 +809,7 @@ export function DirectoryPicker({
                         <Folder
                           className={cn(
                             'size-4 shrink-0',
-                            isSelected ? 'text-accent' : 'text-ink-faint',
+                            isSelected ? 'text-ink' : 'text-ink-faint',
                           )}
                           aria-hidden
                         />
@@ -820,7 +817,7 @@ export function DirectoryPicker({
                           <span
                             className={cn(
                               'truncate font-sans text-base font-medium md:text-[12px]',
-                              isSelected ? 'text-accent' : 'text-ink',
+                              'text-ink',
                             )}
                           >
                             {basename(p)}
@@ -831,7 +828,7 @@ export function DirectoryPicker({
                         </span>
                         {isSelected ? (
                           <Check
-                            className="size-4 shrink-0 text-accent"
+                            className="size-4 shrink-0 text-ink"
                             aria-hidden
                           />
                         ) : null}
@@ -847,7 +844,7 @@ export function DirectoryPicker({
                           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
                           aria-hidden="true"
                         />
-                        <X className="size-4 shrink-0 md:size-3" aria-hidden />
+                        <X className="size-4 shrink-0 md:size-4" aria-hidden />
                       </button>
                     </div>
                   )
@@ -912,7 +909,7 @@ export function DirectoryPicker({
                       type="button"
                       disabled={validating !== null}
                       onClick={() => void validateAndSelect(path)}
-                      className="inline-flex min-h-12 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-8 md:text-[11px]"
+                      className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-8 md:text-[11px]"
                     >
                       <Check className="size-4 shrink-0" aria-hidden />
                       Use folder

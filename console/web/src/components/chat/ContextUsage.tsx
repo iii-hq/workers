@@ -49,7 +49,9 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
   else if (ratio >= WARN_THRESHOLD) tone = 'warn'
 
   const fillClass = cn(
-    'block h-full transition-[width,background-color] duration-200',
+    // Message text can update at streaming cadence. Immediate width changes
+    // avoid queueing overlapping animations while tokens are arriving.
+    'block h-full',
     tone === 'normal' && 'bg-accent',
     tone === 'warn' && 'bg-warn',
     tone === 'danger' && 'bg-danger',
@@ -106,7 +108,7 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
         >
           <div className="flex items-baseline justify-between gap-3">
             <span className="font-medium">Context</span>
-            <span className="text-xs text-ink-faint">estimated</span>
+            <span className="text-xs text-ink-faint">Estimated</span>
           </div>
           <div className="mt-3 space-y-2">
             <ContextDetailRow label="Conversation" value={tokens} />

@@ -183,7 +183,7 @@ export function HttpTester({
   if (endpoint.error) {
     return <ErrorNote call="configuration::get http" message={endpoint.error} />
   }
-  if (!endpoint.data) return <Note>reading the http worker's address…</Note>
+  if (!endpoint.data) return <Note>Reading the HTTP worker's address…</Note>
 
   return (
     <div className="console-catalog-invoke">
@@ -212,7 +212,7 @@ export function HttpTester({
 
       {binding.params.length > 0 ? (
         <div className="console-catalog-fields">
-          <span className="console-catalog-field-label">path parameters</span>
+          <span className="console-catalog-field-label">Path parameters</span>
           {binding.params.map((name) => (
             <div key={name} className="console-catalog-field-row">
               <label htmlFor={`param-${name}`} className="console-catalog-key">
@@ -250,7 +250,7 @@ export function HttpTester({
           </Button>
         </span>
         {query.length === 0 ? (
-          <span className="console-catalog-hint">none</span>
+          <span className="console-catalog-hint">None</span>
         ) : (
           query.map((entry) => (
             <div key={entry.id} className="console-catalog-field-row">

@@ -216,7 +216,7 @@ export function SheetOptionList<Value extends string>({
               ) : null}
             </span>
             {selected ? (
-              <Check className="size-5 shrink-0 text-accent" aria-hidden />
+              <Check className="size-5 shrink-0 text-ink" aria-hidden />
             ) : null}
           </label>
         )

@@ -78,7 +78,7 @@ function SettingsSection({
     <section aria-labelledby={id} className={className}>
       <h3
         id={id}
-        className="mb-2 px-1 font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-ink-ghost"
+        className="mb-2 px-1 font-sans text-[11px] font-medium text-ink-ghost"
       >
         {label}
       </h3>

@@ -24,6 +24,16 @@
 import { TriangleAlert } from 'lucide-react'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -462,7 +472,7 @@ function FileFailureRow({ result }: { result: UpdateFileResult }) {
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
+                <TriangleAlert aria-hidden className="size-4" />
                 <Chip className="border-warn text-warn">
                   {result.error.code}
                 </Chip>
@@ -473,7 +483,7 @@ function FileFailureRow({ result }: { result: UpdateFileResult }) {
             </TooltipContent>
           </Tooltip>
         ) : (
-          <span className="text-warn">err</span>
+          <span className="text-warn">Error</span>
         )}
         <Chip label="applied" className="text-ink-ghost">
           {result.applied}
@@ -546,41 +556,42 @@ function FileEchoSection({
  */
 function OpSummaryTable({ req }: { req: UpdateFileRequest }) {
   return (
-    <table className="w-full font-mono text-[12px] text-ink">
-      <thead>
-        <tr className="border-b border-rule-2 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          <th className="text-left font-normal px-3 py-1.5">path</th>
-          <th className="text-left font-normal px-3 py-1.5">ops</th>
-        </tr>
-      </thead>
-      <tbody>
-        {req.files.map((file) => {
-          const opSummary = file.ops
-            .map((op) => {
-              const head = formatUpdateOp(op)
-              if (op.op === 'insert' || op.op === 'update_lines') {
-                return `${head} · ${truncateInline(op.content)}`
-              }
-              return head
-            })
-            .join('; ')
+    <TableViewport>
+      <TableFrame className="px-3">
+        <Table density="compact" className="min-w-[28rem]">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Path</TableHead>
+              <TableHead>Operations</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {req.files.map((file) => {
+              const opSummary = file.ops
+                .map((op) => {
+                  const head = formatUpdateOp(op)
+                  if (op.op === 'insert' || op.op === 'update_lines') {
+                    return `${head} · ${truncateInline(op.content)}`
+                  }
+                  return head
+                })
+                .join('; ')
 
-          return (
-            <tr
-              key={file.path}
-              className="border-b border-rule-2 last:border-b-0 align-top"
-            >
-              <td className="px-3 py-1.5 text-ink whitespace-nowrap">
-                {file.path}
-              </td>
-              <td className="px-3 py-1.5 text-ink-faint break-all">
-                {opSummary}
-              </td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+              return (
+                <TableRow key={file.path}>
+                  <TableCell className="whitespace-nowrap font-code text-ink">
+                    {file.path}
+                  </TableCell>
+                  <TableCell className="break-all font-code text-ink-faint">
+                    {opSummary}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </TableFrame>
+    </TableViewport>
   )
 }
 

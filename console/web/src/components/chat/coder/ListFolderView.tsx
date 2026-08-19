@@ -9,6 +9,14 @@
  */
 import { formatBytes, formatMtime } from '@/components/chat/sandbox/format'
 import { Chip, FooterPill } from '@/components/chat/sandbox/terminal/Terminal'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { iconForEntry, LockedBadge } from './entryShared'
 import {
   type EntryKind,
@@ -81,7 +89,7 @@ export function ListFolderView({
 
       {resp?.has_more ? (
         <div className="bg-paper-2 border-t border-rule-2 px-3 py-1.5">
-          <FooterPill tone="warn">more pages available</FooterPill>
+          <FooterPill tone="warn">More pages available</FooterPill>
         </div>
       ) : null}
     </div>
@@ -102,35 +110,39 @@ interface EntriesTableProps {
 
 function EntriesTable({ path, entries }: EntriesTableProps) {
   return (
-    <table className="w-full font-mono text-[12px] text-ink">
-      <tbody>
-        {entries.map((e) => {
-          const Icon = iconForEntry(e.kind, e.name)
-          return (
-            <tr key={e.name} className="border-b border-rule-2 last:border-b-0">
-              <td className="pl-3 pr-1.5 py-1.5 w-5">
-                <Icon aria-hidden className="w-3.5 h-3.5 text-ink-faint" />
-              </td>
-              <td
-                className="px-1.5 py-1.5 text-ink"
-                title={joinEntryPath(path, e.name)}
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  <span>{e.kind === 'dir' ? `${e.name}/` : e.name}</span>
-                  {e.non_accessible ? <LockedBadge /> : null}
-                </span>
-              </td>
-              <td className="px-2 py-1.5 text-ink-faint tabular-nums text-right">
-                {e.kind === 'dir' ? '—' : formatBytes(e.size)}
-              </td>
-              <td className="pr-3 pl-2 py-1.5 text-ink-faint">
-                {formatMtime(e.mtime)}
-              </td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+    <TableViewport>
+      <TableFrame className="px-3">
+        <Table density="compact" aria-label="Directory entries">
+          <TableBody>
+            {entries.map((e) => {
+              const Icon = iconForEntry(e.kind, e.name)
+              return (
+                <TableRow key={e.name}>
+                  <TableCell className="w-6 pr-1.5">
+                    <Icon aria-hidden className="size-4 text-ink-faint" />
+                  </TableCell>
+                  <TableCell
+                    className="font-code text-ink"
+                    title={joinEntryPath(path, e.name)}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span>{e.kind === 'dir' ? `${e.name}/` : e.name}</span>
+                      {e.non_accessible ? <LockedBadge /> : null}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right text-ink-faint tabular-nums">
+                    {e.kind === 'dir' ? '—' : formatBytes(e.size)}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-ink-faint tabular-nums">
+                    {formatMtime(e.mtime)}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </TableFrame>
+    </TableViewport>
   )
 }
 

@@ -234,7 +234,7 @@ function PromptPart({
           loading…
         </p>
       ) : body.trim() === '' ? (
-        <p className="dir-ui-sysprompt-empty">this prompt is empty.</p>
+        <p className="dir-ui-sysprompt-empty">This prompt is empty.</p>
       ) : (
         <pre className="dir-ui-sysprompt-body">{body}</pre>
       )}
@@ -445,7 +445,7 @@ export function createSystemPromptChip(host: Host) {
             data-iii-ui="iii-directory"
             className="dir-ui-sysprompt-dialog"
           >
-            <DialogTitle>system prompt</DialogTitle>
+            <DialogTitle>System prompt</DialogTitle>
             <DialogDescription>
               Preview assembled from this session's settings and declared worker
               injections, in send order. Request-dependent hooks and compaction

@@ -119,31 +119,37 @@ generic dashboard with too many panels.
   dense operator tools look like marketing pages.
 - Set document/hero titles around 17–18 px at weight 600; body copy around
   12.5–13 px with 1.55–1.65 line height and a 60–72ch measure; metadata around
-  10–11.5 px. Use uppercase tracking only for short labels.
-- Use sans for explanation and prose; use mono for ids, paths, schemas,
-  counts, code, data, and compact technical chrome. Do not make all text mono.
+  10–11.5 px. Author interface copy in natural sentence/title case; never use
+  CSS `lowercase` or `uppercase` transforms on tabs, buttons, menus, or forms.
+- Use sans for all interface chrome, labels, actions, explanations, and prose.
+  Reserve mono for machine-produced ids, paths, schemas, values, payloads,
+  code, and tabular data. Never make a whole panel or its controls mono.
 - Repeat one restrained identity glyph in the list row, empty hero, and
-  detail masthead, as console functions/triggers do. Use simple stroke SVGs,
-  not emoji or a new icon dependency.
+  detail masthead, as console functions/triggers do. Use Lucide icons at the
+  shared 16 px baseline; do not add application icon usages, component
+  defaults, or root SVGs below 16 px, emoji, or a new icon dependency.
 - Make list rows full-width targets with one strong primary line and at most
   one or two quieter supporting lines. Indicate selection with a surface wash,
-  stronger text, and a 2 px accent rail—never color alone.
+  stronger ink, and an optional 2 px neutral edge—never accent color alone.
 - Keep page actions in `PageHeader`; put resource actions in the identity
   masthead and work actions in the nearest toolbar. Show one clear primary
   action at the point of work; move rare actions into a menu.
-- Use `Tabs` for peer views of the same object and a segmented control for
-  mutually exclusive work modes. Do not use tabs as decoration or expose an
-  empty mode.
+- Use shared line `Tabs` for peer views of the same object. They have a bottom
+  rule, neutral active underline, 600 weight, natural casing, and a semantic
+  16 px icon by default. `SegmentedControl variant="tabs"` uses the same line
+  recipe; reserve `variant="radio"` and its surface track for persisted
+  mutually exclusive choices. Do not fork private boxed tab CSS.
 - Use compact fact sheets or stat tiles only for useful comparisons. Prefer a
   quiet `--color-surface` group with label/value rows over a grid of large
   KPI cards.
 - Put loading, empty, error, and success states where content will appear so
   the page silhouette stays stable. Use `Skeleton`, `EmptyState`, and
   `StatusPanel`; never present raw error text as the main design.
-- For tables, keep the header sticky, numbers aligned/tabular, rows hoverable,
-  selection distinct, and horizontal overflow inside the grid. For related
-  detail, use an inspector or context rail and stack it below before it crowds
-  the primary work.
+- For simple tables, compose the shared `TableViewport`/`TableFrame`/`Table`
+  family. Use natural-case sans headers, horizontal row dividers, comfortable
+  page density or compact chat density, and mono only for technical cells.
+  Make only interactive rows hoverable. Long data grids may add sticky headers,
+  aligned tabular numbers, selection, and an inspector or context rail.
 
 ### Reject generic generated UI
 
@@ -180,7 +186,7 @@ function MyworkPage({
     <PageShell className="mywork-ui-shell">
       <PageHeader
         icon={<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden><circle cx="8" cy="8" r="5" /></svg>}
-        title="mywork"
+        title="Mywork"
         description={host.path}
         onClose={onRequestClose}
       />
@@ -194,7 +200,7 @@ function MyworkPage({
 export default function setup(host: Host) {
   host.pages.register({
     id: 'mywork-manager',           // page URL: #/ext/mywork-manager
-    title: 'mywork',                // nav label
+    title: 'Mywork',                // nav label
     render: (props) => <MyworkPage host={host} {...props} />,
   })
 
@@ -211,12 +217,34 @@ bundle bytes because they resolve to the running console's React tree.
 
 ### The shared component library
 
-The package exports page chrome, buttons, inputs, select, tabs, dialogs,
-menus, tooltips, badges, status/empty/loading components, Markdown and JSON
-renderers, the terminal atoms (`AnsiText`, `TerminalStream`,
-`TerminalCommandLine`), `CodeEditor`, `FileDiff`, and
-`WorkerConfigurationDialog`. Read `packages/console-ui/index.d.ts` for the
-authoritative names and props.
+The package exports page chrome; `List`/`ListItem`, `Card`, `Panel`, `Chip`,
+`IconButton`, and semantic `Table` parts; line `Tabs` and `SegmentedControl`;
+`Selector` and `Select`; buttons, inputs, dialogs, menus and tooltips;
+status/empty/loading components; Markdown and JSON renderers; the terminal atoms (`AnsiText`,
+`TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`, and
+`WorkerConfigurationDialog`. It also exports the stable `uiClasses` recipes
+and canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
+the authoritative names and props.
+
+Use `Selector` for searchable single-choice input, including grouped or
+disabled options, async caller-owned filtering, loading/empty/error states,
+validation, and explicitly enabled free-form creation. Use `Select` for a
+small finite non-searchable list. Use the shared `Tooltip` parts, or
+`IconButton` for an icon-only action; do not implement independent hover
+timers, geometry, or portals. Keep a local selector only for a genuinely
+different interaction such as hierarchical drill-in, multi-select, or a
+persistent command palette, and document that exception.
+
+Use `TabsList variant="line"`/`TabsTrigger` or `SegmentedControl
+variant="tabs"` for content navigation. Shared tabs add a semantic icon by
+default; pass an explicit icon only when the default does not express the
+view, or `icon={false}` only when there is a documented space constraint.
+Use `IconButton` for icon-only actions such as Refresh or Configure so the
+16 px glyph retains an accessible name and tooltip.
+
+Selection is always neutral in both themes: `--color-surface-selected`,
+`--color-ink`, and optionally `--color-edge`. Reserve `--color-accent` for a
+primary action, form focus, live activity, or semantic domain data.
 
 **`PageShell` and `PageHeader` are the stable outer contract for full
 pages.** They keep identity, height behavior, close affordance, and header
@@ -224,6 +252,16 @@ styling consistent with the console. Use `PageBody`, `PageSidebar`, and
 `PageMain` when their navigation/workspace model fits; replace the body with
 a custom structure when the domain needs columns, a canvas, or a drill-in
 flow. Do not replace the outer shell and header.
+
+Use `PageSidebar`'s declarative `collapsible`, `resizable`, `storageKey`,
+width bounds, `side`, `narrow`, and `narrowBelow` props instead of shipping
+local collapse DOM, drag handlers, width clamps, persistence, focus logic, or
+transitions. The Console host keeps a single stable `aside`, leaves children
+mounted while collapsed, synchronizes instances sharing a storage key, and
+owns motion plus reduced-motion behavior. Pass `narrow` when the page already
+has a drill-in state; use `narrowBelow` when only shared sidebar chrome needs
+to react to its parent width. Neither responsive mode overwrites the saved
+wide preference.
 
 The pieces own the surface hierarchy (header on `--color-panel-raised`
 with a hairline `--color-edge` border, sidebar on `--color-sidebar`, main
@@ -302,13 +340,14 @@ scoped rules apply to your UI and nothing else. Use the console's design
 tokens. The main roles are:
 
 Use `--color-bg/sidebar/panel/panel-raised/surface*` for hierarchy,
-`--color-ink/ink-faint/ink-ghost` for text, `--color-accent/alert/warn/ok`
-and their muted variants for state, `--color-edge/rule-focus` for structure,
-and `--font-sans`/`--font-mono`/`--font-code` by semantic role.
+`--color-ink/ink-faint/ink-ghost` for text, `--color-alert/warn/ok` and their
+muted variants for status, `--color-edge/rule-focus` for structure, and
+`--font-sans`/`--font-mono`/`--font-code` by semantic role. Accent is not a
+selected-state token.
 
 Dark mode is a variable flip, so token-based styles theme for free. Prefer
-shared components for controls, keep prose in `--font-sans`, and reserve
-`--font-mono` for identifiers, paths, values, and compact technical chrome.
+shared components for controls, keep all UI chrome and prose in `--font-sans`,
+and reserve `--font-mono` for identifiers, paths, values, payloads, and data.
 Use `--font-code` only for source code, structured payloads, and editor text.
 Never hardcode theme colors.
 
@@ -320,9 +359,19 @@ the manifest's `warnings` array; keep it empty.
 
 Do not use Tailwind utility classes in injected markup: the worker's class
 names are not part of the console's compiled Tailwind output. Use the named
-shared components plus scoped CSS classes. Scope selectors inside
+shared components and `uiClasses` recipes; add scoped worker CSS only for
+domain-specific layout and data visualization. Use `--motion-duration-*` and
+`--motion-ease-*` (or the shared motion recipe classes) for state changes.
+Streaming text, rapidly updating meters, and cursor-following geometry update
+without transitions. Scope custom selectors inside
 `@media (prefers-reduced-motion: reduce)` too; keyframe names remain global
-and must carry the worker prefix.
+and must carry the worker prefix. Shared components and recipes already honor
+the Console's global reduced-motion contract.
+
+Shared `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and
+`BottomSheet` portals preserve the worker's `data-iii-ui` scope
+automatically. If custom domain UI portals directly to `document.body`, wrap
+its portal root with `data-iii-ui="<worker>"`.
 
 ## 3. The build (`ui/build.mjs`)
 
@@ -475,7 +524,7 @@ link-swap with no flash. Unchanged content is hash-deduped end to end.
 | Registration rejected with a fetch error | your content function threw, returned no string `content`, or timed out |
 | "Invalid hook call" in the tab | your bundle contains a second React — a missing `external` |
 | `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the five shared specifiers |
-| Styles apply on your page but not in a portal you created | DOM you portal to `document.body` must carry `data-iii-ui="<worker>"` on its root |
+| Styles apply on your page but not in a custom portal | Shared portalled components preserve scope automatically; a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
 | Whole console restyled | your sheet has unscoped rules — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
@@ -505,6 +554,11 @@ The UI is done only when:
 - `PageShell` + `PageHeader` are present and the close action works;
 - the narrow flow exposes every action without horizontal page overflow;
 - focus is visible, controls have names, and narrow targets are at least 44 px;
+- selected rows, cards, tabs, chips, and segments remain neutral in both themes;
+- content tabs use the shared line recipe, natural casing, and default 16 px
+  icons; application icons are never authored below 16 px;
+- human-facing chrome is sans; mono is limited to machine-readable content;
+- transitions use the shared motion vocabulary and reduced motion is immediate;
 - async responses cannot overwrite a newer selection or a dirty draft;
 - all styles are scoped and token-based in both themes;
 - disconnect/reconnect and hot reload leave no duplicate registrations;

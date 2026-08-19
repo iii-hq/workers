@@ -30,9 +30,7 @@ export function EmptyState({
           />
         ) : null}
         <div className="flex-1">
-          <p className="font-mono text-[13px] text-ink-faint lowercase">
-            {description}
-          </p>
+          <p className="font-sans text-[13px] text-ink-faint">{description}</p>
           {action ? (
             <div className="mt-3">
               <Button variant="ghost" size="sm" onClick={action.onClick}>

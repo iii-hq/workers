@@ -14,11 +14,11 @@ interface TerminalPaneProps {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  connecting: 'starting',
-  reconnecting: 'reconnecting',
-  disconnected: 'disconnected',
-  exited: 'session ended',
-  error: 'session failed',
+  connecting: 'Starting',
+  reconnecting: 'Reconnecting',
+  disconnected: 'Disconnected',
+  exited: 'Session ended',
+  error: 'Session failed',
 }
 
 export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
@@ -56,7 +56,7 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
               onClick={status === 'disconnected' ? startFresh : restart}
             >
               <RefreshCw aria-hidden />
-              {status === 'disconnected' ? 'start fresh' : 'restart'}
+              {status === 'disconnected' ? 'Start fresh' : 'Restart'}
             </button>
           ) : null}
         </div>

@@ -196,10 +196,10 @@ export function EnvPlaceholderPill({
       contentEditable={false}
       data-env-variable={variable}
       className={cn(
-        'inline-flex items-center gap-0.5 px-1.5 h-[22px] -mt-[2px] border align-middle text-ink select-none transition-colors',
+        'mt-[-2px] inline-flex h-[22px] items-center gap-0.5 border px-1.5 align-middle text-ink transition-colors select-none',
         wt.body,
         selected
-          ? 'bg-paper-2 border-accent cursor-pointer'
+          ? 'cursor-pointer border-edge bg-surface-selected'
           : 'bg-panel border-rule',
         pillRef && 'cursor-pointer',
       )}

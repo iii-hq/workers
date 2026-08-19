@@ -83,12 +83,12 @@ export function ViewsDropdown({
             className={cn(
               'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
               activeView
-                ? 'bg-accent-muted text-ink'
+                ? 'bg-surface-selected text-ink'
                 : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
             )}
             aria-label="switch traces view"
           >
-            <SlidersVertical className="w-3 h-3" />
+            <SlidersVertical className="size-4" />
             <span className="max-w-[160px] truncate">{triggerLabel}</span>
             {activeModified && (
               <Circle
@@ -96,21 +96,21 @@ export function ViewsDropdown({
                 aria-label="view modified"
               />
             )}
-            <ChevronDown className="w-3 h-3" />
+            <ChevronDown className="size-4" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          <DropdownMenuLabel>views</DropdownMenuLabel>
+          <DropdownMenuLabel>Views</DropdownMenuLabel>
           <DropdownMenuItem onSelect={() => onSelectView(null)}>
             <span className="w-3">
-              {!activeView && <Check className="w-3 h-3" />}
+              {!activeView && <Check className="size-4" />}
             </span>
             all traces
           </DropdownMenuItem>
           {views.map((view) => (
             <DropdownMenuItem key={view.id} onSelect={() => onSelectView(view)}>
               <span className="w-3">
-                {view.id === activeViewId && <Check className="w-3 h-3" />}
+                {view.id === activeViewId && <Check className="size-4" />}
               </span>
               <span className="truncate">{view.name}</span>
             </DropdownMenuItem>

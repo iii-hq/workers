@@ -97,7 +97,7 @@ export function WorktreeDetailPanel({
             title="close details"
             className="wt-ui-detail-close"
           >
-            <X size={14} aria-hidden />
+            <X size={16} aria-hidden />
           </button>
         ) : null}
       </header>
@@ -121,9 +121,9 @@ export function WorktreeDetailPanel({
               className="wt-ui-copy"
             >
               {copied ? (
-                <Check size={12} className="wt-ui-accent" aria-hidden />
+                <Check size={16} className="wt-ui-accent" aria-hidden />
               ) : (
-                <Copy size={12} aria-hidden />
+                <Copy size={16} aria-hidden />
               )}
             </button>
           </span>
@@ -151,7 +151,7 @@ export function WorktreeDetailPanel({
         {status?.integrated ? (
           <Row label="integrated">
             <span className="wt-ui-integrated">
-              <GitMerge size={12} className="wt-ui-icon-faint" aria-hidden />
+              <GitMerge size={16} className="wt-ui-icon-faint" aria-hidden />
               {integrationLabel(status)}
             </span>
           </Row>

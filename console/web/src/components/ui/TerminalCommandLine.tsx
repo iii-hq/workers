@@ -87,7 +87,7 @@ export function TerminalCommandLine({
         >
           {copyState === 'idle' ? (
             <>
-              <Copy className="size-3 shrink-0" aria-hidden />
+              <Copy className="size-4 shrink-0" aria-hidden />
               <span className="font-mono text-[10px] uppercase tracking-[0.06em]">
                 copy
               </span>

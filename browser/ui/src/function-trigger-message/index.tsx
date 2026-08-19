@@ -165,13 +165,13 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
         )}
         {sessionId ? (
           <a href={BROWSER_PAGE_HASH} className="br-ui-call-link">
-            <ExternalLink size={11} aria-hidden />
+            <ExternalLink size={16} aria-hidden />
             open in browser tab
           </a>
         ) : null}
       </div>
       {running && message.output == null ? (
-        <p className="br-ui-call-running">running...</p>
+        <p className="br-ui-call-running">Running...</p>
       ) : body ? (
         body
       ) : fallback != null ? (
@@ -179,7 +179,7 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
           <JsonHighlight code={formatJson(fallback)} />
         </div>
       ) : (
-        <p className="br-ui-empty-line">no result</p>
+        <p className="br-ui-empty-line">No result</p>
       )}
     </div>
   )

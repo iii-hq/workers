@@ -49,7 +49,7 @@ export function SearchView({ input, output, running }: SearchViewProps) {
           </FooterPill>
         ) : null}
         {resp?.truncated ? (
-          <FooterPill tone="warn">results truncated</FooterPill>
+          <FooterPill tone="warn">Results truncated</FooterPill>
         ) : null}
         {running ? (
           <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
@@ -109,8 +109,8 @@ function RequestChips({ req }: { req: SearchRequest }) {
   )
   return (
     <>
-      {req.regex ? <Chip>regex</Chip> : null}
-      {req.ignore_case ? <Chip>case-insensitive</Chip> : null}
+      {req.regex ? <Chip>Regex</Chip> : null}
+      {req.ignore_case ? <Chip>Case-insensitive</Chip> : null}
       {req.path ? <Chip label="path">{req.path}</Chip> : null}
       {req.include_globs?.length ? (
         <Chip label="include">{req.include_globs.join(' ')}</Chip>
@@ -121,10 +121,10 @@ function RequestChips({ req }: { req: SearchRequest }) {
       {/* Walking into .git / node_modules / target is unusual enough to
           warn-tint — results may include generated or vendored code. */}
       {req.use_default_excludes === false ? (
-        <Chip className="border-warn text-warn">default excludes off</Chip>
+        <Chip className="border-warn text-warn">Default excludes off</Chip>
       ) : null}
-      {req.search_content === false ? <Chip>paths only</Chip> : null}
-      {req.search_paths === false ? <Chip>content only</Chip> : null}
+      {req.search_content === false ? <Chip>Paths only</Chip> : null}
+      {req.search_paths === false ? <Chip>Content only</Chip> : null}
       {context ? <Chip label="context">{context}</Chip> : null}
       {req.max_matches != null ? (
         <Chip label="max">{req.max_matches}</Chip>
@@ -155,7 +155,7 @@ function ContentSection({
 }: { groups: ContentGroup[] } & HighlightOpts) {
   return (
     <div className="font-mono text-[12px] leading-[1.55]">
-      <SectionLabel>content matches</SectionLabel>
+      <SectionLabel>Content matches</SectionLabel>
       {groups.map((group) => (
         <div
           key={group.path}
@@ -236,7 +236,7 @@ function PathSection({
 }: { paths: PathMatch[]; className?: string } & HighlightOpts) {
   return (
     <div className={cn('font-mono text-[12px] leading-[1.55]', className)}>
-      <SectionLabel>path matches</SectionLabel>
+      <SectionLabel>Path matches</SectionLabel>
       {paths.map((p) => (
         <div
           key={p.path}

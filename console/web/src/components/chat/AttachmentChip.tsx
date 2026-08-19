@@ -43,7 +43,7 @@ export function AttachmentChip({
           className="size-6 object-cover border border-rule-2"
         />
       ) : (
-        <Icon size={12} aria-hidden className="text-ink-faint shrink-0" />
+        <Icon size={16} aria-hidden className="text-ink-faint shrink-0" />
       )}
       <span className="truncate min-w-0">{attachment.name}</span>
       <span className="text-ink-ghost tabular-nums shrink-0">
@@ -56,7 +56,7 @@ export function AttachmentChip({
           className="text-ink-faint hover:text-accent transition-colors shrink-0"
           aria-label={`remove ${attachment.name}`}
         >
-          <X size={12} aria-hidden />
+          <X size={16} aria-hidden />
         </button>
       ) : null}
     </div>

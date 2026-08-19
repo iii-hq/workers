@@ -63,7 +63,7 @@ export function NodeStateDot({ state }: { state: NodeState }) {
 export function RunIdRow({ runId }: { runId: string }) {
   return (
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="uppercase tracking-[0.06em] text-[10px] mr-1">run</span>
+      <span className="text-[10px] mr-1">Run</span>
       <span className="text-ink select-all">{runId}</span>
     </div>
   )
@@ -121,10 +121,10 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                     {id}
                   </span>
                   {id === outputId ? (
-                    <Chip className="text-accent border-accent/40">output</Chip>
+                    <Chip className="text-accent border-accent/40">Output</Chip>
                   ) : null}
-                  {join ? <Chip className="text-accent">join</Chip> : null}
-                  {node.fanout ? <Chip>fan-out</Chip> : null}
+                  {join ? <Chip className="text-accent">Join</Chip> : null}
+                  {node.fanout ? <Chip>Fan-out</Chip> : null}
                   {node.agent.model ? <Chip>{node.agent.model}</Chip> : null}
                 </div>
                 <DagEdges

@@ -747,6 +747,7 @@ export function ChatView({
    * users hear them via the polite/assertive ARIA live regions
    * rendered at the bottom of the component. */
   const announcer = useLiveAnnouncer()
+  const announcedApprovalIdsRef = useRef(new Set<string>())
 
   /* Wrap the backend's resolver in a stable callback so MessageList
    * row-level memoization isn't broken by a fresh lambda identity on
@@ -784,6 +785,20 @@ export function ChatView({
                 message.functionTriggerId === event.functionTriggerId,
             )
           : undefined
+        const announcementId = event.functionTriggerId ?? existing?.id
+        if (
+          !announcementId ||
+          !announcedApprovalIdsRef.current.has(announcementId)
+        ) {
+          if (announcementId) {
+            announcedApprovalIdsRef.current.add(announcementId)
+          }
+          announcer.announceAssertive(
+            event.filesystemAccess
+              ? `Action required: ${event.functionId} needs approval to access ${event.filesystemAccess.requestedRoot}.`
+              : `Action required: approve or deny ${event.functionId}.`,
+          )
+        }
         if (existing) {
           onPatchMessage(conversation.id, existing.id, {
             pendingApproval: true,
@@ -815,6 +830,7 @@ export function ChatView({
           message.role === 'function-trigger' &&
           message.functionTriggerId === event.functionTriggerId,
       )
+      announcedApprovalIdsRef.current.delete(event.functionTriggerId)
       if (existing) {
         onPatchMessage(conversation.id, existing.id, {
           pendingApproval: false,
@@ -822,7 +838,12 @@ export function ChatView({
         })
       }
     },
-    [conversation.id, onAppendMessage, onPatchMessage],
+    [
+      announcer.announceAssertive,
+      conversation.id,
+      onAppendMessage,
+      onPatchMessage,
+    ],
   )
 
   // Subagent approvals may arrive after the parent `harness::spawn` turn has
@@ -1923,6 +1944,7 @@ export function ChatView({
 
       <MessageList
         messages={conversation.messages}
+        transcriptHydrated={conversation.hydrated !== false}
         isThinking={isThinking}
         thinkingDetail={
           conversation.status === 'working' && conversation.statusReason
@@ -1966,8 +1988,8 @@ export function ChatView({
                       {conversation.workingDir}
                     </span>
                   ) : (
-                    <span className="min-w-0 flex-1 lowercase text-ink-ghost">
-                      no working directory — using default workspace
+                    <span className="min-w-0 flex-1 text-ink-ghost">
+                      No working directory — using default workspace
                     </span>
                   )}
                 </>
@@ -1982,7 +2004,7 @@ export function ChatView({
                 }
                 className="min-h-12 basis-full text-left text-ink-ghost hover:text-ink sm:ml-auto sm:min-h-0 sm:basis-auto"
               >
-                access: {approvalEnabled ? 'workspace' : 'shell defaults'}
+                Access: {approvalEnabled ? 'Workspace' : 'Shell defaults'}
                 {approvalEnabled && filesystemGrants.grants.length > 0
                   ? ` · ${filesystemGrants.grants.length}`
                   : ''}
@@ -2013,8 +2035,8 @@ export function ChatView({
                     className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
                   >
                     <span className="min-w-0 flex-1 truncate">{row.text}</span>
-                    <span className="shrink-0 lowercase text-ink-ghost">
-                      {drainingQueue ? 'triggering…' : 'queued'}
+                    <span className="shrink-0 text-ink-ghost">
+                      {drainingQueue ? 'Triggering…' : 'Queued'}
                     </span>
                   </div>
                 ))}
@@ -2023,10 +2045,10 @@ export function ChatView({
               {backend.editQueued &&
               queuedDrafts.length > 0 &&
               !drainingQueue ? (
-                <div className="px-3 py-0.5 text-right text-[11px] lowercase text-ink-ghost max-sm:hidden">
+                <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
                   {browsedQueuedId
-                    ? '↑ / ↓ cycle · enter saves in place · empty + enter removes'
-                    : 'press ↑ in the composer to edit queued messages'}
+                    ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
+                    : 'Press ↑ in the composer to edit queued messages'}
                 </div>
               ) : null}
             </section>

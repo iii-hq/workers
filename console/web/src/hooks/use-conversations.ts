@@ -458,6 +458,13 @@ export function mergeHydratedTranscript(
   return messages
 }
 
+/** A failed transcript read is still a terminal hydration outcome. Keep the
+ * live/optimistic snapshot accumulated in memory so the chat can render it
+ * instead of remaining in the initializing state indefinitely. */
+export function completeFailedHydration(c: Conversation): Conversation {
+  return c.hydrated ? c : { ...c, hydrated: true }
+}
+
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
@@ -762,6 +769,10 @@ export function useConversations(
         })
       })
       .catch((err) => {
+        // A request from a conversation the user already left must stay stale
+        // so re-activating it starts a fresh authoritative read.
+        if (cancelled) return
+        patchConversation(sessionId, completeFailedHydration)
         if (import.meta.env.DEV) {
           console.warn(
             '[conversations] transcript hydration failed',

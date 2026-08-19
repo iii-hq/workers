@@ -26,6 +26,8 @@ import { X } from 'lucide-react'
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
+export { PageSidebar, type PageSidebarProps } from './PageSidebar'
+
 /** The pane's root column. Fills the pane whether the parent is a flex
     column (native screens) or a block scroller (the ext-page host). */
 export function PageShell({
@@ -46,7 +48,7 @@ export function PageShell({
 export interface PageHeaderProps {
   /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
   icon?: React.ReactNode
-  /** The page's name — console chrome vocabulary: mono, lowercase. */
+  /** The page's human-readable name. Technical identifiers belong in `description`. */
   title?: React.ReactNode
   /** One short descriptor; truncates before anything else gives. */
   description?: React.ReactNode
@@ -87,12 +89,12 @@ export function PageHeader({
         </span>
       ) : null}
       {title ? (
-        <span className="shrink-0 font-mono text-[12px] lowercase font-medium text-ink">
+        <span className="shrink-0 font-sans text-[14px] font-medium text-ink">
           {title}
         </span>
       ) : null}
       {description ? (
-        <span className="font-mono text-[11px] text-ink-ghost truncate min-w-0">
+        <span className="min-w-0 truncate font-sans text-[12px] text-ink-ghost">
           {description}
         </span>
       ) : null}
@@ -136,30 +138,6 @@ export function PageBody({ side = 'left', className, ...rest }: PageBodyProps) {
       className={cn(
         'flex-1 min-h-0 min-w-0 flex gap-px bg-edge',
         side === 'right' && 'flex-row-reverse',
-        className,
-      )}
-      {...rest}
-    />
-  )
-}
-
-export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
-  /** Column width in px (fixed — navigation stays put while main flexes). */
-  width?: number
-}
-
-/** The navigation column: slightly gray, fixed width, own scroll. */
-export function PageSidebar({
-  width = 280,
-  className,
-  style,
-  ...rest
-}: PageSidebarProps) {
-  return (
-    <aside
-      style={{ width, ...style }}
-      className={cn(
-        'shrink-0 min-h-0 flex flex-col overflow-hidden bg-sidebar',
         className,
       )}
       {...rest}

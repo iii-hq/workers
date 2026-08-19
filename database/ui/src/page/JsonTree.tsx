@@ -19,7 +19,13 @@ const MAX_CHILDREN = 100
 
 type Json = unknown
 
-export function JsonTree({ value, onCopy }: { value: Json; onCopy?: (text: string) => void }) {
+export function JsonTree({
+  value,
+  onCopy,
+}: {
+  value: Json
+  onCopy?: (text: string) => void
+}) {
   // Expansion is held by path key so it survives a re-render, and the root
   // starts open — collapsing the thing you just opened is not useful.
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set(['$']))
@@ -34,7 +40,15 @@ export function JsonTree({ value, onCopy }: { value: Json; onCopy?: (text: strin
 
   return (
     <div className="db-json">
-      <Node path="$" label={null} value={value} depth={0} open={open} onToggle={toggle} onCopy={onCopy} />
+      <Node
+        path="$"
+        label={null}
+        value={value}
+        depth={0}
+        open={open}
+        onToggle={toggle}
+        onCopy={onCopy}
+      />
     </div>
   )
 }
@@ -71,9 +85,13 @@ function Node({
             className={`db-json-twist${expanded ? ' open' : ''}`}
             onClick={() => onToggle(path)}
             aria-expanded={expanded}
-            aria-label={expanded ? `collapse ${label ?? 'root'}` : `expand ${label ?? 'root'}`}
+            aria-label={
+              expanded
+                ? `collapse ${label ?? 'root'}`
+                : `expand ${label ?? 'root'}`
+            }
           >
-            <ChevronRight size={10} aria-hidden />
+            <ChevronRight size={16} aria-hidden />
           </button>
         ) : (
           <span className="db-json-twist leaf" />
@@ -82,7 +100,9 @@ function Node({
         {label !== null ? <span className="db-json-key">{label}</span> : null}
 
         {branch ? (
-          <span className="db-json-summary">{summary(value, entries.length, expanded)}</span>
+          <span className="db-json-summary">
+            {summary(value, entries.length, expanded)}
+          </span>
         ) : (
           <Leaf value={value} />
         )}
@@ -92,9 +112,11 @@ function Node({
             type="button"
             className="db-json-copy"
             title="copy this value"
-            onClick={() => onCopy(branch ? safeStringify(value) : cellText(value))}
+            onClick={() =>
+              onCopy(branch ? safeStringify(value) : cellText(value))
+            }
           >
-            <Copy size={10} aria-hidden />
+            <Copy size={16} aria-hidden />
           </button>
         ) : null}
       </div>
@@ -115,7 +137,10 @@ function Node({
         : null}
 
       {branch && expanded && hidden > 0 ? (
-        <div className="db-json-more" style={{ paddingLeft: `${(depth + 1) * 12 + 14}px` }}>
+        <div
+          className="db-json-more"
+          style={{ paddingLeft: `${(depth + 1) * 12 + 14}px` }}
+        >
           {hidden} more not shown
         </div>
       ) : null}
@@ -126,11 +151,17 @@ function Node({
 /** Leaves match the grid, so a value reads identically in both places. */
 function Leaf({ value }: { value: Json }) {
   if (value === null) return <span className="db-cell-null">null</span>
-  if (value === undefined) return <span className="db-cell-null">undefined</span>
+  if (value === undefined)
+    return <span className="db-cell-null">undefined</span>
   if (typeof value === 'boolean') {
-    return <span className={value ? 'db-cell-bool-true' : 'db-cell-bool-false'}>{String(value)}</span>
+    return (
+      <span className={value ? 'db-cell-bool-true' : 'db-cell-bool-false'}>
+        {String(value)}
+      </span>
+    )
   }
-  if (typeof value === 'number') return <span className="db-cell-num">{String(value)}</span>
+  if (typeof value === 'number')
+    return <span className="db-cell-num">{String(value)}</span>
   // An empty string must not render as nothing at all.
   if (value === '') return <span className="db-cell-null">''</span>
   return <span className="db-cell-str">{String(value)}</span>
@@ -140,14 +171,28 @@ function isBranch(v: Json): v is Record<string, unknown> | unknown[] {
   return typeof v === 'object' && v !== null
 }
 
-function entriesOf(v: Record<string, unknown> | unknown[]): [string, unknown][] {
-  return Array.isArray(v) ? v.map((item, i) => [String(i), item]) : Object.entries(v)
+function entriesOf(
+  v: Record<string, unknown> | unknown[],
+): [string, unknown][] {
+  return Array.isArray(v)
+    ? v.map((item, i) => [String(i), item])
+    : Object.entries(v)
 }
 
-function summary(v: Record<string, unknown> | unknown[], count: number, expanded: boolean): string {
+function summary(
+  v: Record<string, unknown> | unknown[],
+  count: number,
+  expanded: boolean,
+): string {
   const array = Array.isArray(v)
   if (expanded) return array ? '[' : '{'
-  const noun = array ? (count === 1 ? 'item' : 'items') : count === 1 ? 'key' : 'keys'
+  const noun = array
+    ? count === 1
+      ? 'item'
+      : 'items'
+    : count === 1
+      ? 'key'
+      : 'keys'
   return array ? `[… ${count} ${noun}]` : `{… ${count} ${noun}}`
 }
 

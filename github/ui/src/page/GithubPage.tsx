@@ -17,7 +17,13 @@
  * key; workspace tabs survive reloads).
  */
 
-import { type Host, PageHeader, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import {
+  type Host,
+  PageHeader,
+  type PageRenderProps,
+  PageShell,
+  SegmentedControl,
+} from '@iii-dev/console-ui'
 import { useState } from 'react'
 import { GitGraph } from './GitGraph'
 import { GithubIcon } from './icons'
@@ -26,8 +32,8 @@ import { ActivityFeed } from './index'
 type View = 'graph' | 'activity'
 
 const VIEWS: { value: View; label: string }[] = [
-  { value: 'graph', label: 'graph' },
-  { value: 'activity', label: 'activity' },
+  { value: 'graph', label: 'Graph' },
+  { value: 'activity', label: 'Activity' },
 ]
 
 function readStored(key: string): string | null {
@@ -52,7 +58,9 @@ export function GithubPage({
   onRequestClose,
 }: { host: Host } & Partial<PageRenderProps>) {
   const storageKey = `github-ui:${tabId || 'page'}:view`
-  const [view, setViewState] = useState<View>(() => (readStored(storageKey) === 'activity' ? 'activity' : 'graph'))
+  const [view, setViewState] = useState<View>(() =>
+    readStored(storageKey) === 'activity' ? 'activity' : 'graph',
+  )
   const setView = (next: View) => {
     setViewState(next)
     writeStored(storageKey, next)
@@ -62,26 +70,23 @@ export function GithubPage({
     <PageShell className="gh-ui-shell">
       <PageHeader
         icon={<GithubIcon />}
-        title="github"
-        description="the working repo & worker calls, live"
+        title="GitHub"
+        description="The working repository and worker calls, live"
         onClose={onRequestClose}
       >
-        {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the header row */}
-        <div className="gh-ui-seg" role="group" aria-label="graph or activity view">
-          {VIEWS.map((v) => (
-            <button
-              key={v.value}
-              type="button"
-              className={`gh-ui-seg-btn${view === v.value ? ' active' : ''}`}
-              aria-pressed={view === v.value}
-              onClick={() => setView(v.value)}
-            >
-              {v.label}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl<View>
+          value={view}
+          onChange={setView}
+          options={VIEWS}
+          className="gh-ui-tabs"
+          aria-label="Graph or activity view"
+        />
       </PageHeader>
-      {view === 'graph' ? <GitGraph host={host} /> : <ActivityFeed host={host} />}
+      {view === 'graph' ? (
+        <GitGraph host={host} />
+      ) : (
+        <ActivityFeed host={host} />
+      )}
     </PageShell>
   )
 }

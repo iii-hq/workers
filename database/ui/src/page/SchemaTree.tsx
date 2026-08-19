@@ -17,7 +17,14 @@ import {
   tableColumns,
   tableIndexes,
 } from './db-data'
-import { ChevronRight, Eye, type IconProps, KeyRound, Link2, Table2 } from './icons'
+import {
+  ChevronRight,
+  Eye,
+  type IconProps,
+  KeyRound,
+  Link2,
+  Table2,
+} from './icons'
 
 interface SchemaTreeProps {
   host: Host
@@ -33,22 +40,36 @@ interface TableSchema {
   indexes: IndexInfo[]
 }
 
-export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTable }: SchemaTreeProps) {
+export function SchemaTree({
+  host,
+  db,
+  driver,
+  tables,
+  selectedTable,
+  onSelectTable,
+}: SchemaTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [schemaByTable, setSchemaByTable] = useState<Record<string, TableSchema | 'loading' | 'error'>>({})
+  const [schemaByTable, setSchemaByTable] = useState<
+    Record<string, TableSchema | 'loading' | 'error'>
+  >({})
 
   // Fourteen `public.` prefixes ate the width the actual names needed.
   // Display strips a universal schema; selection, fetches and titles keep
   // the qualified name.
   const prefix = commonSchema(tables.map((t) => t.name))
-  const display = (name: string) => (prefix && name.startsWith(`${prefix}.`) ? name.slice(prefix.length + 1) : name)
+  const display = (name: string) =>
+    prefix && name.startsWith(`${prefix}.`)
+      ? name.slice(prefix.length + 1)
+      : name
 
   // Type-to-filter beats walking two tab stops per row. Matches the
   // displayed name and the qualified one; Escape clears.
   const [query, setQuery] = useState('')
   const needle = query.trim().toLowerCase()
   const matches = (t: DbTable) =>
-    needle === '' || display(t.name).toLowerCase().includes(needle) || t.name.toLowerCase().includes(needle)
+    needle === '' ||
+    display(t.name).toLowerCase().includes(needle) ||
+    t.name.toLowerCase().includes(needle)
   const anyMatch = tables.some(matches)
 
   const toggle = (table: DbTable) => {
@@ -67,7 +88,9 @@ export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTa
       setSchemaByTable((cur) => ({ ...cur, [table.name]: 'loading' }))
       void Promise.all([
         tableColumns(host, db, driver, table.name),
-        table.kind === 'table' ? tableIndexes(host, db, driver, table.name).catch(() => []) : Promise.resolve([]),
+        table.kind === 'table'
+          ? tableIndexes(host, db, driver, table.name).catch(() => [])
+          : Promise.resolve([]),
       ])
         .then(([columns, indexes]) => {
           setSchemaByTable((cur) => ({
@@ -86,8 +109,8 @@ export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTa
     kind: DbTable['kind']
     icon: ComponentType<IconProps>
   }[] = [
-    { label: 'tables', kind: 'table', icon: Table2 },
-    { label: 'views', kind: 'view', icon: Eye },
+    { label: 'Tables', kind: 'table', icon: Table2 },
+    { label: 'Views', kind: 'view', icon: Eye },
   ]
 
   return (
@@ -96,20 +119,26 @@ export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTa
         <Input
           value={query}
           onChange={setQuery}
-          placeholder="filter tables"
+          placeholder="Filter tables"
           aria-label="filter tables"
           onKeyDown={(e) => {
             if (e.key === 'Escape') setQuery('')
           }}
         />
       </div>
-      {!anyMatch && needle !== '' ? <p className="db-tree-msg">no tables match "{needle}"</p> : null}
+      {!anyMatch && needle !== '' ? (
+        <p className="db-tree-msg">No tables match "{needle}"</p>
+      ) : null}
       {groups.map((group) => {
-        const entries = tables.filter((t) => t.kind === group.kind && matches(t))
+        const entries = tables.filter(
+          (t) => t.kind === group.kind && matches(t),
+        )
         if (entries.length === 0) return null
         return (
           <div key={group.kind}>
-            {group.kind === 'view' ? <div className="db-tree-grouphead">views · {entries.length}</div> : null}
+            {group.kind === 'view' ? (
+              <div className="db-tree-grouphead">Views · {entries.length}</div>
+            ) : null}
             <ul>
               {entries.map((table) => {
                 const isOpen = expanded.has(table.name)
@@ -118,16 +147,22 @@ export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTa
                 const Icon = group.icon
                 return (
                   <li key={table.name}>
-                    <div className={`db-tree-row${isSelected ? ' active' : ''}`}>
+                    <div
+                      className={`db-tree-row${isSelected ? ' active' : ''}`}
+                    >
                       <button
                         type="button"
                         className="db-tree-toggle"
                         onClick={() => toggle(table)}
                         aria-expanded={isOpen}
-                        aria-label={isOpen ? `collapse ${table.name} columns` : `expand ${table.name} columns`}
+                        aria-label={
+                          isOpen
+                            ? `collapse ${table.name} columns`
+                            : `expand ${table.name} columns`
+                        }
                       >
                         <ChevronRight
-                          size={12}
+                          size={16}
                           style={{
                             transform: isOpen ? 'rotate(90deg)' : undefined,
                             transition: 'transform 0.12s',
@@ -140,7 +175,10 @@ export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTa
                         onClick={() => onSelectTable(table.name)}
                         title={table.name}
                       >
-                        <Icon size={12} style={{ color: 'var(--color-ink-ghost)' }} />
+                        <Icon
+                          size={16}
+                          style={{ color: 'var(--color-ink-ghost)' }}
+                        />
                         <span className="db-trunc">{display(table.name)}</span>
                       </button>
                     </div>
@@ -156,7 +194,11 @@ export function SchemaTree({ host, db, driver, tables, selectedTable, onSelectTa
   )
 }
 
-function TableSchemaRows({ schema }: { schema: TableSchema | 'loading' | 'error' | undefined }) {
+function TableSchemaRows({
+  schema,
+}: {
+  schema: TableSchema | 'loading' | 'error' | undefined
+}) {
   if (schema === 'loading' || schema === undefined) {
     return (
       <div style={{ padding: '4px 12px 4px 36px' }}>
@@ -165,12 +207,12 @@ function TableSchemaRows({ schema }: { schema: TableSchema | 'loading' | 'error'
     )
   }
   if (schema === 'error') {
-    return <p className="db-tree-msg alert">failed to read schema</p>
+    return <p className="db-tree-msg alert">Failed to read schema</p>
   }
   return (
     <ul className="db-cols">
       {schema.columns.length === 0 ? (
-        <li className="db-tree-msg">no columns</li>
+        <li className="db-tree-msg">No columns</li>
       ) : (
         schema.columns.map((col) => (
           <li
@@ -186,9 +228,9 @@ function TableSchemaRows({ schema }: { schema: TableSchema | 'loading' | 'error'
               .join(' · ')}
           >
             {col.pk ? (
-              <KeyRound size={10} style={{ color: 'var(--color-accent)' }} />
+              <KeyRound size={16} style={{ color: 'var(--color-accent)' }} />
             ) : col.fkTarget ? (
-              <Link2 size={10} style={{ color: 'var(--color-ink-ghost)' }} />
+              <Link2 size={16} style={{ color: 'var(--color-ink-ghost)' }} />
             ) : (
               <span style={{ width: 10, flexShrink: 0 }} />
             )}
@@ -199,16 +241,20 @@ function TableSchemaRows({ schema }: { schema: TableSchema | 'loading' | 'error'
       )}
       {schema.indexes.length > 0 ? (
         <>
-          <li className="db-idx-head">indexes</li>
+          <li className="db-idx-head">Indexes</li>
           {schema.indexes.map((idx) => (
             <li
               key={idx.name}
               className="db-idx"
-              title={[idx.unique ? 'unique' : null, idx.detail].filter(Boolean).join(' · ')}
+              title={[idx.unique ? 'unique' : null, idx.detail]
+                .filter(Boolean)
+                .join(' · ')}
             >
               <span style={{ width: 10, flexShrink: 0 }} />
               <span className="db-idx-name">{idx.name}</span>
-              {idx.unique ? <span className="db-idx-unique">unique</span> : null}
+              {idx.unique ? (
+                <span className="db-idx-unique">Unique</span>
+              ) : null}
             </li>
           ))}
         </>

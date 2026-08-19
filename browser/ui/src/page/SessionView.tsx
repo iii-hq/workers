@@ -18,7 +18,7 @@
  * here — url draft, pick mode, type buffer, pane choices — is session-local.
  */
 
-import { Button, type Host, Input } from '@iii-dev/console-ui'
+import { Button, type Host, Input, SegmentedControl } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_PICKED_TRIGGER,
@@ -122,7 +122,9 @@ export function SessionView({
     readStored(dockStoreKey) === 'network' ? 'network' : 'console',
   )
   const dockCollapsedStoreKey = `browser-ui:${tabId || 'page'}:dock-collapsed`
-  const [dockCollapsed, setDockCollapsedState] = useState(() => readStored(dockCollapsedStoreKey) === 'true')
+  const [dockCollapsed, setDockCollapsedState] = useState(
+    () => readStored(dockCollapsedStoreKey) === 'true',
+  )
   const setDockPane = (pane: FeedPane) => {
     setDockPaneState(pane)
     writeStored(dockStoreKey, pane)
@@ -194,7 +196,8 @@ export function SessionView({
 
   const openCurrentPage = useCallback(() => {
     let url = urlDraft.trim() || session.url
-    if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = `https://${url}`
+    if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url))
+      url = `https://${url}`
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }, [session.url, urlDraft])
 
@@ -252,7 +255,9 @@ export function SessionView({
       setLastPicked(evt)
       // No composer slot in injected UI: copy the summary for the user to
       // paste into chat.
-      void navigator.clipboard?.writeText(formatPickedElement(evt)).catch(() => {})
+      void navigator.clipboard
+        ?.writeText(formatPickedElement(evt))
+        .catch(() => {})
       setPicking(false)
     },
   })
@@ -341,22 +346,39 @@ export function SessionView({
     })
   }, [host, sessionId, runAction, onSessionsRefresh, onStopped])
 
-  const displayName = session.title?.trim() || hostOf(session.url) || 'about:blank'
-  const feedPane: FeedPane = narrow ? (narrowPane === 'network' ? 'network' : 'console') : dockPane
+  const displayName =
+    session.title?.trim() || hostOf(session.url) || 'about:blank'
+  const feedPane: FeedPane = narrow
+    ? narrowPane === 'network'
+      ? 'network'
+      : 'console'
+    : dockPane
   const browserMajor = chromiumVersion?.match(/\d+/)?.[0]
   const browserLabel = browserMajor ? `Chromium ${browserMajor}` : null
 
   return (
-    <section className="br-ui-stage" aria-label={`browser session ${sessionId}`}>
+    <section
+      className="br-ui-stage"
+      aria-label={`browser session ${sessionId}`}
+    >
       <header className="br-ui-doc-head">
-        {narrow ? <BackButton onClick={onBack} label="back to session list" /> : null}
+        {narrow ? (
+          <BackButton onClick={onBack} label="back to session list" />
+        ) : null}
         <div className="br-ui-doc-identity">
           <div className="br-ui-doc-title-row">
-            <span className="br-ui-doc-name" title={`${sessionId} · ${session.url}`}>
+            <span
+              className="br-ui-doc-name"
+              title={`${sessionId} · ${session.url}`}
+            >
               <span className="txt">{displayName}</span>
             </span>
-            <span className="br-ui-doc-badge">{session.headless ? 'headless' : 'headful'}</span>
-            {!narrow && browserLabel ? <span className="br-ui-doc-badge">{browserLabel}</span> : null}
+            <span className="br-ui-doc-badge">
+              {session.headless ? 'headless' : 'headful'}
+            </span>
+            {!narrow && browserLabel ? (
+              <span className="br-ui-doc-badge">{browserLabel}</span>
+            ) : null}
           </div>
           <span className="br-ui-doc-crumb">
             <span className="br-ui-doc-url">{session.url}</span>
@@ -368,7 +390,9 @@ export function SessionView({
             {!narrow ? (
               <>
                 <span aria-hidden>·</span>
-                <span>started {formatMtime(Math.floor(session.created_ms / 1000))}</span>
+                <span>
+                  started {formatMtime(Math.floor(session.created_ms / 1000))}
+                </span>
               </>
             ) : null}
           </span>
@@ -385,10 +409,15 @@ export function SessionView({
             }
             className={cn('br-ui-pick-btn', picking && 'is-on')}
           >
-            <Crosshair size={13} aria-hidden />
+            <Crosshair size={16} aria-hidden />
             {picking ? 'Inspecting...' : 'Inspect'}
           </button>
-          <Button variant="ghost" size="sm" className="br-ui-stop-btn" onClick={handleStop}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="br-ui-stop-btn"
+            onClick={handleStop}
+          >
             Stop session
           </Button>
         </div>
@@ -396,27 +425,36 @@ export function SessionView({
 
       {lastPicked ? (
         <div className="br-ui-picked">
-          <span className="br-ui-picked-label">picked</span>
-          <span className="br-ui-picked-chip" title={lastPicked.element.outer_html}>
+          <span className="br-ui-picked-label">Picked</span>
+          <span
+            className="br-ui-picked-chip"
+            title={lastPicked.element.outer_html}
+          >
             <span className="br-ui-picked-ref">{lastPicked.element.ref}</span>
-            <span className="br-ui-truncate">{pickedSelector(lastPicked.element)}</span>
+            <span className="br-ui-truncate">
+              {pickedSelector(lastPicked.element)}
+            </span>
             <button
               type="button"
               onClick={() => setLastPicked(null)}
               aria-label="dismiss picked element"
               className="br-ui-picked-x"
             >
-              <X size={12} aria-hidden />
+              <X size={16} aria-hidden />
             </button>
           </span>
-          <span className="br-ui-picked-note">copied to clipboard</span>
+          <span className="br-ui-picked-note">Copied to clipboard</span>
         </div>
       ) : null}
 
       {actionError ? (
         <div className="br-ui-banner alert" role="alert">
           <span>{actionError}</span>
-          <button type="button" className="br-ui-linkish quiet" onClick={() => setActionError(null)}>
+          <button
+            type="button"
+            className="br-ui-linkish quiet"
+            onClick={() => setActionError(null)}
+          >
             dismiss
           </button>
         </div>
@@ -424,20 +462,21 @@ export function SessionView({
 
       {narrow ? (
         <div className="br-ui-view-row">
-          {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the row */}
-          <div className="br-ui-seg block" role="group" aria-label="session view">
-            {NARROW_PANES.map((pane) => (
-              <button
-                key={pane}
-                type="button"
-                className={`br-ui-seg-btn${narrowPane === pane ? ' active' : ''}`}
-                aria-pressed={narrowPane === pane}
-                onClick={() => setNarrowPane(pane)}
-              >
-                {pane === 'console' ? 'Console' : pane === 'network' ? 'Network' : 'Viewport'}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl<NarrowPane>
+            value={narrowPane}
+            onChange={setNarrowPane}
+            options={NARROW_PANES.map((pane) => ({
+              value: pane,
+              label:
+                pane === 'console'
+                  ? 'Console'
+                  : pane === 'network'
+                    ? 'Network'
+                    : 'Viewport',
+            }))}
+            className="br-ui-tabs"
+            aria-label="Session view"
+          />
         </div>
       ) : null}
 
@@ -451,7 +490,10 @@ export function SessionView({
                 submitUrl()
               }}
             >
-              <fieldset className="br-ui-history-controls" aria-label="browser history controls">
+              <fieldset
+                className="br-ui-history-controls"
+                aria-label="browser history controls"
+              >
                 <button
                   type="button"
                   className="br-ui-chrome-btn"
@@ -481,7 +523,7 @@ export function SessionView({
                 </button>
               </fieldset>
               <div className="br-ui-address">
-                <Globe size={14} aria-hidden className="br-ui-address-icon" />
+                <Globe size={16} aria-hidden className="br-ui-address-icon" />
                 <Input
                   name="browser-url"
                   value={urlDraft}
@@ -507,7 +549,11 @@ export function SessionView({
               >
                 <ExternalLink size={17} aria-hidden />
               </button>
-              <button type="submit" className="br-ui-address-submit" tabIndex={-1}>
+              <button
+                type="submit"
+                className="br-ui-address-submit"
+                tabIndex={-1}
+              >
                 navigate to address
               </button>
             </form>
@@ -538,26 +584,26 @@ export function SessionView({
       {!narrow ? (
         <div className={`br-ui-dock${dockCollapsed ? ' collapsed' : ''}`}>
           <div className="br-ui-dock-head">
-            {/* biome-ignore lint/a11y/useSemanticElements: segmented control of buttons; fieldset chrome (min-content sizing) breaks the row */}
-            <div className="br-ui-seg" role="group" aria-label="session feeds">
-              {FEED_PANES.map((pane) => (
-                <button
-                  key={pane}
-                  type="button"
-                  className={`br-ui-seg-btn${dockPane === pane ? ' active' : ''}`}
-                  aria-pressed={dockPane === pane}
-                  onClick={() => setDockPane(pane)}
-                >
-                  {pane === 'console' ? 'Console' : 'Network'}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl<FeedPane>
+              value={dockPane}
+              onChange={setDockPane}
+              options={FEED_PANES.map((pane) => ({
+                value: pane,
+                label: pane === 'console' ? 'Console' : 'Network',
+              }))}
+              className="br-ui-tabs"
+              aria-label="Session feeds"
+            />
             <button
               type="button"
               className="br-ui-dock-toggle"
               aria-expanded={!dockCollapsed}
-              aria-label={dockCollapsed ? 'show developer tools' : 'hide developer tools'}
-              title={dockCollapsed ? 'show developer tools' : 'hide developer tools'}
+              aria-label={
+                dockCollapsed ? 'show developer tools' : 'hide developer tools'
+              }
+              title={
+                dockCollapsed ? 'show developer tools' : 'hide developer tools'
+              }
               onClick={toggleDock}
             >
               {dockCollapsed ? (
@@ -566,16 +612,24 @@ export function SessionView({
                   <ChevronLeftIcon className="br-ui-dock-toggle-icon" />
                 </>
               ) : (
-                <X size={15} aria-hidden />
+                <X size={16} aria-hidden />
               )}
             </button>
           </div>
           {!dockCollapsed ? (
             <div className="br-ui-dock-body">
               {dockPane === 'console' ? (
-                <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
+                <ConsolePanel
+                  host={host}
+                  sessionId={sessionId}
+                  enabled={enabled}
+                />
               ) : (
-                <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
+                <NetworkPanel
+                  host={host}
+                  sessionId={sessionId}
+                  enabled={enabled}
+                />
               )}
             </div>
           ) : null}
@@ -590,7 +644,9 @@ export function SessionView({
         ) : (
           <span className="fact">Viewport: —</span>
         )}
-        <span className="fact">{session.headless ? 'Headless' : 'Headful'}</span>
+        <span className="fact">
+          {session.headless ? 'Headless' : 'Headful'}
+        </span>
         {browserLabel ? <span className="fact">{browserLabel}</span> : null}
         <span className="fact live">
           <span className="br-ui-live-dot" aria-hidden />
@@ -599,7 +655,9 @@ export function SessionView({
         <span className="spacer" />
         {viewportShown ? (
           picking ? (
-            <span className="fact hint">pick mode: click an element to copy it — esc cancels</span>
+            <span className="fact hint">
+              pick mode: click an element to copy it — esc cancels
+            </span>
           ) : (
             <>
               <span className="fact hint">Click to focus</span>

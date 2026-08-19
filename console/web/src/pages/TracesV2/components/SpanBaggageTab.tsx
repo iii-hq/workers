@@ -50,7 +50,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
   return (
     <div className="p-5 space-y-3">
       <div className="flex items-center gap-2 px-1">
-        <Package className="w-3.5 h-3.5 text-accent" />
+        <Package className="size-4 text-accent" />
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           w3c baggage context
         </span>
@@ -85,7 +85,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
                     copied
                   </span>
                 ) : (
-                  <Copy className="w-3 h-3 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
+                  <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
                 )}
               </div>
             </button>

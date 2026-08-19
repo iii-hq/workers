@@ -201,7 +201,7 @@ export function ModelPicker({
             }
             aria-busy={loading || undefined}
             className={cn(
-              'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-mono text-base lowercase text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
+              'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
               pickerDisabled && 'pointer-events-none opacity-40',
             )}
           >
@@ -212,7 +212,7 @@ export function ModelPicker({
                   !selected && 'text-ink-faint',
                 )}
               >
-                {selected?.label ?? (loading ? 'loading…' : 'no models')}
+                {selected?.label ?? (loading ? 'Loading…' : 'No models')}
               </span>
               {selectedEfforts.length > 1 && thinkingLevel !== 'default' ? (
                 <span className="shrink-0 text-[11px] text-ink-faint">
@@ -221,9 +221,9 @@ export function ModelPicker({
               ) : null}
             </span>
             {open ? (
-              <ChevronUp size={12} aria-hidden />
+              <ChevronUp size={16} aria-hidden />
             ) : (
-              <ChevronDown size={12} aria-hidden />
+              <ChevronDown size={16} aria-hidden />
             )}
           </button>
         </DropdownMenuPrimitive.Trigger>
@@ -430,7 +430,7 @@ export function ModelPickerPanel({
             return (
               <section key={group.label} aria-label={group.label}>
                 <div className="flex items-center justify-between gap-3 px-1 pb-2">
-                  <h3 className="min-w-0 truncate font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-ink-ghost">
+                  <h3 className="min-w-0 truncate font-sans text-[11px] font-medium text-ink-ghost">
                     {formatProviderLabel(group.label)}
                   </h3>
                   {(configured || catalogIsUsable) && onConfigureProvider ? (
@@ -472,14 +472,17 @@ export function ModelPickerPanel({
                           disabled={disabled || unavailable}
                           onClick={() => selectModel(option.id)}
                           aria-pressed={selectedOption}
-                          className="flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+                          className={cn(
+                            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:outline-none focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40',
+                            selectedOption && 'bg-surface-selected',
+                          )}
                         >
                           <span className="min-w-0 flex-1 truncate font-medium">
                             {formatModelLabel(option.label)}
                           </span>
                           {selectedOption ? (
                             <Check
-                              className="size-5 shrink-0 text-accent"
+                              className="size-5 shrink-0 text-ink"
                               aria-hidden
                             />
                           ) : null}
@@ -556,7 +559,10 @@ export function ReasoningEffortPanel({
             title={option.description}
             disabled={disabled}
             onClick={() => onChange(option.effort)}
-            className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+            className={cn(
+              'flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:outline-none focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40',
+              selected && 'bg-surface-selected',
+            )}
           >
             <span className="min-w-0 flex-1">
               <span className="block font-medium capitalize">
@@ -569,7 +575,7 @@ export function ReasoningEffortPanel({
               ) : null}
             </span>
             {selected ? (
-              <Check className="size-5 shrink-0 text-accent" aria-hidden />
+              <Check className="size-5 shrink-0 text-ink" aria-hidden />
             ) : null}
           </button>
         )

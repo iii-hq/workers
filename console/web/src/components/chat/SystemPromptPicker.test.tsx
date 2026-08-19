@@ -23,11 +23,11 @@ describe('new-session system prompt', () => {
       />,
     )
 
-    expect(ready).toContain('system prompt')
-    expect(ready).toContain('default uses the provider&#x27;s built-in prompt')
-    expect(ready).toContain('locked after your first message')
+    expect(ready).toContain('System prompt')
+    expect(ready).toContain('Default uses the provider&#x27;s built-in prompt')
+    expect(ready).toContain('Locked after your first message')
     expect(strategies).toContain('aria-pressed="true"')
-    expect(strategies).toContain('enrich')
-    expect(strategies).toContain('replace')
+    expect(strategies).toContain('Enrich')
+    expect(strategies).toContain('Replace')
   })
 })

@@ -91,10 +91,10 @@ function SaveStatusText({
     )
   }
   if (status.kind === 'saving') {
-    return <p className={cn(wt.bodySm, 'text-ink-faint')}>saving…</p>
+    return <p className={cn(wt.bodySm, 'text-ink-faint')}>Saving…</p>
   }
   if (status.kind === 'saved' && !dirty) {
-    return <p className={cn(wt.bodySm, 'text-ink-faint')}>saved</p>
+    return <p className={cn(wt.bodySm, 'text-ink-faint')}>Saved</p>
   }
   if (dirty) {
     return (

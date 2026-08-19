@@ -316,10 +316,10 @@ export function TabStrip({
             }}
             style={transform ? { transform } : undefined}
             className={cn(
-              'group/tab flex h-12 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md pl-4 font-sans text-sm sm:h-9 sm:gap-1.5 sm:pl-3',
+              'group/tab flex h-12 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md pl-4 font-sans text-sm font-medium sm:h-9 sm:gap-1.5 sm:pl-3',
               tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
               active
-                ? 'bg-accent-muted text-ink'
+                ? 'bg-surface-selected text-ink'
                 : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
               dragging && !isDragged && 'transition-transform duration-150',
               isDragged &&
@@ -470,7 +470,7 @@ function TabContextMenu({
   }, [onDismiss])
 
   const itemCls =
-    'w-full flex items-center gap-2 rounded-xs px-2 py-1.5 text-left font-mono text-[12px] lowercase text-ink cursor-pointer hover:bg-surface-hover transition-colors'
+    'w-full flex items-center gap-2 rounded-xs px-2 py-1.5 text-left font-sans text-[12px] text-ink cursor-pointer hover:bg-surface-hover transition-colors'
 
   return createPortal(
     <div

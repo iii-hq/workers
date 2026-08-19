@@ -14,14 +14,14 @@ import {
   Badge,
   Button,
   EmptyState,
+  type Host,
   PageBody,
   PageHeader,
   PageMain,
+  type PageRenderProps,
   PageShell,
   PageSidebar,
   StatusPanel,
-  type Host,
-  type PageRenderProps,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FreeformPane, type FreeformPaneHandle } from '../freeform'
@@ -35,11 +35,11 @@ import {
   updateCanvas,
 } from './data'
 import {
-  NEW_CANVAS_NAME,
-  STARTER_FLOWCHART,
   errorMessage,
   familyBadgeLabel,
+  NEW_CANVAS_NAME,
   relativeTime,
+  STARTER_FLOWCHART,
 } from './helpers'
 import { AlertCircle, Plus, Shapes, Trash2 } from './icons'
 import { type DraftCache, MermaidPane } from './MermaidPane'
@@ -49,21 +49,9 @@ type ListState =
   | { phase: 'error'; message: string }
   | { phase: 'ready' }
 
-const SIDEBAR_WIDTH_KEY = 'canvas-ui:sidebar-width'
 const SIDEBAR_DEFAULT_WIDTH = 248
 const SIDEBAR_MIN_WIDTH = 190
 const SIDEBAR_MAX_WIDTH = 440
-
-function clampSidebarWidth(w: number): number {
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
-}
-
-function initialSidebarWidth(): number {
-  const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY))
-  return Number.isFinite(stored) && stored > 0
-    ? clampSidebarWidth(stored)
-    : SIDEBAR_DEFAULT_WIDTH
-}
 
 /** Most recently touched first; name breaks timestamp ties stably. */
 function byRecency(a: CanvasRecord, b: CanvasRecord): number {
@@ -105,54 +93,6 @@ export function CanvasPage({
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
-
-  // ── sidebar width (drag handle on the boundary toward the main pane) ──
-  const [sideWidth, setSideWidth] = useState(initialSidebarWidth)
-  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
-  const onHandlePointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      dragRef.current = { startX: e.clientX, startWidth: sideWidth }
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId)
-      } catch {
-        // capture is best-effort; the drag still tracks over the handle
-      }
-    },
-    [sideWidth],
-  )
-  const onHandlePointerMove = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current
-      if (!drag) return
-      const delta = e.clientX - drag.startX
-      // A right-hugging sidebar widens as the handle moves left.
-      setSideWidth(
-        clampSidebarWidth(
-          panelSide === 'right'
-            ? drag.startWidth - delta
-            : drag.startWidth + delta,
-        ),
-      )
-    },
-    [panelSide],
-  )
-  const onHandlePointerUp = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (dragRef.current) {
-        window.localStorage.setItem(
-          SIDEBAR_WIDTH_KEY,
-          String(clampSidebarWidth(sideWidth)),
-        )
-      }
-      dragRef.current = null
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId)
-      } catch {
-        // never captured
-      }
-    },
-    [sideWidth],
-  )
 
   const refreshList = useCallback(() => {
     listCanvases(host)
@@ -396,40 +336,53 @@ export function CanvasPage({
     <PageShell className="canvas-ui">
       <PageHeader
         icon={<Shapes />}
-        title="canvas"
-        description="diagrams stored as editable source"
+        title="Canvas"
+        description="Diagrams stored as editable source"
         onClose={onRequestClose}
       />
       <PageBody side={panelSide}>
-        <PageSidebar width={sideWidth} className="cv-sidebar">
-          <div
-            className={`cv-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
-            onPointerDown={onHandlePointerDown}
-            onPointerMove={onHandlePointerMove}
-            onPointerUp={onHandlePointerUp}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="resize sidebar"
-            title="drag to resize"
-          />
-          <div className="cv-side-head">
-            <span className="cv-side-count">
-              {listState.phase === 'ready'
-                ? `${canvases.length} canvas${canvases.length === 1 ? '' : 'es'}`
-                : 'canvases'}
-            </span>
+        <PageSidebar
+          label="canvases"
+          side={panelSide}
+          collapsible
+          resizable
+          storageKey="canvas:list"
+          defaultWidth={SIDEBAR_DEFAULT_WIDTH}
+          minWidth={SIDEBAR_MIN_WIDTH}
+          maxWidth={SIDEBAR_MAX_WIDTH}
+          className="cv-sidebar"
+          header={
+            <div className="cv-side-head">
+              <span className="cv-side-count">
+                {listState.phase === 'ready'
+                  ? `${canvases.length} canvas${canvases.length === 1 ? '' : 'es'}`
+                  : 'canvases'}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={create}
+                disabled={creating}
+                title="new canvas (starter flowchart)"
+              >
+                <Plus size={16} aria-hidden />
+                new
+              </Button>
+            </div>
+          }
+          collapsedActions={
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={create}
               disabled={creating}
+              aria-label="new canvas"
               title="new canvas (starter flowchart)"
             >
-              <Plus size={13} aria-hidden />
-              new
+              <Plus size={16} aria-hidden />
             </Button>
-          </div>
-
+          }
+        >
           {sideError ? <div className="cv-note warn">{sideError}</div> : null}
 
           {listState.phase === 'loading' ? (
@@ -477,7 +430,7 @@ export function CanvasPage({
                     title="delete"
                     onClick={() => remove(c)}
                   >
-                    <Trash2 size={12} aria-hidden />
+                    <Trash2 size={16} aria-hidden />
                   </button>
                 </li>
               ))}

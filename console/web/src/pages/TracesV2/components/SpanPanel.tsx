@@ -138,7 +138,7 @@ export function SpanPanel({
             aria-label="close panel (esc)"
             title="close (esc)"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="size-4" />
           </Button>
         </div>
 
@@ -155,14 +155,14 @@ export function SpanPanel({
                 copied
               </span>
             ) : (
-              <Copy className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
             )}
           </button>
 
           <span aria-hidden className="w-px h-3 bg-edge" />
 
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Clock className="w-2.5 h-2.5 text-accent" />
+            <Clock className="size-4 text-accent" />
             <span className="font-mono text-[11px] font-semibold text-accent tabular-nums">
               {formatDuration(span.duration_ms)}
             </span>
@@ -170,7 +170,7 @@ export function SpanPanel({
 
           {traceContext && traceContext.childSpans.length > 0 && (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-              <Zap className="w-2.5 h-2.5 text-ink-faint" />
+              <Zap className="size-4 text-ink-faint" />
               <span className="font-mono text-[11px] text-ink-faint tabular-nums lowercase">
                 self {formatDuration(traceContext.selfTime)}
               </span>
@@ -195,7 +195,7 @@ export function SpanPanel({
           </span>
 
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Layers className="w-2.5 h-2.5 text-ink-faint" />
+            <Layers className="size-4 text-ink-faint" />
             <span className="font-mono text-[11px] text-ink-faint tabular-nums">
               d:{span.depth}
             </span>
@@ -222,7 +222,7 @@ export function SpanPanel({
               }
               className="flex items-center gap-1.5 w-full px-2.5 py-1.5 rounded-sm bg-surface hover:bg-surface-hover transition-colors group text-left"
             >
-              <ArrowUp className="w-3 h-3 text-ink-faint group-hover:text-accent transition-colors flex-shrink-0" />
+              <ArrowUp className="size-4 text-ink-faint group-hover:text-accent transition-colors flex-shrink-0" />
               <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 lowercase">
                 parent
               </span>
@@ -246,9 +246,9 @@ export function SpanPanel({
           className="h-full flex flex-col"
         >
           <TabsList className="px-4 pt-2 pb-0 bg-transparent">
-            <TabsTrigger value="info">info</TabsTrigger>
+            <TabsTrigger value="info">Info</TabsTrigger>
             <TabsTrigger value="tags">
-              attributes
+              Attributes
               {attrCount > 0 && (
                 <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {attrCount}
@@ -256,7 +256,7 @@ export function SpanPanel({
               )}
             </TabsTrigger>
             <TabsTrigger value="logs">
-              events
+              Events
               {eventCount > 0 && (
                 <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {eventCount}
@@ -264,23 +264,23 @@ export function SpanPanel({
               )}
             </TabsTrigger>
             <TabsTrigger value="errors">
-              errors
+              Errors
               {hasError && (
                 <span className="ml-1 w-1.5 h-1.5 bg-alert rounded-full inline-block" />
               )}
             </TabsTrigger>
             <TabsTrigger value="otel-logs">
-              logs
+              Logs
               {logCount > 0 && (
                 <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {logCount}
                 </span>
               )}
             </TabsTrigger>
-            <TabsTrigger value="baggage">context</TabsTrigger>
+            <TabsTrigger value="baggage">Context</TabsTrigger>
             {linkCount > 0 && (
               <TabsTrigger value="links">
-                links
+                Links
                 <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {linkCount}
                 </span>
