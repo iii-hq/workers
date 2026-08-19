@@ -1,6 +1,6 @@
 mod support;
 
-use discovery::surface::{catalog, FunctionSpec};
+use iii_directory::surface::{search_catalog as catalog, FunctionSpec};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

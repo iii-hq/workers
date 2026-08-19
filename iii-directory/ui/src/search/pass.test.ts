@@ -48,8 +48,8 @@ describe('passHeadline', () => {
   it('renders the hint line', () => {
     const pass = parseDiscoveryPass(1, { ...base, outcome: 'hint_injected' })!
     expect(passHeadline(pass)).toEqual({
-      text: 'discovery injected the search hint',
-      detail: 'call discovery::search_functions once',
+      text: 'directory injected the search hint',
+      detail: 'call directory::search_functions once',
     })
   })
 
@@ -60,7 +60,7 @@ describe('passHeadline', () => {
       reason: 'task_guided',
     })!
     expect(passHeadline(pass)).toEqual({
-      text: 'discovery injected nothing',
+      text: 'directory injected nothing',
       detail: 'task already names its functions',
     })
   })

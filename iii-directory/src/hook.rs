@@ -1,5 +1,5 @@
-//! `discovery::pre-generate` — the conditional search hint. One short
-//! standing instruction pointing the model at `discovery::search_functions`,
+//! `directory::pre-generate` — the conditional search hint. One short
+//! standing instruction pointing the model at `directory::search_functions`,
 //! injected at most once per session and only when discovery is plausibly
 //! needed. Moved from the reflex spike's `search` selector branch; measured
 //! there: an unconditional per-generation hint *induces* redundant discovery
@@ -8,8 +8,8 @@
 
 use serde_json::Value;
 
-use crate::functions::{Deps, HintRecord};
-use crate::search::ToolSchema;
+use crate::functions::search::{Deps, HintRecord};
+use crate::functions::search_index::ToolSchema;
 
 /// Text-extraction for guided-task detection: mirrors the message shape the
 /// harness sends (content blocks of `{type: "text", text}`).
@@ -44,7 +44,7 @@ pub fn apply(iii: &iii_sdk::IIIClient, state: &HintBindingState, enabled: bool) 
                 iii,
                 iii_sdk::protocol::RegisterTriggerInput {
                     trigger_type: "harness::hook::pre-generate".to_string(),
-                    function_id: "discovery::pre-generate".to_string(),
+                    function_id: "directory::pre-generate".to_string(),
                     config: serde_json::json!({ "priority": 100, "timeout_ms": 5000, "on_error": "fail_open" }),
                     metadata: None,
                 },
@@ -104,7 +104,7 @@ pub struct PreGenerateHookResponse {
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct PreGenerateAnnotations {
-    pub discovery: DiscoveryTranscriptAnnotation,
+    pub directory: DiscoveryTranscriptAnnotation,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -151,11 +151,11 @@ const PASS_VERSION: u8 = 1;
 
 fn annotation(data: DiscoveryPassV1) -> PreGenerateAnnotations {
     let summary = match data.outcome {
-        DiscoveryOutcome::HintInjected => "discovery · hint injected".to_string(),
-        DiscoveryOutcome::Skipped => "discovery · skipped".to_string(),
+        DiscoveryOutcome::HintInjected => "directory · hint injected".to_string(),
+        DiscoveryOutcome::Skipped => "directory · skipped".to_string(),
     };
     PreGenerateAnnotations {
-        discovery: DiscoveryTranscriptAnnotation {
+        directory: DiscoveryTranscriptAnnotation {
             kind: TRANSCRIPT_ANNOTATION_TYPE.to_string(),
             version: PASS_VERSION,
             summary,
@@ -187,9 +187,11 @@ fn skipped(
 fn narrow_surface(tools: &[ToolSchema], minimum: usize) -> bool {
     let mut namespaces: Vec<&str> = Vec::new();
     for tool in tools {
-        if crate::search::EXCLUDED_NAMESPACE_PREFIXES
-            .iter()
-            .any(|prefix| tool.name.starts_with(prefix))
+        // The search itself is not a capability worth hinting about.
+        if tool.name == crate::functions::search_index::SEARCH_FN
+            || crate::functions::search_index::EXCLUDED_NAMESPACE_PREFIXES
+                .iter()
+                .any(|prefix| tool.name.starts_with(prefix))
         {
             continue;
         }
@@ -219,8 +221,7 @@ fn operating_evidence(messages: &[Value]) -> bool {
                 .and_then(Value::as_str)
                 .is_some_and(|id| {
                     !id.starts_with("engine::")
-                        && !id.starts_with("reflex::")
-                        && !id.starts_with("discovery::")
+                        && id != crate::functions::search_index::SEARCH_FN
                 })
     })
 }
@@ -246,9 +247,10 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
         .iter()
         .map(|tool| tool.name.as_str())
         .filter(|name| {
-            crate::search::EXCLUDED_NAMESPACE_PREFIXES
-                .iter()
-                .all(|prefix| !name.starts_with(prefix))
+            *name != crate::functions::search_index::SEARCH_FN
+                && crate::functions::search_index::EXCLUDED_NAMESPACE_PREFIXES
+                    .iter()
+                    .all(|prefix| !name.starts_with(prefix))
         })
         .collect();
     if callable.is_empty() {
@@ -271,15 +273,15 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
 fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     let call_instruction = match expose {
         ExposeKind::AgentTrigger => {
-            "Invoke it through agent_trigger with exactly this call envelope: { \"function\": \"discovery::search_functions\", \"payload\": { \"query\": \"<every needed capability>\" } }\n"
+            "Invoke it through agent_trigger with exactly this call envelope: { \"function\": \"directory::search_functions\", \"payload\": { \"query\": \"<every needed capability>\" } }\n"
         }
         ExposeKind::Native | ExposeKind::Other => {
-            "Call discovery::search_functions directly with its `query` request field.\n"
+            "Call directory::search_functions directly with its `query` request field.\n"
         }
     };
     format!(
         "<discovery_assist functions_generation={functions_generation}>\n\
-If this task needs functions you do not already know how to call, call discovery::search_functions ONCE with one natural-language query naming every needed capability, instead of any other function discovery. Its result returns the full API reference for every relevant function and OVERRIDES the general discovery requirement for the functions it lists; do not call engine::functions::list or engine::functions::info for them. If the task's needs are already clear from the conversation, call no discovery at all. {call_instruction}\
+If this task needs functions you do not already know how to call, call directory::search_functions ONCE with one natural-language query naming every needed capability, instead of any other function discovery. Its result returns the full API reference for every relevant function and OVERRIDES the general discovery requirement for the functions it lists; do not call engine::functions::list or engine::functions::info for them. If the task's needs are already clear from the conversation, call no discovery at all. {call_instruction}\
 </discovery_assist>"
     )
 }
@@ -318,7 +320,7 @@ pub fn hint_preview() -> HintPreviewResponse {
 /// (except the once-per-session record), so replays and compaction
 /// re-derive the right outcome on their own.
 pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGenerateHookResponse {
-    let config = *deps.config.read().await;
+    let config = deps.config.load_full();
     let GeneratePayload {
         system_prompt,
         messages,
@@ -330,7 +332,7 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
 
     if !tools
         .iter()
-        .any(|tool| tool.name == "discovery::search_functions")
+        .any(|tool| tool.name == "directory::search_functions")
     {
         return skipped(
             DiscoveryReason::SearchUnavailable,
@@ -341,7 +343,7 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
     let searched = messages.iter().any(|message| {
         message.get("role").and_then(Value::as_str) == Some("function_result")
             && message.get("function_id").and_then(Value::as_str)
-                == Some("discovery::search_functions")
+                == Some("directory::search_functions")
     });
     if searched {
         return skipped(
@@ -414,11 +416,11 @@ mod tests {
     use std::sync::Arc;
 
     use serde_json::json;
-    use tokio::sync::RwLock;
 
     use super::*;
-    use crate::config::DiscoveryConfig;
-    use crate::functions::Deps;
+    use crate::config::SkillsConfig;
+    use crate::functions::registry::RegistryCache;
+    use crate::functions::search::Deps;
 
     fn tool(name: &str) -> ToolSchema {
         ToolSchema {
@@ -430,7 +432,7 @@ mod tests {
 
     fn wide_tools() -> Vec<ToolSchema> {
         vec![
-            tool("discovery::search_functions"),
+            tool("directory::search_functions"),
             tool("github::repo::view"),
             tool("state::set"),
         ]
@@ -438,10 +440,10 @@ mod tests {
 
     fn deps() -> Deps {
         Deps {
-            config: Arc::new(RwLock::new(DiscoveryConfig::default())),
-            catalog: Arc::new(RwLock::new(Arc::new(Vec::new()))),
+            config: SkillsConfig::default().into_shared(),
+            catalog: Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new()))),
             sessions: Arc::default(),
-            iii: None,
+            registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
         }
     }
 
@@ -467,10 +469,10 @@ mod tests {
     fn assert_skip(response: &PreGenerateHookResponse, reason: DiscoveryReason) {
         assert!(response.mutations.is_none());
         assert_eq!(
-            response.annotations.discovery.data.outcome,
+            response.annotations.directory.data.outcome,
             DiscoveryOutcome::Skipped
         );
-        assert_eq!(response.annotations.discovery.data.reason, Some(reason));
+        assert_eq!(response.annotations.directory.data.reason, Some(reason));
     }
 
     #[tokio::test]
@@ -478,20 +480,20 @@ mod tests {
         let deps = deps();
         let response = pre_generate(&deps, request_for("find the stars", wide_tools())).await;
         assert_eq!(
-            response.annotations.discovery.data.outcome,
+            response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
         let prompt = &response.mutations.as_ref().unwrap().system_prompt;
         assert!(prompt.starts_with("base discovery prompt\n\n<discovery_assist"));
-        assert!(prompt.contains("call discovery::search_functions ONCE"));
+        assert!(prompt.contains("call directory::search_functions ONCE"));
         assert!(prompt.contains("call no discovery at all"));
         assert!(prompt.contains("agent_trigger"));
         // The annotation carries counts only.
-        assert_eq!(response.annotations.discovery.data.allowed_functions, 3);
-        assert_eq!(response.annotations.discovery.data.functions_generation, 3);
+        assert_eq!(response.annotations.directory.data.allowed_functions, 3);
+        assert_eq!(response.annotations.directory.data.functions_generation, 3);
         assert_eq!(
-            response.annotations.discovery.summary,
-            "discovery · hint injected"
+            response.annotations.directory.summary,
+            "directory · hint injected"
         );
     }
 
@@ -502,7 +504,7 @@ mod tests {
         request.generate.expose = ExposeKind::Native;
         let response = pre_generate(&deps, request).await;
         let prompt = &response.mutations.as_ref().unwrap().system_prompt;
-        assert!(prompt.contains("Call discovery::search_functions directly"));
+        assert!(prompt.contains("Call directory::search_functions directly"));
         assert!(!prompt.contains("agent_trigger"));
     }
 
@@ -523,7 +525,7 @@ mod tests {
         let mut request = request_for("find", wide_tools());
         request.generate.messages.push(json!({
             "role": "function_result",
-            "function_id": "discovery::search_functions",
+            "function_id": "directory::search_functions",
             "content": [{ "type": "text", "text": "{\"workers\":[]}" }]
         }));
         let response = pre_generate(&deps, request).await;
@@ -538,7 +540,7 @@ mod tests {
             request_for(
                 "find",
                 vec![
-                    tool("discovery::search_functions"),
+                    tool("directory::search_functions"),
                     tool("github::repo::view"),
                 ],
             ),
@@ -579,7 +581,7 @@ mod tests {
         ];
         let response = pre_generate(&deps, request).await;
         assert_eq!(
-            response.annotations.discovery.data.outcome,
+            response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
     }
@@ -608,7 +610,7 @@ mod tests {
         ];
         let response = pre_generate(&deps, request).await;
         assert_eq!(
-            response.annotations.discovery.data.outcome,
+            response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
     }
@@ -624,7 +626,7 @@ mod tests {
         }));
         let response = pre_generate(&deps, request).await;
         assert_eq!(
-            response.annotations.discovery.data.outcome,
+            response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
     }
@@ -652,7 +654,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            response.annotations.discovery.data.outcome,
+            response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
     }
@@ -662,12 +664,12 @@ mod tests {
         let deps = deps();
         let first = pre_generate(&deps, request_for("find", wide_tools())).await;
         assert_eq!(
-            first.annotations.discovery.data.outcome,
+            first.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
         let replay = pre_generate(&deps, request_for("find", wide_tools())).await;
         assert_eq!(
-            replay.annotations.discovery.data.outcome,
+            replay.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
         let mut later = request_for("find", wide_tools());

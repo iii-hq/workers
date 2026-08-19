@@ -1,4 +1,4 @@
-//! `discovery::search_functions` — one-shot lexical function search — plus
+//! `directory::search_functions` — one-shot lexical function search — plus
 //! the engine-catalog plumbing and the per-session registries behind it.
 //!
 //! Moved from the reflex spike; only the bm25 method came along (the model
@@ -15,16 +15,19 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::ConfigCell;
-use crate::search::{
-    canonical_tools, compact_query, tool_fingerprint, Bm25Index, ToolSchema,
-    EXCLUDED_NAMESPACE_PREFIXES,
+use crate::config::{SharedConfig, SkillsConfig};
+use crate::functions::registry::{
+    self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
-use crate::surface::catalog;
+use crate::functions::search_index::{
+    canonical_tools, compact_query, tool_fingerprint, Bm25Index, ToolSchema,
+    EXCLUDED_NAMESPACE_PREFIXES, SEARCH_FN,
+};
+use crate::surface::search_catalog as catalog;
 
 /// Timeout for one engine catalog call during a refresh.
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
-/// Workers returned by one `discovery::search_functions` call.
+/// Workers returned by one `directory::search_functions` call.
 const MAX_SEARCH_WORKERS: usize = 3;
 /// Contracts returned by one call — the ranked guards usually select a
 /// handful; this is the backstop.
@@ -47,8 +50,6 @@ const MAX_SEARCH_CLAUSES: usize = 4;
 /// Consecutive empty answers before the next would-be-empty one widens to
 /// single-term matches (weak anchors beat a third empty result).
 const DESPERATION_STREAK: u32 = 2;
-/// Timeout for one registry call during the installable fallback.
-const REGISTRY_TIMEOUT_MS: u64 = 5_000;
 /// Registry list queries per search: the full query, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -70,16 +71,16 @@ static CATALOG_RELOAD: Mutex<()> = Mutex::const_new(());
 
 pub type CatalogCell = Arc<RwLock<Arc<Vec<ToolSchema>>>>;
 
-/// Shared dependencies for the search handler and the hint hook. `iii` is
-/// the engine client the registry fallback triggers `directory::*` through;
-/// absent (tests), the fallback is silently skipped — fail-open like every
-/// other registry failure.
+/// Shared dependencies for the search handler and the hint hook. The
+/// registry search runs in-process through [`registry::worker_list`] /
+/// [`registry::worker_info`] with the worker's shared config and cache —
+/// no engine round trip.
 #[derive(Clone)]
 pub struct Deps {
-    pub config: ConfigCell,
+    pub config: SharedConfig,
     pub catalog: CatalogCell,
     pub sessions: Arc<std::sync::Mutex<SessionRegistry>>,
-    pub iii: Option<Arc<IIIClient>>,
+    pub registry_cache: RegistryCache,
 }
 
 const SESSIONS_CAP: usize = 1024;
@@ -219,18 +220,18 @@ reference OVERRIDES discovery for them — do not call engine::functions::list o
 engine::functions::info for these. Call them with their listed request fields, directly when \
 the function is a tool in your surface, otherwise via agent_trigger with { \"function\": \
 \"<function_id>\", \"payload\": { ... } }. For anything missing, call \
-discovery::search_functions again with a more specific query; if a listed call is rejected, \
+directory::search_functions again with a more specific query; if a listed call is rejected, \
 fall back to normal discovery.";
 
 const SEARCH_REFINE_GUIDANCE: &str = "No functions matched this query. Refine the query \
-with the concrete capabilities the task needs and call discovery::search_functions once more.";
+with the concrete capabilities the task needs and call directory::search_functions once more.";
 
 const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched this query, but the \
 public iii worker registry has workers (verified authors) whose functions match — they are \
 listed under `installable` and are NOT callable yet. To use one: confirm with the user \
 first, then install it with worker::add using { \"source\": { \"kind\": \"registry\", \
 \"name\": \"<installable worker name>\" }, \"wait\": false }, poll worker::status until it \
-reports running, and then call the listed functions (or call discovery::search_functions \
+reports running, and then call the listed functions (or call directory::search_functions \
 again). If none fit, refine the query and search once more.";
 
 const SEARCH_INSTALL_NOTE: &str = "The `installable` entries are registry workers that are \
@@ -287,7 +288,7 @@ pub struct SearchFunctionsResponse {
 /// nothing for single-clause queries (the whole-query ranking already
 /// covers them) and at most MAX_SEARCH_CLAUSES clauses.
 fn query_clauses(query: &str) -> Vec<String> {
-    let informative = |text: &str| crate::search::bm25_terms(text).count();
+    let informative = |text: &str| crate::functions::search_index::bm25_terms(text).count();
     let mut clauses: Vec<String> = Vec::new();
     for piece in query.split([',', ';']) {
         let piece = piece.trim();
@@ -424,7 +425,7 @@ fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWork
     workers
 }
 
-/// A registry candidate parsed from `directory::registry::workers::list`.
+/// A registry candidate distilled from a `worker_list` row.
 #[derive(Debug, Clone, PartialEq)]
 struct RegistryCandidate {
     name: String,
@@ -432,37 +433,18 @@ struct RegistryCandidate {
     description: String,
 }
 
-/// Verified-author candidates from a registry list response, in the
-/// registry's own relevance order. Unverified authors never surface: the
-/// fallback ends in an install suggestion, and suggesting unvetted code is
-/// not this worker's call.
-fn registry_candidates(list: &Value) -> Vec<RegistryCandidate> {
-    let Some(workers) = list.get("workers").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+/// Verified-author candidates from a registry list page, in the registry's
+/// own relevance order. Unverified authors never surface: the section ends
+/// in an install suggestion, and suggesting unvetted code is not this
+/// worker's call.
+fn registry_candidates(workers: &[Worker]) -> Vec<RegistryCandidate> {
     workers
         .iter()
-        .filter(|worker| {
-            worker
-                .get("author")
-                .and_then(|author| author.get("verified"))
-                .and_then(Value::as_bool)
-                == Some(true)
-        })
-        .filter_map(|worker| {
-            Some(RegistryCandidate {
-                name: worker.get("name").and_then(Value::as_str)?.to_string(),
-                version: worker
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                description: worker
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            })
+        .filter(|worker| worker.author.as_ref().is_some_and(|author| author.verified))
+        .map(|worker| RegistryCandidate {
+            name: worker.name.clone(),
+            version: worker.version.clone().unwrap_or_default(),
+            description: worker.description.clone().unwrap_or_default(),
         })
         .collect()
 }
@@ -471,44 +453,32 @@ fn registry_candidates(list: &Value) -> Vec<RegistryCandidate> {
 /// internal functions, excluded namespaces, and functions already installed
 /// (same id in the live catalog) are all skipped — the section only ever
 /// offers what installing would actually add.
-fn registry_contracts(info: &Value, installed: &HashSet<&str>) -> Vec<ToolSchema> {
-    let Some(functions) = info
-        .get("api_reference")
-        .and_then(|reference| reference.get("functions"))
-        .and_then(Value::as_array)
-    else {
-        return Vec::new();
-    };
-    functions
+fn registry_contracts(info: &WorkerInfoOutput, installed: &HashSet<&str>) -> Vec<ToolSchema> {
+    info.api_reference
+        .functions
         .iter()
         .filter(|function| {
             function
-                .get("metadata")
+                .metadata
+                .as_ref()
                 .and_then(|metadata| metadata.get("internal"))
                 .and_then(Value::as_bool)
                 != Some(true)
         })
-        .filter_map(|function| {
-            let name = function.get("name").and_then(Value::as_str)?;
-            if installed.contains(name)
-                || EXCLUDED_NAMESPACE_PREFIXES
+        .filter(|function| {
+            !installed.contains(function.name.as_str())
+                && function.name != SEARCH_FN
+                && EXCLUDED_NAMESPACE_PREFIXES
                     .iter()
-                    .any(|prefix| name.starts_with(prefix))
-            {
-                return None;
-            }
-            Some(ToolSchema {
-                name: name.to_string(),
-                description: function
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                parameters: function
-                    .get("request_schema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({ "type": "object" })),
-            })
+                    .all(|prefix| !function.name.starts_with(prefix))
+        })
+        .map(|function| ToolSchema {
+            name: function.name.clone(),
+            description: function.description.clone().unwrap_or_default(),
+            parameters: function
+                .request_schema
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "object" })),
         })
         .collect()
 }
@@ -542,7 +512,7 @@ fn rank_registry_contracts(
 /// single term lands.
 fn registry_queries(query: &str) -> Vec<String> {
     let mut queries = vec![query.to_string()];
-    for term in crate::search::bm25_terms(query) {
+    for term in crate::functions::search_index::bm25_terms(query) {
         if queries.len() >= MAX_REGISTRY_QUERIES {
             break;
         }
@@ -595,33 +565,37 @@ fn assemble_installable(
 /// registry down, malformed payload, no matches — returns an empty section:
 /// the search itself must never error over this.
 async fn registry_installable(
-    iii: &Arc<IIIClient>,
+    cfg: &SkillsConfig,
+    cache: &RegistryCache,
     installed: &[ToolSchema],
     query: &str,
 ) -> Vec<InstallableWorker> {
     // All list variants concurrently: a cold registry costs one timeout,
     // not one per variant, and no variant's hits starve another's — the
     // global ranking dedupes. Variant order still decides candidate
-    // priority (full query first).
+    // priority (full query first). In-process calls: same client, cache,
+    // and error hygiene as `directory::registry::workers::list`.
     let mut lists = tokio::task::JoinSet::new();
     for (priority, list_query) in registry_queries(query).into_iter().enumerate() {
-        let iii = iii.clone();
+        let cfg = cfg.clone();
+        let cache = cache.clone();
         lists.spawn(async move {
-            let result = iii
-                .trigger(TriggerRequest {
-                    function_id: "directory::registry::workers::list".into(),
-                    payload: json!({ "search": list_query }),
-                    action: None,
-                    timeout_ms: Some(REGISTRY_TIMEOUT_MS),
-                })
-                .await;
+            let result = registry::worker_list(
+                &cfg,
+                &cache,
+                WorkerListInput {
+                    search: Some(list_query),
+                    cursor: None,
+                },
+            )
+            .await;
             (priority, result)
         });
     }
-    let mut responses: Vec<(usize, Value)> = Vec::new();
+    let mut responses: Vec<(usize, Vec<Worker>)> = Vec::new();
     while let Some(joined) = lists.join_next().await {
         match joined {
-            Ok((priority, Ok(list))) => responses.push((priority, list)),
+            Ok((priority, Ok(list))) => responses.push((priority, list.workers)),
             Ok((_, Err(error))) => {
                 tracing::warn!(%error, "registry search: list variant failed; skipping")
             }
@@ -639,8 +613,8 @@ async fn registry_installable(
     // not starved out of the cap by the first one's lookalikes.
     let variant_lists: Vec<Vec<RegistryCandidate>> = responses
         .iter()
-        .map(|(_, list)| {
-            registry_candidates(list)
+        .map(|(_, workers)| {
+            registry_candidates(workers)
                 .into_iter()
                 .filter(|candidate| !installed_namespaces.contains(candidate.name.as_str()))
                 .collect()
@@ -671,21 +645,23 @@ async fn registry_installable(
     // so first-seen contract dedupe is deterministic.
     let mut infos = tokio::task::JoinSet::new();
     for (index, candidate) in candidates.iter().enumerate() {
-        let iii = iii.clone();
+        let cfg = cfg.clone();
+        let cache = cache.clone();
         let name = candidate.name.clone();
         infos.spawn(async move {
-            let result = iii
-                .trigger(TriggerRequest {
-                    function_id: "directory::registry::workers::info".into(),
-                    payload: json!({ "name": name }),
-                    action: None,
-                    timeout_ms: Some(REGISTRY_TIMEOUT_MS),
-                })
-                .await;
+            let result = registry::worker_info(
+                &cfg,
+                &cache,
+                WorkerInfoInput {
+                    name,
+                    ..WorkerInfoInput::default()
+                },
+            )
+            .await;
             (index, result)
         });
     }
-    let mut info_responses: Vec<(usize, Value)> = Vec::new();
+    let mut info_responses: Vec<(usize, WorkerInfoOutput)> = Vec::new();
     while let Some(joined) = infos.join_next().await {
         match joined {
             Ok((index, Ok(info))) => info_responses.push((index, info)),
@@ -826,10 +802,9 @@ pub async fn search_functions(
     // registry_search knob; every failure inside returns an empty section
     // (fail-open).
     let mut installable: Vec<InstallableWorker> = Vec::new();
-    if deps.config.read().await.registry_search {
-        if let Some(iii) = deps.iii.as_ref() {
-            installable = registry_installable(iii, &tools, &query).await;
-        }
+    let cfg = deps.config.load_full();
+    if cfg.registry_search {
+        installable = registry_installable(&cfg, &deps.registry_cache, &tools, &query).await;
     }
     let guidance = if workers.is_empty() && repeated.is_empty() {
         if installable.is_empty() {
@@ -898,9 +873,10 @@ fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
         return Err("catalog list contained duplicate function id".into());
     }
     ids.retain(|id| {
-        EXCLUDED_NAMESPACE_PREFIXES
-            .iter()
-            .all(|prefix| !id.starts_with(prefix))
+        id != SEARCH_FN
+            && EXCLUDED_NAMESPACE_PREFIXES
+                .iter()
+                .all(|prefix| !id.starts_with(prefix))
     });
     Ok(ids)
 }
@@ -915,18 +891,36 @@ fn catalog_from_responses(
     }
     ids.into_iter()
         .zip(responses)
-        .map(|(expected_id, response)| {
-            let response = response.map_err(|_| "catalog info response failed".to_string())?;
-            let id = response
+        .filter_map(|(expected_id, response)| {
+            let response = match response {
+                Ok(response) => response,
+                Err(_) => return Some(Err("catalog info response failed".to_string())),
+            };
+            let id = match response
                 .get("function_id")
                 .or_else(|| response.get("id"))
                 .or_else(|| response.get("name"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| "catalog info response was malformed".to_string())?;
+            {
+                Some(id) => id,
+                None => return Some(Err("catalog info response was malformed".to_string())),
+            };
             if id != expected_id {
-                return Err("catalog info response did not match its request".into());
+                return Some(Err("catalog info response did not match its request".into()));
             }
-            Ok(ToolSchema {
+            // Internal plumbing (hooks, config handlers, on-change
+            // listeners) is not a capability an agent should discover —
+            // exclusion is by metadata, not by namespace, so the worker's
+            // own public directory::* functions stay searchable.
+            if response
+                .get("metadata")
+                .and_then(|metadata| metadata.get("internal"))
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                return None;
+            }
+            Some(Ok(ToolSchema {
                 name: expected_id,
                 description: response
                     .get("description")
@@ -939,7 +933,7 @@ fn catalog_from_responses(
                     .or_else(|| response.get("request_schema"))
                     .cloned()
                     .unwrap_or_else(|| json!({ "type": "object" })),
-            })
+            }))
         })
         .collect()
 }
@@ -1005,7 +999,7 @@ pub async fn refresh_catalog(iii: &IIIClient, cell: &CatalogCell) -> Result<bool
 pub fn required_bindings() -> Vec<(&'static str, &'static str, Value)> {
     vec![(
         "engine::functions-available",
-        "discovery::on-functions-change",
+        "directory::on-functions-change",
         json!({}),
     )]
 }
@@ -1025,7 +1019,7 @@ pub fn bind_best_effort(iii: &IIIClient) {
 
 /// Register the public search function, the internal catalog listener, and
 /// the internal pre-generate hook.
-pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
+pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
     let specs = catalog();
 
     let search_deps = deps.clone();
@@ -1101,25 +1095,29 @@ mod tests {
         assert!(drop_low_coverage(Vec::new()).is_empty());
     }
 
+    fn registry_worker(name: &str, version: &str, description: &str, verified: bool) -> Worker {
+        serde_json::from_value(json!({
+            "name": name,
+            "version": version,
+            "description": description,
+            "author": { "verified": verified },
+        }))
+        .expect("worker fixture deserializes")
+    }
+
     #[test]
-    fn registry_candidates_keep_verified_authors_in_order_and_cap() {
-        let list = json!({ "workers": [
-            { "name": "unverified", "version": "1.0.0", "description": "d",
-              "author": { "verified": false } },
-            { "name": "email-kit", "version": "0.3.1", "description": "send email",
-              "author": { "verified": true } },
-            { "name": "no-author", "version": "1.0.0", "description": "d" },
-            { "name": "mailer", "version": "2.0.0", "description": "smtp",
-              "author": { "verified": true } },
-            { "name": "extra", "version": "1.0.0", "description": "d",
-              "author": { "verified": true } },
-        ]});
-        let candidates = registry_candidates(&list);
-        assert_eq!(candidates.len(), 3);
+    fn registry_candidates_keep_verified_authors_in_order() {
+        let workers = vec![
+            registry_worker("unverified", "1.0.0", "d", false),
+            registry_worker("email-kit", "0.3.1", "send email", true),
+            registry_worker("mailer", "2.0.0", "smtp", true),
+        ];
+        let candidates = registry_candidates(&workers);
+        assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].name, "email-kit");
         assert_eq!(candidates[0].version, "0.3.1");
         assert_eq!(candidates[1].name, "mailer");
-        assert!(registry_candidates(&json!({})).is_empty());
+        assert!(registry_candidates(&[]).is_empty());
     }
 
     #[test]
@@ -1174,20 +1172,25 @@ mod tests {
 
     #[test]
     fn registry_contracts_skip_internal_installed_and_excluded() {
-        let info = json!({ "api_reference": { "functions": [
-            { "name": "email::send", "description": "send an email",
-              "request_schema": { "type": "object" }, "metadata": {} },
-            { "name": "email::on-config-change", "description": "internal",
-              "metadata": { "internal": true } },
-            { "name": "state::set", "description": "already installed" },
-            { "name": "engine::functions::list", "description": "excluded" },
-        ]}});
+        let info: WorkerInfoOutput = serde_json::from_value(json!({
+            "worker": { "name": "email" },
+            "api_reference": { "functions": [
+                { "name": "email::send", "description": "send an email",
+                  "request_schema": { "type": "object" }, "metadata": {} },
+                { "name": "email::on-config-change", "description": "internal",
+                  "metadata": { "internal": true } },
+                { "name": "state::set", "description": "already installed" },
+                { "name": "engine::functions::list", "description": "excluded" },
+                { "name": SEARCH_FN, "description": "the search itself" },
+            ]},
+            "skills_tree": { "skills": [], "prompts": [] },
+        }))
+        .expect("info fixture deserializes");
         let installed: HashSet<&str> = ["state::set"].into();
         let contracts = registry_contracts(&info, &installed);
         assert_eq!(contracts.len(), 1);
         assert_eq!(contracts[0].name, "email::send");
         assert_eq!(contracts[0].parameters, json!({ "type": "object" }));
-        assert!(registry_contracts(&json!({}), &installed).is_empty());
     }
 
     #[test]

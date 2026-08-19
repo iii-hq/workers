@@ -1,5 +1,5 @@
 //! Lexical function search: the BM25 scorer, tokenizer folds, corpus
-//! slimming, and fingerprinting behind `discovery::search_functions`.
+//! slimming, and fingerprinting behind `directory::search_functions`.
 //!
 //! Duplicated from the reflex spike (reflex/src/runtime.rs) by decision —
 //! reflex is disposable and this worker owns the calibrations from here on.
@@ -17,7 +17,9 @@ const INDEX_DESCRIPTION_BYTES: usize = 160;
 /// Function-id prefixes that never participate in search: the engine's own
 /// surface, this worker, and the reflex spike (its hook machinery must not
 /// be discovered as a capability).
-pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 3] = ["engine::", "reflex::", "discovery::"];
+pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 1] = ["engine::"];
+/// The search's own id: never searchable, never operating evidence.
+pub(crate) const SEARCH_FN: &str = "directory::search_functions";
 
 /// One catalog entry: the contract fields search runs on.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -373,14 +375,14 @@ fn slim_parameters(parameters: &serde_json::Value) -> serde_json::Value {
 pub(crate) fn canonical_tools(tools: &[ToolSchema]) -> Vec<ToolSchema> {
     let mut tools = tools
         .iter()
-        // The engine control plane (trigger registration, discovery) is not a
-        // selectable "worker": excluding it keeps Needle from proposing
-        // control-plane calls and from ever predicting "engine" as the worker
-        // to document.
+        // The engine control plane is not a selectable "worker", and the
+        // search must never rank itself: excluding both keeps results to
+        // capabilities a task can actually be built from.
         .filter(|tool| {
-            EXCLUDED_NAMESPACE_PREFIXES
-                .iter()
-                .all(|prefix| !tool.name.starts_with(prefix))
+            tool.name != SEARCH_FN
+                && EXCLUDED_NAMESPACE_PREFIXES
+                    .iter()
+                    .all(|prefix| !tool.name.starts_with(prefix))
         })
         .map(|tool| ToolSchema {
             name: tool.name.clone(),

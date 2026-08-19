@@ -6,7 +6,7 @@
 # e2e/, …) keep their own self-contained projects and lockfiles; list a
 # directory here only when it participates in the shared console-UI surface.
 packages:
-  - discovery/ui
+  - iii-directory/ui
   - packages/*
   - console/web
   - console/ui
@@ -25,7 +25,6 @@ packages:
   - pdf/ui
   - state/ui
   - storage/ui
-  - iii-directory/ui
   - shell/ui
   - worktree/ui
   - github/ui

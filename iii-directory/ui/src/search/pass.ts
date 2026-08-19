@@ -1,6 +1,6 @@
 /**
  * Parser + headline for the discovery hook's transcript annotation
- * (`origin.discovery`, V1): outcome `hint_injected` or `skipped` with one of
+ * (`origin.directory`, V1): outcome `hint_injected` or `skipped` with one of
  * six stable reasons, plus coarse counts. Anything malformed parses to null
  * and the console falls back to the annotation summary string.
  */
@@ -69,14 +69,14 @@ export interface Headline {
 export function passHeadline(pass: DiscoveryPass): Headline {
   if (pass.outcome === 'hint_injected') {
     return {
-      text: 'discovery injected the search hint',
-      detail: 'call discovery::search_functions once',
+      text: 'directory injected the search hint',
+      detail: 'call directory::search_functions once',
     }
   }
   const detail = (() => {
     switch (pass.reason) {
       case 'search_unavailable':
-        return 'discovery::search_functions not callable'
+        return 'directory::search_functions not callable'
       case 'already_searched':
         return 'search result already in context'
       case 'narrow_surface':
@@ -91,5 +91,5 @@ export function passHeadline(pass: DiscoveryPass): Headline {
         return 'skipped'
     }
   })()
-  return { text: 'discovery injected nothing', detail }
+  return { text: 'directory injected nothing', detail }
 }

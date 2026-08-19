@@ -1,6 +1,6 @@
 {
   "description": "Search every available function with one natural-language query describing everything the task needs; returns the full API reference for each relevant function, grouped by worker.",
-  "function_id": "discovery::search_functions",
+  "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
@@ -18,6 +18,33 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "InstallableWorker": {
+        "description": "A registry worker that is NOT installed but carries functions matching the query. `name` is the registry slug `worker::add` installs.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "functions": {
+            "items": {
+              "$ref": "#/definitions/SearchContract"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "functions",
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
       "SearchContract": {
         "properties": {
           "description": {
@@ -58,6 +85,13 @@
       "guidance": {
         "type": "string"
       },
+      "installable": {
+        "description": "Registry workers (verified authors) with matching functions, present only when nothing installed matched. Their functions are NOT callable until the worker is installed.",
+        "items": {
+          "$ref": "#/definitions/InstallableWorker"
+        },
+        "type": "array"
+      },
       "latency_ms": {
         "format": "double",
         "type": "number"
@@ -71,6 +105,7 @@
     },
     "required": [
       "guidance",
+      "installable",
       "latency_ms",
       "workers"
     ],

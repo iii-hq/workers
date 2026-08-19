@@ -13,11 +13,12 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::config::DiscoveryConfig;
-use crate::functions::{search_functions, Deps, SearchFunctionsRequest, SearchFunctionsResponse};
-use crate::search::ToolSchema;
+use crate::config::SkillsConfig;
+use crate::functions::registry::RegistryCache;
+use crate::functions::search::{search_functions, Deps, SearchFunctionsRequest, SearchFunctionsResponse};
+use crate::functions::search_index::ToolSchema;
 
-const CATALOG_FIXTURE: &str = include_str!("../tests/fixtures/discover_catalog.json");
+const CATALOG_FIXTURE: &str = include_str!("../../tests/fixtures/discover_catalog.json");
 
 fn fixture_catalog() -> Vec<ToolSchema> {
     let entries: Vec<Value> = serde_json::from_str(CATALOG_FIXTURE).expect("fixture parses");
@@ -38,10 +39,10 @@ fn fixture_catalog() -> Vec<ToolSchema> {
 
 fn fixture_deps() -> Deps {
     Deps {
-        config: Arc::new(RwLock::new(DiscoveryConfig::default())),
+        config: SkillsConfig::default().into_shared(),
         catalog: Arc::new(RwLock::new(Arc::new(fixture_catalog()))),
         sessions: Arc::default(),
-        iii: None,
+        registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
     }
 }
 
@@ -175,7 +176,7 @@ async fn gibberish_query_returns_refine_guidance() {
 }
 
 #[tokio::test]
-async fn engine_and_reflex_never_appear_in_results() {
+async fn engine_and_the_search_itself_never_appear_in_results() {
     let deps = fixture_deps();
     for query in [
         "list every available function on the engine",
@@ -185,7 +186,8 @@ async fn engine_and_reflex_never_appear_in_results() {
         let response = ask(&deps, query).await;
         for id in function_ids(&response) {
             assert!(
-                !id.starts_with("engine::") && !id.starts_with("reflex::"),
+                !id.starts_with("engine::")
+                    && id != crate::functions::search_index::SEARCH_FN,
                 "query {query:?} leaked {id}"
             );
         }
@@ -285,14 +287,14 @@ async fn guidance_carries_the_override_and_requery_contract() {
     assert!(response.guidance.contains("OVERRIDES"));
     assert!(response
         .guidance
-        .contains("discovery::search_functions again"));
+        .contains("directory::search_functions again"));
     assert!(response.guidance.contains("agent_trigger"));
 }
 
 #[tokio::test]
 #[ignore = "exploratory dump for precision tuning"]
 async fn dump_probe_queries() {
-    use crate::search::{canonical_tools, Bm25Index};
+    use crate::functions::search_index::{canonical_tools, Bm25Index};
     let corpus = canonical_tools(&fixture_catalog());
     let index = Bm25Index::build(&corpus);
     for query in [

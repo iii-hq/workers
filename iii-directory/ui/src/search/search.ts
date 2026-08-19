@@ -1,6 +1,6 @@
 import type { JsonValue } from '@iii-dev/console-ui'
 
-/** Parsed `discovery::search_functions` result as the call card renders it. */
+/** Parsed `directory::search_functions` result as the call card renders it. */
 export interface DiscoverContractView {
   function_id: string
   description: string

@@ -1,5 +1,5 @@
 /**
- * Injected call-card view for `discovery::search_functions`, mirroring the console's
+ * Injected call-card view for `directory::search_functions`, mirroring the console's
  * `engine::functions::info` layout (meta row → ƒ line → description →
  * collapsible request schema). The console's card chrome is private to the
  * console bundle, so the small presentational pieces are ported here under
@@ -164,7 +164,7 @@ export function DiscoverCard({
     <div className="discovery-search-card">
       <MetaRow>
         <Badge className="discovery-search-pill" variant="accent">
-          discovery
+          search
         </Badge>
         <KvChip label="workers">{view.workers.length}</KvChip>
         <KvChip label="functions">{functionCount(view)}</KvChip>
@@ -208,8 +208,8 @@ export function DiscoverCard({
 
 export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
   return {
-    id: 'discovery/page.js#search',
-    isMatch: (functionId) => functionId === 'discovery::search_functions',
+    id: 'iii-directory/page.js#search',
+    isMatch: (functionId) => functionId === 'directory::search_functions',
     tryRender: (message: FunctionTriggerMessage) => {
       if (message.pendingApproval) return null
       if (isErrorOutput(message.output)) return null

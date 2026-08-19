@@ -1,8 +1,8 @@
-//! The worker's public surface as data: ids, descriptions, and typed
+//! The search surface as data: ids, descriptions, and typed
 //! request/response schemas — the single source for registration and the
 //! golden schema tests.
 
-use crate::functions::{
+use crate::functions::search::{
     AckResponse, OnFunctionsChangeEvent, SearchFunctionsRequest, SearchFunctionsResponse,
 };
 use crate::hook::{
@@ -35,22 +35,22 @@ fn spec<I: schemars::JsonSchema, O: schemars::JsonSchema>(
     }
 }
 
-pub fn catalog() -> Vec<FunctionSpec> {
+pub fn search_catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SearchFunctionsRequest, SearchFunctionsResponse>(
-            "discovery::search_functions",
+            "directory::search_functions",
             "Search every available function with one natural-language query describing everything the task needs; returns the full API reference for each relevant function, grouped by worker.",
         ),
         spec::<PreGenerateHookRequest, PreGenerateHookResponse>(
-            "discovery::pre-generate",
+            "directory::pre-generate",
             "Internal: inject the conditional search hint into one harness generation.",
         ),
         spec::<OnFunctionsChangeEvent, AckResponse>(
-            "discovery::on-functions-change",
+            "directory::on-functions-change",
             "Internal: refresh the search catalog after the engine function set changes.",
         ),
         spec::<HintPreviewRequest, HintPreviewResponse>(
-            "discovery::hint-preview",
+            "directory::hint-preview",
             "Internal: the exact search-hint text per exposure mode, for the configuration UI.",
         ),
     ]

@@ -1,6 +1,6 @@
 {
   "description": "Internal: inject the conditional search hint into one harness generation.",
-  "function_id": "discovery::pre-generate",
+  "function_id": "directory::pre-generate",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
@@ -191,12 +191,12 @@
       },
       "PreGenerateAnnotations": {
         "properties": {
-          "discovery": {
+          "directory": {
             "$ref": "#/definitions/DiscoveryTranscriptAnnotation"
           }
         },
         "required": [
-          "discovery"
+          "directory"
         ],
         "type": "object"
       },

@@ -1,6 +1,6 @@
 {
   "description": "Internal: the exact search-hint text per exposure mode, for the configuration UI.",
-  "function_id": "discovery::hint-preview",
+  "function_id": "directory::hint-preview",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "HintPreviewRequest",

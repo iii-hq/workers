@@ -46,6 +46,9 @@ pub struct SharedState {
     pub registered_cache: Arc<RegisteredWorkersCache>,
     /// Restart-only fields captured at boot.
     boot_topology: Topology,
+    /// Live `directory::pre-generate` hook binding, reconciled with the
+    /// `inject_hint` knob on every reload.
+    pub hint_binding: crate::hook::HintBindingState,
 }
 
 impl SharedState {
@@ -55,6 +58,7 @@ impl SharedState {
         registry_cache: RegistryCache,
         registered_cache: Arc<RegisteredWorkersCache>,
         boot_topology: Topology,
+        hint_binding: crate::hook::HintBindingState,
     ) -> Self {
         Self {
             config,
@@ -62,6 +66,7 @@ impl SharedState {
             registry_cache,
             registered_cache,
             boot_topology,
+            hint_binding,
         }
     }
 }
@@ -74,7 +79,9 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "id": CONFIG_ID,
         "name": "iii-directory",
         "description": "Skills/prompts folders, workers-registry URL, download timeouts, \
-                        and skill-visibility filters for the iii-directory worker.",
+                        skill-visibility filters, and the function-search knobs \
+                        (inject_hint, hint_min_workers, registry_search) for the \
+                        iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
     });
     if let Some(seed) = seed {
@@ -203,7 +210,11 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
         );
         return;
     }
+    let inject_hint = cfg.inject_hint;
     apply_config(state, cfg).await;
+    // Reconcile the pre-generate hook binding with the reloaded knob (hot,
+    // no restart): on → bind once; off → unregister.
+    crate::hook::apply(iii, &state.hint_binding, inject_hint);
     tracing::info!("iii-directory configuration reloaded (tunable fields applied; caches cleared)");
 }
 
