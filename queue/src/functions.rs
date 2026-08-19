@@ -138,13 +138,13 @@ enum AdapterDlqMessage {
 }
 
 pub fn register_all(
-    iii: &Arc<IIIClient>,
-    engine_iii: &Arc<IIIClient>,
+    project_iii: &Arc<IIIClient>,
+    default_iii: &Arc<IIIClient>,
     adapter: Arc<SwappableAdapter>,
     runtime: FunctionQueueRuntime,
 ) {
     let define_runtime = runtime.clone();
-    iii.register_function(
+    project_iii.register_function(
         DEFINE_QUEUE_FN_ID,
         RegisterFunction::new_async(move |input: DefineQueueInput| {
             let runtime = define_runtime.clone();
@@ -153,7 +153,7 @@ pub fn register_all(
         .description("Define and start a durable named function queue"),
     );
 
-    engine_iii.register_function(
+    default_iii.register_function(
         ENQUEUE_FUNCTION_FN_ID,
         RegisterFunction::new_async(move |input: EnqueueInput| {
             let runtime = runtime.clone();
@@ -163,7 +163,7 @@ pub fn register_all(
     );
 
     let publish_adapter = adapter.clone();
-    iii.register_function(
+    project_iii.register_function(
         PUBLISH_FN_ID,
         RegisterFunction::new_async(move |input: PublishInput| {
             let adapter = publish_adapter.clone();
@@ -173,7 +173,7 @@ pub fn register_all(
     );
 
     let redrive_adapter = adapter.clone();
-    iii.register_function(
+    project_iii.register_function(
         REDRIVE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveInput| {
             let adapter = redrive_adapter.clone();
@@ -183,7 +183,7 @@ pub fn register_all(
     );
 
     let redrive_message_adapter = adapter.clone();
-    iii.register_function(
+    project_iii.register_function(
         REDRIVE_MESSAGE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveSingleInput| {
             let adapter = redrive_message_adapter.clone();
@@ -193,7 +193,7 @@ pub fn register_all(
     );
 
     let discard_adapter = adapter.clone();
-    iii.register_function(
+    project_iii.register_function(
         DISCARD_MESSAGE_FN_ID,
         RegisterFunction::new_async(move |input: RedriveSingleInput| {
             let adapter = discard_adapter.clone();
@@ -203,7 +203,7 @@ pub fn register_all(
     );
 
     let list_adapter = adapter.clone();
-    engine_iii.register_function(
+    default_iii.register_function(
         LIST_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: ListTopicsInput| {
             let adapter = list_adapter.clone();
@@ -213,7 +213,7 @@ pub fn register_all(
     );
 
     let stats_adapter = adapter.clone();
-    engine_iii.register_function(
+    default_iii.register_function(
         TOPIC_STATS_FN_ID,
         RegisterFunction::new_async(move |input: TopicStatsInput| {
             let adapter = stats_adapter.clone();
@@ -223,7 +223,7 @@ pub fn register_all(
     );
 
     let dlq_topics_adapter = adapter.clone();
-    engine_iii.register_function(
+    default_iii.register_function(
         DLQ_TOPICS_FN_ID,
         RegisterFunction::new_async(move |_input: DlqTopicsInput| {
             let adapter = dlq_topics_adapter.clone();
@@ -233,7 +233,7 @@ pub fn register_all(
     );
 
     let dlq_messages_adapter = adapter;
-    engine_iii.register_function(
+    default_iii.register_function(
         DLQ_MESSAGES_FN_ID,
         RegisterFunction::new_async(move |input: DlqMessagesInput| {
             let adapter = dlq_messages_adapter.clone();
