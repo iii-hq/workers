@@ -101,6 +101,9 @@ export interface InjectableUiRuntime {
 interface ConversationsProviderProps {
   children: ReactNode
   injectableUiRuntime?: Promise<InjectableUiRuntime>
+  /** Called when an injected page asks for a conversation, so the host can
+      place the chat pane when none is open. */
+  onConversationRequested?: (sessionId: string) => void
 }
 
 /**
@@ -112,6 +115,7 @@ interface ConversationsProviderProps {
 export function ConversationsProvider({
   children,
   injectableUiRuntime,
+  onConversationRequested,
 }: ConversationsProviderProps) {
   const harnessStatus = useHarnessStatus(backend.id === 'real')
   const harnessAvailable = isHarnessAvailable(harnessStatus)
@@ -166,12 +170,18 @@ export function ConversationsProvider({
   conversationsRef.current = api.conversations
   const activeIdRef = useRef(api.activeId)
   activeIdRef.current = api.activeId
+  const conversationRequestedRef = useRef(onConversationRequested)
+  conversationRequestedRef.current = onConversationRequested
   const conversationAdapterRef = useRef<ConversationAdapter | null>(null)
   if (!conversationAdapterRef.current) {
     conversationAdapterRef.current = {
       selectConversation(sessionId) {
         const id = sessionId.trim()
-        if (id) selectConversationRef.current(id)
+        if (!id) return
+        selectConversationRef.current(id)
+        // Selecting is only half of it: a page that started a turn wants the
+        // operator to see it, and the chat pane may not be on screen at all.
+        conversationRequestedRef.current?.(id)
       },
       composerModel(conversationId) {
         const requested = conversationId?.trim()

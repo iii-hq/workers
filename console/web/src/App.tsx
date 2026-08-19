@@ -210,7 +210,12 @@ export function App({
   })
 
   return (
-    <ConversationsProvider injectableUiRuntime={injectableUiRuntime}>
+    <ConversationsProvider
+      injectableUiRuntime={injectableUiRuntime}
+      onConversationRequested={() => {
+        workspaceRef.current.openScreen(CHAT_SCREEN)
+      }}
+    >
       <Sheet>
         <Header
           workspace={workspace}
