@@ -75,3 +75,13 @@ siphasher = "1.0.3"
 serde_json = "1"
 which = "8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+# Release binary size: strip drops DWARF debug info (panic backtraces become
+# unresolved addresses); thin LTO + a single codegen unit let the optimizer
+# dead-strip and deduplicate across crate boundaries. Together: 35.8 -> 23.0
+# MiB, at the cost of a few extra minutes per release build. No feature,
+# dependency, or runtime behavior changes.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
