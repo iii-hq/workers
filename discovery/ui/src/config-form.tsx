@@ -58,6 +58,7 @@ export function DiscoveryConfigForm(props: ConfigFormProps & { host: Host }) {
   const preview = useHintPreview(props.host)
   const [exposure, setExposure] = useState<ExposureMode>('agent_trigger')
   const injectHint = value.inject_hint !== false
+  const registrySearch = value.registry_search !== false
 
   useEffect(() => {
     const field = props.focusField?.[0]
@@ -72,9 +73,38 @@ export function DiscoveryConfigForm(props: ConfigFormProps & { host: Host }) {
   return (
     <div className="discovery-cfg" ref={rootRef}>
       <p className="discovery-cfg-intro">
-        One-shot lexical function search. Both knobs hot-apply on save — no
+        One-shot lexical function search. Every knob hot-applies on save — no
         restart.
       </p>
+
+      <section
+        className="discovery-cfg-section"
+        aria-labelledby="discovery-cfg-registry"
+      >
+        <h3 id="discovery-cfg-registry">Registry search</h3>
+
+        <label className="discovery-cfg-check" htmlFor="discovery-cfg-registry-search">
+          <input
+            id="discovery-cfg-registry-search"
+            data-field="registry_search"
+            type="checkbox"
+            checked={registrySearch}
+            onChange={(event) =>
+              props.onChange({ ...value, registry_search: event.target.checked })
+            }
+          />
+          <span>
+            <strong>Include installable registry workers</strong>
+            <small>
+              Every search also consults the public worker registry (verified
+              authors only) and lists NOT-installed workers whose functions
+              match under <code>installable</code>, alongside the installed
+              results. Registry errors just omit the section. Default:
+              enabled.
+            </small>
+          </span>
+        </label>
+      </section>
 
       <section className="discovery-cfg-section" aria-labelledby="discovery-cfg-hint">
         <h3 id="discovery-cfg-hint">Search hint</h3>

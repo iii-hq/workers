@@ -49,10 +49,13 @@ const MAX_SEARCH_CLAUSES: usize = 4;
 const DESPERATION_STREAK: u32 = 2;
 /// Timeout for one registry call during the installable fallback.
 const REGISTRY_TIMEOUT_MS: u64 = 5_000;
-/// Registry list queries per fallback: the full query, then informative
+/// Registry list queries per search: the full query, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
-/// natural-language queries that a single term ("email") hits.
-const MAX_REGISTRY_QUERIES: usize = 4;
+/// natural-language queries that a single term ("email") hits. All
+/// variants run concurrently, so the cap bounds registry load, not
+/// latency; it must cover the informative terms of a multi-intent query
+/// ("fetch a web page and send an email report" carries five).
+const MAX_REGISTRY_QUERIES: usize = 6;
 /// Registry candidates whose API reference is fetched (info round trips).
 const MAX_REGISTRY_CANDIDATES: usize = 4;
 /// Registry workers returned per search.
@@ -229,6 +232,12 @@ first, then install it with worker::add using { \"source\": { \"kind\": \"regist
 \"name\": \"<installable worker name>\" }, \"wait\": false }, poll worker::status until it \
 reports running, and then call the listed functions (or call discovery::search_functions \
 again). If none fit, refine the query and search once more.";
+
+const SEARCH_INSTALL_NOTE: &str = "The `installable` entries are registry workers that are \
+NOT installed — their functions are NOT callable yet. Prefer the installed functions above; \
+reach for an installable worker only when they cannot cover the task, and confirm with the \
+user before installing (worker::add with { \"source\": { \"kind\": \"registry\", \"name\": \
+\"<installable worker name>\" }, \"wait\": false }, then poll worker::status).";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
@@ -577,67 +586,122 @@ fn assemble_installable(
     section
 }
 
-/// The installable fallback: when nothing installed matched, ask the public
-/// registry (full query, then per-term retries), pull the top verified
+/// The installable side of a search: ask the public registry (full query,
+/// then per-term retries until anything hits), pull the top verified
 /// candidates' API references, and keep the functions that rank against the
-/// full query in one shared ranking. Every failure — registry down,
-/// malformed payload, no matches — returns an empty section: the search
-/// itself must never error over this.
-async fn registry_fallback(
-    iii: &IIIClient,
+/// full query in one shared ranking. Runs on every search; candidates whose
+/// name is already an installed namespace are skipped — installing them
+/// adds nothing the installed results don't already cover. Every failure —
+/// registry down, malformed payload, no matches — returns an empty section:
+/// the search itself must never error over this.
+async fn registry_installable(
+    iii: &Arc<IIIClient>,
     installed: &[ToolSchema],
     query: &str,
 ) -> Vec<InstallableWorker> {
-    let mut candidates: Vec<RegistryCandidate> = Vec::new();
-    for list_query in registry_queries(query) {
-        if candidates.len() >= MAX_REGISTRY_CANDIDATES {
-            break;
-        }
-        match iii
-            .trigger(TriggerRequest {
-                function_id: "directory::registry::workers::list".into(),
-                payload: json!({ "search": list_query }),
-                action: None,
-                timeout_ms: Some(REGISTRY_TIMEOUT_MS),
-            })
-            .await
-        {
-            Ok(list) => {
-                for candidate in registry_candidates(&list) {
-                    if candidates.len() >= MAX_REGISTRY_CANDIDATES {
-                        break;
-                    }
-                    if !candidates.iter().any(|seen| seen.name == candidate.name) {
-                        candidates.push(candidate);
-                    }
-                }
+    // All list variants concurrently: a cold registry costs one timeout,
+    // not one per variant, and no variant's hits starve another's — the
+    // global ranking dedupes. Variant order still decides candidate
+    // priority (full query first).
+    let mut lists = tokio::task::JoinSet::new();
+    for (priority, list_query) in registry_queries(query).into_iter().enumerate() {
+        let iii = iii.clone();
+        lists.spawn(async move {
+            let result = iii
+                .trigger(TriggerRequest {
+                    function_id: "directory::registry::workers::list".into(),
+                    payload: json!({ "search": list_query }),
+                    action: None,
+                    timeout_ms: Some(REGISTRY_TIMEOUT_MS),
+                })
+                .await;
+            (priority, result)
+        });
+    }
+    let mut responses: Vec<(usize, Value)> = Vec::new();
+    while let Some(joined) = lists.join_next().await {
+        match joined {
+            Ok((priority, Ok(list))) => responses.push((priority, list)),
+            Ok((_, Err(error))) => {
+                tracing::warn!(%error, "registry search: list variant failed; skipping")
             }
-            Err(error) => {
-                tracing::warn!(%error, "registry fallback: list failed; skipping");
-                return Vec::new();
-            }
+            Err(error) => tracing::warn!(%error, "registry search: list task failed; skipping"),
         }
     }
+    responses.sort_by_key(|(priority, _)| *priority);
+    let installed_namespaces: HashSet<&str> = installed
+        .iter()
+        .filter_map(|tool| function_namespace(&tool.name))
+        .collect();
+    // Round-robin across the variants' result lists: every query intent
+    // claims a candidate slot before any variant claims its second, so a
+    // multi-intent query's later capabilities ("… and send an email") are
+    // not starved out of the cap by the first one's lookalikes.
+    let variant_lists: Vec<Vec<RegistryCandidate>> = responses
+        .iter()
+        .map(|(_, list)| {
+            registry_candidates(list)
+                .into_iter()
+                .filter(|candidate| !installed_namespaces.contains(candidate.name.as_str()))
+                .collect()
+        })
+        .collect();
+    let mut candidates: Vec<RegistryCandidate> = Vec::new();
+    let mut round = 0;
+    while candidates.len() < MAX_REGISTRY_CANDIDATES {
+        let mut any = false;
+        for list in &variant_lists {
+            let Some(candidate) = list.get(round) else {
+                continue;
+            };
+            any = true;
+            if candidates.len() >= MAX_REGISTRY_CANDIDATES {
+                break;
+            }
+            if !candidates.iter().any(|seen| seen.name == candidate.name) {
+                candidates.push(candidate.clone());
+            }
+        }
+        if !any {
+            break;
+        }
+        round += 1;
+    }
+    // Info round trips concurrently too; pooling stays in candidate order
+    // so first-seen contract dedupe is deterministic.
+    let mut infos = tokio::task::JoinSet::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let iii = iii.clone();
+        let name = candidate.name.clone();
+        infos.spawn(async move {
+            let result = iii
+                .trigger(TriggerRequest {
+                    function_id: "directory::registry::workers::info".into(),
+                    payload: json!({ "name": name }),
+                    action: None,
+                    timeout_ms: Some(REGISTRY_TIMEOUT_MS),
+                })
+                .await;
+            (index, result)
+        });
+    }
+    let mut info_responses: Vec<(usize, Value)> = Vec::new();
+    while let Some(joined) = infos.join_next().await {
+        match joined {
+            Ok((index, Ok(info))) => info_responses.push((index, info)),
+            Ok((_, Err(error))) => {
+                tracing::warn!(%error, "registry search: info failed; skipping candidate")
+            }
+            Err(error) => tracing::warn!(%error, "registry search: info task failed; skipping"),
+        }
+    }
+    info_responses.sort_by_key(|(index, _)| *index);
     let installed: HashSet<&str> = installed.iter().map(|tool| tool.name.as_str()).collect();
     let mut owners: HashMap<String, RegistryCandidate> = HashMap::new();
     let mut pooled: Vec<ToolSchema> = Vec::new();
-    for candidate in candidates {
-        let info = match iii
-            .trigger(TriggerRequest {
-                function_id: "directory::registry::workers::info".into(),
-                payload: json!({ "name": candidate.name }),
-                action: None,
-                timeout_ms: Some(REGISTRY_TIMEOUT_MS),
-            })
-            .await
-        {
-            Ok(info) => info,
-            Err(error) => {
-                tracing::warn!(%error, worker = %candidate.name, "registry fallback: info failed; skipping candidate");
-                continue;
-            }
-        };
-        for contract in registry_contracts(&info, &installed) {
+    for (index, info) in &info_responses {
+        let candidate = &candidates[*index];
+        for contract in registry_contracts(info, &installed) {
             if !owners.contains_key(&contract.name) {
                 owners.insert(contract.name.clone(), candidate.clone());
                 pooled.push(contract);
@@ -757,14 +821,14 @@ pub async fn search_functions(
         repeated = prior;
     }
     let workers = assemble_workers(&selected, &tools);
-    // Installable fallback: nothing installed matched (and nothing was
-    // withheld as a repeat), so consult the public registry for workers
-    // that WOULD match if installed. Behind the registry_fallback knob;
-    // every failure inside returns an empty section (fail-open).
+    // Installable section: every search also consults the public registry
+    // for NOT-installed workers whose functions match — behind the
+    // registry_search knob; every failure inside returns an empty section
+    // (fail-open).
     let mut installable: Vec<InstallableWorker> = Vec::new();
-    if workers.is_empty() && repeated.is_empty() && deps.config.read().await.registry_fallback {
-        if let Some(iii) = deps.iii.as_deref() {
-            installable = registry_fallback(iii, &tools, &query).await;
+    if deps.config.read().await.registry_search {
+        if let Some(iii) = deps.iii.as_ref() {
+            installable = registry_installable(iii, &tools, &query).await;
         }
     }
     let guidance = if workers.is_empty() && repeated.is_empty() {
@@ -773,14 +837,19 @@ pub async fn search_functions(
         } else {
             SEARCH_INSTALL_GUIDANCE.to_string()
         }
-    } else if repeated.is_empty() {
-        SEARCH_GUIDANCE.to_string()
     } else {
-        format!(
-            "{SEARCH_GUIDANCE} Already provided earlier in this session (contracts \
+        let mut guidance = SEARCH_GUIDANCE.to_string();
+        if !repeated.is_empty() {
+            guidance = format!(
+                "{guidance} Already provided earlier in this session (contracts \
 unchanged — reuse the earlier reference): {}.",
-            repeated.join(", ")
-        )
+                repeated.join(", ")
+            );
+        }
+        if !installable.is_empty() {
+            guidance = format!("{guidance} {SEARCH_INSTALL_NOTE}");
+        }
+        guidance
     };
     if let Some(session_id) = session_id.as_deref() {
         deps.sessions

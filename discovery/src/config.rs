@@ -30,11 +30,13 @@ pub struct DiscoveryConfig {
     /// resolve faster through normal discovery than through a standing
     /// hint; `0` hints on every surface.
     pub hint_min_workers: usize,
-    /// When a search matches no installed function, also search the public
-    /// worker registry (verified authors only) and return matching workers
-    /// as an `installable` section — the model can propose `worker::add`.
-    /// Fail-open: a registry error falls back to the plain refine guidance.
-    pub registry_fallback: bool,
+    /// Also search the public worker registry (verified authors only) on
+    /// every call and return matching NOT-installed workers as an
+    /// `installable` section alongside the installed results — the model
+    /// can propose `worker::add`. Fail-open: a registry error just omits
+    /// the section.
+    #[serde(alias = "registry_fallback")]
+    pub registry_search: bool,
 }
 
 impl Default for DiscoveryConfig {
@@ -42,7 +44,7 @@ impl Default for DiscoveryConfig {
         Self {
             inject_hint: true,
             hint_min_workers: 2,
-            registry_fallback: true,
+            registry_search: true,
         }
     }
 }
@@ -68,7 +70,7 @@ fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: CONFIG_ID,
         name: "discovery",
-        description: "Discovery worker settings — whether the pre-generate search hint is bound at all (inject_hint, hot), the minimum surface width (hint_min_workers) at which it fires, and whether an empty search also consults the public worker registry (registry_fallback).",
+        description: "Discovery worker settings — whether the pre-generate search hint is bound at all (inject_hint, hot), the minimum surface width (hint_min_workers) at which it fires, and whether every search also consults the public worker registry for installable workers (registry_search).",
         schema: DiscoveryConfig::json_schema(),
         default_value: DiscoveryConfig::default().to_json(),
     }
@@ -147,11 +149,11 @@ mod tests {
                 .hint_min_workers,
             2
         );
-        assert!(DiscoveryConfig::default().registry_fallback);
+        assert!(DiscoveryConfig::default().registry_search);
         assert!(
-            !DiscoveryConfig::from_json(&json!({ "registry_fallback": false }))
+            !DiscoveryConfig::from_json(&json!({ "registry_search": false }))
                 .unwrap()
-                .registry_fallback
+                .registry_search
         );
     }
 
@@ -160,7 +162,7 @@ mod tests {
         let cfg = DiscoveryConfig {
             inject_hint: false,
             hint_min_workers: 0,
-            registry_fallback: false,
+            registry_search: false,
         };
         assert_eq!(DiscoveryConfig::from_json(&cfg.to_json()).unwrap(), cfg);
     }
