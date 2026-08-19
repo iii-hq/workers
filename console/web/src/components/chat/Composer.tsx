@@ -110,6 +110,12 @@ interface ComposerProps {
   blocked?: boolean
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
+  /**
+   * Put the caret in the editor on mount. The caller decides, because only it
+   * knows whether focus is welcome: on a touch device it raises the on-screen
+   * keyboard over the conversation, which is worse than aiming once.
+   */
+  autoFocus?: boolean
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /**
@@ -177,6 +183,7 @@ export function Composer({
   queueWhileStreaming,
   blocked,
   blockedPlaceholder = 'chat unavailable…',
+  autoFocus,
   initialContent,
   initialText,
   onTextChange,
@@ -426,6 +433,7 @@ export function Composer({
                 : 'send a message…'
           }
           disabled={inputDisabled}
+          autoFocus={autoFocus}
           initialContent={resolvedInitialContent}
           functionEntries={functionEntries}
           workingDir={workingDir}

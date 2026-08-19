@@ -1125,11 +1125,32 @@ export async function nestedGitStatus(
   return status === 'renamed' ? 'modified' : status
 }
 
+/** The committed body of one path, resolved from the directory it lives in so
+    a repository nested under a non-repository root still answers. Null means
+    there is no usable committed body — no repository, path untracked, binary,
+    truncated, or a failed exec — never an empty string, which a caller would
+    read as a real empty file. */
+export async function gitHeadBaseline(
+  host: Host,
+  cwd: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    const out = await git(host, cwd, ['show', `HEAD:./${path}`])
+    if (execFailure(out, 'git show HEAD') !== null) return null
+    if (out.stdout.includes('\0') || out.stdout.includes('�')) return null
+    return out.stdout
+  } catch {
+    return null
+  }
+}
+
+/** Committed body or empty, for the callers that already treat a missing
+    HEAD side as an addition. */
 export async function gitShowHead(
   host: Host,
   root: string,
   path: string,
 ): Promise<string> {
-  const out = await git(host, root, ['show', `HEAD:./${path}`])
-  return out.exit_code === 0 ? out.stdout : ''
+  return (await gitHeadBaseline(host, root, path)) ?? ''
 }

@@ -1,3 +1,4 @@
+import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin'
 import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
@@ -18,7 +19,7 @@ import {
   type LexicalEditor,
 } from 'lexical'
 import { useEffect, useMemo, useRef } from 'react'
-import { onComposerInsert } from '@/lib/composer-insert'
+import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
 import type { FunctionEntry } from '@/lib/functions'
 import { FileMentionNode } from './lexical/FileMentionNode'
 import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
@@ -33,6 +34,8 @@ interface LexicalShellProps {
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
+  /** Put the caret in the editor on mount. Off by default. */
+  autoFocus?: boolean
 }
 
 const baseConfig = {
@@ -197,6 +200,19 @@ function ExternalInsertPlugin() {
 }
 
 /**
+ * Take the caret when a surface asks for it, e.g. a "new chat" that reused
+ * the untouched one already open, where nothing remounts to focus itself.
+ */
+function FocusOnRequestPlugin({ enabled }: { enabled: boolean }) {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    if (!enabled) return
+    return onComposerFocusRequest(() => editor.focus())
+  }, [editor, enabled])
+  return null
+}
+
+/**
  * Toggle the editor's editable state when `disabled` flips.
  */
 function EditablePlugin({ disabled }: { disabled?: boolean }) {
@@ -227,6 +243,7 @@ export function LexicalShell({
   onSubmit,
   placeholder = 'send a message…',
   disabled,
+  autoFocus,
   clearToken,
   initialContent,
   functionEntries,
@@ -272,6 +289,12 @@ export function LexicalShell({
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
       <ExternalInsertPlugin />
+      {/* Opening a session is a request to write in it, so the first
+          keystroke should land in the message rather than be spent aiming.
+          Lexical's own plugin waits for the editable node, which a bare
+          focus() call on mount does not. */}
+      {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
+      <FocusOnRequestPlugin enabled={disabled !== true} />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

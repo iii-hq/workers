@@ -205,6 +205,15 @@ zero.
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
 | Harness source validation | Release Control operation with an immutable SHA | Policy-defined | Empty reports, hard-gate and technical failures are blocking |
 | Harness Registry validation | Release Control operation with an exact `latest` or `next` stack | Policy-defined | Empty reports, hard-gate and technical failures are blocking; promotion requires exact evidence |
+| Deployment shadow observation | Successful Harness deployment | Plan-defined | Never blocks deployment or promotion |
+
+`harness-e2e-shadow.yml` is intentionally separate from the legacy validation
+matrix. It starts an isolated iii engine on a GitHub-hosted runner, installs the
+exact deployment stack, then installs the independent
+`harness-e2e@<plan-ref>` worker from Registry. The job materializes and invokes
+the local `e2e::*` control plane and uploads an
+`e2e-observation-bundle/v1`. Release Control admits the job through GitHub OIDC
+and ingests the Artifact; it does not host the E2E worker.
 
 Release Control owns the schedule, source/Registry choice, exact stack,
 profiles, selected and required scenarios, repetitions, subjects, judge and

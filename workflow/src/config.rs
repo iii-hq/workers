@@ -24,6 +24,14 @@ pub struct WorkerConfig {
     /// failed. Hot-applies via config-cell swap (not structural).
     #[serde(default = "default_max_node_retries")]
     pub max_node_retries: u32,
+
+    /// Append the workflow orchestration guidance to every agent system
+    /// prompt via the harness `pre-generate` hook. On by default; turn it
+    /// off to shrink prompts (the harness's `# Granted functions` catalog
+    /// still advertises the `workflow::*` ids). Hot-applies — the worker
+    /// binds or unbinds the hook on change.
+    #[serde(default = "default_inject_guidance")]
+    pub inject_guidance: bool,
 }
 
 fn default_pending_timeout_ms() -> u64 {
@@ -38,6 +46,9 @@ fn default_dispatch_timeout_ms() -> u64 {
 fn default_max_node_retries() -> u32 {
     1
 }
+fn default_inject_guidance() -> bool {
+    true
+}
 
 impl Default for WorkerConfig {
     fn default() -> Self {
@@ -46,6 +57,7 @@ impl Default for WorkerConfig {
             sweep_expression: default_sweep_expression(),
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
             max_node_retries: default_max_node_retries(),
+            inject_guidance: default_inject_guidance(),
         }
     }
 }

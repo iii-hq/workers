@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
@@ -86,15 +86,14 @@ async fn main() -> Result<()> {
         tracing::warn!("--config seeding not wired in MVP; using stored/default config");
     }
 
-    configuration::register_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("registering workflow configuration schema")?;
     // Don't brick boot on a transient config-worker hiccup: warn and come up
     // inert on defaults, then recover on the next config-change hot-reload (same
     // resilience stance as on_config_change keeping the previous config on a
     // fetch failure). Matches the warn-and-default convention of the other
     // worker binaries in this repo.
+    if let Err(e) = configuration::register_config(&iii).await {
+        tracing::warn!(error = %e, "registering workflow configuration schema failed; continuing");
+    }
     let cfg = match configuration::fetch_config(&iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -117,16 +116,21 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &deps);
 
     // Bind the cron sweep; retain the handle so a sweep_expression change
-    // re-binds it live.
+    // re-binds it live. The guidance slot starts empty — apply_guidance below
+    // fills it only when the config asks for injection.
     let handles = Arc::new(TriggerHandles {
         sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
+        guidance: Default::default(),
     });
 
-    // Bind the three HARNESS-provided hooks (turn-completed → wake, hook::pre-trigger
-    // → reply stamping, hook::pre-generate → guidance injection). One shot: the engine
-    // parks each binding until the harness registers the trigger type (recoverable
+    // Bind the two always-on HARNESS-provided hooks (turn-completed → wake,
+    // hook::pre-trigger → reply stamping). One shot: the engine parks each
+    // binding until the harness registers the trigger type (recoverable
     // triggers, iii #1962) and re-activates them across harness restarts.
+    // The pre-generate guidance hook follows the `inject_guidance` config
+    // knob instead (on by default), hot-applied on config changes.
     configuration::setup_harness_hooks(&iii);
+    configuration::apply_guidance(&iii, &handles, cfg.inject_guidance);
 
     // Crash recovery: a parked AwaitingNodes run has no enqueued tick.
     // Re-drive each non-terminal run so it can make progress.
@@ -144,8 +148,15 @@ async fn main() -> Result<()> {
     }
 
     // LAST: bind the configuration-change trigger.
-    configuration::register_config_trigger(&iii, cell, handles)
-        .context("registering the configuration change trigger")?;
+    match configuration::register_config_trigger(&iii, cell, handles) {
+        // One serialized re-fetch to close the boot gap: an update landing
+        // between the boot fetch and the binding just registered fired into
+        // nothing, and would otherwise stay invisible until the NEXT change.
+        Ok(reload) => reload.run().await,
+        Err(e) => {
+            tracing::warn!(error = %e, "registering the configuration change trigger failed; config frozen until restart");
+        }
+    }
 
     tracing::info!("workflow ready");
 

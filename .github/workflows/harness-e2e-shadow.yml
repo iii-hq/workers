@@ -1,0 +1,144 @@
+name: Observe deployed Harness with ephemeral E2E
+run-name: RC · e2e_shadow · ${{ inputs.campaign_id }} · ${{ inputs.execution_id }} · ${{ inputs.attempt }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      campaign_id:
+        description: Release Control shadow campaign UUID
+        required: true
+        type: string
+      execution_id:
+        description: Release Control execution UUID
+        required: true
+        type: string
+      attempt:
+        description: Explicit Release Control attempt
+        required: true
+        type: number
+      execution_contract:
+        description: Canonical execution contract JSON
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: harness-e2e-shadow-${{ inputs.execution_id }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Run observe-only plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    environment: harness-e2e-trusted
+    env:
+      HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e-shadow
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate Release Control dispatch
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.campaign_id }}'
+          --step-id '${{ inputs.execution_id }}'
+
+      - name: Prepare execution contract
+        env:
+          EXECUTION_CONTRACT: ${{ inputs.execution_contract }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e-shadow
+          printf '%s\n' "$EXECUTION_CONTRACT" > target/harness-e2e-shadow/execution-contract.json
+          python3 .github/scripts/harness_e2e_shadow_contract.py validate \
+            --contract target/harness-e2e-shadow/execution-contract.json >/dev/null
+          jq -e \
+            --arg campaign '${{ inputs.campaign_id }}' \
+            --arg execution '${{ inputs.execution_id }}' \
+            --argjson attempt '${{ inputs.attempt }}' \
+            '.campaign_id == $campaign and .execution_id == $execution and .attempt == $attempt' \
+            target/harness-e2e-shadow/execution-contract.json >/dev/null
+
+      - name: Install stack verification tooling
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Acquire single-use execution admission
+        id: admission
+        continue-on-error: true
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_CONTROL_API_URL"
+          token_response=$(curl -fsSL \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=release-control-harness-e2e")
+          oidc_token=$(jq -er '.value' <<<"$token_response")
+          response=$(curl -fsSL \
+            -H "Authorization: Bearer $oidc_token" \
+            -H 'Content-Type: application/json' \
+            -X POST "${RELEASE_CONTROL_API_URL%/}/internal/test-executions/${{ inputs.execution_id }}/admit" \
+            --data "$(jq -cn \
+              --arg campaign_id '${{ inputs.campaign_id }}' \
+              --argjson run_id '${{ github.run_id }}' \
+              --argjson run_attempt '${{ github.run_attempt }}' \
+              --arg workflow_sha '${{ github.sha }}' \
+              '{campaign_id:$campaign_id,run_id:$run_id,run_attempt:$run_attempt,workflow_sha:$workflow_sha}')")
+          printf '%s\n' "$response" > target/harness-e2e-shadow/admission.json
+          jq -e '.admitted == true' target/harness-e2e-shadow/admission.json >/dev/null
+
+      - name: Run ephemeral E2E control plane
+        id: execute
+        if: steps.admission.outcome == 'success'
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          HARNESS_E2E_EXECUTION_CONTRACT: ${{ inputs.execution_contract }}
+          III_CLI_CHANNEL: latest
+        run: harness/tests/e2e/run-shadow-control-ci.sh
+
+      - name: Record admission failure
+        if: steps.admission.outcome != 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e-shadow
+          jq -n \
+            '{schema:"e2e-shadow-failure/v1",phase:"admission",outcome:"infra_failed",error:"execution admission was rejected"}' \
+            > target/harness-e2e-shadow/failure.json
+
+      - name: Package factual evidence
+        if: always()
+        env:
+          WORKFLOW_IDENTITY: >-
+            {"repository":"${{ github.repository }}","workflow":"harness-e2e-shadow.yml","workflow_sha":"${{ github.sha }}","run_id":${{ github.run_id }},"run_attempt":${{ github.run_attempt }}}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/harness_e2e_shadow_contract.py package \
+            --root target/harness-e2e-shadow \
+            --contract target/harness-e2e-shadow/execution-contract.json \
+            --workflow "$WORKFLOW_IDENTITY" \
+            --output target/harness-e2e-shadow/bundle-manifest.json
+
+      - name: Upload observation bundle
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
+          path: target/harness-e2e-shadow/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Preserve factual job conclusion
+        if: always() && (steps.admission.outcome != 'success' || steps.execute.outcome != 'success')
+        run: exit 1

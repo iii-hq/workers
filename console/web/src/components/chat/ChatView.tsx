@@ -21,6 +21,7 @@ import {
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
+import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import { expandAttachments, hasExpandableAttachments } from '@/lib/attachments'
@@ -45,6 +46,7 @@ import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
+import { expandSlashInvocation, slashChip } from '@/lib/slash-commands'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
@@ -211,6 +213,9 @@ export function ChatView({
     : false
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
+  // This view is keyed by conversation, so mounting IS opening a session:
+  // the caret belongs in the composer, on the devices where that is free.
+  const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
 
   /* What the model on the other end can do with a picture, read at send time
      rather than closed over: the send and edit-queued callbacks are built
@@ -590,6 +595,25 @@ export function ChatView({
               await expandFileMentions(workingDir, mentionPaths)
             ).blocks
           }
+        }
+        // Same expansion as the live send path: an edited queued message
+        // keeps its `/name` / `/skill:<id>` block instead of silently
+        // dropping it. Staying silent on a failed re-resolution would strip
+        // the body the queued message already carried with no explanation.
+        const slashExpansion =
+          backend.id === 'real'
+            ? await expandSlashInvocation(payload.text.trim())
+            : null
+        if (slashExpansion?.status === 'attached') {
+          attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
+        } else if (slashExpansion) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not attach ${slashExpansion.command} — the edited message will be sent as typed`,
+              'warn',
+            ),
+          )
         }
         // Same expansion as the live send path: a queued message's documents
         // and pictures have to reach the agent too, or editing a queued
@@ -1221,6 +1245,35 @@ export function ChatView({
             ),
           )
         }
+      }
+
+      // A leading `/name` (directory prompt) or `/skill:<id>` the palette
+      // offered expands here: the resolved body rides as another attachment
+      // block while the typed text (command + args) stays the user message.
+      // Prose that merely starts with a slash never resolves (the expander
+      // is gated on the palette's fetched entries).
+      const slashExpansion =
+        backend.id === 'real' ? await expandSlashInvocation(trimmed) : null
+      if (slashExpansion?.status === 'attached') {
+        attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
+        // The body travels as a block, never as visible text — show the same
+        // chip the hydrated transcript will collapse the block into.
+        if (!willQueue) {
+          onPatchMessage(conversationId, userMsg.id, {
+            attachments: [
+              ...(userMsg.attachments ?? []),
+              slashChip(slashExpansion.inv, slashExpansion.block.length),
+            ],
+          })
+        }
+      } else if (slashExpansion) {
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice(
+            `could not attach ${slashExpansion.command} — sending the message as typed`,
+            'warn',
+          ),
+        )
       }
 
       // Mid-stream send (MOT-3837): a turn is already streaming, so the
@@ -1970,7 +2023,7 @@ export function ChatView({
               {backend.editQueued &&
               queuedDrafts.length > 0 &&
               !drainingQueue ? (
-                <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost max-sm:hidden">
+                <div className="px-3 py-0.5 text-right text-[11px] lowercase text-ink-ghost max-sm:hidden">
                   {browsedQueuedId
                     ? '↑ / ↓ cycle · enter saves in place · empty + enter removes'
                     : 'press ↑ in the composer to edit queued messages'}
@@ -2033,6 +2086,7 @@ export function ChatView({
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}
+            autoFocus={focusComposerOnOpen && !harnessBlocked}
             blockedPlaceholder={
               conversationsCtx
                 ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)

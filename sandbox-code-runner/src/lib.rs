@@ -5,6 +5,7 @@
 //! delegated over the bus to the iii-sandbox daemon's `sandbox::*` triggers.
 
 pub mod config;
+pub mod configuration;
 pub mod engine;
 pub mod error;
 pub mod events;

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   classifyWorkspaceBaselinePath,
   captureWorkspaceBaseline,
+  prioritizedBaselineCandidates,
 } from '../baseline'
 import type { TreeNode } from '../coder'
 import { normalizeLiveReviewEvent } from '../live-review'
@@ -33,16 +34,17 @@ function hostFor(root: TreeNode) {
   const trigger = vi.fn(async (functionId: string, _input: unknown) => {
     if (functionId === 'coder::tree') return { path: '/repo', root }
     if (functionId === 'coder::read-file') {
+      // One result per requested path, so a test can count what the capture
+      // actually asked for rather than a fixture's single canned row.
+      const paths = (_input as { paths?: string[] }).paths ?? []
       return {
-        results: [
-          {
-            path: '/repo/visible.ts',
-            success: true,
-            content: 'before\n',
-            is_utf8: true,
-            more_lines: false,
-          },
-        ],
+        results: paths.map((path) => ({
+          path,
+          success: true,
+          content: 'before\n',
+          is_utf8: true,
+          more_lines: false,
+        })),
       }
     }
     throw new Error(`unexpected function ${functionId}`)
@@ -304,6 +306,74 @@ describe('captureWorkspaceBaseline', () => {
     expect(enriched.get('unknown.ts')).toMatchObject({
       baseline: null,
       change: { status: 'untracked' },
+    })
+  })
+})
+
+describe('prioritizedBaselineCandidates', () => {
+  function aged(name: string, mtime: number): TreeNode {
+    return { name, kind: 'file', size: 7, mtime }
+  }
+
+  it('spends the body budget on the most recently modified files first', () => {
+    const root = workspace([
+      aged('stale.ts', 10),
+      {
+        name: 'src',
+        kind: 'dir',
+        size: 0,
+        mtime: 5,
+        children: [aged('fresh.ts', 99), aged('older.ts', 20)],
+      },
+    ])
+
+    expect(prioritizedBaselineCandidates(root, () => true)).toEqual([
+      'src/fresh.ts',
+      'src/older.ts',
+      'stale.ts',
+    ])
+  })
+
+  it('keeps tree order for equal mtimes and honours the review predicate', () => {
+    const root = workspace([aged('a.ts', 7), aged('b.ts', 7), aged('skip.log', 90)])
+
+    expect(
+      prioritizedBaselineCandidates(root, (path) => !path.endsWith('.log')),
+    ).toEqual(['a.ts', 'b.ts'])
+  })
+})
+
+describe('baseline coverage', () => {
+  it('reports a capped body snapshot without disturbing inventory completeness', async () => {
+    const children = Array.from({ length: 501 }, (_, index) =>
+      file(`file-${index}.ts`),
+    )
+    const baseline = await captureWorkspaceBaseline(
+      hostFor(workspace(children)).host,
+      '/repo',
+      () => true,
+    )
+
+    expect(baseline.coverage).toEqual({
+      candidates: 501,
+      captured: 500,
+      capped: true,
+    })
+    expect(baseline.contents.size).toBe(500)
+    expect(baseline.complete).toBe(true)
+  })
+
+  it('reports full coverage when every candidate fits', async () => {
+    const baseline = await captureWorkspaceBaseline(
+      hostFor(workspace([file('visible.ts')])).host,
+      '/repo',
+      () => true,
+    )
+
+    expect(baseline.coverage).toEqual({
+      candidates: 1,
+      captured: 1,
+      capped: false,
     })
   })
 })

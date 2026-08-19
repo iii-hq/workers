@@ -12,8 +12,15 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import type { OpenTab } from './tabs'
+import {
+  createTerminalWorkspace,
+  normalizeTerminalWorkspace,
+  type TerminalWorkspaceState,
+} from './terminal-layout'
 
 export const UI_STATE_CONFIG_ID = 'shell-ui'
+
+export type TerminalDock = 'bottom' | 'right' | 'editor'
 
 export interface TabUiState {
   root?: string
@@ -24,6 +31,14 @@ export interface TabUiState {
   showHidden?: boolean
   /** Sidebar width in px from the drag handle; absent = default. */
   sideWidth?: number
+  /** Dockable terminal panel; absent in legacy saves = closed at bottom. */
+  terminalOpen?: boolean
+  terminalDock?: TerminalDock
+  terminalActive?: boolean
+  terminalBottomSize?: number
+  terminalRightSize?: number
+  terminalJobIds?: string[]
+  terminalWorkspace?: TerminalWorkspaceState
 }
 
 function isUnavailable(err: unknown): boolean {
@@ -63,13 +78,51 @@ export async function loadTabUiState(
   const entry = (tabs as Record<string, unknown>)[tabId]
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
   const raw = entry as Record<string, unknown>
+  const root = typeof raw.root === 'string' ? raw.root : undefined
+  const terminalOpen =
+    raw.terminalOpen === true || raw.workspaceMode === 'terminal'
+      ? true
+      : undefined
+  let terminalWorkspace: TerminalWorkspaceState | undefined
+  if (raw.terminalWorkspace != null) {
+    terminalWorkspace = normalizeTerminalWorkspace(
+      raw.terminalWorkspace,
+      root ?? '/',
+    )
+  } else if (terminalOpen) {
+    terminalWorkspace = createTerminalWorkspace(root ?? '/')
+  }
   return {
-    root: typeof raw.root === 'string' ? raw.root : undefined,
+    root,
     open: Array.isArray(raw.open) ? (raw.open as OpenTab[]) : [],
     active: typeof raw.active === 'string' ? raw.active : null,
     expanded: Array.isArray(raw.expanded)
       ? raw.expanded.filter((p): p is string => typeof p === 'string')
       : [],
+    showHidden:
+      typeof raw.showHidden === 'boolean' ? raw.showHidden : undefined,
+    sideWidth: typeof raw.sideWidth === 'number' ? raw.sideWidth : undefined,
+    terminalOpen,
+    terminalDock:
+      raw.terminalDock === 'bottom' ||
+      raw.terminalDock === 'right' ||
+      raw.terminalDock === 'editor'
+        ? raw.terminalDock
+        : undefined,
+    terminalActive:
+      typeof raw.terminalActive === 'boolean' ? raw.terminalActive : undefined,
+    terminalBottomSize:
+      typeof raw.terminalBottomSize === 'number'
+        ? raw.terminalBottomSize
+        : undefined,
+    terminalRightSize:
+      typeof raw.terminalRightSize === 'number'
+        ? raw.terminalRightSize
+        : undefined,
+    terminalJobIds: Array.isArray(raw.terminalJobIds)
+      ? raw.terminalJobIds.filter((id): id is string => typeof id === 'string')
+      : undefined,
+    terminalWorkspace,
   }
 }
 

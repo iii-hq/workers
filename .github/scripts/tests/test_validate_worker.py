@@ -81,6 +81,12 @@ class TestValidateWorker:
         r = run_script(repo, "smoke", source_changed=["smoke"])
         assert r.returncode == 0, r.stderr
 
+    def test_worker_without_skill_md_passes(self, tmp_path):
+        repo = make_worker(tmp_path, "shell")
+        init_git(repo)
+        r = run_script(repo, "shell", source_changed=["shell"])
+        assert r.returncode == 0, r.stdout + r.stderr
+
     def test_missing_readme_fails_in_strict_mode(self, tmp_path):
         repo = make_worker(tmp_path, "smoke")
         (repo / "smoke" / "README.md").unlink()

@@ -51,6 +51,8 @@ rules:
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # Interactive PTY lifecycle is driven only by the console UI.
+  - '!shell::pty::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
@@ -205,6 +207,15 @@ rules:
   # code-runner: internal hot-reload hook, same pattern as the other
   # on-config-change denies.
   - '!code-runner::on-config-change'
+
+  # The guidance-knob configuration entries (web/workflow/fp/
+  # sandbox-code-runner/scrapling): internal hot-reload hooks, same pattern
+  # as the other on-config-change denies.
+  - '!web::on-config-change'
+  - '!workflow::on-config-change'
+  - '!fp::on-config-change'
+  - '!sandbox-code-runner::on-config-change'
+  - '!scrapling::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   choiceToValue,
   DEFAULT_SYSTEM_PROMPT_STATE,
+  type SystemPromptState,
   selectionForSend,
   toSelection,
   valueToChoice,
@@ -19,6 +20,7 @@ describe('toSelection', () => {
         strategy: 'override',
         namedBody: '',
         customText: 'Talk like a pirate.',
+        addons: [],
       }),
     ).toEqual({ body: 'Talk like a pirate.', strategy: 'override' })
   })
@@ -30,6 +32,7 @@ describe('toSelection', () => {
         strategy: 'enrich',
         namedBody: '',
         customText: '   ',
+        addons: [],
       }),
     ).toBeNull()
   })
@@ -41,18 +44,74 @@ describe('toSelection', () => {
         strategy: 'enrich',
         namedBody: 'Arr.',
         customText: 'ignored',
+        addons: [],
       }),
     ).toEqual({ body: 'Arr.', strategy: 'enrich' })
+  })
+
+  it('addons on the default choice send alone, always as enrich', () => {
+    expect(
+      toSelection({
+        choice: 'default',
+        strategy: 'override',
+        namedBody: '',
+        customText: '',
+        addons: [
+          { kind: 'prompt', name: 'review', body: 'Review checklist.' },
+          { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
+        ],
+      }),
+    ).toEqual({
+      body: 'Review checklist.\n\nCoder skill.',
+      strategy: 'enrich',
+    })
+  })
+
+  it('addons append after the named body, strategy preserved', () => {
+    expect(
+      toSelection({
+        choice: { named: 'pirate' },
+        strategy: 'override',
+        namedBody: 'Arr.',
+        customText: '',
+        addons: [{ kind: 'prompt', name: 'review', body: 'Review checklist.' }],
+      }),
+    ).toEqual({ body: 'Arr.\n\nReview checklist.', strategy: 'override' })
+  })
+
+  it('a blank base never ships as override, even with a named choice', () => {
+    expect(
+      toSelection({
+        choice: { named: 'pirate' },
+        strategy: 'override',
+        namedBody: '   ',
+        customText: '',
+        addons: [{ kind: 'prompt', name: 'review', body: 'Review checklist.' }],
+      }),
+    ).toEqual({ body: 'Review checklist.', strategy: 'enrich' })
+  })
+
+  it('blank addon bodies are filtered out', () => {
+    expect(
+      toSelection({
+        choice: 'default',
+        strategy: 'enrich',
+        namedBody: '',
+        customText: '',
+        addons: [{ kind: 'prompt', name: 'empty', body: '   ' }],
+      }),
+    ).toBeNull()
   })
 })
 
 describe('selectionForSend', () => {
-  const named = {
+  const named: SystemPromptState = {
     choice: { named: 'pirate' },
     strategy: 'enrich',
     namedBody: 'Arr.',
     customText: '',
-  } as const
+    addons: [],
+  }
 
   it('first send (no turn yet) carries the selection', () => {
     expect(selectionForSend(named, false)).toEqual({
