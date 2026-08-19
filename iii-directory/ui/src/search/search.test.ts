@@ -73,21 +73,32 @@ describe('parseDiscoverResponse', () => {
   })
 
   it('parses the installable registry section when present', () => {
-    const installable = [
+    const fn = { function_id: 'image_resize::resize', description: 'Resize an image.' }
+    const parsed = parseDiscoverResponse({
+      guidance: 'No INSTALLED function matched…',
+      workers: [],
+      installable: [
+        {
+          name: 'image-resize',
+          version: '0.1.13',
+          description: 'III engine image resize worker.',
+          functions: [fn],
+          install: {
+            function: 'worker::add',
+            payload: { source: { kind: 'registry', name: 'image-resize' }, wait: false },
+          },
+        },
+      ],
+      latency_ms: 5,
+    })
+    expect(parsed?.installable).toEqual([
       {
         name: 'image-resize',
         version: '0.1.13',
         description: 'III engine image resize worker.',
-        functions: [contract],
+        functions: [fn],
       },
-    ]
-    const parsed = parseDiscoverResponse({
-      guidance: 'No INSTALLED function matched…',
-      workers: [],
-      installable,
-      latency_ms: 5,
-    })
-    expect(parsed?.installable).toEqual(installable)
+    ])
     expect(parsed?.workers).toEqual([])
   })
 
@@ -95,7 +106,7 @@ describe('parseDiscoverResponse', () => {
     for (const installable of [
       {},
       [{ version: '1', description: '', functions: [] }], // no name
-      [{ name: 'x', version: '1', description: '', functions: [{}] }], // bad contract
+      [{ name: 'x', version: '1', description: '', functions: [{}] }], // bad function row
     ]) {
       expect(
         parseDiscoverResponse({ guidance: 'g', workers: [], installable, latency_ms: 1 }),

@@ -18,6 +18,35 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "InstallCall": {
+        "description": "A ready-made `worker::add` invocation: `{ function, payload }` matches the agent_trigger call envelope so the model can execute it verbatim.",
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "payload": true
+        },
+        "required": [
+          "function",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "InstallableFunction": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "function_id"
+        ],
+        "type": "object"
+      },
       "InstallableWorker": {
         "description": "A registry worker that is NOT installed but carries functions matching the query. `name` is the registry slug `worker::add` installs.",
         "properties": {
@@ -25,10 +54,19 @@
             "type": "string"
           },
           "functions": {
+            "description": "Names + descriptions only — deliberately NO request schema: an uninstalled function must not look callable, so there is nothing here for a model to pattern-match into a direct call. Contracts arrive through a fresh search after the install registers them.",
             "items": {
-              "$ref": "#/definitions/SearchContract"
+              "$ref": "#/definitions/InstallableFunction"
             },
             "type": "array"
+          },
+          "install": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/InstallCall"
+              }
+            ],
+            "description": "The exact call that installs this worker, ready to execute."
           },
           "name": {
             "type": "string"
@@ -40,6 +78,7 @@
         "required": [
           "description",
           "functions",
+          "install",
           "name",
           "version"
         ],

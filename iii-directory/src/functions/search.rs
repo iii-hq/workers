@@ -226,19 +226,19 @@ fall back to normal discovery.";
 const SEARCH_REFINE_GUIDANCE: &str = "No functions matched this query. Refine the query \
 with the concrete capabilities the task needs and call directory::search_functions once more.";
 
-const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched this query, but the \
-public iii worker registry has workers (verified authors) whose functions match — they are \
-listed under `installable` and are NOT callable yet. To use one: confirm with the user \
-first, then install it with worker::add using { \"source\": { \"kind\": \"registry\", \
-\"name\": \"<installable worker name>\" }, \"wait\": false }, poll worker::status until it \
-reports running, and then call the listed functions (or call directory::search_functions \
-again). If none fit, refine the query and search once more.";
+const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched this query. The \
+`installable` entries are registry workers (verified authors) whose functions WOULD match, \
+but they are NOT installed: calling their functions now FAILS with function_not_found. To \
+use one, run its `install` call exactly as given (worker::add), poll worker::status with \
+the worker's name until it reports running, then call directory::search_functions again \
+for the newly registered contracts. If none fit, refine the query and search once more.";
 
 const SEARCH_INSTALL_NOTE: &str = "The `installable` entries are registry workers that are \
-NOT installed — their functions are NOT callable yet. Prefer the installed functions above; \
-reach for an installable worker only when they cannot cover the task, and confirm with the \
-user before installing (worker::add with { \"source\": { \"kind\": \"registry\", \"name\": \
-\"<installable worker name>\" }, \"wait\": false }, then poll worker::status).";
+NOT installed: calling their functions now FAILS with function_not_found. Prefer the \
+installed functions above. If the task truly needs an installable worker, FIRST run its \
+`install` call exactly as given (worker::add), poll worker::status with the worker's name \
+until running, then search again for its contracts — never call an installable function \
+before installing.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
@@ -266,7 +266,37 @@ pub struct InstallableWorker {
     pub name: String,
     pub version: String,
     pub description: String,
-    pub functions: Vec<SearchContract>,
+    /// Names + descriptions only — deliberately NO request schema: an
+    /// uninstalled function must not look callable, so there is nothing
+    /// here for a model to pattern-match into a direct call. Contracts
+    /// arrive through a fresh search after the install registers them.
+    pub functions: Vec<InstallableFunction>,
+    /// The exact call that installs this worker, ready to execute.
+    pub install: InstallCall,
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct InstallableFunction {
+    pub function_id: String,
+    pub description: String,
+}
+
+/// A ready-made `worker::add` invocation: `{ function, payload }` matches
+/// the agent_trigger call envelope so the model can execute it verbatim.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct InstallCall {
+    pub function: String,
+    pub payload: Value,
+}
+
+fn install_call(worker_name: &str) -> InstallCall {
+    InstallCall {
+        function: "worker::add".to_string(),
+        payload: json!({
+            "source": { "kind": "registry", "name": worker_name },
+            "wait": false,
+        }),
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -534,21 +564,21 @@ fn assemble_installable(
         let Some(candidate) = owners.get(&tool.name) else {
             continue;
         };
-        let contract = SearchContract {
+        let function = InstallableFunction {
             function_id: tool.name.clone(),
             description: tool.description,
-            request_schema: tool.parameters,
         };
         match section
             .iter()
             .position(|worker| worker.name == candidate.name)
         {
-            Some(index) => section[index].functions.push(contract),
+            Some(index) => section[index].functions.push(function),
             None if section.len() < MAX_INSTALLABLE_WORKERS => section.push(InstallableWorker {
                 name: candidate.name.clone(),
                 version: candidate.version.clone(),
                 description: candidate.description.clone(),
-                functions: vec![contract],
+                functions: vec![function],
+                install: install_call(&candidate.name),
             }),
             None => {}
         }

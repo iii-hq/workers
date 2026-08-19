@@ -125,8 +125,16 @@ function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
       {worker.description.length > 0 ? (
         <div className="discovery-search-install-desc">{worker.description}</div>
       ) : null}
-      {worker.functions.map((contract) => (
-        <ContractBlock contract={contract} key={contract.function_id} />
+      {worker.functions.map((fn) => (
+        <div className="discovery-search-install-fn" key={fn.function_id}>
+          <span aria-hidden="true" className="sym">
+            ƒ
+          </span>
+          <span className="fn-id">{fn.function_id}</span>
+          {fn.description.length > 0 ? (
+            <span className="fn-desc">{fn.description}</span>
+          ) : null}
+        </div>
       ))}
       <div className="discovery-search-install-cmd">
         <span aria-hidden="true" className="sym">

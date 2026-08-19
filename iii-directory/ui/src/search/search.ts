@@ -14,12 +14,18 @@ export interface DiscoverWorkerView {
 
 /** A registry worker the search offered as installable: not on the stack,
  * but its functions matched the query. `name` is the registry slug
- * `worker::add` installs. */
+ * `worker::add` installs. Functions carry names + descriptions only —
+ * the worker deliberately withholds schemas so nothing looks callable. */
 export interface DiscoverInstallableView {
   name: string
   version: string
   description: string
-  functions: DiscoverContractView[]
+  functions: DiscoverInstallableFunctionView[]
+}
+
+export interface DiscoverInstallableFunctionView {
+  function_id: string
+  description: string
 }
 
 export interface DiscoverView {
@@ -70,6 +76,20 @@ export function discoverQuery(input: unknown): string | null {
   return query.length > 0 ? query : null
 }
 
+/** Strict parse of an installable worker's function list (names +
+ * descriptions, no schemas). Null on any shape drift. */
+function parseInstallableFunctions(value: unknown): DiscoverInstallableFunctionView[] | null {
+  if (!Array.isArray(value)) return null
+  const functions: DiscoverInstallableFunctionView[] = []
+  for (const fn of value) {
+    if (!isRecord(fn)) return null
+    if (typeof fn.function_id !== 'string' || fn.function_id.length === 0) return null
+    if (typeof fn.description !== 'string') return null
+    functions.push({ function_id: fn.function_id, description: fn.description })
+  }
+  return functions
+}
+
 /** Strict parse of one contract list. Null on any shape drift. */
 function parseContracts(value: unknown): DiscoverContractView[] | null {
   if (!Array.isArray(value)) return null
@@ -116,7 +136,7 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       if (typeof candidate.name !== 'string' || candidate.name.length === 0) return null
       if (typeof candidate.version !== 'string') return null
       if (typeof candidate.description !== 'string') return null
-      const functions = parseContracts(candidate.functions)
+      const functions = parseInstallableFunctions(candidate.functions)
       if (!functions) return null
       installable.push({
         name: candidate.name,
