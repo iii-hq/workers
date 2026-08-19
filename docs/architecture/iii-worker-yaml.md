@@ -62,6 +62,10 @@ releases, and still excludes `1.0.0` and above. This is the common form for
 `state` and `configuration`, whose compatible `0.x` releases are consumed by
 many workers.
 
+Stable shared dependencies use the same explicit form. For example, consumers
+of `llm-router` declare `>=1.0.0 <2.0.0`, making the supported major boundary
+clear without relying on caret syntax.
+
 ## Example (minimal Rust binary)
 
 ```yaml

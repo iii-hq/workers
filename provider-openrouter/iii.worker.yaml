@@ -10,4 +10,4 @@ description: OpenRouter Chat Completions provider worker; one API key in front o
 
 dependencies:
   state: ">=0.22.0 <1.0.0"
-  llm-router: "^1.0.0"
+  llm-router: ">=1.0.0 <2.0.0"

@@ -9,7 +9,11 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BOUNDED_ZERO_MAJOR_DEPENDENCIES = ("configuration", "state")
+BOUNDED_SHARED_DEPENDENCIES = {
+    "configuration": 0,
+    "llm-router": 1,
+    "state": 0,
+}
 
 
 def dependencies(worker: str) -> dict[str, str]:
@@ -18,22 +22,26 @@ def dependencies(worker: str) -> dict[str, str]:
     return data.get("dependencies", {})
 
 
-def test_shared_zero_major_dependencies_keep_floor_and_allow_minor_updates() -> None:
+def test_shared_dependencies_use_explicit_bounded_ranges() -> None:
     consumers: dict[str, list[str]] = {
-        dependency: [] for dependency in BOUNDED_ZERO_MAJOR_DEPENDENCIES
+        dependency: [] for dependency in BOUNDED_SHARED_DEPENDENCIES
     }
 
     for manifest in sorted(REPO_ROOT.glob("*/iii.worker.yaml")):
         worker_dependencies = dependencies(manifest.parent.name)
-        for dependency in BOUNDED_ZERO_MAJOR_DEPENDENCIES:
+        for dependency, major in BOUNDED_SHARED_DEPENDENCIES.items():
             if dependency in worker_dependencies:
                 consumers[dependency].append(manifest.parent.name)
                 dependency_range = worker_dependencies[dependency]
-                assert re.fullmatch(r">=0\.\d+\.\d+ <1\.0\.0", dependency_range), (
+                next_major = major + 1
+                assert re.fullmatch(
+                    rf">={major}\.\d+\.\d+ <{next_major}\.0\.0",
+                    dependency_range,
+                ), (
                     f"{manifest.relative_to(REPO_ROOT)} pins shared dependency "
                     f"{dependency} to {dependency_range!r}; use a bounded range such as "
-                    ">=0.22.0 <1.0.0 so new 0.x minor releases remain compatible "
-                    "without allowing 1.x"
+                    f">={major}.0.0 <{next_major}.0.0 so compatible minor releases "
+                    f"remain allowed without crossing into {next_major}.x"
                 )
 
     for dependency, workers in consumers.items():

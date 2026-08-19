@@ -16,4 +16,4 @@ scripts:
 dependencies:
   state: ">=0.21.2 <1.0.0"
   cron: "^0.21.0"
-  llm-router: "^1.0.0"
+  llm-router: ">=1.0.0 <2.0.0"
