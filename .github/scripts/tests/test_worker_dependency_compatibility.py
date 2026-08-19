@@ -1,6 +1,7 @@
 """Regression tests for shared worker dependency ranges."""
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -8,12 +9,35 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+BOUNDED_ZERO_MAJOR_DEPENDENCIES = ("configuration", "state")
 
 
 def dependencies(worker: str) -> dict[str, str]:
     manifest = REPO_ROOT / worker / "iii.worker.yaml"
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     return data.get("dependencies", {})
+
+
+def test_shared_zero_major_dependencies_keep_floor_and_allow_minor_updates() -> None:
+    consumers: dict[str, list[str]] = {
+        dependency: [] for dependency in BOUNDED_ZERO_MAJOR_DEPENDENCIES
+    }
+
+    for manifest in sorted(REPO_ROOT.glob("*/iii.worker.yaml")):
+        worker_dependencies = dependencies(manifest.parent.name)
+        for dependency in BOUNDED_ZERO_MAJOR_DEPENDENCIES:
+            if dependency in worker_dependencies:
+                consumers[dependency].append(manifest.parent.name)
+                dependency_range = worker_dependencies[dependency]
+                assert re.fullmatch(r">=0\.\d+\.\d+ <1\.0\.0", dependency_range), (
+                    f"{manifest.relative_to(REPO_ROOT)} pins shared dependency "
+                    f"{dependency} to {dependency_range!r}; use a bounded range such as "
+                    ">=0.22.0 <1.0.0 so new 0.x minor releases remain compatible "
+                    "without allowing 1.x"
+                )
+
+    for dependency, workers in consumers.items():
+        assert workers, f"expected at least one consumer of {dependency}"
 
 
 def test_approval_gate_uses_shared_runtime_dependency_ranges() -> None:

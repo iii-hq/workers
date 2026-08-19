@@ -8,4 +8,4 @@ bin: document
 tags: [document, markdown, docx, pptx, xlsx, epub, csv, attachments, text-extraction, ocr]
 description: Convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF documents to markdown on this machine, detect the format from the bytes, pull out the images embedded in them, and transcribe a scan by rendering its pages and reading them with a vision model.
 dependencies:
-  configuration: "^0.21.6"
+  configuration: ">=0.21.6 <1.0.0"

@@ -40,4 +40,4 @@ config:
       file_path: ./data/queue
       save_interval_ms: 5000
 dependencies:
-  configuration: "^0.21.6"
+  configuration: ">=0.21.6 <1.0.0"

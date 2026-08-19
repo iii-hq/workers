@@ -9,4 +9,4 @@ tags: [session, conversation, chat, history]
 description: Durable, reactive, branching store of typed conversation entries with six emitted trigger types.
 
 dependencies:
-  configuration: "^0.21.6"
+  configuration: ">=0.21.6 <1.0.0"

@@ -55,6 +55,13 @@ tags:
 
 Example: [`harness/iii.worker.yaml`](../../harness/iii.worker.yaml).
 
+Shared dependencies that are still on a `0.x` release line use a bounded range
+such as `>=0.22.0 <1.0.0`. Unlike a fully specified caret range such as
+`^0.22.0`, this preserves the minimum compatible version, accepts later minor
+releases, and still excludes `1.0.0` and above. This is the common form for
+`state` and `configuration`, whose compatible `0.x` releases are consumed by
+many workers.
+
 ## Example (minimal Rust binary)
 
 ```yaml
