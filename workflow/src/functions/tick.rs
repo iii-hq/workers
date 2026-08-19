@@ -246,15 +246,14 @@ pub(crate) async fn fire_node(
     }
     send_payload["session"] = session_init;
 
-    let request = iii_sdk::protocol::TriggerRequest {
-        function_id: "harness::send".into(),
-        payload: send_payload,
-        action: None,
-        timeout_ms: Some(dispatch_timeout_ms),
-    };
     let resp = deps
         .iii
-        .trigger(request)
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "harness::send".into(),
+            payload: send_payload,
+            action: None,
+            timeout_ms: Some(dispatch_timeout_ms),
+        })
         .await
         .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
 
