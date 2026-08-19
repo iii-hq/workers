@@ -2,6 +2,7 @@ import {
   CircleQuestionMark,
   Menu,
   Plus,
+  Search,
   SettingsIcon,
   SquarePen,
   X,
@@ -68,6 +69,9 @@ export function App() {
   const [view, setView] = useHashRoute()
   const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
+  // search affordance is the other, so the state has to sit above both.
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
   const [mobilePanelIndex, setMobilePanelIndex] = useState(0)
@@ -203,6 +207,7 @@ export function App() {
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
         <WorkspacePanes
           workspace={workspace}
@@ -219,6 +224,8 @@ export function App() {
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         <PaletteHost
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
           openScreen={workspace.openScreen}
           onOpenSettings={() => setView('configuration')}
           onOpenShortcuts={() => setShortcutsOpen(true)}
@@ -564,6 +571,7 @@ interface HeaderProps {
   settingsOpen: boolean
   onToggleSettings: () => void
   onOpenShortcuts: () => void
+  onOpenPalette: () => void
 }
 
 function Header({
@@ -573,6 +581,7 @@ function Header({
   settingsOpen,
   onToggleSettings,
   onOpenShortcuts,
+  onOpenPalette,
 }: HeaderProps) {
   const { extPageTitles } = useScreenOptions()
   const { createNew } = useConversationsCtx()
@@ -622,23 +631,36 @@ function Header({
           ) : null}
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            if (mobileScreen === CHAT_SCREEN) createNew()
-            else workspace.createTab({ columns: 1 })
-          }}
-          aria-label={
-            mobileScreen === CHAT_SCREEN ? 'new chat' : 'new workspace'
-          }
-          className="ml-auto flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-        >
-          {mobileScreen === CHAT_SCREEN ? (
-            <SquarePen className="size-6" aria-hidden />
-          ) : (
-            <Plus className="size-6" aria-hidden />
-          )}
-        </button>
+        <div className="flex items-center justify-end">
+          {/* A phone has no ⌘K. Search is the console's way of reaching
+              anything, so it gets a first-class affordance rather than a row
+              buried in the workspace menu. */}
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            aria-label="search the console"
+            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            <Search className="size-6" aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (mobileScreen === CHAT_SCREEN) createNew()
+              else workspace.createTab({ columns: 1 })
+            }}
+            aria-label={
+              mobileScreen === CHAT_SCREEN ? 'new chat' : 'new workspace'
+            }
+            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            {mobileScreen === CHAT_SCREEN ? (
+              <SquarePen className="size-6" aria-hidden />
+            ) : (
+              <Plus className="size-6" aria-hidden />
+            )}
+          </button>
+        </div>
       </header>
 
       <MobileWorkspaceMenu
@@ -653,6 +675,7 @@ function Header({
         }}
         onToggleSettings={onToggleSettings}
         onOpenShortcuts={onOpenShortcuts}
+        onOpenPalette={onOpenPalette}
       />
 
       <header className="hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">

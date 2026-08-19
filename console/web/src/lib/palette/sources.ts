@@ -131,7 +131,7 @@ export async function readEngine(): Promise<EngineSnapshot> {
 
 /**
  * Rank matches the way a keyboard-first surface should: an exact prefix beats a
- * word start, which beats a match anywhere. Subsequence matching (`ecw` finding
+ * word start, which beats a match anywhere. Subsequence matching (`ewl` finding
  * `engine::workers::list`) comes last, because it is the loosest and would
  * otherwise bury the obvious answers.
  */

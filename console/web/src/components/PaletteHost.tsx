@@ -6,7 +6,7 @@
  * overlay, the theme) arrives as props from `App`.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { CommandPalette } from '@/components/CommandPalette'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import { useConversationsCtx } from '@/lib/conversations-context'
@@ -15,6 +15,10 @@ import type { TabScreen } from '@/lib/workspace-tabs'
 import { setPendingWorkerSearch } from '@/pages/Workers/pending-selection'
 
 export interface PaletteHostProps {
+  /** Owned by `App`: the shortcut is one way in, the phone header's search
+   *  affordance is the other, and only one of them can live here. */
+  open: boolean
+  onOpenChange: (open: boolean) => void
   openScreen: (screen: TabScreen) => void
   onOpenSettings: () => void
   onOpenShortcuts: () => void
@@ -23,15 +27,21 @@ export interface PaletteHostProps {
 }
 
 export function PaletteHost({
+  open,
+  onOpenChange,
   openScreen,
   onOpenSettings,
   onOpenShortcuts,
   theme,
   onThemeChange,
 }: PaletteHostProps) {
-  const [open, setOpen] = useState(false)
   const { screenOptions } = useScreenOptions()
   const { conversations, select, createNew } = useConversationsCtx()
+
+  // Read through a ref so the global listener is bound once, not rebound on
+  // every open and close.
+  const openRef = useRef(open)
+  openRef.current = open
 
   // ⌘K / ctrl+K anywhere, including from inside the composer — the palette is
   // how you leave wherever you are, so it must not be shadowed by focus.
@@ -41,11 +51,11 @@ export function PaletteHost({
       if (event.key !== 'k' && event.key !== 'K') return
       if (!event.metaKey && !event.ctrlKey) return
       event.preventDefault()
-      setOpen((current) => !current)
+      onOpenChange(!openRef.current)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [onOpenChange])
 
   // Both land on the workers page, filtered to what was picked: a worker by
   // its name, a function by the worker that registers it, falling back to the
@@ -144,7 +154,7 @@ export function PaletteHost({
   return (
     <CommandPalette
       open={open}
-      onClose={() => setOpen(false)}
+      onClose={() => onOpenChange(false)}
       localEntries={localEntries}
       onOpenWorker={openWorker}
       onOpenFunction={openFunction}

@@ -9,6 +9,11 @@
  * The inventory is read when the palette opens, not cached at boot: a worker
  * that just disconnected should stop being searchable, and one that just
  * arrived should appear without a reload.
+ *
+ * Two layouts, one component. On a pointer screen it is a centred card the
+ * keyboard drives. On a phone it fills the visible viewport, opens from the
+ * header's search affordance, and sizes itself around the software keyboard —
+ * see `useKeyboardInset`.
  */
 
 import {
@@ -18,10 +23,20 @@ import {
   MessageSquareText,
   Search,
   Settings,
+  X,
   Zap,
 } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  type CSSProperties,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { useMediaQuery } from '@/hooks/use-media-query'
+import {
+  type EngineSnapshot,
   filterEntries,
   groupEntries,
   KIND_LABEL,
@@ -39,6 +54,13 @@ const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
   { id: 'action', label: 'Actions' },
 ]
 
+/** The hint has to name the key the reader actually has. */
+const MODIFIER_LABEL =
+  typeof navigator !== 'undefined' &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
+    ? '⌘K'
+    : 'ctrl K'
+
 /** Icon plus the tint its chip carries. Colour is category, not severity —
  *  worker status gets its own dot below, where severity belongs. */
 const KIND_STYLE = {
@@ -49,13 +71,61 @@ const KIND_STYLE = {
   action: { Icon: Settings, chip: 'bg-accent-muted text-accent' },
 } as const
 
+/**
+ * The slice of the screen a phone keyboard leaves behind.
+ *
+ * iOS and Android pan the visual viewport rather than resizing the layout one,
+ * so a `fixed` overlay measured in `vh` (or even `dvh`) keeps its full height
+ * and puts its result rows under the keyboard. Reading `visualViewport` is the
+ * only way to know what is actually on screen. Pointer layouts have no keyboard
+ * to dodge, so above the `sm` breakpoint this stays null and the card keeps its
+ * own sizing.
+ */
+function useKeyboardInset(active: boolean): CSSProperties | undefined {
+  const [inset, setInset] = useState<{ top: number; height: number } | null>(
+    null,
+  )
+  const pointer = useMediaQuery('(min-width: 640px)')
+
+  useEffect(() => {
+    if (!active || pointer || typeof window === 'undefined') {
+      setInset(null)
+      return
+    }
+    const viewport = window.visualViewport
+    if (!viewport) return
+    // `scroll` fires per frame while iOS pans a focused field; only a real
+    // change should cost a render.
+    const read = () =>
+      setInset((previous) =>
+        previous?.top === viewport.offsetTop &&
+        previous?.height === viewport.height
+          ? previous
+          : { top: viewport.offsetTop, height: viewport.height },
+      )
+    read()
+    // `resize` covers the keyboard opening and rotation; `scroll` covers the
+    // pan that follows a focused field.
+    viewport.addEventListener('resize', read)
+    viewport.addEventListener('scroll', read)
+    return () => {
+      viewport.removeEventListener('resize', read)
+      viewport.removeEventListener('scroll', read)
+    }
+  }, [active, pointer])
+
+  if (!inset) return undefined
+  return { top: inset.top, height: inset.height, bottom: 'auto' }
+}
+
 /** `worker::rest-of-id` reads better with the owner dimmed, the way the
  *  console's own function labels render it. */
 function FunctionId({ id }: { id: string }) {
   const marker = id.indexOf('::')
-  if (marker <= 0) return <span className="font-mono text-[0.8rem]">{id}</span>
+  if (marker <= 0)
+    return <span className="font-mono text-sm sm:text-[0.8rem]">{id}</span>
   return (
-    <span className="font-mono text-[0.8rem]">
+    <span className="font-mono text-sm sm:text-[0.8rem]">
       <span className="text-ink-ghost">{id.slice(0, marker + 2)}</span>
       <span className="text-ink">{id.slice(marker + 2)}</span>
     </span>
@@ -79,6 +149,9 @@ export interface CommandPaletteProps {
   onOpenWorker: (name: string) => void
   /** Where a function row goes when chosen (its worker's row). */
   onOpenFunction: (functionId: string, worker: string) => void
+  /** Seam for the gallery, which has no engine to read. Must be a stable
+   *  reference: the palette re-reads whenever it changes. */
+  readInventory?: () => Promise<EngineSnapshot>
 }
 
 export function CommandPalette({
@@ -87,6 +160,7 @@ export function CommandPalette({
   localEntries,
   onOpenWorker,
   onOpenFunction,
+  readInventory = readEngine,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<PaletteKind | 'all'>('all')
@@ -94,6 +168,8 @@ export function CommandPalette({
   const [engineEntries, setEngineEntries] = useState<PaletteEntry[]>([])
   const [engineError, setEngineError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const viewportStyle = useKeyboardInset(open)
 
   // Reset per opening: a palette that reopens on the last query is a palette
   // you have to clear before you can use it. Closing returns focus to whatever
@@ -119,7 +195,7 @@ export function CommandPalette({
     // not survive a read that fails.
     setEngineEntries([])
     setEngineError(null)
-    void readEngine().then((snapshot) => {
+    void readInventory().then((snapshot) => {
       if (cancelled) return
       setEngineError(snapshot.error)
       const workers: PaletteEntry[] = snapshot.workers.map((worker) => ({
@@ -147,7 +223,7 @@ export function CommandPalette({
     return () => {
       cancelled = true
     }
-  }, [open, onOpenWorker, onOpenFunction])
+  }, [open, onOpenWorker, onOpenFunction, readInventory])
 
   const results = useMemo(
     () => filterEntries([...localEntries, ...engineEntries], query, filter),
@@ -168,6 +244,18 @@ export function CommandPalette({
     entry.run()
   }
 
+  // Arrow keys walk past the visible window, so the row has to be dragged back
+  // into view. Only a keyboard move scrolls: pointing at a row already means
+  // you can see it, and scrolling under the cursor moves the target.
+  const move = (step: number) => {
+    if (!flat.length) return
+    const next = (active + step + flat.length) % flat.length
+    setActive(next)
+    listRef.current
+      ?.querySelector(`[data-palette-index="${next}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  }
+
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -176,14 +264,12 @@ export function CommandPalette({
     }
     if (event.key === 'ArrowDown' || (event.key === 'n' && event.ctrlKey)) {
       event.preventDefault()
-      setActive((current) => (flat.length ? (current + 1) % flat.length : 0))
+      move(1)
       return
     }
     if (event.key === 'ArrowUp' || (event.key === 'p' && event.ctrlKey)) {
       event.preventDefault()
-      setActive((current) =>
-        flat.length ? (current - 1 + flat.length) % flat.length : 0,
-      )
+      move(-1)
       return
     }
     if (event.key === 'Tab') {
@@ -204,9 +290,14 @@ export function CommandPalette({
   let cursor = -1
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh] backdrop-blur-sm">
+    <div
+      style={viewportStyle}
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 sm:pt-[12vh] sm:backdrop-blur-sm"
+    >
       {/* The scrim is a real button so dismissing by click is reachable
-          without a mouse; the dialog below owns every other key. */}
+          without a mouse; the dialog below owns every other key. On a phone
+          the dialog covers it, which is why that layout carries its own
+          close affordance. */}
       <button
         type="button"
         aria-label="Close command palette"
@@ -218,10 +309,10 @@ export function CommandPalette({
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="flex max-h-[70vh] w-[min(44rem,92vw)] flex-col overflow-hidden rounded-lg border border-accent-border bg-panel shadow-2xl"
+        className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-edge bg-panel sm:h-auto sm:max-h-[70vh] sm:w-[min(44rem,92vw)] sm:rounded-lg sm:border sm:border-accent-border sm:shadow-2xl"
         onKeyDown={onKeyDown}
       >
-        <div className="flex items-center gap-3 border-b border-edge px-4">
+        <div className="flex shrink-0 items-center gap-2 border-b border-edge pr-1 pl-4 sm:gap-3 sm:pr-4">
           <Search aria-hidden className="size-4 shrink-0 text-ink-ghost" />
           <input
             ref={inputRef}
@@ -230,15 +321,34 @@ export function CommandPalette({
               setQuery(event.target.value)
               setActive(0)
             }}
-            placeholder="Search workers, functions, pages, chats, actions…"
+            placeholder="Search workers, functions, pages, chats…"
             aria-label="Search the console"
-            className="w-full bg-transparent py-3.5 text-sm text-ink outline-none placeholder:text-ink-ghost"
+            // Under 16px iOS Safari zooms the page on focus, which strands a
+            // fixed overlay off screen. Worker and function ids are not prose,
+            // so autocorrect and the automatic leading capital both mangle them.
+            className="w-full bg-transparent py-3.5 text-base text-ink outline-none placeholder:text-ink-ghost sm:text-sm"
+            inputMode="search"
+            enterKeyHint="go"
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
           />
-          <kbd className="shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost">
-            ⌘K
+          <kbd className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost sm:block">
+            {MODIFIER_LABEL}
           </kbd>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="close search"
+            className="flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:hidden"
+          >
+            <X className="size-5" aria-hidden />
+          </button>
         </div>
-        <div className="flex gap-1 border-b border-edge px-3 py-2">
+        {/* Six filters do not fit a phone's width; scrolling them beats
+            crushing them into unreadable slivers. */}
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-edge px-3 py-2">
           {FILTERS.map((option) => (
             <button
               key={option.id}
@@ -247,7 +357,7 @@ export function CommandPalette({
                 setFilter(option.id)
                 setActive(0)
               }}
-              className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+              className={`min-h-11 shrink-0 rounded-full border px-3 text-sm transition-colors sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-xs ${
                 filter === option.id
                   ? 'border-accent-border bg-accent-muted text-accent'
                   : 'border-transparent text-ink-faint hover:bg-surface-active hover:text-ink'
@@ -257,20 +367,23 @@ export function CommandPalette({
             </button>
           ))}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto py-1">
+        <div
+          ref={listRef}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-1"
+        >
           {engineError ? (
-            <p className="px-4 py-2 text-xs text-warn">
+            <p className="px-4 py-2 text-sm text-warn sm:text-xs">
               engine inventory unavailable: {engineError}
             </p>
           ) : null}
           {flat.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-ink-faint">
+            <p className="px-4 py-6 text-center text-base text-ink-faint sm:text-sm">
               no matches
             </p>
           ) : (
             groups.map(([kind, entries]) => (
               <div key={kind}>
-                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-[0.68rem] uppercase tracking-wider text-ink-ghost">
+                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-xs uppercase tracking-wider text-ink-ghost sm:text-[0.68rem]">
                   <span>{KIND_LABEL[kind]}</span>
                   <span className="rounded-full bg-surface-active px-1.5 py-px font-mono text-[0.62rem] normal-case tracking-normal">
                     {entries.length}
@@ -287,9 +400,10 @@ export function CommandPalette({
                     <button
                       key={entry.id}
                       type="button"
+                      data-palette-index={index}
                       onMouseEnter={() => setActive(index)}
                       onClick={() => choose(entry)}
-                      className={`flex w-full items-center gap-3 border-l-2 py-2 pr-4 pl-3.5 text-left transition-colors ${
+                      className={`flex min-h-12 w-full items-center gap-3 border-l-2 py-2.5 pr-4 pl-3.5 text-left transition-colors sm:min-h-0 sm:py-2 ${
                         selected
                           ? 'border-accent bg-accent-muted'
                           : 'border-transparent hover:bg-surface-active'
@@ -306,11 +420,11 @@ export function CommandPalette({
                             <FunctionId id={entry.title} />
                           ) : (
                             <span
-                              className={`truncate text-sm ${
+                              className={`truncate text-base text-ink sm:text-sm ${
                                 entry.kind === 'worker'
-                                  ? 'font-mono text-[0.82rem]'
+                                  ? 'font-mono sm:text-[0.82rem]'
                                   : ''
-                              } ${selected ? 'text-ink' : 'text-ink'}`}
+                              }`}
                             >
                               {entry.title}
                             </span>
@@ -323,13 +437,15 @@ export function CommandPalette({
                           ) : null}
                         </span>
                         {entry.detail ? (
-                          <span className="block truncate text-xs text-ink-faint">
+                          <span className="block truncate text-sm text-ink-faint sm:text-xs">
                             {entry.detail}
                           </span>
                         ) : null}
                       </span>
+                      {/* The right-hand tag is the first thing to give up when
+                          the row has to fit a phone. */}
                       {entry.meta ? (
-                        <span className="shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost">
+                        <span className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-ghost sm:block">
                           {entry.meta}
                         </span>
                       ) : null}
@@ -340,31 +456,34 @@ export function CommandPalette({
             ))
           )}
         </div>
-        <div className="flex items-center gap-3 border-t border-edge px-4 py-2 text-[0.68rem] text-ink-ghost">
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-edge px-1 py-px font-mono">
-              <CornerDownLeft aria-hidden className="size-2.5" />
-            </kbd>
-            open
-          </span>
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-edge px-1 py-px font-mono">
-              ↑↓
-            </kbd>
-            select
-          </span>
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-edge px-1 py-px font-mono">
-              tab
-            </kbd>
-            filter
-          </span>
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-edge px-1 py-px font-mono">
-              esc
-            </kbd>
-            close
-          </span>
+        <div className="flex shrink-0 items-center gap-3 border-t border-edge px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[0.68rem] text-ink-ghost sm:pb-2">
+          {/* Key hints are noise on a surface with no keys to press. */}
+          <div className="hidden items-center gap-3 sm:flex">
+            <span className="flex items-center gap-1.5">
+              <kbd className="rounded border border-edge px-1 py-px font-mono">
+                <CornerDownLeft aria-hidden className="size-2.5" />
+              </kbd>
+              open
+            </span>
+            <span className="flex items-center gap-1.5">
+              <kbd className="rounded border border-edge px-1 py-px font-mono">
+                ↑↓
+              </kbd>
+              select
+            </span>
+            <span className="flex items-center gap-1.5">
+              <kbd className="rounded border border-edge px-1 py-px font-mono">
+                tab
+              </kbd>
+              filter
+            </span>
+            <span className="flex items-center gap-1.5">
+              <kbd className="rounded border border-edge px-1 py-px font-mono">
+                esc
+              </kbd>
+              close
+            </span>
+          </div>
           <span className="ml-auto font-mono">
             {flat.length} result{flat.length === 1 ? '' : 's'}
           </span>
