@@ -96,7 +96,7 @@ test('shows two traces and exposes function arguments in trace events', async ({
     'data-span-name',
     `execute ${functionId}`,
   )
-  await spanPanel.getByRole('tab', { name: /^events/ }).click()
+  await spanPanel.getByRole('tab', { name: /^events\b/i }).click()
 
   const inputEvent = spanPanel.locator(
     '[data-span-event-name="iii.invocation.input"]',
