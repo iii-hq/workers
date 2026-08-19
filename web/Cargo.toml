@@ -17,6 +17,9 @@ path = "src/lib.rs"
 [dependencies]
 iii-sdk = "=0.21.6"
 iii-console-ui = { path = "../crates/console-ui" }
+# Shared plumbing for the builtin `configuration` worker (seeding, retries,
+# NOT_FOUND semantics, serialized hot-reload, guidance binding slot).
+iii-config-client = { path = "../crates/config-client" }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "net"] }
 serde = { version = "1", features = ["derive"] }

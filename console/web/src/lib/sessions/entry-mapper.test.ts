@@ -165,6 +165,45 @@ describe('entrySegments', () => {
     })
   })
 
+  it('collapses command and skill blocks into chips instead of dumping bodies', () => {
+    const commandBlock =
+      '<command name="review-pr">\nThe entire prompt body.\n</command>'
+    const skillBlock =
+      '<skill id="coder/index">\nThe entire skill body.\n</skill>'
+    const item: TranscriptItem = {
+      entry_id: 'msg-4-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '/review-pr the auth changes' },
+          { type: 'text', text: commandBlock },
+          { type: 'text', text: skillBlock },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: '/review-pr the auth changes',
+      attachments: [
+        {
+          id: 'slash-/review-pr',
+          name: '/review-pr',
+          size: commandBlock.length,
+          type: 'text/x-slash-command',
+        },
+        {
+          id: 'slash-/skill:coder/index',
+          name: '/skill:coder/index',
+          size: skillBlock.length,
+          type: 'text/x-skill',
+        },
+      ],
+    })
+    expect((msg as { content: string }).content).not.toContain('entire')
+  })
+
   it('marks only trusted notification user entries', () => {
     expect(
       entrySegments(userItem('e-1', 'normal', { notification: false }))[0],

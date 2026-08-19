@@ -19,6 +19,9 @@ description: >-
 env:
   III_URL: "ws://localhost:49134"
 
+dependencies:
+  configuration: "^0.21.6"
+
 # Must name an engine-preset image ref verbatim: bundle workers may not pull
 # arbitrary base images, and this is how a non-node bundle picks its rootfs
 # (runtime.kind is deprecated).
