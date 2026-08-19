@@ -72,7 +72,7 @@ export class Runner {
       { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
     )
 
-    const server = await this.startOrigin()
+    const servers = await this.startOrigin()
     const cases = this.opts.filter ? ALL_CASES.filter((c) => c.name.includes(this.opts.filter!)) : ALL_CASES
 
     // Stream each case result to stdout as it completes, colored green/red
@@ -93,7 +93,7 @@ export class Runner {
         results.push(r)
       }
     } finally {
-      server.close()
+      for (const server of servers) server.close()
     }
 
     const pass = results.filter((r) => r.status === 'PASS').length
@@ -104,8 +104,9 @@ export class Runner {
     return { pass, total: results.length, results }
   }
 
-  private async startOrigin(): Promise<Server> {
-    const server = createServer((req, res) => {
+  private async startOrigin(): Promise<Server[]> {
+    let port6 = 0
+    const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
       const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
       const address = server.address()
       const port = address && typeof address !== 'string' ? address.port : 0
@@ -137,9 +138,11 @@ export class Runner {
         case '/hop-a':
           return redirect(`http://127.0.0.1:${port}/hop-b`, { 'Set-Cookie': 'hop=1; Path=/' })
         case '/hop-x':
-          // Same server, different hostname: exercises the hostname-only
-          // scoping of redirect cookie replay (127.0.0.1 vs localhost).
-          return redirect(`http://localhost:${port}/hop-b`, { 'Set-Cookie': 'hopx=1; Path=/' })
+          // Same handler, different loopback hostname: exercises the
+          // hostname-only scoping of redirect cookie replay. An IP literal
+          // (not `localhost`) so no resolver is involved — CI resolves
+          // localhost to ::1 while dev machines resolve it to 127.0.0.1.
+          return redirect(`http://[::1]:${port6}/hop-b`, { 'Set-Cookie': 'hopx=1; Path=/' })
         case '/hop-b':
           return html(`<html><body><p>${req.headers.cookie ?? 'none'}</p></body></html>`)
         case '/multi-cookie':
@@ -196,12 +199,21 @@ export class Runner {
       res.setHeader('Content-Length', body.length)
       res.setHeader('Connection', 'close')
       res.end(body)
-    })
+    }
+    const server = createServer(handler)
     server.listen(0, '127.0.0.1')
     await once(server, 'listening')
     const address = server.address()
     if (!address || typeof address === 'string') throw new Error('local origin did not bind TCP')
     this.origin = `http://127.0.0.1:${address.port}`
-    return server
+    // IPv6-loopback twin (own ephemeral port): the second loopback hostname
+    // the hop-x redirect targets. Same handler, so /hop-b answers on both.
+    const server6 = createServer(handler)
+    server6.listen(0, '::1')
+    await once(server6, 'listening')
+    const address6 = server6.address()
+    if (!address6 || typeof address6 === 'string') throw new Error('local v6 origin did not bind TCP')
+    port6 = address6.port
+    return [server, server6]
   }
 }

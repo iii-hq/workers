@@ -140,9 +140,9 @@ export const HARDENING_CASES: TestCase[] = [
       expect(hopped.html.includes('<p>hop=1</p>'), `redirect target did not receive the hop cookie: ${hopped.html}`)
       expectEqual(hopped.cookies, { hop: '1' }, 'envelope accumulates hop cookies')
 
-      // 127.0.0.1 -> localhost is the same server but a different hostname:
-      // the Cookie header must not replay, while the envelope accumulator
-      // (deliberately global across hops) still reports it.
+      // 127.0.0.1 -> [::1] is the same handler on a different loopback
+      // hostname: the Cookie header must not replay, while the envelope
+      // accumulator (deliberately global across hops) still reports it.
       const scoped = await call('browser::fetch', { url: `${origin}/hop-x`, include_html: true, retries: 1 })
       expect(scoped.html.includes('<p>none</p>'), `cross-hostname hop leaked the cookie: ${scoped.html}`)
       expectEqual(scoped.cookies, { hopx: '1' }, 'accumulator still reports every hop cookie')
