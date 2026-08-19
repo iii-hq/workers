@@ -43,6 +43,7 @@ import {
   type TerminalConnectionCoordinator,
   type TerminalStatus,
 } from './terminal-session-state'
+import { terminalAnsiPalette } from './terminal-palette'
 import { bufferTerminalFrame, type TerminalFrame } from './terminal-stream'
 
 export type {
@@ -439,6 +440,20 @@ export function useTerminalSession(
 
   useEffect(() => {
     if (!visible || !container) return
+    const readTheme = () => {
+      const styles = window.getComputedStyle(container)
+      const color = (name: string, fallback: string) =>
+        styles.getPropertyValue(name).trim() || fallback
+      const background = color('--color-bg', styles.backgroundColor || '#111111')
+      return {
+        background,
+        foreground: color('--color-ink', styles.color || '#e5e5e5'),
+        cursor: color('--color-ink', styles.color || '#e5e5e5'),
+        cursorAccent: background,
+        selectionBackground: color('--color-surface-active', '#3a3a3a'),
+        ...terminalAnsiPalette(background),
+      }
+    }
     const styles = window.getComputedStyle(container)
     const color = (name: string, fallback: string) =>
       styles.getPropertyValue(name).trim() || fallback
@@ -453,13 +468,7 @@ export function useTerminalSession(
       lineHeight: 1.2,
       scrollback: 10_000,
       scrollOnUserInput: true,
-      theme: {
-        background: color('--color-bg', '#111111'),
-        foreground: color('--color-ink', '#e5e5e5'),
-        cursor: color('--color-ink', '#e5e5e5'),
-        cursorAccent: color('--color-bg', '#111111'),
-        selectionBackground: color('--color-surface-active', '#3a3a3a'),
-      },
+      theme: readTheme(),
     })
     const fitAddon = new FitAddon()
     const terminalHost = document.createElement('div')
@@ -497,6 +506,12 @@ export function useTerminalSession(
     }
     const observer = new ResizeObserver(fitTerminal)
     observer.observe(container)
+    const themeObserver = new MutationObserver(() => {
+      terminal.options.theme = readTheme()
+    })
+    themeObserver.observe(document.documentElement, {
+      attributeFilter: ['data-theme', 'class'],
+    })
     const frame = window.requestAnimationFrame(() => {
       fitTerminal()
       terminal.focus()
@@ -504,6 +519,7 @@ export function useTerminalSession(
 
     terminalCleanupRef.current = () => {
       window.cancelAnimationFrame(frame)
+      themeObserver.disconnect()
       observer.disconnect()
       scrolled.dispose()
       resized.dispose()

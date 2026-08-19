@@ -109,6 +109,7 @@ import {
 } from './ReviewPane'
 import {
   ReviewScopePicker,
+  reviewScopeLabel,
   type ReviewScopeSelection,
 } from './ReviewScopePicker'
 import {
@@ -121,6 +122,7 @@ import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
 import { ShellLauncher } from './ShellLauncher'
+import { WorkspaceBrowser } from './WorkspaceBrowser'
 import { TerminalPanel } from './TerminalPanel'
 import {
   activateTab,
@@ -321,6 +323,7 @@ export function ShellExplorerPage({
   const rootResolveSeqRef = useRef(0)
   const rootTransitionRef = useRef(false)
   const [sideTab, setSideTab] = useState<SideTab>('files')
+  const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
   const [terminalActive, setTerminalActive] = useState(false)
@@ -888,6 +891,17 @@ export function ShellExplorerPage({
     () => [...visibleReviewEntries.values()].map((entry) => entry.change),
     [visibleReviewEntries],
   )
+  const scopeEmpty =
+    reviewScope.kind !== 'last-turn' &&
+    !scopeLoading &&
+    scopeError === null &&
+    scopeEntries.size === 0
+
+  const rootLabel = useMemo(
+    () => root?.split('/').filter(Boolean).slice(-1)[0] ?? 'workspace',
+    [root],
+  )
+
   const orderedReviewEntries = useMemo<readonly ReviewEntry[]>(
     () => [...visibleReviewEntries.values()],
     [visibleReviewEntries],
@@ -2796,6 +2810,12 @@ export function ShellExplorerPage({
               <div className="shui-main-empty">
                 <span className="t-warn">{scopeError}</span>
               </div>
+            ) : scopeEmpty ? (
+              <div className="shui-main-empty">
+                <span className="t-ghost">
+                  no changes in {reviewScopeLabel(reviewScope)}
+                </span>
+              </div>
             ) : tabs.active !== null ? (
               <EditorPane
                 // fileBump remounts after an agent-side write to the active
@@ -2808,21 +2828,39 @@ export function ShellExplorerPage({
                 onSaved={onSaved}
                 onDirtyChange={onDirtyChange}
               />
+            ) : browsePath !== null ? (
+              <WorkspaceBrowser
+                tree={tree}
+                path={browsePath}
+                rootLabel={rootLabel}
+                onOpenFolder={(relPath) => {
+                  setBrowsePath(relPath)
+                  if (relPath !== '') revealFolder(relPath)
+                }}
+                onOpenFile={pinFile}
+              />
             ) : (
               <ShellLauncher
                 host={host}
                 browserAvailable={browserAvailable}
-                // Changes is the navbar's review scope: ask for the last turn
-                // and open its first changed file, which is what the picker
-                // does when you choose the same scope by hand.
-                onOpenChanges={() => selectReviewScope(LAST_TURN_SCOPE)}
+                // Changes is the navbar's review scope: the last turn when it
+                // touched anything, otherwise everything the working tree has
+                // that HEAD does not.
+                onOpenChanges={() =>
+                  selectReviewScope(
+                    reviewEntriesRef.current.size > 0
+                      ? LAST_TURN_SCOPE
+                      : { kind: 'uncommitted' },
+                  )
+                }
                 onOpenTerminal={() => {
                   setTerminalOpen(true)
                   setTerminalActive(true)
                 }}
-                // File is the sidebar tree: show it, and un-collapse if the
-                // sidebar was hidden.
+                // File opens the workspace browser in this pane and shows the
+                // sidebar tree beside it.
                 onOpenFiles={() => {
+                  setBrowsePath('')
                   setSideTab('files')
                   setCollapsed(false)
                 }}

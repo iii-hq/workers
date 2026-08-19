@@ -1726,22 +1726,6 @@
   width: 100%;
   height: 100%;
 }
-[data-iii-ui="shell"] .shui-terminal-panel-chrome {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 4px 8px 4px 10px;
-  color: var(--color-ink-faint);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  border-bottom: 1px solid var(--color-edge);
-}
-[data-iii-ui="shell"] .shui-terminal-panel-chrome > svg {
-  width: 14px;
-  height: 14px;
-}
 [data-iii-ui="shell"] .shui-terminal-workspace {
   flex: 1;
   display: flex;
@@ -1755,9 +1739,37 @@
   align-items: stretch;
   min-width: 0;
   min-height: 32px;
-  overflow-x: auto;
+  padding-right: 6px;
   border-bottom: 1px solid var(--color-edge);
   scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-strip {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 5px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group .shui-terminal-action {
+  width: 22px;
+  height: 20px;
+  border-radius: 0;
 }
 [data-iii-ui="shell"] .shui-terminal-tab {
   flex: none;
@@ -1777,6 +1789,13 @@
   color: var(--color-ink);
   background: var(--color-surface-active);
   box-shadow: inset 0 -1px 0 var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-terminal-tab .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tab:hover .shui-terminal-tab-action[aria-label^="Rename"],
+[data-iii-ui="shell"] .shui-terminal-tab:focus-within .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 1;
 }
 [data-iii-ui="shell"] .shui-terminal-tab-select {
   max-width: 150px;
@@ -1949,6 +1968,7 @@
   background: var(--color-accent);
 }
 [data-iii-ui="shell"] .shui-terminal {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1956,43 +1976,92 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12.5px;
 }
-[data-iii-ui="shell"] .shui-terminal-chrome {
-  flex-shrink: 0;
+[data-iii-ui="shell"] .shui-terminal-status {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 4px 10px;
   color: var(--color-ink-faint);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-ink) 10%, transparent);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
-[data-iii-ui="shell"] .shui-terminal-chrome-icon {
-  width: 14px;
-  height: 14px;
+[data-iii-ui="shell"] .shui-terminal-status.error,
+[data-iii-ui="shell"] .shui-terminal-status.exited {
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 10%, transparent);
 }
-[data-iii-ui="shell"] .shui-terminal-chrome-cwd {
-  flex: 0 1 auto;
-  min-width: 0;
+[data-iii-ui="shell"] .shui-terminal-status-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  color: inherit;
+  font: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-status-action:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status-action svg {
+  width: 11px;
+  height: 11px;
+}
+[data-iii-ui="shell"] .shui-terminal-hud {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+[data-iii-ui="shell"] .shui-terminal:hover .shui-terminal-hud,
+[data-iii-ui="shell"] .shui-terminal-hud:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-iii-ui="shell"] .shui-terminal-hud-cwd {
+  max-width: 160px;
+  padding-inline: 6px;
   overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
 }
-[data-iii-ui="shell"] .shui-terminal-state {
-  flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-ink-ghost);
+[data-iii-ui="shell"] .shui-terminal-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink);
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  background: var(--color-surface-active);
+  cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-terminal-state.ready {
-  color: var(--color-accent);
-}
-[data-iii-ui="shell"] .shui-terminal-state.error {
-  color: var(--color-warn);
-}
-[data-iii-ui="shell"] .shui-terminal-chrome-spacer {
-  flex: 1;
+[data-iii-ui="shell"] .shui-terminal-jump svg {
+  width: 14px;
+  height: 14px;
 }
 [data-iii-ui="shell"] .shui-terminal-action {
   flex: none;
@@ -2057,6 +2126,7 @@
   height: 100%;
 }
 [data-iii-ui="shell"] .shui-xterm .xterm-viewport {
+  background-color: transparent;
   scrollbar-color: var(--color-ink-ghost) transparent;
 }
 [data-iii-ui="shell"] .shui-etab-icon {
@@ -2066,12 +2136,9 @@
 }
 
 @media (max-width: 760px) {
-  [data-iii-ui="shell"] .shui-terminal-panel-chrome {
-    gap: 3px;
-    padding-inline: 6px;
-  }
-  [data-iii-ui="shell"] .shui-terminal-panel-chrome > span:not(.shui-terminal-chrome-spacer) {
-    display: none;
+  [data-iii-ui="shell"] .shui-terminal-bar-actions {
+    gap: 2px;
+    padding-left: 4px;
   }
   [data-iii-ui="shell"] .shui-terminal-tab-select {
     max-width: 92px;
@@ -2080,9 +2147,8 @@
     width: 22px;
     min-width: 22px;
   }
-  [data-iii-ui="shell"] .shui-terminal-chrome {
-    gap: 4px;
-    padding-inline: 7px;
+  [data-iii-ui="shell"] .shui-terminal-hud-cwd {
+    display: none;
   }
 }
 
@@ -2207,4 +2273,104 @@
 [data-iii-ui='shell'] .shui-launcher-icon {
   width: 20px;
   height: 20px;
+}
+
+/* Workspace browser -------------------------------------------------------- */
+
+[data-iii-ui='shell'] .shui-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group svg {
+  width: 12px;
+  height: 12px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb {
+  padding: 1px 4px;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-list {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 2px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry.dir {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+[data-iii-ui='shell'] .shui-browser-empty {
+  grid-column: 1 / -1;
+  padding: 12px 8px;
+  font-size: 12px;
 }

@@ -2,6 +2,7 @@ import { Columns2, Pencil, Plus, Rows2, X } from 'lucide-react'
 import {
   type Dispatch,
   forwardRef,
+  type ReactNode,
   type KeyboardEvent,
   type PointerEvent,
   useCallback,
@@ -50,6 +51,7 @@ export interface TerminalWorkspaceProps {
   leaseStore: Storage | null
   storageKey: string
   connectionCoordinators: Map<string, TerminalConnectionCoordinator>
+  actions?: ReactNode
 }
 
 export interface TerminalWorkspaceHandle {
@@ -165,6 +167,7 @@ function TerminalPaneSlot({
     >
       <TerminalPane
         session={session}
+        showCwd={context.tabPaneCount > 1}
         actions={
           <>
             <HoverTip label="Split right">
@@ -345,6 +348,7 @@ export const TerminalWorkspace = forwardRef<
     leaseStore,
     storageKey,
     connectionCoordinators,
+    actions,
   },
   ref,
 ) {
@@ -605,11 +609,12 @@ export const TerminalWorkspace = forwardRef<
 
   return (
     <div className="shui-terminal-workspace">
-      <div
-        className="shui-terminal-tabs"
-        role="tablist"
-        aria-label="Terminal tabs"
-      >
+      <div className="shui-terminal-tabs">
+        <div
+          className="shui-terminal-tab-strip"
+          role="tablist"
+          aria-label="Terminal tabs"
+        >
         {state.tabs.map((tab, index) => {
           const selected = tab.id === state.activeTabId
           return (
@@ -675,6 +680,10 @@ export const TerminalWorkspace = forwardRef<
             <Plus aria-hidden />
           </button>
         </HoverTip>
+        </div>
+        {actions ? (
+          <div className="shui-terminal-bar-actions">{actions}</div>
+        ) : null}
       </div>
       {error ? (
         <div className="shui-terminal-workspace-error">{error}</div>
