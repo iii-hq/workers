@@ -198,6 +198,12 @@ pub struct SkillGetOutput {
     /// is what the agent should pass to `agent_trigger`. `null` when
     /// the skill isn't 1:1 with a single function.
     pub function_id: Option<String>,
+    /// Absolute on-disk path of the skill file. Its parent directory is
+    /// the skill's base directory — where payload the body references by
+    /// relative path (`scripts/`, `reference/`, agent-skills convention)
+    /// lives. Only meaningful to callers sharing this worker's
+    /// filesystem (shell/file tools on the same machine).
+    pub path: String,
     /// Raw markdown body (post-frontmatter) from disk.
     ///
     /// Note: there is no `description` field. `description` is the
@@ -726,6 +732,7 @@ fn read_skill_output(
         title,
         kind,
         function_id,
+        path: fs.abs_path.display().to_string(),
         body,
         raw,
         modified_at,
@@ -1004,6 +1011,7 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
         title,
         kind,
         function_id,
+        path: fs.abs_path.display().to_string(),
         body,
         raw,
         modified_at,
@@ -1953,6 +1961,9 @@ First paragraph.
         assert_eq!(out.title, "Real title");
         assert_eq!(out.kind.as_deref(), Some("how-to"));
         assert!(out.body.contains("Body H1"));
+        // `path` announces the on-disk location so payload skills
+        // (scripts/, reference/ beside the file) can self-locate.
+        assert_eq!(out.path, ns.join("doc.md").display().to_string());
     }
 
     #[tokio::test]

@@ -65,7 +65,7 @@ never appear in `index` and `update`/`delete` refuse them.
 
 - `directory::skills::index` — token-light per-worker overview, one block per installed worker; truncates and tells you to call `list` when large.
 - `directory::skills::list` — enumerate every visible skill with id/title/type/description/bytes/modified_at; narrow with `search`, `prefix`, `type`, or `include_description`.
-- `directory::skills::get` — read one skill doc by its skill id; forgiving about short names, a trailing `.md`, an `iii://` prefix, and `SKILL.md` filenames.
+- `directory::skills::get` — read one skill doc by its skill id; forgiving about short names, a trailing `.md`, an `iii://` prefix, and `SKILL.md` filenames. The response's `path` is the absolute on-disk file; its parent directory is the skill's base directory, where payload the body references by relative path (`scripts/`, `reference/`) lives.
 - `directory::skills::download_from_registry` — install a published worker's skills from the registry; `worker` required, pin with `version` XOR `tag` (default `tag: latest`).
 - `directory::skills::download_from_repo` — pull one skill folder from a GitHub repo; `repo` + `skill` required, `branch` defaults to `main`.
 - `directory::skills::download` — flexible alias accepting either source set; prefer the two explicit forms so the source is unambiguous.

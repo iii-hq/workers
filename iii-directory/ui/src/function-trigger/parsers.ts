@@ -90,6 +90,7 @@ export const skillsGetResponseSchema = z.object({
   title: z.string(),
   type: z.string().nullable().optional(),
   function_id: z.string().nullable().optional(),
+  path: z.string().optional(),
   body: z.string(),
   raw: z.string().nullable().optional(),
   modified_at: z.string(),

@@ -10,7 +10,11 @@
  * Built-ins always win a name collision.
  */
 
-import { getCommandPrompt, getSkill } from '@/lib/backend/directory-prompts'
+import {
+  getCommandPrompt,
+  getSkill,
+  skillBodyWithBaseDir,
+} from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 
 export interface SlashCommand {
@@ -144,7 +148,7 @@ export async function expandSlashInvocation(
     const body =
       inv.kind === 'prompt'
         ? (await getCommandPrompt(client, inv.name)).body
-        : (await getSkill(client, inv.id)).body
+        : skillBodyWithBaseDir(await getSkill(client, inv.id))
     return { status: 'attached', block: slashAttachmentBlock(inv, body), inv }
   } catch {
     return { status: 'failed', command }
