@@ -14,11 +14,13 @@
 //! Point the tests at an engine with `III_ENGINE_WS_URL` (default
 //! `ws://127.0.0.1:49134`).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::OnceCell;
@@ -26,6 +28,7 @@ use tokio::sync::OnceCell;
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 
 static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
+static NEXT_WORKER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn ws_url() -> String {
     std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
@@ -58,7 +61,21 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
 
 async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
-    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    let metadata = WorkerMetadata {
+        name: format!(
+            "bridge-e2e-{}-{}",
+            std::process::id(),
+            NEXT_WORKER_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+        ..Default::default()
+    };
+    let iii = Arc::new(register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(metadata),
+            ..Default::default()
+        },
+    ));
 
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;

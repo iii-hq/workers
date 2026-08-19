@@ -11,7 +11,7 @@ import type {
   RemoteFunctionHandler,
   TriggerRequest,
 } from 'iii-browser-sdk'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   __resetIiiClientForTests,
   __setIiiClientDepsForTests,
@@ -106,7 +106,11 @@ describe('wrapSdk on() fan-out', () => {
 })
 
 describe('namespaced browser connection', () => {
-  afterEach(() => __resetIiiClientForTests())
+  afterEach(() => {
+    __resetIiiClientForTests()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
 
   it('passes the console runtime namespace to iii-browser-sdk', async () => {
     const { sdk } = fakeSdk()
@@ -146,5 +150,31 @@ describe('namespaced browser connection', () => {
       'default',
       'default',
     ])
+  })
+
+  it('warns when runtime namespace discovery falls back to default', async () => {
+    const { sdk } = fakeSdk()
+    const calls: Array<{ options?: InitOptions }> = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('window', { location: { href: 'http://console.test/' } })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 503 })),
+    )
+    __setIiiClientDepsForTests({
+      resolveWsUrl: () => 'ws://console.test/ws',
+      makeBrowserId: () => BROWSER_ID,
+      registerWorker: (_url, options) => {
+        calls.push({ options })
+        return sdk
+      },
+    })
+
+    await getIiiClient()
+
+    expect(calls).toEqual([{ options: undefined }])
+    expect(warn).toHaveBeenCalledWith(
+      'Runtime namespace request failed with HTTP 503; connecting to default',
+    )
   })
 })

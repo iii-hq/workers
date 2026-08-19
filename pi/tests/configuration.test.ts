@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig, runtimeJsonSchema, toRuntime } from '../src/config.js';
-import { registerPiConfig } from '../src/configuration.js';
+import { fetchRuntime, registerPiConfig } from '../src/configuration.js';
 import { fakeIii } from './_helpers/fake-iii.js';
 
 describe('configuration worker integration', () => {
@@ -26,6 +26,7 @@ describe('configuration worker integration', () => {
     await registerPiConfig(fake.iii, cfg);
     const reg = fake.calls.find((c) => c.function_id === 'configuration::register');
     expect(reg).toBeDefined();
+    expect(reg?.namespace).toBe('default');
     const payload = reg?.payload as {
       id?: string;
       schema?: unknown;
@@ -35,5 +36,12 @@ describe('configuration worker integration', () => {
     expect(payload.schema).toBeDefined();
     expect(payload.initial_value).not.toHaveProperty('engine_url');
     expect(payload.initial_value?.iii_context).toBe(true);
+  });
+
+  it('reads the live configuration from default', async () => {
+    const fake = fakeIii();
+    await expect(fetchRuntime(fake.iii)).resolves.toBeNull();
+    const get = fake.calls.find((c) => c.function_id === 'configuration::get');
+    expect(get?.namespace).toBe('default');
   });
 });

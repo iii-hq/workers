@@ -14,6 +14,7 @@ pub mod chat_framing;
 pub mod endpoint_count;
 pub mod names;
 pub mod pump;
+pub mod registration;
 pub mod router_client;
 pub mod sse_transport;
 pub mod state;

@@ -79,6 +79,7 @@ def _trigger_with_retry(iii: Any, function_id: str, payload: dict[str, Any]) -> 
             return iii.trigger(
                 {
                     "function_id": function_id,
+                    "namespace": "default",
                     "payload": payload,
                     "timeout_ms": CONFIG_TIMEOUT_MS,
                 }
@@ -148,6 +149,7 @@ def register_config_trigger(iii: Any, state: guidance.GuidanceState) -> None:
                 resp = await iii.trigger_async(
                     {
                         "function_id": "configuration::get",
+                        "namespace": "default",
                         "payload": {"id": CONFIG_ID},
                         "timeout_ms": CONFIG_TIMEOUT_MS,
                     }

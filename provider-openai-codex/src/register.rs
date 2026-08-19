@@ -4,6 +4,7 @@ use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{
     make_refresh_models, refresh_models, refresh_models_periodically, CatalogRefreshState,
 };
+use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{auth, router_client, state, PROVIDER_ID};
@@ -12,6 +13,7 @@ use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -146,18 +148,16 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
     iii.register_function(
         surface::STREAM_ID,
-        RegisterFunction::new_async(make_stream(
-            iii.clone(),
-            http.clone(),
-            cache.clone(),
-            aborts.clone(),
-        ))
+        typed_async_with_bad_request(
+            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
+            invalid_request_from_serde,
+        )
         .description(surface::STREAM_DESC)
         .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async(make_abort(aborts))
+        typed_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
             .description(surface::ABORT_DESC)
             .metadata(json!({ "internal": true })),
     );

@@ -22,5 +22,4 @@ dependencies:
   provider-anthropic: "^1.0.0"
   provider-openai: "^1.0.0"
   shell: "^0.11.0"
-  web: "1.2.7"
-  console: 1.9.5
+  scrapling: "^0.2.7"

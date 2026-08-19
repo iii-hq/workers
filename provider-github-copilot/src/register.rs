@@ -2,6 +2,7 @@
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::DEFAULT_MAX_TOKENS;
 use crate::discovery::{make_refresh_models, refresh_models};
+use crate::errors::invalid_request_from_serde;
 use crate::exchange::BearerCache;
 use crate::login::{make_login_poll, make_login_start};
 use crate::stream_fn::make_stream;
@@ -11,6 +12,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
+use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -145,17 +147,15 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
     iii.register_function(
         surface::STREAM_ID,
-        RegisterFunction::new_async(make_stream(
-            iii.clone(),
-            http.clone(),
-            aborts.clone(),
-            cache.clone(),
-        ))
+        typed_async_with_bad_request(
+            make_stream(iii.clone(), http.clone(), aborts.clone(), cache.clone()),
+            invalid_request_from_serde,
+        )
         .description(surface::STREAM_DESC),
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async(make_abort(aborts))
+        typed_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
             .description(surface::ABORT_DESC)
             // Control-plane callback (router::abort fan-out) — hide from the
             // agent-facing catalog like the other providers' abort functions.

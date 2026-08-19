@@ -68,20 +68,10 @@ pub trait Invoker: Send + Sync + 'static {
         function_id: &str,
         payload: Value,
         _timeout_ms: u64,
-    ) -> Result<Option<Value>, String> {
-        self.call(function_id, payload).await
-    }
-
-    async fn call_with_timeout_in_namespace(
-        &self,
-        function_id: &str,
-        payload: Value,
-        timeout_ms: u64,
         namespace: &str,
     ) -> Result<Option<Value>, String> {
         let _ = namespace;
-        self.call_with_timeout(function_id, payload, timeout_ms)
-            .await
+        self.call(function_id, payload).await
     }
 
     /// Dispatch one SUBSCRIPTION DELIVERY: the payload plus the trigger's
@@ -108,17 +98,13 @@ pub trait Invoker: Send + Sync + 'static {
     /// optimistic default. The real iii-backed invoker overrides this so a
     /// durable job restored before its worker boots is held instead of
     /// burning delivery retries on a transient `FUNCTION_NOT_FOUND` error.
-    async fn function_available(&self, _function_id: &str) -> Result<bool, String> {
-        Ok(true)
-    }
-
-    async fn function_available_in_namespace(
+    async fn function_available(
         &self,
-        function_id: &str,
+        _function_id: &str,
         namespace: &str,
     ) -> Result<bool, String> {
         let _ = namespace;
-        self.function_available(function_id).await
+        Ok(true)
     }
 
     /// Capture the engine epoch immediately before a restart-sensitive
@@ -151,24 +137,6 @@ impl Invoker for IiiInvoker {
     }
 
     async fn call_with_timeout(
-        &self,
-        function_id: &str,
-        payload: Value,
-        timeout_ms: u64,
-    ) -> Result<Option<Value>, String> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
-            .await
-            .map(Some)
-            .map_err(|e| e.to_string())
-    }
-
-    async fn call_with_timeout_in_namespace(
         &self,
         function_id: &str,
         payload: Value,
@@ -210,34 +178,7 @@ impl Invoker for IiiInvoker {
         .map_err(|e| e.to_string())
     }
 
-    async fn function_available(&self, function_id: &str) -> Result<bool, String> {
-        match self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::info".to_string(),
-                payload: json!({ "function_id": function_id }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await
-        {
-            Ok(value) => Ok(!value.is_null() && value.get("error").is_none()),
-            Err(error) => {
-                let message = error.to_string();
-                if message.to_ascii_uppercase().contains("NOT_FOUND") {
-                    Ok(false)
-                } else {
-                    Err(message)
-                }
-            }
-        }
-    }
-
-    async fn function_available_in_namespace(
-        &self,
-        function_id: &str,
-        namespace: &str,
-    ) -> Result<bool, String> {
+    async fn function_available(&self, function_id: &str, namespace: &str) -> Result<bool, String> {
         match self
             .iii
             .trigger(TriggerRequest {

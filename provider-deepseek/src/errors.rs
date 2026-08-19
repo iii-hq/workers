@@ -112,10 +112,9 @@ pub fn upstream_unavailable(message: impl Into<String>) -> Error {
     }
 }
 
-/// Map a serde deserialization failure (the typed-handler bad-request path) to
-/// the provider's `invalid_request` wire error. Used with
-/// `RegisterFunction::new_async_with_bad_request` so typed schemas are emitted
-/// while the malformed-payload contract stays `provider/invalid_request`.
+/// Map a serde deserialization failure to the provider's stable
+/// `invalid_request` wire error. The shared typed registration adapter keeps
+/// schemas emitted while preserving `provider/invalid_request`.
 pub fn invalid_request_from_serde(e: serde_json::Error) -> Error {
     invalid_request(format!("bad ProviderStreamInput: {e}"))
 }

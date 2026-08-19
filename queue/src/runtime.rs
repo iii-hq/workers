@@ -1177,7 +1177,7 @@ async fn invoke_message(
         }
     }
     invoker
-        .call_with_timeout_in_namespace(
+        .call_with_timeout(
             &message.function_id,
             message.data.clone(),
             timeout_ms,
@@ -1215,10 +1215,7 @@ async fn wait_for_function(
 ) {
     let mut waiting = false;
     loop {
-        match invoker
-            .function_available_in_namespace(function_id, namespace)
-            .await
-        {
+        match invoker.function_available(function_id, namespace).await {
             Ok(true) => {
                 if waiting {
                     tracing::info!(queue = %queue, function_id = %function_id, "function queue target became available");
@@ -1575,16 +1572,6 @@ mod tests {
             _function_id: &str,
             _payload: Value,
             timeout_ms: u64,
-        ) -> Result<Option<Value>, String> {
-            self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
-            Ok(None)
-        }
-
-        async fn call_with_timeout_in_namespace(
-            &self,
-            _function_id: &str,
-            _payload: Value,
-            timeout_ms: u64,
             namespace: &str,
         ) -> Result<Option<Value>, String> {
             self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
@@ -1592,7 +1579,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn function_available_in_namespace(
+        async fn function_available(
             &self,
             _function_id: &str,
             namespace: &str,

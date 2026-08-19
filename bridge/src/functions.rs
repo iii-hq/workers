@@ -290,9 +290,8 @@ fn parse_invoke(input: Value) -> Result<InvokeInput, BridgeError> {
     })
 }
 
-/// Deserialization-failure mapper for the SDK's typed `bridge.invoke` /
-/// `bridge.invoke_async` registrations (`RegisterFunction::
-/// new_async_with_bad_request`, see `boot::register_bridge_functions`).
+/// Deserialization-failure mapper for the typed `bridge.invoke` /
+/// `bridge.invoke_async` registrations (see `boot::register_bridge_functions`).
 /// Mirrors [`parse_invoke`]'s `deserialization_error` contract exactly, so
 /// the wire error is identical whether the SDK rejects the payload before
 /// calling the handler (typed registration) or `parse_invoke` rejects it

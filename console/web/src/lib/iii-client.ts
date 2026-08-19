@@ -301,12 +301,21 @@ async function resolveNamespace(): Promise<string | undefined> {
   try {
     const url = new URL('./runtime', window.location.href)
     const response = await fetch(url, { cache: 'no-store' })
-    if (!response.ok) return undefined
+    if (!response.ok) {
+      console.warn(
+        `Runtime namespace request failed with HTTP ${response.status}; connecting to default`,
+      )
+      return undefined
+    }
     const value = (await response.json()) as { namespace?: unknown }
     return typeof value.namespace === 'string' && value.namespace.length > 0
       ? value.namespace
       : undefined
-  } catch {
+  } catch (error) {
+    console.warn(
+      'Runtime namespace request failed; connecting to default',
+      error,
+    )
     return undefined
   }
 }

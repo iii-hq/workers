@@ -11,6 +11,7 @@ describe('configuration worker integration', () => {
     await registerOpencodeConfig(fake.iii, cfg);
     const reg = fake.calls.find((c) => c.function_id === 'configuration::register');
     expect(reg).toBeDefined();
+    expect(reg?.namespace).toBe('default');
     const payload = reg?.payload as {
       id?: string;
       schema?: { $schema?: unknown };
@@ -39,18 +40,23 @@ describe('configuration worker integration', () => {
   });
 
   it('fetchRuntime returns the live value, null when unset', async () => {
+    let namespace: string | undefined;
     const withValue = {
-      trigger: async () => ({
-        value: {
-          defaults: { model: 'm', cwd: '', agent: '' },
-          events_stream: 'agent::events',
-          raw_events_stream: 'opencode::events',
-          iii_context: true,
-          opencode_executable: '',
-        },
-      }),
+      trigger: async (request: { namespace?: string }) => {
+        namespace = request.namespace;
+        return {
+          value: {
+            defaults: { model: 'm', cwd: '', agent: '' },
+            events_stream: 'agent::events',
+            raw_events_stream: 'opencode::events',
+            iii_context: true,
+            opencode_executable: '',
+          },
+        };
+      },
     } as unknown as ISdk;
     await expect(fetchRuntime(withValue)).resolves.toMatchObject({ defaults: { model: 'm' } });
+    expect(namespace).toBe('default');
     const empty = { trigger: async () => ({ value: null }) } as unknown as ISdk;
     await expect(fetchRuntime(empty)).resolves.toBeNull();
   });

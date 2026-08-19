@@ -16,6 +16,7 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::channels::create_router_channel;
 use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value};
+use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
 use llm_router::types::router::ProviderDeclaration;
@@ -1798,6 +1799,46 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
     consumer.shutdown();
     provider.shutdown();
     router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_bad_request_preserves_stable_error_contract() {
+    let engine = engine_or_skip!();
+    let provider = register_worker(&engine.url, test_init_options());
+    let handler_calls = Arc::new(AtomicU64::new(0));
+    let bad_requests = Arc::new(AtomicU64::new(0));
+    let observed_handler_calls = handler_calls.clone();
+    let observed_bad_requests = bad_requests.clone();
+    provider.register_function(
+        "provider::typed::stream",
+        typed_async_with_bad_request(
+            move |_input: llm_router::types::router::ProviderStreamInput| {
+                let handler_calls = observed_handler_calls.clone();
+                async move {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<llm_router::types::router::ProviderStreamOutput, Error>(
+                        llm_router::types::router::ProviderStreamOutput { ok: true },
+                    )
+                }
+            },
+            move |error| {
+                observed_bad_requests.fetch_add(1, Ordering::SeqCst);
+                Error::Remote {
+                    code: "provider/invalid_request".into(),
+                    message: format!("bad ProviderStreamInput: {error}"),
+                    stacktrace: None,
+                }
+            },
+        ),
+    );
+    let error = call(&provider, "provider::typed::stream", json!({}))
+        .await
+        .expect_err("malformed provider input remains a typed bus error");
+    assert_eq!(remote_code(&error), "provider/invalid_request", "{error:?}");
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bad_requests.load(Ordering::SeqCst), 1);
+
+    provider.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

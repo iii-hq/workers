@@ -52,6 +52,7 @@ export function defaults() {
 export async function registerConfig(iii) {
   await iii.trigger({
     function_id: 'configuration::register',
+    namespace: 'default',
     payload: {
       id: CONFIG_ID,
       name: 'OpenWiki',
@@ -64,7 +65,11 @@ export async function registerConfig(iii) {
 
 export async function fetchConfig(iii) {
   try {
-    const res = await iii.trigger({ function_id: 'configuration::get', payload: { id: CONFIG_ID, raw: false } });
+    const res = await iii.trigger({
+      function_id: 'configuration::get',
+      namespace: 'default',
+      payload: { id: CONFIG_ID, raw: false },
+    });
     const v = res && typeof res === 'object' && 'value' in res ? res.value : res;
     return { ...DEFAULTS, ...(v || {}) };
   } catch {

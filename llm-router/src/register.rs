@@ -2,11 +2,10 @@
 //! in-memory snapshot → register functions → bind and reconcile the
 //! configuration trigger → emit `router::ready`.
 //!
-//! Every registration below is a direct `iii_sdk` call:
-//! `iii.register_function(id, RegisterFunction::new_async(...))` for the
-//! function surface and `iii.register_trigger(RegisterTriggerInput::new(...))`
-//! for trigger bindings. Router events fan out via worker-owned trigger types
-//! (`triggers::RouterEvents`).
+//! Function registrations use `iii_sdk` directly, with the shared typed
+//! registration adapter where malformed payloads have a stable public error
+//! code. Trigger bindings use `RegisterTriggerInput::new(...)`. Router events
+//! fan out via worker-owned trigger types (`triggers::RouterEvents`).
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -29,12 +28,14 @@ use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
 use crate::config::state::{new_config_cell, ConfigCell};
+use crate::provider_scaffold::registration::typed_async_with_bad_request;
 use crate::registry::availability::make_provider_list;
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::surface;
 use crate::triggers::RouterEvents;
+use crate::types::errors::invalid_request_from_serde;
 use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};
 
 /// `metadata.internal = true` keeps a registration out of the default
@@ -92,24 +93,30 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
         iii.register_function(
             surface::CHAT_ID,
-            RegisterFunction::new_async(move |input: ChatFnInput| {
-                let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
-                async move {
-                    let sink = open_sink(&iii, &input.writer_ref).await?;
-                    let result = pipeline.run(input.call, sink.clone()).await;
-                    sink.close(); // the handler owns closing the caller's channel
-                    result
-                }
-            })
+            typed_async_with_bad_request(
+                move |input: ChatFnInput| {
+                    let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
+                    async move {
+                        let sink = open_sink(&iii, &input.writer_ref).await?;
+                        let result = pipeline.run(input.call, sink.clone()).await;
+                        sink.close(); // the handler owns closing the caller's channel
+                        result
+                    }
+                },
+                invalid_request_from_serde,
+            )
             .description(surface::CHAT_DESC)
             .metadata(internal_meta()),
         );
     }
     iii.register_function(
         surface::COMPLETE_ID,
-        RegisterFunction::new_async(make_complete(iii.clone(), pipeline.clone()))
-            .description(surface::COMPLETE_DESC)
-            .metadata(internal_meta()),
+        typed_async_with_bad_request(
+            make_complete(iii.clone(), pipeline.clone()),
+            invalid_request_from_serde,
+        )
+        .description(surface::COMPLETE_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::ABORT_ID,
@@ -185,13 +192,16 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_REGISTER_ID,
-        RegisterFunction::new_async(make_provider_register(
-            iii.clone(),
-            registry.clone(),
-            catalog.clone(),
-            entry_lock.clone(),
-            events.clone(),
-        ))
+        typed_async_with_bad_request(
+            make_provider_register(
+                iii.clone(),
+                registry.clone(),
+                catalog.clone(),
+                entry_lock.clone(),
+                events.clone(),
+            ),
+            invalid_request_from_serde,
+        )
         .description(surface::PROVIDER_REGISTER_DESC)
         .metadata(internal_meta()),
     );
@@ -214,11 +224,10 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
-        RegisterFunction::new_async(make_models_reconcile(
-            registry.clone(),
-            catalog.clone(),
-            events.clone(),
-        ))
+        typed_async_with_bad_request(
+            make_models_reconcile(registry.clone(), catalog.clone(), events.clone()),
+            invalid_request_from_serde,
+        )
         .description(surface::MODELS_RECONCILE_DESC)
         .metadata(internal_meta()),
     );
