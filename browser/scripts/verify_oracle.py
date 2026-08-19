@@ -88,8 +88,15 @@ def source_version() -> str:
 
 
 def source_manifest() -> dict[str, object]:
+    # Fingerprint only the source the oracle executes (gen_goldens.py imports
+    # scrapling/src directly; its dependencies come from oracle/
+    # requirements.lock, not the worker's own metadata). Worker metadata —
+    # iii.worker.yaml, README, permissions, pyproject — is deliberately
+    # excluded: PR CI runs on the merge commit, so any main-side churn in
+    # those files would break every open PR's freeze without touching parse
+    # behavior. The version label is provenance, not a compared input.
     output = subprocess.check_output(
-        ["git", "ls-files", "-z", "scrapling"], cwd=REPO
+        ["git", "ls-files", "-z", "scrapling/src"], cwd=REPO
     )
     paths = [Path(item.decode()) for item in output.split(b"\0") if item]
     files = [file_record(REPO / path, str(path)) for path in paths]
@@ -252,8 +259,14 @@ def verify_parser_runtime() -> None:
     """Verify inputs that can affect parse differentials, excluding host/browser data."""
     expected = json.loads(MANIFEST.read_text())
     packages, assets, parser_runtime_sha256 = package_manifest()
+
+    def compared_source(source: dict[str, object]) -> dict[str, object]:
+        # The version label tracks scrapling/pyproject.toml, which the CI bot
+        # bumps after every merge; it is provenance, not a parse input.
+        return {key: source[key] for key in ("sha256", "files")}
+
     current = {
-        "source": source_manifest(),
+        "source": compared_source(source_manifest()),
         "python": {
             "version": sys.version.split()[0],
             "implementation": sys.implementation.name,
@@ -267,7 +280,7 @@ def verify_parser_runtime() -> None:
         "assets": assets,
     }
     frozen = {
-        "source": expected["source"],
+        "source": compared_source(expected["source"]),
         "python": {
             "version": expected["python"]["version"],
             "implementation": expected["python"]["implementation"],

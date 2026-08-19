@@ -19,7 +19,12 @@ use crate::scrapling::egress_gate::EgressGate;
 use crate::scrapling::page::PageData;
 use crate::ssrf::SsrfPolicy;
 
-const CERTIFIED_CHROME_VERSION: &str = "148.0.7778.96";
+/// The frozen Tier-1 Chromium builds compat mode certifies against: the
+/// x86_64 Chrome-for-Testing 148 build and the aarch64 Playwright chromium
+/// build 1223 (same 148 milestone; Playwright snapshots report patch .0).
+/// Both are pinned by sha256 in oracle/manifest.json and fetched by
+/// scripts/fetch_chromium_artifacts.sh.
+pub(crate) const CERTIFIED_CHROME_VERSIONS: &[&str] = &["148.0.7778.96", "148.0.7778.0"];
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
 const GOOGLE_REFERER: &str = "https://www.google.com/";
 const MAX_TILE_WIDTH: u32 = 1024;
@@ -2292,12 +2297,13 @@ fn certify_chromium(path: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("could not read Chromium version from {}", path.display()))?;
     if version
         .split_whitespace()
-        .any(|value| value == CERTIFIED_CHROME_VERSION)
+        .any(|value| CERTIFIED_CHROME_VERSIONS.contains(&value))
     {
         Ok(())
     } else {
         Err(format!(
-            "compat mode requires Chrome {CERTIFIED_CHROME_VERSION}; {} reports {version}",
+            "compat mode requires Chrome {}; {} reports {version}",
+            CERTIFIED_CHROME_VERSIONS.join(" or "),
             path.display()
         ))
     }

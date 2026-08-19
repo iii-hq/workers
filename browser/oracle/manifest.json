@@ -2,43 +2,8 @@
   "format": 1,
   "source": {
     "version": "0.2.7",
-    "sha256": "89703be8308706553be710257a3db5d926fb0b2e583d4e9f5aa55ca84d94f727",
+    "sha256": "0982638efeedff41286af00cc858a6804985c58f78b9d1188b522276c54c9c47",
     "files": [
-      {
-        "path": "scrapling/.gitignore",
-        "size": 116,
-        "sha256": "2d60003e5d625fbfed94267283237d378c1c36f9dda0013bac8434304493f497"
-      },
-      {
-        "path": "scrapling/README.md",
-        "size": 5023,
-        "sha256": "5f17075bd41eaef9afa860cd76f9b15d9ef192aebeecde6d274cb6d8d914d8a4"
-      },
-      {
-        "path": "scrapling/config.yaml",
-        "size": 1387,
-        "sha256": "b5cb08c7bef71d2b9dc8949b2565adfe7e7d76ad934ebbe955fdf238c4e7c648"
-      },
-      {
-        "path": "scrapling/iii-permissions.yaml",
-        "size": 872,
-        "sha256": "7f266b2bab15c7bcc470481ee7581416604fa85168088ebf9cfa254783d6a543"
-      },
-      {
-        "path": "scrapling/iii.worker.yaml",
-        "size": 1829,
-        "sha256": "7d3cff8a25ab3d6cf9aa1d27a2c1bdf371888ac9c33c279a34d7004c5cac74a6"
-      },
-      {
-        "path": "scrapling/pyproject.toml",
-        "size": 1154,
-        "sha256": "b360776014d319fffc820a2d63c1d10a81cafb2f6ddeb807180cb740ba91d0fd"
-      },
-      {
-        "path": "scrapling/skills/SKILL.md",
-        "size": 3461,
-        "sha256": "f4bdd7922233e2557d246cfb7ccfe454ce52f80d4b3c7507c39e0a113749f19c"
-      },
       {
         "path": "scrapling/src/__init__.py",
         "size": 0,
@@ -88,71 +53,6 @@
         "path": "scrapling/src/storage.py",
         "size": 1454,
         "sha256": "aaf5d94ca150f46f35154107f9c05602faf25ffb37417c0f210a742e66469615"
-      },
-      {
-        "path": "scrapling/tests/__init__.py",
-        "size": 0,
-        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-      },
-      {
-        "path": "scrapling/tests/test_adaptive.py",
-        "size": 2259,
-        "sha256": "c8e8cbf0fd7a8754ddbd10daeca0f91f9c1916856bffa95a9c3d5ee71cf0c027"
-      },
-      {
-        "path": "scrapling/tests/test_configuration.py",
-        "size": 5845,
-        "sha256": "097e2b362bfcd42c9f19ba5eeefe6d61347b2f16eadb7a5564c52fa4606640ac"
-      },
-      {
-        "path": "scrapling/tests/test_crawl.py",
-        "size": 8406,
-        "sha256": "b67ff5cacc07ed194a7a2cc386acf3f55f5e8d39218f8dcddc2650a84d5fcb26"
-      },
-      {
-        "path": "scrapling/tests/test_extract.py",
-        "size": 5605,
-        "sha256": "e79811b374f3735242f0247777a177f8b4ad60040551e14936c9221941a6028a"
-      },
-      {
-        "path": "scrapling/tests/test_fetch.py",
-        "size": 5697,
-        "sha256": "1d77ce5a317301372c893d5fcd8f78c34daf5bf83715b9e3c1e9bd1bc0de04a3"
-      },
-      {
-        "path": "scrapling/tests/test_guidance.py",
-        "size": 3951,
-        "sha256": "91b1d23193b62778ed387b6ca677bef733500b18c45c415861820caae83184d5"
-      },
-      {
-        "path": "scrapling/tests/test_main.py",
-        "size": 336,
-        "sha256": "d95bea62d9bbabab72510dbb1348750c8d4a7740e67fd094e1079748e7b9657e"
-      },
-      {
-        "path": "scrapling/tests/test_register.py",
-        "size": 1530,
-        "sha256": "dd01197b19bffcd739c5e2916ff3dbb0c61bae00e1f626ebe4bb662116d616f2"
-      },
-      {
-        "path": "scrapling/tests/test_screenshot.py",
-        "size": 3559,
-        "sha256": "3120eded718159d5d767a029fd1e89b2953585e917ba00ef4eabd19784652edf"
-      },
-      {
-        "path": "scrapling/tests/test_sessions.py",
-        "size": 5907,
-        "sha256": "8bddd0427b1544e2495c2e8bb0388933cdcc13aa13a7d52fe147fc6f81c07c88"
-      },
-      {
-        "path": "scrapling/vendor/iii_helpers-0.21.4-py3-none-any.whl",
-        "size": 27438,
-        "sha256": "7ba233214ef45df3bc5e5e2644c2f9a30a919848ec5bf558da4ecb6d74dfbbe4"
-      },
-      {
-        "path": "scrapling/vendor/iii_sdk-0.21.4-py3-none-any.whl",
-        "size": 36912,
-        "sha256": "e1a3334b6e92c65e45e82b453cca8e71baba32817a9914505c6034b0a34d8b3b"
       }
     ]
   },

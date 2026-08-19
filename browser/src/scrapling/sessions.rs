@@ -729,9 +729,9 @@ mod tests {
             .or_else(|| crate::functions::doctor::detect_chromium(&WorkerConfig::default()));
         let Some(executable) = executable.filter(|executable| {
             crate::functions::doctor::chromium_version(executable).is_some_and(|version| {
-                version
-                    .split_whitespace()
-                    .any(|part| part == "148.0.7778.96")
+                version.split_whitespace().any(|part| {
+                    crate::scrapling::raw_browser::CERTIFIED_CHROME_VERSIONS.contains(&part)
+                })
             })
         }) else {
             #[cfg(feature = "scrapling-compat")]
