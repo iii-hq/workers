@@ -19,7 +19,7 @@ import {
   type LexicalEditor,
 } from 'lexical'
 import { useEffect, useMemo, useRef } from 'react'
-import { onComposerInsert } from '@/lib/composer-insert'
+import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
 import type { FunctionEntry } from '@/lib/functions'
 import { FileMentionNode } from './lexical/FileMentionNode'
 import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
@@ -200,6 +200,19 @@ function ExternalInsertPlugin() {
 }
 
 /**
+ * Take the caret when a surface asks for it, e.g. a "new chat" that reused
+ * the untouched one already open, where nothing remounts to focus itself.
+ */
+function FocusOnRequestPlugin({ enabled }: { enabled: boolean }) {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    if (!enabled) return
+    return onComposerFocusRequest(() => editor.focus())
+  }, [editor, enabled])
+  return null
+}
+
+/**
  * Toggle the editor's editable state when `disabled` flips.
  */
 function EditablePlugin({ disabled }: { disabled?: boolean }) {
@@ -281,6 +294,7 @@ export function LexicalShell({
           Lexical's own plugin waits for the editable node, which a bare
           focus() call on mount does not. */}
       {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
+      <FocusOnRequestPlugin enabled={disabled !== true} />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

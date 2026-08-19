@@ -34,16 +34,17 @@ function hostFor(root: TreeNode) {
   const trigger = vi.fn(async (functionId: string, _input: unknown) => {
     if (functionId === 'coder::tree') return { path: '/repo', root }
     if (functionId === 'coder::read-file') {
+      // One result per requested path, so a test can count what the capture
+      // actually asked for rather than a fixture's single canned row.
+      const paths = (_input as { paths?: string[] }).paths ?? []
       return {
-        results: [
-          {
-            path: '/repo/visible.ts',
-            success: true,
-            content: 'before\n',
-            is_utf8: true,
-            more_lines: false,
-          },
-        ],
+        results: paths.map((path) => ({
+          path,
+          success: true,
+          content: 'before\n',
+          is_utf8: true,
+          more_lines: false,
+        })),
       }
     }
     throw new Error(`unexpected function ${functionId}`)
@@ -355,9 +356,10 @@ describe('baseline coverage', () => {
 
     expect(baseline.coverage).toEqual({
       candidates: 501,
-      captured: baseline.contents.size,
+      captured: 500,
       capped: true,
     })
+    expect(baseline.contents.size).toBe(500)
     expect(baseline.complete).toBe(true)
   })
 

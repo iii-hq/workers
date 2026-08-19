@@ -310,6 +310,23 @@ describe('withWorkspaceScreenOpened', () => {
     })
   })
 
+  it('stays put when the workspace you are on already shows that screen', () => {
+    const tabs: WorkspaceTab[] = [
+      { id: 'first-chat', screens: [CHAT_SCREEN] },
+      { id: 'chat-and-shell', screens: [CHAT_SCREEN, 'ext:shell'] },
+    ]
+    // Opening chat from the second tab must not send you to the first one
+    // just because it was created earlier.
+    expect(
+      withWorkspaceScreenOpened(
+        tabs,
+        'chat-and-shell',
+        CHAT_SCREEN,
+        () => 'new',
+      ),
+    ).toEqual({ tabs, activeTabId: 'chat-and-shell' })
+  })
+
   it('places beside chat, then creates a safe split when the active tab is full', () => {
     const open = withWorkspaceScreenOpened(
       [{ id: 'chat', columns: 2, screens: [CHAT_SCREEN, 'traces'] }],
