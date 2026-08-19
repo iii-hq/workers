@@ -1,0 +1,87 @@
+{
+  "function_id": "browser::screenshot-url",
+  "description": "Capture a page screenshot as image content blocks via a browser fetcher (dynamic or stealthy).",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string"
+      },
+      "fetcher": {
+        "type": "string",
+        "enum": [
+          "dynamic",
+          "stealthy"
+        ]
+      },
+      "full_page": {
+        "type": "boolean"
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ]
+      },
+      "headless": {
+        "type": "boolean"
+      },
+      "network_idle": {
+        "type": "boolean"
+      },
+      "timeout": {
+        "type": "number"
+      },
+      "wait_selector": {
+        "type": "string"
+      },
+      "proxy": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "array",
+        "description": "image blocks (one per tile, width<=1024/height<=1536) + a text caption",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "image",
+                "text"
+              ]
+            },
+            "mime": {
+              "type": "string"
+            },
+            "data": {
+              "type": "string",
+              "description": "base64 image bytes (image blocks)"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      },
+      "mime": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      }
+    }
+  }
+}

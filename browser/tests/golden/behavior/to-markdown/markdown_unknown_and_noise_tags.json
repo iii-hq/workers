@@ -1,0 +1,11 @@
+{
+  "function": "browser::to-markdown",
+  "case": "markdown_unknown_and_noise_tags",
+  "request": {
+    "html": "\n         <!doctype html><!--before--><main data-x=\"1\"><custom-tag> alpha   beta\n gamma </custom-tag>\n         <p>before <span>mid</span> after</p><script>bad()</script><style>x{}</style>\n         <template><p>T</p></template></main>\n     "
+  },
+  "ok": {
+    "format": "markdown",
+    "content": "alpha beta\ngamma \n\nbefore mid after\n\nT"
+  }
+}

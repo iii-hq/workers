@@ -1,0 +1,91 @@
+{
+  "function": "browser::find",
+  "case": "star_tag_falls_through",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "tag": "*"
+  },
+  "ok": {
+    "count": 9,
+    "items": [
+      {
+        "tag": "head",
+        "text": "",
+        "html": "<head></head>",
+        "attrs": {},
+        "css": "head",
+        "xpath": "//head"
+      },
+      {
+        "tag": "body",
+        "text": "Hello\nApple\nBanana\nprice 42 usd then 99",
+        "html": "<body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body>",
+        "attrs": {},
+        "css": "body",
+        "xpath": "//body"
+      },
+      {
+        "tag": "h1",
+        "text": "Hello",
+        "html": "<h1 class=\"t\">Hello</h1>",
+        "attrs": {
+          "class": "t"
+        },
+        "css": "body > h1",
+        "xpath": "//body/h1"
+      },
+      {
+        "tag": "ul",
+        "text": "Apple\nBanana",
+        "html": "<ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul>",
+        "attrs": {},
+        "css": "body > ul",
+        "xpath": "//body/ul"
+      },
+      {
+        "tag": "li",
+        "text": "Apple",
+        "html": "<li><a href=\"/a\">Apple</a></li>",
+        "attrs": {},
+        "css": "body > ul > li",
+        "xpath": "//body/ul/li"
+      },
+      {
+        "tag": "a",
+        "text": "Apple",
+        "html": "<a href=\"/a\">Apple</a>",
+        "attrs": {
+          "href": "/a"
+        },
+        "css": "body > ul > li > a",
+        "xpath": "//body/ul/li/a"
+      },
+      {
+        "tag": "li",
+        "text": "Banana",
+        "html": "<li><a href=\"/b\">Banana</a></li>",
+        "attrs": {},
+        "css": "body > ul > li:nth-of-type(2)",
+        "xpath": "//body/ul/li[2]"
+      },
+      {
+        "tag": "a",
+        "text": "Banana",
+        "html": "<a href=\"/b\">Banana</a>",
+        "attrs": {
+          "href": "/b"
+        },
+        "css": "body > ul > li:nth-of-type(2) > a",
+        "xpath": "//body/ul/li[2]/a"
+      },
+      {
+        "tag": "p",
+        "text": "price 42 usd then 99",
+        "html": "<p>price 42 usd then 99</p>",
+        "attrs": {},
+        "css": "body > p",
+        "xpath": "//body/p"
+      }
+    ]
+  }
+}

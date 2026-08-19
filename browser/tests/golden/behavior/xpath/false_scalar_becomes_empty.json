@@ -1,0 +1,11 @@
+{
+  "function": "browser::xpath",
+  "case": "false_scalar_becomes_empty",
+  "request": {
+    "html": "<p>Alpha</p>",
+    "query": "boolean(//nope)"
+  },
+  "ok": {
+    "result": []
+  }
+}

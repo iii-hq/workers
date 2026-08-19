@@ -1,0 +1,13 @@
+{
+  "function": "browser::xpath",
+  "case": "ancestor_axis_reverse_position",
+  "request": {
+    "html": "<main id='m'><section id='s'><p>P</p></section></main>",
+    "query": "//p/ancestor::*[1]/@id"
+  },
+  "ok": {
+    "result": [
+      "s"
+    ]
+  }
+}

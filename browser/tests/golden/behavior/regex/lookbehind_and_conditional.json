@@ -1,0 +1,22 @@
+{
+  "function": "browser::regex",
+  "case": "lookbehind_and_conditional",
+  "request": {
+    "html": "<p>abcdef ab c</p>",
+    "pattern": "(?:(?<=abc)def)|((a)?(?(2)b|c))"
+  },
+  "ok": {
+    "result": [
+      "ab",
+      "a",
+      "c",
+      "",
+      "",
+      "",
+      "ab",
+      "a",
+      "c",
+      ""
+    ]
+  }
+}

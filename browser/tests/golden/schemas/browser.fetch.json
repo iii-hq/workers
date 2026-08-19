@@ -1,0 +1,193 @@
+{
+  "function_id": "browser::fetch",
+  "description": "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string"
+      },
+      "urls": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "method": {
+        "type": "string",
+        "enum": [
+          "get",
+          "post",
+          "put",
+          "delete"
+        ]
+      },
+      "headers": {
+        "type": "object"
+      },
+      "params": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object"
+      },
+      "json": {
+        "type": "object"
+      },
+      "cookies": {
+        "type": "object"
+      },
+      "proxy": {
+        "type": "string"
+      },
+      "proxies": {
+        "type": "object",
+        "description": "per-scheme proxies, e.g. {\"https\": \"http://...\"}"
+      },
+      "proxy_auth": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "[user, password]"
+      },
+      "impersonate": {
+        "type": "string",
+        "description": "TLS/UA fingerprint, e.g. 'chrome'"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "seconds (HTTP fetcher)"
+      },
+      "follow_redirects": {
+        "type": "boolean"
+      },
+      "max_redirects": {
+        "type": "integer"
+      },
+      "stealthy_headers": {
+        "type": "boolean"
+      },
+      "http3": {
+        "type": "boolean"
+      },
+      "verify": {
+        "type": "boolean"
+      },
+      "retries": {
+        "type": "integer"
+      },
+      "retry_delay": {
+        "type": "number"
+      },
+      "selectors": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            },
+            "regex": {
+              "type": "string"
+            },
+            "attr": {
+              "type": "string",
+              "description": "extract this attribute instead of text"
+            },
+            "html": {
+              "type": "boolean",
+              "description": "extract inner HTML instead of text"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "return every match as a list"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      "include_html": {
+        "type": "boolean"
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "markdown",
+          "text"
+        ],
+        "description": "render page body to this format"
+      },
+      "main_content_only": {
+        "type": "boolean",
+        "description": "strip nav/scripts/hidden before rendering"
+      },
+      "css_selector": {
+        "type": "string",
+        "description": "scope the render to this CSS subtree (e.g. a page's content div)"
+      }
+    }
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "url": {
+        "type": "string"
+      },
+      "headers": {
+        "type": "object"
+      },
+      "cookies": {
+        "type": "object"
+      },
+      "encoding": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "extracted": {
+        "type": "object"
+      },
+      "html": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string",
+        "description": "markdown/text render when `format` requested"
+      },
+      "format": {
+        "type": "string"
+      },
+      "captured_xhr": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  }
+}

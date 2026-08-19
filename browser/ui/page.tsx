@@ -21,6 +21,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { BrowserConfigForm } from './src/configuration'
 import { createBrowserRenderer, createBrowserScreenshotRenderer } from './src/function-trigger-message'
+import { createScraplingRenderer } from './src/function-trigger-message/scrapling'
 import { BrowserPage } from './src/page'
 
 export default function setup(host: Host) {
@@ -36,5 +37,6 @@ export default function setup(host: Host) {
   // renderer first; the general browser renderer still owns errors/running
   // states and every other browser::* function.
   host.functionTriggers.register(createBrowserScreenshotRenderer())
+  host.functionTriggers.register(createScraplingRenderer(host))
   host.functionTriggers.register(createBrowserRenderer(host))
 }

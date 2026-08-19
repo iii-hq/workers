@@ -1,12 +1,17 @@
 {
-  "description": "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that browser::act accepts; refs stay valid until the next navigation. Prefer this over browser::screenshot; it is cheaper and machine-readable.",
   "function_id": "browser::snapshot",
+  "description": "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that browser::act accepts; refs stay valid until the next navigation. Prefer this over browser::screenshot; it is cheaper and machine-readable.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "SnapshotInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
     "properties": {
       "diff": {
-        "default": null,
         "description": "Return only what changed since this session's previous snapshot instead of the full outline. Falls back to a full snapshot when there is no baseline (first snapshot, or first after a navigation).",
+        "default": null,
         "type": [
           "boolean",
           "null"
@@ -15,47 +20,21 @@
       "session_id": {
         "type": "string"
       }
-    },
-    "required": [
-      "session_id"
-    ],
-    "title": "SnapshotInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-      "SnapshotDiff": {
-        "description": "Changes since the previous snapshot. Lines are compared without their `[ref=eN]` suffix (ref names are unique per snapshot); `added` lines carry current refs and are directly actionable.",
-        "properties": {
-          "added": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "removed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "unchanged": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "added",
-          "removed",
-          "unchanged"
-        ],
-        "type": "object"
-      }
-    },
+    "title": "SnapshotOutput",
+    "type": "object",
+    "required": [
+      "generation",
+      "tree",
+      "truncated",
+      "url"
+    ],
     "properties": {
       "diff": {
+        "description": "Present when the caller asked for `diff: true` and a baseline existed. Covers only the emitted nodes of both snapshots; check `truncated` before trusting it as a complete change set.",
         "anyOf": [
           {
             "$ref": "#/definitions/SnapshotDiff"
@@ -63,14 +42,13 @@
           {
             "type": "null"
           }
-        ],
-        "description": "Present when the caller asked for `diff: true` and a baseline existed. Covers only the emitted nodes of both snapshots; check `truncated` before trusting it as a complete change set."
+        ]
       },
       "generation": {
         "description": "Document generation the refs belong to; navigation advances it and kills every ref from earlier generations.",
+        "type": "integer",
         "format": "uint64",
-        "minimum": 0.0,
-        "type": "integer"
+        "minimum": 0.0
       },
       "title": {
         "type": [
@@ -90,13 +68,35 @@
         "type": "string"
       }
     },
-    "required": [
-      "generation",
-      "tree",
-      "truncated",
-      "url"
-    ],
-    "title": "SnapshotOutput",
-    "type": "object"
+    "definitions": {
+      "SnapshotDiff": {
+        "description": "Changes since the previous snapshot. Lines are compared without their `[ref=eN]` suffix (ref names are unique per snapshot); `added` lines carry current refs and are directly actionable.",
+        "type": "object",
+        "required": [
+          "added",
+          "removed",
+          "unchanged"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          }
+        }
+      }
+    }
   }
 }

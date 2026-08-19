@@ -1,0 +1,65 @@
+{
+  "function_id": "browser::find-by-regex",
+  "description": "Find elements whose visible text matches a regex pattern.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "pattern": {
+        "type": "string"
+      },
+      "case_sensitive": {
+        "type": "boolean"
+      },
+      "clean_match": {
+        "type": "boolean"
+      },
+      "first": {
+        "type": "boolean"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "html",
+      "pattern"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "html": {
+              "type": "string"
+            },
+            "attrs": {
+              "type": "object"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

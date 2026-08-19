@@ -14,7 +14,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { ChevronLeftIcon, GlobeIcon, useContainerNarrow } from '../lib/widgets'
 
 type JsonObject = { [key: string]: JsonValue }
-type SectionId = 'launch' | 'viewport' | 'limits' | 'behavior'
+type SectionId = 'launch' | 'viewport' | 'limits' | 'behavior' | 'scraping'
 
 const CONFIG_NARROW_BELOW = 660
 const DEFAULTS = {
@@ -51,6 +51,7 @@ const FIELD_SECTION: Record<string, SectionId> = {
   max_timeout_ms: 'behavior',
   idle_stop_ms: 'behavior',
   allowed_schemes: 'behavior',
+  scrapling: 'scraping',
 }
 
 function asObject(value: JsonValue | undefined): JsonObject {
@@ -373,6 +374,12 @@ function ConfigNav({
       description: 'Timeouts and navigation',
       summary: `${formatDuration(timeout)} · idle ${formatDuration(idle)}`,
     },
+    {
+      id: 'scraping',
+      label: 'Scraping',
+      description: 'Fetch tiers and agent guidance',
+      summary: `guidance ${booleanValue(asObject(value.scrapling).inject_guidance, true) ? 'on' : 'off'}`,
+    },
   ]
 
   return (
@@ -498,6 +505,10 @@ function ConfigEditor({
     behavior: {
       title: 'Runtime behavior',
       description: 'Control timeouts, idle cleanup, and allowed destinations.',
+    },
+    scraping: {
+      title: 'Scraping',
+      description: 'Settings for the browser::* fetch and parse surface.',
     },
   }
 
@@ -744,6 +755,24 @@ function ConfigEditor({
               />
             </section>
           </>
+        ) : null}
+
+        {selection === 'scraping' ? (
+          <section className="br-cfg-section">
+            <SectionHeader
+              title="Agent guidance"
+              description="Whether the worker teaches agents its scraping surface via the system prompt."
+            />
+            <CheckField
+              field="scrapling.inject_guidance"
+              label="Inject scraping guidance into agent system prompts"
+              hint="Hot-applies on save: turning this off unbinds the pre-generate hook immediately, no worker restart."
+              checked={booleanValue(asObject(value.scrapling).inject_guidance, true)}
+              onChange={(next) =>
+                onChange({ ...value, scrapling: { ...asObject(value.scrapling), inject_guidance: next } })
+              }
+            />
+          </section>
         ) : null}
       </div>
     </section>

@@ -1,0 +1,21 @@
+{
+  "function": "browser::find-by-text",
+  "case": "clean_trims_trailing_space",
+  "request": {
+    "html": "<html><head><title>Messy Page</title><meta charset=\"utf-8\"></head><body>\n<nav><ul><li><a href=\"/home\">Home</a></li><li><a href=\"/about\">About</a></li></ul></nav>\n<template><p>never render this</p></template>\n<div aria-hidden=\"true\">screen-reader trap</div>\n<div style=\"display:none\">hidden A</div>\n<div style=\"visibility: hidden\">hidden B</div>\n<main>\n  <h1>Widget Review</h1>\n  <p>Intro paragraph with <em>emphasis</em> and a <a href=\"/w/1\">link</a>.</p>\n  <h2>Specs</h2>\n  <table><tr><th>Name</th><th>Value</th></tr><tr><td>Weight</td><td>3kg</td></tr></table>\n  <ul><li>alpha<ul><li>nested</li></ul></li><li>beta</li></ul>\n  <div class=\"card\" data-id=\"1\"><h3>Card One</h3><p>first card</p></div>\n  <div class=\"card\" data-id=\"2\"><h3>Card Two</h3><p>second card</p></div>\n  <div class=\"card wide\" data-id=\"3\"><h3>Card Three</h3><p>third card</p></div>\n</main>\n<footer><p>© 2026 Example — <span style=\"font-size:0\">invisible</span>fine print</p></footer>\n<script>analytics()</script>\n</body></html>\n",
+    "text": "intro paragraph with"
+  },
+  "ok": {
+    "count": 1,
+    "items": [
+      {
+        "tag": "p",
+        "text": "Intro paragraph with\nemphasis\nand a\nlink\n.",
+        "html": "<p>Intro paragraph with <em>emphasis</em> and a <a href=\"/w/1\">link</a>.</p>",
+        "attrs": {},
+        "css": "body > main > p",
+        "xpath": "//body/main/p"
+      }
+    ]
+  }
+}

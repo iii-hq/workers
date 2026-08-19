@@ -1,0 +1,27 @@
+{
+  "function": "browser::extract",
+  "case": "template_nested_content",
+  "request": {
+    "html": "<template><table><td>T</template><p>P",
+    "selectors": [
+      {
+        "name": "template",
+        "css": "template",
+        "html": true
+      },
+      {
+        "name": "td",
+        "xpath": "//template//td",
+        "all": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "template": "<template><table><td>T<p>P</p></td></table></template>",
+      "td": [
+        "T\nP"
+      ]
+    }
+  }
+}

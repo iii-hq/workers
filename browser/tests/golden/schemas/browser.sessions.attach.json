@@ -1,12 +1,17 @@
 {
-  "description": "Attach a session to an already-running browser over CDP (start Chrome with --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user tab by URL substring and releases it untouched on stop. Reaches the real profile with its logins; disabled unless allow_attach is set in config.",
   "function_id": "browser::sessions::attach",
+  "description": "Attach a session to an already-running browser over CDP (start Chrome with --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user tab by URL substring and releases it untouched on stop. Reaches the real profile with its logins; disabled unless allow_attach is set in config.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AttachInput",
+    "type": "object",
+    "required": [
+      "cdp_url"
+    ],
     "properties": {
       "adopt_url_substring": {
-        "default": null,
         "description": "Adopt the existing tab whose URL contains this substring, exclusively, and release it untouched on stop. Omit to open a fresh tab the session owns and closes on stop. Must match exactly one open tab.",
+        "default": null,
         "type": [
           "string",
           "null"
@@ -17,30 +22,33 @@
         "type": "string"
       },
       "read_only": {
-        "default": null,
         "description": "Inspection-only session; see browser::sessions::start.",
+        "default": null,
         "type": [
           "boolean",
           "null"
         ]
       },
       "url": {
-        "default": null,
         "description": "URL to open in the fresh tab (ignored when adopting). Omit for about:blank.",
+        "default": null,
         "type": [
           "string",
           "null"
         ]
       }
-    },
-    "required": [
-      "cdp_url"
-    ],
-    "title": "AttachInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AttachOutput",
+    "type": "object",
+    "required": [
+      "adopted",
+      "read_only",
+      "session_id",
+      "url"
+    ],
     "properties": {
       "adopted": {
         "description": "True when the session adopted an existing user tab (released, not closed, on stop); false when it opened a fresh tab it owns.",
@@ -55,14 +63,6 @@
       "url": {
         "type": "string"
       }
-    },
-    "required": [
-      "adopted",
-      "read_only",
-      "session_id",
-      "url"
-    ],
-    "title": "AttachOutput",
-    "type": "object"
+    }
   }
 }

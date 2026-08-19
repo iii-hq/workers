@@ -1,0 +1,9 @@
+{
+  "function": "browser::xpath",
+  "case": "number_scalar_type_error",
+  "request": {
+    "html": "<p>Alpha</p>",
+    "query": "count(//p)"
+  },
+  "err": "'float' object is not iterable"
+}

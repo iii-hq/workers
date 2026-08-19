@@ -1,0 +1,12 @@
+{
+  "function": "browser::css",
+  "case": "nth_not_and_attribute_operators",
+  "request": {
+    "html": "<ul><li class='x' data-v='en-us'>A</li><li data-v='en'>B</li><li data-v='fr'>C</li></ul>",
+    "query": "li:nth-child(2):not(.x)[data-v|='en']",
+    "first": true
+  },
+  "ok": {
+    "result": "B"
+  }
+}

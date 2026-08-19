@@ -68,7 +68,11 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
-pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<(), Error> {
+pub fn register_config_trigger(
+    iii: &IIIClient,
+    config: SharedConfig,
+    guidance: crate::scrapling::GuidanceState,
+) -> Result<(), Error> {
     let cfg = config.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -76,8 +80,9 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         RegisterFunction::new_async(move |_req: OnConfigChangeRequest| {
             let cfg = cfg.clone();
             let engine = engine.clone();
+            let guidance = guidance.clone();
             async move {
-                on_config_change(&engine, &cfg).await;
+                on_config_change(&engine, &cfg, &guidance).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -96,10 +101,19 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
     Ok(())
 }
 
-async fn on_config_change(iii: &IIIClient, config: &SharedConfig) {
+async fn on_config_change(
+    iii: &IIIClient,
+    config: &SharedConfig,
+    guidance: &crate::scrapling::GuidanceState,
+) {
     match fetch_config(iii).await {
         Ok(cfg) => {
+            crate::scrapling::adaptive::configure_quota(cfg.scrapling.adaptive_quota());
+            let inject_guidance = cfg.scrapling.inject_guidance;
             config.store(std::sync::Arc::new(cfg));
+            // Hot-apply: flipping browser.scrapling.inject_guidance in the
+            // console binds/unbinds the pre-generate guidance hook live.
+            crate::scrapling::apply_guidance(iii, guidance, inject_guidance);
             tracing::info!("browser configuration reloaded");
         }
         Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),

@@ -1,0 +1,24 @@
+# Agent permissions for the browser worker's scrapling parse surface.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# Every function listed here operates only on caller-provided HTML and uses no
+# network or browser, so it is auto-allowed like the Python parse surface.
+# Adaptive CSS/XPath/extract calls can persist identities in the configured
+# SQLite database; operators should size and protect that durable state.
+# The interactive browser::* surface is deliberately absent: it
+# drives a real browser and stays at the needs_approval default, as do the
+# outbound-fetching browser::{fetch,dynamic-fetch,stealthy-fetch,screenshot-url,
+# session-*,crawl} functions (an SSRF surface).
+version: 1
+
+rules:
+  - browser::extract
+  - browser::css
+  - browser::xpath
+  - browser::regex
+  - browser::find-similar
+  - browser::find
+  - browser::find-by-text
+  - browser::find-by-regex
+  - browser::describe
+  - browser::to-markdown

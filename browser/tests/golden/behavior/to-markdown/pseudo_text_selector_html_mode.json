@@ -1,0 +1,13 @@
+{
+  "function": "browser::to-markdown",
+  "case": "pseudo_text_selector_html_mode",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "format": "html",
+    "css_selector": "li a::text"
+  },
+  "ok": {
+    "format": "html",
+    "content": "AppleBanana"
+  }
+}

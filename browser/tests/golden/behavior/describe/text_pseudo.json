@@ -1,0 +1,25 @@
+{
+  "function": "browser::describe",
+  "case": "text_pseudo",
+  "request": {
+    "html": "<html><head></head><body><h1 class=\"t\">Hello</h1><ul><li><a href=\"/a\">Apple</a></li><li><a href=\"/b\">Banana</a></li></ul><p>price 42 usd then 99</p></body></html>\n",
+    "query": "h1::text"
+  },
+  "ok": {
+    "found": true,
+    "element": {
+      "tag": "#text",
+      "text": "Hello",
+      "html": "Hello",
+      "attrs": {},
+      "css": "",
+      "xpath": "",
+      "full_css": "",
+      "full_xpath": "",
+      "classes": [],
+      "parent_tag": "h1",
+      "children": 0,
+      "siblings": 0
+    }
+  }
+}

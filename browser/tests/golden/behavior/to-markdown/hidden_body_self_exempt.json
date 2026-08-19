@@ -1,0 +1,13 @@
+{
+  "function": "browser::to-markdown",
+  "case": "hidden_body_self_exempt",
+  "request": {
+    "html": "<html><head></head><body aria-hidden=\"true\"><p>keep me</p></body></html>",
+    "format": "text",
+    "main_content_only": true
+  },
+  "ok": {
+    "format": "text",
+    "content": "keep me"
+  }
+}
