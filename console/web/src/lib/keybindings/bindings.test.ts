@@ -172,6 +172,25 @@ describe('isBrowserReserved', () => {
     expect(isBrowserReserved('Ctrl+N', 'mac')).toBe(false)
   })
 
+  it('reserves the Mac-only menu chords', () => {
+    // The obvious chord for a settings screen opens Chrome's preferences.
+    expect(isBrowserReserved('Mod+,', 'mac')).toBe(true)
+    expect(isBrowserReserved('Mod+,', 'other')).toBe(false)
+  })
+
+  it('leaves bare keys alone, which is why the console uses them', () => {
+    for (const binding of ['1', 't', ',', '\\', '?']) {
+      expect({ binding, mac: isBrowserReserved(binding, 'mac') }).toEqual({
+        binding,
+        mac: false,
+      })
+      expect({ binding, other: isBrowserReserved(binding, 'other') }).toEqual({
+        binding,
+        other: false,
+      })
+    }
+  })
+
   it('leaves ordinary chords alone', () => {
     expect(isBrowserReserved('Mod+K', 'mac')).toBe(false)
     expect(isBrowserReserved('?', 'mac')).toBe(false)

@@ -11,10 +11,15 @@ import { shortcutPlatform } from '@/lib/keybindings/bindings'
 import {
   KEYBINDINGS,
   type KeybindingActionId,
+  matchDigitIndex,
   matchesKeybinding,
 } from '@/lib/keybindings/registry'
 
-export type KeybindingHandlers = Partial<Record<KeybindingActionId, () => void>>
+/** A handler takes the selected index for a `digitIndex` shortcut, and
+ *  nothing for every other one. */
+export type KeybindingHandlers = Partial<
+  Record<KeybindingActionId, (index: number) => void>
+>
 
 /** Whether the keystroke is going into a field the user is typing in. */
 function isTyping(target: EventTarget | null): boolean {
@@ -44,9 +49,16 @@ export function useKeybindings(handlers: KeybindingHandlers): void {
         if (typing && !definition.firesWhileTyping) continue
         const run = handlersRef.current[definition.id]
         if (!run) continue
+        if (definition.digitIndex) {
+          const index = matchDigitIndex(definition.id, event, platform)
+          if (index === null) continue
+          event.preventDefault()
+          run(index)
+          return
+        }
         if (!matchesKeybinding(definition.id, event, platform)) continue
         event.preventDefault()
-        run()
+        run(0)
         return
       }
     }

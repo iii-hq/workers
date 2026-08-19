@@ -207,12 +207,29 @@ export const BROWSER_RESERVED: readonly string[] = [
   ...Array.from({ length: 9 }, (_, index) => `Mod+${index + 1}`),
 ]
 
+/**
+ * Reserved on macOS only, where the browser's own menus sit on Command and
+ * the equivalent chord is free on Windows and Linux. `Mod+,` is the trap
+ * worth naming: it is the obvious chord for a settings screen and it opens
+ * Chrome's own preferences.
+ */
+export const MAC_RESERVED: readonly string[] = ['Mod+,', 'Mod+[', 'Mod+]']
+
 export function isBrowserReserved(
   binding: string,
   platform: Platform,
 ): boolean {
+  const reserved = [
+    ...BROWSER_RESERVED,
+    ...(platform === 'mac' ? MAC_RESERVED : []),
+  ]
   const identities = new Set(
-    BROWSER_RESERVED.map((reserved) => conflictIdentity(reserved, platform)),
+    reserved.map((entry) => conflictIdentity(entry, platform)),
   )
   return identities.has(conflictIdentity(binding, platform))
+}
+
+/** The digit a keystroke carries, for shortcuts that select by position. */
+export function digitFromEvent(event: KeyEventLike): string | null {
+  return /^[1-9]$/.test(event.key) ? event.key : null
 }

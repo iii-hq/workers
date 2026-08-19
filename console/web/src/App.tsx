@@ -189,6 +189,19 @@ export function App() {
   useKeybindings({
     'palette.toggle': () => setPaletteOpen((current) => !current),
     'shortcuts.open': () => setShortcutsOpen(true),
+    'app.settings': toggleSettings,
+    'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    'panel.split': () =>
+      workspaceRef.current.addColumn(
+        workspaceRef.current.activeTab.id,
+        'right',
+      ),
+    // Out of range is a no-op rather than a wrap: pressing 7 with four
+    // workspaces open should do nothing, not land somewhere surprising.
+    'workspace.selectByIndex': (index) => {
+      const tab = workspaceRef.current.tabs[index]
+      if (tab) workspaceRef.current.activateTab(tab.id)
+    },
   })
 
   return (
@@ -805,7 +818,11 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
                           {index > 0 ? (
                             <span className="text-ink-ghost">or</span>
                           ) : null}
-                          <KeyCombo binding={binding} platform={platform} />
+                          <KeyCombo
+                            binding={binding}
+                            platform={platform}
+                            digitRange={entry.digitIndex}
+                          />
                         </Fragment>
                       ),
                     )}

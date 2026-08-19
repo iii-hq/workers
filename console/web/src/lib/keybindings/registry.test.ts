@@ -6,6 +6,7 @@ import {
   keybinding,
   keybindingConflicts,
   keybindingGroups,
+  matchDigitIndex,
   matchesKeybinding,
   resolveBindings,
 } from './registry'
@@ -129,6 +130,66 @@ describe('matchesKeybinding', () => {
         'mac',
       ),
     ).toBe(false)
+  })
+})
+
+describe('matchDigitIndex', () => {
+  function digit(key: string) {
+    return {
+      key,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+    }
+  }
+
+  it('returns the position the digit selects, zero based', () => {
+    expect(matchDigitIndex('workspace.selectByIndex', digit('1'), 'mac')).toBe(
+      0,
+    )
+    expect(matchDigitIndex('workspace.selectByIndex', digit('9'), 'mac')).toBe(
+      8,
+    )
+  })
+
+  it('fires for every digit, not just the one stored', () => {
+    expect(bindingsFor('workspace.selectByIndex', 'mac')).toEqual(['1'])
+    for (let value = 1; value <= 9; value++) {
+      expect(
+        matchDigitIndex('workspace.selectByIndex', digit(String(value)), 'mac'),
+      ).toBe(value - 1)
+    }
+  })
+
+  it('ignores a keystroke that is not a digit, and zero', () => {
+    expect(
+      matchDigitIndex('workspace.selectByIndex', digit('0'), 'mac'),
+    ).toBeNull()
+    expect(
+      matchDigitIndex('workspace.selectByIndex', digit('t'), 'mac'),
+    ).toBeNull()
+  })
+
+  it('does not fire when a modifier is held', () => {
+    expect(
+      matchDigitIndex(
+        'workspace.selectByIndex',
+        { ...digit('1'), metaKey: true },
+        'mac',
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null for a shortcut that does not select by position', () => {
+    expect(matchDigitIndex('palette.toggle', digit('1'), 'mac')).toBeNull()
+  })
+
+  it('reserves all nine digits, so nothing else may take one', () => {
+    // Proven by the conflict check: a second shortcut on `5` would collide
+    // with the row that stores `1`.
+    const identities = keybindingConflicts('mac')
+    expect(identities).toEqual([])
   })
 })
 

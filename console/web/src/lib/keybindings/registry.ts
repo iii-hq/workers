@@ -15,8 +15,10 @@
 import {
   bindingMatchesEvent,
   conflictIdentity,
+  digitFromEvent,
   type KeyEventLike,
   type Platform,
+  parseBinding,
   shortcutPlatform,
 } from './bindings'
 
@@ -27,6 +29,10 @@ export type KeybindingScope = 'global' | 'palette'
 export type KeybindingActionId =
   | 'palette.toggle'
   | 'shortcuts.open'
+  | 'app.settings'
+  | 'workspace.selectByIndex'
+  | 'workspace.create'
+  | 'panel.split'
   | 'palette.next'
   | 'palette.previous'
   | 'palette.cycleFilter'
@@ -59,7 +65,15 @@ export type KeybindingDefinition = {
   firesWhileTyping?: boolean
   /** Extra words the palette should match on. */
   keywords?: readonly string[]
+  /**
+   * Selects by position: the binding stores one representative chord and the
+   * shortcut fires for 1 through 9, so the overlay shows a range and no other
+   * shortcut may take a digit out from under it.
+   */
+  digitIndex?: boolean
 }
+
+const DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const
 
 export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   {
@@ -83,6 +97,44 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // Windows and Linux, where the same menu item is ⌘N on a Mac and ctrl is
   // free. ctrl+P follows it rather than quietly eating Print on one platform
   // and meaning "previous" on the other.
+  // Bare keys, not chords. The browser has already taken almost every
+  // Mod+key worth having (see BROWSER_RESERVED and MAC_RESERVED), and a page
+  // that fights it ships shortcuts that silently do nothing. Single keys are
+  // free, they are what GitHub and Linear use for the same reason, and the
+  // console already had one in `?`. None of them fire while you are typing.
+  {
+    id: 'workspace.selectByIndex',
+    title: 'Select workspace 1 to 9',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['1'],
+    digitIndex: true,
+    keywords: ['tab', 'switch', 'workspace'],
+  },
+  {
+    id: 'workspace.create',
+    title: 'New workspace',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['t'],
+    keywords: ['tab', 'new', 'create'],
+  },
+  {
+    id: 'panel.split',
+    title: 'Split the workspace',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['\\'],
+    keywords: ['panel', 'column', 'split'],
+  },
+  {
+    id: 'app.settings',
+    title: 'Open settings',
+    group: 'Console',
+    scope: 'global',
+    bindings: [','],
+    keywords: ['configuration', 'preferences'],
+  },
   {
     id: 'palette.next',
     title: 'Next result',
@@ -159,6 +211,32 @@ export function matchesKeybinding(
   )
 }
 
+/**
+ * The index a keystroke selects, for a `digitIndex` shortcut: the stored
+ * chord's modifiers with the pressed digit swapped in. Returns null when this
+ * keystroke is not that shortcut.
+ */
+export function matchDigitIndex(
+  id: KeybindingActionId,
+  event: KeyEventLike,
+  platform: Platform = shortcutPlatform(),
+): number | null {
+  if (!keybinding(id).digitIndex) return null
+  const digit = digitFromEvent(event)
+  if (!digit) return null
+  for (const binding of bindingsFor(id, platform)) {
+    const parsed = parseBinding(binding)
+    if (!parsed || !DIGITS.includes(parsed.key as (typeof DIGITS)[number])) {
+      continue
+    }
+    const candidate = binding.replace(/[1-9]$/, digit)
+    if (bindingMatchesEvent(candidate, event, platform)) {
+      return Number(digit) - 1
+    }
+  }
+  return null
+}
+
 /** Overlay order: groups in first-seen order, entries in registry order. */
 export function keybindingGroups(): Array<[string, KeybindingDefinition[]]> {
   const groups = new Map<string, KeybindingDefinition[]>()
@@ -184,10 +262,17 @@ export function keybindingConflicts(platform: Platform): KeybindingConflict[] {
   const seen = new Map<string, KeybindingActionId[]>()
   for (const definition of KEYBINDINGS) {
     for (const binding of resolveBindings(definition.bindings, platform)) {
-      const chord = `${definition.scope}:${conflictIdentity(binding, platform)}`
-      const bucket = seen.get(chord)
-      if (bucket) bucket.push(definition.id)
-      else seen.set(chord, [definition.id])
+      // A digit-index row occupies all nine digits, not just the one it
+      // stores, or something else could claim `5` and both would fire.
+      const variants = definition.digitIndex
+        ? DIGITS.map((digit) => binding.replace(/[1-9]$/, digit))
+        : [binding]
+      for (const variant of variants) {
+        const chord = `${definition.scope}:${conflictIdentity(variant, platform)}`
+        const bucket = seen.get(chord)
+        if (bucket) bucket.push(definition.id)
+        else seen.set(chord, [definition.id])
+      }
     }
   }
   return [...seen]

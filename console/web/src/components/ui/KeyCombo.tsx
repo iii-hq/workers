@@ -18,6 +18,9 @@ interface KeyComboProps {
   platform?: Platform
   className?: string
   capClassName?: string
+  /** Selects by position: the stored chord ends in a digit but the shortcut
+   *  fires for any of 1 to 9, so the last cap shows the whole range. */
+  digitRange?: boolean
 }
 
 export function KeyCombo({
@@ -25,8 +28,14 @@ export function KeyCombo({
   platform = shortcutPlatform(),
   className,
   capClassName,
+  digitRange = false,
 }: KeyComboProps) {
-  const caps = formatBinding(binding, platform)
+  const formatted = formatBinding(binding, platform)
+  const last = formatted.at(-1)
+  const caps =
+    digitRange && last !== undefined && /^[1-9]$/.test(last)
+      ? [...formatted.slice(0, -1), `${last}–9`]
+      : formatted
   const mac = platform === 'mac'
   return (
     <span className={cn('inline-flex items-center gap-1', className)}>
