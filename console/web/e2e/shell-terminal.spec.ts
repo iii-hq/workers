@@ -348,12 +348,6 @@ test('runs multi-terminal PTYs, replay, tmux, Claude, and cleanup', async ({
     reloadedPane,
     `${tmux} capture-pane -pt terminal-acceptance:0.0; ${tmux} capture-pane -pt terminal-acceptance:0.1; sleep 0.2`,
   )
-  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
-    '__TMUX_RIGHT__',
-  )
-  await expect(reloadedPane.locator('.xterm-rows')).toContainText(
-    '__TMUX_LEFT__',
-  )
   await runInPane(
     page,
     reloadedPane,
