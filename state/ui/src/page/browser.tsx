@@ -16,7 +16,7 @@
  * reports dirty up); column navigation asks before discarding one.
  */
 
-import { Button, type Host } from '@iii-dev/console-ui'
+import { Button, type Host, PageSidebar } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
@@ -257,13 +257,23 @@ export function StateBrowser({
   return (
     <div className={`state-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`} ref={rootRef}>
       {showScopes ? (
-        <aside className="state-ui-col scopes" aria-label="scope list">
-          <header className="state-ui-col-head">
-            <span className="label">scopes</span>
-            <span className="spacer" />
-            {scopes !== null && !scopesError ? <span className="count">{scopes.length}</span> : null}
-            <RefreshButton onClick={loadScopes} label="refresh scopes" />
-          </header>
+        <PageSidebar
+          label="scopes"
+          side={panelSide}
+          collapsible
+          storageKey="state:scopes"
+          defaultWidth={208}
+          narrow={narrow}
+          className="state-ui-col scopes"
+          header={
+            <div className="state-ui-col-head state-ui-primary-head">
+              <span className="label">scopes</span>
+              <span className="spacer" />
+              {scopes !== null && !scopesError ? <span className="count">{scopes.length}</span> : null}
+              <RefreshButton onClick={loadScopes} label="refresh scopes" />
+            </div>
+          }
+        >
           <ColumnBody
             error={scopesError}
             noun="scope"
@@ -279,7 +289,7 @@ export function StateBrowser({
               </div>
             }
           />
-        </aside>
+        </PageSidebar>
       ) : null}
 
       {showKeys ? (

@@ -44,6 +44,8 @@ import {
   type Host,
   Input,
   MarkdownPreview,
+  type PageRenderProps,
+  PageSidebar,
   StatusDot,
 } from '@iii-dev/console-ui'
 import { DEFAULT_THEMES, parsePatchFiles } from '@pierre/diffs'
@@ -90,13 +92,6 @@ const FLASH_MS = 12_000
 const SIDE_MIN = 180
 const SIDE_MAX = 480
 const SIDE_DEFAULT = 200
-/** Remembered per browser: a pane width is a preference of this surface, not
- *  a fact about the workspace, so it does not belong in the shared record. */
-const SIDE_WIDTH_KEY = 'iii.editor.sideWidth'
-
-export function clampSideWidth(width: number): number {
-  return Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(width)))
-}
 
 /** Single-letter change marks, the way a status column reads them. */
 const KIND_MARK: Record<string, string> = {
@@ -180,7 +175,10 @@ interface Delta {
   patch: string
 }
 
-export function EditorPage({ host }: { host: Host }) {
+export function EditorPage({
+  host,
+  panelSide = 'left',
+}: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createApi(host), [host])
   // Follows the console's own light/dark toggle, not the OS preference.
   const themeType = host.useTheme()
@@ -188,14 +186,6 @@ export function EditorPage({ host }: { host: Host }) {
   const [root, setRoot] = useState('')
   const [rootInput, setRootInput] = useState('')
   const [rootOpen, setRootOpen] = useState(false)
-  const [sideOpen, setSideOpen] = useState(true)
-  const [sideWidth, setSideWidth] = useState(() => {
-    const stored = Number(globalThis.localStorage?.getItem(SIDE_WIDTH_KEY))
-    return Number.isFinite(stored) && stored > 0
-      ? clampSideWidth(stored)
-      : SIDE_DEFAULT
-  })
-  const [resizing, setResizing] = useState(false)
   const [buffers, setBuffers] = useState<Buffer[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null)
@@ -911,51 +901,10 @@ export function EditorPage({ host }: { host: Host }) {
 
   const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
 
-  /**
-   * Drag the sidebar edge.
-   *
-   * Pointer capture is the whole trick: without it a fast drag leaves the
-   * element and the resize stops following the cursor. Width comes from the
-   * pane's own left edge rather than a delta, so the handle stays under the
-   * pointer even if a frame is dropped.
-   */
-  const startResize = useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      const pane = event.currentTarget.parentElement
-      if (!pane) return
-      const left = pane.getBoundingClientRect().left
-      event.currentTarget.setPointerCapture(event.pointerId)
-      event.preventDefault()
-      setResizing(true)
-
-      const onMove = (move: PointerEvent) =>
-        setSideWidth(clampSideWidth(move.clientX - left))
-      const onUp = () => {
-        setResizing(false)
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    },
-    [],
-  )
-
-  // Persist after the drag settles rather than on every frame: a write per
-  // pointermove is a write per pixel.
-  useEffect(() => {
-    if (resizing) return
-    try {
-      globalThis.localStorage?.setItem(SIDE_WIDTH_KEY, String(sideWidth))
-    } catch {
-      // Storage can be denied; a forgotten width is not worth an error.
-    }
-  }, [resizing, sideWidth])
-
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
-    <div className="ed-root" data-resizing={resizing}>
+    <div className="ed-root">
       <header className="ed-head">
         <span className="ed-brand">editor</span>
         {rootOpen ? (
@@ -982,57 +931,36 @@ export function EditorPage({ host }: { host: Host }) {
             </button>
           </>
         ) : (
-          <>
-            <button
-              type="button"
-              className="ed-rootpath"
-              title={`${root} — click to change`}
-              onClick={() => setRootOpen(true)}
-              style={{
-                border: 0,
-                background: 'transparent',
-                cursor: 'pointer',
-                textAlign: 'left',
-              }}
-            >
-              {root || '…'}
-            </button>
-            <button
-              type="button"
-              className="ed-icon"
-              onClick={() => setSideOpen((v) => !v)}
-              aria-label={sideOpen ? 'Hide the sidebar' : 'Show the sidebar'}
-              title={sideOpen ? 'Hide the sidebar' : 'Show the sidebar'}
-            >
-              {sideOpen ? '⟨' : '⟩'}
-            </button>
-          </>
+          <button
+            type="button"
+            className="ed-rootpath"
+            title={`${root} — click to change`}
+            onClick={() => setRootOpen(true)}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            {root || '…'}
+          </button>
         )}
       </header>
 
-      <div className="ed-body">
-        {sideOpen && (
-          <aside
-            className="ed-side"
-            style={{ ['--ed-side-width' as string]: `${sideWidth}px` }}
-          >
-            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-            <button
-              type="button"
-              className="ed-side-handle"
-              data-dragging={resizing}
-              aria-label="Resize the sidebar"
-              onPointerDown={startResize}
-              onKeyDown={(e) => {
-                // Keyboard resize: the handle is a real control, and a drag
-                // target that only responds to a pointer is not one.
-                if (e.key === 'ArrowLeft')
-                  setSideWidth((w) => clampSideWidth(w - 16))
-                if (e.key === 'ArrowRight')
-                  setSideWidth((w) => clampSideWidth(w + 16))
-              }}
-            />
-            <div className="ed-seg">
+      <div className={`ed-body${panelSide === 'right' ? ' right' : ''}`}>
+        <PageSidebar
+          label={mode}
+          side={panelSide}
+          collapsible
+          resizable
+          storageKey="editor:files"
+          defaultWidth={SIDE_DEFAULT}
+          minWidth={SIDE_MIN}
+          maxWidth={SIDE_MAX}
+          className="ed-side"
+          header={
+            <div className="ed-seg ed-seg-header">
               <button
                 type="button"
                 data-active={mode === 'files'}
@@ -1058,7 +986,9 @@ export function EditorPage({ host }: { host: Host }) {
                 )}
               </button>
             </div>
-
+          }
+        >
+          <div className="ed-side-content">
             {/* The feed is not searched: it is short by construction, and a
                 box that filters two of three tabs is a box that lies. */}
             {mode !== 'changes' && (
@@ -1287,8 +1217,8 @@ export function EditorPage({ host }: { host: Host }) {
                 </ul>
               )}
             </div>
-          </aside>
-        )}
+          </div>
+        </PageSidebar>
 
         <section className="ed-main">
           {/* A change being read as a diff owns the pane: it can outlive the

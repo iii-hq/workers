@@ -1,21 +1,24 @@
+import { Plus } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
-import { PageHeader } from '@/components/ui/PageChrome'
+import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
+import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import { useSidebarWidth } from '@/hooks/use-sidebar-width'
 import { useConversationsCtx } from '@/lib/conversations-context'
+import type { PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
 
 export type ChatPanelDensity = 'route' | 'dock'
 
 interface ChatPanelProps {
   density?: ChatPanelDensity
+  /** Outer edge occupied by this pane in a split workspace. */
+  panelSide?: PanelSide
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
 }
-
-const SIDEBAR_COLLAPSED_KEY = 'iii-chat-sidebar-collapsed'
 
 /**
  * Container width (px) below which the panel collapses to the drill-in
@@ -26,24 +29,6 @@ const SIDEBAR_COLLAPSED_KEY = 'iii-chat-sidebar-collapsed'
  */
 const NARROW_BELOW = 560
 const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
-
-function loadSidebarCollapsed(): boolean {
-  if (typeof window === 'undefined') return false
-  try {
-    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function persistSidebarCollapsed(value: boolean): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? '1' : '0')
-  } catch {
-    // ignore quota / privacy-mode errors; collapse state is best-effort
-  }
-}
 
 /**
  * The chat surface: conversation sidebar + active chat.
@@ -56,6 +41,7 @@ function persistSidebarCollapsed(value: boolean): void {
  */
 export function ChatPanel({
   density = 'route',
+  panelSide = 'left',
   onRequestClose,
 }: ChatPanelProps) {
   const {
@@ -76,18 +62,6 @@ export function ChatPanel({
     modelOptions,
     catalogLoading,
   } = useConversationsCtx()
-
-  const [sidebarCollapsed, setSidebarCollapsed] =
-    useState<boolean>(loadSidebarCollapsed)
-  const { width: sidebarWidth, setWidth: setSidebarWidth } = useSidebarWidth()
-
-  useEffect(() => {
-    persistSidebarCollapsed(sidebarCollapsed)
-  }, [sidebarCollapsed])
-
-  const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((v) => !v)
-  }, [])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const mobileViewport = useMediaQuery(MOBILE_VIEWPORT_QUERY)
@@ -125,21 +99,55 @@ export function ChatPanel({
   const showChat = !narrow || (narrowView === 'chat' && Boolean(active))
 
   return (
-    <div ref={rootRef} className="chat-surface flex-1 flex min-h-0 min-w-0">
+    <div
+      ref={rootRef}
+      className={`chat-surface flex-1 flex min-h-0 min-w-0${
+        panelSide === 'right' ? ' flex-row-reverse' : ''
+      }`}
+    >
       {showList ? (
-        <ConversationSidebar
-          conversations={conversations}
-          activeId={activeId}
-          collapsed={narrow ? false : sidebarCollapsed}
-          onToggleCollapsed={narrow ? undefined : toggleSidebar}
-          width={sidebarWidth}
-          onWidthChange={narrow ? undefined : setSidebarWidth}
+        <PageSidebar
+          label="Conversations"
+          side={panelSide}
+          storageKey="console:chat:conversations"
+          defaultWidth={220}
+          minWidth={160}
+          maxWidth={420}
+          collapsible
+          resizable
           narrow={narrow}
-          onCreate={handleCreate}
-          onSelect={handleSelect}
-          onRename={rename}
-          onRemove={remove}
-        />
+          header={
+            <Button
+              type="button"
+              variant="primary"
+              size="md"
+              className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
+              onClick={handleCreate}
+            >
+              <Plus className="size-4 shrink-0" aria-hidden />
+              New chat
+            </Button>
+          }
+          collapsedActions={
+            <IconButton
+              label="New chat"
+              tooltipSide={panelSide === 'left' ? 'right' : 'left'}
+              onClick={handleCreate}
+              className="size-7"
+            >
+              <Plus aria-hidden />
+            </IconButton>
+          }
+        >
+          <ConversationSidebar
+            conversations={conversations}
+            activeId={activeId}
+            narrow={narrow}
+            onSelect={handleSelect}
+            onRename={rename}
+            onRemove={remove}
+          />
+        </PageSidebar>
       ) : null}
 
       {showChat && active ? (

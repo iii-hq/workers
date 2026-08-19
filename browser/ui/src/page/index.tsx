@@ -1,9 +1,10 @@
 /**
  * The browser page (#/ext/browser): the standard page chrome (PageShell/
- * PageHeader from @iii-dev/console-ui) over a session rail and the selected
- * session's workspace — a screencast-fed live viewport with the console and
- * network feeds — so a user can watch what an agent is doing in a Chromium
- * session, drive the page directly, and pick elements into the clipboard.
+ * PageHeader/PageSidebar from @iii-dev/console-ui) over a session rail and the
+ * selected session's workspace — a screencast-fed live viewport with the
+ * console and network feeds — so a user can watch what an agent is doing in a
+ * Chromium session, drive the page directly, and pick elements into the
+ * clipboard.
  *
  * The host only mounts this page while the browser worker is connected, so
  * there is no presence gate here (worker disconnect disposes the script and
@@ -12,12 +13,12 @@
  *
  * Layout adapts to the width the page HAS (a ResizeObserver on its own body
  * row, not a viewport media query — the console can host it in panes of any
- * size). Wide: the rail (start control + session list) is a fixed navigation
- * column beside the session workspace. Under NARROW_BELOW px it becomes a
- * drill-in flow: the session list fills the width, and opening a session
- * swaps it for the full-width workspace with a ← back button. The screencast
- * subscription only runs while the viewport is actually visible (see
- * SessionView), so a narrow pane parked on the list streams nothing.
+ * size). Wide: the rail (start control + session list) is a collapsible
+ * navigation column beside the session workspace. Under NARROW_BELOW px it
+ * becomes a drill-in flow: the session list fills the width, and opening a
+ * session swaps it for the full-width workspace with a ← back button. The
+ * screencast subscription only runs while the viewport is actually visible
+ * (see SessionView), so a narrow pane parked on the list streams nothing.
  */
 
 import {
@@ -26,6 +27,7 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
 } from '@iii-dev/console-ui'
 import type { ComponentType } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -194,8 +196,15 @@ export function BrowserPage({
         ref={rootRef}
       >
         {railVisible ? (
-          <aside className="br-ui-rail" aria-label="session list">
-            <div className="br-ui-rail-top">
+          <PageSidebar
+            label="session list"
+            side={panelSide}
+            collapsible
+            storageKey="browser:sessions"
+            defaultWidth={300}
+            narrow={narrow}
+            className="br-ui-rail"
+            header={
               <div className="br-ui-rail-intro">
                 <div className="br-ui-rail-intro-copy">
                   <h2>Sessions</h2>
@@ -211,10 +220,37 @@ export function BrowserPage({
                   {starting ? 'Starting...' : 'New session'}
                 </Button>
               </div>
-              {startError ? (
-                <p className="br-ui-rail-err">{startError}</p>
-              ) : null}
-            </div>
+            }
+            collapsedActions={
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => void handleNewSession()}
+                  disabled={starting}
+                  aria-label={
+                    starting
+                      ? 'starting browser session'
+                      : 'new browser session'
+                  }
+                  title={
+                    starting
+                      ? 'starting browser session'
+                      : 'new browser session'
+                  }
+                >
+                  <Plus size={16} aria-hidden />
+                </Button>
+                <RefreshButton
+                  onClick={refresh}
+                  label="refresh sessions"
+                  disabled={loading}
+                  spinning={loading}
+                />
+              </>
+            }
+          >
+            {startError ? <p className="br-ui-rail-err">{startError}</p> : null}
             <header className="br-ui-col-head">
               <span className="label">Active now</span>
               <span className="spacer" />
@@ -236,7 +272,7 @@ export function BrowserPage({
                 onSelect={openSession}
               />
             </div>
-          </aside>
+          </PageSidebar>
         ) : null}
 
         {stageVisible ? (

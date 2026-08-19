@@ -681,10 +681,34 @@ export interface PageBodyProps extends React.HTMLAttributes<HTMLDivElement> {
 export declare const PageBody: React.ComponentType<PageBodyProps>
 
 export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
-  /** Column width in px (fixed — navigation stays put while main flexes). */
+  /** Accessible name used by the aside, toggle, tooltip and resize handle. */
+  label?: string
+  /** Which outer edge the sidebar hugs. */
+  side?: 'left' | 'right'
+  /** Optional standard top row rendered beside the stable collapse toggle. */
+  header?: React.ReactNode
+  /** Compact actions rendered below the toggle in the collapsed rail. */
+  collapsedActions?: React.ReactNode
+  /** Controlled expanded width. */
   width?: number
+  /** Initial expanded width for host-owned state. */
+  defaultWidth?: number
+  minWidth?: number
+  maxWidth?: number
+  onWidthChange?: (width: number) => void
+  collapsible?: boolean
+  collapsed?: boolean
+  defaultCollapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
+  resizable?: boolean
+  /** Host-owned persistence/synchronization key; no storage logic ships in worker bundles. */
+  storageKey?: string
+  /** Full-width responsive presentation without changing the wide preference. */
+  narrow?: boolean
+  /** Host-owned PageBody breakpoint for the responsive presentation. */
+  narrowBelow?: number
 }
-/** The navigation column: slightly gray, fixed width, own scroll. */
+/** Shared host-owned navigation column; fixed by default, optionally collapsible/resizable. */
 export declare const PageSidebar: React.ComponentType<PageSidebarProps>
 
 /** The primary workspace column: `--color-panel`, takes what's left. */

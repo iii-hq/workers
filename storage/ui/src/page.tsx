@@ -5,6 +5,7 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
   StatusPanel,
 } from '@iii-dev/console-ui'
 import type { ComponentType } from 'react'
@@ -381,22 +382,32 @@ function StorageExplorer({
       className={`storage-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
     >
       {showBuckets ? (
-        <aside className="storage-ui-buckets" aria-label="Buckets">
-          <header className="storage-ui-column-head">
-            <span className="storage-ui-column-label">buckets</span>
-            <span className="storage-ui-spacer" />
-            {buckets ? (
-              <span className="storage-ui-count">{buckets.length}</span>
-            ) : null}
-            <button
-              type="button"
-              className="storage-ui-icon-button"
-              onClick={loadBuckets}
-              aria-label="Refresh buckets"
-            >
-              <RefreshIcon />
-            </button>
-          </header>
+        <PageSidebar
+          label="buckets"
+          side={panelSide}
+          collapsible
+          storageKey="storage:buckets"
+          defaultWidth={204}
+          narrow={narrow}
+          className="storage-ui-buckets"
+          header={
+            <div className="storage-ui-column-head storage-ui-primary-head">
+              <span className="storage-ui-column-label">buckets</span>
+              <span className="storage-ui-spacer" />
+              {buckets ? (
+                <span className="storage-ui-count">{buckets.length}</span>
+              ) : null}
+              <button
+                type="button"
+                className="storage-ui-icon-button"
+                onClick={loadBuckets}
+                aria-label="Refresh buckets"
+              >
+                <RefreshIcon />
+              </button>
+            </div>
+          }
+        >
           <div className="storage-ui-scroll">
             {buckets === null ? (
               <div className="storage-ui-skeleton" aria-label="Loading buckets">
@@ -444,7 +455,7 @@ function StorageExplorer({
               </ul>
             )}
           </div>
-        </aside>
+        </PageSidebar>
       ) : null}
 
       {showContents ? (

@@ -28,6 +28,7 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
   SegmentedControl,
   StatusDot,
 } from '@iii-dev/console-ui'
@@ -255,14 +256,33 @@ export function MemoryPage({
         ref={rootRef}
       >
         {showRail ? (
-          <BankRail
-            banks={banks}
-            selected={selected}
-            loading={loading}
-            onSelect={openBank}
-            onCreate={(name) => act(() => createBank(host, name))}
-            creating={busy}
-          />
+          <PageSidebar
+            label="bank list"
+            side={panelSide}
+            collapsible
+            storageKey="memory:banks"
+            defaultWidth={232}
+            narrow={narrow}
+            className="mem-ui-rail"
+            header={
+              <div className="mem-ui-col-head">
+                <span className="label">Banks</span>
+                <span className="spacer" />
+                {loading && banks.length === 0 ? null : (
+                  <span className="count">{banks.length}</span>
+                )}
+              </div>
+            }
+          >
+            <BankRail
+              banks={banks}
+              selected={selected}
+              loading={loading}
+              onSelect={openBank}
+              onCreate={(name) => act(() => createBank(host, name))}
+              creating={busy}
+            />
+          </PageSidebar>
         ) : null}
 
         {showDoc ? (

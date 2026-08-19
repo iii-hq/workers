@@ -60,6 +60,12 @@ Use the shared contracts for repeated Console interactions:
 - Shared `Tooltip`, `Dialog`, `DropdownMenu`, `Select`, and `Selector` portals
   preserve an injected worker's `data-iii-ui` scope. `IconButton` combines an
   accessible label with the shared tooltip contract.
+- `PageSidebar` owns sidebar collapse motion, stable focus/ARIA, pointer and
+  keyboard resize, best-effort persistence, and container breakpoints in the
+  Console host. Workers provide navigation content and declarative limits;
+  they do not ship gesture, storage, or transition implementations. Children
+  remain mounted while collapsed, and instances sharing a `storageKey` stay
+  synchronized.
 - Human-facing chrome uses sans and authored sentence/title case. Mono is only
   for machine-readable identifiers, paths, values, payloads, code, and tabular
   data. Application icons use a 16 px baseline; do not author icons below

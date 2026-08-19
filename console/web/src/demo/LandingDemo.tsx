@@ -13,11 +13,13 @@
  * are new.
  */
 
-import { ArrowUp, Paperclip } from 'lucide-react'
+import { ArrowUp, Paperclip, Plus } from 'lucide-react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { ContextUsage } from '@/components/chat/ContextUsage'
 import { MessageList } from '@/components/chat/MessageList'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
+import { Button } from '@/components/ui/Button'
+import { PageSidebar } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import { TraceFilters } from '@/pages/TracesV2/components/TraceFilters'
@@ -186,15 +188,30 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
       */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="hidden lg:flex">
-          <ConversationSidebar
-            conversations={player.conversations}
-            activeId={player.activeId}
+          <PageSidebar
+            label="Conversations"
             width={260}
-            onSelect={player.select}
-            onCreate={noop}
-            onRename={noop}
-            onRemove={noop}
-          />
+            header={
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="flex-1 justify-start px-3"
+                onClick={noop}
+              >
+                <Plus aria-hidden />
+                New chat
+              </Button>
+            }
+          >
+            <ConversationSidebar
+              conversations={player.conversations}
+              activeId={player.activeId}
+              onSelect={player.select}
+              onRename={noop}
+              onRemove={noop}
+            />
+          </PageSidebar>
         </div>
 
         {/* ── transcript ─────────────────────────────────────────────── */}

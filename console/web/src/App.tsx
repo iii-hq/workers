@@ -563,7 +563,13 @@ function ScreenBody({
     case CHAT_SCREEN:
       // The compact header variant — a tab column is width-constrained the
       // same way the old side dock was, especially in two-column layouts.
-      return <ChatPanel density="dock" onRequestClose={onClose} />
+      return (
+        <ChatPanel
+          density="dock"
+          panelSide={panelSide}
+          onRequestClose={onClose}
+        />
+      )
     case 'workers':
       return <Workers onRequestClose={onClose} />
     default:

@@ -747,6 +747,7 @@ export function ChatView({
    * users hear them via the polite/assertive ARIA live regions
    * rendered at the bottom of the component. */
   const announcer = useLiveAnnouncer()
+  const announcedApprovalIdsRef = useRef(new Set<string>())
 
   /* Wrap the backend's resolver in a stable callback so MessageList
    * row-level memoization isn't broken by a fresh lambda identity on
@@ -784,6 +785,20 @@ export function ChatView({
                 message.functionTriggerId === event.functionTriggerId,
             )
           : undefined
+        const announcementId = event.functionTriggerId ?? existing?.id
+        if (
+          !announcementId ||
+          !announcedApprovalIdsRef.current.has(announcementId)
+        ) {
+          if (announcementId) {
+            announcedApprovalIdsRef.current.add(announcementId)
+          }
+          announcer.announceAssertive(
+            event.filesystemAccess
+              ? `Action required: ${event.functionId} needs approval to access ${event.filesystemAccess.requestedRoot}.`
+              : `Action required: approve or deny ${event.functionId}.`,
+          )
+        }
         if (existing) {
           onPatchMessage(conversation.id, existing.id, {
             pendingApproval: true,
@@ -815,6 +830,7 @@ export function ChatView({
           message.role === 'function-trigger' &&
           message.functionTriggerId === event.functionTriggerId,
       )
+      announcedApprovalIdsRef.current.delete(event.functionTriggerId)
       if (existing) {
         onPatchMessage(conversation.id, existing.id, {
           pendingApproval: false,
@@ -822,7 +838,12 @@ export function ChatView({
         })
       }
     },
-    [conversation.id, onAppendMessage, onPatchMessage],
+    [
+      announcer.announceAssertive,
+      conversation.id,
+      onAppendMessage,
+      onPatchMessage,
+    ],
   )
 
   // Subagent approvals may arrive after the parent `harness::spawn` turn has
@@ -1923,6 +1944,7 @@ export function ChatView({
 
       <MessageList
         messages={conversation.messages}
+        transcriptHydrated={conversation.hydrated !== false}
         isThinking={isThinking}
         thinkingDetail={
           conversation.status === 'working' && conversation.statusReason

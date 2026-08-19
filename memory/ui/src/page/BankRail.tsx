@@ -33,12 +33,7 @@ export function BankRail({
   const initialLoad = loading && banks.length === 0
 
   return (
-    <aside className="mem-ui-rail" aria-label="bank list">
-      <header className="mem-ui-col-head">
-        <span className="label">Banks</span>
-        <span className="spacer" />
-        {initialLoad ? null : <span className="count">{banks.length}</span>}
-      </header>
+    <>
       <div className="mem-ui-rail-scroll">
         {initialLoad ? (
           <div className="mem-ui-rail-skel" aria-hidden>
@@ -109,6 +104,6 @@ export function BankRail({
           <Plus size={16} aria-hidden />
         </Button>
       </form>
-    </aside>
+    </>
   )
 }

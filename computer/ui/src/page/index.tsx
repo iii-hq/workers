@@ -9,7 +9,7 @@
  *
  * Layout adapts to the width the page HAS (a ResizeObserver on its own body
  * row, not a viewport media query — the console can host it in panes of any
- * size). Wide: the rail (start form + session list) is a fixed navigation
+ * size). Wide: the rail (start form + session list) is a collapsible navigation
  * column beside the desktop workspace. Under NARROW_BELOW px it becomes a
  * drill-in flow: the session list fills the width, and opening a session
  * swaps it for the full-width viewport with a ← back button. The screencast
@@ -22,6 +22,7 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -235,7 +236,24 @@ export function ComputerPage({
         ref={rootRef}
       >
         {railVisible ? (
-          <aside className="cp-ui-rail" aria-label="session list">
+          <PageSidebar
+            label="sessions"
+            side={panelSide}
+            collapsible
+            storageKey="computer:sessions"
+            defaultWidth={280}
+            narrow={narrow}
+            className="cp-ui-rail"
+            header={
+              <div className="cp-ui-col-head">
+                <span className="label">sessions</span>
+                <span className="spacer" />
+                {loading && sessions.length === 0 ? null : (
+                  <span className="count">{sessions.length}</span>
+                )}
+              </div>
+            }
+          >
             <div className="cp-ui-rail-top">
               <div className="cp-ui-rail-caption">start a session</div>
               <StartSessionForm
@@ -244,13 +262,6 @@ export function ComputerPage({
                 onStart={(input) => void handleStart(input)}
               />
             </div>
-            <header className="cp-ui-col-head">
-              <span className="label">sessions</span>
-              <span className="spacer" />
-              {loading && sessions.length === 0 ? null : (
-                <span className="count">{sessions.length}</span>
-              )}
-            </header>
             <div className="cp-ui-rail-scroll">
               <SessionRail
                 sessions={sessions}
@@ -261,7 +272,7 @@ export function ComputerPage({
                 onStop={(id) => void handleStop(id)}
               />
             </div>
-          </aside>
+          </PageSidebar>
         ) : null}
 
         {stageVisible ? (

@@ -70,4 +70,21 @@ describe('MessageList function-trigger groups', () => {
     expect(html.match(/data-message-role="function-call"/g)).toHaveLength(4)
     expect(html).toContain('show latest')
   })
+
+  it('exposes a pending approval as a focusable, named action target', () => {
+    const pending: FunctionTriggerMessage = {
+      ...call('approval'),
+      pendingApproval: true,
+      sessionId: 'session-1',
+      functionTriggerId: 'function-call-1',
+    }
+    const html = renderToStaticMarkup(
+      <MessageList messages={[pending]} onResolveApproval={async () => {}} />,
+    )
+
+    expect(html).toContain('data-message-id="approval"')
+    expect(html).toContain('aria-label="action required for shell::run"')
+    expect(html).toContain('tabindex="-1"')
+    expect(html).toContain('data-approval-actions=""')
+  })
 })

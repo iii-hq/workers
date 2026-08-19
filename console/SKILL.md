@@ -253,6 +253,16 @@ styling consistent with the console. Use `PageBody`, `PageSidebar`, and
 a custom structure when the domain needs columns, a canvas, or a drill-in
 flow. Do not replace the outer shell and header.
 
+Use `PageSidebar`'s declarative `collapsible`, `resizable`, `storageKey`,
+width bounds, `side`, `narrow`, and `narrowBelow` props instead of shipping
+local collapse DOM, drag handlers, width clamps, persistence, focus logic, or
+transitions. The Console host keeps a single stable `aside`, leaves children
+mounted while collapsed, synchronizes instances sharing a storage key, and
+owns motion plus reduced-motion behavior. Pass `narrow` when the page already
+has a drill-in state; use `narrowBelow` when only shared sidebar chrome needs
+to react to its parent width. Neither responsive mode overwrites the saved
+wide preference.
+
 The pieces own the surface hierarchy (header on `--color-panel-raised`
 with a hairline `--color-edge` border, sidebar on `--color-sidebar`, main
 on `--color-panel`) — don't repaint those tokens yourself. No sidebar?
