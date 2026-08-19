@@ -30,6 +30,7 @@ import { loadApprovalGateDefaults } from './approval-gate-config'
 import {
   getTurnStatus,
   type HarnessFunctionPolicy,
+  type HarnessImageBlock,
   type HarnessSendRequest,
   type HarnessThinkingLevel,
   isTurnActive,
@@ -136,14 +137,23 @@ export function buildTurnMetadata(
  * mention expansions appended. Shared by the send/queue path and the
  * edit-queued path so an edit rebuilds content exactly as the original did.
  */
-function buildMessageInput(prompt: string, attachedBlocks: string[]) {
-  if (attachedBlocks.length === 0) return prompt
+function buildMessageInput(
+  prompt: string,
+  attachedBlocks: string[],
+  attachedImages: HarnessImageBlock[] = [],
+) {
+  if (attachedBlocks.length === 0 && attachedImages.length === 0) return prompt
   return {
     role: 'user' as const,
-    content: [prompt, ...attachedBlocks].map((text) => ({
-      type: 'text' as const,
-      text,
-    })),
+    content: [
+      // Images last: the text says what was asked, and a provider that trims
+      // content to fit its own window should drop pixels before the question.
+      ...[prompt, ...attachedBlocks].map((text) => ({
+        type: 'text' as const,
+        text,
+      })),
+      ...attachedImages,
+    ],
     timestamp: Date.now(),
   }
 }
@@ -178,7 +188,11 @@ async function buildSendRequest(
     }
   }
 
-  const message = buildMessageInput(prompt, opts?.attachedBlocks ?? [])
+  const message = buildMessageInput(
+    prompt,
+    opts?.attachedBlocks ?? [],
+    opts?.attachedImages ?? [],
+  )
 
   return {
     session_id: sessionId,
@@ -484,13 +498,17 @@ async function realEditQueued(
   sessionId: string,
   entryId: string,
   prompt: string,
-  opts?: { attachedBlocks?: string[] },
+  opts?: { attachedBlocks?: string[]; attachedImages?: HarnessImageBlock[] },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('harness::edit_queued', {
     session_id: sessionId,
     entry_id: entryId,
-    message: buildMessageInput(prompt, opts?.attachedBlocks ?? []),
+    message: buildMessageInput(
+      prompt,
+      opts?.attachedBlocks ?? [],
+      opts?.attachedImages ?? [],
+    ),
   })
 }
 

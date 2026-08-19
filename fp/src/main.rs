@@ -1,5 +1,6 @@
-//! `fp` binary entry: connect, register the transforms + `fp::pipe`, bind
-//! the harness pre-generate guidance hook, then sleep until Ctrl+C.
+//! `fp` binary entry: connect, register the transforms + `fp::pipe`,
+//! register the `fp` configuration (whose `inject_guidance` knob binds or
+//! unbinds the pre-generate guidance hook, hot), then sleep until Ctrl+C.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 
-use fp::{condition, guidance, pipe, util};
+use fp::{condition, configuration, guidance, pipe, util};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -51,9 +52,43 @@ async fn main() -> Result<()> {
     ));
 
     register_functions(&iii);
-    guidance::setup(&iii);
+    guidance::register_hook(&iii);
 
-    tracing::info!("fp ready: fp::pipe + 18 transforms + guidance injection");
+    // The `configuration` worker (an engine builtin, like for web/cron) owns
+    // the authoritative `fp` config; `inject_guidance` defaults ON and
+    // hot-applies on change by binding/unbinding the guidance hook.
+    //
+    // Best-effort on purpose: the entry carries one cosmetic prompt knob, so
+    // unlike the full config integrations (docs/sops/configuration.md §4c) a
+    // configuration-worker failure must not take fp::pipe and the transforms
+    // off the bus — warn, run on defaults, and recover on the next
+    // configuration event or restart.
+    if let Err(e) = configuration::register_config(&iii).await {
+        tracing::warn!(error = %e, "registering fp configuration schema failed; continuing");
+    }
+    let cfg = match configuration::fetch_config(&iii).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "loading fp configuration failed; using defaults");
+            fp::config::FpConfig::default()
+        }
+    };
+    let state = guidance::GuidanceState::default();
+    guidance::apply(&iii, &state, cfg.inject_guidance);
+    match configuration::register_config_trigger(&iii, state) {
+        // One serialized re-fetch to close the boot gap: an update landing
+        // between the fetch above and the binding just registered fired into
+        // nothing, and would otherwise stay invisible until the NEXT change.
+        Ok(reload) => reload.run().await,
+        Err(e) => {
+            tracing::warn!(error = %e, "registering configuration change trigger failed; the inject_guidance knob is frozen until restart");
+        }
+    }
+
+    tracing::info!(
+        inject_guidance = cfg.inject_guidance,
+        "fp ready: fp::pipe + 18 transforms + configuration hot-reload"
+    );
     tokio::signal::ctrl_c().await?;
     tracing::info!("fp shutting down");
     iii.shutdown_async().await;

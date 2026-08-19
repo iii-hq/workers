@@ -49,6 +49,14 @@ pub struct Usage {
     pub cost_usd: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionCallArgumentsPreview {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// The frozen streaming vocabulary relayed by `llm-router`. The harness
 /// reads these frames off the `router::chat` channel to build the
 /// assistant message.
@@ -92,6 +100,9 @@ pub enum AssistantMessageEvent {
         /// Call id receiving this delta; empty from pre-id producers.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         id: String,
+        /// Incremental agent_trigger identity extracted by llm-router.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments_preview: Option<FunctionCallArgumentsPreview>,
     },
     FunctioncallEnd {
         partial: AssistantMessage,

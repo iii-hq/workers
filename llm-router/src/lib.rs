@@ -7,6 +7,7 @@ pub mod chat;
 pub mod config;
 pub mod count_tokens;
 pub mod embed;
+mod json_stream;
 pub mod manifest;
 pub mod provider_scaffold;
 pub mod register;

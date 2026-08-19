@@ -101,6 +101,10 @@ function html(extra: Partial<FunctionTriggerMessage> = {}): string {
   )
 }
 
+function collapsedHtml(extra: Partial<FunctionTriggerMessage> = {}): string {
+  return renderToStaticMarkup(<FunctionTriggerCard message={message(extra)} />)
+}
+
 /**
  * What the card's two copy buttons would put on the clipboard: the same
  * resolution the card does (`rawRedactor` over the live dispatch list), then
@@ -117,6 +121,43 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('compact activity presentation', () => {
+  it('uses the muted foreground token for the agent description', () => {
+    expect(collapsedHtml({ description: 'Updating project files' })).toContain(
+      'text-muted-foreground',
+    )
+  })
+
+  it('shimmers the running description beside a loading indicator', () => {
+    const out = collapsedHtml({
+      description: 'Updating project files',
+      running: true,
+      output: undefined,
+      durationMs: undefined,
+    })
+
+    expect(out).toContain('text-trigger-running')
+    expect(out).toContain('function-trigger-shimmer')
+    expect(out).toContain('animate-spin')
+    expect(out).toContain('stroke-trigger-running')
+    expect(out).not.toContain('triggering ')
+  })
+
+  it('shows an incrementally resolved function id without the generic fallback', () => {
+    const out = collapsedHtml({
+      functionId: 'state::se',
+      input: { _streaming: '{"function":"state::se' },
+      running: true,
+      unresolvedTarget: false,
+      output: undefined,
+      durationMs: undefined,
+    })
+
+    expect(out).toContain('state::se')
+    expect(out).not.toContain('triggering ')
+  })
 })
 
 describe('a renderer that declares redactRaw', () => {
@@ -251,5 +292,46 @@ describe('rawRedactor', () => {
     expect(rawRedactor(renderers, FN)?.({})).toBe('b')
     expect(rawRedactor(renderers, 'other::fn')?.({})).toBe('c')
     expect(rawRedactor(renderers.slice(0, 1), FN)).toBeUndefined()
+  })
+})
+
+describe('agent activity and prominent injected content', () => {
+  it('uses the short description as the collapsed activity label', () => {
+    const out = collapsedHtml({ description: 'Updating project files' })
+    expect(out).toContain('Updating project files')
+    expect(out).not.toContain('triggered ')
+    expect(out).toContain('data-expanded="false"')
+    expect(out).toContain('bg-transparent')
+    expect(out).not.toContain('fcall-chrome')
+  })
+
+  it('restores the raised card surface when the activity is expanded', () => {
+    const out = html({ description: 'Updating project files' })
+    expect(out).toContain('data-expanded="true"')
+    expect(out).toContain('fcall-chrome')
+    expect(out).toContain('rounded-md')
+  })
+
+  it('reveals the concrete function identity inside the expanded details', () => {
+    const out = html({ description: 'Updating project files' })
+    expect(out).toContain('copy function id')
+    expect(out).toContain('sandbox-code-runner::')
+  })
+
+  it('shows display-marked renderer content while details stay collapsed', () => {
+    register({
+      metadata: { display: true },
+      tryRender: () => <div>worker-owned artifact</div>,
+    })
+    const out = collapsedHtml({ description: 'Updating project files' })
+    expect(out).toContain('worker-owned artifact')
+    expect(out).not.toContain('raw json')
+  })
+
+  it('keeps unmarked renderer content behind the collapsed activity row', () => {
+    register({ tryRender: () => <div>compact terminal</div> })
+    expect(
+      collapsedHtml({ description: 'Running a compact action' }),
+    ).not.toContain('compact terminal')
   })
 })

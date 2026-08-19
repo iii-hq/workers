@@ -10,6 +10,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// Read a genuinely small object inline. The complete object is buffered and
+/// base64-encoded, with a 10 MiB decoded hard limit. Use a signed GET from
+/// `storage::presignUrl` for files and larger objects.
 pub struct GetReq {
     pub bucket: String,
     pub key: String,
@@ -67,7 +70,6 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     fn state_with(
         resp: Option<Result<BackendGetResp, BackendError>>,
@@ -76,13 +78,7 @@ mod tests {
         m.responses.lock().unwrap().get = resp;
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), m.clone() as Arc<dyn Backend>);
-        (
-            AppState {
-                backends: Arc::new(RwLock::new(map)),
-                local_ctx: None,
-            },
-            m,
-        )
+        (AppState::new(map), m)
     }
 
     fn req(v: serde_json::Value) -> GetReq {

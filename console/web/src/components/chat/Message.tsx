@@ -1,4 +1,4 @@
-import { Bell, Check, Copy, Zap } from 'lucide-react'
+import { Bell, Blocks, Check, Copy, SquareSlash, Zap } from 'lucide-react'
 import { useState } from 'react'
 import { RegisterTriggerView } from '@/components/chat/engine/RegisterTriggerView'
 import { FilterChip } from '@/components/chat/engine/shared'
@@ -16,12 +16,13 @@ import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type {
   AssistantMessage as AssistantMessageType,
+  Attachment,
   Message as MessageType,
   SystemMessage as SystemMessageType,
   TriggerFiredData,
   UserMessage as UserMessageType,
 } from '@/types/chat'
-import { AttachmentChip } from './AttachmentChip'
+import { AttachmentChip, formatSize } from './AttachmentChip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import type { TriggerRegistration } from './MessageList'
@@ -744,7 +745,9 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
         <Prompt symbol="⚡">trigger · reaction task</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
         {event ? (
           <details className="mt-2 group">
             <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
@@ -779,7 +782,9 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
         <Prompt symbol="⟳">validator · corrective prompt</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
       </div>
     </article>
   )
@@ -803,32 +808,89 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
   )
 }
 
+const SLASH_CHIP_TYPES = new Set(['text/x-slash-command', 'text/x-skill'])
+
+/**
+ * The `/command` token inside the user bubble: the typed command fused with
+ * its expansion metadata (body size), so the slash chip never repeats the
+ * same name one row below the bubble. Same anatomy as FunctionMentionPill —
+ * accent glyph, ink text, one alpha-surface step above the bubble.
+ */
+function SlashCommandToken({ chip }: { chip: Attachment }) {
+  const isSkill = chip.type === 'text/x-skill'
+  const Icon = isSkill ? Blocks : SquareSlash
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-1.5 h-[22px] rounded-xs bg-surface font-mono text-[13px] text-ink select-none"
+      title={`${isSkill ? 'skill' : 'prompt'} body attached · ${formatSize(chip.size)}`}
+    >
+      <Icon size={13} aria-hidden className="text-accent shrink-0" />
+      <span className="leading-none truncate">{chip.name}</span>
+      <span className="leading-none text-[11px] text-ink-ghost tabular-nums shrink-0">
+        {formatSize(chip.size)}
+      </span>
+    </span>
+  )
+}
+
 function UserMessage({ message }: { message: UserMessageType }) {
+  const attachments = message.attachments ?? []
+  /* A slash expansion's chip duplicates the command that already leads the
+     typed text — fuse it into the bubble as one token instead of orphaning
+     it in the strip below. A chip that doesn't match the leading token
+     (shouldn't happen) keeps the strip as a fallback. */
+  const slashChip = attachments.find(
+    (a) =>
+      SLASH_CHIP_TYPES.has(a.type) &&
+      message.content.startsWith(a.name) &&
+      (message.content.length === a.name.length ||
+        message.content.charAt(a.name.length) === ' '),
+  )
+  const chips = slashChip
+    ? attachments.filter((a) => a.id !== slashChip.id)
+    : attachments
+  const args = slashChip
+    ? message.content.slice(slashChip.name.length).trim()
+    : ''
   return (
     <article
       className="group flex flex-col items-end gap-2"
       data-message-role="user"
     >
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
+      <header className="flex items-center gap-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
         {message.content ? (
           <CopyMessageButton
             text={message.content}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
+            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           />
         ) : null}
-        <Prompt symbol="$">you</Prompt>
+        <span>You</span>
       </header>
       <div
         className={cn(
-          'max-w-[80%] rounded-sm bg-surface px-3.5 py-2.5',
+          'max-w-[92%] rounded-sm bg-surface px-3.5 py-2.5 sm:max-w-[80%]',
           'break-words',
+          slashChip && 'flex flex-col items-start gap-1.5',
         )}
       >
-        <Markdown>{message.content}</Markdown>
+        {slashChip ? (
+          <>
+            <SlashCommandToken chip={slashChip} />
+            {args ? (
+              <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+                {args}
+              </Markdown>
+            ) : null}
+          </>
+        ) : (
+          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+            {message.content}
+          </Markdown>
+        )}
       </div>
-      {message.attachments && message.attachments.length > 0 ? (
-        <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
-          {message.attachments.map((a) => (
+      {chips.length > 0 ? (
+        <div className="flex max-w-[92%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
+          {chips.map((a) => (
             <AttachmentChip key={a.id} attachment={a} />
           ))}
         </div>
@@ -854,8 +916,14 @@ function AssistantMessage({
       className="group flex flex-col gap-2"
       data-message-role="assistant"
     >
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
-        <Prompt symbol=">">agent</Prompt>
+      <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
+        <span className="font-medium text-ink-faint">Agent</span>
+        {copySource !== undefined && !message.streaming ? (
+          <CopyMessageButton
+            text={copySource}
+            className="opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+          />
+        ) : null}
         {message.model ? (
           <span className="text-ink-ghost">· {message.model}</span>
         ) : null}
@@ -863,16 +931,12 @@ function AssistantMessage({
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
-        {copySource !== undefined && !message.streaming ? (
-          <CopyMessageButton
-            text={copySource}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
-          />
-        ) : null}
       </header>
       <div className="pr-1">
         {message.content ? (
-          <Markdown>{message.content}</Markdown>
+          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+            {message.content}
+          </Markdown>
         ) : (
           <div className="font-mono text-[13px] italic thinking-shimmer">
             thinking…

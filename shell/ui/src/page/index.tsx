@@ -29,15 +29,29 @@ import {
   EyeOff,
   FolderTree,
   MoreHorizontal,
+  PanelLeft,
+  PanelRight,
   RefreshCw,
   Rows3,
   Search,
   SquareTerminal,
+  Terminal,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import { errorMessage } from '../lib/format'
-import { captureWorkspaceBaseline, classifyWorkspaceBaselinePath } from './baseline'
+import {
+  captureWorkspaceBaseline,
+  classifyWorkspaceBaselinePath,
+} from './baseline'
+import { ChangeDiffPane } from './ChangeDiffPane'
 import {
   type CoderInfo,
   coderInfo,
@@ -65,35 +79,48 @@ import {
   type GitCommitSummary,
   type GitComparisonEntry,
   type GitComparisonScope,
-  type GitRevisionComparisonEntry,
   type GitRefSummary,
+  type GitRevisionComparisonEntry,
   type GitState,
-  gitChanges,
   gitBranchComparison,
+  gitChanges,
   gitCommitComparison,
   gitComparison,
   gitRecentCommits,
   gitRefs,
 } from './git'
+import { HoverTip } from './HoverTip'
 import { useWorkspaceChanges } from './live'
 import { normalizeLiveReviewEvent } from './live-review'
-import { createTabUiStateSaver, loadTabUiState, type TabUiState } from './persist'
-import { diffForReviewEntry, mergeGitReviewEntries, mergeReviewEntry, type ReviewEntry } from './review'
-import { useShellReviewSummaryBridge } from './review-summary-store'
-import { changedParentDirs, withReviewChanges } from './review-tree'
+import { parseShellPanelContext } from './panel-context'
+import {
+  createTabUiStateSaver,
+  loadTabUiState,
+  type TabUiState,
+  type TerminalDock,
+} from './persist'
+import {
+  createReviewSaveBarrier,
+  type ReviewEditDraft,
+  type ReviewFileSummary,
+  type ReviewOptions,
+  ReviewPane,
+  runReviewTransition,
+} from './ReviewPane'
 import {
   ReviewScopePicker,
   type ReviewScopeSelection,
 } from './ReviewScopePicker'
 import {
-  createReviewSaveBarrier,
-  ReviewPane,
-  type ReviewEditDraft,
-  type ReviewFileSummary,
-  type ReviewOptions,
-  runReviewTransition,
-} from './ReviewPane'
+  diffForReviewEntry,
+  mergeGitReviewEntries,
+  mergeReviewEntry,
+  type ReviewEntry,
+} from './review'
+import { useShellReviewSummaryBridge } from './review-summary-store'
+import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
+import { TerminalPanel } from './TerminalPanel'
 import {
   activateTab,
   basename,
@@ -106,6 +133,13 @@ import {
   restoreTabs,
   type TabsState,
 } from './tabs'
+import {
+  createTerminalWorkspace,
+  normalizeTerminalWorkspace,
+  reduceTerminalWorkspace,
+} from './terminal-layout'
+import { createTerminalOutputRouter } from './terminal-output-router'
+import type { TerminalConnectionCoordinator } from './terminal-session-state'
 import { useHarnessPreTurn, useHarnessTurn } from './turn'
 import {
   canCaptureHarnessWorkspaceChange,
@@ -116,10 +150,10 @@ import {
   deepLinkRootTarget,
   ownsRequestToken,
   ownsScopedRequestToken,
+  type RootTargetValidation,
   rebasePathAfterValidation,
   rootValidationRetryDelay,
   type ScopedRequestToken,
-  type RootTargetValidation,
   validateRootTarget,
   workingDirectoryNeedsFollow,
   workingDirectoryRetryMessage,
@@ -201,23 +235,46 @@ function reviewEntriesFromGit(
 const SIDEBAR_DEFAULT_WIDTH = 244
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
+const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
+const TERMINAL_RIGHT_DEFAULT_SIZE = 420
 function reviewablePath(rel: string): boolean {
   // This page's own persisted UI state changes on every tab/expand and
   // must never become part of the user's review set.
   if (rel.endsWith('shell-ui.yaml')) return false
-  const noise = ['Library', 'node_modules', 'target', 'dist', 'build', 'out', 'vendor', '__pycache__']
+  const noise = [
+    'Library',
+    'node_modules',
+    'target',
+    'dist',
+    'build',
+    'out',
+    'vendor',
+    '__pycache__',
+  ]
   const segments = rel.split('/')
-  if (segments.some((segment) => segment === '.git' || noise.includes(segment))) return false
-  return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|log|output|tmp|swp|part|pid|sock)$/.test(rel)
+  if (segments.some((segment) => segment === '.git' || noise.includes(segment)))
+    return false
+  return !/\.(o|a|d|rlib|rmeta|so|dylib|dll|class|pyc|wasm|map|log|output|tmp|swp|part|pid|sock)$/.test(
+    rel,
+  )
 }
 
 function clampSidebarWidth(w: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
 }
 
+function clampTerminalSize(size: number | undefined, fallback: number): number {
+  if (size === undefined || !Number.isFinite(size)) return fallback
+  return Math.min(1200, Math.max(160, Math.round(size)))
+}
+
 const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
-  { id: 'files', label: 'files', Icon: FolderTree },
-  { id: 'search', label: 'search', Icon: Search },
+  {
+    id: 'files',
+    label: 'File tree — browse workspace files',
+    Icon: FolderTree,
+  },
+  { id: 'search', label: 'Search — find text in files', Icon: Search },
 ]
 
 export function ShellExplorerPage({
@@ -226,6 +283,7 @@ export function ShellExplorerPage({
   tabId,
   onRequestClose,
   workingDir,
+  panelContext,
   conversationId,
 }: { host: Host } & PageRenderProps) {
   const theme = host.useTheme()
@@ -234,7 +292,9 @@ export function ShellExplorerPage({
   const [reviewKey, setReviewKey] = useState<string | null>(observedReviewKey)
   const [info, setInfo] = useState<CoderInfo | null>(null)
   const [infoError, setInfoError] = useState<string | null>(null)
-  const [restored, setRestored] = useState<TabUiState | null | 'loading'>('loading')
+  const [restored, setRestored] = useState<TabUiState | null | 'loading'>(
+    'loading',
+  )
   const [root, setRoot] = useState<string | null>(null)
   const rootRef = useRef(root)
   rootRef.current = root
@@ -246,7 +306,10 @@ export function ShellExplorerPage({
     path: string
     request: number
   } | null>(null)
-  const workingDirRetryRef = useRef({ path: null as string | null, failures: 0 })
+  const workingDirRetryRef = useRef({
+    path: null as string | null,
+    failures: 0,
+  })
   const workingDirRetryTimerRef = useRef<number | null>(null)
   const manualRootRequestSeqRef = useRef(0)
   const manualRootActiveRequestRef = useRef<number | null>(null)
@@ -257,6 +320,33 @@ export function ShellExplorerPage({
   const rootResolveSeqRef = useRef(0)
   const rootTransitionRef = useRef(false)
   const [sideTab, setSideTab] = useState<SideTab>('files')
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
+  const [terminalActive, setTerminalActive] = useState(false)
+  const [terminalBottomSize, setTerminalBottomSize] = useState(
+    TERMINAL_BOTTOM_DEFAULT_SIZE,
+  )
+  const [terminalRightSize, setTerminalRightSize] = useState(
+    TERMINAL_RIGHT_DEFAULT_SIZE,
+  )
+  const [terminalWorkspace, dispatchTerminalWorkspace] = useReducer(
+    reduceTerminalWorkspace,
+    '/',
+    createTerminalWorkspace,
+  )
+  const terminalRouter = useMemo(() => createTerminalOutputRouter(host), [host])
+  const terminalConnectionCoordinators = useRef(
+    new Map<string, TerminalConnectionCoordinator>(),
+  ).current
+  useEffect(() => () => terminalRouter.dispose(), [terminalRouter])
+  const terminalLeaseStore = useMemo(() => {
+    try {
+      return window.localStorage
+    } catch {
+      return null
+    }
+  }, [])
+  const terminalStorageKey = `iii::shell-ui::terminal-leases::${tabId}`
   const [collapsed, setCollapsed] = useState(false)
   const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const [tree, setTree] = useState<FlatTree | null>(null)
@@ -268,7 +358,9 @@ export function ShellExplorerPage({
   // The base tree snapshot is node-budgeted; expanding a folder the
   // snapshot didn't reach fetches its subtree on demand. An entry with
   // no paths marks a fetched-and-empty folder (no refetch loop).
-  const [subtrees, setSubtrees] = useState<ReadonlyMap<string, FlatTree>>(new Map())
+  const [subtrees, setSubtrees] = useState<ReadonlyMap<string, FlatTree>>(
+    new Map(),
+  )
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
   const [expanded, setExpanded] = useState<string[]>([])
   const [reveal, setReveal] = useState<string | null>(null)
@@ -283,9 +375,9 @@ export function ShellExplorerPage({
     reviewSaveBarrierRef.current = createReviewSaveBarrier()
   }
   const reviewSaveBarrier = reviewSaveBarrierRef.current
-  const [reviewSavingPaths, setReviewSavingPaths] = useState<ReadonlySet<string>>(
-    new Set(),
-  )
+  const [reviewSavingPaths, setReviewSavingPaths] = useState<
+    ReadonlySet<string>
+  >(new Set())
   const reviewSavePending = reviewSavingPaths.size > 0
   const [diff, setDiff] = useState<DiffSelection | null>(null)
   const diffRequestRef = useRef(0)
@@ -293,22 +385,33 @@ export function ShellExplorerPage({
   const [reviewCollapseEpoch, setReviewCollapseEpoch] = useState(0)
   const [reviewExpandEpoch, setReviewExpandEpoch] = useState(0)
   const [reviewMenuOpen, setReviewMenuOpen] = useState(false)
-  const [reviewScope, setReviewScope] = useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
+  const [reviewScope, setReviewScope] =
+    useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
   const reviewScopeRef = useRef(reviewScope)
   reviewScopeRef.current = reviewScope
-  const [scopeEntries, setScopeEntries] = useState<ReadonlyMap<string, ReviewEntry>>(new Map())
+  const [scopeEntries, setScopeEntries] = useState<
+    ReadonlyMap<string, ReviewEntry>
+  >(new Map())
   const scopeEntriesRef = useRef<ReadonlyMap<string, ReviewEntry>>(scopeEntries)
   scopeEntriesRef.current = scopeEntries
-  const [scopeSummary, setScopeSummary] = useState<readonly ReviewFileSummary[]>([])
+  const [scopeSummary, setScopeSummary] = useState<
+    readonly ReviewFileSummary[]
+  >([])
   const [scopeLoading, setScopeLoading] = useState(false)
   const [scopeError, setScopeError] = useState<string | null>(null)
-  const [scopeCommits, setScopeCommits] = useState<readonly GitCommitSummary[]>([])
+  const [scopeCommits, setScopeCommits] = useState<readonly GitCommitSummary[]>(
+    [],
+  )
   const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
   const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
-  const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(null)
+  const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(
+    null,
+  )
   const scopeLoadSeqRef = useRef(0)
   const scopeMetadataSeqRef = useRef(0)
-  const [reviewSummary, setReviewSummary] = useState<readonly ReviewFileSummary[]>([])
+  const [reviewSummary, setReviewSummary] = useState<
+    readonly ReviewFileSummary[]
+  >([])
   const [reviewOptions, setReviewOptions] = useState<ReviewOptions>({
     diffStyle: 'unified',
     wordWrap: true,
@@ -317,13 +420,18 @@ export function ShellExplorerPage({
     expandUnchanged: false,
     richPreview: false,
   })
-  const [reviewEntries, setReviewEntries] = useState<ReadonlyMap<string, ReviewEntry>>(new Map())
-  const reviewEntriesRef = useRef<ReadonlyMap<string, ReviewEntry>>(reviewEntries)
+  const [reviewEntries, setReviewEntries] = useState<
+    ReadonlyMap<string, ReviewEntry>
+  >(new Map())
+  const reviewEntriesRef =
+    useRef<ReadonlyMap<string, ReviewEntry>>(reviewEntries)
   reviewEntriesRef.current = reviewEntries
   // For ordinary non-Git folders, snapshot initial text before Harness
   // writes so every later row can open a real before/after diff.
   const baselineRef = useRef<Map<string, string>>(new Map())
-  const baselineKindsRef = useRef<ReadonlyMap<string, TreeNode['kind']>>(new Map())
+  const baselineKindsRef = useRef<ReadonlyMap<string, TreeNode['kind']>>(
+    new Map(),
+  )
   const baselineCompleteRef = useRef(false)
   const baselineCapturedRef = useRef(false)
   const baselineReadyRef = useRef<Promise<void>>(Promise.resolve())
@@ -344,6 +452,12 @@ export function ShellExplorerPage({
       completedAtMs: observedReview.completedAtMs,
     }
   }
+  const [contextDiff, setContextDiff] = useState<{
+    eventId: number
+    changeId: string
+    path: string
+    canViewFile: boolean
+  } | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
   const reviewEditBackupsRef = useRef<Map<string, ReviewEditBackup>>(new Map())
   const reviewDirtyPathsRef = useRef(reviewDirtyPaths)
@@ -366,7 +480,8 @@ export function ShellExplorerPage({
       const next = new Set(previous)
       for (const path of restored) {
         const cached = cacheRef.current.get(path)
-        if (cached !== undefined && cached.draft !== cached.savedContent) next.add(path)
+        if (cached !== undefined && cached.draft !== cached.savedContent)
+          next.add(path)
         else next.delete(path)
       }
       return next
@@ -411,7 +526,11 @@ export function ShellExplorerPage({
     )
     const count = new Set([...dirtyPaths, ...dirtyReviewPaths]).size
     if (count === 0) return true
-    if (!window.confirm(`discard unsaved changes in ${count} ${count === 1 ? 'file' : 'files'}?`)) {
+    if (
+      !window.confirm(
+        `discard unsaved changes in ${count} ${count === 1 ? 'file' : 'files'}?`,
+      )
+    ) {
       return false
     }
     restoreReviewEditCaches(reviewEditBackupsRef.current.keys())
@@ -444,54 +563,58 @@ export function ShellExplorerPage({
     return true
   }, [reviewSaveBarrier])
 
-  const beginReviewTurn = useCallback((turnId: string) => {
-    if (turnId === lastReviewKeyRef.current) return false
-    if (!reviewSaveBarrier.canTransition()) return false
-    const reviewDrafts = [...reviewDirtyPathsRef.current]
-    if (reviewDrafts.length > 0) {
-      setTabs((previous) => {
-        let next = previous
-        for (const path of reviewDrafts) next = openPinned(next, path)
-        return next
-      })
-    }
-    reviewEditBackupsRef.current.clear()
-    setReviewDirtyPaths(new Set())
-    lastReviewKeyRef.current = turnId
-    setReviewKey(turnId)
-    reviewEpochRef.current += 1
-    reviewWindowRef.current = {
-      turnId,
-      epoch: reviewEpochRef.current,
-      active: false,
-      completedAtMs: null,
-    }
-    scopeMetadataSeqRef.current += 1
-    diffRequestRef.current += 1
-    if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
-    liveTimerRef.current = null
-    changedAbsRef.current = new Map()
-    reviewEligibleAbsRef.current = new Set()
-    changedDirsRef.current = new Set()
-    followRef.current = null
-    preparedTurnRef.current = null
-    baselineRef.current = new Map()
-    baselineKindsRef.current = new Map()
-    baselineCompleteRef.current = false
-    baselineCapturedRef.current = false
-    baselineReadyRef.current = Promise.resolve()
-    reviewEntriesRef.current = new Map()
-    setReviewEntries(new Map())
-    scopeEntriesRef.current = new Map()
-    setScopeEntries(new Map())
-    setScopeSummary([])
-    setScopeMetadataLoading(false)
-    setScopeMetadataError(null)
-    forceLastTurnScope()
-    setReviewSummary([])
-    setDiff(null)
-    return true
-  }, [forceLastTurnScope, reviewSaveBarrier])
+  const beginReviewTurn = useCallback(
+    (turnId: string) => {
+      if (turnId === lastReviewKeyRef.current) return false
+      if (!reviewSaveBarrier.canTransition()) return false
+      const reviewDrafts = [...reviewDirtyPathsRef.current]
+      if (reviewDrafts.length > 0) {
+        setTabs((previous) => {
+          let next = previous
+          for (const path of reviewDrafts) next = openPinned(next, path)
+          return next
+        })
+      }
+      reviewEditBackupsRef.current.clear()
+      setReviewDirtyPaths(new Set())
+      lastReviewKeyRef.current = turnId
+      setReviewKey(turnId)
+      reviewEpochRef.current += 1
+      reviewWindowRef.current = {
+        turnId,
+        epoch: reviewEpochRef.current,
+        active: false,
+        completedAtMs: null,
+      }
+      scopeMetadataSeqRef.current += 1
+      diffRequestRef.current += 1
+      if (liveTimerRef.current !== null)
+        window.clearTimeout(liveTimerRef.current)
+      liveTimerRef.current = null
+      changedAbsRef.current = new Map()
+      reviewEligibleAbsRef.current = new Set()
+      changedDirsRef.current = new Set()
+      followRef.current = null
+      preparedTurnRef.current = null
+      baselineRef.current = new Map()
+      baselineKindsRef.current = new Map()
+      baselineCompleteRef.current = false
+      baselineCapturedRef.current = false
+      baselineReadyRef.current = Promise.resolve()
+      reviewEntriesRef.current = new Map()
+      setReviewEntries(new Map())
+      scopeEntriesRef.current = new Map()
+      setScopeEntries(new Map())
+      setScopeSummary([])
+      setScopeMetadataLoading(false)
+      setScopeMetadataError(null)
+      forceLastTurnScope()
+      setReviewSummary([])
+      setDiff(null)
+      return true
+    },
+    [forceLastTurnScope, reviewSaveBarrier],
+  )
 
   // This runs inside Harness's awaited pre-turn hook: the snapshot is fully
   // frozen before model/tool execution can create, edit, rename, or delete.
@@ -597,29 +720,78 @@ export function ShellExplorerPage({
       .then(({ path: next }) => {
         if (cancelled || rootResolveSeqRef.current !== seq) return
         if (requestedWorkingDir !== null) {
-          acknowledgedWorkingDirRef.current = acknowledgeValidatedWorkingDirectory(
-            acknowledgedWorkingDirRef.current,
-            requestedWorkingDir,
-            workingDirRef.current,
-            true,
+          acknowledgedWorkingDirRef.current =
+            acknowledgeValidatedWorkingDirectory(
+              acknowledgedWorkingDirRef.current,
+              requestedWorkingDir,
+              workingDirRef.current,
+              true,
+            )
+        }
+        function restoreTerminalUiState(state: TabUiState): void {
+          if (state.terminalOpen) setTerminalOpen(true)
+          if (state.terminalDock) setTerminalDock(state.terminalDock)
+          if (state.terminalActive) setTerminalActive(true)
+          setTerminalBottomSize(
+            clampTerminalSize(
+              state.terminalBottomSize,
+              TERMINAL_BOTTOM_DEFAULT_SIZE,
+            ),
           )
+          setTerminalRightSize(
+            clampTerminalSize(
+              state.terminalRightSize,
+              TERMINAL_RIGHT_DEFAULT_SIZE,
+            ),
+          )
+          dispatchTerminalWorkspace({
+            type: 'workspace-restored',
+            state: state.terminalWorkspace
+              ? normalizeTerminalWorkspace(state.terminalWorkspace, next)
+              : createTerminalWorkspace(next),
+          })
         }
         setRoot(next)
-        if (restored?.root && requested === restored.root && next === restored.root) {
+        if (
+          restored?.root &&
+          requested === restored.root &&
+          next === restored.root
+        ) {
           setTabs(restoreTabs(restored.open, restored.active))
           setExpanded(restored.expanded)
           setShowHidden(restored.showHidden ?? false)
-          setSideWidth(clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
-        } else if (restored && !restored.root && requested === info.primary_root) {
+          setSideWidth(
+            clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH),
+          )
+          restoreTerminalUiState(restored)
+        } else if (
+          restored &&
+          !restored.root &&
+          requested === info.primary_root
+        ) {
           // Legacy/first save without a root: restore against the primary.
           setTabs(restoreTabs(restored.open, restored.active))
           setExpanded(restored.expanded)
           setShowHidden(restored.showHidden ?? false)
-          setSideWidth(clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH))
+          setSideWidth(
+            clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH),
+          )
+          restoreTerminalUiState(restored)
+        } else {
+          dispatchTerminalWorkspace({
+            type: 'workspace-restored',
+            state: createTerminalWorkspace(next),
+          })
         }
       })
       .catch(() => {
-        if (!cancelled && rootResolveSeqRef.current === seq) setRoot(info.primary_root)
+        if (!cancelled && rootResolveSeqRef.current === seq) {
+          setRoot(info.primary_root)
+          dispatchTerminalWorkspace({
+            type: 'workspace-restored',
+            state: createTerminalWorkspace(info.primary_root),
+          })
+        }
       })
     return () => {
       cancelled = true
@@ -704,10 +876,13 @@ export function ShellExplorerPage({
     })
   }, [git, reviewKey])
 
-  const visibleReviewEntries = reviewScope.kind === 'last-turn' ? reviewEntries : scopeEntries
-  const visibleReviewEntriesRef = useRef<ReadonlyMap<string, ReviewEntry>>(visibleReviewEntries)
+  const visibleReviewEntries =
+    reviewScope.kind === 'last-turn' ? reviewEntries : scopeEntries
+  const visibleReviewEntriesRef =
+    useRef<ReadonlyMap<string, ReviewEntry>>(visibleReviewEntries)
   visibleReviewEntriesRef.current = visibleReviewEntries
-  const visibleReviewSummary = reviewScope.kind === 'last-turn' ? reviewSummary : scopeSummary
+  const visibleReviewSummary =
+    reviewScope.kind === 'last-turn' ? reviewSummary : scopeSummary
   const reviewChanges = useMemo<readonly GitChange[]>(
     () => [...visibleReviewEntries.values()].map((entry) => entry.change),
     [visibleReviewEntries],
@@ -733,8 +908,14 @@ export function ShellExplorerPage({
   )
   // The Files tree is also the review navigator. Review-only rows keep
   // deleted files visible even after they disappear from coder::tree.
-  const reviewTree = useMemo(() => withReviewChanges(mergedTree, reviewChanges), [mergedTree, reviewChanges])
-  const changedDirsKey = useMemo(() => changedParentDirs(reviewChanges).join('\n'), [reviewChanges])
+  const reviewTree = useMemo(
+    () => withReviewChanges(mergedTree, reviewChanges),
+    [mergedTree, reviewChanges],
+  )
+  const changedDirsKey = useMemo(
+    () => changedParentDirs(reviewChanges).join('\n'),
+    [reviewChanges],
+  )
   useEffect(() => {
     if (changedDirsKey === '') return
     const changedDirs = changedDirsKey.split('\n')
@@ -779,10 +960,17 @@ export function ShellExplorerPage({
           // Inaccessible folder — recorded as fetched-and-empty so the
           // load effect doesn't refetch it on every live burst; a change
           // under it drops the entry and retries.
-          setSubtrees((prev) => new Map(prev).set(dir, { paths: [], kinds: new Map(), truncations: [] }))
+          setSubtrees((prev) =>
+            new Map(prev).set(dir, {
+              paths: [],
+              kinds: new Map(),
+              truncations: [],
+            }),
+          )
         })
         .finally(() => {
-          if (rootGenerationRef.current === generation) subtreeLoadRef.current.delete(dir)
+          if (rootGenerationRef.current === generation)
+            subtreeLoadRef.current.delete(dir)
         })
     }
   }, [expanded, mergedTree, subtrees, root, showHidden, host])
@@ -821,12 +1009,23 @@ export function ShellExplorerPage({
     if (!changedAbsRef.current.has(absPath)) return
     coderReadFile(host, absPath)
       .then((out) => {
-        if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
+        if (
+          rootGenerationRef.current !== generation ||
+          rootRef.current !== currentRoot
+        )
+          return
         if (tabsRef.current.active !== active) return
         const content = out.content ?? ''
         const entry = cacheRef.current.get(active)
         if (!entry) return
-        if (!refreshCleanEditorCacheEntry(entry, content, out.revision ?? undefined)) return
+        if (
+          !refreshCleanEditorCacheEntry(
+            entry,
+            content,
+            out.revision ?? undefined,
+          )
+        )
+          return
         setFileBump((n) => n + 1)
       })
       .catch(() => {
@@ -841,14 +1040,19 @@ export function ShellExplorerPage({
   diffRef.current = diff
   const treeRef = useRef(tree)
   treeRef.current = tree
-  const openReviewEntry = useCallback((entry: ReviewEntry) => {
-    if (!reviewSaveBarrier.canTransition()) return false
-    diffRequestRef.current += 1
-    setTabs((state) => openPreview(state, entry.path))
-    setDiff(diffForReviewEntry(entry))
-    setReviewRefreshEpoch((value) => value + 1)
-    return true
-  }, [reviewSaveBarrier])
+  const openReviewEntry = useCallback(
+    (entry: ReviewEntry) => {
+      if (!reviewSaveBarrier.canTransition()) return false
+      setTerminalActive(false)
+      diffRequestRef.current += 1
+      setContextDiff(null)
+      setTabs((state) => openPreview(state, entry.path))
+      setDiff(diffForReviewEntry(entry))
+      setReviewRefreshEpoch((value) => value + 1)
+      return true
+    },
+    [reviewSaveBarrier],
+  )
 
   const loadScopeMetadata = useCallback(() => {
     if (root === null) return
@@ -857,7 +1061,8 @@ export function ShellExplorerPage({
     setScopeMetadataError(null)
     void Promise.all([gitRecentCommits(host, root), gitRefs(host, root)])
       .then(([commits, refs]) => {
-        if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root) return
+        if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
+          return
         setScopeCommits(commits.kind === 'ready' ? commits.commits : [])
         setScopeRefs(refs.kind === 'ready' ? refs.refs : [])
         const failure =
@@ -882,16 +1087,20 @@ export function ShellExplorerPage({
       setScopeLoading(true)
       setScopeError(null)
       const comparison =
-        scope.kind === 'uncommitted' || scope.kind === 'unstaged' || scope.kind === 'staged'
+        scope.kind === 'uncommitted' ||
+        scope.kind === 'unstaged' ||
+        scope.kind === 'staged'
           ? gitComparison(host, root, scope.kind satisfies GitComparisonScope)
           : scope.kind === 'commit'
             ? gitCommitComparison(host, root, scope.sha)
             : gitBranchComparison(host, root, scope.ref)
       void comparison
         .then((state) => {
-          if (scopeLoadSeqRef.current !== seq || rootRef.current !== root) return
+          if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+            return
           if (state.kind !== 'ready') {
-            const message = state.kind === 'error' ? state.message : 'not a git repository'
+            const message =
+              state.kind === 'error' ? state.message : 'not a git repository'
             scopeEntriesRef.current = new Map()
             setScopeEntries(new Map())
             setScopeError(message)
@@ -903,7 +1112,9 @@ export function ShellExplorerPage({
           scopeEntriesRef.current = next
           setScopeEntries(next)
           const activePath = diffRef.current?.change.path
-          const entry = (activePath ? next.get(activePath) : undefined) ?? next.values().next().value
+          const entry =
+            (activePath ? next.get(activePath) : undefined) ??
+            next.values().next().value
           if (entry) openReviewEntry(entry)
           else {
             diffRequestRef.current += 1
@@ -911,7 +1122,8 @@ export function ShellExplorerPage({
           }
         })
         .catch((error: unknown) => {
-          if (scopeLoadSeqRef.current !== seq || rootRef.current !== root) return
+          if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+            return
           scopeEntriesRef.current = new Map()
           setScopeEntries(new Map())
           setScopeError(errorMessage(error))
@@ -925,17 +1137,20 @@ export function ShellExplorerPage({
     [host, root, openReviewEntry],
   )
 
-  const onReviewEditDirtyChange = useCallback((path: string, dirty: boolean) => {
-    // The page-owned draft remains authoritative until the row explicitly
-    // sends a clean draft, cancels, or saves.
-    if (!dirty) return
-    setReviewDirtyPaths((previous) => {
-      if (previous.has(path)) return previous
-      const next = new Set(previous)
-      next.add(path)
-      return next
-    })
-  }, [])
+  const onReviewEditDirtyChange = useCallback(
+    (path: string, dirty: boolean) => {
+      // The page-owned draft remains authoritative until the row explicitly
+      // sends a clean draft, cancels, or saves.
+      if (!dirty) return
+      setReviewDirtyPaths((previous) => {
+        if (previous.has(path)) return previous
+        const next = new Set(previous)
+        next.add(path)
+        return next
+      })
+    },
+    [],
+  )
 
   const onReviewEditSavingChange = useCallback(
     (path: string, saving: boolean) => {
@@ -944,33 +1159,36 @@ export function ShellExplorerPage({
     [reviewSaveBarrier],
   )
 
-  const onRequestReviewEdit = useCallback((path: string) => {
-    if (!reviewSaveBarrier.canTransition()) return false
-    if (reviewEditBackupsRef.current.has(path)) return true
-    const cached = cacheRef.current.get(path)
-    if (
-      cached !== undefined &&
-      cached.draft !== cached.savedContent &&
-      !window.confirm(`discard the existing editor draft for ${path}?`)
-    ) {
-      return false
-    }
-    reviewEditBackupsRef.current.set(path, {
-      cache:
-        cached === undefined
-          ? null
-          : { ...cached, draft: cached.savedContent },
-      hadTab: tabsRef.current.tabs.some((tab) => tab.path === path),
-    })
-    if (cached !== undefined && cached.draft !== cached.savedContent) {
-      setDirtyPaths((previous) => {
-        const next = new Set(previous)
-        next.delete(path)
-        return next
+  const onRequestReviewEdit = useCallback(
+    (path: string) => {
+      if (!reviewSaveBarrier.canTransition()) return false
+      if (reviewEditBackupsRef.current.has(path)) return true
+      const cached = cacheRef.current.get(path)
+      if (
+        cached !== undefined &&
+        cached.draft !== cached.savedContent &&
+        !window.confirm(`discard the existing editor draft for ${path}?`)
+      ) {
+        return false
+      }
+      reviewEditBackupsRef.current.set(path, {
+        cache:
+          cached === undefined
+            ? null
+            : { ...cached, draft: cached.savedContent },
+        hadTab: tabsRef.current.tabs.some((tab) => tab.path === path),
       })
-    }
-    return true
-  }, [reviewSaveBarrier])
+      if (cached !== undefined && cached.draft !== cached.savedContent) {
+        setDirtyPaths((previous) => {
+          const next = new Set(previous)
+          next.delete(path)
+          return next
+        })
+      }
+      return true
+    },
+    [reviewSaveBarrier],
+  )
 
   const onReviewEditDraftChange = useCallback(
     (path: string, edit: ReviewEditDraft | null) => {
@@ -1112,7 +1330,9 @@ export function ShellExplorerPage({
     } else {
       const currentRoot = rootRef.current
       if (currentRoot) {
-        const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
+        const prefix = currentRoot.endsWith('/')
+          ? currentRoot
+          : `${currentRoot}/`
         if (eventAbs.startsWith(prefix)) {
           const rel = eventAbs.slice(prefix.length)
           if (
@@ -1138,10 +1358,15 @@ export function ShellExplorerPage({
       // complete. New watcher events coalesce into the same maps meanwhile.
       void baselineReadyRef.current.then(() => {
         liveTimerRef.current = null
-        if (rootGenerationRef.current !== generation || reviewEpochRef.current !== reviewEpoch) return
+        if (
+          rootGenerationRef.current !== generation ||
+          reviewEpochRef.current !== reviewEpoch
+        )
+          return
         // Capture the pre-refresh tree: watcher kinds are noisy, while this
         // tells an atomic replacement from a truly new path.
-        const knownBefore = treeRef.current === null ? null : new Set(treeRef.current.paths)
+        const knownBefore =
+          treeRef.current === null ? null : new Set(treeRef.current.paths)
         const kindsBefore = treeRef.current?.kinds
         reloadActiveFile()
         const follow = followRef.current
@@ -1155,7 +1380,9 @@ export function ShellExplorerPage({
         const currentRoot = rootRef.current
         if (currentRoot === null) return
 
-        const prefix = currentRoot.endsWith('/') ? currentRoot : `${currentRoot}/`
+        const prefix = currentRoot.endsWith('/')
+          ? currentRoot
+          : `${currentRoot}/`
         const fileEvents = [...changed]
           .filter(
             ([abs]) =>
@@ -1202,9 +1429,14 @@ export function ShellExplorerPage({
           ) {
             return
           }
-          const existsByPath = new Map(results?.map((result) => [result.path, result.success] as const) ?? [])
+          const existsByPath = new Map(
+            results?.map((result) => [result.path, result.success] as const) ??
+              [],
+          )
           const currentGitChanges = state?.kind === 'ready' ? state.changes : []
-          const currentGitByPath = new Map(currentGitChanges.map((change) => [change.path, change] as const))
+          const currentGitByPath = new Map(
+            currentGitChanges.map((change) => [change.path, change] as const),
+          )
           let nextReview = reviewEntriesRef.current
           for (const { abs, rawKind, rel } of fileEvents) {
             const baselinePath = baselineCapturedRef.current
@@ -1217,15 +1449,18 @@ export function ShellExplorerPage({
                 )
               : null
             const priorKind = baselineCapturedRef.current
-              ? baselinePath?.priorKind ?? null
+              ? (baselinePath?.priorKind ?? null)
               : kindsBefore === undefined
                 ? undefined
                 : kindsBefore.get(rel) === 'file'
                   ? 'file'
-                  : kindsBefore.get(rel) === 'dir' || knownBefore?.has(`${rel}/`)
+                  : kindsBefore.get(rel) === 'dir' ||
+                      knownBefore?.has(`${rel}/`)
                     ? 'dir'
                     : null
-            const baseline = baselineRef.current.get(rel) ?? cacheRef.current.get(rel)?.savedContent
+            const baseline =
+              baselineRef.current.get(rel) ??
+              cacheRef.current.get(rel)?.savedContent
             const baselineUnavailable =
               baselinePath?.priorKind === 'file' && baseline === undefined
             const decision = normalizeLiveReviewEvent({
@@ -1238,7 +1473,11 @@ export function ShellExplorerPage({
                   ? rawKind !== 'deleted'
                   : existsByPath.get(abs) === true,
             })
-            if (decision.action === 'ignore-directory' || decision.action === 'ignore-delete') continue
+            if (
+              decision.action === 'ignore-directory' ||
+              decision.action === 'ignore-delete'
+            )
+              continue
             nextReview = mergeReviewEntry(
               nextReview,
               rel,
@@ -1250,7 +1489,11 @@ export function ShellExplorerPage({
               baselineUnavailable ? undefined : currentGitByPath.get(rel),
             )
           }
-          const enriched = mergeGitReviewEntries(nextReview, currentGitChanges, false)
+          const enriched = mergeGitReviewEntries(
+            nextReview,
+            currentGitChanges,
+            false,
+          )
           reviewEntriesRef.current = enriched
           setReviewEntries(enriched)
 
@@ -1307,16 +1550,40 @@ export function ShellExplorerPage({
       expanded,
       showHidden,
       sideWidth,
+      terminalOpen,
+      terminalDock,
+      terminalActive,
+      terminalBottomSize,
+      terminalRightSize,
+      terminalWorkspace,
     })
-  }, [saver, root, tabs, expanded, showHidden, sideWidth])
+  }, [
+    saver,
+    root,
+    tabs,
+    expanded,
+    showHidden,
+    sideWidth,
+    terminalOpen,
+    terminalDock,
+    terminalActive,
+    terminalBottomSize,
+    terminalRightSize,
+    terminalWorkspace,
+  ])
 
   // ── open/close/pin actions ──
-  const previewFile = useCallback((relPath: string) => {
-    if (!confirmDiscardReviewEdits()) return
-    diffRequestRef.current += 1
-    setDiff(null)
-    setTabs((s) => openPreview(s, relPath))
-  }, [confirmDiscardReviewEdits])
+  const previewFile = useCallback(
+    (relPath: string) => {
+      setContextDiff(null)
+      if (!confirmDiscardReviewEdits()) return
+      setTerminalActive(false)
+      diffRequestRef.current += 1
+      setDiff(null)
+      setTabs((s) => openPreview(s, relPath))
+    },
+    [confirmDiscardReviewEdits],
+  )
 
   const activateFile = useCallback(
     (relPath: string) => {
@@ -1335,7 +1602,9 @@ export function ShellExplorerPage({
         return
       }
       if (!confirmDiscardReviewEdits()) return
+      setTerminalActive(false)
       diffRequestRef.current += 1
+      setContextDiff(null)
       setDiff(null)
       setTabs((s) => openPinned(s, relPath))
     },
@@ -1368,7 +1637,10 @@ export function ShellExplorerPage({
         setTabs((s) => closeTab(s, relPath))
         return
       }
-      if (dirtyPaths.has(relPath) && !window.confirm(`discard unsaved changes to ${relPath}?`)) {
+      if (
+        dirtyPaths.has(relPath) &&
+        !window.confirm(`discard unsaved changes to ${relPath}?`)
+      ) {
         return
       }
       cacheRef.current.delete(relPath)
@@ -1408,118 +1680,132 @@ export function ShellExplorerPage({
       if (!drag) return
       const delta = e.clientX - drag.startX
       // A right-hugging sidebar widens as the handle moves LEFT.
-      setSideWidth(clampSidebarWidth(panelSide === 'right' ? drag.startWidth - delta : drag.startWidth + delta))
+      setSideWidth(
+        clampSidebarWidth(
+          panelSide === 'right'
+            ? drag.startWidth - delta
+            : drag.startWidth + delta,
+        ),
+      )
     },
     [panelSide],
   )
-  const onHandlePointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    dragRef.current = null
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    } catch {
-      // never captured — nothing to release
-    }
-  }, [])
+  const onHandlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      dragRef.current = null
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        // never captured — nothing to release
+      }
+    },
+    [],
+  )
 
-  const changeRoot = useCallback((
-    nextRoot: string,
-    onResolved?: (outcome: RootChangeOutcome, path?: string) => void,
-  ): boolean => {
-    if (!reviewSaveBarrier.canTransition()) return false
-    const resolveSeq = ++rootResolveSeqRef.current
-    void validateRootTarget(
-      () => workspaceValidate(host, nextRoot),
-      () => rootResolveSeqRef.current === resolveSeq,
-    ).then((result) => {
-      if (result.outcome !== 'validated') {
-        onResolved?.(result.outcome)
-        if (result.outcome === 'failed') {
-          setRootChangeSettledEpoch((epoch) => epoch + 1)
+  const changeRoot = useCallback(
+    (
+      nextRoot: string,
+      onResolved?: (outcome: RootChangeOutcome, path?: string) => void,
+    ): boolean => {
+      if (!reviewSaveBarrier.canTransition()) return false
+      const resolveSeq = ++rootResolveSeqRef.current
+      void validateRootTarget(
+        () => workspaceValidate(host, nextRoot),
+        () => rootResolveSeqRef.current === resolveSeq,
+      ).then((result) => {
+        if (result.outcome !== 'validated') {
+          onResolved?.(result.outcome)
+          if (result.outcome === 'failed') {
+            setRootChangeSettledEpoch((epoch) => epoch + 1)
+          }
+          return
         }
-        return
-      }
-      if (result.path === rootRef.current) {
-        refreshTree()
-        void refreshGit()
-        onResolved?.('validated', result.path)
-        setRootChangeSettledEpoch((epoch) => epoch + 1)
-        return
-      }
-      // Validation can take long enough for a draft or save to begin. Confirm
-      // at commit time so the validated transition cannot discard newer work.
-      if (!confirmDiscardAllEdits()) {
-        onResolved?.('declined')
-        setRootChangeSettledEpoch((epoch) => epoch + 1)
-        return
-      }
-      if (rootResolveSeqRef.current !== resolveSeq) {
-        onResolved?.('superseded')
-        return
-      }
+        if (result.path === rootRef.current) {
+          refreshTree()
+          void refreshGit()
+          onResolved?.('validated', result.path)
+          setRootChangeSettledEpoch((epoch) => epoch + 1)
+          return
+        }
+        // Validation can take long enough for a draft or save to begin. Confirm
+        // at commit time so the validated transition cannot discard newer work.
+        if (!confirmDiscardAllEdits()) {
+          onResolved?.('declined')
+          setRootChangeSettledEpoch((epoch) => epoch + 1)
+          return
+        }
+        if (rootResolveSeqRef.current !== resolveSeq) {
+          onResolved?.('superseded')
+          return
+        }
 
-      const path = result.path
-      rootTransitionRef.current = true
-      rootGenerationRef.current += 1
-      reviewEpochRef.current += 1
-      scopeMetadataSeqRef.current += 1
-      treeSeqRef.current += 1
-      gitSeqRef.current += 1
-      diffRequestRef.current += 1
-      if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
-      liveTimerRef.current = null
-      followRef.current = null
-      changedAbsRef.current = new Map()
-      reviewEligibleAbsRef.current = new Set()
-      changedDirsRef.current = new Set()
-      subtreeLoadRef.current.clear()
-      baselineRef.current.clear()
-      baselineKindsRef.current = new Map()
-      baselineCompleteRef.current = false
-      baselineCapturedRef.current = false
-      baselineReadyRef.current = Promise.resolve()
-      preparedTurnRef.current = null
-      reviewEntriesRef.current = new Map()
-      reviewEditBackupsRef.current.clear()
-      cacheRef.current.clear()
-      setDirtyPaths(new Set())
-      setTabs(EMPTY_TABS)
-      setExpanded([])
-      setDiff(null)
-      setReviewEntries(new Map())
-      scopeEntriesRef.current = new Map()
-      setScopeEntries(new Map())
-      setReviewSummary([])
-      setScopeSummary([])
-      setScopeCommits([])
-      setScopeRefs([])
-      setScopeMetadataLoading(false)
-      setScopeMetadataError(null)
-      forceLastTurnScope()
-      setTree(null)
-      setGit(null)
-      setSubtrees(new Map())
-      if (path === rootRef.current) {
-        rootTransitionRef.current = false
-        refreshTree()
-        void refreshGit()
-      } else {
-        // Keep event filtering coherent until React renders the new root.
-        rootRef.current = path
-        setRoot(path)
-        rootTransitionRef.current = false
-      }
-      onResolved?.('validated', path)
-      setRootChangeSettledEpoch((epoch) => epoch + 1)
-    })
-    return true
-  }, [
-    confirmDiscardAllEdits,
-    forceLastTurnScope,
-    host,
-    refreshGit,
-    refreshTree,
-    reviewSaveBarrier,
-  ])
+        const path = result.path
+        rootTransitionRef.current = true
+        rootGenerationRef.current += 1
+        reviewEpochRef.current += 1
+        scopeMetadataSeqRef.current += 1
+        treeSeqRef.current += 1
+        gitSeqRef.current += 1
+        diffRequestRef.current += 1
+        if (liveTimerRef.current !== null)
+          window.clearTimeout(liveTimerRef.current)
+        liveTimerRef.current = null
+        followRef.current = null
+        changedAbsRef.current = new Map()
+        reviewEligibleAbsRef.current = new Set()
+        changedDirsRef.current = new Set()
+        subtreeLoadRef.current.clear()
+        baselineRef.current.clear()
+        baselineKindsRef.current = new Map()
+        baselineCompleteRef.current = false
+        baselineCapturedRef.current = false
+        baselineReadyRef.current = Promise.resolve()
+        preparedTurnRef.current = null
+        reviewEntriesRef.current = new Map()
+        reviewEditBackupsRef.current.clear()
+        cacheRef.current.clear()
+        setDirtyPaths(new Set())
+        setTabs(EMPTY_TABS)
+        setExpanded([])
+        setDiff(null)
+        setContextDiff(null)
+        setReviewEntries(new Map())
+        scopeEntriesRef.current = new Map()
+        setScopeEntries(new Map())
+        setReviewSummary([])
+        setScopeSummary([])
+        setScopeCommits([])
+        setScopeRefs([])
+        setScopeMetadataLoading(false)
+        setScopeMetadataError(null)
+        forceLastTurnScope()
+        setTree(null)
+        setGit(null)
+        setSubtrees(new Map())
+        if (path === rootRef.current) {
+          rootTransitionRef.current = false
+          refreshTree()
+          void refreshGit()
+        } else {
+          // Keep event filtering coherent until React renders the new root.
+          rootRef.current = path
+          setRoot(path)
+          rootTransitionRef.current = false
+        }
+        onResolved?.('validated', path)
+        setRootChangeSettledEpoch((epoch) => epoch + 1)
+      })
+      return true
+    },
+    [
+      confirmDiscardAllEdits,
+      forceLastTurnScope,
+      host,
+      refreshGit,
+      refreshTree,
+      reviewSaveBarrier,
+    ],
+  )
 
   // ── follow the chat's working directory ──
   // Picking another folder in chat re-roots the explorer (the split-screen
@@ -1560,12 +1846,13 @@ export function ShellExplorerPage({
       if (workingDirFollowPendingRef.current?.request !== request) return
       workingDirFollowPendingRef.current = null
       if (outcome === 'validated') {
-        acknowledgedWorkingDirRef.current = acknowledgeValidatedWorkingDirectory(
-          acknowledgedWorkingDirRef.current,
-          next,
-          workingDirRef.current,
-          true,
-        )
+        acknowledgedWorkingDirRef.current =
+          acknowledgeValidatedWorkingDirectory(
+            acknowledgedWorkingDirRef.current,
+            next,
+            workingDirRef.current,
+            true,
+          )
         workingDirRetryRef.current = { path: next, failures: 0 }
         setWorkingDirError(null)
       } else if (outcome === 'failed' && workingDirRef.current === next) {
@@ -1583,9 +1870,7 @@ export function ShellExplorerPage({
           )
         }
       } else if (outcome === 'declined' && workingDirRef.current === next) {
-        setWorkingDirError(
-          workingDirectoryRetryMessage(next, 'declined', null),
-        )
+        setWorkingDirError(workingDirectoryRetryMessage(next, 'declined', null))
       }
     })
     if (!accepted && workingDirFollowPendingRef.current?.request === request) {
@@ -1602,36 +1887,40 @@ export function ShellExplorerPage({
     [],
   )
 
-  const changeManualRoot = useCallback((nextRoot: string) => {
-    const chatDir = workingDirRef.current
-    // Suppress both a scheduled retry and an in-flight chat result before the
-    // manual validation starts. changeRoot's new sequence supersedes the latter.
-    const request = ++manualRootRequestSeqRef.current
-    manualRootActiveRequestRef.current = request
-    workingDirFollowPendingRef.current = null
-    setWorkingDirError(null)
-    if (workingDirRetryTimerRef.current !== null) {
-      window.clearTimeout(workingDirRetryTimerRef.current)
-      workingDirRetryTimerRef.current = null
-    }
-    const accepted = changeRoot(nextRoot, (outcome) => {
-      if (!ownsRequestToken(manualRootActiveRequestRef.current, request)) return
-      manualRootActiveRequestRef.current = null
-      if (outcome === 'validated' && workingDirRef.current === chatDir) {
-        acknowledgedWorkingDirRef.current = chatDir
-        workingDirRetryRef.current = { path: chatDir, failures: 0 }
-      } else {
-        // Validation failure or a declined discard releases the unchanged chat
-        // directory to follow again.
+  const changeManualRoot = useCallback(
+    (nextRoot: string) => {
+      const chatDir = workingDirRef.current
+      // Suppress both a scheduled retry and an in-flight chat result before the
+      // manual validation starts. changeRoot's new sequence supersedes the latter.
+      const request = ++manualRootRequestSeqRef.current
+      manualRootActiveRequestRef.current = request
+      workingDirFollowPendingRef.current = null
+      setWorkingDirError(null)
+      if (workingDirRetryTimerRef.current !== null) {
+        window.clearTimeout(workingDirRetryTimerRef.current)
+        workingDirRetryTimerRef.current = null
+      }
+      const accepted = changeRoot(nextRoot, (outcome) => {
+        if (!ownsRequestToken(manualRootActiveRequestRef.current, request))
+          return
+        manualRootActiveRequestRef.current = null
+        if (outcome === 'validated' && workingDirRef.current === chatDir) {
+          acknowledgedWorkingDirRef.current = chatDir
+          workingDirRetryRef.current = { path: chatDir, failures: 0 }
+        } else {
+          // Validation failure or a declined discard releases the unchanged chat
+          // directory to follow again.
+          setWorkingDirRetryEpoch((epoch) => epoch + 1)
+        }
+      })
+      if (accepted) return
+      if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
+        manualRootActiveRequestRef.current = null
         setWorkingDirRetryEpoch((epoch) => epoch + 1)
       }
-    })
-    if (accepted) return
-    if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
-      manualRootActiveRequestRef.current = null
-      setWorkingDirRetryEpoch((epoch) => epoch + 1)
-    }
-  }, [changeRoot])
+    },
+    [changeRoot],
+  )
 
   // ── deep link: #/ext/shell/open/<encoded-abs>[:line] ──
   // The chat's "open in shell" lands here. The request is captured (and
@@ -1661,7 +1950,10 @@ export function ShellExplorerPage({
       )
       const raw = m[1]
       const colon = raw.lastIndexOf(':')
-      const encoded = colon !== -1 && /^\d+$/.test(raw.slice(colon + 1)) ? raw.slice(0, colon) : raw
+      const encoded =
+        colon !== -1 && /^\d+$/.test(raw.slice(colon + 1))
+          ? raw.slice(0, colon)
+          : raw
       let abs: string
       try {
         abs = decodeURIComponent(encoded)
@@ -1699,6 +1991,7 @@ export function ShellExplorerPage({
       pendingOpenRetryRef.current = 0
       setPendingOpenError(null)
       diffRequestRef.current += 1
+      setContextDiff(null)
       setDiff(null)
       setTabs((s) => openPinned(s, abs.slice(prefix.length)))
     } else if (abs !== root) {
@@ -1744,7 +2037,8 @@ export function ShellExplorerPage({
           if (delay !== null && pendingOpenRetryTimerRef.current === null) {
             pendingOpenWaitingForRetryRef.current = true
             pendingOpenRetryTimerRef.current = window.setTimeout(() => {
-              if (pendingOpenCaptureSeqRef.current !== requestToken.scope) return
+              if (pendingOpenCaptureSeqRef.current !== requestToken.scope)
+                return
               pendingOpenRetryTimerRef.current = null
               pendingOpenWaitingForRetryRef.current = false
               setOpenBump((bump) => bump + 1)
@@ -1788,12 +2082,75 @@ export function ShellExplorerPage({
     [],
   )
 
+  const openContextFile = useCallback(
+    (path: string): boolean => {
+      if (!reviewSaveBarrier.canTransition() || root === null) return false
+      setTerminalActive(false)
+      setContextDiff(null)
+      setSideTab('files')
+      setCollapsed(false)
+
+      if (!path.startsWith('/')) {
+        diffRequestRef.current += 1
+        setDiff(null)
+        setTabs((state) => openPinned(state, path))
+        return true
+      }
+
+      // Reuse the PR's validated deep-link pipeline for contextual panel
+      // requests. It safely re-roots when the file lives outside the current
+      // workspace and preserves the same retry/error behavior.
+      if (rootRef.current !== null) rootResolveSeqRef.current += 1
+      pendingOpenCaptureSeqRef.current += 1
+      pendingOpenRef.current = path
+      pendingOpenRootRequestRef.current = null
+      pendingOpenWaitingForRetryRef.current = false
+      pendingOpenRetryRef.current = 0
+      setPendingOpenError(null)
+      if (pendingOpenRetryTimerRef.current !== null) {
+        window.clearTimeout(pendingOpenRetryTimerRef.current)
+        pendingOpenRetryTimerRef.current = null
+      }
+      setOpenBump((value) => value + 1)
+      return true
+    },
+    [reviewSaveBarrier, root],
+  )
+
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseShellPanelContext(panelContext.context)
+    if (!context) return
+    // A newly mounted shell page receives the context before its persisted
+    // root necessarily resolves. Leave file events unapplied until the safe
+    // open pipeline can accept them.
+    if (context.type === 'file') {
+      if (!openContextFile(context.path)) return
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    if (!confirmDiscardReviewEdits()) return
+    appliedContextRef.current = panelContext.id
+    setTerminalActive(false)
+    setDiff(null)
+    setContextDiff({
+      eventId: panelContext.id,
+      changeId: context.changeId,
+      path: context.path,
+      canViewFile: context.canViewFile,
+    })
+  }, [confirmDiscardReviewEdits, openContextFile, panelContext])
+
   const onSaved = useCallback(() => {
     refreshGit()
   }, [refreshGit])
 
   const treeGitStatus = useMemo<readonly GitStatusEntry[]>(() => {
-    return reviewChanges.map((change) => ({ path: change.path, status: change.status }))
+    return reviewChanges.map((change) => ({
+      path: change.path,
+      status: change.status,
+    }))
   }, [reviewChanges])
 
   // Chat-synced roots can be subfolders of a base path — surface the
@@ -1801,11 +2158,38 @@ export function ShellExplorerPage({
   // options don't contain (and the user can always pop back to a base).
   const rootOptions = useMemo(() => {
     if (!info || !root) return []
-    return info.base_paths.includes(root) ? info.base_paths : [root, ...info.base_paths]
+    return info.base_paths.includes(root)
+      ? info.base_paths
+      : [root, ...info.base_paths]
   }, [info, root])
+
+  const changeTerminalDock = useCallback((next: TerminalDock) => {
+    setTerminalOpen(true)
+    setTerminalDock(next)
+    setTerminalActive(next === 'editor')
+  }, [])
+
+  const closeTerminal = useCallback(() => {
+    setTerminalOpen(false)
+    setTerminalActive(false)
+  }, [])
+
+  const toggleTerminal = useCallback(() => {
+    if (!terminalOpen) {
+      setTerminalOpen(true)
+      setTerminalActive(terminalDock === 'editor')
+      return
+    }
+    if (terminalDock === 'editor' && !terminalActive) {
+      setTerminalActive(true)
+      return
+    }
+    closeTerminal()
+  }, [closeTerminal, terminalActive, terminalDock, terminalOpen])
 
   const header = (
     <PageHeader
+      className="shui-page-header"
       icon={<SquareTerminal />}
       title="shell"
       description={
@@ -1834,45 +2218,78 @@ export function ShellExplorerPage({
         info && root ? (
           <div className="shui-page-actions">
             {SIDE_TABS.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                type="button"
-                className={`shui-side-tab${sideTab === id ? ' active' : ''}`}
-                onClick={() => {
-                  setSideTab(id)
-                  setCollapsed(false)
-                }}
-                aria-label={label}
-                title={label}
-              >
-                <Icon aria-hidden className="shui-side-tab-icon" />
-              </button>
+              <HoverTip key={id} label={label}>
+                <button
+                  type="button"
+                  className={`shui-side-tab${sideTab === id ? ' active' : ''}`}
+                  onClick={() => {
+                    setSideTab(id)
+                    setCollapsed(false)
+                  }}
+                  aria-label={label}
+                >
+                  <Icon aria-hidden className="shui-side-tab-icon" />
+                </button>
+              </HoverTip>
             ))}
             {sideTab === 'files' && !collapsed ? (
+              <HoverTip
+                label={
+                  showHidden
+                    ? 'Hide hidden files (dotfiles)'
+                    : 'Show hidden files (dotfiles)'
+                }
+              >
+                <button
+                  type="button"
+                  className={`shui-side-tab${showHidden ? ' active' : ''}`}
+                  onClick={() => setShowHidden((value) => !value)}
+                  aria-pressed={showHidden}
+                  aria-label={
+                    showHidden ? 'Hide hidden files' : 'Show hidden files'
+                  }
+                >
+                  {showHidden ? (
+                    <Eye aria-hidden className="shui-side-tab-icon" />
+                  ) : (
+                    <EyeOff aria-hidden className="shui-side-tab-icon" />
+                  )}
+                </button>
+              </HoverTip>
+            ) : null}
+            <HoverTip
+              label={terminalOpen ? 'Hide terminal' : 'Open terminal (zsh)'}
+            >
               <button
                 type="button"
-                className={`shui-side-tab${showHidden ? ' active' : ''}`}
-                onClick={() => setShowHidden((value) => !value)}
-                aria-pressed={showHidden}
-                aria-label={showHidden ? 'hide hidden files' : 'show hidden files'}
-                title={showHidden ? 'hide hidden files' : 'show hidden files'}
+                className={`shui-side-tab${terminalOpen ? ' active' : ''}`}
+                onClick={toggleTerminal}
+                aria-pressed={terminalOpen}
+                aria-label={terminalOpen ? 'Hide terminal' : 'Open terminal'}
               >
-                {showHidden ? (
-                  <Eye aria-hidden className="shui-side-tab-icon" />
+                <Terminal aria-hidden className="shui-side-tab-icon" />
+              </button>
+            </HoverTip>
+            <HoverTip
+              label={
+                collapsed ? 'Show the file sidebar' : 'Hide the file sidebar'
+              }
+            >
+              <button
+                type="button"
+                className="shui-collapse-btn"
+                onClick={() => setCollapsed((value) => !value)}
+                aria-label={
+                  collapsed ? 'Show file sidebar' : 'Hide file sidebar'
+                }
+              >
+                {panelSide === 'right' ? (
+                  <PanelRight aria-hidden className="shui-side-tab-icon" />
                 ) : (
-                  <EyeOff aria-hidden className="shui-side-tab-icon" />
+                  <PanelLeft aria-hidden className="shui-side-tab-icon" />
                 )}
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="shui-collapse-btn"
-              onClick={() => setCollapsed((value) => !value)}
-              aria-label={collapsed ? 'show explorer' : 'hide explorer'}
-              title={collapsed ? 'show explorer' : 'hide explorer'}
-            >
-              {panelSide === 'right' ? (collapsed ? '‹' : '›') : collapsed ? '›' : '‹'}
-            </button>
+            </HoverTip>
           </div>
         ) : undefined
       }
@@ -1891,7 +2308,8 @@ export function ShellExplorerPage({
       <PageShell>
         {header}
         <div className="shui-side-note warn pad">
-          shell explorer needs the worker's coder surface — coder::info failed: {infoError}
+          shell explorer needs the worker's coder surface — coder::info failed:{' '}
+          {infoError}
         </div>
       </PageShell>
     )
@@ -1908,55 +2326,62 @@ export function ShellExplorerPage({
   return (
     <PageShell>
       {header}
-      <PageBody side={panelSide}>
-        {!collapsed ? (
-          <PageSidebar width={sideWidth} className="shui-sidebar">
-            <button
-              type="button"
-              className={`shui-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
-              onPointerDown={onHandlePointerDown}
-              onPointerMove={onHandlePointerMove}
-              onPointerUp={onHandlePointerUp}
-              onPointerCancel={onHandlePointerUp}
-              onLostPointerCapture={onHandlePointerUp}
-              onKeyDown={(event) => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-                event.preventDefault()
-                const inward = panelSide === 'right' ? 'ArrowLeft' : 'ArrowRight'
-                setSideWidth((width) => clampSidebarWidth(width + (event.key === inward ? 10 : -10)))
-              }}
-              aria-label="resize sidebar"
-              title="drag to resize"
-            />
-            <div className="shui-side-body">
-              {sideTab === 'files' ? (
-                <FilesTab
-                  tree={reviewTree}
-                  gitStatus={treeGitStatus}
-                  theme={theme}
-                  hiddenFiltered={!showHidden}
-                  expanded={expanded}
-                  onExpandedChange={setExpanded}
-                  reveal={reveal}
-                  onRevealed={onRevealed}
-                  activePath={diff?.change.path ?? tabs.active}
-                  onActivateFile={activateFile}
-                  onPinFile={pinFile}
-                />
-              ) : (
-                <SearchTab
-                  host={host}
-                  root={root}
-                  onPreviewFile={previewFile}
-                  onPinFile={pinFile}
-                  onRevealFolder={revealFolder}
-                />
-              )}
-            </div>
-          </PageSidebar>
-        ) : null}
+      <div className={`shui-workspace-frame terminal-${terminalDock}`}>
+        <PageBody side={panelSide}>
+          {!collapsed ? (
+            <PageSidebar width={sideWidth} className="shui-sidebar">
+              <button
+                type="button"
+                className={`shui-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
+                onPointerDown={onHandlePointerDown}
+                onPointerMove={onHandlePointerMove}
+                onPointerUp={onHandlePointerUp}
+                onPointerCancel={onHandlePointerUp}
+                onLostPointerCapture={onHandlePointerUp}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
+                    return
+                  event.preventDefault()
+                  const inward =
+                    panelSide === 'right' ? 'ArrowLeft' : 'ArrowRight'
+                  setSideWidth((width) =>
+                    clampSidebarWidth(
+                      width + (event.key === inward ? 10 : -10),
+                    ),
+                  )
+                }}
+                aria-label="resize sidebar"
+                title="drag to resize"
+              />
+              <div className="shui-side-body">
+                {sideTab === 'files' ? (
+                  <FilesTab
+                    tree={reviewTree}
+                    gitStatus={treeGitStatus}
+                    theme={theme}
+                    hiddenFiltered={!showHidden}
+                    expanded={expanded}
+                    onExpandedChange={setExpanded}
+                    reveal={reveal}
+                    onRevealed={onRevealed}
+                    activePath={diff?.change.path ?? tabs.active}
+                    onActivateFile={activateFile}
+                    onPinFile={pinFile}
+                  />
+                ) : (
+                  <SearchTab
+                    host={host}
+                    root={root}
+                    onPreviewFile={previewFile}
+                    onPinFile={pinFile}
+                    onRevealFolder={revealFolder}
+                  />
+                )}
+              </div>
+            </PageSidebar>
+          ) : null}
 
-        <PageMain>
+          <PageMain>
             {workingDirError ? (
               <div className="shui-review-message warn" role="alert">
                 <span>{workingDirError}</span>
@@ -1996,241 +2421,386 @@ export function ShellExplorerPage({
                 </button>
               </div>
             ) : null}
-            <div className="shui-review-toolbar">
-              {reviewSavePending ? (
-                <span
-                  className="shui-review-count"
-                  role="status"
-                  aria-live="polite"
-                >
-                  saving {reviewSavingPaths.size === 1 ? 'review file' : `${reviewSavingPaths.size} review files`}… navigation paused
-                </span>
-              ) : null}
-              <ReviewScopePicker
-                value={reviewScope}
-                commits={scopeCommits}
-                branches={scopeRefs.map((ref) => ({
-                  ref: ref.fullName,
-                  name: ref.name,
-                  current: ref.current,
-                }))}
-                metadataLoading={scopeMetadataLoading}
-                metadataError={scopeMetadataError}
-                onOpen={loadScopeMetadata}
-                onChange={selectReviewScope}
-              />
-              <span className="shui-review-count">
-                {scopeLoading
-                  ? 'loading…'
-                  : `${orderedReviewEntries.length} ${orderedReviewEntries.length === 1 ? 'file' : 'files'}`}
-              </span>
-              {scopeError ? (
-                <span className="shui-review-scope-error" title={scopeError}>unavailable</span>
-              ) : null}
-              {reviewTotals.ready > 0 ? (
-                <>
-                  <span className="shui-review-total add">+{reviewTotals.add}</span>
-                  <span className="shui-review-total del">−{reviewTotals.del}</span>
-                </>
-              ) : null}
-              {reviewTotals.pending > 0 || reviewTotals.unavailable > 0 ? (
-                <span
-                  className="shui-review-total"
-                  title={`${reviewTotals.pending} pending, ${reviewTotals.unavailable} unavailable`}
-                  aria-label={`${reviewTotals.pending} change totals pending, ${reviewTotals.unavailable} unavailable`}
-                >
-                  …
-                </span>
-              ) : null}
-              <span className="spacer" />
-              <button
-                type="button"
-                className="shui-review-action"
-                onClick={() => {
-                  refreshTree()
-                  void refreshGit()
-                  if (reviewScope.kind === 'last-turn') {
-                    setReviewRefreshEpoch((value) => value + 1)
-                  } else {
-                    loadReviewScope(reviewScope)
-                  }
-                }}
-                aria-label="refresh review"
-                title="refresh"
-              >
-                <RefreshCw aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="shui-review-action"
-                onClick={() => setReviewExpandEpoch((value) => value + 1)}
-                aria-label="expand all diffs"
-                title="expand all diffs"
-              >
-                <ChevronsUpDown aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="shui-review-action"
-                onClick={() => setReviewCollapseEpoch((value) => value + 1)}
-                aria-label="collapse all diffs"
-                title="collapse all diffs"
-              >
-                <ChevronsDownUp aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="shui-review-action"
-                onClick={() =>
-                  setReviewOptions((previous) => ({
-                    ...previous,
-                    diffStyle: previous.diffStyle === 'unified' ? 'split' : 'unified',
-                  }))
-                }
-                aria-label={`switch to ${reviewOptions.diffStyle === 'unified' ? 'split' : 'unified'} diff`}
-                title={`switch to ${reviewOptions.diffStyle === 'unified' ? 'split' : 'unified'} diff`}
-              >
-                {reviewOptions.diffStyle === 'unified' ? <Columns2 aria-hidden /> : <Rows3 aria-hidden />}
-              </button>
-              <div className="shui-review-menu-wrap">
-                <button
-                  type="button"
-                  className={`shui-review-action${reviewMenuOpen ? ' active' : ''}`}
-                  onClick={() => setReviewMenuOpen((value) => !value)}
-                  aria-expanded={reviewMenuOpen}
-                  aria-label="review options"
-                  title="review options"
-                >
-                  <MoreHorizontal aria-hidden />
-                </button>
-                {reviewMenuOpen ? (
-                  <div className="shui-review-menu" role="menu">
-                    <ReviewOption
-                      label="Enable word wrap"
-                      checked={reviewOptions.wordWrap}
-                      onChange={(wordWrap) => setReviewOptions((value) => ({ ...value, wordWrap }))}
-                    />
-                    <ReviewOption
-                      label="Enable word diffs"
-                      checked={reviewOptions.wordDiffs}
-                      onChange={(wordDiffs) => setReviewOptions((value) => ({ ...value, wordDiffs }))}
-                    />
-                    <ReviewOption
-                      label="Hide whitespace"
-                      checked={reviewOptions.hideWhitespace}
-                      onChange={(hideWhitespace) =>
-                        setReviewOptions((value) => ({ ...value, hideWhitespace }))
-                      }
-                    />
-                    <ReviewOption
-                      label="Load full files"
-                      checked={reviewOptions.expandUnchanged}
-                      onChange={(expandUnchanged) =>
-                        setReviewOptions((value) => ({ ...value, expandUnchanged }))
-                      }
-                    />
-                    <ReviewOption
-                      label="Enable rich preview"
-                      checked={reviewOptions.richPreview}
-                      onChange={(richPreview) =>
-                        setReviewOptions((value) => ({ ...value, richPreview }))
-                      }
-                    />
-                  </div>
+            {!(terminalOpen && terminalDock === 'editor' && terminalActive) ? (
+              <div className="shui-review-toolbar">
+                {reviewSavePending ? (
+                  <span
+                    className="shui-review-count"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    saving{' '}
+                    {reviewSavingPaths.size === 1
+                      ? 'review file'
+                      : `${reviewSavingPaths.size} review files`}
+                    … navigation paused
+                  </span>
                 ) : null}
+                <ReviewScopePicker
+                  value={reviewScope}
+                  commits={scopeCommits}
+                  branches={scopeRefs.map((ref) => ({
+                    ref: ref.fullName,
+                    name: ref.name,
+                    current: ref.current,
+                  }))}
+                  metadataLoading={scopeMetadataLoading}
+                  metadataError={scopeMetadataError}
+                  onOpen={loadScopeMetadata}
+                  onChange={selectReviewScope}
+                />
+                <span className="shui-review-count">
+                  {scopeLoading
+                    ? 'loading…'
+                    : `${orderedReviewEntries.length} ${orderedReviewEntries.length === 1 ? 'file' : 'files'}`}
+                </span>
+                {scopeError ? (
+                  <span className="shui-review-scope-error" title={scopeError}>
+                    unavailable
+                  </span>
+                ) : null}
+                {reviewTotals.ready > 0 ? (
+                  <>
+                    <span className="shui-review-total add">
+                      +{reviewTotals.add}
+                    </span>
+                    <span className="shui-review-total del">
+                      −{reviewTotals.del}
+                    </span>
+                  </>
+                ) : null}
+                {reviewTotals.pending > 0 || reviewTotals.unavailable > 0 ? (
+                  <span
+                    className="shui-review-total"
+                    role="status"
+                    title={`${reviewTotals.pending} pending, ${reviewTotals.unavailable} unavailable`}
+                    aria-label={`${reviewTotals.pending} change totals pending, ${reviewTotals.unavailable} unavailable`}
+                  >
+                    …
+                  </span>
+                ) : null}
+                <span className="spacer" />
+                <HoverTip label="Reload this review">
+                  <button
+                    type="button"
+                    className="shui-review-action"
+                    onClick={() => {
+                      refreshTree()
+                      void refreshGit()
+                      if (reviewScope.kind === 'last-turn') {
+                        setReviewRefreshEpoch((value) => value + 1)
+                      } else {
+                        loadReviewScope(reviewScope)
+                      }
+                    }}
+                    aria-label="Reload this review"
+                  >
+                    <RefreshCw aria-hidden />
+                  </button>
+                </HoverTip>
+                <HoverTip label="Expand all diffs">
+                  <button
+                    type="button"
+                    className="shui-review-action"
+                    onClick={() => setReviewExpandEpoch((value) => value + 1)}
+                    aria-label="Expand all diffs"
+                  >
+                    <ChevronsUpDown aria-hidden />
+                  </button>
+                </HoverTip>
+                <HoverTip label="Collapse all diffs">
+                  <button
+                    type="button"
+                    className="shui-review-action"
+                    onClick={() => setReviewCollapseEpoch((value) => value + 1)}
+                    aria-label="Collapse all diffs"
+                  >
+                    <ChevronsDownUp aria-hidden />
+                  </button>
+                </HoverTip>
+                <HoverTip
+                  label={
+                    reviewOptions.diffStyle === 'unified'
+                      ? 'Show split diff (side by side)'
+                      : 'Show unified diff (one column)'
+                  }
+                >
+                  <button
+                    type="button"
+                    className="shui-review-action"
+                    onClick={() =>
+                      setReviewOptions((previous) => ({
+                        ...previous,
+                        diffStyle:
+                          previous.diffStyle === 'unified'
+                            ? 'split'
+                            : 'unified',
+                      }))
+                    }
+                    aria-label={
+                      reviewOptions.diffStyle === 'unified'
+                        ? 'Show split diff'
+                        : 'Show unified diff'
+                    }
+                  >
+                    {reviewOptions.diffStyle === 'unified' ? (
+                      <Columns2 aria-hidden />
+                    ) : (
+                      <Rows3 aria-hidden />
+                    )}
+                  </button>
+                </HoverTip>
+                <div className="shui-review-menu-wrap">
+                  <HoverTip label="Diff display options">
+                    <button
+                      type="button"
+                      className={`shui-review-action${reviewMenuOpen ? ' active' : ''}`}
+                      onClick={() => setReviewMenuOpen((value) => !value)}
+                      aria-expanded={reviewMenuOpen}
+                      aria-label="Diff display options"
+                    >
+                      <MoreHorizontal aria-hidden />
+                    </button>
+                  </HoverTip>
+                  {reviewMenuOpen ? (
+                    <div className="shui-review-menu" role="menu">
+                      <ReviewOption
+                        label="Enable word wrap"
+                        checked={reviewOptions.wordWrap}
+                        onChange={(wordWrap) =>
+                          setReviewOptions((value) => ({ ...value, wordWrap }))
+                        }
+                      />
+                      <ReviewOption
+                        label="Enable word diffs"
+                        checked={reviewOptions.wordDiffs}
+                        onChange={(wordDiffs) =>
+                          setReviewOptions((value) => ({ ...value, wordDiffs }))
+                        }
+                      />
+                      <ReviewOption
+                        label="Hide whitespace"
+                        checked={reviewOptions.hideWhitespace}
+                        onChange={(hideWhitespace) =>
+                          setReviewOptions((value) => ({
+                            ...value,
+                            hideWhitespace,
+                          }))
+                        }
+                      />
+                      <ReviewOption
+                        label="Load full files"
+                        checked={reviewOptions.expandUnchanged}
+                        onChange={(expandUnchanged) =>
+                          setReviewOptions((value) => ({
+                            ...value,
+                            expandUnchanged,
+                          }))
+                        }
+                      />
+                      <ReviewOption
+                        label="Enable rich preview"
+                        checked={reviewOptions.richPreview}
+                        onChange={(richPreview) =>
+                          setReviewOptions((value) => ({
+                            ...value,
+                            richPreview,
+                          }))
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          {diff === null && tabs.tabs.length > 0 ? (
-            <div className="shui-editor-tabs" role="tablist">
-              {tabs.tabs.map((tab) => {
-                const active = diff === null && tab.path === tabs.active
-                return (
-                  <div key={tab.path} className={`shui-etab${active ? ' active' : ''}${tab.pinned ? '' : ' preview'}`}>
+            ) : null}
+            {(diff === null && tabs.tabs.length > 0) ||
+            (terminalOpen && terminalDock === 'editor') ? (
+              <div className="shui-editor-tabs" role="tablist">
+                {tabs.tabs.map((tab) => {
+                  const active =
+                    !terminalActive &&
+                    diff === null &&
+                    contextDiff === null &&
+                    tab.path === tabs.active
+                  return (
+                    <div
+                      key={tab.path}
+                      className={`shui-etab${active ? ' active' : ''}${tab.pinned ? '' : ' preview'}`}
+                    >
+                      <button
+                        type="button"
+                        className="open"
+                        role="tab"
+                        aria-selected={active}
+                        title={tab.path}
+                        onClick={() =>
+                          runReviewTransition(reviewSaveBarrier, () => {
+                            setTerminalActive(false)
+                            diffRequestRef.current += 1
+                            setContextDiff(null)
+                            setDiff(null)
+                            setTabs((s) => activateTab(s, tab.path))
+                          })
+                        }
+                        onDoubleClick={() =>
+                          runReviewTransition(reviewSaveBarrier, () => {
+                            setTabs((s) => pinTab(s, tab.path))
+                          })
+                        }
+                      >
+                        {basename(tab.path)}
+                        {dirtyPaths.has(tab.path) ? (
+                          <span
+                            className="shui-dirty"
+                            title="unsaved changes"
+                          />
+                        ) : null}
+                      </button>
+                      <HoverTip label={`Close ${basename(tab.path)}`}>
+                        <button
+                          type="button"
+                          className="close"
+                          aria-label={`close ${basename(tab.path)}`}
+                          onClick={() => onCloseTab(tab.path)}
+                        >
+                          <X aria-hidden className="shui-x-icon" />
+                        </button>
+                      </HoverTip>
+                    </div>
+                  )
+                })}
+                {terminalOpen && terminalDock === 'editor' ? (
+                  <div
+                    className={`shui-etab${terminalActive ? ' active' : ''}`}
+                  >
                     <button
                       type="button"
                       className="open"
                       role="tab"
-                      aria-selected={active}
-                      title={tab.path}
-                      onClick={() =>
-                        runReviewTransition(reviewSaveBarrier, () => {
-                          diffRequestRef.current += 1
-                          setDiff(null)
-                          setTabs((s) => activateTab(s, tab.path))
-                        })
-                      }
-                      onDoubleClick={() =>
-                        runReviewTransition(reviewSaveBarrier, () => {
-                          setTabs((s) => pinTab(s, tab.path))
-                        })
-                      }
+                      aria-selected={terminalActive}
+                      onClick={() => setTerminalActive(true)}
                     >
-                      {basename(tab.path)}
-                      {dirtyPaths.has(tab.path) ? <span className="shui-dirty" title="unsaved changes" /> : null}
+                      <Terminal aria-hidden className="shui-etab-icon" />
+                      {terminalWorkspace.tabs.find(
+                        (tab) => tab.id === terminalWorkspace.activeTabId,
+                      )?.title ?? 'zsh'}
                     </button>
-                    <button
-                      type="button"
-                      className="close"
-                      aria-label={`close ${basename(tab.path)}`}
-                      title="close"
-                      onClick={() => onCloseTab(tab.path)}
-                    >
-                      <X aria-hidden className="shui-x-icon" />
-                    </button>
+                    <HoverTip label="Close terminal">
+                      <button
+                        type="button"
+                        className="close"
+                        aria-label="Close terminal"
+                        onClick={closeTerminal}
+                      >
+                        <X aria-hidden className="shui-x-icon" />
+                      </button>
+                    </HoverTip>
                   </div>
-                )
-              })}
-            </div>
-          ) : null}
+                ) : null}
+              </div>
+            ) : null}
 
-          {diff !== null ? (
-            <ReviewPane
-              host={host}
-              root={root}
-              entries={orderedReviewEntries}
-              activePath={diff.change.path}
-              options={reviewOptions}
-              collapseEpoch={reviewCollapseEpoch}
-              expandEpoch={reviewExpandEpoch}
-              refreshEpoch={reviewRefreshEpoch}
-              onRequestEdit={onRequestReviewEdit}
-              onEditDraftChange={onReviewEditDraftChange}
-              onEditDirtyChange={onReviewEditDirtyChange}
-              onEditSavingChange={onReviewEditSavingChange}
-              onFileSaved={onReviewFileSaved}
-              onActivate={(path) => {
-                const entry = visibleReviewEntriesRef.current.get(path)
-                if (entry) openReviewEntry(entry)
-              }}
-              onSummaryChange={reviewScope.kind === 'last-turn' ? setReviewSummary : setScopeSummary}
-            />
-          ) : scopeLoading ? (
-            <div className="shui-main-empty">
-              <span className="t-ghost">loading review…</span>
-            </div>
-          ) : scopeError ? (
-            <div className="shui-main-empty">
-              <span className="t-warn">{scopeError}</span>
-            </div>
-          ) : tabs.active !== null ? (
-            <EditorPane
-              // fileBump remounts after an agent-side write to the active
-              // file: the pane rehydrates from the refreshed cache entry.
-              key={`${tabs.active}:${fileBump}`}
-              host={host}
-              root={root}
-              relPath={tabs.active}
-              cache={cacheRef.current}
-              onSaved={onSaved}
-              onDirtyChange={onDirtyChange}
-            />
-          ) : (
-            <div className="shui-main-empty">
-              <span className="t-ghost">select a file to edit or review</span>
-            </div>
-          )}
-        </PageMain>
-      </PageBody>
+            {terminalOpen && terminalDock === 'editor' && terminalActive ? (
+              <TerminalPanel
+                state={terminalWorkspace}
+                dispatch={dispatchTerminalWorkspace}
+                root={root}
+                visible
+                router={terminalRouter}
+                leaseStore={terminalLeaseStore}
+                storageKey={terminalStorageKey}
+                connectionCoordinators={terminalConnectionCoordinators}
+                dock={terminalDock}
+                size={terminalBottomSize}
+                onDockChange={changeTerminalDock}
+                onSizeChange={setTerminalBottomSize}
+                onClose={closeTerminal}
+              />
+            ) : contextDiff !== null ? (
+              <ChangeDiffPane
+                key={contextDiff.eventId}
+                host={host}
+                changeId={contextDiff.changeId}
+                path={contextDiff.path}
+                canViewFile={contextDiff.canViewFile}
+                onViewFile={openContextFile}
+              />
+            ) : diff !== null ? (
+              <ReviewPane
+                host={host}
+                root={root}
+                entries={orderedReviewEntries}
+                activePath={diff.change.path}
+                options={reviewOptions}
+                collapseEpoch={reviewCollapseEpoch}
+                expandEpoch={reviewExpandEpoch}
+                refreshEpoch={reviewRefreshEpoch}
+                onRequestEdit={onRequestReviewEdit}
+                onEditDraftChange={onReviewEditDraftChange}
+                onEditDirtyChange={onReviewEditDirtyChange}
+                onEditSavingChange={onReviewEditSavingChange}
+                onFileSaved={onReviewFileSaved}
+                onActivate={(path) => {
+                  const entry = visibleReviewEntriesRef.current.get(path)
+                  if (entry) openReviewEntry(entry)
+                }}
+                onSummaryChange={
+                  reviewScope.kind === 'last-turn'
+                    ? setReviewSummary
+                    : setScopeSummary
+                }
+              />
+            ) : scopeLoading ? (
+              <div className="shui-main-empty">
+                <span className="t-ghost">loading review…</span>
+              </div>
+            ) : scopeError ? (
+              <div className="shui-main-empty">
+                <span className="t-warn">{scopeError}</span>
+              </div>
+            ) : tabs.active !== null ? (
+              <EditorPane
+                // fileBump remounts after an agent-side write to the active
+                // file: the pane rehydrates from the refreshed cache entry.
+                key={`${tabs.active}:${fileBump}`}
+                host={host}
+                root={root}
+                relPath={tabs.active}
+                cache={cacheRef.current}
+                onSaved={onSaved}
+                onDirtyChange={onDirtyChange}
+              />
+            ) : (
+              <div className="shui-main-empty">
+                <span className="t-ghost">select a file to edit or review</span>
+              </div>
+            )}
+          </PageMain>
+        </PageBody>
+        {terminalOpen && terminalDock !== 'editor' ? (
+          <TerminalPanel
+            state={terminalWorkspace}
+            dispatch={dispatchTerminalWorkspace}
+            root={root}
+            visible
+            router={terminalRouter}
+            leaseStore={terminalLeaseStore}
+            storageKey={terminalStorageKey}
+            connectionCoordinators={terminalConnectionCoordinators}
+            dock={terminalDock}
+            size={
+              terminalDock === 'bottom' ? terminalBottomSize : terminalRightSize
+            }
+            onDockChange={changeTerminalDock}
+            onSizeChange={
+              terminalDock === 'bottom'
+                ? setTerminalBottomSize
+                : setTerminalRightSize
+            }
+            onClose={closeTerminal}
+          />
+        ) : null}
+      </div>
     </PageShell>
   )
 }

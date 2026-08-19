@@ -62,7 +62,12 @@ export function SkillsUpdateView({ input, output, running }: ViewProps) {
 
 /* ---------------- directory::prompts::update ---------------- */
 
-export function PromptsUpdateView({ input, output, running }: ViewProps) {
+export function PromptsUpdateView({
+  input,
+  output,
+  running,
+  verb = 'updated',
+}: ViewProps & { verb?: string }) {
   const req = safeParseRequest(promptsUpdateRequestSchema, input)
 
   if (running) {
@@ -85,7 +90,7 @@ export function PromptsUpdateView({ input, output, running }: ViewProps) {
   return (
     <Card>
       <MetaRow>
-        <StatusPill label="updated" variant="accent" />
+        <StatusPill label={verb} variant="accent" />
         {renamed ? <KvChip label="was">{req.name}</KvChip> : null}
         <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
         <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>

@@ -10,7 +10,13 @@
  * `failures` entry the caller surfaces as a chat notice.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
+import {
+  ATTACHED_FILE_PREFIX,
+  escapeAttr,
+  failureBlock,
+  type TriggerFn,
+  triggerOr,
+} from '@/lib/attachments/shared'
 
 export const READ_FILE_FUNCTION_ID = 'coder::read-file'
 
@@ -19,8 +25,6 @@ const FILE_MENTION_RE = /#file\(([^)]+)\)/g
 
 /** Max unique mentions expanded per send; extras are ignored. */
 export const MAX_MENTIONS_PER_SEND = 20
-
-const ATTACHED_FILE_PREFIX = '<attached-file '
 
 export interface FileMentionFailure {
   path: string
@@ -72,11 +76,6 @@ interface ReadFileBatchWire {
   results?: ReadEntryResultWire[]
 }
 
-type TriggerFn = (
-  functionId: string,
-  payload: Record<string, unknown>,
-) => Promise<unknown>
-
 /**
  * Read every mentioned file in one jail-validated batch call and format the
  * attachment blocks. Batch results come back in request order (the wire
@@ -95,12 +94,7 @@ export async function expandFileMentions(
     return { blocks: [], attachments: [], failures: [] }
   }
 
-  const call =
-    trigger ??
-    (async (functionId: string, payload: Record<string, unknown>) => {
-      const client = await getIiiClient()
-      return client.trigger(functionId, payload)
-    })
+  const call = triggerOr(trigger)
 
   let results: ReadEntryResultWire[]
   try {
@@ -152,10 +146,6 @@ function contentBlock(path: string, entry: ReadEntryResultWire): string {
   return `${ATTACHED_FILE_PREFIX}${attrs.join(' ')}>\n${entry.content}\n</attached-file>`
 }
 
-function failureBlock(path: string, reason: string): string {
-  return `${ATTACHED_FILE_PREFIX}path="${escapeAttr(path)}" error="${escapeAttr(reason)}" />`
-}
-
 function shortReason(message: string | undefined | null): string | undefined {
   if (!message) return undefined
   return message.length > 120 ? `${message.slice(0, 117)}…` : message
@@ -196,10 +186,9 @@ export function parseAttachedFileHeader(
   }
 }
 
-function escapeAttr(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;')
-}
-
 function unescapeAttr(value: string): string {
-  return value.replaceAll('&quot;', '"').replaceAll('&amp;', '&')
+  return value
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&amp;', '&')
 }

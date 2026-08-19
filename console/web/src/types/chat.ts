@@ -12,6 +12,12 @@ export interface ModelOption {
   label: string
   contextWindow?: number
   supportsThinking?: boolean
+  /**
+   * Whether the model reads images. `undefined` means the router did not say —
+   * an older catalog, or a model it has no row for — and callers treat that as
+   * "assume it can" rather than refusing to send a picture on missing metadata.
+   */
+  supportsVision?: boolean
   reasoningEfforts?: ReasoningEffortOption[]
 }
 
@@ -94,6 +100,12 @@ export interface AssistantMessage extends BaseMessage {
   mode?: Mode
   streaming?: boolean
   /**
+   * Why the provider ended this assistant entry. `function_call` marks an
+   * intermediate update that continues into tools; `end` marks the turn's
+   * final prose. Older/local fixtures may omit it.
+   */
+  stopReason?: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
+  /**
    * What the memory worker fed this turn (from the entry origin's hook
    * annotations): the bank, how many memories were injected, and their
    * ids so the chip can fetch details on demand.
@@ -119,6 +131,12 @@ export interface ThoughtMessage extends BaseMessage {
 export interface FunctionTriggerMessage extends BaseMessage {
   role: 'function-trigger'
   functionId: string
+  /**
+   * Short user-facing action supplied by the agent_trigger wrapper. Calls
+   * recorded before this field existed omit it and keep the function-id
+   * fallback.
+   */
+  description?: string
   input: unknown
   output?: unknown
   durationMs?: number

@@ -14,6 +14,7 @@ use gcloud_storage::http::error::ErrorResponse;
 use gcloud_storage::http::objects::delete::DeleteObjectRequest;
 use gcloud_storage::http::objects::download::Range;
 use gcloud_storage::http::objects::get::GetObjectRequest;
+use gcloud_storage::http::objects::list::ListObjectsRequest;
 use gcloud_storage::http::objects::upload::{Media, UploadObjectRequest, UploadType};
 use gcloud_storage::http::objects::Object;
 use gcloud_storage::http::Error as GcsHttpError;
@@ -44,8 +45,8 @@ impl GcsBackend {
     pub async fn build(opts: GcsBackendOpts, bucket: String) -> Result<Self, BackendError> {
         let mut config = if let Some(path) = opts.credentials_file {
             // Load the SA file directly instead of mutating GOOGLE_APPLICATION_CREDENTIALS,
-            // which would race across multiple GCS buckets and leak into spawned subprocesses
-            // (notably the rustfs sidecar). See review CRITICAL #1.
+            // which would race across multiple GCS buckets and leak into unrelated
+            // SDK clients or child processes.
             let creds = gcloud_auth::credentials::CredentialsFile::new_from_file(path.clone())
                 .await
                 .map_err(|e| {
@@ -239,6 +240,45 @@ impl Backend for GcsBackend {
                 other => Err(other),
             },
         }
+    }
+
+    async fn list(&self, req: ListReq) -> Result<ListResp, BackendError> {
+        let resp = self
+            .client
+            .list_objects(&ListObjectsRequest {
+                bucket: self.bucket.clone(),
+                prefix: Some(req.prefix),
+                delimiter: req.delimiter,
+                page_token: req.cursor,
+                max_results: Some(req.limit.min(1_000) as i32),
+                ..Default::default()
+            })
+            .await
+            .map_err(map_gcs_error)?;
+        let objects = resp
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|object| ObjectSummary {
+                key: object.name,
+                etag: object.etag,
+                size: object.size.max(0) as u64,
+                last_modified: object
+                    .updated
+                    .and_then(|value| {
+                        chrono::Utc
+                            .timestamp_opt(value.unix_timestamp(), value.nanosecond())
+                            .single()
+                    })
+                    .unwrap_or_else(Utc::now),
+                content_type: object.content_type,
+            })
+            .collect();
+        Ok(ListResp {
+            objects,
+            common_prefixes: resp.prefixes.unwrap_or_default(),
+            next_cursor: resp.next_page_token,
+        })
     }
 
     async fn presign(&self, req: PresignReq) -> Result<PresignResp, BackendError> {

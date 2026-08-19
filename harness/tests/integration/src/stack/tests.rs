@@ -101,3 +101,29 @@ async fn boot_failure_carries_a_complete_typed_teardown() {
     assert!(failure.teardown.complete());
     assert!(format!("{:#}", failure.error).contains("missing --worker-bin"));
 }
+
+#[tokio::test]
+async fn integration_engine_receives_telemetry_opt_out() {
+    let artifacts = tempfile::tempdir().unwrap();
+    let layout = RunLayout::allocate(artifacts.path(), "run-engine-env").unwrap();
+    let marker = layout.root.join("engine-telemetry-env.txt");
+    let args = vec![
+        "-c".to_string(),
+        "printf '%s' \"$III_TELEMETRY_ENABLED\" > \"$1\"".to_string(),
+        "engine-test".to_string(),
+        marker.to_string_lossy().into_owned(),
+    ];
+    let mut stack = Stack::for_tests(layout.clone());
+
+    stack
+        .spawn_engine_logged(
+            "engine",
+            PathBuf::from("/bin/sh").as_path(),
+            &args,
+            &layout.root,
+        )
+        .unwrap();
+    stack.wait_for_early_exit().await.unwrap();
+
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "false");
+}

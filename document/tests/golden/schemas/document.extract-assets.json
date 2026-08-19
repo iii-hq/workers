@@ -1,0 +1,381 @@
+{
+  "description": "Pull the images and embedded objects out of a document as base64, for a deck or report whose content is pictures rather than text. Capped per response and per asset; anything left out is still listed with its type and size. Not available for PDFs — use pdf::extract-regions.",
+  "function_id": "document::extract-assets",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Format": {
+        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "oneOf": [
+          {
+            "description": "Binary Word 97-2003 (`.doc`).",
+            "enum": [
+              "doc"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "WordprocessingML (`.docx`, `.docm`).",
+            "enum": [
+              "docx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Text (`.odt`).",
+            "enum": [
+              "odt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rich Text Format (`.rtf`).",
+            "enum": [
+              "rtf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Binary PowerPoint 97-2003 (`.ppt`, `.pps`, `.pot`).",
+            "enum": [
+              "ppt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PresentationML (`.pptx`, `.pptm`, `.ppsx`, `.ppsm`).",
+            "enum": [
+              "pptx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Presentation (`.odp`).",
+            "enum": [
+              "odp"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Excel workbooks in every container (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`).",
+            "enum": [
+              "excel"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Spreadsheet (`.ods`).",
+            "enum": [
+              "ods"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Delimiter-separated text (`.csv`).",
+            "enum": [
+              "csv"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "EPUB 2 and 3 (`.epub`).",
+            "enum": [
+              "epub"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Portable Document Format (`.pdf`).",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell and pdf workers take.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the document comes from. Exactly one of `path` and `bytes_base64` must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded document bytes, for a document with no path — an attachment held in memory. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "file_name": {
+        "default": null,
+        "description": "Original file name for inline bytes, used only to recognise a format the content cannot name. A `.csv` needs this; nothing else does. Ignored when `path` is set, which carries its own name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Format"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Force a format instead of detecting one."
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "include_bytes": {
+        "default": true,
+        "description": "Include the base64 payload. Set `false` to inventory a document — what it holds and how big — without moving the bytes.",
+        "type": "boolean"
+      },
+      "max_assets": {
+        "default": null,
+        "description": "Assets to return in this response. Narrows the configured ceiling; it cannot raise it.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "media_type_prefix": {
+        "default": null,
+        "description": "Return only assets whose media type starts with this, e.g. `image/`. Omit for every asset.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the document. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Asset": {
+        "description": "One embedded asset. `bytes_base64` is absent when the caller asked for an inventory, or when this asset is over the per-asset ceiling — `omitted` says which.",
+        "properties": {
+          "bytes_base64": {
+            "description": "The payload, base64-encoded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "description": "Position in the document's asset list, stable for a given document.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "media_type": {
+            "description": "MIME type, e.g. `image/png`.",
+            "type": "string"
+          },
+          "omitted": {
+            "description": "Why the payload is absent, when it is: `not_requested`, `too_large` (this asset alone is over the per-asset ceiling), or `budget_spent` (the response's total byte budget went on earlier assets — ask for this one on its own).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "origin_part": {
+            "description": "The package part or stream it came from, for provenance.",
+            "type": "string"
+          },
+          "size_bytes": {
+            "description": "Size of the payload in bytes, whether or not the payload is included.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "media_type",
+          "origin_part",
+          "size_bytes"
+        ],
+        "type": "object"
+      },
+      "Format": {
+        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "oneOf": [
+          {
+            "description": "Binary Word 97-2003 (`.doc`).",
+            "enum": [
+              "doc"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "WordprocessingML (`.docx`, `.docm`).",
+            "enum": [
+              "docx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Text (`.odt`).",
+            "enum": [
+              "odt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Rich Text Format (`.rtf`).",
+            "enum": [
+              "rtf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Binary PowerPoint 97-2003 (`.ppt`, `.pps`, `.pot`).",
+            "enum": [
+              "ppt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "PresentationML (`.pptx`, `.pptm`, `.ppsx`, `.ppsm`).",
+            "enum": [
+              "pptx"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Presentation (`.odp`).",
+            "enum": [
+              "odp"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Excel workbooks in every container (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`).",
+            "enum": [
+              "excel"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "OpenDocument Spreadsheet (`.ods`).",
+            "enum": [
+              "ods"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Delimiter-separated text (`.csv`).",
+            "enum": [
+              "csv"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "EPUB 2 and 3 (`.epub`).",
+            "enum": [
+              "epub"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Portable Document Format (`.pdf`).",
+            "enum": [
+              "pdf"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "assets": {
+        "description": "The assets, in document order, up to the effective ceiling.",
+        "items": {
+          "$ref": "#/definitions/Asset"
+        },
+        "type": "array"
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the extraction.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "format": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Format"
+          }
+        ],
+        "description": "The format that was parsed."
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      },
+      "total_count": {
+        "description": "Assets the document holds after `media_type_prefix` is applied. Larger than `assets.len()` when the ceiling cut the response short.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "description": "`true` when the ceiling cut the response short.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "assets",
+      "elapsed_ms",
+      "format",
+      "source",
+      "total_count",
+      "truncated"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

@@ -406,6 +406,7 @@ pub fn handle_chunk(
                             partial: None,
                             delta: args.to_string(),
                             id,
+                            arguments_preview: None,
                         });
                     }
                 }

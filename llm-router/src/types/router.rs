@@ -98,6 +98,9 @@ pub struct AbortResponse {
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
+    /// Environment variable declared by API-key providers. `None` means the
+    /// provider owns authentication (OAuth, local app login, device flow).
+    pub credential_env_var: Option<String>,
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,

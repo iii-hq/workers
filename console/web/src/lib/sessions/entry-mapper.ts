@@ -25,6 +25,7 @@
  */
 
 import { parseAttachedFileHeader } from '@/lib/file-mentions'
+import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
   Attachment,
   FunctionTriggerMessage,
@@ -277,38 +278,63 @@ function unwrapFunctionTrigger(
 ): {
   functionId: string
   input: unknown
+  description?: string
   unresolvedTarget?: boolean
 } {
   if (block.function_id === 'agent_trigger') {
     if (block.arguments && typeof block.arguments === 'object') {
       const args = block.arguments as {
         function?: unknown
+        description?: unknown
         payload?: unknown
         _streaming?: unknown
       }
-      // Mid-stream, the harness rides the raw in-flight arguments tail on
-      // `_streaming` (providers degrade the incomplete JSON itself), so the
-      // command can be watched forming in the request pane.
+      // Mid-stream, the harness supplies both incrementally reconstructed
+      // fields and a bounded raw tail. Preserve the structured payload for
+      // the request pane while `_streaming` keeps its live-state treatment.
       const streaming =
         typeof args._streaming === 'string' ? args._streaming : undefined
+      const description =
+        typeof args.description === 'string' &&
+        args.description.trim().length > 0
+          ? args.description.trim()
+          : undefined
       if (typeof args.function === 'string' && args.function.length > 0) {
         if (streaming !== undefined) {
-          return { functionId: args.function, input: { _streaming: streaming } }
+          const input =
+            args.payload &&
+            typeof args.payload === 'object' &&
+            !Array.isArray(args.payload)
+              ? {
+                  ...(args.payload as Record<string, unknown>),
+                  _streaming: streaming,
+                }
+              : { _streaming: streaming }
+          return {
+            functionId: args.function,
+            input,
+            description,
+          }
         }
-        return { functionId: args.function, input: args.payload ?? {} }
+        return {
+          functionId: args.function,
+          input: args.payload ?? {},
+          description,
+        }
       }
       if (streaming !== undefined) {
         return {
           functionId: block.function_id,
           input: { _streaming: streaming },
+          description,
           unresolvedTarget: true,
         }
       }
     }
-    // The target is unknown while the wrapper's arguments are still
-    // streaming (providers degrade partial JSON to `{}`). Flag it so the UI
-    // can render a placeholder instead of the literal `agent_trigger`; the
-    // next snapshot self-corrects once the arguments finish streaming.
+    // Before the incremental parser has observed a non-empty target (or for
+    // malformed provider output), render a placeholder instead of the literal
+    // `agent_trigger`; the next snapshot self-corrects as soon as a value is
+    // available.
     return {
       functionId: block.function_id,
       input: block.arguments,
@@ -328,10 +354,16 @@ function textOf(blocks: ContentBlock[]): string {
 
 /**
  * Split a user message's blocks into visible text and attachment chips.
- * `<attached-file …>` blocks are console-authored `#file(...)` mention
- * expansions — rendering their full content in the user bubble would dump
- * whole files into the chat, so they collapse to chips instead (failure
- * placeholders keep the error visible in the chip name).
+ * `<attached-file …>` blocks are console-authored `#file(...)` mention and
+ * document expansions — rendering their full content in the user bubble would
+ * dump whole files into the chat, so they collapse to chips instead (failure
+ * placeholders keep the error visible in the chip name). `<command>` /
+ * `<skill>` blocks are `/name` slash expansions and collapse the same way —
+ * the typed command stays the visible text, the body becomes a chip.
+ *
+ * An image block is the picture itself, sent to a vision model. It becomes a
+ * chip carrying its own thumbnail: without this a conversation reloaded from
+ * history shows the question and no sign that a screenshot went with it.
  */
 function splitUserContent(blocks: ContentBlock[]): {
   text: string
@@ -339,7 +371,22 @@ function splitUserContent(blocks: ContentBlock[]): {
 } {
   let text = ''
   const attachments: Attachment[] = []
+  let imageIndex = 0
   for (const block of blocks) {
+    if (block.type === 'image') {
+      imageIndex += 1
+      const mime = block.mime || 'image/png'
+      attachments.push({
+        id: `image-${imageIndex}`,
+        name: `image ${imageIndex}`,
+        // Base64 inflates by a third; the original byte count is what a
+        // person recognises, so report that rather than the encoded length.
+        size: Math.floor((block.data?.length ?? 0) * 0.75),
+        type: mime,
+        dataUrl: block.data ? `data:${mime};base64,${block.data}` : undefined,
+      })
+      continue
+    }
     if (block.type !== 'text') continue
     const header = parseAttachedFileHeader(block.text)
     if (header) {
@@ -349,6 +396,11 @@ function splitUserContent(blocks: ContentBlock[]): {
         size: header.size ?? 0,
         type: 'text/x-file-mention',
       })
+      continue
+    }
+    const slash = parseSlashBlockHeader(block.text)
+    if (slash) {
+      attachments.push(slashChip(slash, block.text.length))
     } else {
       text += block.text
     }
@@ -569,16 +621,18 @@ function assistantSegments(
           role: 'assistant',
           content: block.text,
           model: message.model,
+          stopReason: message.stop_reason,
           createdAt: message.timestamp,
         })
         break
       case 'function_call': {
-        const { functionId, input, unresolvedTarget } =
+        const { functionId, input, description, unresolvedTarget } =
           unwrapFunctionTrigger(block)
         const msg: FunctionTriggerMessage = {
           id,
           role: 'function-trigger',
           functionId,
+          description,
           input,
           unresolvedTarget,
           functionTriggerId: block.id,

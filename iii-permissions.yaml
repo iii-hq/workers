@@ -51,6 +51,8 @@ rules:
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # Interactive PTY lifecycle is driven only by the console UI.
+  - '!shell::pty::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
@@ -195,12 +197,25 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # document: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!document::on-config-change'
+
   # canvas: internal target. The hot-reload hook follows the same pattern as
   # the other on-config-change denies.
   - '!canvas::on-config-change'
   # code-runner: internal hot-reload hook, same pattern as the other
   # on-config-change denies.
   - '!code-runner::on-config-change'
+
+  # The guidance-knob configuration entries (web/workflow/fp/
+  # sandbox-code-runner/scrapling): internal hot-reload hooks, same pattern
+  # as the other on-config-change denies.
+  - '!web::on-config-change'
+  - '!workflow::on-config-change'
+  - '!fp::on-config-change'
+  - '!sandbox-code-runner::on-config-change'
+  - '!scrapling::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get
@@ -348,6 +363,20 @@ rules:
   - pdf::extract-text
   - pdf::extract-items
   - pdf::extract-regions
+
+  # document: same reasoning as pdf. Every function listed is a pure read of a
+  # file the agent could already reach through the filesystem scope, and reaching
+  # an office document any other way returns compressed noise. Nothing here
+  # writes, spends, or leaves the machine, and each response is capped by the
+  # worker's own configuration.
+  #
+  # `document::ocr` is deliberately absent: it renders pages and reads them with
+  # a vision model, so it spends money per page. It stays behind an approval,
+  # which is also what keeps an agent from transcribing a four-hundred-page scan
+  # because a document happened to be attached.
+  - document::detect
+  - document::to-markdown
+  - document::extract-assets
 
   # canvas: every function touches only the worker's own store (state scope
   # "canvas"), sources are size-capped by its configuration, and nothing here

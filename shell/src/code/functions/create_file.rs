@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
@@ -90,6 +91,10 @@ pub struct CreateFileResult {
     pub path: String,
     pub success: bool,
     pub bytes_written: u64,
+    /// Opaque id for the console UI to retrieve the exact before/after diff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub change_id: Option<String>,
     /// Opaque revision for the exact bytes written. Supply this as
     /// `expected_revision` on a later overwrite to avoid lost updates.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,9 +107,28 @@ pub struct CreateFileResult {
     pub error: Option<WireError>,
 }
 
+#[allow(dead_code)] // Public compatibility path used by integration callers without UI journaling.
 pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
+    req: CreateFileInput,
+) -> Result<CreateFileOutput, String> {
+    handle_impl(resolver, cfg, None, req).await
+}
+
+pub async fn handle_with_journal(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: ChangeJournal,
+    req: CreateFileInput,
+) -> Result<CreateFileOutput, String> {
+    handle_impl(resolver, cfg, Some(journal), req).await
+}
+
+async fn handle_impl(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    journal: Option<ChangeJournal>,
     req: CreateFileInput,
 ) -> Result<CreateFileOutput, String> {
     if req.files.is_empty() {
@@ -127,7 +151,7 @@ pub async fn handle(
     let results = tokio::task::spawn_blocking(move || {
         entries
             .into_iter()
-            .map(|(spec, resolved)| create_one(&cfg, spec, resolved))
+            .map(|(spec, resolved)| create_one(&cfg, journal.as_ref(), spec, resolved))
             .collect()
     })
     .await
@@ -137,6 +161,7 @@ pub async fn handle(
 
 fn create_one(
     cfg: &CoderConfig,
+    journal: Option<&ChangeJournal>,
     spec: CreateFileSpec,
     resolved: Result<std::path::PathBuf, CoderError>,
 ) -> CreateFileResult {
@@ -151,17 +176,19 @@ fn create_one(
                 path: spec.path,
                 success: false,
                 bytes_written: 0,
+                change_id: None,
                 revision: None,
                 error: Some((&e).into()),
             }
         }
     };
     let wire_path = abs.display().to_string();
-    match try_create_one(cfg, &abs, spec) {
+    match try_create_one(cfg, journal, &abs, spec) {
         Ok(written) => CreateFileResult {
             path: wire_path,
             success: true,
             bytes_written: written.bytes,
+            change_id: written.change_id,
             revision: Some(written.revision),
             error: None,
         },
@@ -169,6 +196,7 @@ fn create_one(
             path: wire_path,
             success: false,
             bytes_written: 0,
+            change_id: None,
             revision: None,
             error: Some((&e).into()),
         },
@@ -185,6 +213,7 @@ fn is_jail_scope_error(e: &CoderError) -> bool {
 struct WriteSuccess {
     bytes: u64,
     revision: String,
+    change_id: Option<String>,
 }
 
 /// Serialize publication within this worker. The revision is checked while
@@ -197,6 +226,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn try_create_one(
     cfg: &CoderConfig,
+    journal: Option<&ChangeJournal>,
     abs: &Path,
     spec: CreateFileSpec,
 ) -> Result<WriteSuccess, CoderError> {
@@ -229,18 +259,26 @@ fn try_create_one(
             std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
         }
     }
-    atomic_write(
+    let before = atomic_write(
         abs,
-        &spec.path,
         bytes,
-        mode,
-        spec.overwrite,
-        spec.expected_revision.as_deref(),
-        cfg.max_read_bytes,
+        AtomicWriteOptions {
+            wire_path: &spec.path,
+            mode,
+            overwrite: spec.overwrite,
+            expected_revision: spec.expected_revision.as_deref(),
+            max_read_bytes: cfg.max_read_bytes,
+            capture_before: journal.is_some(),
+        },
     )?;
+    let change_id = before.and_then(|before| {
+        journal
+            .and_then(|journal| journal.record(abs.display().to_string(), before, bytes.to_vec()))
+    });
     Ok(WriteSuccess {
         bytes: bytes.len() as u64,
         revision: content_revision(bytes),
+        change_id,
     })
 }
 
@@ -353,18 +391,31 @@ impl Drop for TempGuard {
     }
 }
 
+struct AtomicWriteOptions<'a> {
+    wire_path: &'a str,
+    mode: u32,
+    overwrite: bool,
+    expected_revision: Option<&'a str>,
+    max_read_bytes: u64,
+    capture_before: bool,
+}
+
 /// Publish a complete file through a permissioned sibling temp and rename.
 /// The original remains intact if writing, syncing, chmod, or the optimistic
 /// recheck fails. Sibling placement guarantees rename stays on one filesystem.
 fn atomic_write(
     target: &Path,
-    wire_path: &str,
     bytes: &[u8],
-    mode: u32,
-    overwrite: bool,
-    expected_revision: Option<&str>,
-    max_read_bytes: u64,
-) -> Result<(), CoderError> {
+    options: AtomicWriteOptions<'_>,
+) -> Result<Option<Vec<u8>>, CoderError> {
+    let AtomicWriteOptions {
+        wire_path,
+        mode,
+        overwrite,
+        expected_revision,
+        max_read_bytes,
+        capture_before,
+    } = options;
     let parent = target
         .parent()
         .ok_or_else(|| CoderError::Io(format!("{wire_path}: target has no parent directory")))?;
@@ -402,12 +453,28 @@ fn atomic_write(
         )));
     }
 
+    // Capture the exact pre-publication body while cooperative writers are
+    // serialized. Journaling is best-effort and bounded by the normal read
+    // limit, so an oversized or transiently unreadable target never blocks a
+    // successful write merely for the console artifact.
+    let before = if capture_before {
+        match std::fs::metadata(target) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= max_read_bytes => {
+                std::fs::read(target).ok()
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     std::fs::rename(&temp_path, target).map_err(|e| CoderError::io_for_path(e, wire_path))?;
     drop(guard);
     if let Ok(parent_dir) = std::fs::File::open(parent) {
         let _ = parent_dir.sync_all();
     }
-    Ok(())
+    Ok(before)
 }
 
 #[cfg(test)]
@@ -667,6 +734,7 @@ mod tests {
                 barrier.wait();
                 try_create_one(
                     &cfg,
+                    None,
                     &target,
                     CreateFileSpec {
                         path: "a.txt".into(),

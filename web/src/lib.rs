@@ -13,3 +13,4 @@ pub mod functions;
 pub mod manifest;
 pub mod schemas;
 pub mod ssrf;
+pub mod ui;

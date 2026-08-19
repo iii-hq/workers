@@ -3,6 +3,7 @@ import type { Editor, EditorOptions } from '@pierre/diffs/edit'
 import { EditProvider, MultiFileDiff } from '@pierre/diffs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from '@/hooks/use-theme'
+import { cn } from '@/lib/utils'
 
 type PierreEditorConstructor = new (
   options?: EditorOptions<undefined>,
@@ -143,7 +144,7 @@ export function FileDiff({
       newFile={newFile}
       edit={editing}
       editorOptions={editing ? editorOptions : undefined}
-      className={className}
+      className={cn('[--diffs-font-family:var(--font-code)]', className)}
       options={{
         diffStyle,
         overflow,

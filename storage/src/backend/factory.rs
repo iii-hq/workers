@@ -6,14 +6,9 @@ use super::{Backend, BackendError};
 use crate::config::{BucketConfig, ProvidersConfig};
 use std::sync::Arc;
 
-/// Runtime context for the local backend, supplied by main once the rustfs
-/// sidecar has been spawned. S3/GCS/R2 arms ignore this.
-#[derive(Clone)]
-pub struct LocalBackendCtx {
-    pub port: u16,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-}
+/// Context for one prepared native-local service generation. A live
+/// configuration update creates a new generation before publishing it.
+pub use super::local::LocalBackendCtx;
 
 pub async fn build(
     name: &str,
@@ -77,18 +72,10 @@ pub async fn build(
         BucketConfig::Local(l) => {
             let ctx = local_ctx.ok_or_else(|| BackendError::Provider {
                 inner_code: Some("LOCAL_NO_CTX".into()),
-                message: "local backend requested but no rustfs sidecar context".into(),
+                message: "local backend requested but no native local context".into(),
             })?;
             let bucket = l.bucket.clone().unwrap_or_else(|| name.to_string());
-            super::local::build(
-                super::local::LocalBackendOpts {
-                    port: ctx.port,
-                    access_key_id: ctx.access_key_id.clone(),
-                    secret_access_key: ctx.secret_access_key.clone(),
-                },
-                bucket,
-            )
-            .await
+            super::local::build(ctx, name.to_string(), bucket)
         }
     }
 }

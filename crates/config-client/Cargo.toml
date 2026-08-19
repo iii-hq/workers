@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "iii-config-client"
+version = "0.1.0"
+edition = "2021"
+description = "Worker-side client for the builtin configuration worker — safe seeding, NOT_FOUND-aware reads, retrying RPCs, serialized hot-reload, and the knob-following trigger binding slot"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished: workers in this repo link it by path
+# (iii-config-client = { path = "../crates/config-client" }), the same way
+# they link crates/console-ui.
+publish = false
+
+[dependencies]
+# Range, not an exact pin — same rationale as crates/console-ui: workers on
+# this repo's SDK line carry their own exact pins (0.21.6 for most, 0.21.8
+# for the harness) and cargo must be able to unify them with this crate.
+iii-sdk = ">=0.21.6, <0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Must stay on the same schemars major as iii-sdk so the derived schemas line up.
+schemars = "0.8"
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

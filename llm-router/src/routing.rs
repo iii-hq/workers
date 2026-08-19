@@ -9,6 +9,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 
+use crate::catalog::queries::effective_model_ref;
 use crate::catalog::store::CatalogStore;
 use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::store::RegistryStore;
@@ -36,8 +37,17 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     let registered = |id: &str| input.registered_providers.iter().any(|p| p == id);
     let available = |id: &str| input.available_providers.iter().any(|p| p == id);
 
+    // 0. Composite `provider::model` ids (the console's display form) resolve
+    // in models::get/budget — dispatch must agree instead of shipping the
+    // literal string to the default provider. Split when the prefix names a
+    // registered or catalog provider, so the composite routes exactly like the
+    // explicit pair; unknown prefixes stay literal (`::` is legal in an id).
+    let (provider, model) = effective_model_ref(input.provider.as_deref(), &input.model, |p| {
+        registered(p) || input.catalog.iter().any(|(owner, _)| owner == p)
+    });
+
     // 1. Explicit provider — sole candidate; cold-catalog tolerant; typos loud.
-    if let Some(provider) = &input.provider {
+    if let Some(provider) = provider {
         if !registered(provider) {
             return Err(RouterError::new(
                 RouterCode::UnknownProvider,
@@ -54,7 +64,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
                 ),
             ));
         }
-        return Ok(vec![provider.clone()]);
+        return Ok(vec![provider.to_string()]);
     }
 
     // 2. Unique available catalog owner; 2+ available owners → ambiguous (the
@@ -64,7 +74,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     let owners: Vec<&str> = input
         .catalog
         .iter()
-        .filter(|(provider, ids)| registered(provider) && ids.iter().any(|m| m == &input.model))
+        .filter(|(provider, ids)| registered(provider) && ids.iter().any(|m| m == model))
         .map(|(p, _)| p.as_str())
         .collect();
     let mut available_owners: Vec<&str> = owners
@@ -79,8 +89,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
             return Err(RouterError::new(
                 RouterCode::AmbiguousModel,
                 format!(
-                    "Model \"{}\" is available from multiple providers: {}. Choose a provider and try again.",
-                    input.model,
+                    "Model \"{model}\" is available from multiple providers: {}. Choose a provider and try again.",
                     available_owners.join(", ")
                 ),
             ))
@@ -101,7 +110,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
         let Ok(re) = regex::Regex::new(&h.pattern) else {
             continue; // an invalid operator regex never takes the router down
         };
-        if re.is_match(&input.model) {
+        if re.is_match(model) {
             if available(&h.provider) {
                 return Ok(vec![h.provider.clone()]);
             }
@@ -127,8 +136,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
         return Err(RouterError::new(
             RouterCode::ProviderUnavailable,
             format!(
-                "No provider currently available can serve model \"{}\" (unavailable: {}). Try again later or choose another model.",
-                input.model,
+                "No provider currently available can serve model \"{model}\" (unavailable: {}). Try again later or choose another model.",
                 unavailable_matches.join(", ")
             ),
         ));
@@ -138,8 +146,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     Err(RouterError::new(
         RouterCode::NoProviderForModel,
         format!(
-            "No configured provider can serve model \"{}\". Choose another model or configure a compatible provider.",
-            input.model
+            "No configured provider can serve model \"{model}\". Choose another model or configure a compatible provider."
         ),
     ))
 }
@@ -266,6 +273,44 @@ mod tests {
             },
         ];
         assert_eq!(decide(&input).unwrap(), vec!["openai"]);
+    }
+
+    // Composite `provider::model` ids (the console's display form) resolve in
+    // models::get/budget — dispatch must agree. A known prefix routes exactly
+    // like the explicit pair; a `::` id whose prefix names no provider stays
+    // literal and behaves as it always did.
+    #[test]
+    fn step0_composite_model_ids_route_like_the_explicit_pair() {
+        let mut input = base();
+        // Registered prefix → step 1, even when the split model isn't
+        // cataloged yet (cold-catalog tolerant, like the explicit pair).
+        input.model = "anthropic::brand-new".into();
+        assert_eq!(decide(&input).unwrap(), vec!["anthropic"]);
+        // The harness's shape: explicit provider agreeing with the prefix.
+        input.model = "anthropic::claude-sonnet-4".into();
+        input.provider = Some("anthropic".into());
+        assert_eq!(decide(&input).unwrap(), vec!["anthropic"]);
+        // Contradiction → no split; the explicit provider wins, as before.
+        input.provider = Some("openai".into());
+        assert_eq!(decide(&input).unwrap(), vec!["openai"]);
+        // Non-provider prefix stays literal: no owner, no default → the same
+        // loud error as before, never a guessed split.
+        input.provider = None;
+        input.model = "weird::thing".into();
+        assert_eq!(
+            decide(&input).unwrap_err().code,
+            RouterCode::NoProviderForModel
+        );
+        // Catalog-owner prefix whose provider lost registration: the loud
+        // unknown-provider the explicit pair would get — not a silent
+        // default-provider dispatch of the literal composite.
+        input.model = "lmstudio::local-llama".into();
+        input.default_provider = Some("anthropic".into());
+        input.registered_providers.retain(|p| p != "lmstudio");
+        assert_eq!(
+            decide(&input).unwrap_err().code,
+            RouterCode::UnknownProvider
+        );
     }
 
     #[test]

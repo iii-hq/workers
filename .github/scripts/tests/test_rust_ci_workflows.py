@@ -114,4 +114,10 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     assert install["with"]["tool"] == "cargo-audit@0.22.2"
     assert "git diff --name-only -z" in run
     assert "find . -name Cargo.lock" in run
-    assert "cargo audit --no-fetch --file" in run
+    assert "cargo audit --file" in run
+    # Every iteration fetches: the yanked check resolves crates against the
+    # index entries fetched by its own invocation, so a no-fetch pass only
+    # sees whatever the first lockfile happened to warm — each additional
+    # lockfile in a PR then fails its yanked lookups. (The workflow's comment
+    # may name the flag; only the invocation form is forbidden.)
+    assert "cargo audit --no-fetch" not in run

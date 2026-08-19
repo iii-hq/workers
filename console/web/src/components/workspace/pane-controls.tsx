@@ -57,7 +57,7 @@ export function ResizeHandle({
       aria-valuemax={100}
       tabIndex={0}
       className={cn(
-        'relative w-1.5 shrink-0 cursor-col-resize touch-none select-none focus-visible:outline-none',
+        'relative hidden w-1.5 shrink-0 cursor-col-resize touch-none select-none focus-visible:outline-none sm:block',
         'after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] after:-translate-x-1/2 after:rounded-full after:transition-colors',
         active
           ? 'after:bg-accent'
@@ -117,7 +117,7 @@ interface EdgeAddZoneProps {
  * reveals a GHOST PANEL — a dashed, translucent preview of the pane that
  * would appear there (a click/tap reveals immediately; touch has no hover
  * to dwell on); clicking the ghost makes it real.
- * Render only while the tab is under MAX_COLUMNS.
+ * Render while the tab is under the workspace's defensive safety ceiling.
  */
 export function EdgeAddZone({ side, onAdd, nudge = false }: EdgeAddZoneProps) {
   const [revealed, setRevealed] = useState(false)
@@ -141,7 +141,7 @@ export function EdgeAddZone({ side, onAdd, nudge = false }: EdgeAddZoneProps) {
   return (
     <div
       className={cn(
-        'absolute inset-y-0 z-20 flex pb-1.5 transition-[width] duration-150',
+        'absolute inset-y-0 z-20 hidden pb-1.5 transition-[width] duration-150 sm:flex',
         side === 'left' ? 'left-0' : 'right-0',
         revealed ? 'w-32' : 'w-3 sm:w-4',
       )}

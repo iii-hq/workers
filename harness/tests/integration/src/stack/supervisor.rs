@@ -9,6 +9,7 @@ use super::{EarlyExit, RunLayout, StackBins};
 
 const ENGINE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const ENGINE_CONNECT_INTERVAL: Duration = Duration::from_millis(25);
+const INTEGRATION_TELEMETRY_ENV: (&str, &str) = ("III_TELEMETRY_ENABLED", "false");
 
 pub struct Stack {
     pub ws_url: String,
@@ -80,9 +81,7 @@ impl Stack {
             engine_restarts: 0,
         };
 
-        if let Err(error) =
-            stack.spawn_child("engine", &bins.engine, &engine_args, &paths.engine_dir)
-        {
+        if let Err(error) = stack.spawn_engine(&bins.engine, &engine_args, &paths.engine_dir) {
             let teardown = stack.teardown().await;
             return Err(BootError::Other { error, teardown });
         }
@@ -195,7 +194,7 @@ impl Stack {
             .ok_or_else(|| anyhow::anyhow!("stack has no engine recipe"))?;
         self.engine_restarts += 1;
         let log_name = format!("engine.restart{}", self.engine_restarts);
-        self.spawn_child_logged_with_env("engine", &log_name, &bin, &args, &cwd, &[])
+        self.spawn_engine_logged(&log_name, &bin, &args, &cwd)
     }
 
     pub fn respawn_worker(&mut self, bins: &StackBins, worker: &str) -> anyhow::Result<()> {
@@ -222,6 +221,27 @@ impl Stack {
             args.push(seed_path.to_string_lossy().into_owned());
         }
         self.spawn_child_with_env(worker, bin, &args, &paths.root, extra_env)
+    }
+
+    fn spawn_engine(&mut self, bin: &Path, args: &[String], cwd: &Path) -> anyhow::Result<()> {
+        self.spawn_engine_logged("engine", bin, args, cwd)
+    }
+
+    pub(super) fn spawn_engine_logged(
+        &mut self,
+        log_name: &str,
+        bin: &Path,
+        args: &[String],
+        cwd: &Path,
+    ) -> anyhow::Result<()> {
+        // Integration engines are test processes. Their inherited environment
+        // is intentionally cleared below, so disable product telemetry
+        // explicitly instead of relying on CI detection in the child.
+        let extra_env = [(
+            INTEGRATION_TELEMETRY_ENV.0.to_string(),
+            INTEGRATION_TELEMETRY_ENV.1.to_string(),
+        )];
+        self.spawn_child_logged_with_env("engine", log_name, bin, args, cwd, &extra_env)
     }
 
     #[doc(hidden)]

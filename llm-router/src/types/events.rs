@@ -46,6 +46,17 @@ pub struct Usage {
     pub cost_usd: Option<f64>, // filled by llm-router from catalog pricing
 }
 
+/// Small, bounded view of the top-level agent_trigger identity observed while
+/// its JSON arguments are still forming. The router adds this to relayed
+/// deltas; providers leave it absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionCallArgumentsPreview {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// The frozen 15-variant streaming vocabulary (README § Streaming events).
 /// New frame types are a contract revision, not a provider choice.
 ///
@@ -96,6 +107,9 @@ pub enum AssistantMessageEvent {
         /// Call id receiving this delta; empty from pre-id producers.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         id: String,
+        /// Router-produced view of fields useful to an in-flight UI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments_preview: Option<FunctionCallArgumentsPreview>,
     },
     FunctioncallEnd {
         partial: AssistantMessage,
