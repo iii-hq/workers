@@ -266,9 +266,11 @@ test('runs multi-terminal PTYs, replay, tmux, Claude, and cleanup', async ({
   await runInPane(
     page,
     resizedPane,
-    `sh -c 'sleep 1; printf "%s%s\\n" "__REPLAY_" "OK__"' &`,
+    `sh -c 'printf "%s%s\\n" "__REPLAY_" "ARMED__"; sleep 1; printf "%s%s\\n" "__REPLAY_" "OK__"' &`,
   )
-  await page.waitForTimeout(100)
+  await expect(resizedPane.locator('.xterm-rows')).toContainText(
+    '__REPLAY_ARMED__',
+  )
   await page.reload({ waitUntil: 'networkidle' })
   await page
     .getByRole('tab', { name: /^shell(?: close shell)?$/ })
