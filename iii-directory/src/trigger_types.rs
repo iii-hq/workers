@@ -4,7 +4,10 @@
 //!
 //! - `directory::skills::on-change`  — fires after every successful
 //!   `directory::skills::download` that wrote at least one skill
-//!   markdown file, or a `directory::skills::update`.
+//!   markdown file, or a `directory::skills::update`, `create`, or
+//!   `delete`. External edits under the read-only `agents_skills_folder`
+//!   also fire it via the fs watcher (doorbell only — the worker never
+//!   writes there).
 //! - `directory::prompts::on-change` — fires after every successful
 //!   `directory::skills::download` that wrote at least one command-
 //!   template prompt, a `directory::prompts::update`, or a
@@ -125,7 +128,7 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
-        "Fires after a directory::skills::download that wrote at least one skill markdown file, or a directory::skills::update.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one skill markdown file, or a directory::skills::update, create, or delete.".to_string(),
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");

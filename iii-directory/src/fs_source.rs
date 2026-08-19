@@ -23,6 +23,8 @@
 //!
 //! - [`split_frontmatter`]            — minimal `---\n...\n---\n` parser.
 //! - [`scan_skills`]                  — id-keyed listing of all `**/*.md` outside `*/prompts/*`.
+//! - [`scan_agents_skills`]           — shallow `<skill>/SKILL.md` listing of the read-only
+//!   agents root (the `~/.agents/skills` convention).
 //! - [`scan_prompts`]                 — name-keyed listing of `*/prompts/*.md`.
 //! - [`read_body`]                    — cap-checked body read with frontmatter stripped.
 //! - [`read_skill_with_frontmatter`]  — same caps as `read_body` plus a
@@ -95,6 +97,11 @@ pub struct SkillFrontmatter {
     /// reader returns this verbatim instead of the first body `# H1`.
     #[serde(default)]
     pub title: Option<String>,
+    /// Optional skill name — the key the `~/.agents/skills` convention
+    /// (and most repo-bundled SKILL.md files) use instead of `title`.
+    /// Used as a title fallback (title → name → body H1).
+    #[serde(default)]
+    pub name: Option<String>,
     /// Free-form classifier (e.g. `index`, `how-to`, `reference`).
     /// Renamed from the YAML key `type` to avoid the Rust reserved word.
     #[serde(default, rename = "type")]
@@ -502,7 +509,7 @@ pub fn read_skill_with_frontmatter(abs_path: &Path) -> Result<(SkillFrontmatter,
 
 /// Top-level namespace directories under `root`. Returns a sorted,
 /// deduped list of directory names.
-fn top_level_namespaces(root: &Path) -> Vec<String> {
+pub(crate) fn top_level_namespaces(root: &Path) -> Vec<String> {
     let mut ns = Vec::new();
     let entries = match std::fs::read_dir(root) {
         Ok(e) => e,
@@ -577,6 +584,108 @@ pub fn scan_skills_merged(
     all_skipped.extend(local_skipped);
 
     (merged, all_skipped)
+}
+
+/// Shallow scan of a read-only agents skills root (the `~/.agents/skills`
+/// convention: one directory per installed skill, each containing a
+/// `SKILL.md` plus arbitrary support payload such as `reference/` and
+/// `scripts/`).
+///
+/// Deliberately NOT a `**/*.md` glob: only `<dir>/SKILL.md` is picked up
+/// (id `<dir>/index`, per the [`rel_to_id`] alias), so a skill's support
+/// docs never flood `directory::skills::list`. A missing or unreadable
+/// root is silently empty — this worker never creates or writes under it.
+pub fn scan_agents_skills(agents_root: &Path) -> (Vec<FsSkill>, Vec<SkipReason>) {
+    let mut skills: Vec<FsSkill> = Vec::new();
+    let mut skipped: Vec<SkipReason> = Vec::new();
+
+    let entries = match std::fs::read_dir(agents_root) {
+        Ok(e) => e,
+        Err(_) => return (skills, skipped),
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let abs = dir.join("SKILL.md");
+        if !abs.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            skipped.push(SkipReason {
+                kind: SourceKind::Skill,
+                path: abs,
+                reason: "non-UTF-8 directory name".into(),
+            });
+            continue;
+        };
+        let id = format!("{name}/index");
+        if let Err(e) = validate_id(&id) {
+            skipped.push(SkipReason {
+                kind: SourceKind::Skill,
+                path: abs,
+                reason: format!("invalid id {id:?}: {e}"),
+            });
+            continue;
+        }
+        skills.push(FsSkill { id, abs_path: abs });
+    }
+
+    skills.sort_by(|a, b| a.id.cmp(&b.id));
+    (skills, skipped)
+}
+
+/// Namespaces the agents root ACTUALLY serves: the top segment of every
+/// [`scan_agents_skills`] entry, i.e. only directories carrying a valid
+/// `SKILL.md`. Deliberately narrower than [`top_level_namespaces`] — a
+/// stray skill-less directory under `~/.agents/skills` must neither
+/// exempt a namespace from `filter_unregistered` nor reserve it against
+/// `directory::skills::create`.
+pub fn agents_namespaces(agents_root: &Path) -> Vec<String> {
+    let (skills, _skipped) = scan_agents_skills(agents_root);
+    let mut ns: Vec<String> = skills
+        .into_iter()
+        .filter_map(|s| s.id.split('/').next().map(str::to_string))
+        .collect();
+    ns.dedup(); // scan output is id-sorted, so dups are adjacent
+    ns
+}
+
+/// Append non-shadowed agents-root skills to an already-resolved visible
+/// set. Same whole-namespace override semantics as [`scan_skills_merged`],
+/// one tier lower: a top-level namespace directory present under either
+/// `local_root` or `global_root` shadows that namespace in the agents
+/// root entirely (local > global > agents).
+pub fn merge_agents_root(
+    visible: Vec<FsSkill>,
+    global_root: &Path,
+    local_root: &Path,
+    agents_root: &Path,
+) -> (Vec<FsSkill>, Vec<SkipReason>) {
+    let mut shadow_ns = top_level_namespaces(local_root);
+    shadow_ns.extend(top_level_namespaces(global_root));
+    shadow_ns.sort();
+    shadow_ns.dedup();
+
+    let (agents_skills, mut skipped) = scan_agents_skills(agents_root);
+    let mut merged = visible;
+    merged.extend(agents_skills.into_iter().filter(|s| {
+        let top_seg = s.id.split('/').next().unwrap_or("");
+        !shadow_ns.contains(&top_seg.to_string())
+    }));
+    skipped.retain(|s| {
+        let top_seg = s
+            .path
+            .strip_prefix(agents_root)
+            .ok()
+            .and_then(|p| p.components().next())
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("");
+        !shadow_ns.contains(&top_seg.to_string())
+    });
+    merged.sort_by(|a, b| a.id.cmp(&b.id));
+    (merged, skipped)
 }
 
 /// Merged scan of prompts from a global root and a local root.
@@ -1063,6 +1172,22 @@ mod tests {
     }
 
     #[test]
+    fn read_with_frontmatter_extracts_name() {
+        // The ~/.agents/skills convention: name + description, no title.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: impeccable\ndescription: Use when designing UI.\nversion: 4.0.4\n---\nBody without an H1.\n",
+        )
+        .unwrap();
+        let (fm, _body) = read_skill_with_frontmatter(&path).unwrap();
+        assert_eq!(fm.name.as_deref(), Some("impeccable"));
+        assert!(fm.title.is_none());
+        assert_eq!(fm.description.as_deref(), Some("Use when designing UI."));
+    }
+
+    #[test]
     fn read_with_frontmatter_extracts_description() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("desc.md");
@@ -1164,6 +1289,98 @@ mod tests {
             "empty local dir should shadow global; got: {:?}",
             skills.iter().map(|s| &s.id).collect::<Vec<_>>()
         );
+    }
+
+    // ── scan_agents_skills / merge_agents_root ───────────────────────
+
+    #[test]
+    fn scan_agents_skills_shallow_only_skill_md() {
+        let agents = tempfile::tempdir().unwrap();
+        write_fixture(agents.path(), "impeccable/SKILL.md", "# Impeccable\n");
+        write_fixture(agents.path(), "impeccable/reference/polish.md", "# Ref\n");
+        write_fixture(agents.path(), "impeccable/scripts/x.md", "# Script doc\n");
+        // A dir without SKILL.md and a stray top-level file are ignored.
+        write_fixture(agents.path(), "no-entry/reference/a.md", "# A\n");
+        write_fixture(agents.path(), "stray.md", "# Stray\n");
+
+        let (skills, skipped) = scan_agents_skills(agents.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["impeccable/index"]);
+        assert!(skills[0].abs_path.ends_with("impeccable/SKILL.md"));
+    }
+
+    #[test]
+    fn scan_agents_skills_missing_dir_is_empty() {
+        let (skills, skipped) = scan_agents_skills(Path::new("/no/such/agents/dir"));
+        assert!(skills.is_empty());
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn scan_agents_skills_skips_invalid_dir_name() {
+        let agents = tempfile::tempdir().unwrap();
+        write_fixture(agents.path(), "My-Skill/SKILL.md", "# Bad case\n");
+        write_fixture(agents.path(), "good-skill/SKILL.md", "# Good\n");
+
+        let (skills, skipped) = scan_agents_skills(agents.path());
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["good-skill/index"]);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].reason.contains("invalid id"));
+    }
+
+    #[test]
+    fn merge_agents_root_global_or_local_dir_shadows() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+
+        write_fixture(agents.path(), "impeccable/SKILL.md", "# Agents\n");
+        write_fixture(agents.path(), "solo/SKILL.md", "# Solo\n");
+        // Mere existence of the namespace dir in global shadows agents...
+        std::fs::create_dir_all(global.path().join("impeccable")).unwrap();
+        // ...and a local dir shadows too.
+        write_fixture(agents.path(), "localized/SKILL.md", "# Agents L\n");
+        std::fs::create_dir_all(local.path().join("localized")).unwrap();
+
+        let (visible, _) = scan_skills_merged(global.path(), local.path());
+        let (merged, skipped) =
+            merge_agents_root(visible, global.path(), local.path(), agents.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        let ids: Vec<&str> = merged.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["solo/index"]);
+    }
+
+    #[test]
+    fn agents_namespaces_requires_skill_md() {
+        // A stray skill-less directory must not count as an agents
+        // namespace: it would wrongly exempt same-named stale skills from
+        // filter_unregistered and reserve the namespace against create.
+        let agents = tempfile::tempdir().unwrap();
+        write_fixture(agents.path(), "real-skill/SKILL.md", "# Real\n");
+        std::fs::create_dir_all(agents.path().join("stray-dir")).unwrap();
+
+        assert_eq!(
+            agents_namespaces(agents.path()),
+            vec!["real-skill".to_string()]
+        );
+        assert!(agents_namespaces(Path::new("/no/such/agents/dir")).is_empty());
+    }
+
+    #[test]
+    fn merge_agents_root_appends_and_sorts() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+
+        write_fixture(global.path(), "worker-z/index.md", "# Z\n");
+        write_fixture(agents.path(), "aaa-skill/SKILL.md", "# A\n");
+
+        let (visible, _) = scan_skills_merged(global.path(), local.path());
+        let (merged, _) = merge_agents_root(visible, global.path(), local.path(), agents.path());
+        let ids: Vec<&str> = merged.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["aaa-skill/index", "worker-z/index"]);
     }
 
     // ── third kind: classification + kind-scoped scans ───────────────

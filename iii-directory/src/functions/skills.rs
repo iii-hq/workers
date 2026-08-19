@@ -369,8 +369,13 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 //     │  YES: fetch/cache        │  NO: pass through
 //     │  worker::list            │
 //     │  keep only matched ns    │
+//     │  (+ agents-ns exempt)    │
 //     └──────────┬───────────────┘
 //                ▼
+//     merge_agents_root(…, agents root)
+//        append non-shadowed <skill>/SKILL.md
+//                 │
+//                 ▼
 //         Vec<FsSkill> (visible)
 
 /// Resolve the visible set of skills given config and engine handle.
@@ -379,38 +384,52 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 /// namespace segment matches a registered (installed) worker name are
 /// returned. On daemon-down or first-boot-no-cache, falls back to
 /// the unfiltered set.
+///
+/// System-installed skills from the read-only `agents_skills_folder`
+/// are appended last (shadowed by the same namespace under the global
+/// or local root) and are exempt from `filter_unregistered` — their
+/// namespaces are skills, not workers. The exemption is by namespace
+/// NAME, not path, so a manual copy of an agents skill into the global
+/// root stays visible too.
 pub async fn resolve_visible_skills(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
     iii: &IIIClient,
     fresh: bool,
 ) -> Vec<FsSkill> {
-    let (merged, _skipped) =
-        fs_source::scan_skills_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
+    let global_root = cfg.resolved_skills_folder();
+    let local_root = cfg.local_skills_folder();
+    let agents_root = cfg.resolved_agents_skills_folder();
+    let (merged, _skipped) = fs_source::scan_skills_merged(&global_root, &local_root);
 
-    if !cfg.filter_unregistered {
-        return merged;
-    }
-
-    // `fresh` callers (the index) re-fetch `worker::list` every call so a
-    // just-registered worker is never hidden by a stale registered-workers
-    // cache; cached callers (`list`/`get`) keep the TTL fast path.
-    let registered = if fresh {
-        cache.get_fresh(iii).await
+    let filtered = if !cfg.filter_unregistered {
+        merged
     } else {
-        cache.get_or_fetch(iii).await
+        // `fresh` callers (the index) re-fetch `worker::list` every call so a
+        // just-registered worker is never hidden by a stale registered-workers
+        // cache; cached callers (`list`/`get`) keep the TTL fast path.
+        let registered = if fresh {
+            cache.get_fresh(iii).await
+        } else {
+            cache.get_or_fetch(iii).await
+        };
+
+        match registered {
+            Some(registered) => {
+                let agents_ns = fs_source::agents_namespaces(&agents_root);
+                filter_to_registered(merged, &registered, &agents_ns)
+            }
+            None => {
+                tracing::info!(
+                    "no cached registered workers and daemon unreachable; \
+                     returning unfiltered skill set"
+                );
+                merged
+            }
+        }
     };
 
-    match registered {
-        Some(registered) => filter_to_registered(merged, &registered),
-        None => {
-            tracing::info!(
-                "no cached registered workers and daemon unreachable; \
-                 returning unfiltered skill set"
-            );
-            merged
-        }
-    }
+    fs_source::merge_agents_root(filtered, &global_root, &local_root, &agents_root).0
 }
 
 /// The engine's own skill namespace. The iii engine is not a worker, so
@@ -432,11 +451,17 @@ pub const ENGINE_NAMESPACE: &str = "iii";
 ///    `registered` set, but its skill is always visible.
 /// 4. Its top namespace segment is in the `registered` set (i.e. it
 ///    belongs to an installed worker).
+/// 5. Its top namespace segment is in `agents_ns` — a system-installed
+///    skill namespace under `agents_skills_folder`; those are skills,
+///    not workers, so `worker::list` never contains them. Matching by
+///    NAME (not path) keeps a manual global-root copy of an agents
+///    skill visible as well.
 ///
 /// Everything else (skills from uninstalled workers) is dropped.
 pub(crate) fn filter_to_registered(
     merged: Vec<FsSkill>,
     registered: &HashSet<String>,
+    agents_ns: &[String],
 ) -> Vec<FsSkill> {
     merged
         .into_iter()
@@ -450,6 +475,8 @@ pub(crate) fn filter_to_registered(
                 || top_seg == ENGINE_NAMESPACE
                 // Belongs to a registered (installed) worker.
                 || registered.contains(top_seg)
+                // A system-installed agents skill namespace.
+                || agents_ns.iter().any(|ns| ns == top_seg)
         })
         .collect()
 }
@@ -612,8 +639,17 @@ fn register_index_skills(
             async move {
                 let entries = resolve_visible_skills(&cfg, &cache, &iii, true).await;
                 let siblings = id_set(&entries);
+                // Agents-root skills are not workers: their `<ns>/index` ids
+                // would render as fake worker blocks and inflate
+                // `workers_count` in this token-light per-WORKER surface, so
+                // drop them here; `directory::skills::list` still serves them.
+                // Filter by PROVENANCE (abs_path under the agents root), not
+                // by namespace name — an installed worker that happens to
+                // share a name with an agents dir must keep its index block.
+                let agents_root = cfg.resolved_agents_skills_folder();
                 let rows: Vec<SkillEntry> = entries
                     .into_iter()
+                    .filter(|fs| !fs.abs_path.starts_with(&agents_root))
                     .map(|fs| skill_entry_from_fs(fs, &siblings))
                     .collect();
                 let body = render_index_markdown(&rows);
@@ -1087,11 +1123,19 @@ pub fn extract_title(markdown: &str) -> Option<&str> {
 }
 
 /// Pick the best title for a skill: frontmatter `title:` (when present
-/// and non-empty after trim), then the first body `# H1`, then the
-/// bare `id` so the response field is never empty.
+/// and non-empty after trim), then frontmatter `name:` (the
+/// `~/.agents/skills` and repo-bundled SKILL.md convention), then the
+/// first body `# H1`, then the bare `id` so the response field is
+/// never empty.
 pub fn resolve_title(fm: &SkillFrontmatter, body: &str, id: &str) -> String {
     if let Some(t) = fm.title.as_deref() {
         let trimmed = t.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(n) = fm.name.as_deref() {
+        let trimmed = n.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
@@ -1773,6 +1817,27 @@ First paragraph.
     fn resolve_title_falls_back_to_id_when_no_h1_or_frontmatter() {
         let fm = SkillFrontmatter::default();
         assert_eq!(resolve_title(&fm, "no heading here", "ns/foo"), "ns/foo");
+    }
+
+    #[test]
+    fn resolve_title_falls_back_to_frontmatter_name() {
+        // The ~/.agents/skills convention: `name:` frontmatter, no
+        // `title:`, and a body without an H1.
+        let fm = SkillFrontmatter {
+            name: Some("impeccable".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_title(&fm, "no heading here", "impeccable/index"),
+            "impeccable"
+        );
+        // `title:` still wins over `name:` when both are present.
+        let both = SkillFrontmatter {
+            title: Some("Real title".into()),
+            name: Some("impeccable".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_title(&both, "body", "id"), "Real title");
     }
 
     #[test]
@@ -2874,7 +2939,7 @@ First paragraph.
     fn filter_keeps_root_doc_without_namespace() {
         let registered = HashSet::from(["resend".to_string()]);
         let merged = vec![fs_skill("index")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "index");
     }
@@ -2883,7 +2948,7 @@ First paragraph.
     fn filter_keeps_directory_namespace_docs() {
         let registered = HashSet::new(); // nothing registered
         let merged = vec![fs_skill("directory/engine/functions/info")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "directory/engine/functions/info");
     }
@@ -2940,10 +3005,27 @@ First paragraph.
     fn filter_keeps_engine_namespace_docs() {
         let registered = HashSet::new(); // nothing registered; `iii` is not a worker
         let merged = vec![fs_skill("iii/index"), fs_skill("iii/SKILL")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"iii/index"));
         assert!(ids.contains(&"iii/SKILL"));
+    }
+
+    #[test]
+    fn filter_keeps_agents_namespace_docs() {
+        // An agents skill namespace is exempt by NAME, not path, so a
+        // manual global-root copy of an agents skill survives the filter
+        // even though `impeccable` is not an installed worker.
+        let registered = HashSet::new();
+        let agents_ns = vec!["impeccable".to_string()];
+        let merged = vec![
+            fs_skill("impeccable/index"),
+            fs_skill("impeccable/notes"),
+            fs_skill("orphan/index"),
+        ];
+        let result = filter_to_registered(merged, &registered, &agents_ns);
+        let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["impeccable/index", "impeccable/notes"]);
     }
 
     // ── worker_overview_fallback ───────────────────────────────────────
@@ -3206,7 +3288,7 @@ First paragraph.
     fn filter_keeps_registered_worker_skills() {
         let registered = HashSet::from(["resend".to_string()]);
         let merged = vec![fs_skill("resend/index"), fs_skill("resend/emails/send")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 2);
     }
 
@@ -3219,7 +3301,7 @@ First paragraph.
             fs_skill("index"),
             fs_skill("directory/skills/list"),
         ];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"resend/index"));
         assert!(ids.contains(&"index"));
@@ -3231,7 +3313,7 @@ First paragraph.
     fn filter_drops_resend_when_not_registered() {
         let registered = HashSet::from(["agent-memory".to_string()]);
         let merged = vec![fs_skill("resend/index"), fs_skill("agent-memory/index")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "agent-memory/index");
     }

@@ -72,7 +72,8 @@ pub fn register_all(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         1 skills update, 5 directory::prompts::* (list + get + create + update + delete), \
+         3 skills writes (update + create + delete), \
+         5 directory::prompts::* (list + get + create + update + delete), \
          5 directory::system-prompts::* (list + get + create + update + delete), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
@@ -95,7 +96,8 @@ pub fn register_all_with_cache(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         1 skills update, 5 directory::prompts::* (list + get + create + update + delete), \
+         3 skills writes (update + create + delete), \
+         5 directory::prompts::* (list + get + create + update + delete), \
          5 directory::system-prompts::* (list + get + create + update + delete), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
@@ -112,12 +114,21 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
         fs_source::scan_prompts(&folder, fs_source::PromptKind::Command);
     let (system_prompts, system_prompt_skipped) =
         fs_source::scan_prompts(&folder, fs_source::PromptKind::System);
+    let (agents_skills, agents_skipped) =
+        fs_source::scan_agents_skills(&cfg.resolved_agents_skills_folder());
 
     for s in &skills {
         tracing::info!(
             id = %s.id,
             path = %s.abs_path.display(),
             "loaded fs-backed skill"
+        );
+    }
+    for s in &agents_skills {
+        tracing::info!(
+            id = %s.id,
+            path = %s.abs_path.display(),
+            "loaded system-installed agents skill"
         );
     }
     for p in &prompts {
@@ -135,11 +146,15 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
         );
     }
 
-    let total_skipped = skill_skipped.len() + prompt_skipped.len() + system_prompt_skipped.len();
+    let total_skipped = skill_skipped.len()
+        + prompt_skipped.len()
+        + system_prompt_skipped.len()
+        + agents_skipped.len();
     for s in skill_skipped
         .iter()
         .chain(prompt_skipped.iter())
         .chain(system_prompt_skipped.iter())
+        .chain(agents_skipped.iter())
     {
         let kind = match s.kind {
             SourceKind::Skill => "skill",
@@ -156,6 +171,7 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
 
     tracing::info!(
         skills = skills.len(),
+        agents_skills = agents_skills.len(),
         prompts = prompts.len(),
         system_prompts = system_prompts.len(),
         skipped = total_skipped,

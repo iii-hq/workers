@@ -130,7 +130,9 @@ fn self_writes() -> &'static Mutex<HashMap<PathBuf, Instant>> {
     SELF_WRITES.get_or_init(Default::default)
 }
 
-fn mark_self_write(path: &Path) {
+/// `pub(crate)` so delete paths (which have no atomic write to piggyback
+/// on) can suppress their own watcher event before `remove_file`.
+pub(crate) fn mark_self_write(path: &Path) {
     let mut map = self_writes().lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
     map.retain(|_, t| now.duration_since(*t) < SELF_WRITE_TTL);

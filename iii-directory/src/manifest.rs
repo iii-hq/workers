@@ -2,7 +2,10 @@
 
 use serde::Serialize;
 
-use crate::config::{DEFAULT_LOCAL_SKILLS_FOLDER, DEFAULT_REGISTRY_URL, DEFAULT_SKILLS_FOLDER};
+use crate::config::{
+    DEFAULT_AGENTS_SKILLS_FOLDER, DEFAULT_LOCAL_SKILLS_FOLDER, DEFAULT_REGISTRY_URL,
+    DEFAULT_SKILLS_FOLDER,
+};
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -23,6 +26,7 @@ pub fn build_manifest() -> ModuleManifest {
         default_config: serde_json::json!({
             "skills_folder": DEFAULT_SKILLS_FOLDER,
             "local_skills_folder": DEFAULT_LOCAL_SKILLS_FOLDER,
+            "agents_skills_folder": DEFAULT_AGENTS_SKILLS_FOLDER,
             "registry_url": DEFAULT_REGISTRY_URL,
             "download_timeout_ms": 60_000,
             "registry_cache_ttl_ms": 60_000,
@@ -51,6 +55,10 @@ mod tests {
         assert_eq!(
             parsed["default_config"]["skills_folder"],
             DEFAULT_SKILLS_FOLDER
+        );
+        assert_eq!(
+            parsed["default_config"]["agents_skills_folder"],
+            DEFAULT_AGENTS_SKILLS_FOLDER
         );
         assert_eq!(
             parsed["default_config"]["registry_url"],

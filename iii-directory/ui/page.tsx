@@ -38,7 +38,7 @@ function DirectoryPassLine() {
 export default function setup(host: Host) {
   host.pages.register({
     id: 'directory',
-    title: 'directory',
+    title: 'Directory',
     render: (props) => <DirectoryPage host={host} {...props} />,
   })
 

@@ -75,6 +75,12 @@ export interface BrowserAdapter {
   defaultNameKey?: string
   /** Prompt names use the worker's lowercase identifier grammar. */
   slugName?: boolean
+  /** Overrides the slug grammar for name validation on save — skills allow
+      slash-separated segments. */
+  namePattern?: RegExp
+  /** Error copy shown when the name fails `namePattern` (falls back to the
+      slug message). */
+  nameHint?: string
   /** Prompt scanners reject an empty description; skills keep it optional. */
   descriptionRequired?: boolean
   /** Workspace empty-state copy. */
@@ -86,8 +92,7 @@ export interface BrowserAdapter {
   /** Save; returns the entry's effective key after the write (a prompt
       rename via frontmatter `name:` moves the selection along). */
   save(host: Host, key: string, content: string): Promise<string>
-  /** Create a NEW entry; returns its key. Omit to hide the "new" button —
-      skills arrive by download, so only prompt-ish collections set this. */
+  /** Create a NEW entry; returns its key. Omit to hide the "new" button. */
   create?(host: Host, name: string, content: string): Promise<string>
   /** Permanently remove an existing entry. Omit when deletion is unsupported. */
   remove?(host: Host, key: string): Promise<void>
@@ -360,9 +365,19 @@ export function CollectionBrowser({
       adapter.defaultNameKey,
     ).value.trim()
     const effectiveName = name || (!creating ? loaded.key : '')
-    if (adapter.slugName && !SLUG_NAME.test(effectiveName)) {
+    // namePattern governs the CREATE id only: on update the frontmatter
+    // name/title is a display field for skills (the id is the key), so a
+    // human-readable title must not block saving. Prompt updates keep the
+    // slug gate — there the frontmatter name IS a rename.
+    const pattern = creating
+      ? (adapter.namePattern ?? (adapter.slugName ? SLUG_NAME : null))
+      : adapter.slugName
+        ? SLUG_NAME
+        : null
+    if (pattern && !pattern.test(effectiveName)) {
       setSaveError(
-        'enter a name using lowercase letters, numbers, hyphens or underscores',
+        adapter.nameHint ??
+          'enter a name using lowercase letters, numbers, hyphens or underscores',
       )
       return
     }

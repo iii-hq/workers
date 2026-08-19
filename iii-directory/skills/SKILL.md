@@ -16,8 +16,8 @@ serves the system prompts the chat picker offers as an identity override
 (`directory::system-prompts::*`), and proxies the public worker catalogue at
 `api.workers.iii.dev` (`directory::registry::*`). A download pulls a bundle
 onto disk, and each filesystem-backed family also takes direct `create` /
-`update` calls — those are this worker's only writes. Everything else here is
-read-only.
+`update` / `delete` calls — those are this worker's only writes. Everything
+else here is read-only.
 
 Two kinds of id flow through this worker and they must not be mixed up. A
 **callable id** uses `::` (`directory::skills::get`) and goes in the `function:`
@@ -34,7 +34,10 @@ always present. A skill you know exists stays invisible until its worker is
 downloaded, so when one is missing, install it and look again. With
 `auto_download` enabled the worker subscribes to the engine `worker` add event
 and pulls a newly added worker's skills automatically, so freshly installed
-workers can appear without a manual download.
+workers can appear without a manual download. System-installed agent skills
+under the read-only `agents_skills_folder` (`~/.agents/skills` by default) are
+also always visible in `list`/`get` — they are skills, not workers, so they
+never appear in `index` and `update`/`delete` refuse them.
 
 ## When to Use
 
@@ -50,7 +53,8 @@ workers can appear without a manual download.
 ## Boundaries
 
 - Only installed workers are visible. If the engine daemon is unreachable at boot, filtering is skipped and everything on disk is shown instead.
-- Writes are downloads plus the per-family `create` / `update` calls; every read function leaves disk untouched.
+- Writes are downloads plus the per-family `create` / `update` / `delete` calls; every read function leaves disk untouched.
+- Skills under `agents_skills_folder` are read-only: `update`/`delete` refuse them (`D116`), and `create` refuses ids in their namespaces (`D115`). Edit them with their owning tool, or copy one into `skills_folder` on disk to fork it.
 - Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); daemon-managed providers (`http`, `cron`, `state`) open no WebSocket, so merge `worker::list` by `name`.
 - Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - Prompt files without a `description:` in frontmatter are silently skipped by `directory::prompts::list` and `directory::system-prompts::list` alike.
@@ -65,7 +69,9 @@ workers can appear without a manual download.
 - `directory::skills::download_from_registry` — install a published worker's skills from the registry; `worker` required, pin with `version` XOR `tag` (default `tag: latest`).
 - `directory::skills::download_from_repo` — pull one skill folder from a GitHub repo; `repo` + `skill` required, `branch` defaults to `main`.
 - `directory::skills::download` — flexible alias accepting either source set; prefer the two explicit forms so the source is unambiguous.
-- `directory::skills::update` — overwrite one EXISTING skill with new full-file markdown (frontmatter included); never creates, so materialize a bundle with a download first.
+- `directory::skills::update` — overwrite one EXISTING skill with new full-file markdown (frontmatter included); never creates — author with `directory::skills::create` or materialize a bundle with a download first.
+- `directory::skills::create` — create a NEW skill at `<skills_folder>/<id>.md` from full-file content; refuses an id that already resolves in the visible set, an existing target path, and ids the visibility filter (or a system-installed agents namespace) would hide.
+- `directory::skills::delete` — permanently remove one EXISTING skill by id (same forgiving id forms as `get`); cleans up parent directories left empty.
 - `directory::prompts::list` — list slash-command prompt templates (only files carrying a frontmatter `description`).
 - `directory::prompts::get` — read one prompt template's body by name; `raw: true` also returns the full on-disk file for round-tripping.
 - `directory::prompts::create` — create a NEW command template at `<skills_folder>/prompts/<name>.md` from full-file content; refuses a name already in the command scan and an existing target path.
@@ -80,7 +86,7 @@ workers can appear without a manual download.
 - `directory::registry::workers::info` — full registry detail for one worker, including ones not installed: `api_reference` (functions + triggers with schemas) and `skills_tree`.
 - `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, and registered triggers for one function id.
 
-A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip and `D214` for a create whose name or target path is already taken) — follow it instead of retrying the same input. Both prompt families share those codes; the message names which kind it means ("prompt" vs "system prompt") and its `Next:` stays inside that family. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
+A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Both prompt families share those codes; the message names which kind it means ("prompt" vs "system prompt") and its `Next:` stays inside that family. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
 
 ## Reactive triggers
 
@@ -88,7 +94,8 @@ The worker publishes three custom trigger types, one per kind —
 `directory::skills::on-change`, `directory::prompts::on-change`, and
 `directory::system-prompts::on-change`. Each fires for its own kind only, on any
 of: a download that wrote at least one file of that kind (`op: "download"`), that
-family's `update` or `create` (`op: "update"` / `"create"`), or a change made to
+family's `update`, `create`, or `delete` (`op: "update"` / `"create"` /
+`"delete"`), or a change made to
 that kind's files directly on disk, outside this worker (`op: "external"` — a
 file pasted in, edited in an external editor, deleted, or renamed). Bind one when
 a *different* worker must react to the on-disk set changing; the `mcp` worker uses
