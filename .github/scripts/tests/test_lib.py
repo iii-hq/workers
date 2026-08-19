@@ -16,7 +16,7 @@ class TestParseSemver:
         assert _lib.parse_semver("1.2") == ((1, 2, 0), 1, "")
 
     def test_prerelease_strips_core_keeps_suffix(self):
-        assert _lib.parse_semver("1.2.3-rc.1") == ((1, 2, 3), 0, "rc.1")
+        assert _lib.parse_semver("1.2.3-rc.1") == ((1, 2, 3), 0, "rc.00000000000000000001")
 
     def test_stable_greater_than_prerelease_same_core(self):
         # 1.2.3 must rank above 1.2.3-rc.1 (the audit bug).
@@ -28,6 +28,7 @@ class TestParseSemver:
 
     def test_two_prereleases_sort_lexicographically(self):
         assert _lib.parse_semver("1.2.3-rc.1") < _lib.parse_semver("1.2.3-rc.2")
+        assert _lib.parse_semver("1.2.3-rc.2") < _lib.parse_semver("1.2.3-rc.10")
 
     def test_build_metadata_is_ignored(self):
         # SemVer 2.0.0 §10: build metadata after `+` MUST NOT affect precedence.

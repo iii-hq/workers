@@ -1,0 +1,158 @@
+name: Commit exact stable Registry release
+run-name: RC · registry_finalize · ${{ inputs.operation_id }} · ${{ inputs.step_id }} · ${{ inputs.dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        required: true
+        type: string
+      step_id:
+        required: true
+        type: string
+      release_intent_id:
+        required: true
+        type: string
+      candidate_id:
+        required: true
+        type: string
+      release_attempt_id:
+        required: true
+        type: string
+      worker:
+        required: true
+        type: string
+      candidate_version:
+        required: true
+        type: string
+      stable_version:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      plan_hash:
+        required: true
+        type: string
+      expected_next_version:
+        required: true
+        type: string
+      expected_latest_version:
+        required: true
+        type: string
+      dispatch_nonce:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    name: Set ${{ inputs.worker }} latest tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate exact dispatch and CAS identity
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/release_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
+          --plan-hash '${{ inputs.plan_hash }}'
+          --dispatch-nonce '${{ inputs.dispatch_nonce }}'
+          --candidate-version '${{ inputs.candidate_version }}'
+          --stable-version '${{ inputs.stable_version }}'
+          --source-sha '${{ inputs.source_sha }}'
+          --mutating
+
+      - name: Commit Registry point or confirm an already committed retry
+        id: commit
+        env:
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          CANDIDATE: ${{ inputs.candidate_version }}
+          STABLE: ${{ inputs.stable_version }}
+          EXPECTED_NEXT: ${{ inputs.expected_next_version }}
+          EXPECTED_LATEST: ${{ inputs.expected_latest_version }}
+        run: |
+          set -euo pipefail
+          resolve() {
+            local channel="$1" response http
+            response=$(mktemp)
+            http=$(curl -sS -o "$response" -w '%{http_code}' \
+              -H 'Content-Type: application/json' -X POST 'https://api.workers.iii.dev/resolve' \
+              --data "$(jq -cn --arg worker "$WORKER" --arg version "$channel" '{worker:$worker,version:$version}')")
+            if [[ "$http" == "200" ]]; then jq -r '.root.version // empty' "$response"; else echo; fi
+          }
+
+          next=$(resolve next)
+          latest=$(resolve latest)
+          if [[ "$next" != "$EXPECTED_NEXT" ]]; then
+            echo "::error::next points to ${next:-nothing}, expected $EXPECTED_NEXT"
+            exit 1
+          fi
+          stable=$(resolve "$STABLE")
+          if [[ "$stable" != "$STABLE" ]]; then
+            echo "::error::stable version $STABLE is not present in the Registry"
+            exit 1
+          fi
+          if [[ "$next" == "$EXPECTED_NEXT" && "$latest" == "$STABLE" ]]; then
+            echo 'state=unchanged' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          expected_latest_json=null
+          if [[ "$EXPECTED_LATEST" != 'none' ]]; then
+            expected_latest_json=$(jq -cn --arg value "$EXPECTED_LATEST" '$value')
+          fi
+          payload=$(jq -cn --arg stable "$STABLE" --argjson latest "$expected_latest_json" \
+            '{version:$stable} + (if $latest == null then {expected_current_version:null} else {expected_current_version:$latest} end)')
+          http=$(curl -sS -o finalize-response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+            -X PUT "https://api.workers.iii.dev/w/$WORKER/tags/latest" \
+            --data "$payload")
+          cat finalize-response.json
+          test "$http" = 200
+          test "$(resolve latest)" = "$STABLE"
+          test "$(resolve next)" = "$EXPECTED_NEXT"
+          echo 'state=changed' >> "$GITHUB_OUTPUT"
+
+      - name: Write factual Registry result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          STATE: ${{ steps.commit.outputs.state }}
+        run: |
+          set -euo pipefail
+          state="$STATE"
+          if [[ "$JOB_STATUS" != 'success' ]]; then state='failed'; fi
+          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"registry_commit_point",status:$status}]')
+          effects=$(jq -cn --arg state "$state" --arg worker '${{ inputs.worker }}' --arg version '${{ inputs.stable_version }}' \
+            '[{surface:"registry_commit_point",status:(if $state == "changed" then "changed" else (if $state == "unchanged" then "unchanged" else "failed" end) end),immutable_id:($worker + "@" + $version)}]')
+          outputs=$(jq -cn --arg state "$state" '{registry_state:$state}')
+          subject=$(jq -cn \
+            --arg worker '${{ inputs.worker }}' --arg candidate '${{ inputs.candidate_version }}' \
+            --arg stable '${{ inputs.stable_version }}' --arg source '${{ inputs.source_sha }}' \
+            '{worker:$worker,version:$stable,candidate_version:$candidate,stable_version:$stable,source_sha:$source}')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --kind registry_finalize --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
+            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
+            --workflow finalize-registry.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects "$effects" --outputs "$outputs" \
+            --release-intent-id '${{ inputs.release_intent_id }}' --candidate-id '${{ inputs.candidate_id }}' --attempt-id '${{ inputs.release_attempt_id }}' \
+            --plan-hash '${{ inputs.plan_hash }}' --dispatch-nonce '${{ inputs.dispatch_nonce }}' \
+            --candidate-version '${{ inputs.candidate_version }}' --stable-version '${{ inputs.stable_version }}' \
+            --source-sha '${{ inputs.source_sha }}' --output execution-result.json
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: execution-result.json
+          retention-days: 30
+          if-no-files-found: error
