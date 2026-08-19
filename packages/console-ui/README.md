@@ -104,6 +104,28 @@ external: ['react', 'react-dom', 'react-dom/client',
 
 Full authoring guide: `workers/docs/sops/injectable-console-ui.md`.
 
+## Transcript annotation renderers
+
+Workers can feature-detect
+`host.chat?.registerTranscriptRenderer?.({ id, render })` to render a detail
+for an assistant-origin envelope:
+
+```ts
+origin.<id> = {
+  type: 'console.transcript',
+  version: 1,
+  summary: 'safe plain-text summary',
+  data: { /* worker-owned JSON */ },
+}
+```
+
+The renderer receives only `{ version, summary, data }`, never the surrounding
+transcript or complete origin. Lookup is exact by `id`, with last registration
+winning; asset replacement, worker disconnect, and per-worker disable dispose
+the renderer automatically. The host scopes and error-boundary-wraps it. A
+missing, disabled, disconnected, or incompatible renderer leaves the safe
+summary visible. Ordinary origin fields do not create rows.
+
 ## Keeping it honest
 
 The declarations are hand-modeled on the console's real components; two

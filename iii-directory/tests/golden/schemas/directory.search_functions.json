@@ -1,0 +1,154 @@
+{
+  "description": "Search every available function with one natural-language query describing everything the task needs; returns the full API reference for each relevant function, grouped by worker.",
+  "function_id": "directory::search_functions",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "query": {
+        "description": "One natural-language query naming every capability the task needs.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "SearchFunctionsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "InstallCall": {
+        "description": "A ready-made `worker::add` invocation: `{ function, payload }` matches the agent_trigger call envelope so the model can execute it verbatim.",
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "payload": true
+        },
+        "required": [
+          "function",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "InstallableFunction": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "InstallableWorker": {
+        "description": "A registry worker that is NOT installed but carries functions matching the query. `name` is the registry slug `worker::add` installs.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "functions": {
+            "description": "Names + descriptions only — deliberately NO request schema: an uninstalled function must not look callable, so there is nothing here for a model to pattern-match into a direct call. Contracts arrive through a fresh search after the install registers them.",
+            "items": {
+              "$ref": "#/definitions/InstallableFunction"
+            },
+            "type": "array"
+          },
+          "install": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/InstallCall"
+              }
+            ],
+            "description": "The exact call that installs this worker, ready to execute."
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "functions",
+          "install",
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "SearchContract": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "request_schema": true
+        },
+        "required": [
+          "description",
+          "function_id",
+          "request_schema"
+        ],
+        "type": "object"
+      },
+      "SearchWorker": {
+        "properties": {
+          "functions": {
+            "items": {
+              "$ref": "#/definitions/SearchContract"
+            },
+            "type": "array"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "functions",
+          "namespace"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "guidance": {
+        "type": "string"
+      },
+      "installable": {
+        "description": "Registry workers (verified authors) with matching functions, present only when nothing installed matched. Their functions are NOT callable until the worker is installed.",
+        "items": {
+          "$ref": "#/definitions/InstallableWorker"
+        },
+        "type": "array"
+      },
+      "latency_ms": {
+        "format": "double",
+        "type": "number"
+      },
+      "workers": {
+        "items": {
+          "$ref": "#/definitions/SearchWorker"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "guidance",
+      "installable",
+      "latency_ms",
+      "workers"
+    ],
+    "title": "SearchFunctionsResponse",
+    "type": "object"
+  }
+}

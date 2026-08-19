@@ -15,7 +15,7 @@ name = "iii_directory"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.21.8"
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "process"] }
 serde = { version = "1", features = ["derive"] }
@@ -41,6 +41,14 @@ notify = "8"
 # console:style triggers + dev watcher). Path-linked, never published —
 # versions with the console worker in this repo.
 iii-console-ui = { path = "../crates/console-ui" }
+# Hook-binding reconcile (BindingSlot/try_bind) for the pre-generate hint —
+# the configuration register/fetch here stays hand-rolled on purpose.
+iii-config-client = { path = "../crates/config-client" }
+# Caller-supplied session id from OTel baggage keys the search's per-session
+# resend-avoidance memory. Never a security boundary.
+opentelemetry = { version = "0.31", default-features = false }
+# Catalog fingerprint hashing for the search index.
+sha2 = "0.10"
 
 [dev-dependencies]
 serde_json = "1"

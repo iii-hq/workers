@@ -20,6 +20,10 @@ pub mod engine_fn;
 pub mod error;
 pub mod prompts;
 pub mod registry;
+pub mod search;
+pub mod search_index;
+#[cfg(test)]
+mod search_relevance;
 pub mod skills;
 pub mod update;
 

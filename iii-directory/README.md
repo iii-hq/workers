@@ -3,13 +3,14 @@
 Workers registry HTTP proxy and filesystem-backed skill + prompt
 reader for the [iii engine](https://github.com/iii-hq/iii). Every
 public function sits under a single `directory::*` namespace, split
-into four sub-namespaces (all MCP-agnostic):
+into five surfaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). `title` prefers the YAML frontmatter `title:` over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Command templates listed by `directory::prompts::list`, read by `get`, authored by `create`, edited by `update`. Stored under any `prompts/` path segment; `create` writes `<skills_folder>/prompts/<name>.md`. | Parametric command templates the *user* invokes |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts with the same four verbs and the same response shapes as Prompts — including the `prompts` field name on `list`. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
+| **Search** (`directory::search_functions`) | One natural-language query → the API reference of only the relevant functions (installed, plus installable registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Engine introspection (functions / triggers / registered triggers /
@@ -47,9 +48,10 @@ registry view also surfaces publication metadata (`type`, `config`,
 4. [On-disk layout](#on-disk-layout)
 5. [Skill ids](#skill-ids)
 6. [Functions](#functions)
-7. [Custom trigger types](#custom-trigger-types)
-8. [Local development & testing](#local-development--testing)
-9. [Migration from skills v0.2.x](#migration-from-skills-v02x)
+7. [Function search & pre-generate hint](#function-search--pre-generate-hint)
+8. [Custom trigger types](#custom-trigger-types)
+9. [Local development & testing](#local-development--testing)
+10. [Migration from skills v0.2.x](#migration-from-skills-v02x)
 
 ---
 
@@ -106,6 +108,9 @@ registry_url: https://api.workers.iii.dev   # workers registry base URL
 download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
 registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
 filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
+inject_hint: true                            # bind the directory::pre-generate search-hint hook
+hint_min_workers: 2                          # minimum surface width before the hint fires (0 = always)
+registry_search: true                        # include installable registry workers in every search
 ```
 
 The `skills_folder` is created on first download if it doesn't exist.
@@ -335,6 +340,61 @@ There is **no** `directory::skills::register` /
 [Migration](#migration-from-skills-v02x) below.
 
 ---
+
+## Function search & pre-generate hint
+
+One-shot lexical function search over the live engine catalog, absorbed from
+the former `discovery` worker. One natural-language query returns the API
+reference of only the relevant functions, grouped by worker in rank order —
+the model's next step is calling them directly instead of walking the engine
+catalog with `engine::functions::list`/`info`.
+
+| Function | Kind | What it does |
+|---|---|---|
+| `directory::search_functions` | public | `{ query }` → `{ guidance, workers[], installable[]?, latency_ms }`: BM25 rank over the live engine catalog (at most 3 workers / 12 contracts) plus matching NOT-installed registry workers under `installable`. |
+| `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per session). |
+| `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
+| `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
+
+Ranking pipeline:
+
+1. **Corpus**: the live engine catalog (boot snapshot + push refresh),
+   slimmed to name + first description sentence + argument names. `engine::`
+   ids, functions published with `metadata.internal`, and the search itself
+   never participate — the worker's own public `directory::*` functions are
+   searchable like any other capability.
+2. **Scoring**: Okapi BM25 (k1 1.2, b 0.75) with the function name indexed at
+   3× weight, camelCase segmentation (`presignUrl` → presign + url), a
+   22-word grammatical stoplist, conservative plural folding, JSON-key
+   stripping from the query, and a two-distinct-terms minimum match.
+3. **Multi-intent queries**: clauses split on list punctuation and "and"
+   (only when both sides keep two informative terms) are ranked on their own
+   leaders with a fair share of the function cap.
+4. **Pruning**: coverage-aware function floor (≥50% of the leader AND full
+   term coverage or ≥85% score) drops same-worker family riders; a
+   namespace-level floor (40% of the leader) drops trailing workers.
+5. **Registry search** (`registry_search`, default on): every call also
+   consults the public workers registry in-process (full query, then
+   informative terms, all concurrent; verified authors only; candidates
+   merged round-robin across query variants) and returns up to 2 workers / 6
+   contracts that WOULD match if installed, with `worker::add` guidance.
+6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
+   repeat queries omit contracts already delivered; two consecutive empty
+   answers widen the next one to single-term matches.
+
+The pre-generate hook appends one `<discovery_assist>` block pointing the
+model at `search_functions` — at most once per session, and only when every
+gate clears: the function is callable in the surface, no search result is in
+the window yet, the surface spans at least `hint_min_workers` distinct
+workers, the current task (from the latest user message) has no real function
+results yet, and it does not already name a callable function id. Measured on
+26 pre-existing e2e scenarios: an unconditional hint *induces* redundant
+discovery on guided tasks (up to +110% tokens); the gates are what make
+default-on affordable. The hook's transcript annotations (`origin.directory`)
+carry only coarse outcome/reason and counts.
+
+Knobs (`inject_hint`, `hint_min_workers`, `registry_search`) live in the
+`iii-directory` configuration entry and hot-apply — see Configuration.
 
 ## Custom trigger types
 
