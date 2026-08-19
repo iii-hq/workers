@@ -356,6 +356,10 @@
 
 /* ── the explorer page ──────────────────────────────────────────────── */
 
+[data-iii-ui="shell"] .shui-workspace-frame > * {
+  position: relative;
+}
+
 [data-iii-ui="shell"] .shui-sidebar {
   --shui-explorer-bg: var(--color-panel-raised);
   --shui-tree-file-muted: color-mix(
@@ -1687,6 +1691,10 @@
   min-width: 0;
   display: flex;
   overflow: hidden;
+  /* The page is injected into a console panel, so the viewport says nothing
+     about the room it actually has: two shell panels side by side on a
+     desktop are each narrower than a phone. Responsive rules key off this. */
+  container: shui-page / inline-size;
 }
 [data-iii-ui="shell"] .shui-workspace-frame.terminal-bottom {
   flex-direction: column;
@@ -1726,22 +1734,6 @@
   width: 100%;
   height: 100%;
 }
-[data-iii-ui="shell"] .shui-terminal-panel-chrome {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 4px 8px 4px 10px;
-  color: var(--color-ink-faint);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  border-bottom: 1px solid var(--color-edge);
-}
-[data-iii-ui="shell"] .shui-terminal-panel-chrome > svg {
-  width: 14px;
-  height: 14px;
-}
 [data-iii-ui="shell"] .shui-terminal-workspace {
   flex: 1;
   display: flex;
@@ -1755,14 +1747,47 @@
   align-items: stretch;
   min-width: 0;
   min-height: 32px;
-  overflow-x: auto;
+  padding-right: 6px;
   border-bottom: 1px solid var(--color-edge);
   scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-strip {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 5px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group .shui-terminal-action {
+  width: 22px;
+  height: 20px;
+  border-radius: 0;
 }
 [data-iii-ui="shell"] .shui-terminal-tab {
   flex: none;
   display: flex;
   align-items: center;
+  /* One rhythm across the row: the label, its actions and the tab's right
+     edge share the same gap, so the close button never looks pushed against
+     the divider. */
+  gap: 2px;
+  padding-right: 4px;
   min-width: 0;
   color: var(--color-ink-faint);
   border-right: 1px solid var(--color-edge);
@@ -1773,9 +1798,16 @@
   background: var(--color-surface-active);
   box-shadow: inset 0 -1px 0 var(--color-accent);
 }
+[data-iii-ui="shell"] .shui-terminal-tab .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tab:hover .shui-terminal-tab-action[aria-label^="Rename"],
+[data-iii-ui="shell"] .shui-terminal-tab:focus-within .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 1;
+}
 [data-iii-ui="shell"] .shui-terminal-tab-select {
   max-width: 150px;
-  padding: 7px 8px 7px 10px;
+  padding: 7px 2px 7px 10px;
   overflow: hidden;
   color: inherit;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -1791,11 +1823,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  min-width: 26px;
+  /* The strip stretches its children, so an unsized button grows to the full
+     tab height and its icon stops sharing a centre line with the tab label.
+     Fixing the box and centring it with auto margins keeps rename, close and
+     new-tab optically aligned with the text beside them. */
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  margin: auto 0;
   padding: 0;
   color: var(--color-ink-ghost);
   border: 0;
+  border-radius: 4px;
   background: transparent;
   cursor: pointer;
 }
@@ -1937,6 +1976,7 @@
   background: var(--color-accent);
 }
 [data-iii-ui="shell"] .shui-terminal {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1944,43 +1984,106 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12.5px;
 }
-[data-iii-ui="shell"] .shui-terminal-chrome {
-  flex-shrink: 0;
+[data-iii-ui="shell"] .shui-terminal-status {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 4px 10px;
   color: var(--color-ink-faint);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-ink) 10%, transparent);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
-[data-iii-ui="shell"] .shui-terminal-chrome-icon {
-  width: 14px;
-  height: 14px;
+[data-iii-ui="shell"] .shui-terminal-status.error,
+[data-iii-ui="shell"] .shui-terminal-status.exited {
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 10%, transparent);
 }
-[data-iii-ui="shell"] .shui-terminal-chrome-cwd {
-  flex: 0 1 auto;
+[data-iii-ui="shell"] .shui-terminal-status-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  color: inherit;
+  font: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-status-action:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status-action svg {
+  width: 11px;
+  height: 11px;
+}
+[data-iii-ui="shell"] .shui-terminal-hud {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+[data-iii-ui="shell"] .shui-terminal:hover .shui-terminal-hud,
+[data-iii-ui="shell"] .shui-terminal-hud:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 4px 2px 9px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-pane-cwd {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
 }
-[data-iii-ui="shell"] .shui-terminal-state {
-  flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-ink-ghost);
+[data-iii-ui="shell"] .shui-terminal-pane-bar .shui-terminal-action {
+  width: 20px;
+  height: 20px;
 }
-[data-iii-ui="shell"] .shui-terminal-state.ready {
-  color: var(--color-accent);
+[data-iii-ui="shell"] .shui-terminal-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink);
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  background: var(--color-surface-active);
+  cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-terminal-state.error {
-  color: var(--color-warn);
-}
-[data-iii-ui="shell"] .shui-terminal-chrome-spacer {
-  flex: 1;
+[data-iii-ui="shell"] .shui-terminal-jump svg {
+  width: 14px;
+  height: 14px;
 }
 [data-iii-ui="shell"] .shui-terminal-action {
   flex: none;
@@ -2045,6 +2148,7 @@
   height: 100%;
 }
 [data-iii-ui="shell"] .shui-xterm .xterm-viewport {
+  background-color: transparent;
   scrollbar-color: var(--color-ink-ghost) transparent;
 }
 [data-iii-ui="shell"] .shui-etab-icon {
@@ -2054,12 +2158,9 @@
 }
 
 @media (max-width: 760px) {
-  [data-iii-ui="shell"] .shui-terminal-panel-chrome {
-    gap: 3px;
-    padding-inline: 6px;
-  }
-  [data-iii-ui="shell"] .shui-terminal-panel-chrome > span:not(.shui-terminal-chrome-spacer) {
-    display: none;
+  [data-iii-ui="shell"] .shui-terminal-bar-actions {
+    gap: 2px;
+    padding-left: 4px;
   }
   [data-iii-ui="shell"] .shui-terminal-tab-select {
     max-width: 92px;
@@ -2068,8 +2169,338 @@
     width: 22px;
     min-width: 22px;
   }
-  [data-iii-ui="shell"] .shui-terminal-chrome {
-    gap: 4px;
-    padding-inline: 7px;
+  [data-iii-ui="shell"] .shui-terminal-pane-cwd {
+    display: none;
   }
+}
+
+/* Agent runs watched in the terminal surface ------------------------------ */
+
+[data-iii-ui='shell'] .shell-agent-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+[data-iii-ui='shell'] .shell-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-session,
+[data-iii-ui='shell'] .shell-agent-status {
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-status {
+  margin-left: auto;
+}
+
+[data-iii-ui='shell'] .shell-agent-prompt {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--color-ink-faint);
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-end,
+[data-iii-ui='shell'] .shell-agent-hint {
+  font-size: 0.76rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+[data-iii-ui='shell'] .shell-agent-card-note {
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-input {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-top: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-input > *:first-child {
+  flex: 1;
+}
+
+[data-iii-ui='shell'] .shui-launcher {
+  display: grid;
+  grid-template-columns: repeat(2, 8.5rem);
+  gap: 0.6rem;
+}
+
+[data-iii-ui='shell'] .shui-launcher-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 6.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-subtle);
+  color: var(--color-ink-faint);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-launcher-card:hover {
+  color: var(--color-ink);
+  border-color: var(--color-border-strong, var(--color-border));
+}
+
+[data-iii-ui='shell'] .shui-launcher-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* Workspace browser -------------------------------------------------------- */
+
+[data-iii-ui='shell'] .shui-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group svg {
+  width: 12px;
+  height: 12px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb {
+  padding: 1px 4px;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-list {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 2px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry.dir {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+[data-iii-ui='shell'] .shui-browser-empty {
+  grid-column: 1 / -1;
+  padding: 12px 8px;
+  font-size: 12px;
+}
+
+/* Narrow panels — phones, and desktop panels split small ------------------- */
+
+@container shui-page (max-width: 720px) {
+  [data-iii-ui='shell'] .shui-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 6;
+    width: min(100%, 320px) !important;
+  }
+
+  [data-iii-ui='shell'] .shui-resize-handle {
+    display: none;
+  }
+
+  /* A side-by-side split at this width gives each pane a few characters, so
+     panes stack whichever way they were split. */
+  [data-iii-ui='shell'] .shui-terminal-split.horizontal {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-split.horizontal
+    > .shui-terminal-split-separator {
+    width: auto;
+    height: 5px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-workspace-frame.terminal-right {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-panel[data-terminal-dock='right'] {
+    width: 100% !important;
+    height: 45%;
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--color-edge);
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-panel[data-terminal-dock='right']
+    > .shui-terminal-resize {
+    top: 0;
+    right: auto;
+    left: 0;
+    width: 100%;
+    height: 7px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-new {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-dock-group .shui-terminal-action {
+    width: 28px;
+    height: 26px;
+  }
+
+  /* The rename pencil is a hover affordance; touch has no hover, and the tab
+     still renames on double tap. */
+  [data-iii-ui='shell']
+    .shui-terminal-tab
+    .shui-terminal-tab-action[aria-label^='Rename'] {
+    display: none;
+  }
+
+  /* Same for the pane cluster: hover never fires on touch, so it becomes a
+     bar of its own above the output. */
+  [data-iii-ui='shell'] .shui-terminal-hud {
+    position: static;
+    order: -1;
+    justify-content: flex-end;
+    opacity: 1;
+    border: 0;
+    border-bottom: 1px solid var(--color-edge);
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: auto;
+  }
+
+  [data-iii-ui='shell'] .shui-launcher {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: min(100%, 20rem);
+  }
+
+  [data-iii-ui='shell'] .shui-browser-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+[data-iii-ui='shell'] .shui-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, #000 42%, transparent);
 }

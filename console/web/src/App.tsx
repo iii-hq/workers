@@ -2,6 +2,7 @@ import {
   CircleQuestionMark,
   Menu,
   Plus,
+  Search,
   SettingsIcon,
   SquarePen,
   X,
@@ -15,12 +16,14 @@ import {
   useState,
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { PaletteHost } from '@/components/PaletteHost'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
@@ -34,6 +37,7 @@ import {
   useHashRoute,
   type View,
 } from '@/hooks/use-hash-route'
+import { useKeybindings } from '@/hooks/use-keybindings'
 import { useTheme } from '@/hooks/use-theme'
 import {
   type UseWorkspaceTabsReturn,
@@ -43,6 +47,8 @@ import {
   ConversationsProvider,
   useConversationsCtx,
 } from '@/lib/conversations-context'
+import { shortcutPlatform } from '@/lib/keybindings/bindings'
+import { keybindingGroups, resolveBindings } from '@/lib/keybindings/registry'
 import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
@@ -67,6 +73,9 @@ export function App() {
   const [view, setView] = useHashRoute()
   const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
+  // search affordance is the other, so the state has to sit above both.
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
   const [mobilePanelIndex, setMobilePanelIndex] = useState(0)
@@ -174,23 +183,26 @@ export function App() {
     else setView(primary as View)
   }, [activeTabId, activeTab, hashScreen, setView])
 
-  /* `?` opens the shortcuts overlay. Ignored when the user is typing into
-     editable elements so we don't fight the composer. */
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== '?') return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      const target = e.target as HTMLElement | null
-      if (target?.isContentEditable) return
-      const tag = target?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      e.preventDefault()
-      setShortcutsOpen(true)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  /* Every global shortcut the console has, dispatched from the registry.
+     Which keys reach here while the caret is in a field, and which stand
+     down, is the registry's call — not this component's. */
+  useKeybindings({
+    'palette.toggle': () => setPaletteOpen((current) => !current),
+    'shortcuts.open': () => setShortcutsOpen(true),
+    'app.settings': toggleSettings,
+    'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    'panel.split': () =>
+      workspaceRef.current.addColumn(
+        workspaceRef.current.activeTab.id,
+        'right',
+      ),
+    // Out of range is a no-op rather than a wrap: pressing 7 with four
+    // workspaces open should do nothing, not land somewhere surprising.
+    'workspace.selectByIndex': (index) => {
+      const tab = workspaceRef.current.tabs[index]
+      if (tab) workspaceRef.current.activateTab(tab.id)
+    },
+  })
 
   return (
     <ConversationsProvider>
@@ -202,6 +214,7 @@ export function App() {
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
         <WorkspacePanes
           workspace={workspace}
@@ -217,6 +230,15 @@ export function App() {
           />
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <PaletteHost
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          openScreen={workspace.openScreen}
+          onOpenSettings={() => setView('configuration')}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
+          theme={theme}
+          onThemeChange={setTheme}
+        />
       </Sheet>
     </ConversationsProvider>
   )
@@ -556,6 +578,7 @@ interface HeaderProps {
   settingsOpen: boolean
   onToggleSettings: () => void
   onOpenShortcuts: () => void
+  onOpenPalette: () => void
 }
 
 function Header({
@@ -565,6 +588,7 @@ function Header({
   settingsOpen,
   onToggleSettings,
   onOpenShortcuts,
+  onOpenPalette,
 }: HeaderProps) {
   const { extPageTitles } = useScreenOptions()
   const { createNew } = useConversationsCtx()
@@ -614,23 +638,36 @@ function Header({
           ) : null}
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            if (mobileScreen === CHAT_SCREEN) createNew()
-            else workspace.createTab({ columns: 1 })
-          }}
-          aria-label={
-            mobileScreen === CHAT_SCREEN ? 'new chat' : 'new workspace'
-          }
-          className="ml-auto flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-        >
-          {mobileScreen === CHAT_SCREEN ? (
-            <SquarePen className="size-6" aria-hidden />
-          ) : (
-            <Plus className="size-6" aria-hidden />
-          )}
-        </button>
+        <div className="flex items-center justify-end">
+          {/* A phone has no ⌘K. Search is the console's way of reaching
+              anything, so it gets a first-class affordance rather than a row
+              buried in the workspace menu. */}
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            aria-label="search the console"
+            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            <Search className="size-6" aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (mobileScreen === CHAT_SCREEN) createNew()
+              else workspace.createTab({ columns: 1 })
+            }}
+            aria-label={
+              mobileScreen === CHAT_SCREEN ? 'new chat' : 'new workspace'
+            }
+            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            {mobileScreen === CHAT_SCREEN ? (
+              <SquarePen className="size-6" aria-hidden />
+            ) : (
+              <Plus className="size-6" aria-hidden />
+            )}
+          </button>
+        </div>
       </header>
 
       <MobileWorkspaceMenu
@@ -645,6 +682,7 @@ function Header({
         }}
         onToggleSettings={onToggleSettings}
         onOpenShortcuts={onOpenShortcuts}
+        onOpenPalette={onOpenPalette}
       />
 
       <header className="hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
@@ -745,11 +783,10 @@ interface ShortcutsDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-const SHORTCUTS: { combo: string; description: string }[] = [
-  { combo: '?', description: 'open this shortcut overlay' },
-]
-
+/* Generated from the registry, so the overlay cannot drift from what the
+   keys actually do, and each chord is spelled for the reader's keyboard. */
 function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
+  const platform = shortcutPlatform()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -760,17 +797,41 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           press <kbd className="font-mono text-ink">?</kbd> any time to reopen
           this list.
         </DialogDescription>
-        <ul className="mt-4 divide-y divide-rule-2 border-t border-b border-rule-2">
-          {SHORTCUTS.map(({ combo, description }) => (
-            <li
-              key={combo}
-              className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
-            >
-              <span className="text-ink-faint">{description}</span>
-              <kbd className="text-ink tracking-[0.06em]">{combo}</kbd>
-            </li>
-          ))}
-        </ul>
+        {keybindingGroups().map(([group, entries]) => (
+          <section key={group} className="mt-4">
+            <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
+              {group}
+            </h3>
+            <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
+              {entries.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
+                >
+                  <span className="text-ink-faint">{entry.title}</span>
+                  {/* Alternatives, not one chord: without a separator `tab`
+                      and `shift tab` read as a single four-key press. */}
+                  <span className="flex shrink-0 items-center gap-2">
+                    {resolveBindings(entry.bindings, platform).map(
+                      (binding, index) => (
+                        <Fragment key={binding}>
+                          {index > 0 ? (
+                            <span className="text-ink-ghost">or</span>
+                          ) : null}
+                          <KeyCombo
+                            binding={binding}
+                            platform={platform}
+                            digitRange={entry.digitIndex}
+                          />
+                        </Fragment>
+                      ),
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
       </DialogContent>
     </Dialog>
   )

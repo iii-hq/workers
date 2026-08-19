@@ -1,4 +1,4 @@
-import { ArrowDown, RefreshCw, SquareTerminal } from 'lucide-react'
+import { ArrowDown, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { HoverTip } from './HoverTip'
 import type { TerminalSession } from './terminal-session'
@@ -9,9 +9,19 @@ export { useTerminalSession } from './terminal-session'
 interface TerminalPaneProps {
   session: TerminalSession
   actions?: ReactNode
+  /** Split panes need identity and controls that never sit over output. */
+  docked?: boolean
 }
 
-export function TerminalPane({ session, actions }: TerminalPaneProps) {
+const STATUS_LABEL: Record<string, string> = {
+  connecting: 'starting',
+  reconnecting: 'reconnecting',
+  disconnected: 'disconnected',
+  exited: 'session ended',
+  error: 'session failed',
+}
+
+export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
   const {
     atBottom,
     cwd,
@@ -22,54 +32,35 @@ export function TerminalPane({ session, actions }: TerminalPaneProps) {
     startFresh,
     status,
   } = session
+  const settled = status === 'ready'
+  const recoverable =
+    status === 'disconnected' || status === 'exited' || status === 'error'
 
   return (
     <div className="shui-terminal">
-      <div className="shui-terminal-chrome">
-        <SquareTerminal aria-hidden className="shui-terminal-chrome-icon" />
-        <span>zsh</span>
-        <span className={`shui-terminal-state ${status}`}>{status}</span>
-        <span className="shui-terminal-chrome-cwd" title={cwd}>
-          {cwd}
-        </span>
-        <span className="shui-terminal-chrome-spacer" />
-        {!atBottom ? (
-          <HoverTip label="Jump to latest output">
+      {docked ? (
+        <div className="shui-terminal-pane-bar">
+          <span className="shui-terminal-pane-cwd" title={cwd}>
+            {cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd}
+          </span>
+          {actions}
+        </div>
+      ) : null}
+      {!settled ? (
+        <div className={`shui-terminal-status ${status}`} role="status">
+          <span>{STATUS_LABEL[status] ?? status}</span>
+          {recoverable ? (
             <button
               type="button"
-              className="shui-terminal-action"
-              onClick={jumpToLatest}
-              aria-label="Jump to latest output"
-            >
-              <ArrowDown aria-hidden />
-            </button>
-          </HoverTip>
-        ) : null}
-        {status === 'disconnected' ? (
-          <HoverTip label="Start fresh shell">
-            <button
-              type="button"
-              className="shui-terminal-action"
-              onClick={startFresh}
-              aria-label="Start fresh shell"
+              className="shui-terminal-status-action"
+              onClick={status === 'disconnected' ? startFresh : restart}
             >
               <RefreshCw aria-hidden />
+              {status === 'disconnected' ? 'start fresh' : 'restart'}
             </button>
-          </HoverTip>
-        ) : status === 'exited' || status === 'error' ? (
-          <HoverTip label="Restart terminal session">
-            <button
-              type="button"
-              className="shui-terminal-action"
-              onClick={restart}
-              aria-label="Restart terminal session"
-            >
-              <RefreshCw aria-hidden />
-            </button>
-          </HoverTip>
-        ) : null}
-        {actions}
-      </div>
+          ) : null}
+        </div>
+      ) : null}
       {error ? <div className="shui-terminal-error">{error}</div> : null}
       <div
         ref={setContainer}
@@ -77,6 +68,19 @@ export function TerminalPane({ session, actions }: TerminalPaneProps) {
         role="application"
         aria-label="Interactive zsh terminal"
       />
+      {docked ? null : <div className="shui-terminal-hud">{actions}</div>}
+      {!atBottom ? (
+        <HoverTip label="Jump to latest output">
+          <button
+            type="button"
+            className="shui-terminal-jump"
+            onClick={jumpToLatest}
+            aria-label="Jump to latest output"
+          >
+            <ArrowDown aria-hidden />
+          </button>
+        </HoverTip>
+      ) : null}
     </div>
   )
 }

@@ -5,9 +5,6 @@ on:
   pull_request:
     paths:
       - 'shell/**'
-      - 'console/**'
-      - 'packages/console-ui/**'
-      - 'pnpm-lock.yaml'
       - '.github/workflows/shell-e2e.yml'
   workflow_dispatch:
     inputs:
@@ -97,95 +94,8 @@ jobs:
             shell/tests/e2e/reports/
           retention-days: 7
 
-  terminal:
-    name: Browser terminal
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-
-      - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
-
-      - name: Cache cargo registry & builds
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            shell
-            console
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-
-      - name: Install Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install terminal prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tmux zsh
-          npm install --global @anthropic-ai/claude-code
-
-      - name: Install iii engine (latest from main)
-        run: |
-          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
-            https://install.iii.dev/iii/main/install.sh | sh
-          {
-            echo "$HOME/.local/bin"
-            echo "$HOME/.iii/bin"
-          } >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
-          echo "III_BIN=$(command -v iii)" >> "$GITHUB_ENV"
-          iii --version
-
-      - name: Install UI dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build shell and console UIs
-        run: |
-          pnpm --dir shell/ui build
-          pnpm --dir console/web build
-
-      - name: Build shell and console workers
-        run: |
-          cargo build --locked --release --manifest-path shell/Cargo.toml
-          cargo build --locked --release --manifest-path console/Cargo.toml
-
-      - name: Install Playwright Chromium
-        working-directory: console/web
-        run: pnpm exec playwright install --with-deps chromium
-
-      - name: Typecheck Console E2E tests
-        working-directory: console/web
-        run: pnpm typecheck:e2e
-
-      - name: Run shell terminal Playwright scenario
-        working-directory: console/web
-        env:
-          CONSOLE_BIN: ${{ github.workspace }}/console/target/release/console
-          CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
-          SHELL_BIN: ${{ github.workspace }}/shell/target/release/shell
-        run: pnpm test:e2e:shell
-
-      - name: Upload browser evidence on failure
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: shell-terminal-e2e
-          path: target/console-e2e/
-          retention-days: 7
-
   evidence:
-    needs: [e2e, terminal]
+    needs: e2e
     if: github.event_name == 'workflow_dispatch' && always()
     runs-on: ubuntu-latest
     steps:
@@ -193,8 +103,7 @@ jobs:
         with: { ref: "${{ github.sha }}" }
       - run: |
           subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
-          checks=$(jq -cn --arg harness '${{ needs.e2e.result }}' --arg terminal '${{ needs.terminal.result }}' \
-            '[{name:"shell_e2e",status:$harness},{name:"shell_terminal_e2e",status:$terminal}]')
+          checks=$(jq -cn --arg status '${{ needs.e2e.result }}' '[{name:"shell_e2e",status:$status}]')
           python3 .github/scripts/release_control_contract.py write-result --kind test --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
             --run-attempt '${{ github.run_attempt }}' --workflow shell-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \

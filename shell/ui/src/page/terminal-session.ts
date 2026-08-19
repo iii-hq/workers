@@ -43,6 +43,7 @@ import {
   type TerminalConnectionCoordinator,
   type TerminalStatus,
 } from './terminal-session-state'
+import { terminalAnsiPalette } from './terminal-palette'
 import { bufferTerminalFrame, type TerminalFrame } from './terminal-stream'
 
 export type {
@@ -439,6 +440,20 @@ export function useTerminalSession(
 
   useEffect(() => {
     if (!visible || !container) return
+    const readTheme = () => {
+      const styles = window.getComputedStyle(container)
+      const color = (name: string, fallback: string) =>
+        styles.getPropertyValue(name).trim() || fallback
+      const background = color('--color-bg', styles.backgroundColor || '#111111')
+      return {
+        background,
+        foreground: color('--color-ink', styles.color || '#e5e5e5'),
+        cursor: color('--color-ink', styles.color || '#e5e5e5'),
+        cursorAccent: background,
+        selectionBackground: color('--color-surface-active', '#3a3a3a'),
+        ...terminalAnsiPalette(background),
+      }
+    }
     const styles = window.getComputedStyle(container)
     const color = (name: string, fallback: string) =>
       styles.getPropertyValue(name).trim() || fallback
@@ -453,13 +468,7 @@ export function useTerminalSession(
       lineHeight: 1.2,
       scrollback: 10_000,
       scrollOnUserInput: true,
-      theme: {
-        background: color('--color-bg', '#111111'),
-        foreground: color('--color-ink', '#e5e5e5'),
-        cursor: color('--color-ink', '#e5e5e5'),
-        cursorAccent: color('--color-bg', '#111111'),
-        selectionBackground: color('--color-surface-active', '#3a3a3a'),
-      },
+      theme: readTheme(),
     })
     const fitAddon = new FitAddon()
     const terminalHost = document.createElement('div')
@@ -484,7 +493,14 @@ export function useTerminalSession(
     for (const chunk of preMountOutputRef.current) terminal.write(chunk)
     preMountOutputRef.current = []
 
+    let fitFrame = 0
     const fitTerminal = () => {
+      // A pane mid-layout (docking, splitting, a collapsed sidebar) measures
+      // as a sliver. Fitting against that hands the PTY a 1-column terminal,
+      // and the shell redraws its prompt at that width — the stray "%" marks
+      // and clipped prompts that survive the pane growing back.
+      const rect = container.getBoundingClientRect()
+      if (rect.width < 40 || rect.height < 24) return
       try {
         fitAddon.fit()
       } catch {
@@ -495,8 +511,21 @@ export function useTerminalSession(
         terminal.rows,
       )
     }
-    const observer = new ResizeObserver(fitTerminal)
+    const scheduleFit = () => {
+      if (fitFrame) window.cancelAnimationFrame(fitFrame)
+      fitFrame = window.requestAnimationFrame(() => {
+        fitFrame = 0
+        fitTerminal()
+      })
+    }
+    const observer = new ResizeObserver(scheduleFit)
     observer.observe(container)
+    const themeObserver = new MutationObserver(() => {
+      terminal.options.theme = readTheme()
+    })
+    themeObserver.observe(document.documentElement, {
+      attributeFilter: ['data-theme', 'class'],
+    })
     const frame = window.requestAnimationFrame(() => {
       fitTerminal()
       terminal.focus()
@@ -504,6 +533,8 @@ export function useTerminalSession(
 
     terminalCleanupRef.current = () => {
       window.cancelAnimationFrame(frame)
+      if (fitFrame) window.cancelAnimationFrame(fitFrame)
+      themeObserver.disconnect()
       observer.disconnect()
       scrolled.dispose()
       resized.dispose()

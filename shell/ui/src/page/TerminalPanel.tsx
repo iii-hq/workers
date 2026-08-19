@@ -82,6 +82,7 @@ function DockActions({
 }: Pick<TerminalPanelSharedProps, 'dock' | 'onDockChange' | 'onClose'>) {
   return (
     <>
+      <span className="shui-terminal-dock-group">
       <HoverTip label="Dock terminal at bottom">
         <button
           type="button"
@@ -115,6 +116,7 @@ function DockActions({
           <SquareTerminal aria-hidden />
         </button>
       </HoverTip>
+      </span>
       <HoverTip label="Hide terminal">
         <button
           type="button"
@@ -260,28 +262,27 @@ export function TerminalPanel(props: TerminalPanelProps) {
           <span aria-hidden />
         </div>
       ) : null}
-      <div className="shui-terminal-panel-chrome">
-        <SquareTerminal aria-hidden />
-        <span>Terminal workspace</span>
-        <span className="shui-terminal-chrome-spacer" />
-        <HoverTip label="Close disconnected terminals">
-          <button
-            type="button"
-            className="shui-terminal-action"
-            onClick={() => void workspaceRef.current?.closeDisconnected()}
-            aria-label="Close disconnected terminals"
-          >
-            <Trash2 aria-hidden />
-          </button>
-        </HoverTip>
-        <DockActions
-          dock={dock}
-          onDockChange={onDockChange}
-          onClose={onClose}
-        />
-      </div>
       <TerminalWorkspace
         ref={workspaceRef}
+        actions={
+          <>
+            <HoverTip label="Close disconnected terminals">
+              <button
+                type="button"
+                className="shui-terminal-action"
+                onClick={() => void workspaceRef.current?.closeDisconnected()}
+                aria-label="Close disconnected terminals"
+              >
+                <Trash2 aria-hidden />
+              </button>
+            </HoverTip>
+            <DockActions
+              dock={dock}
+              onDockChange={onDockChange}
+              onClose={onClose}
+            />
+          </>
+        }
         state={props.state}
         dispatch={props.dispatch}
         root={props.root}
