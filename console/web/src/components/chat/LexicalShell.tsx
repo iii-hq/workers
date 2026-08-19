@@ -1,3 +1,4 @@
+import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin'
 import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
@@ -33,6 +34,8 @@ interface LexicalShellProps {
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
+  /** Put the caret in the editor on mount. Off by default. */
+  autoFocus?: boolean
 }
 
 const baseConfig = {
@@ -227,6 +230,7 @@ export function LexicalShell({
   onSubmit,
   placeholder = 'send a message…',
   disabled,
+  autoFocus,
   clearToken,
   initialContent,
   functionEntries,
@@ -272,6 +276,11 @@ export function LexicalShell({
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
       <ExternalInsertPlugin />
+      {/* Opening a session is a request to write in it, so the first
+          keystroke should land in the message rather than be spent aiming.
+          Lexical's own plugin waits for the editable node, which a bare
+          focus() call on mount does not. */}
+      {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

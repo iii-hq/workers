@@ -1512,6 +1512,7 @@ export function ShellExplorerPage({
               path: rel,
               rawKind,
               priorKind,
+              priorKindExact: baselinePath?.exact,
               priorBaseline: baseline,
               existsNow:
                 results === null
