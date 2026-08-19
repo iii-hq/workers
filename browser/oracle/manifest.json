@@ -1,8 +1,8 @@
 {
   "format": 1,
   "source": {
-    "version": "0.2.6",
-    "sha256": "aed73077a9bfe523f842e8e5133f0d9a941dbb6b9862dae6c0f7bb1c27e12c1f",
+    "version": "0.2.7",
+    "sha256": "89703be8308706553be710257a3db5d926fb0b2e583d4e9f5aa55ca84d94f727",
     "files": [
       {
         "path": "scrapling/.gitignore",
@@ -11,8 +11,8 @@
       },
       {
         "path": "scrapling/README.md",
-        "size": 4749,
-        "sha256": "f98ddca029ca09fd6046239b2b8c2abeb515f2f607ebab632d1e2a6829c07d7b"
+        "size": 5023,
+        "sha256": "5f17075bd41eaef9afa860cd76f9b15d9ef192aebeecde6d274cb6d8d914d8a4"
       },
       {
         "path": "scrapling/config.yaml",
@@ -21,18 +21,18 @@
       },
       {
         "path": "scrapling/iii-permissions.yaml",
-        "size": 692,
-        "sha256": "d8d2639f0b89b7fbd40affe5fd56721d4699d3aeb80883ab13cdc2b90d208902"
+        "size": 872,
+        "sha256": "7f266b2bab15c7bcc470481ee7581416604fa85168088ebf9cfa254783d6a543"
       },
       {
         "path": "scrapling/iii.worker.yaml",
-        "size": 1787,
-        "sha256": "7266df502cb6e4f4a6cea26fd5fe91641a0795d73e590ba997f5b17f948ec2ae"
+        "size": 1829,
+        "sha256": "7d3cff8a25ab3d6cf9aa1d27a2c1bdf371888ac9c33c279a34d7004c5cac74a6"
       },
       {
         "path": "scrapling/pyproject.toml",
         "size": 1154,
-        "sha256": "cd9e0c0eda2cd3f53811706aff2a66c63d439f81a3089b6524a2aed06c2ed41b"
+        "sha256": "b360776014d319fffc820a2d63c1d10a81cafb2f6ddeb807180cb740ba91d0fd"
       },
       {
         "path": "scrapling/skills/SKILL.md",
@@ -43,6 +43,11 @@
         "path": "scrapling/src/__init__.py",
         "size": 0,
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scrapling/src/configuration.py",
+        "size": 6952,
+        "sha256": "289d50ce45b5062553bd8680ad8d170fd14049a85f45164ac85d68f6ed3605c7"
       },
       {
         "path": "scrapling/src/core.py",
@@ -56,8 +61,8 @@
       },
       {
         "path": "scrapling/src/guidance.py",
-        "size": 6492,
-        "sha256": "e010648370f6ca1858a5e9292d943cdbcd1578c86fac6bb2bc6175675d3d4764"
+        "size": 8506,
+        "sha256": "ac8be6a8334dccdf2505ed806832a2641a75e0ea2be30519dd47e8f6dddf2b74"
       },
       {
         "path": "scrapling/src/handlers.py",
@@ -66,8 +71,8 @@
       },
       {
         "path": "scrapling/src/main.py",
-        "size": 2700,
-        "sha256": "e787274476a69635815340342f3015c93d4c4698c060e6d8df9de0295bde126d"
+        "size": 4154,
+        "sha256": "d05ac774de9e17704ed9c22075ea7541d14c68786f99d8e4c386d0381990d16d"
       },
       {
         "path": "scrapling/src/schemas.py",
@@ -95,6 +100,11 @@
         "sha256": "c8e8cbf0fd7a8754ddbd10daeca0f91f9c1916856bffa95a9c3d5ee71cf0c027"
       },
       {
+        "path": "scrapling/tests/test_configuration.py",
+        "size": 5845,
+        "sha256": "097e2b362bfcd42c9f19ba5eeefe6d61347b2f16eadb7a5564c52fa4606640ac"
+      },
+      {
         "path": "scrapling/tests/test_crawl.py",
         "size": 8406,
         "sha256": "b67ff5cacc07ed194a7a2cc386acf3f55f5e8d39218f8dcddc2650a84d5fcb26"
@@ -111,8 +121,8 @@
       },
       {
         "path": "scrapling/tests/test_guidance.py",
-        "size": 2798,
-        "sha256": "cbdda7cd12b234744b1a157bc4ce5f21913411d033399109c805c174b1e33ad4"
+        "size": 3951,
+        "sha256": "91b1d23193b62778ed387b6ca677bef733500b18c45c415861820caae83184d5"
       },
       {
         "path": "scrapling/tests/test_main.py",

@@ -61,6 +61,10 @@ if [[ $mode == fetch ]]; then
   chrome_dir=$(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -name 'chrome-linux*' ! -name 'chrome-headless*' | head -1)
   headless_dir=$(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -name 'chrome-headless-shell-linux*' | head -1)
   mkdir -p "$target_dir/pw/chromium-1223" "$target_dir/pw/chromium_headless_shell-1223"
+  # rm before ln: a restored CI cache can materialize the link destination as
+  # a real directory, and `ln -sfn` refuses to overwrite one.
+  rm -rf "$target_dir/pw/chromium-1223/$(basename "$chrome_dir")" \
+    "$target_dir/pw/chromium_headless_shell-1223/$(basename "$headless_dir")"
   ln -sfn "$chrome_dir" "$target_dir/pw/chromium-1223/$(basename "$chrome_dir")"
   ln -sfn "$headless_dir" "$target_dir/pw/chromium_headless_shell-1223/$(basename "$headless_dir")"
 fi

@@ -76,13 +76,24 @@ def records_digest(records: list[dict[str, object]]) -> str:
     return digest.hexdigest()
 
 
+def source_version() -> str:
+    # The CI bot bumps this after every scrapling merge; reading it keeps the
+    # recorded version from silently lying (pyproject.toml is itself one of
+    # the fingerprinted files, so a bump already forces a re-freeze).
+    pyproject = (REPO / "scrapling/pyproject.toml").read_text()
+    match = re.search(r'(?m)^version = "([^"]+)"$', pyproject)
+    if not match:
+        raise SystemExit("cannot read version from scrapling/pyproject.toml")
+    return match.group(1)
+
+
 def source_manifest() -> dict[str, object]:
     output = subprocess.check_output(
         ["git", "ls-files", "-z", "scrapling"], cwd=REPO
     )
     paths = [Path(item.decode()) for item in output.split(b"\0") if item]
     files = [file_record(REPO / path, str(path)) for path in paths]
-    return {"version": "0.2.6", "sha256": records_digest(files), "files": files}
+    return {"version": source_version(), "sha256": records_digest(files), "files": files}
 
 
 def canonical_name(value: str) -> str:
