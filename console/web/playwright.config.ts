@@ -7,7 +7,6 @@ const artifactsRoot =
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: process.env.SHELL_E2E ? [] : ['shell-terminal.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,
