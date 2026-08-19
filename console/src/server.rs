@@ -314,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_http_response_carries_defensive_browser_headers() {
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
         for uri in ["/", "/missing"] {
             let response = get_response(router(state.clone()), uri, &[]).await;
             assert_eq!(
