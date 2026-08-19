@@ -7,7 +7,11 @@ import type {
   UiAssetsPush,
 } from '../types/injectable-ui'
 import type { IiiClient } from './iii-client'
-import { startUiLoader, UI_ASSETS_FN } from './ui-loader'
+import {
+  type ConversationAdapter,
+  startUiLoader,
+  UI_ASSETS_FN,
+} from './ui-loader'
 import {
   getExtConfigForm,
   getExtProviderConfigForm,
@@ -39,9 +43,14 @@ function setupForm(label: string): UiModule {
 }
 
 function createHarness({
+  conversationAdapter = {
+    selectConversation: vi.fn(),
+    composerModel: vi.fn(() => null),
+  },
   importModule = vi.fn(async () => setupForm('default')),
   manifest = Promise.resolve({ disabled: false }),
 }: {
+  conversationAdapter?: ConversationAdapter
   importModule?: (url: string) => Promise<UiModule>
   manifest?: Promise<{ disabled: boolean }>
 } = {}) {
@@ -65,7 +74,7 @@ function createHarness({
     uiClasses: {} as ConsoleApi['uiClasses'],
     useTheme: () => 'light',
   } as ConsoleApi
-  const stop = startUiLoader(client, api, {
+  const stop = startUiLoader(client, api, conversationAdapter, {
     baseUrl: new URL('http://console.test/base/'),
     importModule,
   })
@@ -190,5 +199,62 @@ describe('injectable UI script updates', () => {
     expect(renderCurrentForm()).toContain('old form')
 
     harness.stop()
+  })
+})
+
+describe('injectable UI conversation adapters', () => {
+  it('keeps concurrent loader hosts isolated through teardown and reload', async () => {
+    const selectA = vi.fn()
+    const selectB = vi.fn()
+    const modelA = vi.fn(() => 'provider::model-a')
+    const modelB = vi.fn(() => 'provider::model-b')
+    const observed: string[] = []
+    const moduleFor = (sessionId: string): UiModule => ({
+      default(host) {
+        host.chat.selectConversation?.(sessionId)
+        observed.push(host.chat.composerModel?.('draft') ?? 'missing')
+      },
+    })
+    const first = createHarness({
+      conversationAdapter: {
+        selectConversation: selectA,
+        composerModel: modelA,
+      },
+      importModule: async () => moduleFor('session-a'),
+    })
+    const second = createHarness({
+      conversationAdapter: {
+        selectConversation: selectB,
+        composerModel: modelB,
+      },
+      importModule: async () => moduleFor('session-b'),
+    })
+
+    first.emit({
+      event: 'sync',
+      assets: [{ path: 'first/page.js', kind: 'script', hash: 'one' }],
+    })
+    second.emit({
+      event: 'sync',
+      assets: [{ path: 'second/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(observed).toHaveLength(2))
+    expect(selectA).toHaveBeenCalledWith('session-a')
+    expect(selectA).not.toHaveBeenCalledWith('session-b')
+    expect(selectB).toHaveBeenCalledWith('session-b')
+    expect(selectB).not.toHaveBeenCalledWith('session-a')
+    expect(observed).toEqual(['provider::model-a', 'provider::model-b'])
+
+    first.stop()
+    second.emit({
+      event: 'set',
+      path: 'second/page.js',
+      kind: 'script',
+      hash: 'two',
+    })
+    await vi.waitFor(() => expect(selectB).toHaveBeenCalledTimes(2))
+    expect(selectA).toHaveBeenCalledTimes(1)
+    expect(modelB).toHaveBeenCalledTimes(2)
+    second.stop()
   })
 })

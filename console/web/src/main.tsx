@@ -9,7 +9,6 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { getIiiClient } from '@/lib/iii-client'
-import { startUiLoader } from '@/lib/ui-loader'
 import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
 import faviconUrl from './icons/favicon.svg?url'
@@ -44,16 +43,16 @@ window.__III_CONSOLE__ = bootGlobal
 // injected-UI slots as loading synchronously so configuration editors do not
 // mistake a not-yet-registered override for a genuinely absent one.
 setUiAssetsStatus('loading')
-getIiiClient()
-  .then((client) => {
-    bootGlobal.api = buildConsoleApi(client)
-    Object.freeze(bootGlobal)
-    startUiLoader(client, bootGlobal.api)
-  })
-  .catch((err) => {
-    setUiAssetsStatus('unavailable')
-    console.error('[iii-ui] loader not started — engine client failed', err)
-  })
+const injectableUiRuntime = getIiiClient().then((client) => {
+  const api = buildConsoleApi(client)
+  bootGlobal.api = api
+  Object.freeze(bootGlobal)
+  return { client, api }
+})
+void injectableUiRuntime.catch((err) => {
+  setUiAssetsStatus('unavailable')
+  console.error('[iii-ui] loader not started — engine client failed', err)
+})
 
 const favicon =
   document.querySelector<HTMLLinkElement>('link[rel="icon"]') ??
@@ -80,7 +79,7 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={150}>
-        <App />
+        <App injectableUiRuntime={injectableUiRuntime} />
       </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,
