@@ -143,10 +143,16 @@ export const test = base.extend<ShellFixtures>({
     const runRoot = path.join(root, 'workspace')
     const tmuxRoot = await mkdtemp('/tmp/t8-tmux-')
     const zshRoot = path.join(root, 'zsh')
-    const zshPath = '/bin/zsh'
-    await access(zshPath, constants.X_OK)
+    const systemZshPath = '/bin/zsh'
+    const zshBinRoot = path.join(root, 'bin')
+    const zshPath = path.join(zshBinRoot, 'zsh')
+    await access(systemZshPath, constants.X_OK)
     await mkdir(runRoot, { recursive: true })
     await mkdir(zshRoot, { recursive: true })
+    await mkdir(zshBinRoot, { recursive: true })
+    await writeFile(zshPath, `#!/bin/sh\nexec ${systemZshPath} -d "$@"\n`, {
+      mode: 0o755,
+    })
     await writeFile(path.join(zshRoot, '.zshrc'), "PROMPT='iii-e2e% '\n")
     const enginePort = await reservePort()
     const consolePort = await reservePort()
