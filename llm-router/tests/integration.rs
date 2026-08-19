@@ -1220,7 +1220,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
         .expect_err("duplicate live request id must be rejected");
     assert_eq!(
         remote_code(&duplicate),
-        "router/invalid_request",
+        "router/request_in_progress",
         "{duplicate:?}"
     );
     tokio::time::timeout(Duration::from_secs(2), second_pump)
@@ -2304,7 +2304,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
         .expect_err("internal channel creation failure remains a bus error");
     assert_eq!(
         remote_code(&error),
-        "injected/channel_unavailable",
+        "router/stream_setup_failed",
         "{error:?}"
     );
     tokio::time::timeout(Duration::from_secs(2), pump)
