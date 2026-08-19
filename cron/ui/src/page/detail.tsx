@@ -72,7 +72,7 @@ export function TaskDetail({
         <DetailRow label="Session" mono>
           {task.sessionId}
         </DetailRow>
-        <DetailRow label="Fires">
+        <DetailRow label="Runs">
           {task.once
             ? `${task.fires} of 1 (runs once)`
             : task.maxFires !== undefined

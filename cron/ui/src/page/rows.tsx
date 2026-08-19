@@ -46,7 +46,7 @@ function nextRunLabel(expression: string, now: Date): string {
   return next ? untilLabel(next, now) : 'unknown'
 }
 
-function firesLabel(task: SessionCronTask): string {
+function runsLabel(task: SessionCronTask): string {
   const cap = task.once ? 1 : task.maxFires
   return cap === undefined ? `${task.fires}` : `${task.fires} / ${cap}`
 }
@@ -85,7 +85,7 @@ export function TaskRow({
       </TableCell>
       <TableCell>{cadenceLabel(task.expression)}</TableCell>
       <TableCell>{nextRunLabel(task.expression, now)}</TableCell>
-      <TableCell className="cron-ui-cell-numeric">{firesLabel(task)}</TableCell>
+      <TableCell className="cron-ui-cell-numeric">{runsLabel(task)}</TableCell>
       <TableCell className="cron-ui-cell-actions">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -161,7 +161,7 @@ export function TaskListRow({
       leading={<StatusDot tone={view.tone} aria-hidden />}
       label={task.label ?? 'Untitled schedule'}
       description={`${cadenceLabel(task.expression)} · ${nextRunLabel(task.expression, now)}`}
-      trailing={<span className="cron-ui-list-meta">{firesLabel(task)}</span>}
+      trailing={<span className="cron-ui-list-meta">{runsLabel(task)}</span>}
     />
   )
 }

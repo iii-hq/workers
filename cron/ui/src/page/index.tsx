@@ -766,7 +766,7 @@ export function CronSchedulesPage({
                               <TableHead>Target</TableHead>
                               <TableHead>Cadence</TableHead>
                               <TableHead>Next run</TableHead>
-                              <TableHead className="cron-ui-cell-numeric">Fires</TableHead>
+                              <TableHead className="cron-ui-cell-numeric">Runs</TableHead>
                               <TableHead className="cron-ui-cell-actions">
                                 <span className="cron-ui-sr">Actions</span>
                               </TableHead>
@@ -828,7 +828,7 @@ export function CronSchedulesPage({
                               <TableHead>Function</TableHead>
                               <TableHead>Cadence</TableHead>
                               <TableHead>Next run</TableHead>
-                              <TableHead className="cron-ui-cell-numeric">Fires</TableHead>
+                              <TableHead className="cron-ui-cell-numeric">Runs</TableHead>
                               <TableHead className="cron-ui-cell-actions">
                                 <span className="cron-ui-sr">Actions</span>
                               </TableHead>

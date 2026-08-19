@@ -2,7 +2,7 @@ import { Button, CodeEditor, Input, Select, Selector, StatusPanel } from '@iii-d
 import { useMemo, useState } from 'react'
 import { Field, TextArea } from '../components'
 import type { FunctionSummary } from '../lib/api'
-import { validateCron } from '../lib/cron'
+import { describeCron, nextCronRun, validateCron } from '../lib/cron'
 
 export interface ManualTaskSpec {
   label: string
@@ -42,6 +42,24 @@ export function ManualTaskForm({
   const [eventInto, setEventInto] = useState('/cron_event')
   const [maxFires, setMaxFires] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
+
+  /** What this expression actually means, before it is registered: the plain
+      reading, then the next few literal times. A six-field slip usually looks
+      right and only reveals itself at the first fire. */
+  const expressionError = validateCron(expression)
+  const cadence = expressionError ? null : describeCron(expression)
+  const upcoming = useMemo(() => {
+    if (expressionError) return []
+    const times: string[] = []
+    let cursor = new Date()
+    for (let index = 0; index < 3; index += 1) {
+      const next = nextCronRun(expression, cursor)
+      if (!next) break
+      times.push(`${next.toISOString().slice(0, 16).replace('T', ' ')} UTC`)
+      cursor = next
+    }
+    return times
+  }, [expression, expressionError])
 
   // Grouped by owning worker, because the catalog is every function on the bus.
   const functionGroups = useMemo(() => {
@@ -86,7 +104,7 @@ export function ManualTaskForm({
     }
     const max = maxFires.trim() ? Number(maxFires) : undefined
     if (max !== undefined && (!Number.isInteger(max) || max < 1)) {
-      setFormError('Maximum fires must be a positive whole number.')
+      setFormError('Maximum runs must be a positive whole number.')
       return
     }
     setFormError(null)
@@ -135,7 +153,20 @@ export function ManualTaskForm({
       <Field
         label="Cron expression"
         htmlFor="cron-task-expression"
-        hint="second minute hour day month weekday, optional year. Times are UTC."
+        hint={
+          expressionError ?? (
+            <>
+              second minute hour day month weekday, optional year. Times are UTC.
+              {upcoming.length > 0 ? (
+                <>
+                  {' '}
+                  {cadence ? `${cadence}. ` : ''}
+                  Next: {upcoming.join(', ')}.
+                </>
+              ) : null}
+            </>
+          )
+        }
       >
         <Input
           id="cron-task-expression"
@@ -196,12 +227,12 @@ export function ManualTaskForm({
       ) : null}
 
       <Field
-        label="Maximum fires"
-        htmlFor="cron-task-max-fires"
+        label="Maximum runs"
+        htmlFor="cron-task-max-runs"
         hint="Leave empty for a recurring task that runs until removed."
       >
         <Input
-          id="cron-task-max-fires"
+          id="cron-task-max-runs"
           type="number"
           min={1}
           step={1}
