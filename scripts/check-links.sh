@@ -10,6 +10,8 @@ trap 'rm -f "$headers_file"' EXIT
 ignore=(
   'https://api.workers.iii.dev'            # API base, only POST routes
   'https://api.workers.iii.dev/workers'    # ditto
+  'https://api.workers.iii.dev/resolve'    # workflow action endpoint, POST only
+  'https://api.workers.iii.dev/w/$WORKER/tags/latest' # workflow action endpoint, PUT only
   'https://workers.iii.dev/workers/'       # URL prefix in a test assertion, not a link
   'https://workers.iii.dev/workers/skills' # published (badge.svg 200) but registry page missing
 )
