@@ -31,3 +31,21 @@ Conventions for AI coding agents (and humans) working in this repo.
   PR, `Refs MOT-###` on the others). If a piece genuinely needs its own
   tracking, create a sub-issue under the main ticket, not a new top-level
   ticket.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in Linear (iii team, `MOT-###`) via the Linear MCP
+tools. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage labels, used as-is (`needs-triage` already
+exists in Linear; the rest are created on first use). See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.
