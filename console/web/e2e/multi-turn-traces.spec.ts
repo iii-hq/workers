@@ -35,13 +35,11 @@ test('shows two traces and exposes function arguments in trace events', async ({
   ).toHaveCount(1)
 
   const traces = page.getByRole('region', { name: 'traces' })
-  const grouping = traces.getByRole('button', {
-    name: /^(?:no grouping|group by .+)$/,
-  })
-  if ((await grouping.textContent())?.trim() !== 'group by session') {
-    await grouping.click()
-    await page.getByRole('button', { name: 'session', exact: true }).click()
-  }
+  await traces.getByRole('button', { name: 'group traces by' }).click()
+  await page
+    .getByRole('listbox', { name: 'group traces by' })
+    .getByRole('option', { name: 'session', exact: true })
+    .click()
 
   const group = traces.locator(
     `[data-trace-group-value="${stack.ready.session.id}"]`,
