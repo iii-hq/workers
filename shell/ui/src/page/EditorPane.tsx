@@ -149,6 +149,9 @@ export function EditorPane({
   const absPath = joinPath(root, relPath)
   const previewable = isRichPreviewPath(relPath)
   const [previewChoice, setPreviewChoice] = useState<boolean | null>(null)
+  useEffect(() => {
+    setPreviewChoice(null)
+  }, [richPreview, relPath])
   const showPreview = previewable && (previewChoice ?? richPreview)
   const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
   const [draft, setDraftState] = useState('')
