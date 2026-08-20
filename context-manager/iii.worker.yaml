@@ -10,4 +10,4 @@ description: Turns a raw conversation history plus a target model into a model-r
 
 dependencies:
   configuration: "0.x"
-  llm-router: "^1.0.0"
+  llm-router: "^1.4.12"
