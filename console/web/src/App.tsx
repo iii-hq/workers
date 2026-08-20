@@ -167,9 +167,11 @@ export function App({
     if (hashScreen === null) return
     const ws = workspaceRef.current
     if (ws.activeTab.screens.includes(hashScreen)) return
-    const existing = ws.tabs.find((t) => t.screens.includes(hashScreen))
-    if (existing) ws.activateTab(existing.id)
-    else ws.createTab({ columns: 1, screens: [hashScreen] })
+    // Same placement as an agent's console::workspace::open and a worker's
+    // panel-open: reuse the tab already showing it, else place it beside chat
+    // in the active tab, else open a fresh chat + screen tab — never a bare
+    // single-column tab.
+    ws.openScreen(hashScreen)
   }, [hashScreen, layoutSource])
 
   // ── Tabs → hash ──
