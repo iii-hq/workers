@@ -355,6 +355,19 @@ export function withActiveTabId(
   return withWorkspace(configValue, { activeTabId: id })
 }
 
+/** Where the tabs in hand come from: `pending` until the first server
+    answer, `server` while the configuration entry is readable, `local` when
+    it is not (the localStorage copy). */
+export type WorkspaceLayoutSource = 'pending' | 'server' | 'local'
+
+export function workspaceLayoutSource(
+  fetched: boolean,
+  available: boolean,
+): WorkspaceLayoutSource {
+  if (available) return 'server'
+  return fetched ? 'local' : 'pending'
+}
+
 export function newTabId(): string {
   if (
     typeof crypto !== 'undefined' &&

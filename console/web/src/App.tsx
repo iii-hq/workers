@@ -69,6 +69,12 @@ import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PanelSide } from '@/types/injectable-ui'
 
+function hasExplicitHash(): boolean {
+  if (typeof window === 'undefined') return false
+  const hash = window.location.hash
+  return hash !== '' && hash !== '#' && hash !== '#/'
+}
+
 export function App({
   injectableUiRuntime,
 }: {
@@ -113,12 +119,7 @@ export function App({
       lastTabViewRef.current = view
   }, [view])
   const lastHashScreenRef = useRef<TabScreen | null>(
-    typeof window !== 'undefined' &&
-      window.location.hash &&
-      window.location.hash !== '#' &&
-      window.location.hash !== '#/'
-      ? null
-      : hashScreen,
+    hasExplicitHash() ? null : hashScreen,
   )
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
@@ -150,7 +151,14 @@ export function App({
     if (view === 'configuration') closeSettings()
     else setView('configuration')
   }, [view, setView, closeSettings])
+  const layoutSource = workspace.layoutSource
+  const lastLayoutSourceRef = useRef(layoutSource)
   useEffect(() => {
+    if (layoutSource === 'pending') return
+    if (lastLayoutSourceRef.current !== layoutSource) {
+      lastLayoutSourceRef.current = layoutSource
+      if (hasExplicitHash()) lastHashScreenRef.current = null
+    }
     if (lastHashScreenRef.current === hashScreen) return
     lastHashScreenRef.current = hashScreen
     // No tab representation (settings overlay, unresolved ext route):
@@ -162,14 +170,24 @@ export function App({
     const existing = ws.tabs.find((t) => t.screens.includes(hashScreen))
     if (existing) ws.activateTab(existing.id)
     else ws.createTab({ columns: 1, screens: [hashScreen] })
-  }, [hashScreen])
+  }, [hashScreen, layoutSource])
 
   // ── Tabs → hash ──
   // Activating a tab whose screens don't cover the current hash points the
   // hash at the tab's first routed screen, so page-internal sub-routes and
   // deep links keep working. Chat-only and empty tabs leave the hash alone.
   const prevActiveTabIdRef = useRef<string | null>(null)
+  const prevSourceForHashRef = useRef<string>('pending')
   useEffect(() => {
+    if (layoutSource === 'pending') {
+      prevActiveTabIdRef.current = null
+      return
+    }
+    if (prevSourceForHashRef.current !== layoutSource) {
+      prevSourceForHashRef.current = layoutSource
+      prevActiveTabIdRef.current = activeTabId
+      return
+    }
     const prev = prevActiveTabIdRef.current
     prevActiveTabIdRef.current = activeTabId
     if (prev === null || prev === activeTabId) return
@@ -186,7 +204,7 @@ export function App({
     const extId = extPageIdForScreen(primary)
     if (extId) window.location.hash = hashForExtPage(extId)
     else setView(primary as View)
-  }, [activeTabId, activeTab, hashScreen, setView])
+  }, [activeTabId, activeTab, hashScreen, setView, layoutSource])
 
   /* Every global shortcut the console has, dispatched from the registry.
      Which keys reach here while the caret is in a field, and which stand
@@ -714,6 +732,15 @@ function Header({
           />
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            aria-label="search the console (⌘K)"
+            title="search the console (⌘K)"
+            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
+          >
+            <Search className="size-4 shrink-0" aria-hidden />
+          </button>
           <button
             type="button"
             onClick={onOpenShortcuts}

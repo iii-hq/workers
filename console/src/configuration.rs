@@ -283,7 +283,7 @@ pub struct ConfigChangeAck {
 pub struct ConfigChangeRequest {}
 
 /// `Ok(None)` when the entry does not exist or holds `null`.
-async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
+pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
@@ -293,7 +293,18 @@ async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     }
 }
 
-async fn trigger_configuration_with_retry(
+/// Replace the stored `console` entry wholesale (`configuration::set`).
+pub(crate) async fn set_value(iii: &IIIClient, value: Value) -> Result<(), String> {
+    trigger_configuration_with_retry(
+        iii,
+        "configuration::set",
+        json!({ "id": config_id(), "value": value }),
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,

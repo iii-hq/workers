@@ -1,0 +1,111 @@
+{
+  "open": [
+    {
+      "name": "stays on the active tab when it already shows the screen",
+      "tabs": [
+        { "id": "a", "columns": 1, "screens": ["ext:shell"] },
+        { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+      ],
+      "activeTabId": "a",
+      "screen": "ext:shell",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          { "id": "a", "columns": 1, "screens": ["ext:shell"] },
+          { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+        ]
+      }
+    },
+    {
+      "name": "switches to the tab that already shows the screen",
+      "tabs": [
+        { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+        { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+      ],
+      "activeTabId": "a",
+      "screen": "ext:shell",
+      "expect": {
+        "activeTabId": "b",
+        "tabs": [
+          { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+          { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+        ]
+      }
+    },
+    {
+      "name": "fills the empty column beside chat",
+      "tabs": [{ "id": "a", "columns": 3, "screens": ["traces", "chat", null] }],
+      "activeTabId": "a",
+      "screen": "workers",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [{ "id": "a", "columns": 3, "screens": ["traces", "chat", "workers"] }]
+      }
+    },
+    {
+      "name": "falls back to any empty column",
+      "tabs": [{ "id": "a", "columns": 3, "screens": [null, "chat", "traces"] }],
+      "activeTabId": "a",
+      "screen": "workers",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [{ "id": "a", "columns": 3, "screens": ["workers", "chat", "traces"] }]
+      }
+    },
+    {
+      "name": "inserts a new column after chat and rescales widths",
+      "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"], "sizes": [0.5, 0.5] }],
+      "activeTabId": "a",
+      "screen": "ext:shell",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 3,
+            "screens": ["chat", "ext:shell", "traces"],
+            "sizes": [0.33333333333333337, 0.3333333333333333, 0.33333333333333337]
+          }
+        ]
+      }
+    },
+    {
+      "name": "appends the column when the tab has no chat",
+      "tabs": [{ "id": "a", "columns": 1, "screens": ["traces"] }],
+      "activeTabId": "a",
+      "screen": "workers",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [{ "id": "a", "columns": 2, "screens": ["traces", "workers"], "sizes": [0.5, 0.5] }]
+      }
+    }
+  ],
+  "close": [
+    {
+      "name": "drops the column in multi-column tabs and empties a lone column",
+      "tabs": [
+        { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"], "sizes": [0.25, 0.75] },
+        { "id": "b", "columns": 1, "screens": ["ext:shell"] },
+        { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
+      ],
+      "screen": "ext:shell",
+      "expect": {
+        "tabIds": ["a", "b"],
+        "tabs": [
+          { "id": "a", "columns": 1, "screens": ["chat"], "sizes": [1.0] },
+          { "id": "b", "columns": 1, "screens": [null] },
+          { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
+        ]
+      }
+    },
+    {
+      "name": "is a no-op when the screen is not mounted",
+      "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"] }],
+      "screen": "workers",
+      "expect": {
+        "tabIds": [],
+        "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"] }]
+      }
+    }
+  ]
+}

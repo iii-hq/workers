@@ -2,10 +2,13 @@
 //!
 //! `console` is mostly an HTTP server + WS proxy, so the SDK surface is
 //! deliberately small: one health/identity function (`console::status`)
-//! that returns the runtime knobs the worker booted with, plus the
-//! injectable-UI debug surface (`console::ui-manifest`).
+//! that returns the runtime knobs the worker booted with, the
+//! injectable-UI debug surface (`console::ui-manifest`), and the workspace
+//! layout functions (`console::workspace::*`) that let an agent show a
+//! screen to the human.
 
 pub mod status;
+pub mod workspace;
 
 use std::sync::Arc;
 
@@ -30,7 +33,10 @@ pub fn register_all(
 ) {
     register_status(iii, config, engine_url);
     register_ui_manifest(iii, ui);
-    tracing::info!("registered console::status, console::ui-manifest");
+    workspace::register(iii);
+    tracing::info!(
+        "registered console::status, console::ui-manifest, console::workspace::{{list,open,close}}"
+    );
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

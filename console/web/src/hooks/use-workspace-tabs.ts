@@ -31,6 +31,7 @@ import {
   resolveActiveTab,
   type TabScreen,
   tabColumns,
+  type WorkspaceLayoutSource,
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
@@ -38,6 +39,7 @@ import {
   withScreenDetached,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
+  workspaceLayoutSource,
 } from '@/lib/workspace-tabs'
 
 const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
@@ -80,6 +82,10 @@ function persistLocal(state: LocalState): void {
 }
 
 export interface UseWorkspaceTabsReturn {
+  /** `pending` until the first server answer; then `server`, or `local`
+      while the configuration entry is unreachable and `tabs` is the
+      localStorage copy. Flips `local` to `server` when a later poll succeeds. */
+  layoutSource: WorkspaceLayoutSource
   tabs: WorkspaceTab[]
   activeTabId: string
   activeTab: WorkspaceTab
@@ -109,7 +115,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 
   // Shares the traces saved-views cache entry; refetchInterval keeps the
   // strip reactive to writes from other browsers/tabs.
-  const { data } = useQuery<ConsoleConfigValue | null>({
+  const { data, isFetched } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,
     queryFn: fetchConsoleConfigValue,
     staleTime: 3_000,
@@ -118,6 +124,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     retry: 1,
   })
   const available = data !== null && data !== undefined
+  const layoutSource = workspaceLayoutSource(isFetched, available)
 
   const [local, setLocal] = useState<LocalState>(loadLocal)
 
@@ -304,6 +311,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   )
 
   return {
+    layoutSource,
     tabs,
     activeTabId,
     activeTab,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import fixtures from './workspace-open.fixtures.json'
 import {
   CHAT_SCREEN,
   defaultTabs,
@@ -19,6 +20,7 @@ import {
   withScreenOpenedBeside,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
+  workspaceLayoutSource,
 } from './workspace-tabs'
 
 const NO_EXT = new Map<string, string>()
@@ -394,5 +396,57 @@ describe('withScreenDetached', () => {
     const parsed = parseWorkspaceTabs({ workspace: { tabs: [detached] } })
     expect(parsed).toHaveLength(1)
     expect(parsed[0].screens).toEqual([null])
+  })
+})
+
+describe('console::workspace fixtures (shared with the Rust worker)', () => {
+  for (const f of fixtures.open) {
+    it(`open: ${f.name}`, () => {
+      const result = withWorkspaceScreenOpened(
+        f.tabs as WorkspaceTab[],
+        f.activeTabId,
+        f.screen,
+        () => 'tab-new',
+      )
+      expect({ tabs: result.tabs, activeTabId: result.activeTabId }).toEqual(
+        f.expect,
+      )
+    })
+  }
+
+  for (const f of fixtures.close) {
+    it(`close: ${f.name}`, () => {
+      const tabIds: string[] = []
+      const tabs = (f.tabs as WorkspaceTab[]).map((tab) => {
+        const column = tab.screens.indexOf(f.screen)
+        if (column < 0) return tab
+        tabIds.push(tab.id)
+        return tabColumns(tab) > 1
+          ? withColumnRemoved(tab, column)
+          : withScreenDetached(tab, column)
+      })
+      expect({ tabIds, tabs }).toEqual(f.expect)
+    })
+  }
+})
+
+describe('workspaceLayoutSource', () => {
+  it('is pending until the first answer, then server or local', () => {
+    expect(workspaceLayoutSource(false, false)).toBe('pending')
+    expect(workspaceLayoutSource(true, false)).toBe('local')
+    expect(workspaceLayoutSource(true, true)).toBe('server')
+  })
+
+  it('flips from local to server when a later poll succeeds', () => {
+    const timeline = [
+      [true, false],
+      [true, false],
+      [true, true],
+    ] as const
+    expect(timeline.map(([f, a]) => workspaceLayoutSource(f, a))).toEqual([
+      'local',
+      'local',
+      'server',
+    ])
   })
 })
