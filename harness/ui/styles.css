@@ -196,6 +196,45 @@
   color: var(--color-ink);
 }
 
+[data-iii-ui="harness"] .harness-ui-pop-session {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-iii-ui="harness"] .harness-ui-pop-session-id {
+  font-family: var(--font-mono);
+  /* Flex items refuse to shrink past their content without this, so a long
+     session id would push the copy button out of the 300px popover instead
+     of ellipsing. Same pairing as .harness-ui-pop-model above. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="harness"] .harness-ui-pop-copy {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="harness"] .harness-ui-pop-copy:hover {
+  color: var(--color-ink);
+}
+
+[data-iii-ui="harness"] .harness-ui-pop-copy[data-copied] {
+  color: var(--color-accent);
+}
+
+[data-iii-ui="harness"] .harness-ui-pop-copy:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
 [data-iii-ui="harness"] .harness-ui-cache-hit {
   font-variant-numeric: tabular-nums;
   color: var(--color-ink);

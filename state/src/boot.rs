@@ -29,9 +29,12 @@ pub struct BootHandle {
 
 impl BootHandle {
     pub async fn shutdown(&self) {
-        // Store parity with the builtin's destroy(): kv flushes on the save
-        // loop (nothing extra to do — pending dirty entries flush on the next
-        // tick; a hard kill loses at most one save window, same as the engine).
+        // Flush pending dirty entries before destroy: the save loop's cadence
+        // means a stop right after a write would otherwise lose up to one save
+        // window. Only a hard kill (SIGKILL) can still lose that window.
+        if let Err(err) = self.ctx.adapter.flush().await {
+            tracing::warn!(error = ?err, "state adapter flush on shutdown failed");
+        }
         let _ = self.ctx.adapter.destroy().await;
     }
 }

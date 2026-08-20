@@ -7,7 +7,7 @@ into five surfaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
-| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). `title` prefers the YAML frontmatter `title:` over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. | Orientation: "when and why to use my worker's tools" |
+| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, path, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Command templates listed by `directory::prompts::list`, read by `get`, authored by `create`, edited by `update`. Stored under any `prompts/` path segment; `create` writes `<skills_folder>/prompts/<name>.md`. | Parametric command templates the *user* invokes |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts with the same four verbs and the same response shapes as Prompts — including the `prompts` field name on `list`. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Search** (`directory::search_functions`) | One natural-language query → the API reference of only the relevant functions (installed, plus installable registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
@@ -25,7 +25,7 @@ Skills and prompts are sourced from a single configured folder on disk
 (`skills_folder`). Writes are the **`directory::skills::download*`**
 functions, which pull markdown into `skills_folder` from either the
 [workers registry](https://workers.iii.dev) or a GitHub repo, plus the
-per-kind single-file editors — `directory::skills::update`,
+per-kind single-file editors — `directory::skills::{create,update,delete}`,
 `directory::prompts::{create,update,delete}` and
 `directory::system-prompts::{create,update,delete}`. Once downloaded, files
 belong to the developer — edit them however you want, in the editor of
@@ -101,6 +101,7 @@ or use the console Workers tab — all three propagate without a redeploy.
 # TOPOLOGY — changing any of these requires a worker restart.
 skills_folder: ~/.iii/skills          # read/write root for skills + prompts
 local_skills_folder: ./.iii/skills    # project-scoped overrides (whole-namespace local-wins)
+agents_skills_folder: ~/.agents/skills # READ-ONLY system-installed agent skills (shallow <skill>/SKILL.md scan)
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
 
 # TUNABLE — hot-reload live on `configuration:updated`.
@@ -130,12 +131,17 @@ On `configuration::set` (or an external edit to the persisted file), the worker
 re-fetches the authoritative value. Tunable changes apply in place and the
 registry caches are cleared so a repointed `registry_url` takes effect
 immediately. Topology changes (`skills_folder` / `local_skills_folder` /
-`auto_download`) are refused with a "restart required" log; the previous
-configuration is kept until the worker restarts.
+`agents_skills_folder` / `auto_download`) are refused with a "restart
+required" log; the previous configuration is kept until the worker restarts.
 
 Both folder settings are also watch roots, and the watcher creates each one at
 boot if it is missing (so a fresh install is watched rather than silently
-unwatched until the next restart). `local_skills_folder` defaults to the
+unwatched until the next restart). `agents_skills_folder` is a watch root too,
+but only when it already exists — the worker never creates (or writes)
+anything under it. Install your first agents skill while the worker is
+running and that root stays unwatched until the next restart: reads still
+serve it, since every read re-scans disk, but the live `external` doorbell
+is missing until then. `local_skills_folder` defaults to the
 CWD-relative `./.iii/skills`, so expect an empty `.iii/skills` directory to
 appear in whatever working directory the engine launches the worker from. An
 empty local root shadows nothing. Because both are restart-required, the watch
@@ -202,15 +208,30 @@ skills_folder/
     pirate.md
 ```
 
+A second, READ-ONLY root — `agents_skills_folder` (default
+`~/.agents/skills`) — serves system-installed agent skills. It is
+scanned **shallowly**: only `<skill-dir>/SKILL.md` becomes an entry
+(id `<skill-dir>/index`, displayed as `<skill-dir>`); a skill's
+`reference/`, `scripts/`, or other support payload is never listed. A
+missing directory is silently empty. These skills bypass
+`filter_unregistered` (their namespaces are skills, not workers), stay
+out of `directory::skills::index` (a per-WORKER surface), and are
+refused by `update`/`delete` — edit them with their owning tool, or
+copy one into `skills_folder` on disk to fork it. Precedence is
+`local_skills_folder` > `skills_folder` > `agents_skills_folder`,
+namespace-wise: a top-level namespace directory in a higher root
+shadows the same namespace below.
+
 A few rules:
 
 - **Skill ids** are the relative path under `skills_folder` with `.md`
   stripped. Each segment must satisfy `[a-z0-9_-]{1,64}`.
 - **Skill frontmatter is optional.** When present, the reader honours
-  two keys: `title:` (used by `directory::skills::list` and
-  `directory::skills::get` in preference to a body `# H1`) and
-  `type:` (free-form classifier surfaced verbatim on both responses).
-  Any other YAML keys are ignored.
+  three keys: `title:` (used by `directory::skills::list` and
+  `directory::skills::get` in preference to a body `# H1`), `name:`
+  (title fallback when `title:` is absent — the `~/.agents/skills`
+  convention), and `type:` (free-form classifier surfaced verbatim on
+  both responses). Any other YAML keys are ignored.
 - **Prompts** live under any `*/prompts/*.md` path. They must start with
   a YAML frontmatter block declaring at least `description`; `name`
   is optional and overrides the file-stem default.
@@ -265,7 +286,7 @@ tree-shaped picker iterate `list` rows themselves and indent by
 
 ## Functions
 
-Eighteen functions, all under `directory::*`. All registrations are
+Twenty-two functions, all under `directory::*`. All registrations are
 namespace-clean; this worker is intentionally agnostic to MCP and any
 other adapter.
 
@@ -277,8 +298,10 @@ other adapter.
 | `directory::skills::download_from_repo` | Repo-only form: `{repo, skill, branch?}`. Copies one skill folder out of a GitHub repo, classifying each written file as a skill, a command template (`prompts/`), or a system prompt (`system-prompts/`). |
 | `directory::skills::download_from_registry` | Registry-only form: `{worker, version?\|tag?}`. Installs a published worker's bundle from `api.workers.iii.dev`. |
 | `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, type, description, bytes, modified_at }` per row. `title` prefers the YAML frontmatter `title:` over the body H1, `type` is lifted from frontmatter `type:` (`null` when absent), and `description` is the first paragraph of the body — so consumers can render a picker without a follow-up `get` per row. |
-| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body`. Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw` — the round-trip form `update` takes. |
-| `directory::skills::update` | Overwrite one EXISTING skill file with new full-file content: `{ id, content }` where `content` is the edited `raw` from `get { raw: true }`. Validated against the read invariants (size cap, non-empty body after frontmatter); atomic write; fans out `directory::skills::on-change` with `op: "update"`. Never creates files. |
+| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, path, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body` and the absolute on-disk `path` (its parent directory is the skill's base directory, where payload like `scripts/` and `reference/` lives — meaningful only to callers on this worker's machine). Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw` — the round-trip form `update` takes. |
+| `directory::skills::update` | Overwrite one EXISTING skill file with new full-file content: `{ id, content }` where `content` is the edited `raw` from `get { raw: true }`. Validated against the read invariants (size cap, non-empty body after frontmatter); atomic write; fans out `directory::skills::on-change` with `op: "update"`. Never creates files (use `create`). Refuses read-only system-installed skills under `agents_skills_folder` (`D116`). |
+| `directory::skills::create` | Create a NEW skill file at `<skills_folder>/<id>.md` from full-file content: `{ id, content }`. Frontmatter is optional (same rules as `update`: size cap, non-empty body). Refuses an `id` that already resolves in the visible set — including the `<id>` → `<id>/index` overview alias and system-installed agents skills — or a target path that already exists on disk (`D114`); an `id` in a namespace reserved by a system-installed agents skill (`D115`); and, while `filter_unregistered` is on, an `id` the visibility filter would immediately hide (`D115`). Atomic write; fans out `directory::skills::on-change` with `op: "create"`. Returns the same shape as `update`. |
+| `directory::skills::delete` | Permanently remove one EXISTING skill file by `{ id }` (same id forms as `get`). Resolves against the same visible set as `list`/`get`, refuses read-only system-installed skills under `agents_skills_folder` (`D116`), removes the file plus any parent directories left empty (so a deleted namespace can't keep shadowing a lower-precedence root), and fans out `directory::skills::on-change` with `op: "delete"`. Returns `{ id }` (the resolved on-disk id). |
 | `directory::skills::index` | Render one short markdown entry per installed worker (skills with frontmatter `type: index`). Returns `{ body, workers_count }` where `body` is a ready-to-paste page: `# Skills index`, then one `## <worker title>` heading + the worker's first overview paragraph + a `Read iii://<ns>/index` pointer the agent can follow with `directory::skills::get`. Token-light by design; use `directory::skills::list` for per-skill rows. |
 
 ### `directory::prompts::*` (filesystem reader + editor)
@@ -400,18 +423,20 @@ Knobs (`inject_hint`, `hint_min_workers`, `registry_search`) live in the
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "namespace": "<ns>", "id": "<id>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
+| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, `create`, or `delete`, or external (file pasted/edited/deleted directly on disk — including under `agents_skills_folder`) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "namespace": "<ns>", "id": "<id>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
 | `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file, a `directory::prompts::update`, `create`, `delete`, or external (file pasted/edited/deleted directly on disk) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
 | `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
 
 Dispatches are fire-and-forget (Void), so the write path doesn't
 block on downstream latency.
 
-The `external` op comes from a filesystem watch over the two skills roots. It is
-a doorbell, not a ledger: every read re-scans disk, so a missed event costs a
-stale open view until the next call, never data. A burst coalesces into one event
-per kind, and this worker's own writes are suppressed — a `create` or `update`
-sends its precise op and never an extra `external`.
+The `external` op comes from a filesystem watch over `skills_folder`,
+`local_skills_folder`, and (when it already exists) the read-only
+`agents_skills_folder`. It is a doorbell, not a ledger: every read re-scans
+disk, so a missed event costs a stale open view until the next call, never
+data. A burst coalesces into one event per kind, and this worker's own writes
+are suppressed — a `create` or `update` sends its precise op and never an
+extra `external`.
 
 **Loop hazard for subscribers.** Suppression covers writes made *through this
 worker*. A subscriber that reacts to `{ "op": "external" }` by writing `.md`

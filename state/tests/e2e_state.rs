@@ -32,6 +32,21 @@ fn unique(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
 }
 
+/// Boot config for e2e: the shipped default store_method is file_based, so an
+/// unpinned boot would write `./data/state` in the test cwd and leak state
+/// across tests and runs. Every boot here pins in_memory.
+fn in_memory_config() -> StateConfig {
+    // Extend the default (keeping triggers_enabled etc.) rather than building
+    // from bare JSON, which would drop the default knobs to None.
+    StateConfig {
+        adapter: Some(
+            serde_json::from_value(json!({"name": "kv", "config": {"store_method": "in_memory"}}))
+                .expect("valid in-memory adapter config"),
+        ),
+        ..StateConfig::default()
+    }
+}
+
 async fn call(iii: &iii_sdk::IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
     iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
@@ -97,7 +112,7 @@ async fn set_then_get_roundtrip_with_old_value_parity() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -148,7 +163,7 @@ async fn set_accepts_data_alias() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -176,7 +191,7 @@ async fn delete_returns_old_value_and_missing_is_null() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -214,7 +229,7 @@ async fn update_applies_ops_and_reports_errors() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -272,7 +287,7 @@ async fn list_and_list_groups() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -353,7 +368,7 @@ async fn state_trigger_fires_with_event_payload() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -433,7 +448,7 @@ async fn condition_false_blocks_null_passes() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -521,7 +536,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -626,7 +641,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::config_id(), "value": StateConfig::default().to_json()}),
+        json!({"id": configuration::config_id(), "value": in_memory_config().to_json()}),
     )
     .await
     .expect("restore default configuration");
@@ -655,7 +670,7 @@ async fn claim_namespace_lifecycle() {
     let Some(iii) = engine::connect_fresh_named(&name).await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -962,7 +977,7 @@ async fn cas_misses_and_barrier_fan_in_via_bus() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 

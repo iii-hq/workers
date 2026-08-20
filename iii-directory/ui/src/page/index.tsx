@@ -40,10 +40,13 @@ const skillsAdapter: BrowserAdapter = {
   crumbRoot: 'skills',
   nameKeys: ['name', 'title'],
   defaultNameKey: 'name',
+  // Skill ids are slash-separated lowercase segments (ns/skill/…).
+  namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
+  nameHint: 'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
   onChangeType: 'directory::skills::on-change',
   emptyTitle: 'Select a skill',
   emptyBody:
-    'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through downloads (directory::skills::download) or direct edits to the skills folder.',
+    'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through the new-skill button, downloads (directory::skills::download), or direct edits to the skills folder.',
   async list(host) {
     const out = await host.iii.trigger<{ skills: SkillRow[] }>(
       'directory::skills::list',
@@ -74,6 +77,13 @@ const skillsAdapter: BrowserAdapter = {
       { id, content },
     )
     return out.id ?? id
+  },
+  async create(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>('directory::skills::create', { id, content })
+    return out.id ?? id
+  },
+  async remove(host, id) {
+    await host.iii.trigger('directory::skills::delete', { id })
   },
 }
 

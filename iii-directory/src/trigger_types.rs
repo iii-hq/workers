@@ -4,7 +4,10 @@
 //!
 //! - `directory::skills::on-change`  — fires after every successful
 //!   `directory::skills::download` that wrote at least one skill
-//!   markdown file, or a `directory::skills::update`.
+//!   markdown file, or a `directory::skills::update`, `create`, or
+//!   `delete`. External edits under the read-only `agents_skills_folder`
+//!   also fire it via the fs watcher (doorbell only — the worker never
+//!   writes there).
 //! - `directory::prompts::on-change` — fires after every successful
 //!   `directory::skills::download` that wrote at least one command-
 //!   template prompt, a `directory::prompts::update`, or a
@@ -125,14 +128,21 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
-        "Fires after a directory::skills::download that wrote at least one skill markdown file, or a directory::skills::update.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one skill markdown file, \
+         or a directory::skills::update, create, or delete. Also fires with { op: \"external\" } \
+         when a watched skills root changes on disk outside this worker — including the \
+         read-only agents skills root, when that root exists at startup."
+            .to_string(),
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         PROMPTS_ON_CHANGE.to_string(),
-        "Fires after a directory::skills::download that wrote at least one command-template prompt, a directory::prompts::update, or a directory::prompts::create.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one command-template \
+         prompt, or a directory::prompts::update, create, or delete. Also fires with \
+         { op: \"external\" } when a watched prompts root changes on disk outside this worker."
+            .to_string(),
         SkillsTriggerHandler::new(PROMPTS_ON_CHANGE, prompts.clone()),
     ));
     tracing::info!(trigger_type = PROMPTS_ON_CHANGE, "registered trigger type");
@@ -140,7 +150,11 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
     let system_prompts = SubscriberSet::new();
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SYSTEM_PROMPTS_ON_CHANGE.to_string(),
-        "Fires after a directory::skills::download that wrote at least one system prompt, or a directory::system-prompts::update, create, or delete.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one system prompt, or a \
+         directory::system-prompts::update, create, or delete. Also fires with \
+         { op: \"external\" } when a watched system-prompts root changes on disk outside \
+         this worker."
+            .to_string(),
         SkillsTriggerHandler::new(SYSTEM_PROMPTS_ON_CHANGE, system_prompts.clone()),
     ));
     tracing::info!(

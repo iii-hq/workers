@@ -10,8 +10,12 @@
 //!     (slashed-path-relative-to-`skills_folder`).
 //!     `directory::skills::list` enumerates them with title/type/description
 //!     pre-populated; `directory::skills::get` reads one body + metadata.
-//!     `title` prefers the YAML frontmatter `title:` over the body H1,
-//!     and `type` is lifted verbatim from frontmatter `type:`.
+//!     `title` prefers the YAML frontmatter `title:` (then `name:`) over
+//!     the body H1, and `type` is lifted verbatim from frontmatter `type:`.
+//!     System-installed agent skills under the read-only
+//!     `agents_skills_folder` (`~/.agents/skills` convention, shallow
+//!     `<skill>/SKILL.md` scan) are served too, shadowed by the same
+//!     namespace under the global or local root.
 //!   * **Prompts** (`directory::prompts::*`): filesystem-backed
 //!     slash-command templates loaded from
 //!     `<skills_folder>/<ns>/prompts/*.md` files with YAML frontmatter.
@@ -35,8 +39,10 @@
 //! `<skills_folder>/<namespace>/...`; `directory::skills::update` /
 //! `directory::prompts::update` / `directory::system-prompts::update`
 //! overwrite one existing file with edited full-file content;
+//! `directory::skills::{create,delete}`,
 //! `directory::prompts::{create,delete}` and
-//! `directory::system-prompts::{create,delete}` manage prompt files per kind. After
+//! `directory::system-prompts::{create,delete}` manage skill/prompt
+//! files (never touching the read-only `agents_skills_folder`). After
 //! every successful write the worker fires `directory::skills::on-change`
 //! and/or `directory::prompts::on-change` and/or
 //! `directory::system-prompts::on-change` so subscribers can forward

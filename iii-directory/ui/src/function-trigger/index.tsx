@@ -72,6 +72,17 @@ function render(
       return (
         <SkillsUpdateView input={input} output={output} running={running} />
       )
+    /* create's wire shapes ({id, content} → {id, title, bytes, modified_at})
+       are identical to update's, so the update view fits. */
+    case 'directory::skills::create':
+      return (
+        <SkillsUpdateView
+          input={input}
+          output={output}
+          running={running}
+          verb="created"
+        />
+      )
     case 'directory::prompts::list':
     case 'directory::system-prompts::list':
       return <PromptsListView input={input} output={output} running={running} />

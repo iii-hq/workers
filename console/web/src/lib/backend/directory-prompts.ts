@@ -40,7 +40,30 @@ export interface SkillBody {
   id: string
   title: string
   body: string
+  /** Absolute on-disk path of the skill file; its parent directory is the
+   * skill's base directory (where `scripts/`, `reference/` payload lives).
+   * Absent on directory workers that predate the field. */
+  path?: string
   modified_at: string
+}
+
+/**
+ * The skill body with its base directory announced. Payload skills
+ * (agent-skills convention: SKILL.md beside scripts/ and reference/)
+ * reference their own files by relative path and need the runtime to say
+ * where they live — without this line a session scoped to the user's
+ * project can never find them. Body-only when the worker sends no path.
+ */
+export function skillBodyWithBaseDir(skill: SkillBody): string {
+  if (!skill.path) return skill.body
+  // Both separators: the worker ships Windows binaries, so `path` can be a
+  // `C:\...\SKILL.md`. A missing separator must fall through to body-only —
+  // `slice(0, -1)` would otherwise hand the model a path with its last
+  // character shaved off, which is worse than saying nothing.
+  const cut = Math.max(skill.path.lastIndexOf('/'), skill.path.lastIndexOf('\\'))
+  if (cut <= 0) return skill.body
+  const dir = skill.path.slice(0, cut)
+  return `${skill.body}\n\nSkill base directory: ${dir} — resolve the skill's relative paths (scripts/, reference/, …) against it; keep the working directory at the user's project.`
 }
 
 export async function listPrompts(client: IiiClient): Promise<PromptEntry[]> {

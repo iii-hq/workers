@@ -225,5 +225,10 @@ export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
       if (!view) return null
       return <DiscoverCard query={discoverQuery(message.input)} view={view} />
     },
+    /* The found functions ARE the answer — promote a successful card into
+       the chat flow instead of hiding it behind "show raw request and
+       response". Every non-display path above returns null, so a pending,
+       failed, or unparseable call still falls through to the compact card. */
+    metadata: { display: true },
   }
 }

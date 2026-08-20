@@ -35,6 +35,7 @@ import {
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { draftAction, parseStoredDraft } from './draft-storage'
 import {
   BackButton,
   MarkdownFileIcon,
@@ -75,6 +76,12 @@ export interface BrowserAdapter {
   defaultNameKey?: string
   /** Prompt names use the worker's lowercase identifier grammar. */
   slugName?: boolean
+  /** Overrides the slug grammar for name validation on save — skills allow
+      slash-separated segments. */
+  namePattern?: RegExp
+  /** Error copy shown when the name fails `namePattern` (falls back to the
+      slug message). */
+  nameHint?: string
   /** Prompt scanners reject an empty description; skills keep it optional. */
   descriptionRequired?: boolean
   /** Workspace empty-state copy. */
@@ -86,8 +93,7 @@ export interface BrowserAdapter {
   /** Save; returns the entry's effective key after the write (a prompt
       rename via frontmatter `name:` moves the selection along). */
   save(host: Host, key: string, content: string): Promise<string>
-  /** Create a NEW entry; returns its key. Omit to hide the "new" button —
-      skills arrive by download, so only prompt-ish collections set this. */
+  /** Create a NEW entry; returns its key. Omit to hide the "new" button. */
   create?(host: Host, name: string, content: string): Promise<string>
   /** Permanently remove an existing entry. Omit when deletion is unsupported. */
   remove?(host: Host, key: string): Promise<void>
@@ -128,6 +134,15 @@ function writeStored(key: string, value: string) {
     /* private mode / quota — persistence is best-effort */
   }
 }
+
+function removeStored(key: string) {
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    /* private mode / quota — persistence is best-effort */
+  }
+}
+
 
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
 
@@ -207,10 +222,20 @@ export function CollectionBrowser({
   const searchRef = useRef<HTMLInputElement | null>(null)
   const fieldId = useId()
 
-  const [selected, setSelected] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [loaded, setLoaded] = useState<Loaded | null>(null)
-  const [draft, setDraft] = useState('')
+  /* Restore unsaved work from the last unmount (tab switch). A creating
+     draft is self-contained; a selected-entry draft still needs the disk
+     baseline, loaded by the mount effect below. */
+  const [restored] = useState(() =>
+    parseStoredDraft(readStored(`${storageKey}:draft`)),
+  )
+  const [selected, setSelected] = useState<string | null>(
+    restored && !restored.creating ? restored.key : null,
+  )
+  const [creating, setCreating] = useState(restored?.creating ?? false)
+  const [loaded, setLoaded] = useState<Loaded | null>(
+    restored?.creating ? { key: '', content: '' } : null,
+  )
+  const [draft, setDraft] = useState(restored?.content ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [mode, setModeState] = useState<EditorMode>(() => {
@@ -268,6 +293,40 @@ export function CollectionBrowser({
   const creatingRef = useRef(creating)
   creatingRef.current = creating
 
+  /* One-shot: fetch the disk baseline under a restored selected-entry draft
+     so dirty tracking and save() have the real `loaded.content` to diff
+     against. The restored draft itself is kept, never overwritten. */
+  useEffect(() => {
+    if (!restored || restored.creating || !restored.key) return
+    const key = restored.key
+    adapter
+      .load(host, key)
+      .then((content) => {
+        if (selectedRef.current !== key) return
+        setLoaded({ key, content })
+      })
+      .catch((e) => {
+        if (selectedRef.current === key) setLoadError(String(e))
+      })
+    // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only restore
+  }, [])
+
+  /* Mirror unsaved work to storage on every change, so a tab switch (which
+     unmounts this page) can restore it. See `draftAction` for the cases. */
+  useEffect(() => {
+    const action = draftAction({
+      creating,
+      selected,
+      draft,
+      loadedContent: loaded?.content ?? null,
+    })
+    if (action.kind === 'write') {
+      writeStored(`${storageKey}:draft`, JSON.stringify(action.draft))
+    } else if (action.kind === 'clear') {
+      removeStored(`${storageKey}:draft`)
+    }
+  }, [creating, selected, draft, loaded, storageKey])
+
   const open = useCallback(
     (key: string, opts?: { reload?: boolean }) => {
       if (!opts?.reload) {
@@ -281,6 +340,9 @@ export function CollectionBrowser({
           return
         }
       }
+      // Discard confirmed (or a reload): the persisted draft dies now, not
+      // when the load lands — an unmount in between must not resurrect it.
+      removeStored(`${storageKey}:draft`)
       setSelected(key)
       setCreating(false)
       setLoaded(null)
@@ -303,7 +365,7 @@ export function CollectionBrowser({
           if (selectedRef.current === key) setLoadError(String(e))
         })
     },
-    [host, adapter],
+    [host, adapter, storageKey],
   )
 
   /** Blank editor for a new entry. `loaded.content` is empty rather than the
@@ -316,6 +378,7 @@ export function CollectionBrowser({
     ) {
       return
     }
+    removeStored(`${storageKey}:draft`)
     setCreating(true)
     setSelected(null)
     setLoaded({ key: '', content: '' })
@@ -324,7 +387,7 @@ export function CollectionBrowser({
     setSaveError(null)
     setDeleteError(null)
     setStaleOnDisk(false)
-  }, [])
+  }, [storageKey])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -360,9 +423,19 @@ export function CollectionBrowser({
       adapter.defaultNameKey,
     ).value.trim()
     const effectiveName = name || (!creating ? loaded.key : '')
-    if (adapter.slugName && !SLUG_NAME.test(effectiveName)) {
+    // namePattern governs the CREATE id only: on update the frontmatter
+    // name/title is a display field for skills (the id is the key), so a
+    // human-readable title must not block saving. Prompt updates keep the
+    // slug gate — there the frontmatter name IS a rename.
+    const pattern = creating
+      ? (adapter.namePattern ?? (adapter.slugName ? SLUG_NAME : null))
+      : adapter.slugName
+        ? SLUG_NAME
+        : null
+    if (pattern && !pattern.test(effectiveName)) {
       setSaveError(
-        'enter a name using lowercase letters, numbers, hyphens or underscores',
+        adapter.nameHint ??
+          'enter a name using lowercase letters, numbers, hyphens or underscores',
       )
       return
     }
@@ -475,6 +548,7 @@ export function CollectionBrowser({
   // Narrow-mode drill-out: back to the list, guarding an unsaved draft.
   const goBack = () => {
     if (dirty && !window.confirm('Discard unsaved changes?')) return
+    removeStored(`${storageKey}:draft`)
     setSelected(null)
     setCreating(false)
     setLoaded(null)

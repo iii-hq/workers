@@ -6,14 +6,16 @@
  * Wire source: `iii-directory/src/functions/*.rs`
  *   - skills.rs        — directory::skills::list / get / index
  *   - download.rs      — directory::skills::download (+ _from_registry / _from_repo)
- *   - update.rs        — directory::skills::update, directory::prompts::update /
- *                        create and the directory::system-prompts::* mirrors
+ *   - update.rs        — directory::skills::update / create,
+ *                        directory::prompts::update / create and the
+ *                        directory::system-prompts::* mirrors
  *   - prompts.rs       — directory::prompts::list / get + system-prompts mirrors
  *   - registry.rs      — directory::registry::workers::list / info
  *
- * The two `::delete` ids are deliberately absent: their `{ name }` in/out
- * shape has no dedicated view, and the console's generic JSON card is the
- * right rendering for a delete confirmation.
+ * The `::delete` ids (skills, prompts, system-prompts) are deliberately
+ * absent: their `{ name }` / `{ id }` in/out shape has no dedicated view,
+ * and the console's generic JSON card is the right rendering for a delete
+ * confirmation.
  */
 import { z } from 'zod'
 import { unwrapEnvelope } from '../lib/envelope'
@@ -26,6 +28,7 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::skills::download_from_registry',
   'directory::skills::download_from_repo',
   'directory::skills::update',
+  'directory::skills::create',
   'directory::prompts::list',
   'directory::prompts::get',
   'directory::prompts::update',
@@ -87,6 +90,7 @@ export const skillsGetResponseSchema = z.object({
   title: z.string(),
   type: z.string().nullable().optional(),
   function_id: z.string().nullable().optional(),
+  path: z.string().optional(),
   body: z.string(),
   raw: z.string().nullable().optional(),
   modified_at: z.string(),

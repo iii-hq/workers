@@ -6,6 +6,7 @@ import {
   listCommandPrompts,
   listPrompts,
   listSkills,
+  skillBodyWithBaseDir,
 } from './directory-prompts'
 
 const TIMEOUT = { timeoutMs: 10_000 }
@@ -103,6 +104,51 @@ describe('client calls', () => {
       'directory::skills::get',
       { id: 'coder/index' },
       TIMEOUT,
+    )
+  })
+})
+
+describe('skillBodyWithBaseDir', () => {
+  const skill = {
+    id: 'impeccable',
+    title: 'Impeccable',
+    body: 'Run scripts/context.mjs.',
+    modified_at: 't',
+  }
+
+  it('appends the base directory when the worker sends a path', () => {
+    const out = skillBodyWithBaseDir({
+      ...skill,
+      path: '/home/u/.agents/skills/impeccable/SKILL.md',
+    })
+    expect(out).toContain('Run scripts/context.mjs.')
+    expect(out).toContain(
+      'Skill base directory: /home/u/.agents/skills/impeccable',
+    )
+  })
+
+  it('is body-only when the worker predates the path field', () => {
+    expect(skillBodyWithBaseDir(skill)).toBe('Run scripts/context.mjs.')
+  })
+
+  it('handles a Windows path from a Windows worker build', () => {
+    const out = skillBodyWithBaseDir({
+      ...skill,
+      path: 'C:\\Users\\u\\.agents\\skills\\impeccable\\SKILL.md',
+    })
+    expect(out).toContain(
+      'Skill base directory: C:\\Users\\u\\.agents\\skills\\impeccable',
+    )
+  })
+
+  it('falls back to body-only rather than emit a truncated path', () => {
+    // No separator at all: naive `slice(0, lastIndexOf(...))` would shave the
+    // final character off and present the result as a directory.
+    expect(skillBodyWithBaseDir({ ...skill, path: 'SKILL.md' })).toBe(
+      'Run scripts/context.mjs.',
+    )
+    expect(skillBodyWithBaseDir({ ...skill, path: '/SKILL.md' })).toBe(
+      'Run scripts/context.mjs.',
     )
   })
 })

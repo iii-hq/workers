@@ -11,6 +11,6 @@ config:
   adapter:
     name: kv
     config:
-      store_method: in_memory
+      store_method: file_based
 dependencies:
   configuration: "0.x"

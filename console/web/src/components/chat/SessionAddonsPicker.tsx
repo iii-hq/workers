@@ -7,7 +7,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
-import { getSkill, listSkills } from '@/lib/backend/directory-prompts'
+import {
+  getSkill,
+  listSkills,
+  skillBodyWithBaseDir,
+} from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import { cn } from '@/lib/utils'
 import type { SystemPromptState } from './system-prompt-selection'
@@ -83,7 +87,7 @@ export function SessionAddonsPicker({
          first send, same contract as the identity prompt's namedBody. */
       try {
         const client = await getIiiClient()
-        const body = (await getSkill(client, name)).body
+        const body = skillBodyWithBaseDir(await getSkill(client, name))
         const latest = valueRef.current
         if (latest.addons.some((a) => a.kind === 'skill' && a.name === name)) {
           return

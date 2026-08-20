@@ -60,6 +60,13 @@ pub async fn register_all(iii: &Arc<IIIClient>) -> Result<Arc<Shared>> {
 
     let cfg = Arc::new(SkillsConfig {
         skills_folder: skills_folder.to_string_lossy().into_owned(),
+        // Pin the agents root inside the tempdir: the default resolves to
+        // the developer's REAL ~/.agents/skills, which would leak
+        // machine-dependent skills into list/index assertions.
+        agents_skills_folder: skills_folder
+            .join("agents-empty")
+            .to_string_lossy()
+            .into_owned(),
         registry_url: mock_server.uri(),
         ..SkillsConfig::default()
     });

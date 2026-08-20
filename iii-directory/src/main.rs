@@ -18,12 +18,14 @@
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! Write paths are `directory::skills::download*` (bulk materialization)
-//! and `directory::skills::update` / `directory::prompts::update` /
+//! and `directory::skills::{update,create,delete}` /
+//! `directory::prompts::{update,create,delete}` /
 //! `directory::system-prompts::{update,create,delete}` (single-file edits). Read-side
 //! surfaces (`directory::skills::list`,
 //! `directory::skills::get`, `directory::prompts::*`,
 //! `directory::registry::*`) source from the configured `skills_folder`
-//! on disk or proxy to the public registry over HTTP. Engine introspection is handled by the engine natively —
+//! on disk (plus the read-only `agents_skills_folder` for system-installed
+//! agent skills) or proxy to the public registry over HTTP. Engine introspection is handled by the engine natively —
 //! call `engine::functions::list`, `engine::triggers::list`, etc.,
 //! directly.
 
@@ -227,6 +229,14 @@ async fn main() -> Result<()> {
     if local_root != watch_roots[0] {
         watch_roots.push(local_root);
     }
+    // The agents root is watched only when it already exists:
+    // spawn_fs_watch create_dir_all's its roots, and this worker must
+    // never materialize (or write) `~/.agents/skills` — it's owned by
+    // external agent tooling.
+    let agents_root = cfg_now.resolved_agents_skills_folder();
+    if agents_root.is_dir() && !watch_roots.contains(&agents_root) {
+        watch_roots.push(agents_root);
+    }
     let watch_iii = iii.clone();
     // Named fields, not a tuple: transposing two positional subscriber sets
     // would compile, pass every test, and route pasted system prompts to
@@ -258,14 +268,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    // 21 unconditional: 3 skills reads + 4 prompts reads (2 kinds) + 3 downloads +
-    // 7 writes (skill update, prompt/system-prompt update, create, and delete) +
-    // 2 registry proxy + 1 engine-functions-info + 1 configuration-change
-    // handler (registered above, outside functions::register_all_with_cache).
-    // +1 when auto_download also registers directory::__on_worker_added;
-    // +4 for the search surface (search_functions + pre-generate +
-    // on-functions-change + hint-preview).
-    let fn_count = if auto_download { 26 } else { 25 };
+    // 27 unconditional: 3 skills reads (list/get/index) + 6 skills writes
+    // (update/create/delete + download/download_from_registry/download_from_repo)
+    // + 5 prompts (get/list/create/update/delete) + 5 system-prompts
+    // (get/list/create/update/delete) + 2 registry proxy + 1
+    // engine-functions-info + 1 configuration-change handler (registered
+    // above, outside functions::register_all_with_cache) + 4 for the
+    // search surface (search_functions + pre-generate + on-functions-change
+    // + hint-preview).
+    // +1 when auto_download also registers directory::__on_worker_added.
+    let fn_count = if auto_download { 28 } else { 27 };
     tracing::info!(
         "iii-directory ready: {} directory::* functions + 3 custom trigger types + \
          function search + pre-generate hint + configuration hot-reload",

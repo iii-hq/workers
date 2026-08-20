@@ -10,7 +10,7 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
 import {
   type ContextSnapshot,
@@ -217,12 +217,73 @@ function LegendRow({
   )
 }
 
+/** Clipboard write that survives http://<LAN-IP> (insecure context, where
+ *  navigator.clipboard is undefined) — the console's lib/clipboard strategy,
+ *  inlined because injected bundles only get components from
+ *  @iii-dev/console-ui, not its libs. */
+async function copyText(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // Permissions can reject even on secure origins — try the fallback.
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  textarea.remove()
+  return ok
+}
+
+/** Footer row: the session id (the `state::get` / session-store key),
+    truncated to fit the 300px popover, with a copy affordance. */
+function SessionIdRow({ sessionId }: { sessionId: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = useCallback(() => {
+    void copyText(sessionId).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }, [sessionId])
+  return (
+    <span className="harness-ui-pop-session">
+      <span className="harness-ui-pop-session-id" title={sessionId}>
+        session {sessionId}
+      </span>
+      <button
+        type="button"
+        className="harness-ui-pop-copy"
+        onClick={handleCopy}
+        data-copied={copied || undefined}
+        aria-label="copy session id"
+      >
+        {copied ? 'copied' : 'copy'}
+      </button>
+    </span>
+  )
+}
+
 function ContextPopover({
   snapshot,
   modelId,
+  sessionId,
 }: {
   snapshot: ContextSnapshot
   modelId?: string
+  sessionId: string
 }) {
   const usable = snapshot.usable
   const pct =
@@ -315,6 +376,7 @@ function ContextPopover({
             session total {formatCost(snapshot.session_cost_usd)}
           </span>
         ) : null}
+        <SessionIdRow sessionId={sessionId} />
       </div>
     </div>
   )
@@ -323,9 +385,11 @@ function ContextPopover({
 function EmptyContextPopover({
   modelId,
   contextWindow,
+  sessionId,
 }: {
   modelId?: string
   contextWindow?: number
+  sessionId: string
 }) {
   const hasWindow = contextWindow !== undefined && contextWindow > 0
   return (
@@ -357,6 +421,7 @@ function EmptyContextPopover({
             ? 'the breakdown appears after the first generation step'
             : 'the selected model did not report a context-window limit'}
         </span>
+        <SessionIdRow sessionId={sessionId} />
       </div>
     </div>
   )
@@ -495,6 +560,7 @@ export function createContextChip(host: Host) {
               <EmptyContextPopover
                 modelId={modelId}
                 contextWindow={contextWindow}
+                sessionId={sessionId}
               />
             ) : null}
           </div>
@@ -514,7 +580,9 @@ export function createContextChip(host: Host) {
             <span className="harness-ui-chip-empty">—</span>
             <ContextCaret />
           </button>
-          {open ? <EmptyContextPopover modelId={modelId} /> : null}
+          {open ? (
+            <EmptyContextPopover modelId={modelId} sessionId={sessionId} />
+          ) : null}
         </div>
       )
     }
@@ -561,7 +629,13 @@ export function createContextChip(host: Host) {
               geometry, since an injected bundle has no icon dependency. */}
           <ContextCaret />
         </button>
-        {open ? <ContextPopover snapshot={snapshot} modelId={modelId} /> : null}
+        {open ? (
+          <ContextPopover
+            snapshot={snapshot}
+            modelId={modelId}
+            sessionId={sessionId}
+          />
+        ) : null}
       </div>
     )
   }

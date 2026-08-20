@@ -24,7 +24,12 @@ interface ViewProps {
 
 /* ---------------- directory::skills::update ---------------- */
 
-export function SkillsUpdateView({ input, output, running }: ViewProps) {
+export function SkillsUpdateView({
+  input,
+  output,
+  running,
+  verb = 'updated',
+}: ViewProps & { verb?: string }) {
   const req = safeParseRequest(skillsUpdateRequestSchema, input)
 
   if (running) {
@@ -45,7 +50,7 @@ export function SkillsUpdateView({ input, output, running }: ViewProps) {
   return (
     <Card>
       <MetaRow>
-        <StatusPill label="updated" variant="accent" />
+        <StatusPill label={verb} variant="accent" />
         {resp.type ? <KvChip label="type">{resp.type}</KvChip> : null}
         <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
         <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>

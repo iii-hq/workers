@@ -121,7 +121,7 @@ keys.
 
 | Field | Default | Description |
 |---|---|---|
-| `adapter` | `kv` | Storage adapter: `kv` (in-process; `store_method: in_memory` or `file_based` with `file_path` and `save_interval_ms`) or `redis` (`redis_url`, default `redis://localhost:6379`). Restart-tier: a runtime change is logged and takes effect at the next worker start. |
+| `adapter` | `kv` | Storage adapter: `kv` (in-process; `store_method: file_based` — the default, persisting under `file_path`, default `./data/state` relative to the worker cwd — or `in_memory`, volatile) or `redis` (`redis_url`, default `redis://localhost:6379`). Restart-tier: a runtime change is logged and takes effect at the next worker start. |
 | `triggers_enabled` | `true` | Globally enable/disable state change-trigger fan-out. Applied live. |
 | `max_value_bytes` | unset (no limit) | Reject `state::set` writes whose JSON-serialized value exceeds this many bytes (`VALUE_TOO_LARGE`). Minimum `1`. Applied live. |
 | `save_interval_ms` | `5000` | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`. Applied live by respawning the adapter's save loop (hot-retune; no-op for in-memory/redis). |

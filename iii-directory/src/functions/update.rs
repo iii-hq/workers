@@ -2,21 +2,24 @@
 //!
 //! Public API (reachable by any worker over `iii.trigger`):
 //!
-//!   * `directory::skills::update`  — overwrite one EXISTING skill
-//!     markdown file with new full-file content.
-//!   * `directory::prompts::update` — overwrite one EXISTING prompt
-//!     markdown file with new full-file content.
-//!   * `directory::system-prompts::delete` — permanently remove one
-//!     EXISTING system-prompt markdown file.
+//!   * `directory::skills::{update,create,delete}` — overwrite one
+//!     EXISTING skill markdown file, author a NEW one under the global
+//!     `skills_folder`, or permanently remove one.
+//!   * `directory::prompts::{update,create,delete}` and
+//!     `directory::system-prompts::{update,create,delete}` — the same
+//!     trio for both prompt kinds.
 //!
-//! Both take the FULL raw file (frontmatter block included) — the same
+//! Updates take the FULL raw file (frontmatter block included) — the same
 //! string `directory::skills::get { raw: true }` / `directory::prompts::get
 //! { raw: true }` return — so an editor round-trips the exact on-disk
-//! bytes. Updates never create files: downloads (and direct disk edits)
-//! are how skills arrive; update only mutates what a read can already
-//! see. Resolution mirrors the read path (merged global+local scan, the
-//! `<id>` → `<id>/index` overview alias, the installed-worker visibility
-//! filter) so update can never write a file `list`/`get` would hide.
+//! bytes. Update never creates files — `create` is the explicit authoring
+//! path; update only mutates what a read can already see. Resolution
+//! mirrors the read path (merged global+local scan, the `<id>` →
+//! `<id>/index` overview alias, the installed-worker visibility filter)
+//! so update can never write a file `list`/`get` would hide. Skills
+//! resolved to the read-only `agents_skills_folder` are refused by
+//! update/delete (D116) — those are owned by external agent tooling —
+//! and create never writes there.
 //!
 //! Content is validated against the READ invariants before the write —
 //! anything this module accepts, the scanners and readers will serve:
@@ -31,6 +34,7 @@
 //! same `directory::skills::on-change` / `directory::prompts::on-change`
 //! triggers with `{ op: "update", ... }` payloads.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -45,19 +49,27 @@ use crate::fs_source::{self, FsPrompt, FsSkill, SkillFrontmatter};
 use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
 use crate::functions::prompts::validate_name;
 use crate::functions::skills::{
-    find_fs_skill_in, normalize_get_id, reject_function_id_shaped, resolve_title,
-    resolve_visible_skills, validate_id, RegisteredWorkersCache, SKILL_BODY_MAX_BYTES,
+    filter_to_registered, find_fs_skill_in, normalize_get_id, reject_function_id_shaped,
+    resolve_title, resolve_visible_skills, validate_id, RegisteredWorkersCache,
+    SKILL_BODY_MAX_BYTES,
 };
-use crate::sources::write_file_atomic;
+use crate::sources::{mark_self_write, write_file_atomic};
 use crate::trigger_types;
 
-/// Recovery pointers for a missed skill update target.
+/// Recovery pointers for a missed skill update/delete target.
 const SKILL_UPDATE_NOT_FOUND_NEXT: &[NextAction] = &[
     NextAction::new("directory::skills::list", "browse skill ids"),
     NextAction::new(
         "directory::skills::download",
         "materialize a missing bundle first",
     ),
+    NextAction::new("directory::skills::create", "author a new skill"),
+];
+
+/// Recovery pointers for a skill create that hit an existing id/path.
+const SKILL_CREATE_CONFLICT_NEXT: &[NextAction] = &[
+    NextAction::new("directory::skills::update", "edit the existing skill"),
+    NextAction::new("directory::skills::list", "browse skill ids"),
 ];
 
 /// Recovery pointer for a missed prompt update target.
@@ -138,6 +150,52 @@ pub struct SkillUpdateOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SkillCreateInput {
+    /// New skill id — becomes the file path
+    /// (`<skills_folder>/<id>.md`), so it may contain `/`-separated
+    /// segments (`[a-z0-9_-]` each). Must not collide with an existing
+    /// visible skill (including system-installed agents skills) or an
+    /// on-disk file at the target path.
+    pub id: String,
+    /// FULL file content, frontmatter block included — the same form
+    /// `directory::skills::update` takes. Frontmatter is optional for
+    /// skills; only the size cap and a non-empty body are enforced.
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SkillCreateOutput {
+    /// The created skill's id (normalized form of the input id).
+    pub id: String,
+    /// Title resolved from the content (frontmatter `title:`, then
+    /// `name:`, then body H1, then the id) — what `list` rows will show.
+    pub title: String,
+    /// Frontmatter `type:` of the content, `null` when absent.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    /// Frontmatter `function_id:` of the content, `null` when absent.
+    pub function_id: Option<String>,
+    /// Bytes written.
+    pub bytes: usize,
+    /// File mtime after the write, RFC 3339.
+    pub modified_at: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SkillDeleteInput {
+    /// Existing skill id — the same forms `directory::skills::get`
+    /// accepts (bare id, `<id>.md`, `SKILL(S).md`, `iii://<id>`).
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SkillDeleteOutput {
+    /// Id of the skill whose file was removed — the RESOLVED on-disk id
+    /// (e.g. `ns/index` for input `ns`), not the input form.
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PromptUpdateInput {
     /// Prompt name to overwrite, as returned by the matching list for
     /// this kind (`directory::prompts::list` for command templates,
@@ -212,6 +270,8 @@ pub fn register(
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     register_update_skill(iii, cfg, &subscribers.skills, cache);
+    register_create_skill(iii, cfg, &subscribers.skills, cache);
+    register_delete_skill(iii, cfg, &subscribers.skills, cache);
     register_update_prompt(
         iii,
         cfg,
@@ -275,7 +335,8 @@ fn register_update_skill(
             let cache = cache_inner.clone();
             async move {
                 let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
-                let out = update_skill_in(&visible, &req).map_err(Error::Handler)?;
+                let out = update_skill_in(&visible, &req, &cfg.resolved_agents_skills_folder())
+                    .map_err(Error::Handler)?;
                 let namespace = out.id.split('/').next().unwrap_or("").to_string();
                 trigger_types::dispatch(
                     &iii,
@@ -290,12 +351,111 @@ fn register_update_skill(
             "Overwrite one EXISTING filesystem-backed skill with new full-file markdown \
              content (frontmatter block included — pass back the `raw` field from \
              directory::skills::get { raw: true }, edited). Accepts the same id forms as \
-             `get`. Never creates files (use directory::skills::download to materialize a \
-             bundle). Content is validated against the read invariants (size cap, \
-             non-empty body after frontmatter); the write is atomic and fans out \
-             directory::skills::on-change with { op: \"update\" }.",
+             `get`. Never creates files (use directory::skills::create to author one, or \
+             directory::skills::download to materialize a bundle). Refuses read-only \
+             system-installed skills under agents_skills_folder. Content is validated \
+             against the read invariants (size cap, non-empty body after frontmatter); \
+             the write is atomic and fans out directory::skills::on-change with \
+             { op: \"update\" }.",
         )
         .metadata(json!({"tool": {"label": "Update skill"}})),
+    );
+}
+
+fn register_create_skill(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    subs: &trigger_types::SubscriberSet,
+    cache: &Arc<RegisteredWorkersCache>,
+) {
+    let cfg_inner = cfg.clone();
+    let iii_inner = iii.clone();
+    let subs_inner = subs.clone();
+    let cache_inner = cache.clone();
+    iii.register_function(
+        "directory::skills::create",
+        RegisterFunction::new_async(move |req: SkillCreateInput| {
+            let cfg = cfg_inner.load_full();
+            let iii = iii_inner.clone();
+            let subs = subs_inner.clone();
+            let cache = cache_inner.clone();
+            async move {
+                let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
+                // Mirror the read path: the filter guard only applies when
+                // the filter is on AND the registered set is known — on
+                // daemon-down reads serve unfiltered, so create does too.
+                let registered = if cfg.filter_unregistered {
+                    cache.get_or_fetch(&iii).await
+                } else {
+                    None
+                };
+                let out = create_skill_in(&cfg, &visible, registered.as_ref(), &req)
+                    .map_err(Error::Handler)?;
+                let namespace = out.id.split('/').next().unwrap_or("").to_string();
+                trigger_types::dispatch(
+                    &iii,
+                    &subs,
+                    json!({ "op": "create", "namespace": namespace, "id": out.id }),
+                )
+                .await;
+                Ok::<_, Error>(out)
+            }
+        })
+        .description(
+            "Create a NEW filesystem-backed skill at <skills_folder>/<id>.md from \
+             full-file markdown content (frontmatter optional; only the size cap and a \
+             non-empty body are enforced, same as directory::skills::update). Rejects ids \
+             that already exist anywhere in the visible skill set (including \
+             system-installed agents skills), a target path that already exists on disk \
+             (even one the scanner would skip), ids in a namespace reserved by a \
+             system-installed agents skill, and — when filter_unregistered is on — ids \
+             the visibility filter would immediately hide. The write is atomic and fans \
+             out directory::skills::on-change with { op: \"create\" }. Use \
+             directory::skills::update to edit existing skills.",
+        )
+        .metadata(json!({"tool": {"label": "Create skill"}})),
+    );
+}
+
+fn register_delete_skill(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    subs: &trigger_types::SubscriberSet,
+    cache: &Arc<RegisteredWorkersCache>,
+) {
+    let cfg_inner = cfg.clone();
+    let iii_inner = iii.clone();
+    let subs_inner = subs.clone();
+    let cache_inner = cache.clone();
+    iii.register_function(
+        "directory::skills::delete",
+        RegisterFunction::new_async(move |req: SkillDeleteInput| {
+            let cfg = cfg_inner.load_full();
+            let iii = iii_inner.clone();
+            let subs = subs_inner.clone();
+            let cache = cache_inner.clone();
+            async move {
+                let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
+                let out = delete_skill_in(&cfg, &visible, &req).map_err(Error::Handler)?;
+                let namespace = out.id.split('/').next().unwrap_or("").to_string();
+                trigger_types::dispatch(
+                    &iii,
+                    &subs,
+                    json!({ "op": "delete", "namespace": namespace, "id": out.id }),
+                )
+                .await;
+                Ok::<_, Error>(out)
+            }
+        })
+        .description(
+            "Permanently delete one EXISTING filesystem-backed skill by id. Accepts the \
+             same id forms as directory::skills::get, resolves against the same visible \
+             set as directory::skills::list, refuses read-only system-installed skills \
+             under agents_skills_folder, removes only that skill's markdown file (plus \
+             any parent directories the removal left empty), and fans out \
+             directory::skills::on-change with { op: \"delete\" }.",
+        )
+        .metadata(json!({"tool": {"label": "Delete skill"}})),
     );
 }
 
@@ -450,12 +610,33 @@ fn register_delete_prompt(
 
 // ---------- core helpers (engine-free, reusable in tests) ----------
 
+/// Refuse writes to a skill resolved into the read-only agents root.
+/// Checked on the RESOLVED `abs_path` (not the input id) so every input
+/// alias (`bare`, `<id>/index`, `SKILL.md`, `iii://…`) hits the guard.
+fn ensure_writable(fs: &FsSkill, agents_root: &Path) -> Result<(), String> {
+    if fs.abs_path.starts_with(agents_root) {
+        return Err(invalid_input_message(
+            "D116",
+            &format!(
+                "skill {:?} is system-installed under agents_skills_folder ({}) and \
+                 read-only; edit it with its owning tool, or copy it into skills_folder \
+                 on disk to fork it.",
+                fs.id,
+                agents_root.display()
+            ),
+            &[],
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve `req.id` against an already-resolved visible set and write the
 /// new content. Pure with respect to the engine: callers hand in the
 /// visible skills, so tests drive it straight off a tempdir scan.
 pub fn update_skill_in(
     visible: &[FsSkill],
     req: &SkillUpdateInput,
+    agents_root: &Path,
 ) -> Result<SkillUpdateOutput, String> {
     let id = normalize_get_id(&req.id)?;
     reject_function_id_shaped(&id)?;
@@ -473,6 +654,7 @@ pub fn update_skill_in(
             SKILL_UPDATE_NOT_FOUND_NEXT,
         ));
     };
+    ensure_writable(&fs, agents_root)?;
 
     write_file_atomic(&fs.abs_path, req.content.as_bytes())?;
 
@@ -489,6 +671,184 @@ pub fn update_skill_in(
         bytes: req.content.len(),
         modified_at: fs_modified_at(&fs.abs_path),
     })
+}
+
+/// Create a NEW skill file at `<skills_folder>/<id>.md`. Mirrors
+/// [`create_prompt`]'s two-layer conflict check — the id must not resolve
+/// in the visible set (the `<id>` → `<id>/index` alias catches a bare id
+/// colliding with an existing overview doc, agents skills included), and
+/// the target path must not exist on disk even when the scanner skips it.
+///
+/// Two guards keep the module invariant ("anything this module accepts,
+/// the readers will serve") under the visibility filter:
+///
+/// * ids whose top segment is a system-installed agents namespace are
+///   reserved — creating `<agents-skill>/…` under the global root would
+///   shadow the whole read-only namespace;
+/// * when `registered` is `Some` (the handler passes it only while
+///   `cfg.filter_unregistered` is on), ids that [`filter_to_registered`]
+///   would immediately hide are rejected. `None` skips the guard,
+///   mirroring the read path's unfiltered daemon-down fallback.
+pub fn create_skill_in(
+    cfg: &SkillsConfig,
+    visible: &[FsSkill],
+    registered: Option<&HashSet<String>>,
+    req: &SkillCreateInput,
+) -> Result<SkillCreateOutput, String> {
+    let id = normalize_get_id(&req.id)?;
+    reject_function_id_shaped(&id)?;
+    validate_id(&id)?;
+    // A `prompts` / `system-prompts` segment would make the written file a
+    // PROMPT to the shared classifier — invisible to every skills scan —
+    // breaking the module invariant that an accepted write is a servable
+    // read. Route the caller to the matching prompt family instead.
+    let classified = fs_source::classify_rel_path(Path::new(&format!("{id}.md")));
+    if classified != fs_source::SourceKind::Skill {
+        let (family, create_fn) = match classified {
+            fs_source::SourceKind::Prompt => ("prompts", "directory::prompts::create"),
+            _ => ("system-prompts", "directory::system-prompts::create"),
+        };
+        return Err(invalid_input_message(
+            "D115",
+            &format!(
+                "id {id:?} contains a `{family}` path segment, which the scanner \
+                 classifies as a prompt — the created file would be invisible to \
+                 directory::skills::list. Use {create_fn} for prompt files.",
+            ),
+            &[],
+        ));
+    }
+
+    let agents_root = cfg.resolved_agents_skills_folder();
+    let agents_ns = fs_source::agents_namespaces(&agents_root);
+    let top_seg = id.split('/').next().unwrap_or("");
+    if id.contains('/') && agents_ns.iter().any(|ns| ns == top_seg) {
+        return Err(invalid_input_message(
+            "D115",
+            &format!(
+                "namespace {top_seg:?} is reserved by a system-installed skill under \
+                 agents_skills_folder ({}); edit it with its owning tool, or copy it \
+                 into skills_folder on disk to fork it.",
+                agents_root.display()
+            ),
+            &[],
+        ));
+    }
+    if let Some(registered) = registered {
+        let candidate = FsSkill {
+            id: id.clone(),
+            abs_path: std::path::PathBuf::new(),
+        };
+        if filter_to_registered(vec![candidate], registered, &agents_ns).is_empty() {
+            return Err(invalid_input_message(
+                "D115",
+                &format!(
+                    "id {id:?} would be hidden by filter_unregistered: its top namespace \
+                     segment {top_seg:?} is not an installed worker. Use a single-segment \
+                     id, install the worker first, or set filter_unregistered: false.",
+                ),
+                &[],
+            ));
+        }
+    }
+
+    if find_fs_skill_in(visible, &id).is_some() {
+        return Err(invalid_input_message(
+            "D114",
+            &format!("skill {id:?} already exists."),
+            SKILL_CREATE_CONFLICT_NEXT,
+        ));
+    }
+    let dest = cfg.resolved_skills_folder().join(format!("{id}.md"));
+    if dest.exists() {
+        return Err(invalid_input_message(
+            "D114",
+            &format!(
+                "a file already exists at {} (currently skipped by the scanner); edit or \
+                 remove it on disk.",
+                dest.display()
+            ),
+            SKILL_CREATE_CONFLICT_NEXT,
+        ));
+    }
+    validate_skill_content(&req.content)?;
+
+    write_file_atomic(&dest, req.content.as_bytes())?;
+
+    let (fm_text, body) = fs_source::split_frontmatter(&req.content);
+    let fm: SkillFrontmatter = fm_text
+        .and_then(|t| serde_yaml::from_str(t).ok())
+        .unwrap_or_default();
+    let title = resolve_title(&fm, body, &id);
+    Ok(SkillCreateOutput {
+        id,
+        title,
+        kind: crate::functions::skills::clean_optional(fm.kind),
+        function_id: crate::functions::skills::clean_optional(fm.function_id),
+        bytes: req.content.len(),
+        modified_at: fs_modified_at(&dest),
+    })
+}
+
+/// Delete one skill resolved through the same visible view as list/get.
+/// Refuses read-only agents-root skills, then removes the file plus any
+/// parent directories the removal left empty — a leftover empty namespace
+/// dir would otherwise keep shadowing the same namespace in a
+/// lower-precedence root (agents) forever, so delete must undo what
+/// create did.
+pub fn delete_skill_in(
+    cfg: &SkillsConfig,
+    visible: &[FsSkill],
+    req: &SkillDeleteInput,
+) -> Result<SkillDeleteOutput, String> {
+    let id = normalize_get_id(&req.id)?;
+    reject_function_id_shaped(&id)?;
+    validate_id(&id)?;
+
+    let Some(fs) = find_fs_skill_in(visible, &id) else {
+        let ids: Vec<String> = visible.iter().map(|s| s.id.clone()).collect();
+        let candidates = closest_ids(&ids, &id, 3);
+        return Err(not_found_message(
+            "D110",
+            "skill",
+            &id,
+            &candidates,
+            SKILL_UPDATE_NOT_FOUND_NEXT,
+        ));
+    };
+    ensure_writable(&fs, &cfg.resolved_agents_skills_folder())?;
+
+    // Deletes have no atomic write to piggyback the self-write mark on;
+    // mark explicitly so the watcher doesn't fire a spurious
+    // `{ op: "external" }` on top of the precise `{ op: "delete" }`.
+    mark_self_write(&fs.abs_path);
+    std::fs::remove_file(&fs.abs_path)
+        .map_err(|error| format!("delete {}: {error}", fs.abs_path.display()))?;
+    remove_empty_parents(
+        &fs.abs_path,
+        &[&cfg.resolved_skills_folder(), &cfg.local_skills_folder()],
+    );
+    Ok(SkillDeleteOutput { id: fs.id.clone() })
+}
+
+/// Remove now-empty ancestor directories of `path`, stopping at (never
+/// removing) any of `roots` and at the first non-empty directory —
+/// `remove_dir` refuses non-empty dirs, which bounds the walk naturally.
+fn remove_empty_parents(path: &Path, roots: &[&Path]) {
+    let mut cur = path.parent();
+    while let Some(dir) = cur {
+        // A root is never removed, even when it is nested inside another
+        // root (e.g. a local_skills_folder configured under the global
+        // one) — check equality against ALL roots before the inside test.
+        if roots.contains(&dir) {
+            break;
+        }
+        let inside_a_root = roots.iter().any(|r| dir.starts_with(r));
+        if !inside_a_root || std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+        cur = dir.parent();
+    }
 }
 
 /// Prompt update against the merged (global + local) prompt view for
@@ -605,6 +965,9 @@ pub fn delete_prompt(
         ));
     };
 
+    // Suppress the watcher's `{ op: "external" }` for our own delete —
+    // the precise `{ op: "delete" }` fan-out already covers it.
+    mark_self_write(&fs.abs_path);
     std::fs::remove_file(&fs.abs_path)
         .map_err(|error| format!("delete {}: {error}", fs.abs_path.display()))?;
     Ok(PromptDeleteOutput {
@@ -771,10 +1134,19 @@ mod tests {
         SkillsConfig {
             skills_folder: dir.to_string_lossy().into_owned(),
             // Point the local root INSIDE the tempdir so a `.iii/skills`
-            // in the test process CWD can't shadow the fixtures.
+            // in the test process CWD can't shadow the fixtures — and the
+            // agents root too: its default resolves to the developer's
+            // REAL ~/.agents/skills, which would leak into these tests.
             local_skills_folder: dir.join("local-empty").to_string_lossy().into_owned(),
+            agents_skills_folder: dir.join("agents-empty").to_string_lossy().into_owned(),
             ..SkillsConfig::default()
         }
+    }
+
+    /// An agents root that matches nothing — for tests that only need
+    /// `update_skill_in`'s read-only guard to stay out of the way.
+    fn no_agents() -> std::path::PathBuf {
+        std::path::PathBuf::from("/nonexistent-agents-root")
     }
 
     // ── skills ───────────────────────────────────────────────────────
@@ -792,6 +1164,7 @@ mod tests {
                 id: "ns/how-to".into(),
                 content: new_content.into(),
             },
+            &no_agents(),
         )
         .unwrap();
 
@@ -816,6 +1189,7 @@ mod tests {
                 id: "ns".into(),
                 content: "# Overview\n\nnew\n".into(),
             },
+            &no_agents(),
         )
         .unwrap();
         assert_eq!(out.id, "ns");
@@ -835,6 +1209,7 @@ mod tests {
                 id: "ns/reel".into(),
                 content: "# X\n\nbody\n".into(),
             },
+            &no_agents(),
         )
         .unwrap_err();
         assert!(err.starts_with("D110 not_found:"), "got: {err}");
@@ -855,6 +1230,7 @@ mod tests {
                 id: "ns/a".into(),
                 content: "---\ntitle: x\n---\n".into(),
             },
+            &no_agents(),
         )
         .unwrap_err();
         assert!(empty.starts_with("D113 invalid_input:"), "got: {empty}");
@@ -865,6 +1241,7 @@ mod tests {
                 id: "ns/a".into(),
                 content: "x".repeat(SKILL_BODY_MAX_BYTES + 1),
             },
+            &no_agents(),
         )
         .unwrap_err();
         assert!(huge.contains("too large"), "got: {huge}");
@@ -885,6 +1262,7 @@ mod tests {
                 id: "sandbox::create".into(),
                 content: "# X\n\nbody\n".into(),
             },
+            &no_agents(),
         )
         .unwrap_err();
         assert!(err.contains("FUNCTION id"), "got: {err}");
@@ -1211,5 +1589,404 @@ mod tests {
             err.starts_with("D210 not_found: system prompt"),
             "got: {err}"
         );
+    }
+
+    // ── skill create / delete ────────────────────────────────────────
+
+    #[test]
+    fn create_skill_writes_file_visible_to_next_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        let content = "---\ntitle: Guide\ntype: how-to\n---\n# Guide\n\nBody.\n";
+        let out = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "my-skill".into(),
+                content: content.into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.id, "my-skill");
+        assert_eq!(out.title, "Guide");
+        assert_eq!(out.kind.as_deref(), Some("how-to"));
+        assert_eq!(out.bytes, content.len());
+        assert!(!out.modified_at.is_empty());
+
+        let on_disk = std::fs::read_to_string(tmp.path().join("my-skill.md")).unwrap();
+        assert_eq!(on_disk, content);
+
+        // The next scan (what list/get serve) sees it.
+        let visible = scan(tmp.path());
+        assert!(visible.iter().any(|s| s.id == "my-skill"));
+    }
+
+    #[test]
+    fn create_skill_rejects_existing_id_including_skill_md_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "ns/SKILL.md", "# Existing\n\nbody\n");
+        let cfg = cfg_for(tmp.path());
+        let visible = scan(tmp.path()); // ns/SKILL.md → id ns/index
+
+        // Both the on-disk id and the bare alias collide.
+        for id in ["ns/index", "ns"] {
+            let err = create_skill_in(
+                &cfg,
+                &visible,
+                None,
+                &SkillCreateInput {
+                    id: id.into(),
+                    content: "# New\n\nbody\n".into(),
+                },
+            )
+            .unwrap_err();
+            assert!(err.starts_with("D114 invalid_input:"), "id {id}: {err}");
+            assert!(
+                err.contains("directory::skills::update"),
+                "next-action missing for {id}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_skill_rejects_existing_file_at_target_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        // Present on disk but invisible to the scan (empty body): create
+        // must refuse rather than clobber it.
+        write_fixture(tmp.path(), "ghost.md", "");
+
+        let err = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "ghost".into(),
+                content: "# G\n\nbody\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("D114 invalid_input:"), "got: {err}");
+        let on_disk = std::fs::read_to_string(tmp.path().join("ghost.md")).unwrap();
+        assert_eq!(on_disk, "", "existing file untouched");
+    }
+
+    #[test]
+    fn create_skill_rejects_empty_body_and_oversize() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        let empty = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "new-skill".into(),
+                content: "---\ntitle: x\n---\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(empty.starts_with("D113 invalid_input:"), "got: {empty}");
+
+        let huge = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "new-skill".into(),
+                content: "x".repeat(SKILL_BODY_MAX_BYTES + 1),
+            },
+        )
+        .unwrap_err();
+        assert!(huge.contains("too large"), "got: {huge}");
+        assert!(!tmp.path().join("new-skill.md").exists());
+    }
+
+    #[test]
+    fn create_skill_rejects_function_id_shaped_and_invalid_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        let err = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "sandbox::create".into(),
+                content: "# X\n\nbody\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("FUNCTION id"), "got: {err}");
+
+        assert!(create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "Bad Name".into(),
+                content: "# X\n\nbody\n".into(),
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn create_skill_rejects_prompt_segment_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        for (id, family) in [
+            ("ns/prompts/foo", "directory::prompts::create"),
+            ("ns/system-prompts/foo", "directory::system-prompts::create"),
+            ("prompts/foo", "directory::prompts::create"),
+        ] {
+            let err = create_skill_in(
+                &cfg,
+                &[],
+                None,
+                &SkillCreateInput {
+                    id: id.into(),
+                    content: "# X\n\nbody\n".into(),
+                },
+            )
+            .unwrap_err();
+            assert!(err.starts_with("D115 invalid_input:"), "id {id}: {err}");
+            assert!(
+                err.contains(family),
+                "id {id} should route to {family}: {err}"
+            );
+        }
+        assert!(!tmp.path().join("ns").exists());
+        assert!(!tmp.path().join("prompts").exists());
+    }
+
+    #[test]
+    fn create_skill_ignores_skill_less_agents_dirs() {
+        // A stray directory without a SKILL.md under the agents root
+        // reserves nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(agents.path().join("stray")).unwrap();
+        let mut cfg = cfg_for(tmp.path());
+        cfg.agents_skills_folder = agents.path().to_string_lossy().into_owned();
+
+        create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "stray/notes".into(),
+                content: "# N\n\nbody\n".into(),
+            },
+        )
+        .expect("skill-less agents dir must not reserve the namespace");
+    }
+
+    #[test]
+    fn remove_empty_parents_never_removes_a_nested_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().to_path_buf();
+        // Local root nested INSIDE the global root.
+        let local = global.join("nested-local");
+        let file = local.join("ns/doc.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "x").unwrap();
+        std::fs::remove_file(&file).unwrap();
+
+        remove_empty_parents(&file, &[&global, &local]);
+        assert!(!local.join("ns").exists(), "empty ns dir is cleaned");
+        assert!(
+            local.exists(),
+            "the nested local root itself must survive even when empty"
+        );
+    }
+
+    #[test]
+    fn create_skill_rejects_id_hidden_by_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let registered: HashSet<String> = HashSet::from(["other".to_string()]);
+
+        // Multi-segment id under a non-installed namespace: would be
+        // invisible to list/get the moment it was written.
+        let err = create_skill_in(
+            &cfg,
+            &[],
+            Some(&registered),
+            &SkillCreateInput {
+                id: "ghost/doc".into(),
+                content: "# G\n\nbody\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("D115 invalid_input:"), "got: {err}");
+        assert!(err.contains("filter_unregistered"), "got: {err}");
+        assert!(!tmp.path().join("ghost/doc.md").exists());
+
+        // Filter-exempt shapes pass: single-segment, directory/*, iii/*,
+        // and installed-worker namespaces.
+        for id in ["solo", "directory/note", "iii/note", "other/note"] {
+            create_skill_in(
+                &cfg,
+                &[],
+                Some(&registered),
+                &SkillCreateInput {
+                    id: id.into(),
+                    content: "# OK\n\nbody\n".into(),
+                },
+            )
+            .unwrap_or_else(|e| panic!("id {id} should pass the filter guard: {e}"));
+        }
+    }
+
+    #[test]
+    fn create_skill_rejects_agents_namespace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        write_fixture(
+            agents.path(),
+            "impeccable/SKILL.md",
+            "# Impeccable\n\nbody\n",
+        );
+        let mut cfg = cfg_for(tmp.path());
+        cfg.agents_skills_folder = agents.path().to_string_lossy().into_owned();
+
+        // A multi-segment id under the agents namespace would shadow the
+        // whole read-only namespace — reserved, even with the filter off.
+        let err = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "impeccable/notes".into(),
+                content: "# N\n\nbody\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("D115 invalid_input:"), "got: {err}");
+        assert!(err.contains("reserved"), "got: {err}");
+        assert!(!tmp.path().join("impeccable").exists());
+
+        // The bare id collides with the agents skill via the <id>/index
+        // alias once the agents entry is in the visible set.
+        let (merged, _) = fs_source::scan_skills_merged(
+            &cfg.resolved_skills_folder(),
+            &cfg.local_skills_folder(),
+        );
+        let (visible, _) = fs_source::merge_agents_root(
+            merged,
+            &cfg.resolved_skills_folder(),
+            &cfg.local_skills_folder(),
+            &cfg.resolved_agents_skills_folder(),
+        );
+        let err = create_skill_in(
+            &cfg,
+            &visible,
+            None,
+            &SkillCreateInput {
+                id: "impeccable".into(),
+                content: "# I\n\nbody\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("D114 invalid_input:"), "got: {err}");
+    }
+
+    #[test]
+    fn delete_skill_removes_file_and_cleans_empty_parents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(tmp.path(), "ns/deep/doc.md", "# Doc\n\nbody\n");
+        write_fixture(tmp.path(), "keep/other.md", "# Other\n\nbody\n");
+        let visible = scan(tmp.path());
+
+        let out = delete_skill_in(
+            &cfg,
+            &visible,
+            &SkillDeleteInput {
+                id: "ns/deep/doc".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.id, "ns/deep/doc");
+        assert!(!tmp.path().join("ns/deep/doc.md").exists());
+        // Empty parents are cleaned up so the namespace can't keep
+        // shadowing a lower-precedence root…
+        assert!(!tmp.path().join("ns").exists());
+        // …but the root itself and non-empty siblings survive.
+        assert!(tmp.path().exists());
+        assert!(tmp.path().join("keep/other.md").exists());
+    }
+
+    #[test]
+    fn delete_skill_resolves_bare_alias_to_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(tmp.path(), "ns/index.md", "# Overview\n\nbody\n");
+        let visible = scan(tmp.path());
+
+        let out = delete_skill_in(&cfg, &visible, &SkillDeleteInput { id: "ns".into() }).unwrap();
+        assert_eq!(out.id, "ns/index", "returns the resolved on-disk id");
+        assert!(!tmp.path().join("ns").exists());
+    }
+
+    #[test]
+    fn delete_skill_missing_target_is_not_found_with_candidates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(tmp.path(), "ns/real.md", "# Real\n\nbody\n");
+        let visible = scan(tmp.path());
+
+        let err = delete_skill_in(
+            &cfg,
+            &visible,
+            &SkillDeleteInput {
+                id: "ns/reel".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("D110 not_found:"), "got: {err}");
+        assert!(err.contains("ns/real"), "got: {err}");
+        assert!(tmp.path().join("ns/real.md").exists());
+    }
+
+    #[test]
+    fn update_and_delete_refuse_agents_root_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        write_fixture(
+            agents.path(),
+            "impeccable/SKILL.md",
+            "# Impeccable\n\nbody\n",
+        );
+        let mut cfg = cfg_for(tmp.path());
+        cfg.agents_skills_folder = agents.path().to_string_lossy().into_owned();
+
+        let (visible, skipped) = fs_source::scan_agents_skills(agents.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+
+        // Every input alias resolves to the same abs_path and is refused.
+        for id in ["impeccable", "impeccable/index"] {
+            let err = update_skill_in(
+                &visible,
+                &SkillUpdateInput {
+                    id: id.into(),
+                    content: "# Hacked\n\nbody\n".into(),
+                },
+                &cfg.resolved_agents_skills_folder(),
+            )
+            .unwrap_err();
+            assert!(err.starts_with("D116 invalid_input:"), "id {id}: {err}");
+
+            let err =
+                delete_skill_in(&cfg, &visible, &SkillDeleteInput { id: id.into() }).unwrap_err();
+            assert!(err.starts_with("D116 invalid_input:"), "id {id}: {err}");
+        }
+        // The file survives untouched.
+        let on_disk = std::fs::read_to_string(agents.path().join("impeccable/SKILL.md")).unwrap();
+        assert_eq!(on_disk, "# Impeccable\n\nbody\n");
     }
 }
