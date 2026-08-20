@@ -109,8 +109,16 @@ async fn main() -> Result<()> {
 
     wait_for_shutdown_signal().await?;
     tracing::info!("iii-state shutting down");
-    boot.shutdown().await;
+    // Disconnect BEFORE flushing. `shutdown_async` clears the SDK's `running`
+    // flag, which stops its receive loop from dispatching further
+    // invocations — so no request accepted after this point can mutate the
+    // store behind the flush and be lost. Flush and destroy touch only local
+    // state and disk, never the engine, so they are safe on a closed
+    // connection. Requests already executing when the signal lands are still
+    // a race the SDK gives us no way to await; only a full admission gate
+    // with in-flight tracking would close it.
     iii.shutdown_async().await;
+    boot.shutdown().await;
     Ok(())
 }
 

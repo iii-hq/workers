@@ -172,8 +172,7 @@ impl StateAdapter for KvStoreAdapter {
         Ok(())
     }
     async fn flush(&self) -> anyhow::Result<()> {
-        self.storage.flush().await;
-        Ok(())
+        self.storage.flush().await
     }
     async fn destroy(&self) -> anyhow::Result<()> {
         Ok(())

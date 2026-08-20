@@ -158,6 +158,15 @@ async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Re-mark a scope dirty after a failed disk operation — but never on top of
+/// a NEWER one. The scope left the dirty map before the write started, so a
+/// concurrent `set`/`delete` may have queued fresh intent for it meanwhile;
+/// overwriting that would persist the stale intent instead (a failed delete
+/// landing on a fresh upsert deletes live data on the next flush).
+async fn requeue(dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>, index: String, op: DirtyOp) {
+    dirty.write().await.entry(index).or_insert(op);
+}
+
 pub struct KvStore {
     store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
     file_store_dir: Option<PathBuf>,
@@ -167,6 +176,12 @@ pub struct KvStore {
     /// [`KvStore::reconfigure`]. `None` for in-memory stores, which run
     /// no save loop.
     save_loop_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Serialises `flush_dirty` across the periodic save loop and the
+    /// shutdown flush. Both drain the whole dirty map, so without it the
+    /// shutdown flush can find the map already empty while the loop's write
+    /// is still in flight — and process exit then cancels that write,
+    /// losing precisely the update this store is here to keep.
+    flush_lock: Arc<tokio::sync::Mutex<()>>,
     /// The boot-configured save cadence (ms, already floored). A reconfigure
     /// that clears `save_interval_ms` reverts to this rather than to the global
     /// default, so clearing the runtime knob restores the adapter's configured
@@ -235,6 +250,7 @@ impl KvStore {
             file_store_dir,
             dirty,
             save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
+            flush_lock: Arc::new(tokio::sync::Mutex::new(())),
             default_interval: interval,
         };
 
@@ -265,8 +281,9 @@ impl KvStore {
 
         let store = Arc::clone(&self.store);
         let dirty = Arc::clone(&self.dirty);
+        let flush_lock = Arc::clone(&self.flush_lock);
         tokio::spawn(async move {
-            Self::save_loop(store, dirty, interval_ms, dir, stop_rx).await;
+            Self::save_loop(store, dirty, flush_lock, interval_ms, dir, stop_rx).await;
         });
     }
 
@@ -295,6 +312,7 @@ impl KvStore {
     async fn save_loop(
         store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+        flush_lock: Arc<tokio::sync::Mutex<()>>,
         polling_interval: u64,
         dir: PathBuf,
         mut stop_rx: tokio::sync::watch::Receiver<bool>,
@@ -313,25 +331,34 @@ impl KvStore {
                     }
                 }
                 _ = interval.tick() => {
-                    Self::flush_dirty(&store, &dirty, &dir).await;
+                    // Every failure is already logged and requeued per scope;
+                    // the aggregate is only actionable on the shutdown path.
+                    let _ = Self::flush_dirty(&store, &dirty, &flush_lock, &dir).await;
                 }
             }
         }
     }
 
     /// Write every dirty scope to disk now. Failed entries are re-marked dirty
-    /// so a later flush retries them. Shared by the periodic save loop and
-    /// [`KvStore::flush`].
+    /// so a later flush retries them, and the count of failures comes back as
+    /// an error so the shutdown path can report that the final persistence
+    /// attempt did not fully succeed. Shared by the periodic save loop and
+    /// [`KvStore::flush`], which `flush_lock` keeps from overlapping.
     async fn flush_dirty(
         store: &Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
         dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>,
+        flush_lock: &tokio::sync::Mutex<()>,
         dir: &Path,
-    ) {
+    ) -> anyhow::Result<()> {
+        let _guard = flush_lock.lock().await;
         let batch = {
             let mut dirty = dirty.write().await;
             dirty.drain().collect::<Vec<_>>()
         };
 
+        // Every scope is attempted even after one fails, so a single bad path
+        // can't strand the rest of the batch on the shutdown flush.
+        let mut failed = 0usize;
         for (index, op) in batch {
             match op {
                 DirtyOp::Upsert => {
@@ -343,27 +370,33 @@ impl KvStore {
                         && let Err(err) = persist_index_to_disk(dir, &index, &value).await
                     {
                         tracing::error!(error = ?err, index = %index, "failed to persist index");
-                        let mut dirty = dirty.write().await;
-                        dirty.insert(index, DirtyOp::Upsert);
+                        failed += 1;
+                        requeue(dirty, index, DirtyOp::Upsert).await;
                     }
                 }
                 DirtyOp::Delete => {
                     if let Err(err) = delete_index_from_disk(dir, &index).await {
                         tracing::error!(error = ?err, index = %index, "failed to delete index");
-                        let mut dirty = dirty.write().await;
-                        dirty.insert(index, DirtyOp::Delete);
+                        failed += 1;
+                        requeue(dirty, index, DirtyOp::Delete).await;
                     }
                 }
             }
         }
+
+        if failed > 0 {
+            anyhow::bail!("{failed} scope(s) failed to persist and were requeued");
+        }
+        Ok(())
     }
 
     /// Flush pending dirty scopes to disk immediately — the shutdown path,
     /// so a stop right after a write doesn't lose the last save window.
     /// No-op for in-memory stores.
-    pub async fn flush(&self) {
-        if let Some(dir) = &self.file_store_dir {
-            Self::flush_dirty(&self.store, &self.dirty, dir).await;
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        match &self.file_store_dir {
+            Some(dir) => Self::flush_dirty(&self.store, &self.dirty, &self.flush_lock, dir).await,
+            None => Ok(()),
         }
     }
 
@@ -653,6 +686,65 @@ mod test {
         }
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A failed write must never bury newer intent for the same scope.
+    /// Ordering: a `Delete` is drained and its disk op fails; meanwhile a
+    /// `set` queues an `Upsert`. Requeueing the failed `Delete` with a plain
+    /// `insert` would overwrite that `Upsert`, and the next flush would then
+    /// delete a scope the store still holds — silent data loss.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn requeue_never_overwrites_newer_intent() {
+        let dirty: Arc<RwLock<HashMap<String, DirtyOp>>> = Arc::new(RwLock::new(HashMap::new()));
+
+        dirty
+            .write()
+            .await
+            .insert("scope".to_string(), DirtyOp::Upsert);
+        requeue(&dirty, "scope".to_string(), DirtyOp::Delete).await;
+        assert!(
+            matches!(dirty.read().await.get("scope"), Some(DirtyOp::Upsert)),
+            "the newer Upsert must survive the failed Delete's requeue"
+        );
+
+        // With nothing newer queued, the failed op is restored so the next
+        // flush retries it.
+        dirty.write().await.clear();
+        requeue(&dirty, "scope".to_string(), DirtyOp::Delete).await;
+        assert!(matches!(
+            dirty.read().await.get("scope"),
+            Some(DirtyOp::Delete)
+        ));
+    }
+
+    /// A failing disk write has to reach the caller: `BootHandle::shutdown`
+    /// logs a warning off this result, and it was unreachable while `flush`
+    /// returned `()`. A directory sitting where the index file belongs makes
+    /// the write fail without touching permissions.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_reports_failure_and_requeues_the_scope() {
+        let dir = temp_store_dir();
+        let index = "blocked";
+        let store = KvStore::new(Some(serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            // Long cadence: this test owns the flush, not the save loop.
+            "save_interval_ms": 600_000,
+        })));
+
+        std::fs::create_dir_all(dir.join(index_file_name(index))).unwrap();
+        store
+            .set(index.to_string(), "k".to_string(), serde_json::json!(1))
+            .await;
+
+        assert!(
+            store.flush().await.is_err(),
+            "a failed persist must surface, not just log"
+        );
+        assert!(
+            store.dirty.read().await.contains_key(index),
+            "the failed scope stays dirty so a later flush retries it"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
