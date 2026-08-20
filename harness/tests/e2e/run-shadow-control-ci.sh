@@ -153,6 +153,16 @@ add_with_retry() {
   return 1
 }
 
+install_exact_stack() {
+  local label=$1
+  local versions_json=$2
+  local -a pins=()
+  mapfile -t pins < <(jq -r 'to_entries | sort_by(.key)[] | "\(.key)@\(.value)"' <<<"$versions_json")
+  ((${#pins[@]} > 0)) || return 0
+  log "Installing ${#pins[@]} exact workers ($label)"
+  add_with_retry "$label" "${pins[@]}" --force
+}
+
 if [[ "$contract_schema" == 2 ]]; then
   log "Installing exact iii CLI $cli_version"
 else
@@ -182,10 +192,14 @@ wait_for_engine
 
 failure_phase=registry
 if [[ "$contract_schema" == 2 ]]; then
-  while IFS=$'\t' read -r worker version; do
-    log "Installing exact E2E runtime: $worker@$version"
-    add_with_retry "runtime-$worker" "$worker@$version" --force
-  done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$runtime_versions")
+  # The contract may distinguish runtime and target pins. Resolve their union
+  # once before the runner and once after it, rather than waiting for every
+  # individual worker to report ready in four serial loops.
+  exact_stack_versions=$(jq -cn \
+    --argjson runtime "$runtime_versions" \
+    --argjson target "$stack_versions" \
+    '$runtime + $target')
+  install_exact_stack stack-bootstrap "$exact_stack_versions"
 else
   support=("database@latest" "storage@latest" "fp@latest" "web@latest")
   declare -A providers=()
@@ -198,24 +212,25 @@ else
   add_with_retry support "${support[@]}"
 fi
 
-while IFS=$'\t' read -r worker version; do
-  log "Installing exact target stack: $worker@$version"
-  add_with_retry "stack-$worker" "$worker@$version" --force
-done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
+if [[ "$contract_schema" != 2 ]]; then
+  while IFS=$'\t' read -r worker version; do
+    log "Installing exact target stack: $worker@$version"
+    add_with_retry "stack-$worker" "$worker@$version" --force
+  done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
+fi
 
 log "Installing ephemeral runner: $runner_worker@$runner_ref"
 add_with_retry runner "$runner_worker@$runner_ref" --force
 
 # A runner dependency may resolve a different version of a runtime or target
-# worker. Reapply every exact pin after the runner, with the target last.
+# worker. Reapply every exact pin after the runner.
 if [[ "$contract_schema" == 2 ]]; then
+  install_exact_stack stack-repin "$exact_stack_versions"
+else
   while IFS=$'\t' read -r worker version; do
-    add_with_retry "repin-runtime-$worker" "$worker@$version" --force
-  done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$runtime_versions")
+    add_with_retry "repin-$worker" "$worker@$version" --force
+  done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
 fi
-while IFS=$'\t' read -r worker version; do
-  add_with_retry "repin-$worker" "$worker@$version" --force
-done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
 
 target_harness_version=$(jq -r '.target.version' "$contract_path")
 if [[ "$contract_schema" == 2 ]]; then
