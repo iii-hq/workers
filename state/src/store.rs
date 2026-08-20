@@ -184,7 +184,7 @@ impl KvStore {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .unwrap_or_else(|| "in_memory".to_string());
+            .unwrap_or_else(|| "file_based".to_string());
 
         if store_method == "in_memory" {
             tracing::warn!(
@@ -199,7 +199,7 @@ impl KvStore {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .unwrap_or_else(|| "kv_store_data.db".to_string());
+            .unwrap_or_else(|| "./data/state".to_string());
 
         let interval = config
             .clone()
@@ -313,41 +313,57 @@ impl KvStore {
                     }
                 }
                 _ = interval.tick() => {
-                    let batch = {
-                        let mut dirty = dirty.write().await;
-                        if dirty.is_empty() {
-                            continue;
-                        }
-                        dirty.drain().collect::<Vec<_>>()
-                    };
+                    Self::flush_dirty(&store, &dirty, &dir).await;
+                }
+            }
+        }
+    }
 
-                    for (index, op) in batch {
-                        match op {
-                            DirtyOp::Upsert => {
-                                let value = {
-                                    let store = store.read().await;
-                                    store.get(&index).cloned()
-                                };
-                                if let Some(value) = value
-                                    && let Err(err) =
-                                        persist_index_to_disk(&dir, &index, &value).await
-                                {
-                                    tracing::error!(error = ?err, index = %index, "failed to persist index");
-                                    let mut dirty = dirty.write().await;
-                                    dirty.insert(index, DirtyOp::Upsert);
-                                }
-                            }
-                            DirtyOp::Delete => {
-                                if let Err(err) = delete_index_from_disk(&dir, &index).await {
-                                    tracing::error!(error = ?err, index = %index, "failed to delete index");
-                                    let mut dirty = dirty.write().await;
-                                    dirty.insert(index, DirtyOp::Delete);
-                                }
-                            }
-                        }
+    /// Write every dirty scope to disk now. Failed entries are re-marked dirty
+    /// so a later flush retries them. Shared by the periodic save loop and
+    /// [`KvStore::flush`].
+    async fn flush_dirty(
+        store: &Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
+        dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>,
+        dir: &Path,
+    ) {
+        let batch = {
+            let mut dirty = dirty.write().await;
+            dirty.drain().collect::<Vec<_>>()
+        };
+
+        for (index, op) in batch {
+            match op {
+                DirtyOp::Upsert => {
+                    let value = {
+                        let store = store.read().await;
+                        store.get(&index).cloned()
+                    };
+                    if let Some(value) = value
+                        && let Err(err) = persist_index_to_disk(dir, &index, &value).await
+                    {
+                        tracing::error!(error = ?err, index = %index, "failed to persist index");
+                        let mut dirty = dirty.write().await;
+                        dirty.insert(index, DirtyOp::Upsert);
+                    }
+                }
+                DirtyOp::Delete => {
+                    if let Err(err) = delete_index_from_disk(dir, &index).await {
+                        tracing::error!(error = ?err, index = %index, "failed to delete index");
+                        let mut dirty = dirty.write().await;
+                        dirty.insert(index, DirtyOp::Delete);
                     }
                 }
             }
+        }
+    }
+
+    /// Flush pending dirty scopes to disk immediately — the shutdown path,
+    /// so a stop right after a write doesn't lose the last save window.
+    /// No-op for in-memory stores.
+    pub async fn flush(&self) {
+        if let Some(dir) = &self.file_store_dir {
+            Self::flush_dirty(&self.store, &self.dirty, dir).await;
         }
     }
 
@@ -562,6 +578,13 @@ impl KvStore {
     }
 }
 
+/// The default store_method is file_based — tests that don't exercise
+/// persistence pin in_memory so they never touch `./data/state`.
+#[cfg(test)]
+fn in_memory_store() -> KvStore {
+    KvStore::new(Some(serde_json::json!({"store_method": "in_memory"})))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -725,7 +748,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_reconfigure_in_memory_is_noop() {
-        let kv_store = KvStore::new(None); // in-memory: no save loop
+        let kv_store = in_memory_store(); // in-memory: no save loop
         kv_store.reconfigure(&serde_json::json!({ "save_interval_ms": 100 }));
         assert!(
             kv_store
@@ -779,7 +802,7 @@ mod barrier_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_arrivals_complete_a_barrier_exactly_once() {
         const N: usize = 32;
-        let store = Arc::new(KvStore::new(None));
+        let store = Arc::new(in_memory_store());
         let cfg = Arc::new(BarrierConfig {
             id: "race".into(),
             expect: Expect::Count(N as u64),
@@ -813,7 +836,7 @@ mod barrier_tests {
     /// arrival racing itself must still count once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn duplicate_arrivals_racing_do_not_over_count() {
-        let store = Arc::new(KvStore::new(None));
+        let store = Arc::new(in_memory_store());
         let cfg = Arc::new(BarrierConfig {
             id: "dupes".into(),
             expect: Expect::Count(2),
@@ -852,7 +875,7 @@ mod cas_tests {
 
     #[tokio::test]
     async fn a_swap_happens_only_when_the_expectation_holds() {
-        let store = KvStore::new(None);
+        let store = in_memory_store();
         // Absent → set-if-absent succeeds.
         assert_eq!(
             store
@@ -889,7 +912,7 @@ mod cas_tests {
 
     #[tokio::test]
     async fn failed_or_ignored_atomic_operations_do_not_create_scopes() {
-        let store = KvStore::new(None);
+        let store = in_memory_store();
         assert_eq!(
             store
                 .compare_and_set("phantom".into(), "k".into(), Some(&json!(1)), json!(2))
@@ -943,7 +966,7 @@ mod cas_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_claimers_each_get_a_distinct_slot() {
         const N: usize = 40;
-        let store = Arc::new(KvStore::new(None));
+        let store = Arc::new(in_memory_store());
         store
             .compare_and_set("claims".into(), "counter".into(), None, json!(0))
             .await;
@@ -995,7 +1018,7 @@ mod cas_tests {
     async fn a_stored_null_counts_as_absent() {
         // A deleted-then-rewritten key must behave like a never-written one, or
         // set-if-absent would refuse forever after the first delete.
-        let store = KvStore::new(None);
+        let store = in_memory_store();
         store.set("s".into(), "k".into(), Value::Null).await;
         assert_eq!(
             store

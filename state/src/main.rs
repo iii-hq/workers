@@ -107,9 +107,27 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("binding configuration trigger")?;
 
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown_signal().await?;
     tracing::info!("iii-state shutting down");
     boot.shutdown().await;
     iii.shutdown_async().await;
     Ok(())
+}
+
+/// Ctrl+C or SIGTERM — workers-dev stops workers with SIGTERM (then SIGKILL
+/// after ~1s), so SIGTERM must reach the shutdown flush too.
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r,
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }
