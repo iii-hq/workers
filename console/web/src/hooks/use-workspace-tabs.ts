@@ -16,7 +16,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type ConsoleConfigValue,
   fetchConsoleConfigValue,
@@ -29,6 +29,7 @@ import {
   parseActiveTabId,
   parseWorkspaceTabs,
   resolveActiveTab,
+  shouldFlushPendingWrite,
   type TabScreen,
   tabColumns,
   type WorkspaceLayoutSource,
@@ -161,8 +162,22 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     },
   })
 
+  // A mutation fired before the first server answer arrives (a keyboard
+  // shortcut, a worker's panel-open) must not be lost when `tabs` flips from
+  // the local copy to the server layout. The latest such write is held and
+  // replayed through the server path once hydrated.
+  const pendingWriteRef = useRef<{
+    tabs: WorkspaceTab[]
+    activeTabId: string
+  } | null>(null)
+
   const persist = useCallback(
     (nextTabs: WorkspaceTab[], nextActiveId: string) => {
+      if (layoutSource === 'pending') {
+        pendingWriteRef.current = { tabs: nextTabs, activeTabId: nextActiveId }
+        setLocal({ tabs: nextTabs, activeTabId: nextActiveId })
+        return
+      }
       if (available) {
         const transform = (value: ConsoleConfigValue) =>
           withActiveTabId(withWorkspaceTabs(value, nextTabs), nextActiveId)
@@ -179,8 +194,15 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         persistLocal(nextState)
       }
     },
-    [available, mutation, qc],
+    [available, layoutSource, mutation, qc],
   )
+
+  useEffect(() => {
+    const pending = pendingWriteRef.current
+    if (!shouldFlushPendingWrite(layoutSource, pending !== null)) return
+    pendingWriteRef.current = null
+    if (pending !== null) persist(pending.tabs, pending.activeTabId)
+  }, [layoutSource, persist])
 
   const activateTab = useCallback(
     (id: string) => {
