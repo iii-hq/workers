@@ -44,9 +44,15 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
     None
 }
 
-async fn try_connect_raw() -> Option<Arc<IIIClient>> {
+async fn try_connect_raw(namespace: Option<&str>) -> Option<Arc<IIIClient>> {
     let url = ws_url();
-    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    let iii = Arc::new(register_worker(
+        &url,
+        InitOptions {
+            namespace: namespace.map(str::to_owned),
+            ..InitOptions::default()
+        },
+    ));
 
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -70,12 +76,16 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
 }
 
 pub async fn connect_fresh() -> Option<Arc<IIIClient>> {
-    require_or_skip(try_connect_raw().await)
+    require_or_skip(try_connect_raw(None).await)
+}
+
+pub async fn connect_fresh_in_namespace(namespace: &str) -> Option<Arc<IIIClient>> {
+    require_or_skip(try_connect_raw(Some(namespace)).await)
 }
 
 pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
-        .get_or_init(|| async { require_or_skip(try_connect_raw().await) })
+        .get_or_init(|| async { require_or_skip(try_connect_raw(None).await) })
         .await
         .clone()
 }
