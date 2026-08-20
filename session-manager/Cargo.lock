@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "session-manager"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "anyhow",
  "async-trait",
