@@ -85,6 +85,13 @@ jobs:
           [[ "$(git tag -l --format='%(contents)' "$RAW_TAG" | sed -n 's/^operation-id: //p')" == '${{ inputs.operation_id }}' ]]
           [[ "$(git tag -l --format='%(contents)' "$RAW_TAG" | sed -n 's/^step-id: //p')" == '${{ inputs.source_tag_step_id }}' ]]
 
+      - name: Validate Rust lockfile
+        if: ${{ steps.meta.outputs.language == 'rust' }}
+        env:
+          WORKER: ${{ steps.meta.outputs.worker }}
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+        run: cargo metadata --locked --format-version 1 --manifest-path "$WORKER/$MANIFEST" >/dev/null
+
       - name: Detect web bundle
         id: web
         env:
@@ -100,7 +107,7 @@ jobs:
           fi
 
   github-release:
-    name: Create GitHub Release shell
+    name: Create GitHub Release
     needs: setup
     runs-on: ubuntu-latest
     permissions:
