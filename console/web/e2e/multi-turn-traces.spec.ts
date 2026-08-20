@@ -35,12 +35,13 @@ test('shows two traces and exposes function arguments in trace events', async ({
   ).toHaveCount(1)
 
   const traces = page.getByRole('region', { name: 'traces' })
-  const grouping = traces.getByRole('button', {
-    name: /^(?:no grouping|group by .+)$/,
-  })
-  if ((await grouping.textContent())?.trim() !== 'group by session') {
+  // The group-by control is the shared Selector: the trigger is named by its
+  // aria-label and shows the selected option's label as text; choices are
+  // options in a listbox, not buttons.
+  const grouping = traces.getByRole('button', { name: 'group traces by' })
+  if ((await grouping.textContent())?.trim() !== 'session') {
     await grouping.click()
-    await page.getByRole('button', { name: 'session', exact: true }).click()
+    await page.getByRole('option', { name: 'session', exact: true }).click()
   }
 
   const group = traces.locator(
