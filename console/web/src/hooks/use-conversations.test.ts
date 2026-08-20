@@ -6,6 +6,7 @@ import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  completeFailedHydration,
   isUntouchedDraft,
   markBackgroundedStale,
   mergeConversationMeta,
@@ -276,6 +277,39 @@ describe('mergeHydratedTranscript', () => {
       opts,
     )
     expect(merged.map((m) => m.id)).toEqual(['e1:0', 'local-1:0'])
+  })
+})
+
+describe('completeFailedHydration', () => {
+  it('reaches a terminal state without replacing live or optimistic messages', () => {
+    const messages: Conversation['messages'] = [
+      {
+        id: 'live-1',
+        role: 'assistant',
+        content: 'partial live response',
+        createdAt: 2_100,
+      },
+      {
+        id: 'optimistic-1',
+        role: 'user',
+        content: 'pending prompt',
+        createdAt: 2_200,
+      },
+    ]
+    const current = conversation({ messages, hydrated: false })
+
+    const next = completeFailedHydration(current)
+
+    expect(next.hydrated).toBe(true)
+    expect(next.messages).toBe(messages)
+    expect(next.status).toBe(current.status)
+    expect(next.updatedAt).toBe(current.updatedAt)
+  })
+
+  it('is idempotent after hydration has already completed', () => {
+    const current = conversation({ hydrated: true })
+
+    expect(completeFailedHydration(current)).toBe(current)
   })
 })
 

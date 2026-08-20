@@ -111,12 +111,6 @@
 /* ── navigation rail ────────────────────────────────────────────────── */
 
 [data-iii-ui="computer"] .cp-ui-rail {
-  width: 280px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--color-sidebar);
   border-right: 1px solid var(--color-edge);
 }
 [data-iii-ui="computer"] .cp-ui-browser.right .cp-ui-rail {
@@ -127,7 +121,6 @@
    the viewport: one pane at a time — the JSX renders either the rail or
    the opened desktop. */
 [data-iii-ui="computer"] .cp-ui-browser.narrow .cp-ui-rail {
-  width: 100%;
   border-right: 0;
   border-left: 0;
 }
@@ -164,10 +157,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 32px;
-  padding: 6px 10px 6px 14px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--color-edge);
+  width: 100%;
+  min-width: 0;
 }
 [data-iii-ui="computer"] .cp-ui-col-head .label {
   font-family: var(--font-mono, ui-monospace, monospace);

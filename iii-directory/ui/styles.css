@@ -293,14 +293,6 @@
 /* ── navigation sidebar ─────────────────────────────────────────────── */
 
 [data-iii-ui="iii-directory"] .dir-ui-side {
-  width: 300px;
-  min-width: 260px;
-  max-width: 340px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--color-sidebar);
   border-right: 1px solid var(--color-edge);
 }
 [data-iii-ui="iii-directory"] .dir-ui-browser.right .dir-ui-side {
@@ -311,8 +303,6 @@
    not the viewport: one pane at a time — the JSX renders either the list
    or the opened document. */
 [data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-side {
-  width: 100%;
-  max-width: none;
   border-right: 0;
   border-left: 0;
 }

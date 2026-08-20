@@ -24,15 +24,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
-import {
-  type KeyboardEvent,
-  type PointerEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { onSandboxSelected, takeSelectedSandbox } from '../lib/selection'
 import { ConsoleTab } from './ConsoleTab'
 import { CreateDialog } from './CreateDialog'
@@ -40,104 +32,15 @@ import { FilesTab } from './FilesTab'
 import { FleetRail } from './FleetRail'
 import { BoxIcon, PlayIcon, PlusIcon, RefreshIcon } from './icons'
 import { OverviewTab } from './OverviewTab'
-import { useExecRecords } from './records'
 import { RunCodeDialog } from './RunCodeDialog'
+import { useExecRecords } from './records'
 import { useFleet } from './useFleet'
 
 type TabId = 'overview' | 'console' | 'files'
 
-const RAIL_WIDTH_KEY = 'sandbox-ui:rail-width'
 const RAIL_WIDTH_DEFAULT = 264
 const RAIL_WIDTH_MIN = 200
 const RAIL_WIDTH_MAX = 420
-
-function clampRailWidth(width: number): number {
-  return Math.min(RAIL_WIDTH_MAX, Math.max(RAIL_WIDTH_MIN, Math.round(width)))
-}
-
-/** Drag-resizable rail width, persisted so the layout survives reloads. */
-function useRailWidth(side: 'left' | 'right') {
-  const [width, setWidth] = useState(() => {
-    try {
-      const stored = Number(localStorage.getItem(RAIL_WIDTH_KEY))
-      if (Number.isFinite(stored) && stored > 0) return clampRailWidth(stored)
-    } catch {
-      /* storage unavailable */
-    }
-    return RAIL_WIDTH_DEFAULT
-  })
-  const drag = useRef<{ startX: number; startWidth: number } | null>(null)
-
-  const persist = useCallback((next: number) => {
-    try {
-      localStorage.setItem(RAIL_WIDTH_KEY, String(next))
-    } catch {
-      /* storage unavailable */
-    }
-  }, [])
-
-  const onPointerDown = useCallback(
-    (e: PointerEvent<HTMLElement>) => {
-      drag.current = { startX: e.clientX, startWidth: width }
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId)
-      } catch {
-        /* capture is best-effort — the move/up handlers still work */
-      }
-    },
-    [width],
-  )
-  const onPointerMove = useCallback(
-    (e: PointerEvent<HTMLElement>) => {
-      if (!drag.current) return
-      const dx = e.clientX - drag.current.startX
-      // With the panel docked right the rail sits on the right, so dragging
-      // the handle left grows it.
-      setWidth(
-        clampRailWidth(drag.current.startWidth + (side === 'right' ? -dx : dx)),
-      )
-    },
-    [side],
-  )
-  const onPointerUp = useCallback(
-    (e: PointerEvent<HTMLElement>) => {
-      if (!drag.current) return
-      // The final width derives from the drag state, so persisting stays
-      // outside the setWidth updater (React may re-invoke updaters).
-      const dx = e.clientX - drag.current.startX
-      const final = clampRailWidth(
-        drag.current.startWidth + (side === 'right' ? -dx : dx),
-      )
-      drag.current = null
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId)
-      } catch {
-        /* never captured */
-      }
-      setWidth(final)
-      persist(final)
-    },
-    [side, persist],
-  )
-  const onKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLElement>) => {
-      const grow = side === 'right' ? 'ArrowLeft' : 'ArrowRight'
-      const shrink = side === 'right' ? 'ArrowRight' : 'ArrowLeft'
-      if (e.key !== grow && e.key !== shrink) return
-      e.preventDefault()
-      const next = clampRailWidth(width + (e.key === grow ? 16 : -16))
-      setWidth(next)
-      persist(next)
-    },
-    [side, width, persist],
-  )
-  const reset = useCallback(() => {
-    setWidth(RAIL_WIDTH_DEFAULT)
-    persist(RAIL_WIDTH_DEFAULT)
-  }, [persist])
-
-  return { width, onPointerDown, onPointerMove, onPointerUp, onKeyDown, reset }
-}
 
 export function SandboxPage({
   host,
@@ -154,7 +57,6 @@ export function SandboxPage({
   const [tab, setTab] = useState<TabId>('overview')
   const [createOpen, setCreateOpen] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
-  const rail = useRailWidth(panelSide)
 
   // local display clock, not bus polling; the doctrine targets bus traffic
   // — change-only fleet events leave age_secs frozen, so displayed ages
@@ -337,7 +239,18 @@ export function SandboxPage({
         side={panelSide}
         className={`cr-page-body${panelSide === 'right' ? ' right' : ''}`}
       >
-        <PageSidebar width={rail.width} className="cr-page-sidebar">
+        <PageSidebar
+          label="fleet"
+          side={panelSide}
+          collapsible
+          resizable
+          storageKey="sandbox:fleet"
+          defaultWidth={RAIL_WIDTH_DEFAULT}
+          minWidth={RAIL_WIDTH_MIN}
+          maxWidth={RAIL_WIDTH_MAX}
+          narrowBelow={700}
+          className="cr-page-sidebar"
+        >
           <FleetRail
             host={host}
             sandboxes={state.sandboxes}
@@ -352,22 +265,6 @@ export function SandboxPage({
             onRefresh={refresh}
           />
         </PageSidebar>
-
-        <div
-          className="cr-page-rail-resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="resize the fleet rail (arrow keys, double-click resets)"
-          aria-valuenow={rail.width}
-          aria-valuemin={RAIL_WIDTH_MIN}
-          aria-valuemax={RAIL_WIDTH_MAX}
-          tabIndex={0}
-          onPointerDown={rail.onPointerDown}
-          onPointerMove={rail.onPointerMove}
-          onPointerUp={rail.onPointerUp}
-          onKeyDown={rail.onKeyDown}
-          onDoubleClick={rail.reset}
-        />
 
         <PageMain className="cr-page-main">{renderMain()}</PageMain>
       </PageBody>

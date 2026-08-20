@@ -582,6 +582,20 @@
 }
 
 /* lexical editor surface — keep it boring so it inherits the rest of the system */
+.composer-editor[data-composer-height-ready] {
+  height: var(--composer-editor-height);
+  transition: height var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.composer-editor[data-composer-height-measuring] {
+  height: auto;
+}
+
+.composer-editor[data-composer-height-measuring],
+.composer-editor[data-composer-height-mode="instant"] {
+  transition-duration: var(--motion-duration-instant);
+}
+
 .composer-editor {
   outline: none;
   min-height: 96px;

@@ -30,6 +30,7 @@ import {
   type Host,
   Input,
   MarkdownPreview,
+  PageSidebar,
   SegmentedControl,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
@@ -610,9 +611,30 @@ export function CollectionBrowser({
       onKeyDown={onRootKeyDown}
     >
       {showSide ? (
-        <aside className="dir-ui-side" aria-label={`${adapter.noun} list`}>
+        <PageSidebar
+          label={`${adapter.noun} list`}
+          side={panelSide}
+          collapsible
+          storageKey="iii-directory:navigation"
+          defaultWidth={300}
+          narrow={narrow}
+          className="dir-ui-side"
+          header={nav}
+          collapsedActions={
+            adapter.create ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={startCreate}
+                aria-label={`new ${adapter.noun}`}
+                title={`new ${adapter.noun}`}
+              >
+                <PlusIcon className="dir-ui-new-icon" />
+              </Button>
+            ) : undefined
+          }
+        >
           <div className="dir-ui-side-top">
-            {nav}
             {adapter.create ? (
               <Button
                 variant="ghost"
@@ -734,7 +756,7 @@ export function CollectionBrowser({
               </ul>
             )}
           </div>
-        </aside>
+        </PageSidebar>
       ) : null}
 
       {showDoc ? (

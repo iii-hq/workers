@@ -91,7 +91,15 @@ export function CatalogShell({
         className="console-catalog-body"
         data-selected={hasSelection}
       >
-        <PageSidebar width={320} className="console-catalog-side">
+        <PageSidebar
+          label="catalog"
+          side={side}
+          defaultWidth={320}
+          collapsible
+          storageKey="console:catalog"
+          narrowBelow={700}
+          className="console-catalog-side"
+        >
           <div className="console-catalog-side-top">{sideTop}</div>
           <div className="console-catalog-side-scroll">{list}</div>
           {sideFooter ? (

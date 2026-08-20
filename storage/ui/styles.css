@@ -29,7 +29,6 @@
 }
 
 [data-iii-ui="storage"] .storage-ui-buckets {
-  flex: 0 0 204px;
   background: var(--color-sidebar);
   border-right: 1px solid var(--color-edge);
 }
@@ -70,6 +69,15 @@
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-edge);
   background: var(--color-panel-raised);
+}
+
+[data-iii-ui="storage"] .storage-ui-primary-head {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
 }
 
 [data-iii-ui="storage"] .storage-ui-column-label {

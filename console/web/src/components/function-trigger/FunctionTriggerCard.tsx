@@ -373,7 +373,7 @@ export function FunctionTriggerCard({
   const description = message.description?.trim() || undefined
 
   return (
-    <div
+    <section
       className={cn(
         'function-trigger-surface',
         expandedSurface
@@ -384,6 +384,10 @@ export function FunctionTriggerCard({
       data-message-role="function-call"
       data-function-id={message.functionId}
       data-expanded={expandedSurface}
+      aria-label={
+        pending ? `action required for ${message.functionId}` : undefined
+      }
+      tabIndex={pending ? -1 : undefined}
       data-function-status={
         pending ? 'pending' : running ? 'running' : errored ? 'error' : 'done'
       }
@@ -609,7 +613,7 @@ export function FunctionTriggerCard({
           <p className="font-mono text-[12px] text-ink-faint">
             execution is paused until you approve or deny this call.
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" data-approval-actions="">
             <Button
               variant="primary"
               size="sm"
@@ -645,7 +649,7 @@ export function FunctionTriggerCard({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </section>
   )
 }
 

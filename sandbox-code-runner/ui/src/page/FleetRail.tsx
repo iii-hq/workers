@@ -226,7 +226,6 @@ export function FleetRail({
 
   return (
     <div className="cr-page-rail">
-      <div className="cr-page-rail-label">fleet</div>
       {daemonAbsent ? (
         <div className="cr-page-rail-empty">
           <EmptyState

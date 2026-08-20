@@ -263,10 +263,6 @@ function reviewablePath(rel: string): boolean {
   )
 }
 
-function clampSidebarWidth(w: number): number {
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(w)))
-}
-
 function clampTerminalSize(size: number | undefined, fallback: number): number {
   if (size === undefined || !Number.isFinite(size)) return fallback
   return Math.min(1200, Math.max(160, Math.round(size)))
@@ -357,7 +353,6 @@ export function ShellExplorerPage({
   // the workspace frame exists, so an effect that reads a ref once would
   // observe nothing.
   const [frameEl, setFrameEl] = useState<HTMLDivElement | null>(null)
-  const [sideWidth, setSideWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const [tree, setTree] = useState<FlatTree | null>(null)
   // Dot entries are filtered by default (Finder/VS Code convention) —
   // in home-shaped folders they otherwise crowd out every visible name.
@@ -774,9 +769,6 @@ export function ShellExplorerPage({
           setTabs(restoreTabs(restored.open, restored.active))
           setExpanded(restored.expanded)
           setShowHidden(restored.showHidden ?? false)
-          setSideWidth(
-            clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH),
-          )
           restoreTerminalUiState(restored)
         } else if (
           restored &&
@@ -787,9 +779,6 @@ export function ShellExplorerPage({
           setTabs(restoreTabs(restored.open, restored.active))
           setExpanded(restored.expanded)
           setShowHidden(restored.showHidden ?? false)
-          setSideWidth(
-            clampSidebarWidth(restored.sideWidth ?? SIDEBAR_DEFAULT_WIDTH),
-          )
           restoreTerminalUiState(restored)
         } else {
           dispatchTerminalWorkspace({
@@ -1594,7 +1583,6 @@ export function ShellExplorerPage({
       active: tabs.active,
       expanded,
       showHidden,
-      sideWidth,
       terminalOpen,
       terminalDock,
       terminalActive,
@@ -1608,7 +1596,6 @@ export function ShellExplorerPage({
     tabs,
     expanded,
     showHidden,
-    sideWidth,
     terminalOpen,
     terminalDock,
     terminalActive,
@@ -1702,49 +1689,6 @@ export function ShellExplorerPage({
       setTabs((s) => closeTab(s, relPath))
     },
     [dirtyPaths, reviewDirtyPaths, reviewSaveBarrier],
-  )
-
-  // ── sidebar resize (drag handle on the boundary toward the main pane) ──
-  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
-  const onHandlePointerDown = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      dragRef.current = { startX: e.clientX, startWidth: sideWidth }
-      // Capture is best-effort: some pointer types refuse it, and the
-      // drag still works through the move/up handlers.
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId)
-      } catch {
-        // no capture — moves outside the handle end the drag early
-      }
-    },
-    [sideWidth],
-  )
-  const onHandlePointerMove = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      const drag = dragRef.current
-      if (!drag) return
-      const delta = e.clientX - drag.startX
-      // A right-hugging sidebar widens as the handle moves LEFT.
-      setSideWidth(
-        clampSidebarWidth(
-          panelSide === 'right'
-            ? drag.startWidth - delta
-            : drag.startWidth + delta,
-        ),
-      )
-    },
-    [panelSide],
-  )
-  const onHandlePointerUp = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      dragRef.current = null
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId)
-      } catch {
-        // never captured — nothing to release
-      }
-    },
-    [],
   )
 
   const changeRoot = useCallback(
@@ -2353,26 +2297,30 @@ export function ShellExplorerPage({
                 <Terminal aria-hidden className="shui-side-tab-icon" />
               </button>
             </HoverTip>
-            <HoverTip
-              label={
-                collapsed ? 'Show the file sidebar' : 'Hide the file sidebar'
-              }
-            >
-              <button
-                type="button"
-                className="shui-collapse-btn"
-                onClick={() => setCollapsed((value) => !value)}
-                aria-label={
-                  collapsed ? 'Show file sidebar' : 'Hide file sidebar'
+            {narrow ? (
+              <HoverTip
+                label={
+                  collapsed
+                    ? 'Show the file sidebar'
+                    : 'Hide the file sidebar'
                 }
               >
-                {panelSide === 'right' ? (
-                  <PanelRight aria-hidden className="shui-side-tab-icon" />
-                ) : (
-                  <PanelLeft aria-hidden className="shui-side-tab-icon" />
-                )}
-              </button>
-            </HoverTip>
+                <button
+                  type="button"
+                  className="shui-collapse-btn"
+                  onClick={() => setCollapsed((value) => !value)}
+                  aria-label={
+                    collapsed ? 'Show file sidebar' : 'Hide file sidebar'
+                  }
+                >
+                  {panelSide === 'right' ? (
+                    <PanelRight aria-hidden className="shui-side-tab-icon" />
+                  ) : (
+                    <PanelLeft aria-hidden className="shui-side-tab-icon" />
+                  )}
+                </button>
+              </HoverTip>
+            ) : null}
           </div>
         ) : undefined
       }
@@ -2422,58 +2370,47 @@ export function ShellExplorerPage({
           />
         ) : null}
         <PageBody side={panelSide}>
-          {!collapsed ? (
-            <PageSidebar width={sideWidth} className="shui-sidebar">
-              <button
-                type="button"
-                className={`shui-resize-handle ${panelSide === 'right' ? 'left' : 'right'}`}
-                onPointerDown={onHandlePointerDown}
-                onPointerMove={onHandlePointerMove}
-                onPointerUp={onHandlePointerUp}
-                onPointerCancel={onHandlePointerUp}
-                onLostPointerCapture={onHandlePointerUp}
-                onKeyDown={(event) => {
-                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
-                    return
-                  event.preventDefault()
-                  const inward =
-                    panelSide === 'right' ? 'ArrowLeft' : 'ArrowRight'
-                  setSideWidth((width) =>
-                    clampSidebarWidth(
-                      width + (event.key === inward ? 10 : -10),
-                    ),
-                  )
-                }}
-                aria-label="resize sidebar"
-                title="drag to resize"
-              />
-              <div className="shui-side-body">
-                {sideTab === 'files' ? (
-                  <FilesTab
-                    tree={reviewTree}
-                    gitStatus={treeGitStatus}
-                    theme={theme}
-                    hiddenFiltered={!showHidden}
-                    expanded={expanded}
-                    onExpandedChange={setExpanded}
-                    reveal={reveal}
-                    onRevealed={onRevealed}
-                    activePath={diff?.change.path ?? tabs.active}
-                    onActivateFile={activateFile}
-                    onPinFile={pinFile}
-                  />
-                ) : (
-                  <SearchTab
-                    host={host}
-                    root={root}
-                    onPreviewFile={previewFile}
-                    onPinFile={pinFile}
-                    onRevealFolder={revealFolder}
-                  />
-                )}
-              </div>
-            </PageSidebar>
-          ) : null}
+          <PageSidebar
+            label={sideTab === 'files' ? 'Files' : 'Search'}
+            side={panelSide}
+            storageKey={`shell:${tabId || 'page'}:sidebar`}
+            defaultWidth={SIDEBAR_DEFAULT_WIDTH}
+            minWidth={SIDEBAR_MIN_WIDTH}
+            maxWidth={SIDEBAR_MAX_WIDTH}
+            collapsible
+            collapsed={collapsed}
+            onCollapsedChange={setCollapsed}
+            resizable
+            narrow={narrow}
+            hidden={narrow && collapsed}
+            className="shui-sidebar"
+          >
+            <div className="shui-side-body">
+              {sideTab === 'files' ? (
+                <FilesTab
+                  tree={reviewTree}
+                  gitStatus={treeGitStatus}
+                  theme={theme}
+                  hiddenFiltered={!showHidden}
+                  expanded={expanded}
+                  onExpandedChange={setExpanded}
+                  reveal={reveal}
+                  onRevealed={onRevealed}
+                  activePath={diff?.change.path ?? tabs.active}
+                  onActivateFile={activateFile}
+                  onPinFile={pinFile}
+                />
+              ) : (
+                <SearchTab
+                  host={host}
+                  root={root}
+                  onPreviewFile={previewFile}
+                  onPinFile={pinFile}
+                  onRevealFolder={revealFolder}
+                />
+              )}
+            </div>
+          </PageSidebar>
 
           <PageMain>
             {workingDirError ? (

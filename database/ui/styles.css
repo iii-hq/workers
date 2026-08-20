@@ -253,29 +253,15 @@
 
 /* --- navigation column (schema tree) ----------------------------------- */
 [data-iii-ui="database"] .db-ui-side {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--color-sidebar);
   border-right: 1px solid var(--color-edge);
 }
 [data-iii-ui="database"] .db-ui-browser.right .db-ui-side {
   border-right: 0;
   border-left: 1px solid var(--color-edge);
 }
-/* Collapsed to a slim rail (wide mode only) — two of the five modes barely
-   use the selection, and at dock widths the rail costs the first screenful. */
-[data-iii-ui="database"] .db-ui-side.collapsed {
-  width: 34px;
-  align-items: center;
-  padding: 6px 0;
-}
 /* Narrow is CONTAINER width (< 850px, the page's own ResizeObserver), not
    the viewport: one pane at a time — tree or workspace, via [hidden]. */
 [data-iii-ui="database"] .db-ui-browser.narrow .db-ui-side {
-  width: 100%;
   border-right: 0;
   border-left: 0;
 }
@@ -288,12 +274,10 @@
 
 [data-iii-ui="database"] .db-ui-side-head {
   display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 6px 8px 6px 14px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--color-edge);
 }
 [data-iii-ui="database"] .db-ui-side-head .label {
   font-size: 13px;
@@ -328,24 +312,6 @@
   min-height: 0;
   overflow-y: auto;
   padding: 4px 6px 12px;
-}
-
-[data-iii-ui="database"] .db-ui-iconbtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink-ghost);
-  cursor: pointer;
-}
-[data-iii-ui="database"] .db-ui-iconbtn:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
 }
 
 /* --- workspace ---------------------------------------------------------- */

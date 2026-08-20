@@ -325,7 +325,21 @@ console's own screens (chat, traces):
     onClose={onRequestClose}          // the standard ✕
   />
   <PageBody side={panelSide}>         {/* mirrors for right-side panes */}
-    <PageSidebar>…navigation…</PageSidebar>  {/* gray, fixed width */}
+    <PageSidebar
+      label="projects"
+      side={panelSide}
+      collapsible
+      resizable
+      storageKey="my-worker:projects"
+      defaultWidth={260}
+      minWidth={200}
+      maxWidth={420}
+      narrowBelow={700}
+      header={<>Projects</>}
+      collapsedActions={<IconButton label="New project" … />}
+    >
+      …navigation…
+    </PageSidebar>
     <PageMain>…workspace…</PageMain>         {/* white, flexes */}
   </PageBody>
 </PageShell>
@@ -339,6 +353,19 @@ page with custom internals (the directory page's drill-in browser) may
 own its body but MUST keep `PageShell` + `PageHeader`. The shell
 explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
 composition.
+
+`PageSidebar` is implemented by the Console host and resolves through the
+shared `/vendor/console-ui.js` module, so importing its behavior adds no bytes
+to a worker bundle. Use its declarative API instead of local collapse DOM,
+pointer handlers, width clamps, `localStorage`, focus management, or motion.
+It keeps one `aside` and its children mounted while collapsed; the host owns
+the 220 ms width transition, content fade/offset, reduced-motion behavior,
+accessible toggle, pointer/keyboard resize, and best-effort persistence.
+Instances with the same `storageKey` share one preference. Pass `narrow` when
+your page's own drill-in state already knows the pane is narrow, or
+`narrowBelow` when only the sidebar chrome needs a container breakpoint; both
+temporarily force the full-width presentation without overwriting the saved
+wide preference. Drag resize and wide↔narrow changes remain instant.
 
 All human-facing chrome uses sans and authored sentence/title case; do not use
 CSS case transforms on tabs, buttons, menus, fields, or labels. Reserve mono

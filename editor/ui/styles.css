@@ -86,61 +86,26 @@
   flex: 1;
   min-height: 0;
 }
+[data-iii-ui="editor"] .ed-body.right {
+  flex-direction: row-reverse;
+}
 
-/* Width is a variable the page sets from the drag handle. 200px was a fine
-   default for a file tree and far too narrow for the changes feed, where a
-   row carries a path, a mark, two counts and an age — the folder truncated to
-   "in ch…", which is no information at all. Rather than pick a new number
-   that is wrong for a different tab, the pane is draggable. */
 [data-iii-ui="editor"] .ed-side {
-  width: var(--ed-side-width, 200px);
-  flex: none;
+  border-right: 1px solid var(--color-rule);
+}
+[data-iii-ui="editor"] .ed-body.right .ed-side {
+  border-right: 0;
+  border-left: 1px solid var(--color-rule);
+}
+
+[data-iii-ui="editor"] .ed-side-content {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 8px;
   min-height: 0;
-  position: relative;
-}
-
-/* The handle sits *on* the border rather than beside it, so the divider the
-   eye already reads as the edge is the thing you grab. Wider than it looks:
-   a 1px target is a target you miss. */
-[data-iii-ui="editor"] .ed-side-handle {
-  position: absolute;
-  top: 0;
-  right: -3px;
-  bottom: 0;
-  width: 7px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: col-resize;
-  z-index: 2;
-}
-
-[data-iii-ui="editor"] .ed-side-handle::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 3px;
-  width: 1px;
-  background: var(--color-rule);
-  transition: background var(--motion-duration-control) var(--motion-ease-exit);
-}
-
-[data-iii-ui="editor"] .ed-side-handle:hover::after,
-[data-iii-ui="editor"] .ed-side-handle:focus-visible::after,
-[data-iii-ui="editor"] .ed-side-handle[data-dragging="true"]::after {
-  background: var(--color-accent);
-}
-
-/* While dragging, the pointer owns the whole page: without this a fast drag
-   selects text in the editor and the resize stutters. */
-[data-iii-ui="editor"][data-resizing="true"] {
-  cursor: col-resize;
-  user-select: none;
+  overflow: hidden;
 }
 
 [data-iii-ui="editor"] .ed-main {
@@ -161,15 +126,21 @@
   flex: none;
 }
 
-[data-iii-ui="editor"] .ed-seg button {
+[data-iii-ui="editor"] .ed-seg-header {
   flex: 1;
-  padding: 4px 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="editor"] .ed-seg button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 3px;
   border: 0;
   background: transparent;
   color: var(--color-ink-faint);
   font: inherit;
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  font-size: 10px;
+  letter-spacing: 0.02em;
   white-space: nowrap;
   cursor: pointer;
 }
