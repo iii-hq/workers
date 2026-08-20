@@ -35,6 +35,7 @@ import {
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { draftAction, parseStoredDraft } from './draft-storage'
 import {
   BackButton,
   MarkdownFileIcon,
@@ -134,6 +135,15 @@ function writeStored(key: string, value: string) {
   }
 }
 
+function removeStored(key: string) {
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    /* private mode / quota — persistence is best-effort */
+  }
+}
+
+
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
 
 /** Observe the browser root's own width. Returns a callback ref to put
@@ -212,10 +222,20 @@ export function CollectionBrowser({
   const searchRef = useRef<HTMLInputElement | null>(null)
   const fieldId = useId()
 
-  const [selected, setSelected] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [loaded, setLoaded] = useState<Loaded | null>(null)
-  const [draft, setDraft] = useState('')
+  /* Restore unsaved work from the last unmount (tab switch). A creating
+     draft is self-contained; a selected-entry draft still needs the disk
+     baseline, loaded by the mount effect below. */
+  const [restored] = useState(() =>
+    parseStoredDraft(readStored(`${storageKey}:draft`)),
+  )
+  const [selected, setSelected] = useState<string | null>(
+    restored && !restored.creating ? restored.key : null,
+  )
+  const [creating, setCreating] = useState(restored?.creating ?? false)
+  const [loaded, setLoaded] = useState<Loaded | null>(
+    restored?.creating ? { key: '', content: '' } : null,
+  )
+  const [draft, setDraft] = useState(restored?.content ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [mode, setModeState] = useState<EditorMode>(() => {
@@ -273,6 +293,40 @@ export function CollectionBrowser({
   const creatingRef = useRef(creating)
   creatingRef.current = creating
 
+  /* One-shot: fetch the disk baseline under a restored selected-entry draft
+     so dirty tracking and save() have the real `loaded.content` to diff
+     against. The restored draft itself is kept, never overwritten. */
+  useEffect(() => {
+    if (!restored || restored.creating || !restored.key) return
+    const key = restored.key
+    adapter
+      .load(host, key)
+      .then((content) => {
+        if (selectedRef.current !== key) return
+        setLoaded({ key, content })
+      })
+      .catch((e) => {
+        if (selectedRef.current === key) setLoadError(String(e))
+      })
+    // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only restore
+  }, [])
+
+  /* Mirror unsaved work to storage on every change, so a tab switch (which
+     unmounts this page) can restore it. See `draftAction` for the cases. */
+  useEffect(() => {
+    const action = draftAction({
+      creating,
+      selected,
+      draft,
+      loadedContent: loaded?.content ?? null,
+    })
+    if (action.kind === 'write') {
+      writeStored(`${storageKey}:draft`, JSON.stringify(action.draft))
+    } else if (action.kind === 'clear') {
+      removeStored(`${storageKey}:draft`)
+    }
+  }, [creating, selected, draft, loaded, storageKey])
+
   const open = useCallback(
     (key: string, opts?: { reload?: boolean }) => {
       if (!opts?.reload) {
@@ -286,6 +340,9 @@ export function CollectionBrowser({
           return
         }
       }
+      // Discard confirmed (or a reload): the persisted draft dies now, not
+      // when the load lands — an unmount in between must not resurrect it.
+      removeStored(`${storageKey}:draft`)
       setSelected(key)
       setCreating(false)
       setLoaded(null)
@@ -308,7 +365,7 @@ export function CollectionBrowser({
           if (selectedRef.current === key) setLoadError(String(e))
         })
     },
-    [host, adapter],
+    [host, adapter, storageKey],
   )
 
   /** Blank editor for a new entry. `loaded.content` is empty rather than the
@@ -321,6 +378,7 @@ export function CollectionBrowser({
     ) {
       return
     }
+    removeStored(`${storageKey}:draft`)
     setCreating(true)
     setSelected(null)
     setLoaded({ key: '', content: '' })
@@ -329,7 +387,7 @@ export function CollectionBrowser({
     setSaveError(null)
     setDeleteError(null)
     setStaleOnDisk(false)
-  }, [])
+  }, [storageKey])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -490,6 +548,7 @@ export function CollectionBrowser({
   // Narrow-mode drill-out: back to the list, guarding an unsaved draft.
   const goBack = () => {
     if (dirty && !window.confirm('Discard unsaved changes?')) return
+    removeStored(`${storageKey}:draft`)
     setSelected(null)
     setCreating(false)
     setLoaded(null)
