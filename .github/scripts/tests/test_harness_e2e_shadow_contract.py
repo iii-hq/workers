@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).parents[1] / "harness_e2e_shadow_contract.py"
+RUNNER_SCRIPT = Path(__file__).parents[3] / "harness" / "tests" / "e2e" / "run-shadow-control-ci.sh"
 SPEC = importlib.util.spec_from_file_location("shadow_contract", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -159,6 +160,11 @@ def write_lock(path: Path, workers: dict[str, dict[str, str]]):
 
 
 class ShadowContractTest(unittest.TestCase):
+    def test_ephemeral_runner_writes_workers_to_the_engine_config(self):
+        runner = RUNNER_SCRIPT.read_text()
+        self.assertIn('export III_CONFIG_PATH="$project_config"', runner)
+        self.assertIn('iii.config.yaml config.yaml iii.lock workers.json', runner)
+
     def test_materializes_observe_only_request(self):
         request = MODULE.materialize_request(contract(), catalog())
         self.assertEqual(request["run_contract"]["mode"]["decision"], "observe_only")

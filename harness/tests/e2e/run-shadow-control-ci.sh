@@ -52,6 +52,11 @@ mkdir -p "$project_dir" "$e2e_home" "$artifact_dir/logs" "$artifact_dir/stack"
 export HOME="$e2e_home"
 export XDG_CONFIG_HOME="$e2e_home/.config"
 export PATH="$e2e_home/.local/bin:$e2e_home/.iii/bin:$PATH"
+# The CLI historically defaults to ./config.yaml, while the ephemeral engine
+# is deliberately started with the canonical iii.config.yaml. Pin both sides
+# to the same file; otherwise installs succeed into an unwatched config and
+# no target worker can register.
+export III_CONFIG_PATH="$project_config"
 export HARNESS_E2E_STACK_MODE=registry
 export HARNESS_E2E_STACK_VERSIONS="$stack_versions"
 export HARNESS_E2E_STACK_DIGEST="$stack_digest"
@@ -75,7 +80,7 @@ fail() {
 }
 
 snapshot_stack() {
-  for file in iii.config.yaml iii.lock workers.json; do
+  for file in iii.config.yaml config.yaml iii.lock workers.json; do
     [[ -f "$project_dir/$file" ]] && cp "$project_dir/$file" "$artifact_dir/stack/$file"
   done
   if [[ -f "$project_dir/iii.lock" ]]; then
