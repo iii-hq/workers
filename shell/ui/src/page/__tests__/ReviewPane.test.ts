@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@iii-dev/console-ui', () => ({
   FileDiff: () => null,
+  Markdown: () => null,
 }))
 vi.mock('react', () => ({
   useCallback: (callback: unknown) => callback,
@@ -518,5 +519,64 @@ describe('loadReviewContents without a captured baseline', () => {
       newContents: '',
       baselineSource: 'committed',
     })
+  })
+})
+
+describe('loadReviewContents for raster images', () => {
+  it('loads the working copy as a data URL instead of a text diff', async () => {
+    const { host, trigger } = execHost({
+      'coder::read-file': { content: 'iVBORw0KGgo=', revision: 'r9', mode: 420, size: 8 },
+    })
+    const image: ReviewEntry = {
+      path: 'docs/logo.png',
+      change: { path: 'docs/logo.png', status: 'modified', staged: false },
+      baseline: 'old bytes',
+    }
+
+    await expect(loadReviewContents(host, '/root', image)).resolves.toEqual({
+      oldContents: '',
+      newContents: '',
+      worktreeRevision: 'r9',
+      mode: 420,
+      image: 'data:image/png;base64,iVBORw0KGgo=',
+    })
+    expect(trigger).toHaveBeenCalledWith(
+      'coder::read-file',
+      expect.objectContaining({ path: '/root/docs/logo.png', encoding: 'base64' }),
+    )
+    expect(trigger).toHaveBeenCalledTimes(1)
+  })
+
+  it('flags a committed image as unavailable instead of deleted', async () => {
+    const { host, trigger } = execHost({})
+    const committed: ReviewEntry = {
+      path: 'docs/logo.png',
+      change: { path: 'docs/logo.png', status: 'modified', staged: false },
+      before: { kind: 'revision', revision: 'aaaa', path: 'docs/logo.png' },
+      after: { kind: 'revision', revision: 'bbbb', path: 'docs/logo.png' },
+    }
+
+    await expect(loadReviewContents(host, '/root', committed)).resolves.toEqual({
+      oldContents: '',
+      newContents: '',
+      imageUnavailable: true,
+    })
+    expect(trigger).not.toHaveBeenCalled()
+  })
+
+  it('marks a deleted image without reading anything', async () => {
+    const { host, trigger } = execHost({})
+    const deleted: ReviewEntry = {
+      path: 'docs/logo.png',
+      change: { path: 'docs/logo.png', status: 'deleted', staged: false },
+      baseline: 'old bytes',
+    }
+
+    await expect(loadReviewContents(host, '/root', deleted)).resolves.toEqual({
+      oldContents: '',
+      newContents: '',
+      image: null,
+    })
+    expect(trigger).not.toHaveBeenCalled()
   })
 })

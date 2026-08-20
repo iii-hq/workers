@@ -7,7 +7,8 @@
    remounted per file (key=path) and rehydrates from the cache instead
    of re-reading. */
 
-import { CodeEditor, type Host } from '@iii-dev/console-ui'
+import { CodeEditor, type Host, IconButton } from '@iii-dev/console-ui'
+import { Code, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
 import {
@@ -16,6 +17,7 @@ import {
   coderWriteFile,
   joinPath,
 } from './coder'
+import { isRichPreviewPath, richPreviewNode } from './rich-preview'
 
 /** File-extension → Monaco language id (unknown ids render plain). */
 export function monacoLangFromPath(path: string): string {
@@ -131,6 +133,8 @@ interface EditorPaneProps {
   onSaved: () => void
   /** Dirty-flag transitions — the page pins the tab on first edit. */
   onDirtyChange: (relPath: string, dirty: boolean) => void
+  /** Global review-pane preference; the header toggle overrides it per file. */
+  richPreview?: boolean
 }
 
 export function EditorPane({
@@ -138,10 +142,17 @@ export function EditorPane({
   root,
   relPath,
   cache,
+  richPreview = false,
   onSaved,
   onDirtyChange,
 }: EditorPaneProps) {
   const absPath = joinPath(root, relPath)
+  const previewable = isRichPreviewPath(relPath)
+  const [previewChoice, setPreviewChoice] = useState<boolean | null>(null)
+  useEffect(() => {
+    setPreviewChoice(null)
+  }, [richPreview, relPath])
+  const showPreview = previewable && (previewChoice ?? richPreview)
   const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
   const [draft, setDraftState] = useState('')
   const [savedContent, setSavedContent] = useState('')
@@ -296,6 +307,15 @@ export function EditorPane({
         ) : null}
         <span className="spacer" />
         {saveError ? <span className="shui-ro-note warn">{saveError}</span> : null}
+        {previewable ? (
+          <IconButton
+            label={showPreview ? 'Show source' : 'Show preview'}
+            aria-pressed={showPreview}
+            onClick={() => setPreviewChoice(!showPreview)}
+          >
+            {showPreview ? <Code aria-hidden /> : <Eye aria-hidden />}
+          </IconButton>
+        ) : null}
         <button
           type="button"
           className="shui-save-btn"
@@ -316,6 +336,8 @@ export function EditorPane({
           <div className="shui-image-wrap">
             <img src={entry.image} alt={relPath} />
           </div>
+        ) : showPreview ? (
+          <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
         ) : (
           <CodeEditor
             value={draft}
