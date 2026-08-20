@@ -734,6 +734,15 @@ function Header({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={onOpenPalette}
+            aria-label="search the console (⌘K)"
+            title="search the console (⌘K)"
+            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
+          >
+            <Search className="size-4 shrink-0" aria-hidden />
+          </button>
+          <button
+            type="button"
             onClick={onOpenShortcuts}
             aria-label="keyboard shortcuts (?)"
             title="keyboard shortcuts (?)"
