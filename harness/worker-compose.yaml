@@ -1,0 +1,121 @@
+namespace: my-harness-ns
+startup_timeout: 5m
+stop_timeout: 10s
+
+containers:
+  queue:
+    worker: path://../queue
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin queue
+
+  state:
+    worker: path://../state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin state
+
+  session-manager:
+    worker: path://../session-manager
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin session-manager
+
+  llm-router:
+    worker: path://../llm-router
+    depends_on:
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin llm-router
+
+  provider-openai-codex:
+    worker: path://../provider-openai-codex
+    depends_on:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin provider-openai-codex
+
+  provider-openai:
+    worker: path://../provider-openai
+    depends_on:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin provider-openai
+
+  provider-anthropic:
+    worker: path://../provider-anthropic
+    depends_on:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin provider-anthropic
+
+  context-manager:
+    worker: path://../context-manager
+    depends_on:
+      - llm-router
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin context-manager
+
+  iii-directory:
+    worker: path://../iii-directory
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin iii-directory
+
+  cron:
+    worker: path://../cron
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin cron
+
+  console:
+    worker: path://../console
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin console
+
+  shell:
+    worker: path://../shell
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin shell
+
+  harness:
+    worker: path://.
+    depends_on:
+      - state
+      - queue
+      - session-manager
+      - llm-router
+      - provider-openai-codex
+      - provider-openai
+      - provider-anthropic
+      - context-manager
+      - iii-directory
+      - cron
+      - console
+      - shell
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin harness
