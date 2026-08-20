@@ -39,7 +39,13 @@ export const MiddlewareRequestSchema = z
   })
   .strict();
 
-export const MiddlewareResponseSchema = z.unknown();
+// The gate is a pass-through: on allow, the response is whatever the forwarded
+// call returned. Typed as an open object rather than z.unknown() because
+// z.toJSONSchema(z.unknown()) is `{}`, which the registry renders as "unknown"
+// and `collect_worker_interface.py --assert-typed-schemas` rejects at publish.
+// Same shape openwiki uses for open payloads. Widen to anyOf if a governed
+// function ever returns a bare scalar or array.
+export const MiddlewareResponseSchema = z.record(z.string(), z.unknown());
 
 export const VerifyRequestSchema = z
   .object({
@@ -87,7 +93,10 @@ export const OnTriggerTypeRegistrationRequestSchema = z
   })
   .strict();
 
-export const OnTriggerTypeRegistrationResponseSchema = z.unknown();
+// onTriggerTypeRegistration is an unconditional deny — it always throws
+// GantryDenied and has no success shape. Declared as the empty strict object so
+// the schema stays typed (see the note on MiddlewareResponseSchema).
+export const OnTriggerTypeRegistrationResponseSchema = z.object({}).strict();
 
 export const FUNCTION_FORMATS = {
   'gantry::middleware': {
