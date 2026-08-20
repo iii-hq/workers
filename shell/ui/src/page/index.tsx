@@ -2688,7 +2688,7 @@ export function ShellExplorerPage({
                     />
                   </DropdownMenuContent>
                 </DropdownMenu>
-                {orderedReviewEntries.length > 1 ? (
+                {orderedReviewEntries.length > 0 ? (
                   <HoverTip label="Jump to file">
                     <div className="shui-review-jump-wrap">
                       <Selector
