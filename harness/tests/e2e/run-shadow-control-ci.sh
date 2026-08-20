@@ -9,7 +9,9 @@ contract_tool="$repo_root/.github/scripts/harness_e2e_shadow_contract.py"
 artifact_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e-shadow"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
 engine_port=${HARNESS_E2E_ENGINE_PORT:-49134}
-wait_seconds=${HARNESS_E2E_WAIT_SECONDS:-180}
+wait_seconds=${HARNESS_E2E_WAIT_SECONDS:-300}
+stack_settle_seconds=${HARNESS_E2E_STACK_SETTLE_SECONDS:-60}
+admission_timeout_seconds=${HARNESS_E2E_ADMISSION_TIMEOUT_SECONDS:-180}
 run_timeout_seconds=${HARNESS_E2E_RUN_TIMEOUT_SECONDS:-10800}
 
 case "$artifact_dir" in
@@ -130,18 +132,29 @@ wait_for_engine() {
 }
 
 wait_for_functions() {
-  local required response missing
+  local required response missing stable_since deadline
   required=$(printf '%s\n' "$@" | jq -R . | jq -s .)
-  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+  deadline=$((SECONDS + wait_seconds))
+  stable_since=""
+  while ((SECONDS < deadline)); do
     response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>/dev/null || true)
     missing=$(jq -r --argjson required "$required" \
       '(.functions // [] | map(.function_id)) as $available | ($required - $available) | join(" ")' \
       <<<"$response" 2>/dev/null || printf 'function discovery failed')
-    [[ -z "$missing" ]] && return 0
+    if [[ -z "$missing" ]] && timeout --signal=TERM --kill-after=2s 5 \
+      "$iii_bin" trigger state::list --port "$engine_port" \
+      --json '{"scope":"harness_e2e_execution"}' >/dev/null 2>&1; then
+      [[ -n "$stable_since" ]] || stable_since=$SECONDS
+      if ((SECONDS - stable_since >= stack_settle_seconds)); then
+        return 0
+      fi
+    else
+      stable_since=""
+    fi
     sleep 1
   done
-  fail "required functions did not register: $missing"
+  fail "required functions did not remain ready for ${stack_settle_seconds}s: ${missing:-state::list}"
 }
 
 add_with_retry() {
@@ -260,8 +273,10 @@ else
 fi
 
 wait_for_functions \
-  e2e::scenarios-list e2e::run e2e::status e2e::results-get \
-  harness::send harness::status router::models::get
+  e2e::scenarios-list e2e::run e2e::status e2e::results-get e2e::archive e2e::archive-head \
+  harness::send harness::status router::models::get \
+  state::list state::get state::set \
+  storage::putObject storage::getObject database::execute database::query
 "$iii_bin" trigger engine::workers::list --port "$engine_port" --json '{}' >"$project_dir/workers.json"
 
 failure_phase=materialization
@@ -273,7 +288,7 @@ python3 "$contract_tool" materialize \
   --output "$artifact_dir/run-request.json"
 
 failure_phase=execution
-timeout --signal=TERM --kill-after=30s 60 \
+timeout --signal=TERM --kill-after=30s "$admission_timeout_seconds" \
   "$iii_bin" trigger e2e::run --port "$engine_port" \
   --json "$(jq -c . "$artifact_dir/run-request.json")" >"$artifact_dir/accepted.json"
 remote_execution_id=$(jq -er '.execution_id | select(type == "string" and length > 0)' "$artifact_dir/accepted.json")

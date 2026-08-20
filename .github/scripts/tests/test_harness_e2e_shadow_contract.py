@@ -165,6 +165,14 @@ class ShadowContractTest(unittest.TestCase):
         self.assertIn('export III_CONFIG_PATH="$project_config"', runner)
         self.assertIn('iii.config.yaml config.yaml iii.lock workers.json', runner)
 
+    def test_ephemeral_runner_waits_for_a_stable_persistence_plane_before_admission(self):
+        runner = RUNNER_SCRIPT.read_text()
+        self.assertIn('HARNESS_E2E_STACK_SETTLE_SECONDS', runner)
+        self.assertIn('HARNESS_E2E_ADMISSION_TIMEOUT_SECONDS', runner)
+        self.assertIn('state::list state::get state::set', runner)
+        self.assertIn('storage::putObject storage::getObject database::execute database::query', runner)
+        self.assertIn('trigger state::list --port "$engine_port"', runner)
+
     def test_materializes_observe_only_request(self):
         request = MODULE.materialize_request(contract(), catalog())
         self.assertEqual(request["run_contract"]["mode"]["decision"], "observe_only")
