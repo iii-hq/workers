@@ -10,4 +10,3 @@ description: Engine introspection (functions / triggers / workers), workers regi
 
 dependencies:
   configuration: "0.x"
-  harness: "^1.0.0"
