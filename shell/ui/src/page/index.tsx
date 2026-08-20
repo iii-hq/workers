@@ -32,7 +32,6 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   ClipboardCopy,
-  Columns2,
   Eye,
   EyeOff,
   FileSearch,
@@ -42,10 +41,7 @@ import {
   MoreHorizontal,
   PanelLeft,
   PanelRight,
-  PanelRightClose,
-  PanelRightOpen,
   RefreshCw,
-  Rows3,
   Search,
   Space,
   SquareTerminal,
@@ -234,6 +230,26 @@ function ReviewOption({
         {checked ? <Check /> : null}
       </span>
     </DropdownMenuItem>
+  )
+}
+
+function SplitDiffIcon() {
+  return (
+    <svg className="shui-diff-style-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" className="frame" />
+      <rect x="3" y="4" width="4.5" height="8" rx="1.2" className="del" />
+      <rect x="8.5" y="4" width="4.5" height="8" rx="1.2" className="add" />
+    </svg>
+  )
+}
+
+function UnifiedDiffIcon() {
+  return (
+    <svg className="shui-diff-style-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" className="frame" />
+      <rect x="3" y="4" width="10" height="3.5" rx="1.2" className="del" />
+      <rect x="3" y="8.5" width="10" height="3.5" rx="1.2" className="add" />
+    </svg>
   )
 }
 
@@ -434,6 +450,12 @@ export function ShellExplorerPage({
   const [reviewRefreshEpoch, setReviewRefreshEpoch] = useState(0)
   const [reviewCollapseEpoch, setReviewCollapseEpoch] = useState(0)
   const [reviewExpandEpoch, setReviewExpandEpoch] = useState(0)
+  const [reviewAllCollapsed, setReviewAllCollapsed] = useState(false)
+  const toggleAllDiffs = () => {
+    if (reviewAllCollapsed) setReviewExpandEpoch((value) => value + 1)
+    else setReviewCollapseEpoch((value) => value + 1)
+    setReviewAllCollapsed((value) => !value)
+  }
   const [reviewMenuOpen, setReviewMenuOpen] = useState(false)
   const [copyingPatch, setCopyingPatch] = useState(false)
   const reloadReview = () => {
@@ -2588,30 +2610,6 @@ export function ShellExplorerPage({
                   </span>
                 ) : null}
                 <span className="spacer" />
-                {orderedReviewEntries.length > 1 ? (
-                  <HoverTip label="Jump to file">
-                    <div className="shui-review-jump-wrap">
-                      <Selector
-                        aria-label="Jump to file"
-                        className="shui-review-jump"
-                        contentClassName="shui-review-jump-list"
-                        value={undefined}
-                        options={orderedReviewEntries.map((entry) => ({
-                          value: entry.path,
-                          label: entry.path,
-                        }))}
-                        placeholder=""
-                        searchPlaceholder="Jump to file…"
-                        emptyMessage="no matching file"
-                        triggerIcon={<FileSearch aria-hidden />}
-                        onChange={(path) => {
-                          const entry = visibleReviewEntriesRef.current.get(path)
-                          if (entry) openReviewEntry(entry)
-                        }}
-                      />
-                    </div>
-                  </HoverTip>
-                ) : null}
                 <DropdownMenu open={reviewMenuOpen} onOpenChange={setReviewMenuOpen}>
                   <DropdownMenuTrigger asChild>
                     <IconButton
@@ -2690,11 +2688,39 @@ export function ShellExplorerPage({
                     />
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <IconButton label="Expand all diffs" onClick={() => setReviewExpandEpoch((value) => value + 1)}>
-                  <ChevronsUpDown aria-hidden />
-                </IconButton>
-                <IconButton label="Collapse all diffs" onClick={() => setReviewCollapseEpoch((value) => value + 1)}>
-                  <ChevronsDownUp aria-hidden />
+                {orderedReviewEntries.length > 1 ? (
+                  <HoverTip label="Jump to file">
+                    <div className="shui-review-jump-wrap">
+                      <Selector
+                        aria-label="Jump to file"
+                        className="shui-review-jump"
+                        contentClassName="shui-review-jump-list"
+                        value={undefined}
+                        options={orderedReviewEntries.map((entry) => ({
+                          value: entry.path,
+                          label: entry.path,
+                        }))}
+                        placeholder=""
+                        searchPlaceholder="Jump to file…"
+                        emptyMessage="no matching file"
+                        triggerIcon={<FileSearch aria-hidden />}
+                        onChange={(path) => {
+                          const entry = visibleReviewEntriesRef.current.get(path)
+                          if (entry) openReviewEntry(entry)
+                        }}
+                      />
+                    </div>
+                  </HoverTip>
+                ) : null}
+                <IconButton
+                  label={reviewAllCollapsed ? 'Expand all diffs' : 'Collapse all diffs'}
+                  onClick={toggleAllDiffs}
+                >
+                  {reviewAllCollapsed ? (
+                    <ChevronsUpDown aria-hidden />
+                  ) : (
+                    <ChevronsDownUp aria-hidden />
+                  )}
                 </IconButton>
                 <IconButton
                   label={
@@ -2711,20 +2737,9 @@ export function ShellExplorerPage({
                   }
                 >
                   {reviewOptions.diffStyle === 'unified' ? (
-                    <Columns2 aria-hidden />
+                    <SplitDiffIcon />
                   ) : (
-                    <Rows3 aria-hidden />
-                  )}
-                </IconButton>
-                <IconButton
-                  label={collapsed ? 'Show files' : 'Hide files'}
-                  aria-pressed={collapsed}
-                  onClick={() => setCollapsed((value) => !value)}
-                >
-                  {collapsed ? (
-                    <PanelRightOpen aria-hidden />
-                  ) : (
-                    <PanelRightClose aria-hidden />
+                    <UnifiedDiffIcon />
                   )}
                 </IconButton>
               </div>

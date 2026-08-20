@@ -1251,6 +1251,22 @@
   color: var(--color-ink);
   background: var(--color-surface-hover);
 }
+[data-iii-ui="shell"] .shui-diff-style-icon {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .frame {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  opacity: 0.75;
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .del {
+  fill: var(--color-git-deleted, #c05353);
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .add {
+  fill: var(--color-git-added, #4d9a57);
+}
 [data-iii-ui="shell"] .shui-review-menu-content {
   min-width: 248px;
 }
