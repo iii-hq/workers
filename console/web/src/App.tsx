@@ -43,6 +43,7 @@ import {
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
+import { stepChatTurn } from '@/lib/chat-turn-nav'
 import {
   ConversationsProvider,
   useConversationsCtx,
@@ -191,6 +192,8 @@ export function App() {
     'shortcuts.open': () => setShortcutsOpen(true),
     'app.settings': toggleSettings,
     'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    'chat.previousTurn': () => stepChatTurn(-1),
+    'chat.nextTurn': () => stepChatTurn(1),
     'panel.split': () =>
       workspaceRef.current.addColumn(
         workspaceRef.current.activeTab.id,

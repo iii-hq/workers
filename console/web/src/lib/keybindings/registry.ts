@@ -38,6 +38,8 @@ export type KeybindingActionId =
   | 'palette.cycleFilter'
   | 'palette.choose'
   | 'palette.close'
+  | 'chat.previousTurn'
+  | 'chat.nextTurn'
 
 /**
  * One list when the chord is the same everywhere, or a chord per platform
@@ -92,6 +94,22 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     scope: 'global',
     bindings: ['?'],
     keywords: ['keys', 'help', 'shortcut'],
+  },
+  {
+    id: 'chat.previousTurn',
+    title: 'Previous turn in the chat',
+    group: 'Chat',
+    scope: 'global',
+    bindings: ['['],
+    keywords: ['turn', 'back', 'scroll', 'rail'],
+  },
+  {
+    id: 'chat.nextTurn',
+    title: 'Next turn in the chat',
+    group: 'Chat',
+    scope: 'global',
+    bindings: [']'],
+    keywords: ['turn', 'forward', 'scroll', 'rail'],
   },
   // The emacs pair is Mac-only on purpose: ctrl+N opens a browser window on
   // Windows and Linux, where the same menu item is ⌘N on a Mac and ctrl is

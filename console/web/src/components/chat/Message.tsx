@@ -852,6 +852,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
     <article
       className="group flex flex-col items-end gap-2"
       data-message-role="user"
+      data-message-id={message.id}
     >
       <header className="flex items-center gap-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
         {message.content ? (
@@ -911,6 +912,7 @@ function AssistantMessage({
     <article
       className="group flex flex-col gap-2"
       data-message-role="assistant"
+      data-message-id={message.id}
     >
       <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
         <span className="font-medium text-ink-faint">Agent</span>

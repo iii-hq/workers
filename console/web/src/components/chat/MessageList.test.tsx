@@ -87,4 +87,20 @@ describe('MessageList function-trigger groups', () => {
     expect(html).toContain('tabindex="-1"')
     expect(html).toContain('data-approval-actions=""')
   })
+
+  it('anchors user and assistant messages by id for the turn rail', () => {
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[
+          { id: 'u-1', createdAt: 1, role: 'user', content: 'hello' },
+          { id: 'a-1', createdAt: 2, role: 'assistant', content: 'hi' },
+        ]}
+      />,
+    )
+
+    expect(html).toContain('data-message-role="user" data-message-id="u-1"')
+    expect(html).toContain(
+      'data-message-role="assistant" data-message-id="a-1"',
+    )
+  })
 })

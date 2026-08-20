@@ -40,6 +40,7 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
 } from './system-prompt-selection'
+import { TurnRail } from './TurnRail'
 import {
   nextTailScrollTop,
   TAIL_GLIDE_SETTLE_DISTANCE_PX,
@@ -519,6 +520,11 @@ export function MessageList({
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
+      <TurnRail
+        messages={messages}
+        container={containerRef}
+        content={contentRef}
+      />
       <section
         ref={containerRef}
         data-tail-scroll={tailState}
