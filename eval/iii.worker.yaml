@@ -9,7 +9,7 @@ tags: [evaluation, benchmark, sessions, metrics, prompt, system-prompt]
 description: Compare live objective metrics for 2-5 root sessions; retain durable prompt experiments as an advanced surface.
 
 dependencies:
-  state: "^0.22.1"
-  queue: "^0.21.4"
+  state: "^0.22.2"
+  queue: "^0.21.5"
   cron: "^0.21.0"
   iii-observability: "^0.21.6"

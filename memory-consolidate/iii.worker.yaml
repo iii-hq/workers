@@ -11,4 +11,4 @@ description: Scheduled hygiene for the memory worker — deterministic dedup of 
 dependencies:
   memory: "^0.1.0"
   configuration: "0.x"
-  state: "^0.22.1"
+  state: "^0.22.2"
