@@ -177,11 +177,30 @@ add_with_retry() {
 install_exact_stack() {
   local label=$1
   local versions_json=$2
+  local force=${3:-false}
   local -a pins=()
   mapfile -t pins < <(jq -r 'to_entries | sort_by(.key)[] | "\(.key)@\(.value)"' <<<"$versions_json")
   ((${#pins[@]} > 0)) || return 0
   log "Installing ${#pins[@]} exact workers ($label)"
-  add_with_retry "$label" "${pins[@]}" --force
+  if [[ "$force" == true ]]; then
+    add_with_retry "$label" "${pins[@]}" --force
+  else
+    add_with_retry "$label" "${pins[@]}"
+  fi
+}
+
+capture_workers() {
+  "$iii_bin" trigger engine::workers::list --port "$engine_port" --json '{}' >"$project_dir/workers.json"
+}
+
+verify_target_harness_runtime() {
+  local expected observed
+  expected=$(jq -r '.target.version' "$contract_path")
+  observed=$(jq -r --arg name harness \
+    '(.workers // [] | map(select(.name == $name)) | last | .version) // empty' \
+    "$project_dir/workers.json")
+  [[ "$observed" == "$expected" ]] && return 0
+  fail "harness runtime version mismatch: expected $expected, observed ${observed:-unreported}"
 }
 
 if [[ "$contract_schema" == 2 ]]; then
@@ -220,7 +239,7 @@ if [[ "$contract_schema" == 2 ]]; then
     --argjson runtime "$runtime_versions" \
     --argjson target "$stack_versions" \
     '$runtime + $target')
-  install_exact_stack stack-bootstrap "$exact_stack_versions"
+  install_exact_stack stack-bootstrap "$exact_stack_versions" true
 else
   support=("database@latest" "storage@latest" "fp@latest" "web@latest")
   declare -A providers=()
@@ -243,10 +262,12 @@ fi
 log "Installing ephemeral runner: $runner_worker@$runner_ref"
 add_with_retry runner "$runner_worker@$runner_ref" --force
 
-# A runner dependency may resolve a different version of a runtime or target
-# worker. Reapply every exact pin after the runner.
+# A runner dependency may resolve a different version in the lock. Reapply
+# exact pins without force: force restarts an already-correct target worker
+# while the engine's file watcher can revive its previous executable between
+# removal and download. The lock and runtime checks below remain fail-closed.
 if [[ "$contract_schema" == 2 ]]; then
-  install_exact_stack stack-repin "$exact_stack_versions"
+  install_exact_stack stack-repin "$exact_stack_versions" false
 else
   while IFS=$'\t' read -r worker version; do
     add_with_retry "repin-$worker" "$worker@$version" --force
@@ -277,7 +298,8 @@ wait_for_functions \
   harness::send harness::status router::models::get \
   state::list state::get state::set \
   storage::putObject storage::getObject database::execute database::query
-"$iii_bin" trigger engine::workers::list --port "$engine_port" --json '{}' >"$project_dir/workers.json"
+capture_workers
+verify_target_harness_runtime
 
 failure_phase=materialization
 "$iii_bin" trigger e2e::scenarios-list --port "$engine_port" \
