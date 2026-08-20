@@ -19,6 +19,22 @@ VERSION = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
+# These workers are hosted by the pinned iii engine rather than installed from
+# the Registry. `iii worker add` intentionally reports them as built-in, so a
+# Registry resolution of a transitive dependency cannot force their internal
+# version. Their observed lock entries remain evidence, while the exact CLI
+# pin is the reproducibility boundary for their runtime implementation.
+ENGINE_MANAGED_WORKERS = frozenset(
+    {
+        "configuration",
+        "iii-observability",
+        "iii-state",
+        "iii-stream",
+        "iii-worker-manager",
+        "iii-worker-ops",
+    }
+)
+
 
 def load_object(path: Path, label: str) -> dict[str, Any]:
     value = json.loads(path.read_text())
@@ -415,13 +431,31 @@ def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
         runtime_digest = None
 
     expected = {**expected_runtime, **expected_target, contract["runner"]["registry_worker"]: contract["runner"]["registry_ref"]}
+    engine_managed = {
+        worker
+        for worker in expected
+        if worker in ENGINE_MANAGED_WORKERS
+        and isinstance(workers.get(worker), dict)
+        and workers[worker].get("type") == "engine"
+        and worker != contract["runner"]["registry_worker"]
+    }
     mismatches = [
         f"{worker}: expected {version}, resolved {observed.get(worker, 'missing')}"
         for worker, version in sorted(expected.items())
-        if observed.get(worker) != version
+        if observed.get(worker) != version and worker not in engine_managed
     ]
     if mismatches:
         raise ValueError("stack_version_mismatch: " + "; ".join(mismatches))
+
+    registry_pins = {worker: version for worker, version in expected.items() if worker not in engine_managed}
+    engine_managed_evidence = {
+        worker: {
+            "declared_version": expected[worker],
+            "observed_version": observed[worker],
+            "lock_type": workers[worker]["type"],
+        }
+        for worker in sorted(engine_managed)
+    }
 
     target_stack = v2_target_member(contract, target, "stack") if contract["schema_version"] == 2 else None
     return {
@@ -445,6 +479,16 @@ def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
         "runner": {
             **contract["runner"],
             "observed_version": observed[contract["runner"]["registry_worker"]],
+        },
+        "verification": {
+            "registry_pins": {
+                "expected_versions": dict(sorted(registry_pins.items())),
+                "observed_versions": {worker: observed[worker] for worker in sorted(registry_pins)},
+            },
+            "engine_managed": {
+                "runtime_cli": contract.get("runtime", {}).get("cli"),
+                "workers": engine_managed_evidence,
+            },
         },
         "lock": {
             "sha256": f"sha256:{hashlib.sha256(lock_path.read_bytes()).hexdigest()}",

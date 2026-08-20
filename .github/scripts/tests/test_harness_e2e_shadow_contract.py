@@ -132,6 +132,32 @@ def manual_v2_catalog():
     }
 
 
+def manual_v2_contract_with_versions(versions: dict[str, str]):
+    changed = manual_v2_contract()
+    stack_digest = MODULE.canonical_sha256(versions)
+    changed["target"]["stack_versions"] = versions
+    changed["target"]["stack_digest"] = stack_digest
+    changed["target"]["stack"]["requested_versions"] = versions
+    changed["target"]["stack"]["resolved_versions"] = versions
+    changed["target"]["stack"]["resolution_sha256"] = stack_digest
+    changed["target"]["stack"]["provenance"] = [
+        {"worker": worker, "version": version} for worker, version in sorted(versions.items())
+    ]
+    changed["target"]["stack"]["provenance"][0].update(
+        {
+            "source_sha": "b" * 40,
+            "operation_id": "33333333-3333-4333-8333-333333333333",
+        }
+    )
+    changed["runtime"]["stack_versions"] = versions
+    changed["runtime"]["stack_digest"] = stack_digest
+    return changed
+
+
+def write_lock(path: Path, workers: dict[str, dict[str, str]]):
+    path.write_text(json.dumps({"version": 1, "workers": workers}))
+
+
 class ShadowContractTest(unittest.TestCase):
     def test_materializes_observe_only_request(self):
         request = MODULE.materialize_request(contract(), catalog())
@@ -166,6 +192,61 @@ class ShadowContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "resolution_sha256 does not match"):
             MODULE.validate_contract(changed)
+
+    def test_verify_lock_records_engine_managed_workers_from_the_pinned_runtime(self):
+        versions = {"harness": "1.9.0", "iii-observability": "0.22.1", "state": "0.22.1"}
+        changed = manual_v2_contract_with_versions(versions)
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "iii.lock"
+            write_lock(
+                lock_path,
+                {
+                    "harness": {"version": "1.9.0", "type": "binary"},
+                    "iii-observability": {"version": "0.21.8", "type": "engine"},
+                    "state": {"version": "0.22.1", "type": "binary"},
+                    "harness-e2e": {"version": "0.1.0-experimental", "type": "binary"},
+                },
+            )
+            manifest = MODULE.verify_lock(changed, lock_path)
+
+        engine_worker = manifest["verification"]["engine_managed"]["workers"]["iii-observability"]
+        self.assertEqual(engine_worker["declared_version"], "0.22.1")
+        self.assertEqual(engine_worker["observed_version"], "0.21.8")
+        self.assertEqual(manifest["verification"]["registry_pins"]["observed_versions"]["state"], "0.22.1")
+
+    def test_verify_lock_still_rejects_a_registry_worker_version_drift(self):
+        versions = {"harness": "1.9.0", "iii-observability": "0.22.1", "state": "0.22.1"}
+        changed = manual_v2_contract_with_versions(versions)
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "iii.lock"
+            write_lock(
+                lock_path,
+                {
+                    "harness": {"version": "1.9.0", "type": "binary"},
+                    "iii-observability": {"version": "0.21.8", "type": "engine"},
+                    "state": {"version": "0.22.0", "type": "binary"},
+                    "harness-e2e": {"version": "0.1.0-experimental", "type": "binary"},
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "stack_version_mismatch: state"):
+                MODULE.verify_lock(changed, lock_path)
+
+    def test_verify_lock_does_not_bypass_an_engine_managed_name_with_a_registry_record(self):
+        versions = {"harness": "1.9.0", "iii-observability": "0.22.1", "state": "0.22.1"}
+        changed = manual_v2_contract_with_versions(versions)
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "iii.lock"
+            write_lock(
+                lock_path,
+                {
+                    "harness": {"version": "1.9.0", "type": "binary"},
+                    "iii-observability": {"version": "0.21.8", "type": "binary"},
+                    "state": {"version": "0.22.1", "type": "binary"},
+                    "harness-e2e": {"version": "0.1.0-experimental", "type": "binary"},
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "stack_version_mismatch: iii-observability"):
+                MODULE.verify_lock(changed, lock_path)
 
     def test_packages_raw_file_digests(self):
         with tempfile.TemporaryDirectory() as directory:
