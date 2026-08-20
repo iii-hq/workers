@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import fixtures from './workspace-open.fixtures.json'
 import {
   CHAT_SCREEN,
   defaultTabs,
@@ -19,8 +20,8 @@ import {
   withScreenOpenedBeside,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
+  workspaceLayoutSource,
 } from './workspace-tabs'
-import fixtures from './workspace-open.fixtures.json'
 
 const NO_EXT = new Map<string, string>()
 
@@ -427,4 +428,25 @@ describe('console::workspace fixtures (shared with the Rust worker)', () => {
       expect({ tabIds, tabs }).toEqual(f.expect)
     })
   }
+})
+
+describe('workspaceLayoutSource', () => {
+  it('is pending until the first answer, then server or local', () => {
+    expect(workspaceLayoutSource(false, false)).toBe('pending')
+    expect(workspaceLayoutSource(true, false)).toBe('local')
+    expect(workspaceLayoutSource(true, true)).toBe('server')
+  })
+
+  it('flips from local to server when a later poll succeeds', () => {
+    const timeline = [
+      [true, false],
+      [true, false],
+      [true, true],
+    ] as const
+    expect(timeline.map(([f, a]) => workspaceLayoutSource(f, a))).toEqual([
+      'local',
+      'local',
+      'server',
+    ])
+  })
 })

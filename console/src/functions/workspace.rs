@@ -121,18 +121,48 @@ fn is_valid_tab(tab: &Tab) -> bool {
         })
 }
 
+fn parse_tab(raw: &Value) -> Option<Tab> {
+    let mut tab = serde_json::from_value::<Tab>(raw.clone()).ok()?;
+    tab.screens = tab.screens.into_iter().map(migrate_screen).collect();
+    is_valid_tab(&tab).then_some(tab)
+}
+
+pub fn raw_tabs(value: &Value) -> Vec<Value> {
+    value
+        .pointer("/workspace/tabs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
 pub fn parse_tabs(value: &Value) -> Vec<Tab> {
-    let Some(tabs) = value.pointer("/workspace/tabs").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    tabs.iter()
-        .filter_map(|raw| serde_json::from_value::<Tab>(raw.clone()).ok())
-        .map(|mut tab| {
-            tab.screens = tab.screens.into_iter().map(migrate_screen).collect();
-            tab
+    raw_tabs(value).iter().filter_map(parse_tab).collect()
+}
+
+/// Write `next` back over the stored array: a tab this worker changed is
+/// re-serialized, every other stored entry (including ones this worker could
+/// not parse) is kept byte-for-byte, and tabs new in `next` are appended.
+pub fn merge_tabs(raw: &[Value], next: &[Tab]) -> Vec<Value> {
+    let mut pending: Vec<&Tab> = next.iter().collect();
+    let mut out: Vec<Value> = raw
+        .iter()
+        .map(|entry| {
+            let Some(original) = parse_tab(entry) else {
+                return entry.clone();
+            };
+            let Some(index) = pending.iter().position(|t| t.id == original.id) else {
+                return entry.clone();
+            };
+            let tab = pending.remove(index);
+            if *tab == original {
+                entry.clone()
+            } else {
+                json!(tab)
+            }
         })
-        .filter(is_valid_tab)
-        .collect()
+        .collect();
+    out.extend(pending.into_iter().map(|tab| json!(tab)));
+    out
 }
 
 pub fn parse_active_tab_id(value: &Value) -> Option<String> {
@@ -154,14 +184,16 @@ pub fn default_tabs() -> Vec<Tab> {
     }]
 }
 
-pub fn resolve_active<'a>(tabs: &'a [Tab], pointer: Option<&str>) -> &'a Tab {
+/// The SPA's `resolveActiveTab`: the pointed tab, else the chat + traces
+/// tab, else the first one.
+pub fn resolve_active<'a>(tabs: &'a [Tab], pointer: Option<&str>) -> Option<&'a Tab> {
     tabs.iter()
         .find(|t| Some(t.id.as_str()) == pointer)
         .or_else(|| tabs.iter().find(|t| t.is_default_layout()))
-        .unwrap_or(&tabs[0])
+        .or_else(|| tabs.first())
 }
 
-pub fn with_workspace(value: Value, tabs: &[Tab], active_tab_id: &str) -> Value {
+pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str) -> Value {
     let mut root = match value {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -248,12 +280,13 @@ pub fn open_screen(
     screen: &str,
     new_id: impl FnOnce() -> String,
 ) -> Opened {
-    let active = resolve_active(tabs, Some(active_tab_id));
-    let mounted = if active.has_screen(screen) {
-        Some(active)
-    } else {
-        tabs.iter().find(|t| t.has_screen(screen))
-    };
+    let active = tabs
+        .iter()
+        .find(|t| t.id == active_tab_id)
+        .or_else(|| tabs.first());
+    let mounted = active
+        .filter(|t| t.has_screen(screen))
+        .or_else(|| tabs.iter().find(|t| t.has_screen(screen)));
     if let Some(existing) = mounted {
         return Opened {
             tabs: None,
@@ -263,12 +296,17 @@ pub fn open_screen(
             screens: existing.normalized_screens(existing.column_count()),
         };
     }
-    if let Some((placed, column, placement)) = place_beside_chat(active, screen) {
+    if let Some((placed, column, placement)) = active.and_then(|tab| place_beside_chat(tab, screen))
+    {
+        let placed_id = placed.id.clone();
         let mut next = tabs.to_vec();
-        if let Some(slot) = next.iter_mut().find(|t| t.id == placed.id) {
+        if let Some(slot) = next.iter_mut().find(|t| t.id == placed_id) {
             *slot = placed;
         }
-        let tab = next.iter().find(|t| t.id == active.id).unwrap_or(active);
+        let tab = next
+            .iter()
+            .find(|t| t.id == placed_id)
+            .expect("placed tab is in next");
         return Opened {
             tab_id: tab.id.clone(),
             column,
@@ -360,8 +398,18 @@ fn validated_screen(raw: &str) -> Result<String, Error> {
 
 struct Layout {
     value: Value,
+    raw: Vec<Value>,
     tabs: Vec<Tab>,
     active_tab_id: String,
+}
+
+impl Layout {
+    async fn store(self, iii: &IIIClient, tabs: &[Tab], active_tab_id: &str) -> Result<(), Error> {
+        let merged = merge_tabs(&self.raw, tabs);
+        set_value(iii, with_workspace(self.value, &merged, active_tab_id))
+            .await
+            .map_err(|e| remote(CODE_UNAVAILABLE, e))
+    }
 }
 
 async fn load_layout(iii: &IIIClient) -> Result<Layout, Error> {
@@ -369,28 +417,21 @@ async fn load_layout(iii: &IIIClient) -> Result<Layout, Error> {
         .await
         .map_err(|e| remote(CODE_UNAVAILABLE, e))?
         .unwrap_or_else(|| json!({}));
-    let mut tabs = parse_tabs(&value);
+    let raw = raw_tabs(&value);
+    let mut tabs: Vec<Tab> = raw.iter().filter_map(parse_tab).collect();
     if tabs.is_empty() {
         tabs = default_tabs();
     }
     let pointer = parse_active_tab_id(&value);
-    let active_tab_id = resolve_active(&tabs, pointer.as_deref()).id.clone();
+    let active_tab_id = resolve_active(&tabs, pointer.as_deref())
+        .map(|t| t.id.clone())
+        .unwrap_or_else(|| default_tabs()[0].id.clone());
     Ok(Layout {
         value,
+        raw,
         tabs,
         active_tab_id,
     })
-}
-
-async fn store_layout(
-    iii: &IIIClient,
-    original: Value,
-    tabs: &[Tab],
-    active_tab_id: &str,
-) -> Result<(), Error> {
-    set_value(iii, with_workspace(original, tabs, active_tab_id))
-        .await
-        .map_err(|e| remote(CODE_UNAVAILABLE, e))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -444,6 +485,7 @@ pub struct CloseOutput {
 }
 
 pub fn register(iii: &Arc<IIIClient>) {
+    let write_lock = Arc::new(tokio::sync::Mutex::new(()));
     let client = iii.clone();
     iii.register_function(
         "console::workspace::list",
@@ -476,13 +518,16 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 
     let client = iii.clone();
+    let lock = write_lock.clone();
     iii.register_function(
         "console::workspace::open",
         RegisterFunction::new_async(move |input: OpenInput| {
             let iii = client.clone();
+            let lock = lock.clone();
             async move {
                 let screen = validated_screen(&input.screen)?;
                 let activate = input.activate.unwrap_or(true);
+                let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
                 let opened = open_screen(&layout.tabs, &layout.active_tab_id, &screen, new_tab_id);
                 let active_tab_id = if activate {
@@ -492,9 +537,10 @@ pub fn register(iii: &Arc<IIIClient>) {
                 };
                 let pointer_moved = active_tab_id != layout.active_tab_id;
                 match opened.tabs {
-                    Some(tabs) => store_layout(&iii, layout.value, &tabs, &active_tab_id).await?,
+                    Some(tabs) => layout.store(&iii, &tabs, &active_tab_id).await?,
                     None if pointer_moved => {
-                        store_layout(&iii, layout.value, &layout.tabs, &active_tab_id).await?
+                        let tabs = layout.tabs.clone();
+                        layout.store(&iii, &tabs, &active_tab_id).await?
                     }
                     None => {}
                 }
@@ -517,16 +563,20 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 
     let client = iii.clone();
+    let lock = write_lock;
     iii.register_function(
         "console::workspace::close",
         RegisterFunction::new_async(move |input: CloseInput| {
             let iii = client.clone();
+            let lock = lock.clone();
             async move {
                 let screen = validated_screen(&input.screen)?;
+                let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
                 let (tabs, tab_ids) = close_screen(&layout.tabs, &screen);
                 if !tab_ids.is_empty() {
-                    store_layout(&iii, layout.value, &tabs, &layout.active_tab_id).await?;
+                    let active_tab_id = layout.active_tab_id.clone();
+                    layout.store(&iii, &tabs, &active_tab_id).await?;
                 }
                 Ok::<_, Error>(CloseOutput { tab_ids })
             }
@@ -667,10 +717,47 @@ mod tests {
     }
 
     #[test]
+    fn merge_keeps_unparsed_and_untouched_entries_verbatim() {
+        let raw = vec![
+            json!({ "id": "a", "columns": 2, "screens": ["chat", null], "pinned": true }),
+            json!({ "id": "weird", "screens": ["from-the-future"], "x": 1 }),
+            json!({ "id": "c", "screens": ["chat", "traces"] }),
+        ];
+        let tabs: Vec<Tab> = raw.iter().filter_map(parse_tab).collect();
+        assert_eq!(tabs.len(), 2);
+        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id);
+        let merged = merge_tabs(&raw, &opened.tabs.unwrap());
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0]["screens"], json!(["chat", "ext:shell"]));
+        assert_eq!(merged[0]["pinned"], json!(true));
+        assert_eq!(merged[1], raw[1]);
+        assert_eq!(merged[2], raw[2]);
+
+        let appended = merge_tabs(
+            &raw,
+            &open_screen(&tabs, "c", "workers", fixed_id).tabs.unwrap(),
+        );
+        assert_eq!(appended.len(), 3);
+        assert_eq!(appended[2]["screens"], json!(["chat", "workers", "traces"]));
+        let brand_new = merge_tabs(&[], &default_tabs());
+        assert_eq!(brand_new[0]["id"], json!("tab-home"));
+    }
+
+    #[test]
+    fn empty_layouts_never_panic() {
+        assert!(resolve_active(&[], Some("x")).is_none());
+        let opened = open_screen(&[], "x", "workers", fixed_id);
+        assert_eq!(opened.placement, Placement::NewTab);
+        assert_eq!(opened.tabs.unwrap().len(), 1);
+        let stale = open_screen(&default_tabs(), "missing", "workers", fixed_id);
+        assert_eq!(stale.tab_id, "tab-home");
+    }
+
+    #[test]
     fn with_workspace_keeps_sibling_keys() {
         let value =
             json!({ "traces": { "views": [] }, "workspace": { "tabs": [], "other": true } });
-        let next = with_workspace(value, &default_tabs(), "tab-home");
+        let next = with_workspace(value, &merge_tabs(&[], &default_tabs()), "tab-home");
         assert_eq!(next.pointer("/traces/views"), Some(&json!([])));
         assert_eq!(next.pointer("/workspace/other"), Some(&json!(true)));
         assert_eq!(

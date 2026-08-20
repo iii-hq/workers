@@ -68,6 +68,12 @@ import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PanelSide } from '@/types/injectable-ui'
 
+function hasExplicitHash(): boolean {
+  if (typeof window === 'undefined') return false
+  const hash = window.location.hash
+  return hash !== '' && hash !== '#' && hash !== '#/'
+}
+
 export function App() {
   const [theme, setTheme] = useTheme()
   const [view, setView] = useHashRoute()
@@ -108,12 +114,7 @@ export function App() {
       lastTabViewRef.current = view
   }, [view])
   const lastHashScreenRef = useRef<TabScreen | null>(
-    typeof window !== 'undefined' &&
-      window.location.hash &&
-      window.location.hash !== '#' &&
-      window.location.hash !== '#/'
-      ? null
-      : hashScreen,
+    hasExplicitHash() ? null : hashScreen,
   )
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
@@ -145,9 +146,14 @@ export function App() {
     if (view === 'configuration') closeSettings()
     else setView('configuration')
   }, [view, setView, closeSettings])
-  const workspaceReady = workspace.ready
+  const layoutSource = workspace.layoutSource
+  const lastLayoutSourceRef = useRef(layoutSource)
   useEffect(() => {
-    if (!workspaceReady) return
+    if (layoutSource === 'pending') return
+    if (lastLayoutSourceRef.current !== layoutSource) {
+      lastLayoutSourceRef.current = layoutSource
+      if (hasExplicitHash()) lastHashScreenRef.current = null
+    }
     if (lastHashScreenRef.current === hashScreen) return
     lastHashScreenRef.current = hashScreen
     // No tab representation (settings overlay, unresolved ext route):
@@ -159,16 +165,22 @@ export function App() {
     const existing = ws.tabs.find((t) => t.screens.includes(hashScreen))
     if (existing) ws.activateTab(existing.id)
     else ws.createTab({ columns: 1, screens: [hashScreen] })
-  }, [hashScreen, workspaceReady])
+  }, [hashScreen, layoutSource])
 
   // ── Tabs → hash ──
   // Activating a tab whose screens don't cover the current hash points the
   // hash at the tab's first routed screen, so page-internal sub-routes and
   // deep links keep working. Chat-only and empty tabs leave the hash alone.
   const prevActiveTabIdRef = useRef<string | null>(null)
+  const prevSourceForHashRef = useRef<string>('pending')
   useEffect(() => {
-    if (!workspaceReady) {
+    if (layoutSource === 'pending') {
       prevActiveTabIdRef.current = null
+      return
+    }
+    if (prevSourceForHashRef.current !== layoutSource) {
+      prevSourceForHashRef.current = layoutSource
+      prevActiveTabIdRef.current = activeTabId
       return
     }
     const prev = prevActiveTabIdRef.current
@@ -187,7 +199,7 @@ export function App() {
     const extId = extPageIdForScreen(primary)
     if (extId) window.location.hash = hashForExtPage(extId)
     else setView(primary as View)
-  }, [activeTabId, activeTab, hashScreen, setView, workspaceReady])
+  }, [activeTabId, activeTab, hashScreen, setView, layoutSource])
 
   /* Every global shortcut the console has, dispatched from the registry.
      Which keys reach here while the caret is in a field, and which stand
