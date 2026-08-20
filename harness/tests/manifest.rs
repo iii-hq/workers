@@ -101,14 +101,14 @@ fn worker_manifest_uses_the_tested_harness_stack() {
         .expect("dependencies is a mapping");
 
     for (worker, version) in [
-        ("session-manager", "^1.0.12"),
+        ("session-manager", "^1.0.13"),
         ("llm-router", "^1.4.12"),
         ("provider-openai-codex", "^0.4.4"),
         ("context-manager", "^1.1.3"),
         ("iii-directory", "^1.2.3"),
         ("provider-anthropic", "^1.2.8"),
         ("provider-openai", "^1.0.0"),
-        ("shell", "^0.11.8"),
+        ("shell", "^0.11.9"),
         ("console", "^1.9.11"),
     ] {
         assert_eq!(
