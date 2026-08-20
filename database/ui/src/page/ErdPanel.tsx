@@ -13,7 +13,15 @@
  * mouse move.
  */
 
-import { Badge, Button, EmptyState, type Host, Input, Select, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  type Host,
+  Input,
+  Select,
+  StatusPanel,
+} from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { schemaDiagram } from '../lib/rpc'
 import { AlertCircle, KeyRound, Link2, Maximize, Table2 } from './icons'
@@ -77,7 +85,10 @@ export function ErdPanel({
   const [focus, setFocus] = useState<string | null>(focusTable ?? null)
   const [depth, setDepth] = useState(1)
 
-  const fetcher = useCallback(() => schemaDiagram(host, db, { focus, depth }), [host, db, focus, depth])
+  const fetcher = useCallback(
+    () => schemaDiagram(host, db, { focus, depth }),
+    [host, db, focus, depth],
+  )
   const read = useDatabaseRead(true, fetcher)
   const diagram = read.data
 
@@ -86,8 +97,12 @@ export function ErdPanel({
   // Manual node positions, as offsets over what the worker laid out. Kept in
   // the browser: this is where you dragged a box just now, not a preference
   // worth persisting for everyone.
-  const [offsets, setOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
-  const nodeDragRef = useRef<{ table: string; px: number; py: number } | null>(null)
+  const [offsets, setOffsets] = useState<
+    Record<string, { dx: number; dy: number }>
+  >({})
+  const nodeDragRef = useRef<{ table: string; px: number; py: number } | null>(
+    null,
+  )
   // Mirrored: `view` drives React, `viewRef` drives the raw transform during a
   // drag so a 200-node diagram does not re-render per frame.
   const [view, setView] = useState<View>({ x: 0, y: 0, z: 1 })
@@ -127,7 +142,10 @@ export function ErdPanel({
       1,
       Math.max(
         MIN_ZOOM,
-        Math.min((frame.clientWidth - PAD) / diagram.width, (frame.clientHeight - PAD) / diagram.height),
+        Math.min(
+          (frame.clientWidth - PAD) / diagram.width,
+          (frame.clientHeight - PAD) / diagram.height,
+        ),
       ),
     )
     // Centre, rather than pinning to a corner and leaving the rest empty.
@@ -171,7 +189,10 @@ export function ErdPanel({
       e.preventDefault()
       const rect = frame.getBoundingClientRect()
       const v = viewRef.current
-      const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12)))
+      const next = Math.min(
+        MAX_ZOOM,
+        Math.max(MIN_ZOOM, v.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12)),
+      )
       // Keep the point under the cursor fixed while zooming.
       const cx = e.clientX - rect.left
       const cy = e.clientY - rect.top
@@ -192,7 +213,11 @@ export function ErdPanel({
     const d = dragRef.current
     if (!d) return
     const v = viewRef.current
-    viewRef.current = { ...v, x: v.x + (e.clientX - d.px), y: v.y + (e.clientY - d.py) }
+    viewRef.current = {
+      ...v,
+      x: v.x + (e.clientX - d.px),
+      y: v.y + (e.clientY - d.py),
+    }
     dragRef.current = { px: e.clientX, py: e.clientY }
     schedule()
   }
@@ -239,7 +264,11 @@ export function ErdPanel({
   const matches = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q || !diagram) return null
-    return new Set(diagram.nodes.filter((n) => n.table.toLowerCase().includes(q)).map((n) => n.table))
+    return new Set(
+      diagram.nodes
+        .filter((n) => n.table.toLowerCase().includes(q))
+        .map((n) => n.table),
+    )
   }, [search, diagram])
 
   if (read.error) {
@@ -247,20 +276,20 @@ export function ErdPanel({
       <StatusPanel
         variant="alert"
         icon={<AlertCircle size={18} />}
-        headline="could not lay out the schema"
+        headline="Could not lay out the schema"
         detail={read.error}
       />
     )
   }
   if (read.loading && !diagram) {
-    return <div className="db-msg db-pulse">· laying out the schema…</div>
+    return <div className="db-msg db-pulse">Laying out the schema…</div>
   }
   if (!diagram || diagram.nodes.length === 0) {
     return (
       <EmptyState
         icon={TableIcon}
-        title="nothing to diagram"
-        description="this database has no tables yet. create one and refresh."
+        title="Nothing to diagram"
+        description="This database has no tables yet. Create one and refresh."
       />
     )
   }
@@ -271,42 +300,45 @@ export function ErdPanel({
     <div className="db-erd">
       <div className="db-erd-bar db-toolbar">
         <span className="db-erd-stat">
-          {diagram.nodes.length} table{diagram.nodes.length === 1 ? '' : 's'} · {diagram.edges.length} relation
+          {diagram.nodes.length} table{diagram.nodes.length === 1 ? '' : 's'} ·{' '}
+          {diagram.edges.length} relation
           {diagram.edges.length === 1 ? '' : 's'}
         </span>
         {related === 0 ? (
-          <span className="db-erd-stat quiet">no foreign keys — nothing to connect</span>
+          <span className="db-erd-stat quiet">
+            No foreign keys — nothing to connect
+          </span>
         ) : (
           <span className="db-erd-stat quiet">
             {diagram.isolated.length} unrelated · {diagram.crossings} crossings
           </span>
         )}
-        {diagram.truncated ? <Badge variant="warn">truncated</Badge> : null}
+        {diagram.truncated ? <Badge variant="warn">Truncated</Badge> : null}
         <div className="db-toolbar-spacer" />
         {focus ? (
           <>
             <span className="db-erd-focus">
-              focused on <strong>{focus}</strong>
+              Focused on <strong>{focus}</strong>
             </span>
             <Select
               value={String(depth)}
               onChange={(d) => setDepth(Number(d))}
               options={[
-                { value: '1', label: 'direct relations' },
+                { value: '1', label: 'Direct relations' },
                 { value: '2', label: '2 hops' },
                 { value: '3', label: '3 hops' },
               ]}
               aria-label="how far to expand"
             />
             <Button variant="ghost" size="sm" onClick={() => setFocus(null)}>
-              whole schema
+              Whole schema
             </Button>
           </>
         ) : null}
         <Input
           value={search}
           onChange={setSearch}
-          placeholder="find a table"
+          placeholder="Find a table"
           preserveCase
           className="db-erd-search"
           aria-label="find a table"
@@ -314,14 +346,14 @@ export function ErdPanel({
         <span className="db-erd-zoom">{Math.round(view.z * 100)}%</span>
         {Object.keys(offsets).length > 0 ? (
           <Button variant="ghost" size="sm" onClick={() => setOffsets({})}>
-            reset positions
+            Reset positions
           </Button>
         ) : null}
         {/* A frame icon, not the refresh arrows: fit re-frames the view, the
             header's refresh re-reads data — same glyph implied same verb. */}
         <Button variant="ghost" size="sm" onClick={fitToFrame}>
-          <Maximize size={13} aria-hidden />
-          fit
+          <Maximize size={16} aria-hidden />
+          Fit
         </Button>
       </div>
 
@@ -329,14 +361,23 @@ export function ErdPanel({
           the next ring is what makes expanding a decision rather than a guess. */}
       {focus && diagram.frontier.length > 0 ? (
         <div className="db-erd-frontier">
-          <span className="db-erd-frontier-label">also connected:</span>
+          <span className="db-erd-frontier-label">Also connected:</span>
           {diagram.frontier.map((t) => (
-            <button key={t} type="button" className="db-erd-frontier-item" onClick={() => setFocus(t)}>
+            <button
+              key={t}
+              type="button"
+              className="db-erd-frontier-item"
+              onClick={() => setFocus(t)}
+            >
               {t}
             </button>
           ))}
-          <button type="button" className="db-erd-frontier-more" onClick={() => setDepth((d) => d + 1)}>
-            pull them in
+          <button
+            type="button"
+            className="db-erd-frontier-more"
+            onClick={() => setDepth((d) => d + 1)}
+          >
+            Pull them in
           </button>
         </div>
       ) : null}
@@ -383,10 +424,17 @@ export function ErdPanel({
               </div>
             ))}
 
-          <svg className="db-erd-edges" width={diagram.width} height={diagram.height} aria-hidden>
-            <title>foreign key relationships</title>
+          <svg
+            className="db-erd-edges"
+            width={diagram.width}
+            height={diagram.height}
+            aria-hidden
+          >
+            <title>Foreign key relationships</title>
             {diagram.edges.map((e) => {
-              const dim = matches ? !matches.has(e.from) && !matches.has(e.to) : false
+              const dim = matches
+                ? !matches.has(e.from) && !matches.has(e.to)
+                : false
               const hot = selected === e.from || selected === e.to
               // An edge has to follow the nodes it joins. The worker routed it
               // against the original coordinates, so each end is shifted by
@@ -403,12 +451,20 @@ export function ErdPanel({
                   key={`${e.from}.${e.from_column}->${e.to}.${e.to_column}`}
                   className={`db-erd-edge${hot ? ' hot' : ''}${dim ? ' dim' : ''}`}
                 >
-                  <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" />
+                  <polyline
+                    points={points.map((p) => `${p.x},${p.y}`).join(' ')}
+                    fill="none"
+                  />
                   {/* Endpoint dots, the idiom both reference clients use: the
                       line lands on the exact column row, so a relationship
                       reads as column-to-column rather than box-to-box. */}
                   <circle className="db-erd-endpoint" cx={a.x} cy={a.y} r={3} />
-                  <circle className="db-erd-endpoint target" cx={b.x} cy={b.y} r={3} />
+                  <circle
+                    className="db-erd-endpoint target"
+                    cx={b.x}
+                    cy={b.y}
+                    r={3}
+                  />
                 </g>
               )
             })}
@@ -449,7 +505,9 @@ export function ErdPanel({
                   onPointerMove={moveNode}
                   onPointerUp={endNodeDrag}
                   onPointerCancel={endNodeDrag}
-                  onClick={() => setSelected(selected === n.table ? null : n.table)}
+                  onClick={() =>
+                    setSelected(selected === n.table ? null : n.table)
+                  }
                   onDoubleClick={() => {
                     setFocus(n.table)
                     setSelected(null)
@@ -466,15 +524,25 @@ export function ErdPanel({
                   title={`${n.table} · ${n.degree} relation${n.degree === 1 ? '' : 's'} · drag to move, double-click or F to focus`}
                 >
                   <span className="db-erd-node-name">{n.table}</span>
-                  {n.degree > 0 ? <span className="db-erd-node-deg">{n.degree}</span> : null}
+                  {n.degree > 0 ? (
+                    <span className="db-erd-node-deg">{n.degree}</span>
+                  ) : null}
                 </button>
                 <div className="db-erd-cols">
                   {n.columns.map((c) => (
                     <div className="db-erd-col" key={c.name}>
                       {c.primary_key ? (
-                        <KeyRound size={9} className="db-erd-glyph pk" aria-label="primary key" />
+                        <KeyRound
+                          size={16}
+                          className="db-erd-glyph pk"
+                          aria-label="primary key"
+                        />
                       ) : c.foreign_key ? (
-                        <Link2 size={9} className="db-erd-glyph fk" aria-label="foreign key" />
+                        <Link2
+                          size={16}
+                          className="db-erd-glyph fk"
+                          aria-label="foreign key"
+                        />
                       ) : (
                         <span className="db-erd-glyph" />
                       )}
@@ -487,10 +555,14 @@ export function ErdPanel({
                           *
                         </span>
                       ) : null}
-                      <span className="db-erd-col-type">{c.type.toLowerCase()}</span>
+                      <span className="db-erd-col-type">{c.type}</span>
                     </div>
                   ))}
-                  {n.hidden_columns > 0 ? <div className="db-erd-col more">+{n.hidden_columns} more</div> : null}
+                  {n.hidden_columns > 0 ? (
+                    <div className="db-erd-col more">
+                      +{n.hidden_columns} more
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )

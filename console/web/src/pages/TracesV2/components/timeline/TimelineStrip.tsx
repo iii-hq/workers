@@ -812,11 +812,11 @@ export function TimelineStrip({
         <div className="flex items-center gap-3 px-3 py-2">
           <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
             <span className="text-accent">$</span>
-            <span className="text-ink ml-2">traces</span>
+            <span className="text-ink ml-2">Traces</span>
           </div>
           {isPaused ? (
             <Badge variant="warn">
-              <Pause className="w-3 h-3" />
+              <Pause className="size-4" />
               paused
             </Badge>
           ) : (
@@ -842,7 +842,7 @@ export function TimelineStrip({
                     : 'follow your turns: auto-open the trace when you send a message'
                 }
               >
-                <Crosshair className="w-3.5 h-3.5" />
+                <Crosshair className="size-4" />
               </IconToggleButton>
             )}
             {spanFilter && (

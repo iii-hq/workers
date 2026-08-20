@@ -119,7 +119,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 title="remove"
                 aria-label="remove attribute"
               >
-                <X className="w-3 h-3" />
+                <X className="size-4" />
               </button>
             </div>
           ))}
@@ -134,13 +134,13 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
             onClick={handleAdd}
             className="text-accent"
           >
-            <Plus className="w-3 h-3" />
+            <Plus className="size-4" />
             add
           </Button>
 
           {isDirty && (
             <Button variant="pill" size="sm" onClick={handleApply}>
-              <Check className="w-3 h-3" />
+              <Check className="size-4" />
               apply
             </Button>
           )}
@@ -156,7 +156,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 className="flex items-center gap-1 px-1.5 py-0.5 rounded-xs font-mono text-[10px] text-ink-faint bg-surface border border-rule-2 hover:border-rule hover:text-ink transition-colors lowercase"
                 title={`add ${attr}`}
               >
-                <Tag className="w-2.5 h-2.5" />
+                <Tag className="size-4" />
                 {attr}
               </button>
             ))}

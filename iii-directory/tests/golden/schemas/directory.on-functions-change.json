@@ -1,0 +1,30 @@
+{
+  "description": "Internal: refresh the search catalog after the engine function set changes.",
+  "function_id": "directory::on-functions-change",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "event": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "OnFunctionsChangeEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "AckResponse",
+    "type": "object"
+  }
+}

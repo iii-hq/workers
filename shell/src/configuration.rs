@@ -17,7 +17,25 @@ use crate::config::ShellConfig;
 use crate::fs::host::{HostFsBackend, HostFsConfig, IiiChannelMaker};
 use crate::fs::FsBackend;
 
-pub const CONFIG_ID: &str = "shell";
+pub const DEFAULT_CONFIG_ID: &str = "shell";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "shell::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -181,7 +199,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 /// over it repairs the entry instead of leaving the worker in a crash loop.
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Shell",
         "description": "Command denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
@@ -204,7 +222,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
             ),
         }
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -257,21 +275,24 @@ fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii, false)
-        .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+    try_get_config_value(iii, false).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
-    match trigger_with_retry(
+    match trigger_configuration_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": CONFIG_ID, "raw": raw }),
+        json!({ "id": config_id(), "raw": raw }),
     )
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        // `trigger_with_retry` flattens the structured `Error` to its
+        // `trigger_configuration_with_retry` flattens the structured `Error` to its
         // Display string, so we substring-match the recovered message rather
         // than branch on `Error::Remote { code }`. The engine's missing-entry
         // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
@@ -357,15 +378,14 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-    })?;
+    ))?;
     Ok(())
 }
 
@@ -486,7 +506,7 @@ where
 
 /// Shared by the config bootstrap here and `ui.rs`'s `shell-ui`
 /// UI-state entry registration.
-pub(crate) async fn trigger_with_retry(
+pub(crate) async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -494,12 +514,15 @@ pub(crate) async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

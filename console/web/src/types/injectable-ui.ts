@@ -10,6 +10,7 @@
  * UI projects link against; the conformance test holds the two together.
  */
 
+import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
 import type { IIIConnectionState, RegisterTriggerInput } from '@/lib/iii-client'
 import type { FunctionTriggerMessage } from '@/types/chat'
 
@@ -55,6 +56,8 @@ export interface ConsoleApi {
   useTheme(): 'light' | 'dark'
   /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
   tokens: readonly string[]
+  /** Stable namespaced CSS recipes for shared visual patterns. */
+  uiClasses: UiClasses
 }
 
 /**
@@ -286,6 +289,7 @@ export interface Host {
   iii: ExtensionIii
   components: ConsoleApi['components']
   useTheme: ConsoleApi['useTheme']
+  uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   pages: {

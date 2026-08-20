@@ -5,10 +5,10 @@
 //! Golden-tested in `tests/schemas.rs`; keep in lockstep with
 //! [`crate::register::register_router`]. Schema generation MUST mirror
 //! iii-sdk's internal `json_schema_for` (`SchemaSettings::draft07()` on the
-//! handler's request/response types): `RegisterFunction::new_async` /
-//! `new_async_with_bad_request` auto-extract schemas from the SAME structs
-//! referenced here, with the same schemars 0.8 generator settings, so a catalog
-//! snapshot pins exactly what registration emits.
+//! handler's request/response types): `RegisterFunction::new_async` and the
+//! shared typed registration adapter derive schemas from the SAME structs with
+//! the same schemars 0.8 settings, so a catalog snapshot pins exactly what
+//! registration emits.
 
 use crate::chat::chat::{ChatCall, ChatFnInput};
 use crate::types::router::{

@@ -110,6 +110,8 @@ impl HookRegistry {
         step: u64,
         base_system_prompt: Option<String>,
         base_messages: &[Value],
+        functions_generation: u64,
+        tools: &[crate::types::model::AgentFunction],
     ) -> PreGenerateOutcome {
         let mut system_prompt = base_system_prompt;
         let mut appended: Vec<Value> = Vec::new();
@@ -127,6 +129,17 @@ impl HookRegistry {
                 "messages": messages,
                 "model": record.options.model,
                 "provider": record.options.provider.clone().unwrap_or_default(),
+                "functions_generation": functions_generation,
+                "tools": tools,
+                // Hooks always receive the concrete decision tools, so the
+                // exposure mode is not inferable from `tools`; injectors need
+                // it to phrase call instructions the model can actually follow.
+                "expose": record
+                    .options
+                    .functions
+                    .as_ref()
+                    .map(|functions| functions.expose)
+                    .unwrap_or_default(),
             });
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(m) => {
@@ -358,15 +371,15 @@ impl HookRegistry {
         payload: Value,
     ) -> Result<Value, String> {
         let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
-        let fut = iii_helpers::observability::run_with_baggage(
-            &baggage,
-            self.iii.trigger(TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload,
-                action: None,
-                timeout_ms: Some(binding.timeout_ms),
-            }),
-        );
+        let request = TriggerRequest {
+            function_id: binding.function_id.clone(),
+            payload,
+            action: None,
+            timeout_ms: Some(binding.timeout_ms),
+        };
+        let namespace = binding.namespace.as_deref().unwrap_or("default");
+        let request = request.namespace(namespace);
+        let fut = iii_helpers::observability::run_with_baggage(&baggage, self.iii.trigger(request));
         let bounded = tokio::time::timeout(
             Duration::from_millis(binding.timeout_ms.saturating_add(1_000)),
             fut,
@@ -638,6 +651,7 @@ mod tests {
     fn binding(function_id: &str, priority: i64) -> HookBinding {
         HookBinding {
             function_id: function_id.into(),
+            namespace: None,
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,
@@ -756,6 +770,7 @@ mod tests {
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
             function_id: "gate".into(),
+            namespace: None,
             inject_prompt: None,
             functions: Some(vec!["shell::*".into()]),
             sessions: None,

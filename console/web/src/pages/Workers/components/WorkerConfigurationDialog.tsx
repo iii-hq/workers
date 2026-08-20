@@ -40,7 +40,7 @@ export function WorkerConfigurationDialog({
               ],
         )}
       >
-        <DialogTitle className="sr-only">worker configuration</DialogTitle>
+        <DialogTitle className="sr-only">Worker configuration</DialogTitle>
         {configurationId ? (
           <WorkerConfigurationBody
             configurationId={configurationId}
@@ -76,7 +76,7 @@ function WorkerConfigurationBody({
   if (schemaQuery.isError || !schemaQuery.data) {
     return (
       <div className="flex-1 min-h-0 px-6 py-8">
-        <h2 className={cn(wt.heading, 'text-ink')}>configuration</h2>
+        <h2 className={cn(wt.heading, 'text-ink')}>Configuration</h2>
         <p className={cn(wt.bodySm, 'mt-2 text-alert')} role="alert">
           {(schemaQuery.error as Error | null)?.message ??
             `failed to load ${configurationId}`}

@@ -1,64 +1,41 @@
 {
-  "description": "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console UI can draw a hover highlight in pick mode. Not an agent function.",
   "function_id": "browser::pick::hint",
+  "description": "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console UI can draw a hover highlight in pick mode. Not an agent function.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "PickHintInput",
+    "type": "object",
+    "required": [
+      "session_id",
+      "x",
+      "y"
+    ],
     "properties": {
       "session_id": {
         "type": "string"
       },
       "x": {
         "description": "Viewport x of the cursor.",
-        "format": "double",
-        "type": "number"
+        "type": "number",
+        "format": "double"
       },
       "y": {
         "description": "Viewport y of the cursor.",
-        "format": "double",
-        "type": "number"
+        "type": "number",
+        "format": "double"
       }
-    },
-    "required": [
-      "session_id",
-      "x",
-      "y"
-    ],
-    "title": "PickHintInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-      "Bounds": {
-        "properties": {
-          "height": {
-            "format": "double",
-            "type": "number"
-          },
-          "width": {
-            "format": "double",
-            "type": "number"
-          },
-          "x": {
-            "format": "double",
-            "type": "number"
-          },
-          "y": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "height",
-          "width",
-          "x",
-          "y"
-        ],
-        "type": "object"
-      }
-    },
+    "title": "PickHintOutput",
+    "type": "object",
+    "required": [
+      "hit"
+    ],
     "properties": {
       "bounds": {
+        "description": "Viewport-space box to draw the highlight over.",
         "anyOf": [
           {
             "$ref": "#/definitions/Bounds"
@@ -66,8 +43,7 @@
           {
             "type": "null"
           }
-        ],
-        "description": "Viewport-space box to draw the highlight over."
+        ]
       },
       "classes": {
         "type": [
@@ -93,10 +69,34 @@
         ]
       }
     },
-    "required": [
-      "hit"
-    ],
-    "title": "PickHintOutput",
-    "type": "object"
+    "definitions": {
+      "Bounds": {
+        "type": "object",
+        "required": [
+          "height",
+          "width",
+          "x",
+          "y"
+        ],
+        "properties": {
+          "height": {
+            "type": "number",
+            "format": "double"
+          },
+          "width": {
+            "type": "number",
+            "format": "double"
+          },
+          "x": {
+            "type": "number",
+            "format": "double"
+          },
+          "y": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      }
+    }
   }
 }

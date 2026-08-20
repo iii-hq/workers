@@ -65,7 +65,9 @@
 [data-iii-ui="harness"] .harness-ui-chip-fill {
   display: block;
   height: 100%;
-  transition: width 0.2s, background-color 0.2s;
+  transition:
+    width 0.2s,
+    background-color 0.2s;
 }
 /* `ink-faint` (5.1:1 on panel-raised), not `ink-ghost` (2.4:1 — under the
    4.5:1 AA floor). These are the numbers you read before compacting. */
@@ -76,8 +78,8 @@
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="harness"] .harness-ui-chip-caret {
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
   flex: none;
   color: var(--color-ink-ghost);
 }

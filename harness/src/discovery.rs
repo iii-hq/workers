@@ -265,12 +265,11 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         .metadata(json!({ "internal": true })),
     );
 
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: FUNCTIONS_TRIGGER_TYPE.to_string(),
-        function_id: FUNCTIONS_FN_ID.to_string(),
-        config: json!({}),
-        metadata: None,
-    }) {
+    match iii.register_trigger(RegisterTriggerInput::new(
+        FUNCTIONS_TRIGGER_TYPE.to_string(),
+        FUNCTIONS_FN_ID.to_string(),
+        json!({}),
+    )) {
         Ok(_) => tracing::info!(
             trigger_type = FUNCTIONS_TRIGGER_TYPE,
             function_id = FUNCTIONS_FN_ID,

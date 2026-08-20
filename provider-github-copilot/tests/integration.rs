@@ -48,6 +48,17 @@ fn free_port() -> u16 {
         .port()
 }
 
+fn test_init_options() -> InitOptions {
+    static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    metadata.name = format!("{}-test-{worker_id}", metadata.name);
+    InitOptions {
+        metadata: Some(metadata),
+        ..InitOptions::default()
+    }
+}
+
 /// Spawn a minimal engine in a temp dir; poll until WS-reachable.
 /// None = no engine available on this host → the caller self-skips.
 async fn spawn_engine() -> Option<Engine> {
@@ -102,7 +113,7 @@ async fn spawn_engine() -> Option<Engine> {
         .expect("spawn engine");
 
     let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, InitOptions::default());
+    let probe = register_worker(&url, test_init_options());
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let ready = probe
@@ -293,11 +304,11 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
 
 /// Boot router + provider on one engine; wait until the provider is listed.
 async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
-    let router_iii = register_worker(engine_url, InitOptions::default());
+    let router_iii = register_worker(engine_url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
-    let provider_iii = register_worker(engine_url, InitOptions::default());
+    let provider_iii = register_worker(engine_url, test_init_options());
     register_provider(provider_iii.clone())
         .await
         .expect("provider boots");
@@ -429,7 +440,7 @@ async fn chat_streams_end_to_end_through_the_ready_bearer_path() {
     // catalog-ownership routing needs the live slice in place
     refresh_and_wait(&router_iii, &provider_iii, "copilot/gpt-agentic").await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
@@ -479,7 +490,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
 
-    let consumer = register_worker(&engine.url, InitOptions::default());
+    let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
@@ -589,7 +600,7 @@ async fn provider_redeclares_on_router_ready() {
     // simulate a router restart: drop the first router, boot a fresh one
     router_iii.shutdown();
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let router2 = register_worker(&engine.url, InitOptions::default());
+    let router2 = register_worker(&engine.url, test_init_options());
     register_router(router2.clone())
         .await
         .expect("router reboots");

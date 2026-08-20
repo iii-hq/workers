@@ -24,7 +24,7 @@ export function DragHandle({
       className="shrink-0 flex items-center justify-center h-9 w-5 text-ink-faint hover:text-ink cursor-grab active:cursor-grabbing focus:outline-none focus-visible:text-accent"
       {...handle}
     >
-      <GripVertical size={14} aria-hidden />
+      <GripVertical size={16} aria-hidden />
     </button>
   )
 }
@@ -56,7 +56,7 @@ export function DeleteButton({
           : 'border-rule text-ink-faint hover:border-alert hover:text-alert',
       )}
     >
-      <Trash2 size={14} aria-hidden />
+      <Trash2 size={16} aria-hidden />
     </button>
   )
 }

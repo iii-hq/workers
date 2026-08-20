@@ -21,7 +21,19 @@ import type { Host } from '@iii-dev/console-ui'
 import { DirectoryConfigForm } from './src/configuration'
 import { createDirectoryTriggerRenderer } from './src/function-trigger'
 import { DirectoryPage } from './src/page'
+import { createSearchTriggerRenderer } from './src/search/search-card'
 import { createSystemPromptChip } from './src/session-chip'
+
+/**
+ * The pre-generate hook's transcript annotations (`origin.directory`) stay
+ * in the durable data for traces and measurement but render nothing in
+ * chat: the null renderer SUPPRESSES the console's fallback summary row —
+ * without it every generation would print "directory · hint injected"/
+ * "directory · skipped" lines.
+ */
+function DirectoryPassLine() {
+  return null
+}
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -31,8 +43,14 @@ export default function setup(host: Host) {
   })
 
   host.functionTriggers.register(createDirectoryTriggerRenderer())
+  host.functionTriggers.register(createSearchTriggerRenderer())
 
   host.configForms.register('iii-directory', DirectoryConfigForm)
+
+  host.chat?.registerTranscriptRenderer?.({
+    id: 'directory',
+    render: DirectoryPassLine,
+  })
 
   /* Optional chained: the slot postdates the published Host type, so a
      console that predates session chips just skips this contribution. */

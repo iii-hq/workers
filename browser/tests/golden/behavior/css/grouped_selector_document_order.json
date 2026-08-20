@@ -1,0 +1,15 @@
+{
+  "function": "browser::css",
+  "case": "grouped_selector_document_order",
+  "request": {
+    "html": "<p>P</p><h1>H</h1><p>Q</p>",
+    "query": "h1, p"
+  },
+  "ok": {
+    "result": [
+      "P",
+      "H",
+      "Q"
+    ]
+  }
+}

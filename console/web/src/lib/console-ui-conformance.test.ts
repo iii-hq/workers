@@ -16,12 +16,16 @@
  *    and the conformance map below must all agree exactly.
  */
 
+import { readFileSync } from 'node:fs'
 import type * as ConsoleUi from '@iii-dev/console-ui'
 import componentNames from '@iii-dev/console-ui/component-names'
+import tokenNames from '@iii-dev/console-ui/token-names'
+import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
   Dialog,
@@ -42,8 +46,11 @@ import {
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { FileDiff } from '@/components/ui/FileDiff'
+import { IconButton } from '@/components/ui/IconButton'
 import { Input } from '@/components/ui/Input'
+import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import { SegmentedControl } from '@/components/ui/ModeToggle'
 import {
   PageBody,
   PageHeader,
@@ -52,9 +59,30 @@ import {
   PageSidebar,
 } from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
+import { Selector } from '@/components/ui/Selector'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  Panel,
+  PanelBody,
+  PanelHeader,
+} from '@/components/ui/Surface'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
 import { TerminalStream } from '@/components/ui/TerminalStream'
@@ -77,6 +105,10 @@ const conformance: {
   AnsiText: typeof ConsoleUi.AnsiText
   Badge: typeof ConsoleUi.Badge
   Button: typeof ConsoleUi.Button
+  Card: typeof ConsoleUi.Card
+  CardBody: typeof ConsoleUi.CardBody
+  CardHeader: typeof ConsoleUi.CardHeader
+  Chip: typeof ConsoleUi.Chip
   CodeEditor: typeof ConsoleUi.CodeEditor
   CodeHighlight: typeof ConsoleUi.CodeHighlight
   Dialog: typeof ConsoleUi.Dialog
@@ -94,8 +126,13 @@ const conformance: {
   EmptyState: typeof ConsoleUi.EmptyState
   ErrorBoundary: typeof ConsoleUi.ErrorBoundary
   FileDiff: typeof ConsoleUi.FileDiff
+  IconButton: typeof ConsoleUi.IconButton
   Input: typeof ConsoleUi.Input
   JsonHighlight: typeof ConsoleUi.JsonHighlight
+  List: typeof ConsoleUi.List
+  ListGroup: typeof ConsoleUi.ListGroup
+  ListGroupLabel: typeof ConsoleUi.ListGroupLabel
+  ListItem: typeof ConsoleUi.ListItem
   Markdown: typeof ConsoleUi.Markdown
   MarkdownPreview: typeof ConsoleUi.MarkdownPreview
   PageBody: typeof ConsoleUi.PageBody
@@ -103,10 +140,25 @@ const conformance: {
   PageMain: typeof ConsoleUi.PageMain
   PageShell: typeof ConsoleUi.PageShell
   PageSidebar: typeof ConsoleUi.PageSidebar
+  Panel: typeof ConsoleUi.Panel
+  PanelBody: typeof ConsoleUi.PanelBody
+  PanelHeader: typeof ConsoleUi.PanelHeader
   Select: typeof ConsoleUi.Select
+  SegmentedControl: typeof ConsoleUi.SegmentedControl
+  Selector: typeof ConsoleUi.Selector
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
   StatusPanel: typeof ConsoleUi.StatusPanel
+  Table: typeof ConsoleUi.Table
+  TableBody: typeof ConsoleUi.TableBody
+  TableCaption: typeof ConsoleUi.TableCaption
+  TableCell: typeof ConsoleUi.TableCell
+  TableFooter: typeof ConsoleUi.TableFooter
+  TableFrame: typeof ConsoleUi.TableFrame
+  TableHead: typeof ConsoleUi.TableHead
+  TableHeader: typeof ConsoleUi.TableHeader
+  TableRow: typeof ConsoleUi.TableRow
+  TableViewport: typeof ConsoleUi.TableViewport
   Tabs: typeof ConsoleUi.Tabs
   TabsContent: typeof ConsoleUi.TabsContent
   TabsList: typeof ConsoleUi.TabsList
@@ -121,6 +173,10 @@ const conformance: {
   AnsiText,
   Badge,
   Button,
+  Card,
+  CardBody,
+  CardHeader,
+  Chip,
   CodeEditor,
   CodeHighlight,
   Dialog,
@@ -138,8 +194,13 @@ const conformance: {
   EmptyState,
   ErrorBoundary,
   FileDiff,
+  IconButton,
   Input,
   JsonHighlight,
+  List,
+  ListGroup,
+  ListGroupLabel,
+  ListItem,
   Markdown,
   MarkdownPreview,
   PageBody,
@@ -147,10 +208,25 @@ const conformance: {
   PageMain,
   PageShell,
   PageSidebar,
+  Panel,
+  PanelBody,
+  PanelHeader,
   Select,
+  SegmentedControl,
+  Selector,
   Skeleton,
   StatusDot,
   StatusPanel,
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
   Tabs,
   TabsContent,
   TabsList,
@@ -177,6 +253,43 @@ describe('@iii-dev/console-ui surface', () => {
       expect(components[name], name).toBe(
         conformance[name as keyof typeof conformance],
       )
+    }
+  })
+
+  it('publishes only tokens declared by the Console theme', () => {
+    const themeCss = readFileSync(
+      new URL('../index.css', import.meta.url),
+      'utf8',
+    )
+    for (const token of tokenNames) {
+      expect(themeCss, token).toContain(`${token}:`)
+    }
+  })
+
+  it('publishes stable class names backed by shared CSS recipes', () => {
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    expect(Object.values(uiClasses)).toEqual(uiClassNames)
+    for (const className of uiClassNames) {
+      expect(recipesCss, className).toContain(`.${className}`)
+    }
+  })
+
+  it('keeps selection recipes neutral instead of accent-colored', () => {
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    const selectedBlocks = [
+      ...recipesCss.matchAll(
+        /[^{}]*(?:data-selected|aria-selected|aria-current|aria-checked)[^{}]*\{([^{}]*)\}/g,
+      ),
+    ]
+    expect(selectedBlocks.length).toBeGreaterThan(0)
+    for (const block of selectedBlocks) {
+      expect(block[1]).not.toContain('--color-accent')
     }
   })
 })

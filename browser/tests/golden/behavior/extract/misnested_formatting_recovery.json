@@ -1,0 +1,19 @@
+{
+  "function": "browser::extract",
+  "case": "misnested_formatting_recovery",
+  "request": {
+    "html": "<p><b>one<i>two</b>three</i>tail",
+    "selectors": [
+      {
+        "name": "body",
+        "css": "body",
+        "html": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "body": "<body><p><b>one<i>two</i></b>threetail</p></body>"
+    }
+  }
+}

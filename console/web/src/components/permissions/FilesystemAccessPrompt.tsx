@@ -87,7 +87,10 @@ export function FilesystemAccessPrompt({
         ) : null}
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap">
+      <div
+        className="flex items-center gap-2 flex-wrap"
+        data-approval-actions=""
+      >
         <Button
           variant="primary"
           size="sm"

@@ -300,14 +300,13 @@ impl RegisteredWorkersCache {
     /// Fetch `worker::list` from the engine WITHOUT holding the lock,
     /// then store the result (or fall back to the stale set on error).
     async fn fetch_and_store(&self, iii: &IIIClient) -> Option<HashSet<String>> {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         // Re-acquire the lock and store or fall back.
         let mut lock = self.inner.lock().await;

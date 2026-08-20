@@ -1,0 +1,13 @@
+{
+  "function": "browser::xpath",
+  "case": "global_parenthesized_position",
+  "request": {
+    "html": "<div><p>A</p><p>B</p></div><section><p>C</p></section>",
+    "query": "(//p)[2]"
+  },
+  "ok": {
+    "result": [
+      "B"
+    ]
+  }
+}

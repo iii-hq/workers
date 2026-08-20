@@ -267,6 +267,7 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
             200,
             None,
             None,
+            Some("my-harness-ns".to_string()),
             None,
         )
         .await
@@ -282,6 +283,7 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
         .expect("first delivery should arrive")
         .expect("channel should stay open");
     assert_eq!(msg1.attempt, 0);
+    assert_eq!(msg1.namespace.as_deref(), Some("my-harness-ns"));
     adapter
         .nack_function_queue(&queue_name, msg1.delivery_id, msg1.attempt, 1)
         .await
@@ -292,6 +294,7 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
         .expect("retried delivery should arrive")
         .expect("channel should stay open");
     assert_eq!(msg2.attempt, 1, "attempt should be incremented on retry");
+    assert_eq!(msg2.namespace.as_deref(), Some("my-harness-ns"));
     adapter
         .nack_function_queue(&queue_name, msg2.delivery_id, msg2.attempt, 1)
         .await
@@ -324,6 +327,7 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
         .expect("redriven delivery should arrive")
         .expect("channel should stay open");
     assert_eq!(msg3.attempt, 0, "redrive resets the attempt counter");
+    assert_eq!(msg3.namespace.as_deref(), Some("my-harness-ns"));
     adapter
         .ack_function_queue(&queue_name, msg3.delivery_id)
         .await

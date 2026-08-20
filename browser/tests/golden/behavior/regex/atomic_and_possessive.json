@@ -1,0 +1,13 @@
+{
+  "function": "browser::regex",
+  "case": "atomic_and_possessive",
+  "request": {
+    "html": "<p>aaab aaaa</p>",
+    "pattern": "(?>a+)b|a++a"
+  },
+  "ok": {
+    "result": [
+      "aaab"
+    ]
+  }
+}

@@ -11,6 +11,16 @@
 import { TriangleAlert } from 'lucide-react'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -51,83 +61,89 @@ export function MoveView({ input, output, running, preview }: MoveViewProps) {
         ) : null}
       </div>
 
-      <table className="w-full font-mono text-[12px] text-ink">
-        <thead>
-          <tr className="border-b border-rule-2 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            <th className="text-left font-normal px-3 py-1.5">from → to</th>
-            <th className="text-left font-normal px-3 py-1.5 w-28">outcome</th>
-            <th className="text-left font-normal px-3 py-1.5 w-16">status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {req.files.map((spec, i) => {
-            const result = resp?.results[i]
-            // Canonical absolute paths once the wire responds (caller's
-            // input verbatim when resolution failed); request paths until.
-            const from = result?.from ?? spec.from
-            const to = result?.to ?? spec.to
-            const outcome = pending
-              ? { label: 'pending', tone: 'text-ink-faint' }
-              : !result
-                ? { label: '—', tone: 'text-ink-faint' }
-                : result.moved
-                  ? { label: 'moved', tone: 'text-ink' }
-                  : result.success
-                    ? { label: 'unchanged', tone: 'text-ink-ghost' }
-                    : { label: 'failed', tone: 'text-ink-ghost' }
+      <TableViewport>
+        <TableFrame className="px-3">
+          <Table density="compact">
+            <TableHeader>
+              <TableRow>
+                <TableHead>From → To</TableHead>
+                <TableHead className="w-28">Outcome</TableHead>
+                <TableHead className="w-16">Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {req.files.map((spec, i) => {
+                const result = resp?.results[i]
+                // Canonical absolute paths once the wire responds (caller's
+                // input verbatim when resolution failed); request paths until.
+                const from = result?.from ?? spec.from
+                const to = result?.to ?? spec.to
+                const outcome = pending
+                  ? { label: 'Pending', tone: 'text-ink-faint' }
+                  : !result
+                    ? { label: '—', tone: 'text-ink-faint' }
+                    : result.moved
+                      ? { label: 'Moved', tone: 'text-ink' }
+                      : result.success
+                        ? { label: 'Unchanged', tone: 'text-ink-ghost' }
+                        : { label: 'Failed', tone: 'text-ink-ghost' }
 
-            return (
-              <tr
-                key={`${spec.from}→${spec.to}`}
-                className="border-b border-rule-2 last:border-b-0 align-top"
-              >
-                <td className="px-3 py-1.5">
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <span>{from}</span>
-                    <span className="text-ink-ghost">→</span>
-                    <span>{to}</span>
-                    {!pending && result?.success ? (
-                      <OpenInEditorButton path={result.to} />
-                    ) : null}
-                    {spec.overwrite ? (
-                      <Chip label="overwrite" className="border-warn text-warn">
-                        true
-                      </Chip>
-                    ) : null}
-                  </div>
-                  {result?.error ? (
-                    <div className="mt-1 text-[11px] text-warn break-words">
-                      {result.error.message}
-                    </div>
-                  ) : null}
-                </td>
-                <td className="px-3 py-1.5">
-                  <span className={outcome.tone}>{outcome.label}</span>
-                </td>
-                <td className="px-3 py-1.5">
-                  {pending || !result ? (
-                    <span className="text-ink-faint">—</span>
-                  ) : result.success ? (
-                    <span className="text-accent">ok</span>
-                  ) : result.error ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                          <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
-                          {result.error.code}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{result.error.message}</TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <span className="text-warn">err</span>
-                  )}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+                return (
+                  <TableRow key={`${spec.from}→${spec.to}`}>
+                    <TableCell>
+                      <div className="flex flex-wrap items-baseline gap-2 font-code">
+                        <span>{from}</span>
+                        <span className="text-ink-ghost">→</span>
+                        <span>{to}</span>
+                        {!pending && result?.success ? (
+                          <OpenInEditorButton path={result.to} />
+                        ) : null}
+                        {spec.overwrite ? (
+                          <Chip
+                            label="overwrite"
+                            className="border-warn text-warn"
+                          >
+                            true
+                          </Chip>
+                        ) : null}
+                      </div>
+                      {result?.error ? (
+                        <div className="mt-1 break-words text-[11px] text-warn">
+                          {result.error.message}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <span className={outcome.tone}>{outcome.label}</span>
+                    </TableCell>
+                    <TableCell>
+                      {pending || !result ? (
+                        <span className="text-ink-faint">—</span>
+                      ) : result.success ? (
+                        <span className="text-accent">OK</span>
+                      ) : result.error ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex cursor-help items-center gap-1 text-warn">
+                              <TriangleAlert aria-hidden className="size-4" />
+                              {result.error.code}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {result.error.message}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <span className="text-warn">Error</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </TableFrame>
+      </TableViewport>
     </div>
   )
 }

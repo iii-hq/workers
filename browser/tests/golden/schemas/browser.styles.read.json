@@ -1,19 +1,25 @@
 {
-  "description": "Read an element's computed styles (curated design set by default, or named properties) plus its inline style attribute.",
   "function_id": "browser::styles::read",
+  "description": "Read an element's computed styles (curated design set by default, or named properties) plus its inline style attribute.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StylesReadInput",
+    "type": "object",
+    "required": [
+      "ref",
+      "session_id"
+    ],
     "properties": {
       "properties": {
-        "default": null,
         "description": "Computed property names to return. Omit for a curated design-panel set; pass `[\"*\"]` for every computed property.",
-        "items": {
-          "type": "string"
-        },
+        "default": null,
         "type": [
           "array",
           "null"
-        ]
+        ],
+        "items": {
+          "type": "string"
+        }
       },
       "ref": {
         "description": "Element ref from `browser::snapshot`, `browser::dom::read`, or a pick.",
@@ -22,33 +28,16 @@
       "session_id": {
         "type": "string"
       }
-    },
-    "required": [
-      "ref",
-      "session_id"
-    ],
-    "title": "StylesReadInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-      "StyleProperty": {
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "value"
-        ],
-        "type": "object"
-      }
-    },
+    "title": "StylesReadOutput",
+    "type": "object",
+    "required": [
+      "properties",
+      "ref"
+    ],
     "properties": {
       "inline_style": {
         "description": "The element's inline `style` attribute, when present.",
@@ -58,20 +47,31 @@
         ]
       },
       "properties": {
+        "type": "array",
         "items": {
           "$ref": "#/definitions/StyleProperty"
-        },
-        "type": "array"
+        }
       },
       "ref": {
         "type": "string"
       }
     },
-    "required": [
-      "properties",
-      "ref"
-    ],
-    "title": "StylesReadOutput",
-    "type": "object"
+    "definitions": {
+      "StyleProperty": {
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    }
   }
 }

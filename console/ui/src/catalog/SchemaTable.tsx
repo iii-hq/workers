@@ -9,7 +9,19 @@
  * docs rather than as JSON.
  */
 
-import { JsonHighlight } from '@iii-dev/console-ui'
+import {
+  Chip,
+  JsonHighlight,
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@iii-dev/console-ui'
+import type { CSSProperties } from 'react'
 import { Note } from './widgets'
 
 const MAX_DEPTH = 3
@@ -134,48 +146,64 @@ export function SchemaTable({
     <div className="console-catalog-schema">
       {title || description ? (
         <div className="console-catalog-schema-head">
-          {title ? <span className="title">{title}</span> : null}
-          {description ? <span className="desc">{description}</span> : null}
+          {title ? <h3 className="title">{title}</h3> : null}
+          {description ? <p className="desc">{description}</p> : null}
         </div>
       ) : null}
-      <table>
-        <thead>
-          <tr>
-            <th>field</th>
-            <th>type</th>
-            <th>notes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.path}>
-              <td>
-                <span
-                  className="field"
-                  style={{ paddingLeft: `${row.depth * 12}px` }}
-                >
-                  {row.name}
-                </span>
-                {row.required ? <span className="req">required</span> : null}
-              </td>
-              <td>
-                <span className="type">{row.type}</span>
-              </td>
-              <td>
-                {row.description ? (
-                  <span className="desc">{row.description}</span>
-                ) : null}
-                {row.enumValues ? (
-                  <span className="enum">one of {row.enumValues}</span>
-                ) : null}
-                {row.defaultValue ? (
-                  <span className="default">default {row.defaultValue}</span>
-                ) : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TableViewport className="console-catalog-schema-table">
+        <TableFrame>
+          <Table aria-label={title ? `${title} fields` : 'Schema fields'}>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="field-column">Field</TableHead>
+                <TableHead className="type-column">Type</TableHead>
+                <TableHead>Notes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.path}>
+                  <TableCell>
+                    <div className="field-line">
+                      <span
+                        className="field"
+                        style={
+                          {
+                            '--schema-indent': `${row.depth * 0.75}rem`,
+                          } as CSSProperties
+                        }
+                      >
+                        {row.name}
+                      </span>
+                      {row.required ? (
+                        <Chip className="required">Required</Chip>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Chip className="type">{row.type}</Chip>
+                  </TableCell>
+                  <TableCell>
+                    <div className="notes">
+                      {row.description ? (
+                        <div className="desc">{row.description}</div>
+                      ) : null}
+                      {row.enumValues ? (
+                        <div className="enum">One of {row.enumValues}</div>
+                      ) : null}
+                      {row.defaultValue ? (
+                        <div className="default">
+                          Default {row.defaultValue}
+                        </div>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
+      </TableViewport>
     </div>
   )
 }

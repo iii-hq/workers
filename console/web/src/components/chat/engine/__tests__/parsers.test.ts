@@ -509,7 +509,7 @@ describe('engine::register_trigger', () => {
     const html = renderToStaticMarkup(
       createElement(RegisterTriggerView, { input, output: undefined }),
     )
-    expect(html).toContain('only if')
+    expect(html).toContain('Only if')
     expect(html).toContain('state::barrier')
     expect(html).toContain('acme, globex, initech')
     expect(html).toContain('all_couriers_done')

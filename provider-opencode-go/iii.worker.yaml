@@ -9,5 +9,5 @@ tags: [llm, opencode, go, chat-completions, subscription, provider]
 description: OpenCode Go Chat Completions provider worker; implements provider::opencode_go::stream and provider::opencode_go::refresh_models behind llm-router.
 
 dependencies:
-  state: "^0.22.0"
+  state: "0.x"
   llm-router: "^1.0.0"

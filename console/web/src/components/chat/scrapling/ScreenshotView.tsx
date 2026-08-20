@@ -31,7 +31,7 @@ export function ScreenshotView({
         <MetaRow>
           <StatusPill label="capturing…" variant="default" />
           <Chip>{req.fetcher ?? 'dynamic'}</Chip>
-          {req.full_page ? <Chip>full page</Chip> : null}
+          {req.full_page ? <Chip>Full page</Chip> : null}
         </MetaRow>
         <ActionLine symbol="→" tone="ink">
           <span className="break-all">{req.url}</span>
@@ -62,7 +62,7 @@ export function ScreenshotView({
         <StatusPill label="screenshot" variant="accent" />
         <Chip>{req?.fetcher ?? 'dynamic'}</Chip>
         <Chip>{mime.replace('image/', '')}</Chip>
-        {req?.full_page ? <Chip>full page</Chip> : null}
+        {req?.full_page ? <Chip>Full page</Chip> : null}
         {images.length > 1 ? <Chip>{images.length} tiles</Chip> : null}
         <Chip>
           <span className="tabular-nums">{sizeKb}</span>
@@ -101,7 +101,7 @@ export function ScreenshotPreview({ input }: { input: unknown }) {
         <StatusPill label="permission to screenshot" variant="warn" />
         <Chip>{req.fetcher ?? 'dynamic'}</Chip>
         {req.format ? <Chip>{req.format}</Chip> : null}
-        {req.full_page ? <Chip>full page</Chip> : null}
+        {req.full_page ? <Chip>Full page</Chip> : null}
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
         <span className="break-all">{req.url}</span>

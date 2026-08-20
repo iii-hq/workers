@@ -71,6 +71,7 @@ function createHarness({
     iii: client,
     components: {},
     tokens: [],
+    uiClasses: {} as ConsoleApi['uiClasses'],
     useTheme: () => 'light',
   } as ConsoleApi
   const stop = startUiLoader(client, api, conversationAdapter, {

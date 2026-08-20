@@ -82,8 +82,8 @@ function OpenAgentTerminal({ host, message }: { host: Host; message: FunctionTri
           })
         }
       >
-        <SquareTerminal size={14} />
-        open terminal here
+        <SquareTerminal size={16} />
+        Open terminal here
       </Button>
     </div>
   )

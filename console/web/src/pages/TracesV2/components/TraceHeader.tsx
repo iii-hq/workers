@@ -96,7 +96,7 @@ export function TraceHeader({
           aria-label="close trace detail"
           title="close (esc)"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="size-4" />
         </Button>
       </div>
 
@@ -112,21 +112,21 @@ export function TraceHeader({
               copied
             </span>
           ) : (
-            <Copy className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
           )}
         </button>
 
         <span aria-hidden className="w-px h-3 bg-edge" />
 
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-          <Clock className="w-2.5 h-2.5 text-accent" />
+          <Clock className="size-4 text-accent" />
           <span className="text-[11px] font-mono font-semibold text-accent tabular-nums">
             {formatDuration(data.total_duration_ms)}
           </span>
         </span>
 
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-          <Layers className="w-2.5 h-2.5 text-ink-faint" />
+          <Layers className="size-4 text-ink-faint" />
           <span className="text-[11px] font-mono text-ink-faint tabular-nums">
             {data.span_count} spans
           </span>
@@ -140,7 +140,7 @@ export function TraceHeader({
 
         {hasErrors && (
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-alert-muted">
-            <AlertCircle className="w-2.5 h-2.5 text-alert" />
+            <AlertCircle className="size-4 text-alert" />
             <span className="text-[11px] font-mono font-semibold text-alert tabular-nums">
               {errorCount} err
             </span>
@@ -193,7 +193,7 @@ export function TraceHeader({
           {criticalPath.map((span, i) => (
             <Fragment key={span.span_id}>
               {i > 0 && (
-                <ChevronRight className="w-3 h-3 text-ink-ghost flex-shrink-0" />
+                <ChevronRight className="size-4 text-ink-ghost flex-shrink-0" />
               )}
               <button
                 type="button"

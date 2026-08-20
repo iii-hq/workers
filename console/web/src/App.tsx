@@ -502,13 +502,13 @@ function WorkspacePanes({
           aria-label="swipe to create a new panel"
           className="flex min-h-0 min-w-full basis-full shrink-0 snap-center items-center justify-center border-y border-dashed border-edge bg-panel/60 px-6 text-center [scroll-snap-stop:always] sm:hidden"
         >
-          <div className="flex flex-col items-center gap-2 font-mono lowercase text-ink-faint">
+          <div className="flex flex-col items-center gap-2 font-sans text-ink-faint">
             <span className="flex size-12 items-center justify-center rounded-sm bg-surface">
               <Plus className="size-5 shrink-0" aria-hidden />
             </span>
-            <span className="text-base">new panel</span>
+            <span className="text-base">New panel</span>
             <span className="text-base text-ink-ghost">
-              keep swiping to add it
+              Keep swiping to add it
             </span>
           </div>
         </section>
@@ -573,7 +573,13 @@ function ScreenBody({
     case CHAT_SCREEN:
       // The compact header variant — a tab column is width-constrained the
       // same way the old side dock was, especially in two-column layouts.
-      return <ChatPanel density="dock" onRequestClose={onClose} />
+      return (
+        <ChatPanel
+          density="dock"
+          panelSide={panelSide}
+          onRequestClose={onClose}
+        />
+      )
     case 'workers':
       return <Workers onRequestClose={onClose} />
     default:
@@ -632,9 +638,7 @@ function Header({
                     key={index}
                     className={cn(
                       'size-1.5 rounded-full',
-                      index === mobilePanelIndex
-                        ? 'bg-accent'
-                        : 'bg-ink-ghost/60',
+                      index === mobilePanelIndex ? 'bg-ink' : 'bg-ink-ghost/60',
                     )}
                     aria-hidden
                   />
@@ -800,11 +804,11 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogTitle className="text-[11px] uppercase tracking-[0.18em] text-ink-faint">
-          keyboard shortcuts
+        <DialogTitle className="text-[11px] font-semibold text-ink-faint">
+          Keyboard shortcuts
         </DialogTitle>
         <DialogDescription className="mt-1">
-          press <kbd className="font-mono text-ink">?</kbd> any time to reopen
+          Press <kbd className="font-mono text-ink">?</kbd> any time to reopen
           this list.
         </DialogDescription>
         {keybindingGroups().map(([group, entries]) => (

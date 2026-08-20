@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+  # rust_decimal 1.41 locks optional rkyv 0.7 support, but this project only
+  # enables db-tokio-postgres. The vulnerable rkyv code is not compiled.
+  "RUSTSEC-2026-0235",
+]

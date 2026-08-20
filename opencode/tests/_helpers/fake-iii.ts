@@ -1,7 +1,11 @@
 import { vi } from 'vitest';
 import type { ISdk } from 'iii-sdk';
 
-export type TriggerCall = { function_id: string; payload: Record<string, unknown> };
+export type TriggerCall = {
+  function_id: string;
+  namespace?: string;
+  payload: Record<string, unknown>;
+};
 
 export type FakeIii = {
   iii: ISdk;
@@ -23,11 +27,15 @@ export function fakeIii(): FakeIii {
   const registered = new Map<string, (payload: unknown) => Promise<unknown>>();
 
   const iii = {
-    trigger: async (req: { function_id: string; payload: Record<string, unknown> }) => {
+    trigger: async (req: {
+      function_id: string;
+      namespace?: string;
+      payload: Record<string, unknown>;
+    }) => {
       // Clone like the wire would: the live bus serializes payloads, so
       // later caller-side mutation must not rewrite recorded calls.
       const payload = structuredClone(req.payload);
-      calls.push({ function_id: req.function_id, payload });
+      calls.push({ function_id: req.function_id, namespace: req.namespace, payload });
       const { scope, key, value } = payload as { scope?: string; key?: string; value?: unknown };
       if (req.function_id === 'state::set') {
         state.set(`${scope}/${key}`, value);

@@ -1,0 +1,25 @@
+{
+  "function": "browser::describe",
+  "case": "id_shortcircuit_full",
+  "request": {
+    "html": "<html><head></head><body>\n<div id=\"wrap\" class=\"outer main\">\n  <span>CONDITION: <!-- separator -->Excellent</span>\n  <p> <b>bold</b>after-bold</p>\n  <p>lead<b>mid</b>tail</p>\n  <ul><li>one</li><li>two</li><li>three</li></ul>\n  <a href=\"/x?a=1&amp;b=2\" data-price=\"10\">A&amp;B</a>\n  <input disabled type=\"text\">\n  <script>var hidden = \"never\";</script>\n  <style>.x { display: none; }</style>\n  <p class=\"uni\">Ünïcode — café</p>\n  <textarea>   </textarea>\n  <div>line one\nand two <b>x</b></div>\n  <div data-x=\"1\">line oneand two <b>y</b></div>\n</div>\n</body></html>\n",
+    "query": "#wrap p"
+  },
+  "ok": {
+    "found": true,
+    "element": {
+      "tag": "p",
+      "text": "bold\nafter-bold",
+      "html": "<p> <b>bold</b>after-bold</p>",
+      "attrs": {},
+      "css": "#wrap > p",
+      "xpath": "//*[@id='wrap']/p",
+      "full_css": "body > #wrap > p",
+      "full_xpath": "//body/*[@id='wrap']/p",
+      "classes": [],
+      "parent_tag": "div",
+      "children": 1,
+      "siblings": 11
+    }
+  }
+}

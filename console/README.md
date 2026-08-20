@@ -171,12 +171,15 @@ Defined in [`src/functions/status.rs`](src/functions/status.rs).
 ```mermaid
 flowchart LR
     Browser["Browser SPA<br/>(iii-browser-sdk)"] -->|"HTTP GET /"| Console
+    Browser -->|"HTTP GET /runtime"| Console
     Browser -->|"WS /ws"| Console
     Console["console binary<br/>(axum + rust-embed)"] -->|"WebSocket"| Engine["iii engine<br/>:49134"]
     Console -. "registers console::status" .-> Engine
 ```
 
-`console` is a thin HTTP server with exactly two jobs: serve the embedded SPA bundle (with appropriate cache headers) and transparently proxy `/ws` to the iii engine. The browser only ever talks to one origin.
+`console` is a thin HTTP server. It serves the embedded SPA bundle and
+runtime connection settings, hosts injected worker UI assets, and transparently
+proxies `/ws` to the iii engine. The browser only ever talks to one origin.
 
 ## Configuration
 
@@ -207,6 +210,7 @@ injectable_ui: true   # kill switch for runtime-injected worker UI (default: tru
 |---|---|
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
+| `GET /runtime` | Runtime connection settings for the SPA, including the console worker namespace. `Cache-Control: no-store` |
 | `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |

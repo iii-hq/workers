@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-acp"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 description = "Agent Client Protocol worker for iii-engine"
 license = "Apache-2.0"
@@ -23,7 +23,7 @@ name = "iii-acp"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.23.0-rc.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

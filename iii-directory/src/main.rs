@@ -165,6 +165,29 @@ async fn main() -> Result<()> {
     );
     functions::log_fs_health(&cfg_handle.load_full());
 
+    // Function search: seed the engine-catalog snapshot (best effort — the
+    // functions-available push refreshes it), register
+    // directory::search_functions + its internal hook/preview/listener, and
+    // reconcile the pre-generate hint binding with the inject_hint knob.
+    let search_catalog: functions::search::CatalogCell =
+        Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
+    if functions::search::refresh_catalog(&iii, &search_catalog)
+        .await
+        .is_err()
+    {
+        tracing::warn!("search catalog refresh failed; starting with an empty catalog");
+    }
+    let search_deps = functions::search::Deps {
+        config: cfg_handle.clone(),
+        catalog: search_catalog,
+        sessions: Arc::default(),
+        registry_cache: registry_cache.clone(),
+    };
+    functions::search::register(&iii, &search_deps);
+    functions::search::bind_best_effort(&iii);
+    let hint_binding = iii_directory::hook::HintBindingState::default();
+    iii_directory::hook::apply(&iii, &hint_binding, cfg_handle.load().inject_hint);
+
     // Injectable console UI: the skills & prompts editor page, the
     // directory::* function-trigger renderer, and the configuration form.
     iii_directory::ui::register(&iii);
@@ -190,6 +213,7 @@ async fn main() -> Result<()> {
         registry_cache,
         registered_cache,
         boot_topology,
+        hint_binding,
     );
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;
@@ -238,11 +262,13 @@ async fn main() -> Result<()> {
     // 7 writes (skill update, prompt/system-prompt update, create, and delete) +
     // 2 registry proxy + 1 engine-functions-info + 1 configuration-change
     // handler (registered above, outside functions::register_all_with_cache).
-    // +1 when auto_download also registers directory::__on_worker_added.
-    let fn_count = if auto_download { 22 } else { 21 };
+    // +1 when auto_download also registers directory::__on_worker_added;
+    // +4 for the search surface (search_functions + pre-generate +
+    // on-functions-change + hint-preview).
+    let fn_count = if auto_download { 26 } else { 25 };
     tracing::info!(
         "iii-directory ready: {} directory::* functions + 3 custom trigger types + \
-         configuration hot-reload",
+         function search + pre-generate hint + configuration hot-reload",
         fn_count
     );
 
@@ -297,15 +323,14 @@ fn setup_auto_download(
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(RegisterTriggerInput {
-                trigger_type: "worker".to_string(),
-                function_id: "directory::__on_worker_added".to_string(),
-                config: json!({
+            let result = iii_sub.register_trigger(RegisterTriggerInput::new(
+                "worker".to_string(),
+                "directory::__on_worker_added".to_string(),
+                json!({
                     "operations": ["add"],
                     "stages": ["done"]
                 }),
-                metadata: None,
-            });
+            ));
             match result {
                 Ok(_) => {
                     tracing::info!("subscribed to worker trigger for auto-download");
@@ -405,14 +430,13 @@ async fn reconcile_one(
 async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         match result {
             Ok(val) => {

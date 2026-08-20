@@ -23,7 +23,7 @@ export function LockedBadge() {
     <Tooltip>
       <TooltipTrigger asChild>
         <span className="inline-flex items-center gap-1 text-warn cursor-help text-[10px] uppercase tracking-[0.06em]">
-          <TriangleAlert aria-hidden className="w-3 h-3" />
+          <TriangleAlert aria-hidden className="size-4" />
           locked
         </span>
       </TooltipTrigger>

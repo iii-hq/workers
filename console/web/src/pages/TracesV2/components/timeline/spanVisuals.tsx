@@ -36,13 +36,13 @@ export function iconColorFor(barColor: string): string {
   return LIGHT_BAR_COLORS.has(barColor) ? 'var(--color-ink)' : 'var(--color-bg)'
 }
 
-/** Ring stack for bars: selection (accent) beats hover (ink). */
+/** Ring stack for bars: selection uses neutral ink and beats hover. */
 export function ringFor(
   selected: boolean,
   hovered: boolean,
 ): string | undefined {
-  if (selected) return '0 0 0 1px var(--color-accent)'
-  if (hovered) return '0 0 0 1px var(--color-ink)'
+  if (selected) return '0 0 0 2px var(--color-ink-faint)'
+  if (hovered) return '0 0 0 1px var(--color-ink-faint)'
   return undefined
 }
 

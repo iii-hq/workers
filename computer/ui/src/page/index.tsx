@@ -9,7 +9,7 @@
  *
  * Layout adapts to the width the page HAS (a ResizeObserver on its own body
  * row, not a viewport media query — the console can host it in panes of any
- * size). Wide: the rail (start form + session list) is a fixed navigation
+ * size). Wide: the rail (start form + session list) is a collapsible navigation
  * column beside the desktop workspace. Under NARROW_BELOW px it becomes a
  * drill-in flow: the session list fills the width, and opening a session
  * swaps it for the full-width viewport with a ← back button. The screencast
@@ -22,6 +22,7 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -52,7 +53,9 @@ const NARROW_BELOW = 720
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none) are ignored so a hidden page keeps its last
  * real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -206,8 +209,8 @@ export function ComputerPage({
     <PageShell className="cp-ui-shell">
       <PageHeader
         icon={<MonitorIcon />}
-        title="computer"
-        description="live desktops you can watch and drive"
+        title="Computer"
+        description="Live desktops you can watch and drive"
         actions={<LivePill live={live} />}
         onClose={onRequestClose}
       />
@@ -233,7 +236,24 @@ export function ComputerPage({
         ref={rootRef}
       >
         {railVisible ? (
-          <aside className="cp-ui-rail" aria-label="session list">
+          <PageSidebar
+            label="sessions"
+            side={panelSide}
+            collapsible
+            storageKey="computer:sessions"
+            defaultWidth={280}
+            narrow={narrow}
+            className="cp-ui-rail"
+            header={
+              <div className="cp-ui-col-head">
+                <span className="label">sessions</span>
+                <span className="spacer" />
+                {loading && sessions.length === 0 ? null : (
+                  <span className="count">{sessions.length}</span>
+                )}
+              </div>
+            }
+          >
             <div className="cp-ui-rail-top">
               <div className="cp-ui-rail-caption">start a session</div>
               <StartSessionForm
@@ -242,13 +262,6 @@ export function ComputerPage({
                 onStart={(input) => void handleStart(input)}
               />
             </div>
-            <header className="cp-ui-col-head">
-              <span className="label">sessions</span>
-              <span className="spacer" />
-              {loading && sessions.length === 0 ? null : (
-                <span className="count">{sessions.length}</span>
-              )}
-            </header>
             <div className="cp-ui-rail-scroll">
               <SessionRail
                 sessions={sessions}
@@ -259,7 +272,7 @@ export function ComputerPage({
                 onStop={(id) => void handleStop(id)}
               />
             </div>
-          </aside>
+          </PageSidebar>
         ) : null}
 
         {stageVisible ? (
@@ -322,7 +335,9 @@ export function ComputerPage({
                     click to focus — clicks, scroll, typing and shortcuts
                     forward as act
                   </span>
-                  <span className="fact hint">shift+esc leaves the surface</span>
+                  <span className="fact hint">
+                    shift+esc leaves the surface
+                  </span>
                 </footer>
               </>
             ) : (
@@ -330,8 +345,8 @@ export function ComputerPage({
                 <MonitorIcon className="cp-ui-hero-icon" />
                 <h2 className="cp-ui-hero-title">no desktop yet</h2>
                 <p className="cp-ui-hero-body">
-                  start a session to drive this machine, a sandboxed desktop,
-                  or a remote one.
+                  start a session to drive this machine, a sandboxed desktop, or
+                  a remote one.
                 </p>
               </div>
             )}

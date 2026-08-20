@@ -1,0 +1,26 @@
+{
+  "function": "browser::find",
+  "case": "duplicate_and_boolean_attributes",
+  "request": {
+    "html": "<input z=1 disabled a='' z=2 checked=checked>",
+    "tag": "input"
+  },
+  "ok": {
+    "count": 1,
+    "items": [
+      {
+        "tag": "input",
+        "text": "",
+        "html": "<input z=\"1\" disabled a=\"\" checked>",
+        "attrs": {
+          "z": "1",
+          "disabled": "disabled",
+          "a": "",
+          "checked": "checked"
+        },
+        "css": "body > input",
+        "xpath": "//body/input"
+      }
+    ]
+  }
+}

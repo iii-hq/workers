@@ -220,11 +220,29 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # browser is the one worker whose --all-features build needs external
+      # pinned artifacts: `scrapling-compat` links a certified
+      # curl-impersonate static library and its tests hard-require the frozen
+      # Chrome 148. That exact gate (fmt + clippy + test, --all-features, on
+      # both Tier-1 targets, artifacts fetched and verified) runs in
+      # browser-scrapling-e2e.yml's compat-certification job on every
+      # browser/** PR, so the generic gate covers browser's default feature
+      # set instead of duplicating the artifact plumbing here.
       - name: Run clippy
+        if: matrix.worker != 'browser'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      - name: Run clippy (default features)
+        if: matrix.worker == 'browser'
+        run: cargo clippy --locked --all-targets -- -D warnings
+
       - name: Run tests
+        if: matrix.worker != 'browser'
         run: cargo test --locked --all-features
+
+      - name: Run tests (default features)
+        if: matrix.worker == 'browser'
+        run: cargo test --locked
 
   # ──────────────────────────────────────────────────────────────
   # Shared Rust crates (crates/*): lint + test. Workers link these by
@@ -315,12 +333,12 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.22.1'
+          VERSION: '0.23.0-rc.2'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh
+          sh /tmp/install-iii.sh --rc
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
@@ -394,12 +412,12 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.21.8'
+          VERSION: '0.23.0-rc.2'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh
+          sh /tmp/install-iii.sh --rc
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
@@ -570,14 +588,13 @@ jobs:
         env:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
-          # with the workers' iii-sdk protocol line. 0.21.8 includes
-          # recoverable triggers required by workers that bind before providers.
-          VERSION: '0.21.8'
+          # with the workers' iii-sdk protocol line.
+          VERSION: '0.23.0-rc.2'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh
+          sh /tmp/install-iii.sh --rc
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"

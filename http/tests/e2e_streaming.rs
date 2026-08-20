@@ -45,12 +45,11 @@ async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_meth
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_http::TRIGGER_TYPE.to_string(),
         function_id,
-        config: json!({ "api_path": api_path, "http_method": http_method }),
-        metadata: None,
-    })
+        json!({ "api_path": api_path, "http_method": http_method }),
+    ))
     .expect("register http trigger for stream backend");
 }
 
@@ -89,12 +88,11 @@ async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_http::TRIGGER_TYPE.to_string(),
         function_id,
-        config: json!({ "api_path": api_path, "http_method": http_method }),
-        metadata: None,
-    })
+        json!({ "api_path": api_path, "http_method": http_method }),
+    ))
     .expect("register http trigger for late stream backend");
 }
 

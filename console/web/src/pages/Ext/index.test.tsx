@@ -9,7 +9,7 @@ describe('ExtPage missing-worker state', () => {
     )
 
     expect(markup).toContain('aria-label="close panel"')
-    expect(markup).toContain('waiting for worker')
-    expect(markup).toContain('extension page not loaded')
+    expect(markup).toContain('Waiting for worker')
+    expect(markup).toContain('Extension page not loaded')
   })
 })

@@ -127,6 +127,7 @@ impl QueueAdapter for MemoryAdapter {
         backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         priority: Option<u8>,
     ) -> anyhow::Result<()> {
         self.inner
@@ -139,6 +140,7 @@ impl QueueAdapter for MemoryAdapter {
                 backoff_ms,
                 traceparent,
                 baggage,
+                namespace,
                 priority,
             )
             .await

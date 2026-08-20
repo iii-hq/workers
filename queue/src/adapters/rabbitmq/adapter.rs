@@ -882,6 +882,7 @@ impl QueueAdapter for RabbitMQAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         priority: Option<u8>,
     ) -> anyhow::Result<()> {
         let names = FnQueueNames::new(queue_name);
@@ -905,6 +906,12 @@ impl QueueAdapter for RabbitMQAdapter {
             headers.insert(
                 "baggage".into(),
                 lapin::types::AMQPValue::LongString(bg.as_str().into()),
+            );
+        }
+        if let Some(namespace) = &namespace {
+            headers.insert(
+                "namespace".into(),
+                lapin::types::AMQPValue::LongString(namespace.as_str().into()),
             );
         }
 
@@ -1058,6 +1065,13 @@ impl QueueAdapter for RabbitMQAdapter {
                                     _ => None,
                                 });
 
+                        let namespace = headers.and_then(|h| h.inner().get("namespace")).and_then(
+                            |v| match v {
+                                lapin::types::AMQPValue::LongString(s) => Some(s.to_string()),
+                                _ => None,
+                            },
+                        );
+
                         let attempt = headers
                             .and_then(|h| h.inner().get("x-attempt"))
                             .and_then(|v| match v {
@@ -1092,6 +1106,7 @@ impl QueueAdapter for RabbitMQAdapter {
                             message_id,
                             traceparent,
                             baggage,
+                            namespace,
                         };
 
                         if tx.send(msg).await.is_err() {

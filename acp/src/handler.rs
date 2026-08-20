@@ -699,12 +699,11 @@ fn register_event_subscriber(
         .description("ACP agent::events → stdout fan-in"),
     );
 
-    let trigger = match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "stream".into(),
-        function_id: fn_id,
-        config: json!({ "stream_name": AGENT_EVENTS_STREAM }),
-        metadata: None,
-    }) {
+    let trigger = match iii.register_trigger(RegisterTriggerInput::new(
+        "stream",
+        fn_id,
+        json!({ "stream_name": AGENT_EVENTS_STREAM }),
+    )) {
         Ok(t) => Some(t),
         Err(e) => {
             tracing::error!(error = %e, "failed to register acp event stream subscriber");

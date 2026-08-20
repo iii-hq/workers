@@ -41,12 +41,11 @@ async fn cron_trigger_fires_bound_function_with_parity_payload() {
     }
 
     let trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "cron".to_string(),
-            function_id: "e2e::cron-backend".to_string(),
-            config: serde_json::json!({"expression": "*/1 * * * * *"}),
-            metadata: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "cron".to_string(),
+            "e2e::cron-backend".to_string(),
+            serde_json::json!({"expression": "*/1 * * * * *"}),
+        ))
         .expect("trigger registration");
 
     common::wait_for_fires(&fires, 1).await;

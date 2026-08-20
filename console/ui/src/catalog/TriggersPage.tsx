@@ -289,10 +289,10 @@ export function TriggersPage({
       header={
         <PageHeader
           icon={<BoltIcon />}
-          title="triggers"
+          title="Triggers"
           description={
             <span className="console-catalog-header-desc">
-              trigger types and registered bindings
+              Trigger types and registered bindings
             </span>
           }
           onClose={onRequestClose}
@@ -563,23 +563,23 @@ function TypeDocument({
             onRetry={detail.reload}
           />
         ) : detail.data === null ? (
-          <Note>loading detail…</Note>
+          <Note>Loading detail…</Note>
         ) : (
           <Tabs defaultValue="config" className="console-catalog-tabs">
             <TabsList>
-              <TabsTrigger value="config">configuration</TabsTrigger>
-              <TabsTrigger value="payload">event payload</TabsTrigger>
+              <TabsTrigger value="config">Configuration</TabsTrigger>
+              <TabsTrigger value="payload">Event Payload</TabsTrigger>
             </TabsList>
             <TabsContent value="config">
               <SchemaTable
                 schema={detail.data.configuration_schema}
-                empty="this type takes no config — bindings register with an empty object."
+                empty="This type takes no configuration — bindings register with an empty object."
               />
             </TabsContent>
             <TabsContent value="payload">
               <SchemaTable
                 schema={detail.data.request_schema}
-                empty="this type publishes no payload schema."
+                empty="This type publishes no payload schema."
               />
             </TabsContent>
           </Tabs>
@@ -716,14 +716,14 @@ function BindingDocument({
             <TabsList>
               <TabsTrigger value="fire">
                 {spec.family === 'http'
-                  ? 'send request'
+                  ? 'Send Request'
                   : spec.family === 'queue'
-                    ? 'publish'
+                    ? 'Publish'
                     : spec.family === 'cron'
-                      ? 'run now'
-                      : 'trigger function'}
+                      ? 'Run Now'
+                      : 'Trigger Function'}
               </TabsTrigger>
-              <TabsTrigger value="config">config</TabsTrigger>
+              <TabsTrigger value="config">Configuration</TabsTrigger>
             </TabsList>
 
             <TabsContent value="fire">

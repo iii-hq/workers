@@ -113,6 +113,40 @@ pub struct SkillsConfig {
     /// folder.
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
+
+    /// Bind the `directory::pre-generate` hook so the conditional search
+    /// hint can be injected into agent generations. On by default; turning
+    /// it off unbinds the hook entirely (hot, no restart) — the model then
+    /// only finds `directory::search_functions` through normal discovery.
+    #[serde(default = "default_inject_hint")]
+    pub inject_hint: bool,
+
+    /// Only inject the search hint when the session's surface spans at
+    /// least this many distinct non-engine workers. Narrower surfaces
+    /// resolve faster through normal discovery than through a standing
+    /// hint; `0` hints on every surface.
+    #[serde(default = "default_hint_min_workers")]
+    pub hint_min_workers: usize,
+
+    /// Also search the public worker registry (verified authors only) on
+    /// every `directory::search_functions` call and return matching
+    /// NOT-installed workers as an `installable` section alongside the
+    /// installed results. Fail-open: a registry error just omits the
+    /// section.
+    #[serde(default = "default_registry_search")]
+    pub registry_search: bool,
+}
+
+fn default_inject_hint() -> bool {
+    true
+}
+
+fn default_hint_min_workers() -> usize {
+    2
+}
+
+fn default_registry_search() -> bool {
+    true
 }
 
 impl Default for SkillsConfig {
@@ -125,6 +159,9 @@ impl Default for SkillsConfig {
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),
             auto_download: default_auto_download(),
+            inject_hint: default_inject_hint(),
+            hint_min_workers: default_hint_min_workers(),
+            registry_search: default_registry_search(),
         }
     }
 }

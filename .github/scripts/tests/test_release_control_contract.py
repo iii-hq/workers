@@ -54,6 +54,58 @@ def test_strict_dispatch_rejects_user_and_rerun():
         assert result.returncode == 2
 
 
+def test_release_dispatch_validates_frozen_identity_inputs():
+    valid = run(
+        "validate-dispatch",
+        "--operation-id",
+        OPERATION_ID,
+        "--step-id",
+        STEP_ID,
+        "--actor",
+        "iii-release-control[bot]",
+        "--triggering-actor",
+        "iii-release-control[bot]",
+        "--expected-bot",
+        "iii-release-control[bot]",
+        "--run-attempt",
+        "1",
+        "--mutating",
+        "--plan-hash",
+        "b" * 64,
+        "--dispatch-nonce",
+        "66666666-6666-4666-8666-666666666666",
+        "--candidate-version",
+        "1.2.3-rc.1",
+        "--stable-version",
+        "1.2.3",
+        "--source-sha",
+        "a" * 40,
+        "--prepared-sha",
+        "c" * 40,
+    )
+    assert valid.returncode == 0, valid.stderr
+
+    invalid = run(
+        "validate-dispatch",
+        "--operation-id",
+        OPERATION_ID,
+        "--step-id",
+        STEP_ID,
+        "--actor",
+        "iii-release-control[bot]",
+        "--triggering-actor",
+        "iii-release-control[bot]",
+        "--expected-bot",
+        "iii-release-control[bot]",
+        "--run-attempt",
+        "1",
+        "--mutating",
+        "--plan-hash",
+        "not-a-plan",
+    )
+    assert invalid.returncode == 2
+
+
 def test_result_contains_only_factual_sections(tmp_path: pathlib.Path):
     output = tmp_path / "execution-result.json"
     result = run(
@@ -84,6 +136,26 @@ def test_result_contains_only_factual_sections(tmp_path: pathlib.Path):
         '[{"surface":"registry","status":"changed"}]',
         "--outputs",
         '{"tag":"eval/v1.2.3"}',
+        "--release-intent-id",
+        "33333333-3333-4333-8333-333333333333",
+        "--candidate-id",
+        "44444444-4444-4444-8444-444444444444",
+        "--attempt-id",
+        "55555555-5555-4555-8555-555555555555",
+        "--plan-hash",
+        "b" * 64,
+        "--dispatch-nonce",
+        "nonce-1",
+        "--candidate-version",
+        "1.2.3-rc.1",
+        "--stable-version",
+        "1.2.3",
+        "--source-sha",
+        "a" * 40,
+        "--prepared-sha",
+        "c" * 40,
+        "--digests-json",
+        '[{"name":"worker.tar.gz","sha256":"d"}]',
         "--output",
         str(output),
     )
@@ -93,3 +165,5 @@ def test_result_contains_only_factual_sections(tmp_path: pathlib.Path):
     assert payload["run"]["attempt"] == 1
     assert "status" not in payload
     assert "promotable" not in payload
+    assert payload["release"]["candidate_id"] == "44444444-4444-4444-8444-444444444444"
+    assert payload["release"]["digests"] == [{"name": "worker.tar.gz", "sha256": "d"}]

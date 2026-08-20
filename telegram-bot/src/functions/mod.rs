@@ -108,12 +108,11 @@ pub fn bind_approval_triggers(iii: &Arc<IIIClient>) {
 pub fn bind_http_triggers(iii: &Arc<IIIClient>) {
     let http = [(SET_WEBHOOK_ID, "telegram-bot/set-webhook", "POST")];
     for (function_id, api_path, http_method) in http {
-        match iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: function_id.to_string(),
-            config: json!({ "api_path": api_path, "http_method": http_method }),
-            metadata: None,
-        }) {
+        match iii.register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            function_id.to_string(),
+            json!({ "api_path": api_path, "http_method": http_method }),
+        )) {
             Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
             Err(e) => tracing::warn!(error = %e, function_id, "failed to register http trigger"),
         }
@@ -125,12 +124,11 @@ pub fn bind_http_triggers(iii: &Arc<IIIClient>) {
 /// [`crate::config::WEBHOOK_API_PATH`] — the same constant used to derive the
 /// public URL handed to Telegram, so they cannot drift.
 pub fn register_webhook_trigger(iii: &IIIClient) -> Result<Trigger, Error> {
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: WEBHOOK_ID.to_string(),
-        config: json!({ "api_path": crate::config::WEBHOOK_API_PATH, "http_method": "POST" }),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        WEBHOOK_ID.to_string(),
+        json!({ "api_path": crate::config::WEBHOOK_API_PATH, "http_method": "POST" }),
+    ))
 }
 
 fn bind_best_effort(
@@ -139,12 +137,11 @@ fn bind_best_effort(
     function_id: &str,
     config: serde_json::Value,
 ) {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    match iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
         Err(e) => tracing::warn!(
             trigger_type,

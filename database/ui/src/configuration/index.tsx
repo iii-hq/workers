@@ -27,7 +27,8 @@ function asString(v: JsonValue | undefined): string {
 type Driver = 'postgres' | 'mysql' | 'sqlite' | 'unknown'
 
 function driverOf(url: string): Driver {
-  if (url.startsWith('postgres://') || url.startsWith('postgresql://')) return 'postgres'
+  if (url.startsWith('postgres://') || url.startsWith('postgresql://'))
+    return 'postgres'
   if (url.startsWith('mysql://')) return 'mysql'
   if (url.startsWith('sqlite:')) return 'sqlite'
   return 'unknown'
@@ -35,19 +36,30 @@ function driverOf(url: string): Driver {
 
 const CAPTURE_HINTS: Record<Driver, string> = {
   postgres:
-    'native: any client’s committed writes fire database::row-changed via triggers + LISTEN/NOTIFY. The role needs DDL rights on watched tables; bindings must name a table.',
+    'Native: any client’s committed writes fire database::row-changed via triggers + LISTEN/NOTIFY. The role needs DDL rights on watched tables; bindings must name a table.',
   sqlite:
-    'native: triggers + changelog table + filesystem watch hear every process writing the file. Bindings must name a table.',
+    'Native: triggers + changelog table + filesystem watch hear every process writing the file. Bindings must name a table.',
   mysql:
-    'native: streams the binlog as a replica — nothing installed in the schema, but the user needs GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*',
-  unknown: 'set a url first — capture support depends on the driver.',
+    'Native: streams the binlog as a replica — nothing installed in the schema, but the user needs GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*',
+  unknown: 'Set a URL first — capture support depends on the driver.',
 }
 
 const POOL_FIELDS = [
-  { key: 'max', label: 'max connections', placeholder: '10' },
-  { key: 'idle_timeout_ms', label: 'idle timeout (ms)', placeholder: '30000' },
-  { key: 'acquire_timeout_ms', label: 'acquire timeout (ms)', placeholder: '5000' },
+  { key: 'max', label: 'Max connections', placeholder: '10' },
+  { key: 'idle_timeout_ms', label: 'Idle timeout (ms)', placeholder: '30000' },
+  {
+    key: 'acquire_timeout_ms',
+    label: 'Acquire timeout (ms)',
+    placeholder: '5000',
+  },
 ] as const
+
+const DRIVER_LABELS: Readonly<Record<Driver, string>> = {
+  postgres: 'PostgreSQL',
+  mysql: 'MySQL',
+  sqlite: 'SQLite',
+  unknown: 'Unknown',
+}
 
 /** Wire shape of `database::testConnection`. */
 interface TestConnectionResp {
@@ -58,7 +70,9 @@ interface TestConnectionResp {
   message?: string
 }
 
-type TestResult = { status: 'testing' } | { status: 'done'; ok: boolean; text: string }
+type TestResult =
+  | { status: 'testing' }
+  | { status: 'done'; ok: boolean; text: string }
 
 export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
   const value = asObject(props.value)
@@ -95,7 +109,8 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
 
   const runTest = async (name: string) => {
     const db = asObject(databases[name])
-    const token = (testTokens.current[name] = (testTokens.current[name] ?? 0) + 1)
+    const token = (testTokens.current[name] =
+      (testTokens.current[name] ?? 0) + 1)
     setTestResults((r) => ({ ...r, [name]: { status: 'testing' } }))
     let result: TestResult
     try {
@@ -108,8 +123,8 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
         status: 'done',
         ok: resp.ok,
         text: resp.ok
-          ? `connected · ${resp.server_version ?? resp.driver} · ${resp.latency_ms}ms`
-          : resp.message ?? 'connection failed',
+          ? `Connected · ${resp.server_version ?? resp.driver} · ${resp.latency_ms}ms`
+          : (resp.message ?? 'Connection failed'),
       }
     } catch (e) {
       result = { status: 'done', ok: false, text: errText(e) }
@@ -139,7 +154,8 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
       delete next[from]
       return next
     })
-    if (trimmed === '' || trimmed === from || databases[trimmed] !== undefined) return
+    if (trimmed === '' || trimmed === from || databases[trimmed] !== undefined)
+      return
     clearTest(from)
     // Rebuild in place so the card doesn't jump to the end of the list.
     const next: JsonObject = {}
@@ -167,10 +183,15 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
 
   return (
     <div className="db-cfg" ref={rootRef}>
-      <span className="db-cfg-caption">custom form · shipped by the database worker</span>
+      <span className="db-cfg-caption">
+        Custom form · Shipped by the database worker
+      </span>
 
       {names.length === 0 ? (
-        <div className="db-cfg-empty">No databases configured — the worker refuses to start without at least one.</div>
+        <div className="db-cfg-empty">
+          No databases configured — the worker refuses to start without at least
+          one.
+        </div>
       ) : null}
 
       {names.map((name) => (
@@ -190,7 +211,7 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
       ))}
 
       <button type="button" className="db-cfg-add" onClick={addDb}>
-        + add database
+        + Add database
       </button>
 
       {props.errors && props.errors.size > 0 ? (
@@ -252,18 +273,26 @@ function DatabaseCard(card: {
           onChange={(e) => card.onPendingName(e.target.value)}
           onBlur={(e) => card.onRename(e.target.value)}
         />
-        <span className={`db-cfg-driver db-cfg-driver-${driver}`}>{driver}</span>
-        {capture === 'native' ? <span className="db-cfg-capture-pill">native capture</span> : null}
+        <span className={`db-cfg-driver db-cfg-driver-${driver}`}>
+          {DRIVER_LABELS[driver]}
+        </span>
+        {capture === 'native' ? (
+          <span className="db-cfg-capture-pill">Native capture</span>
+        ) : null}
         <span className="db-cfg-spacer" />
         {card.removable ? (
-          <button type="button" className="db-cfg-remove" onClick={card.onRemove}>
-            remove
+          <button
+            type="button"
+            className="db-cfg-remove"
+            onClick={card.onRemove}
+          >
+            Remove
           </button>
         ) : null}
       </header>
 
       <div className="db-cfg-field">
-        <label htmlFor={`db-cfg-url-${name}`}>connection url</label>
+        <label htmlFor={`db-cfg-url-${name}`}>Connection URL</label>
         <div className="db-cfg-url-row">
           <input
             id={`db-cfg-url-${name}`}
@@ -280,18 +309,20 @@ function DatabaseCard(card: {
             disabled={card.test?.status === 'testing' || url.trim() === ''}
             onClick={card.onTest}
           >
-            {card.test?.status === 'testing' ? 'testing…' : 'test connection'}
+            {card.test?.status === 'testing' ? 'Testing…' : 'Test connection'}
           </button>
         </div>
         {card.test?.status === 'done' ? (
-          <span className={card.test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'}>
+          <span
+            className={card.test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'}
+          >
             {card.test.text}
           </span>
         ) : null}
       </div>
 
       <div className="db-cfg-field">
-        <label htmlFor={`db-cfg-capture-${name}`}>row-change capture</label>
+        <label htmlFor={`db-cfg-capture-${name}`}>Row-change capture</label>
         <select
           id={`db-cfg-capture-${name}`}
           className="db-cfg-select"
@@ -303,13 +334,17 @@ function DatabaseCard(card: {
             })
           }
         >
-          <option value="statements">statements — only writes made through this worker</option>
-          <option value="native">native — writes from any client, including other processes</option>
+          <option value="statements">
+            Statements — only writes made through this worker
+          </option>
+          <option value="native">
+            Native — writes from any client, including other processes
+          </option>
         </select>
         {capture === 'native' && isMemorySqlite ? (
           <span className="db-cfg-warn">
-            a `:memory:` database is per-connection and cannot be captured — the worker rejects
-            this configuration
+            A `:memory:` database is per-connection and cannot be captured — the
+            worker rejects this configuration
           </span>
         ) : (
           <span className="db-cfg-hint">{CAPTURE_HINTS[driver]}</span>
@@ -319,7 +354,7 @@ function DatabaseCard(card: {
       {driver === 'postgres' || driver === 'mysql' ? (
         <div className="db-cfg-row">
           <div className="db-cfg-field">
-            <label htmlFor={`db-cfg-tls-${name}`}>tls</label>
+            <label htmlFor={`db-cfg-tls-${name}`}>TLS</label>
             <select
               id={`db-cfg-tls-${name}`}
               className="db-cfg-select"
@@ -331,13 +366,21 @@ function DatabaseCard(card: {
                 })
               }
             >
-              <option value="disable">disable — plaintext (local dev only)</option>
-              <option value="require">require — TLS, chain validated (default)</option>
-              <option value="verify-full">verify-full — also verify hostname</option>
+              <option value="disable">
+                Disable — plaintext (local dev only)
+              </option>
+              <option value="require">
+                Require — TLS, chain validated (default)
+              </option>
+              <option value="verify-full">
+                Verify full — also verify hostname
+              </option>
             </select>
           </div>
           <div className="db-cfg-field db-cfg-grow">
-            <label htmlFor={`db-cfg-ca-${name}`}>extra CA bundle (PEM path, optional)</label>
+            <label htmlFor={`db-cfg-ca-${name}`}>
+              Extra CA bundle (PEM path, optional)
+            </label>
             <input
               id={`db-cfg-ca-${name}`}
               className="db-cfg-input"
@@ -356,7 +399,7 @@ function DatabaseCard(card: {
       ) : null}
 
       <details className="db-cfg-pool">
-        <summary>connection pool</summary>
+        <summary>Connection pool</summary>
         <div className="db-cfg-row">
           {POOL_FIELDS.map((f) => (
             <div className="db-cfg-field" key={f.key}>
@@ -366,12 +409,15 @@ function DatabaseCard(card: {
                 className="db-cfg-input"
                 type="number"
                 min={1}
-                value={typeof pool[f.key] === 'number' ? (pool[f.key] as number) : ''}
+                value={
+                  typeof pool[f.key] === 'number' ? (pool[f.key] as number) : ''
+                }
                 placeholder={f.placeholder}
                 onChange={(e) =>
                   setBlock('pool', (block) => {
                     if (e.target.value.trim() === '') delete block[f.key]
-                    else if (!Number.isNaN(Number(e.target.value))) block[f.key] = Number(e.target.value)
+                    else if (!Number.isNaN(Number(e.target.value)))
+                      block[f.key] = Number(e.target.value)
                   })
                 }
               />

@@ -44,6 +44,8 @@ import {
   type Host,
   Input,
   MarkdownPreview,
+  type PageRenderProps,
+  PageSidebar,
   StatusDot,
 } from '@iii-dev/console-ui'
 import { DEFAULT_THEMES, parsePatchFiles } from '@pierre/diffs'
@@ -90,13 +92,6 @@ const FLASH_MS = 12_000
 const SIDE_MIN = 180
 const SIDE_MAX = 480
 const SIDE_DEFAULT = 200
-/** Remembered per browser: a pane width is a preference of this surface, not
- *  a fact about the workspace, so it does not belong in the shared record. */
-const SIDE_WIDTH_KEY = 'iii.editor.sideWidth'
-
-export function clampSideWidth(width: number): number {
-  return Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(width)))
-}
 
 /** Single-letter change marks, the way a status column reads them. */
 const KIND_MARK: Record<string, string> = {
@@ -126,7 +121,8 @@ const COALESCE_MS = 100
 
 /** A cancellable pause, so a sustained stream of events gets a window between
  *  passes instead of back-to-back round trips. */
-const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+const settle = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 /**
  * pierre renders into its own shadow root and injects its stylesheet there
@@ -146,7 +142,11 @@ const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve
  * non-issue; a 10k-line file is where it would start to show.
  */
 const READ_OPTIONS = { theme: DEFAULT_THEMES, overflow: 'scroll' } as const
-const DIFF_OPTIONS = { theme: DEFAULT_THEMES, diffStyle: 'unified', overflow: 'scroll' } as const
+const DIFF_OPTIONS = {
+  theme: DEFAULT_THEMES,
+  diffStyle: 'unified',
+  overflow: 'scroll',
+} as const
 
 /** Editor contents per open path. The worker owns *which* paths are open; the
  *  text being typed is the one thing genuinely local until it is saved. */
@@ -175,7 +175,10 @@ interface Delta {
   patch: string
 }
 
-export function EditorPage({ host }: { host: Host }) {
+export function EditorPage({
+  host,
+  panelSide = 'left',
+}: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createApi(host), [host])
   // Follows the console's own light/dark toggle, not the OS preference.
   const themeType = host.useTheme()
@@ -183,12 +186,6 @@ export function EditorPage({ host }: { host: Host }) {
   const [root, setRoot] = useState('')
   const [rootInput, setRootInput] = useState('')
   const [rootOpen, setRootOpen] = useState(false)
-  const [sideOpen, setSideOpen] = useState(true)
-  const [sideWidth, setSideWidth] = useState(() => {
-    const stored = Number(globalThis.localStorage?.getItem(SIDE_WIDTH_KEY))
-    return Number.isFinite(stored) && stored > 0 ? clampSideWidth(stored) : SIDE_DEFAULT
-  })
-  const [resizing, setResizing] = useState(false)
   const [buffers, setBuffers] = useState<Buffer[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null)
@@ -196,7 +193,9 @@ export function EditorPage({ host }: { host: Host }) {
   const [activePath, setActivePath] = useState<string | null>(null)
   // Reading is the default: opening a file should show you the file, not put
   // a cursor in it.
-  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git' | 'change'>('read')
+  const [view, setView] = useState<
+    'read' | 'edit' | 'preview' | 'diff' | 'git' | 'change'
+  >('read')
   const [mode, setMode] = useState<'files' | 'search' | 'changes'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
@@ -221,7 +220,9 @@ export function EditorPage({ host }: { host: Host }) {
   /** The feed row being read as a diff. The patch travels on the event, so
    *  this renders without a round trip and keeps showing what that write did
    *  even after the file moves on. */
-  const [openChangeEntry, setOpenChangeEntry] = useState<ChangeEntry | null>(null)
+  const [openChangeEntry, setOpenChangeEntry] = useState<ChangeEntry | null>(
+    null,
+  )
 
   // Read inside a refresh without making it a dependency — rebuilding the
   // refresh callbacks on every keystroke would re-run the effects that bind
@@ -235,7 +236,9 @@ export function EditorPage({ host }: { host: Host }) {
   const dirty = activeDraft !== null && activeDraft.draft !== activeDraft.base
   // The worker classifies the language, so the extension check is only a
   // fallback for a file it did not recognise.
-  const markdown = activeBuffer?.language === 'markdown' || /\.(md|markdown|mdx)$/i.test(activePath ?? '')
+  const markdown =
+    activeBuffer?.language === 'markdown' ||
+    /\.(md|markdown|mdx)$/i.test(activePath ?? '')
 
   // Two of the tabs only exist for some files: `unsaved` while something is
   // unsaved, `preview` on markdown. Saving, undoing back to the original, or
@@ -252,12 +255,15 @@ export function EditorPage({ host }: { host: Host }) {
    *  moving underneath it without re-subscribing per render. */
   const rootRef = useRef('')
 
-  const applyWorkspace = useCallback((ws: { root: string; buffers: Buffer[]; expanded: string[] }) => {
-    rootRef.current = ws.root
-    setRoot(ws.root)
-    setBuffers(ws.buffers)
-    setExpanded(new Set(ws.expanded))
-  }, [])
+  const applyWorkspace = useCallback(
+    (ws: { root: string; buffers: Buffer[]; expanded: string[] }) => {
+      rootRef.current = ws.root
+      setRoot(ws.root)
+      setBuffers(ws.buffers)
+      setExpanded(new Set(ws.expanded))
+    },
+    [],
+  )
 
   const loadTree = useCallback(
     async (opts: { expand?: string[]; collapse?: string[] } = {}) => {
@@ -283,7 +289,8 @@ export function EditorPage({ host }: { host: Host }) {
         if (cancelled) return
         applyWorkspace(ws)
         setRootInput(ws.root)
-        if (ws.buffers.length > 0) setActivePath(ws.buffers[ws.buffers.length - 1].path)
+        if (ws.buffers.length > 0)
+          setActivePath(ws.buffers[ws.buffers.length - 1].path)
       })
       .catch((e) => {
         if (!cancelled) setError(errorText(e))
@@ -352,7 +359,9 @@ export function EditorPage({ host }: { host: Host }) {
     (path: string) => {
       // The worker owns expansion (it collapses descendants with the parent),
       // so the toggle is a call and the response is the truth.
-      void loadTree(expanded.has(path) ? { collapse: [path] } : { expand: [path] })
+      void loadTree(
+        expanded.has(path) ? { collapse: [path] } : { expand: [path] },
+      )
     },
     [expanded, loadTree],
   )
@@ -376,7 +385,8 @@ export function EditorPage({ host }: { host: Host }) {
         }
       }
       seenRef.current = nextSeen
-      if (Object.keys(fresh).length > 0) setFlashed((prev) => ({ ...prev, ...fresh }))
+      if (Object.keys(fresh).length > 0)
+        setFlashed((prev) => ({ ...prev, ...fresh }))
     } catch (e) {
       const message = errorText(e)
       setStatus(null)
@@ -485,7 +495,11 @@ export function EditorPage({ host }: { host: Host }) {
 
   /** Work accumulated since the last pass: paths whose file needs re-reading,
    *  and whether the git overlay is stale. */
-  const pendingRef = useRef<{ paths: Set<string>; git: boolean; tree: boolean }>({
+  const pendingRef = useRef<{
+    paths: Set<string>
+    git: boolean
+    tree: boolean
+  }>({
     paths: new Set(),
     git: false,
     tree: false,
@@ -625,7 +639,8 @@ export function EditorPage({ host }: { host: Host }) {
       // made in another editor before any of this was running.
       try {
         const recorded = await api.changes()
-        if (!cancelled) setChangeLog((prev) => fromRecords(prev, recorded.changes))
+        if (!cancelled)
+          setChangeLog((prev) => fromRecords(prev, recorded.changes))
       } catch {
         // Older worker without the log. The working tree still seeds it.
       }
@@ -698,7 +713,11 @@ export function EditorPage({ host }: { host: Host }) {
       setView('change')
       if (entry.patch.trim() === '') {
         const patch = await resolvePatch(entry)
-        setOpenChangeEntry((current) => (current && current.path === entry.path ? { ...current, patch } : current))
+        setOpenChangeEntry((current) =>
+          current && current.path === entry.path
+            ? { ...current, patch }
+            : current,
+        )
       }
     },
     [openPath, resolvePatch],
@@ -709,8 +728,12 @@ export function EditorPage({ host }: { host: Host }) {
     const id = setInterval(() => {
       const cutoff = Date.now() - FLASH_MS
       setFlashed((prev) => {
-        const next = Object.fromEntries(Object.entries(prev).filter(([, at]) => at > cutoff))
-        return Object.keys(next).length === Object.keys(prev).length ? prev : next
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([, at]) => at > cutoff),
+        )
+        return Object.keys(next).length === Object.keys(prev).length
+          ? prev
+          : next
       })
     }, 2_000)
     return () => clearInterval(id)
@@ -781,7 +804,12 @@ export function EditorPage({ host }: { host: Host }) {
     if (!activePath || !activeBuffer || !activeDraft) return
     setBusy(true)
     try {
-      const result = await api.save(activePath, activeDraft.draft, activeBuffer.mtime, activeBuffer.version)
+      const result = await api.save(
+        activePath,
+        activeDraft.draft,
+        activeBuffer.mtime,
+        activeBuffer.version,
+      )
       if (result.conflict) {
         setConflict(result)
       } else {
@@ -790,7 +818,12 @@ export function EditorPage({ host }: { host: Host }) {
           // `result.mtime` is what the file now has on disk. Recording it keeps
           // the `syncWorkspace` gate quiet about the buffer this save just
           // upserted into the shared workspace.
-          [activePath]: { ...activeDraft, base: activeDraft.draft, mtime: result.mtime, stale: false },
+          [activePath]: {
+            ...activeDraft,
+            base: activeDraft.draft,
+            mtime: result.mtime,
+            stale: false,
+          },
         }))
         applyWorkspace(await api.workspace())
         void refreshGit()
@@ -813,7 +846,9 @@ export function EditorPage({ host }: { host: Host }) {
           return next
         })
         setActivePath((current) =>
-          current === path ? (result.buffers[result.buffers.length - 1]?.path ?? null) : current,
+          current === path
+            ? (result.buffers[result.buffers.length - 1]?.path ?? null)
+            : current,
         )
       } catch (e) {
         setError(errorText(e))
@@ -859,51 +894,17 @@ export function EditorPage({ host }: { host: Host }) {
     return map
   }, [status])
 
-  const rows = useMemo(() => (treeRoot ? visibleRows(treeRoot, expanded) : []), [treeRoot, expanded])
+  const rows = useMemo(
+    () => (treeRoot ? visibleRows(treeRoot, expanded) : []),
+    [treeRoot, expanded],
+  )
 
   const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
-
-  /**
-   * Drag the sidebar edge.
-   *
-   * Pointer capture is the whole trick: without it a fast drag leaves the
-   * element and the resize stops following the cursor. Width comes from the
-   * pane's own left edge rather than a delta, so the handle stays under the
-   * pointer even if a frame is dropped.
-   */
-  const startResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    const pane = event.currentTarget.parentElement
-    if (!pane) return
-    const left = pane.getBoundingClientRect().left
-    event.currentTarget.setPointerCapture(event.pointerId)
-    event.preventDefault()
-    setResizing(true)
-
-    const onMove = (move: PointerEvent) => setSideWidth(clampSideWidth(move.clientX - left))
-    const onUp = () => {
-      setResizing(false)
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }, [])
-
-  // Persist after the drag settles rather than on every frame: a write per
-  // pointermove is a write per pixel.
-  useEffect(() => {
-    if (resizing) return
-    try {
-      globalThis.localStorage?.setItem(SIDE_WIDTH_KEY, String(sideWidth))
-    } catch {
-      // Storage can be denied; a forgotten width is not worth an error.
-    }
-  }, [resizing, sideWidth])
 
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
-    <div className="ed-root" data-resizing={resizing}>
+    <div className="ed-root">
       <header className="ed-head">
         <span className="ed-brand">editor</span>
         {rootOpen ? (
@@ -912,7 +913,7 @@ export function EditorPage({ host }: { host: Host }) {
               <Input
                 value={rootInput}
                 onChange={setRootInput}
-                placeholder="folder to open…"
+                placeholder="Folder to open…"
                 aria-label="Workspace folder"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void changeRoot()
@@ -920,73 +921,86 @@ export function EditorPage({ host }: { host: Host }) {
                 preserveCase
               />
             </span>
-            <Button onClick={() => void changeRoot()}>open</Button>
-            <button type="button" className="ed-icon" onClick={() => setRootOpen(false)}>
+            <Button onClick={() => void changeRoot()}>Open</Button>
+            <button
+              type="button"
+              className="ed-icon"
+              onClick={() => setRootOpen(false)}
+            >
               ×
             </button>
           </>
         ) : (
-          <>
-            <button
-              type="button"
-              className="ed-rootpath"
-              title={`${root} — click to change`}
-              onClick={() => setRootOpen(true)}
-              style={{ border: 0, background: 'transparent', cursor: 'pointer', textAlign: 'left' }}
-            >
-              {root || '…'}
-            </button>
-            <button
-              type="button"
-              className="ed-icon"
-              onClick={() => setSideOpen((v) => !v)}
-              aria-label={sideOpen ? 'Hide the sidebar' : 'Show the sidebar'}
-              title={sideOpen ? 'Hide the sidebar' : 'Show the sidebar'}
-            >
-              {sideOpen ? '⟨' : '⟩'}
-            </button>
-          </>
+          <button
+            type="button"
+            className="ed-rootpath"
+            title={`${root} — click to change`}
+            onClick={() => setRootOpen(true)}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            {root || '…'}
+          </button>
         )}
       </header>
 
-      <div className="ed-body">
-        {sideOpen && (
-          <aside className="ed-side" style={{ ['--ed-side-width' as string]: `${sideWidth}px` }}>
-            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-            <button
-              type="button"
-              className="ed-side-handle"
-              data-dragging={resizing}
-              aria-label="Resize the sidebar"
-              onPointerDown={startResize}
-              onKeyDown={(e) => {
-                // Keyboard resize: the handle is a real control, and a drag
-                // target that only responds to a pointer is not one.
-                if (e.key === 'ArrowLeft') setSideWidth((w) => clampSideWidth(w - 16))
-                if (e.key === 'ArrowRight') setSideWidth((w) => clampSideWidth(w + 16))
-              }}
-            />
-            <div className="ed-seg">
-              <button type="button" data-active={mode === 'files'} onClick={() => setMode('files')}>
+      <div className={`ed-body${panelSide === 'right' ? ' right' : ''}`}>
+        <PageSidebar
+          label={mode}
+          side={panelSide}
+          collapsible
+          resizable
+          storageKey="editor:files"
+          defaultWidth={SIDE_DEFAULT}
+          minWidth={SIDE_MIN}
+          maxWidth={SIDE_MAX}
+          className="ed-side"
+          header={
+            <div className="ed-seg ed-seg-header">
+              <button
+                type="button"
+                data-active={mode === 'files'}
+                onClick={() => setMode('files')}
+              >
                 files
               </button>
-              <button type="button" data-active={mode === 'search'} onClick={() => setMode('search')}>
+              <button
+                type="button"
+                data-active={mode === 'search'}
+                onClick={() => setMode('search')}
+              >
                 search
               </button>
-              <button type="button" data-active={mode === 'changes'} onClick={() => setMode('changes')}>
+              <button
+                type="button"
+                data-active={mode === 'changes'}
+                onClick={() => setMode('changes')}
+              >
                 changes
-                {changeLog.length > 0 && <span className="ed-count">{changeLog.length}</span>}
+                {changeLog.length > 0 && (
+                  <span className="ed-count">{changeLog.length}</span>
+                )}
               </button>
             </div>
-
+          }
+        >
+          <div className="ed-side-content">
             {/* The feed is not searched: it is short by construction, and a
                 box that filters two of three tabs is a box that lies. */}
             {mode !== 'changes' && (
               <Input
                 value={query}
                 onChange={setQuery}
-                placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
-                aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
+                placeholder={
+                  mode === 'files' ? 'find a file…' : 'search contents…'
+                }
+                aria-label={
+                  mode === 'files' ? 'Find a file' : 'Search file contents'
+                }
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && mode === 'search') void runSearch()
                 }}
@@ -998,7 +1012,8 @@ export function EditorPage({ host }: { host: Host }) {
               {mode === 'changes' ? (
                 changeLog.length === 0 ? (
                   <div className="ed-hint">
-                    nothing yet — file changes appear here as they happen, whoever makes them
+                    nothing yet — file changes appear here as they happen,
+                    whoever makes them
                   </div>
                 ) : (
                   <ul className="ed-list">
@@ -1007,22 +1022,30 @@ export function EditorPage({ host }: { host: Host }) {
                         {/* One turn's work reads as one thing: the header is
                             the summary, the rows under it are the detail. */}
                         <div className="ed-group">
-                          <span className="ed-change-by">{groupLabel(group)}</span>
+                          <span className="ed-change-by">
+                            {groupLabel(group)}
+                          </span>
                           {/* An agent can work in a folder other than the one
                               this page has open. Saying so is the difference
                               between "the tree is broken" and "that happened
                               somewhere else" — and it is why the file this row
                               names is not in the tree. */}
-                          {group.entries[0] && isOutsideWorkspace(group.entries[0]) && (
-                            <span className="ed-group-root" title={splitPath(group.entries[0].path).dir}>
-                              in {outsideFolder(group.entries[0])}
-                            </span>
-                          )}
+                          {group.entries[0] &&
+                            isOutsideWorkspace(group.entries[0]) && (
+                              <span
+                                className="ed-group-root"
+                                title={splitPath(group.entries[0].path).dir}
+                              >
+                                in {outsideFolder(group.entries[0])}
+                              </span>
+                            )}
                           {/* "1 file" says nothing a single row below does not
                               already say. The count earns its place only when
                               it summarises something. */}
                           {group.entries.length > 1 && (
-                            <span className="ed-group-files">{group.entries.length} files</span>
+                            <span className="ed-group-files">
+                              {group.entries.length} files
+                            </span>
                           )}
                           {(group.added > 0 || group.removed > 0) && (
                             <span>
@@ -1030,7 +1053,9 @@ export function EditorPage({ host }: { host: Host }) {
                               <span className="ed-del">-{group.removed}</span>
                             </span>
                           )}
-                          <span className="ed-change-age">{relativeAge(group.at, changeClock)}</span>
+                          <span className="ed-change-age">
+                            {relativeAge(group.at, changeClock)}
+                          </span>
                         </div>
                         <ul className="ed-list">
                           {group.entries.map((entry) => {
@@ -1040,13 +1065,16 @@ export function EditorPage({ host }: { host: Host }) {
                                 <button
                                   type="button"
                                   className="ed-row ed-change"
-                                  data-active={entry.path === openChangeEntry?.path}
+                                  data-active={
+                                    entry.path === openChangeEntry?.path
+                                  }
                                   data-fresh={flashed[entry.path] !== undefined}
                                   onClick={() => void openChange(entry)}
                                   title={[
                                     entry.path,
                                     `${entry.kind} via ${entry.cause || 'unknown'}`,
-                                    entry.sessionId && `session ${entry.sessionId}`,
+                                    entry.sessionId &&
+                                      `session ${entry.sessionId}`,
                                     entry.turnId && `turn ${entry.turnId}`,
                                   ]
                                     .filter(Boolean)
@@ -1056,20 +1084,37 @@ export function EditorPage({ host }: { host: Host }) {
                                       part that survives a narrow pane; the
                                       folder gives way first. */}
                                   <span className="ed-change-path">
-                                    {split.dir && <span className="ed-change-dir">{split.dir}</span>}
-                                    <span className="ed-change-name">{split.name}</span>
+                                    {split.dir && (
+                                      <span className="ed-change-dir">
+                                        {split.dir}
+                                      </span>
+                                    )}
+                                    <span className="ed-change-name">
+                                      {split.name}
+                                    </span>
                                   </span>
                                   <span className="ed-change-meta">
-                                    <span className="ed-change-kind" data-kind={entry.kind}>
+                                    <span
+                                      className="ed-change-kind"
+                                      data-kind={entry.kind}
+                                    >
                                       {KIND_MARK[entry.kind] ?? 'M'}
                                     </span>
                                     {(entry.added > 0 || entry.removed > 0) && (
                                       <>
-                                        <span className="ed-add">+{entry.added}</span>
-                                        <span className="ed-del">-{entry.removed}</span>
+                                        <span className="ed-add">
+                                          +{entry.added}
+                                        </span>
+                                        <span className="ed-del">
+                                          -{entry.removed}
+                                        </span>
                                       </>
                                     )}
-                                    {entry.count > 1 && <span className="ed-count">x{entry.count}</span>}
+                                    {entry.count > 1 && (
+                                      <span className="ed-count">
+                                        x{entry.count}
+                                      </span>
+                                    )}
                                   </span>
                                 </button>
                               </li>
@@ -1140,15 +1185,27 @@ export function EditorPage({ host }: { host: Host }) {
                           data-active={row.path === activePath}
                           data-fresh={flashed[row.path] !== undefined}
                           style={{ paddingLeft: `${6 + row.depth * 11}px` }}
-                          onClick={() => (dir ? toggleFolder(row.path) : void openPath(row.path))}
+                          onClick={() =>
+                            dir
+                              ? toggleFolder(row.path)
+                              : void openPath(row.path)
+                          }
                           title={row.path}
                         >
-                          <span className="ed-caret">{dir ? (expanded.has(row.path) ? '▾' : '▸') : ''}</span>
-                          <span className={`ed-name${dir ? ' ed-dir' : ''}`}>{row.name}</span>
+                          <span className="ed-caret">
+                            {dir ? (expanded.has(row.path) ? '▾' : '▸') : ''}
+                          </span>
+                          <span className={`ed-name${dir ? ' ed-dir' : ''}`}>
+                            {row.name}
+                          </span>
                           {entry && (
                             <span
                               className="ed-mark"
-                              data-s={entry.worktree !== 'unchanged' ? entry.worktree : entry.index}
+                              data-s={
+                                entry.worktree !== 'unchanged'
+                                  ? entry.worktree
+                                  : entry.index
+                              }
                             >
                               {statusMark(entry)}
                             </span>
@@ -1160,8 +1217,8 @@ export function EditorPage({ host }: { host: Host }) {
                 </ul>
               )}
             </div>
-          </aside>
-        )}
+          </div>
+        </PageSidebar>
 
         <section className="ed-main">
           {/* A change being read as a diff owns the pane: it can outlive the
@@ -1187,7 +1244,11 @@ export function EditorPage({ host }: { host: Host }) {
                 {buffers.map((buffer) => {
                   const local = drafts[buffer.path]
                   return (
-                    <div key={buffer.path} className="ed-tab" data-active={buffer.path === activePath}>
+                    <div
+                      key={buffer.path}
+                      className="ed-tab"
+                      data-active={buffer.path === activePath}
+                    >
                       <button
                         type="button"
                         className="ed-tab-name"
@@ -1196,7 +1257,9 @@ export function EditorPage({ host }: { host: Host }) {
                       >
                         {buffer.path.split('/').pop()}
                       </button>
-                      {local && local.draft !== local.base && <span className="ed-dot">•</span>}
+                      {local && local.draft !== local.base && (
+                        <span className="ed-dot">•</span>
+                      )}
                       <button
                         type="button"
                         className="ed-close"
@@ -1214,10 +1277,18 @@ export function EditorPage({ host }: { host: Host }) {
                 <>
                   <div className="ed-bar">
                     <div className="ed-seg">
-                      <button type="button" data-active={view === 'read'} onClick={() => setView('read')}>
+                      <button
+                        type="button"
+                        data-active={view === 'read'}
+                        onClick={() => setView('read')}
+                      >
                         read
                       </button>
-                      <button type="button" data-active={view === 'edit'} onClick={() => setView('edit')}>
+                      <button
+                        type="button"
+                        data-active={view === 'edit'}
+                        onClick={() => setView('edit')}
+                      >
                         edit
                       </button>
                       {/*
@@ -1229,7 +1300,11 @@ export function EditorPage({ host }: { host: Host }) {
                         in the bundle, since console-ui resolves at runtime.
                       */}
                       {markdown && (
-                        <button type="button" data-active={view === 'preview'} onClick={() => setView('preview')}>
+                        <button
+                          type="button"
+                          data-active={view === 'preview'}
+                          onClick={() => setView('preview')}
+                        >
                           preview
                         </button>
                       )}
@@ -1244,29 +1319,47 @@ export function EditorPage({ host }: { host: Host }) {
                         you are mid-edit.
                       */}
                       {dirty && (
-                        <button type="button" data-active={view === 'diff'} onClick={() => setView('diff')}>
+                        <button
+                          type="button"
+                          data-active={view === 'diff'}
+                          onClick={() => setView('diff')}
+                        >
                           unsaved
                         </button>
                       )}
-                      <button type="button" data-active={view === 'git'} onClick={() => setView('git')}>
+                      <button
+                        type="button"
+                        data-active={view === 'git'}
+                        onClick={() => setView('git')}
+                      >
                         head
                       </button>
                     </div>
                     <span className="ed-spacer" />
-                    {activeDraft.stale && <Badge variant="warn">disk moved</Badge>}
-                    <Button onClick={() => void save()} disabled={!dirty || busy}>
+                    {activeDraft.stale && (
+                      <Badge variant="warn">disk moved</Badge>
+                    )}
+                    <Button
+                      onClick={() => void save()}
+                      disabled={!dirty || busy}
+                    >
                       {busy ? 'saving…' : 'save'}
                     </Button>
                   </div>
 
                   {activeDraft.truncated && (
                     <div className="ed-warn">
-                      Larger than <code>max_file_bytes</code> — only the beginning was read, so saving is refused.
+                      Larger than <code>max_file_bytes</code> — only the
+                      beginning was read, so saving is refused.
                     </div>
                   )}
 
                   {view === 'read' ? (
-                    <FileView path={activePath} contents={activeDraft.draft} themeType={themeType} />
+                    <FileView
+                      path={activePath}
+                      contents={activeDraft.draft}
+                      themeType={themeType}
+                    />
                   ) : view === 'preview' ? (
                     // The draft, not the saved file, so the preview tracks what
                     // is being typed rather than what was last written.
@@ -1297,7 +1390,10 @@ export function EditorPage({ host }: { host: Host }) {
                       themeType={themeType}
                     />
                   ) : (
-                    <PatchView patch={delta?.patch ?? ''} themeType={themeType} />
+                    <PatchView
+                      patch={delta?.patch ?? ''}
+                      themeType={themeType}
+                    />
                   )}
 
                   <div className="ed-status">
@@ -1317,9 +1413,14 @@ export function EditorPage({ host }: { host: Host }) {
                           </span>
                         )
                       ))}
-                    <span className={dirty ? 'ed-unsaved' : undefined}>{dirty ? 'unsaved' : 'saved'}</span>
+                    <span className={dirty ? 'ed-unsaved' : undefined}>
+                      {dirty ? 'unsaved' : 'saved'}
+                    </span>
                     {lastChange && (
-                      <span className="ed-live" title={`${lastChange.cause} → ${lastChange.path}`}>
+                      <span
+                        className="ed-live"
+                        title={`${lastChange.cause} → ${lastChange.path}`}
+                      >
                         {lastChange.kind} {lastChange.path.split('/').pop()}
                       </span>
                     )}
@@ -1334,7 +1435,10 @@ export function EditorPage({ host }: { host: Host }) {
       {status !== null && (
         <footer className="ed-git">
           <span className="ed-branch">
-            <StatusDot tone={status.clean ? 'ink' : 'accent'} pulse={!status.clean} />
+            <StatusDot
+              tone={status.clean ? 'ink' : 'accent'}
+              pulse={!status.clean}
+            />
             {status.branch ?? 'detached'}
             {(status.ahead > 0 || status.behind > 0) && (
               <span className="ed-ab">
@@ -1365,14 +1469,27 @@ export function EditorPage({ host }: { host: Host }) {
             commit
           </Button>
           {(['fetch', 'pull', 'push'] as SyncAction[]).map((action) => (
-            <Button key={action} variant="ghost" disabled={busy} onClick={() => void gitAction(() => api.sync(action))}>
+            <Button
+              key={action}
+              variant="ghost"
+              disabled={busy}
+              onClick={() => void gitAction(() => api.sync(action))}
+            >
               {action}
             </Button>
           ))}
-          <Button variant="ghost" disabled={busy} onClick={() => void gitAction(() => api.stash('push'))}>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void gitAction(() => api.stash('push'))}
+          >
             stash
           </Button>
-          <Button variant="ghost" disabled={busy} onClick={() => void gitAction(() => api.stash('pop'))}>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void gitAction(() => api.stash('pop'))}
+          >
             pop
           </Button>
         </footer>
@@ -1394,20 +1511,31 @@ export function EditorPage({ host }: { host: Host }) {
           </button>
         </div>
       )}
-      {noRepo && !error && <div className="ed-hint">not a git repository — tree and editor still work</div>}
+      {noRepo && !error && (
+        <div className="ed-hint">
+          not a git repository — tree and editor still work
+        </div>
+      )}
       {error && <div className="ed-error">{error}</div>}
 
-      <Dialog open={conflict !== null} onOpenChange={(open) => !open && setConflict(null)}>
+      <Dialog
+        open={conflict !== null}
+        onOpenChange={(open) => !open && setConflict(null)}
+      >
         <DialogContent>
           <DialogTitle>This file changed while you were editing it</DialogTitle>
           <DialogDescription>
-            Nothing was written. Below is the difference between what is on disk now and what you tried to save.
+            Nothing was written. Below is the difference between what is on disk
+            now and what you tried to save.
           </DialogDescription>
           {/* The one patch still shown as highlighted source rather than as a
               pierre diff. pierre sizes itself against a flex parent it can
               scroll inside; a dialog is neither, and a diff that grows past
               the dialog instead of scrolling in it is worse than this. */}
-          <CodeHighlight code={conflict?.conflict_patch ?? ''} language="diff" />
+          <CodeHighlight
+            code={conflict?.conflict_patch ?? ''}
+            language="diff"
+          />
           <div className="ed-bar">
             <Button variant="ghost" onClick={() => setConflict(null)}>
               keep editing
@@ -1436,11 +1564,30 @@ export function EditorPage({ host }: { host: Host }) {
  * contents are hashed — see `contentHash`, which is where the earlier
  * length-only key and what it got wrong are written down.
  */
-function FileView({ path, contents, themeType }: { path: string; contents: string; themeType: 'light' | 'dark' }) {
-  const file = useMemo(() => ({ name: path, contents, cacheKey: `${path}:${contentHash(contents)}` }), [contents, path])
+function FileView({
+  path,
+  contents,
+  themeType,
+}: {
+  path: string
+  contents: string
+  themeType: 'light' | 'dark'
+}) {
+  const file = useMemo(
+    () => ({
+      name: path,
+      contents,
+      cacheKey: `${path}:${contentHash(contents)}`,
+    }),
+    [contents, path],
+  )
   return (
     <div className="ed-pane ed-reader">
-      <File file={file} options={{ ...READ_OPTIONS, themeType }} disableWorkerPool />
+      <File
+        file={file}
+        options={{ ...READ_OPTIONS, themeType }}
+        disableWorkerPool
+      />
     </div>
   )
 }
@@ -1485,15 +1632,21 @@ function ChangeCard({
         <span className="ed-change-title" title={entry.path}>
           {entry.path}
         </span>
-        <Badge variant={entry.kind === 'deleted' ? 'warn' : 'default'}>{entry.kind}</Badge>
+        <Badge variant={entry.kind === 'deleted' ? 'warn' : 'default'}>
+          {entry.kind}
+        </Badge>
         {(entry.added > 0 || entry.removed > 0) && (
           <span>
-            <span className="ed-add">+{entry.added}</span> <span className="ed-del">−{entry.removed}</span>
+            <span className="ed-add">+{entry.added}</span>{' '}
+            <span className="ed-del">−{entry.removed}</span>
           </span>
         )}
         <span className="ed-change-by">{causeLabel(entry.cause)}</span>
         {entry.sessionId && (
-          <span className="ed-change-session" title={entry.turnId ? `turn ${entry.turnId}` : entry.sessionId}>
+          <span
+            className="ed-change-session"
+            title={entry.turnId ? `turn ${entry.turnId}` : entry.sessionId}
+          >
             session {entry.sessionId.replace(/^s_/, '').slice(0, 8)}
           </span>
         )}
@@ -1502,7 +1655,8 @@ function ChangeCard({
       </div>
       {entry.truncated && (
         <div className="ed-warn">
-          The change was larger than the preview the event carries, so only its beginning is shown.
+          The change was larger than the preview the event carries, so only its
+          beginning is shown.
         </div>
       )}
       <PatchView patch={entry.patch} themeType={themeType} />
@@ -1510,9 +1664,20 @@ function ChangeCard({
   )
 }
 
-function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | 'dark' }) {
+function PatchView({
+  patch,
+  themeType,
+}: {
+  patch: string
+  themeType: 'light' | 'dark'
+}) {
   const files = useMemo(
-    () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap((p) => p.files)),
+    () =>
+      patch.trim() === ''
+        ? []
+        : parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap(
+            (p) => p.files,
+          ),
     [patch],
   )
 

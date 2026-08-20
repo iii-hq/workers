@@ -5,6 +5,6 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'eval-benchmarks',
     title: 'eval',
-    render: () => <EvalPage host={host} />,
+    render: (props) => <EvalPage host={host} {...props} />,
   })
 }

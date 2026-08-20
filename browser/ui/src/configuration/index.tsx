@@ -4,12 +4,17 @@
  * unsaved-change guard; this component only edits the JSON draft.
  */
 
-import { type ConfigFormProps, Input, type JsonValue, StatusPanel } from '@iii-dev/console-ui'
+import {
+  type ConfigFormProps,
+  Input,
+  type JsonValue,
+  StatusPanel,
+} from '@iii-dev/console-ui'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { ChevronLeftIcon, GlobeIcon, useContainerNarrow } from '../lib/widgets'
 
 type JsonObject = { [key: string]: JsonValue }
-type SectionId = 'launch' | 'viewport' | 'limits' | 'behavior'
+type SectionId = 'launch' | 'viewport' | 'limits' | 'behavior' | 'scraping'
 
 const CONFIG_NARROW_BELOW = 660
 const DEFAULTS = {
@@ -46,10 +51,13 @@ const FIELD_SECTION: Record<string, SectionId> = {
   max_timeout_ms: 'behavior',
   idle_stop_ms: 'behavior',
   allowed_schemes: 'behavior',
+  scrapling: 'scraping',
 }
 
 function asObject(value: JsonValue | undefined): JsonObject {
-  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...value }
+    : {}
 }
 
 function stringValue(value: JsonValue | undefined, fallback = ''): string {
@@ -60,7 +68,10 @@ function numberValue(value: JsonValue | undefined, fallback: number): number {
   return typeof value === 'number' ? value : fallback
 }
 
-function booleanValue(value: JsonValue | undefined, fallback: boolean): boolean {
+function booleanValue(
+  value: JsonValue | undefined,
+  fallback: boolean,
+): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
@@ -70,7 +81,12 @@ function pointer(field: string) {
 
 function fieldError(errors: ConfigFormProps['errors'], field: string) {
   const base = pointer(field)
-  return errors?.get(base) ?? [...(errors?.entries() ?? [])].find(([path]) => path.startsWith(`${base}/`))?.[1]
+  return (
+    errors?.get(base) ??
+    [...(errors?.entries() ?? [])].find(([path]) =>
+      path.startsWith(`${base}/`),
+    )?.[1]
+  )
 }
 
 function formatCount(value: number) {
@@ -131,7 +147,11 @@ function TextField({
 }) {
   const id = `br-cfg-${field}`
   return (
-    <Field label={<label htmlFor={id}>{label}</label>} hint={hint} error={error}>
+    <Field
+      label={<label htmlFor={id}>{label}</label>}
+      hint={hint}
+      error={error}
+    >
       <Input
         id={id}
         name={field}
@@ -171,7 +191,11 @@ function NumberField({
 }) {
   const id = `br-cfg-${field}`
   return (
-    <Field label={<label htmlFor={id}>{label}</label>} hint={hint} error={error}>
+    <Field
+      label={<label htmlFor={id}>{label}</label>}
+      hint={hint}
+      error={error}
+    >
       <Input
         id={id}
         name={field}
@@ -247,7 +271,9 @@ function SchemesField({
 
   return (
     <Field
-      label={<label htmlFor="br-cfg-allowed_schemes">Allowed URL schemes</label>}
+      label={
+        <label htmlFor="br-cfg-allowed_schemes">Allowed URL schemes</label>
+      }
       hint="Enter a comma-separated list without ://. Keep this list as narrow as your workflows allow."
       error={error}
     >
@@ -274,7 +300,13 @@ function SchemesField({
   )
 }
 
-function SectionHeader({ title, description }: { title: string; description: string }) {
+function SectionHeader({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
   return (
     <div className="br-cfg-section-head">
       <div>
@@ -298,9 +330,18 @@ function ConfigNav({
   const height = numberValue(value.viewport_height, DEFAULTS.viewport_height)
   const maxSessions = numberValue(value.max_sessions, DEFAULTS.max_sessions)
   const headless = booleanValue(value.headless, DEFAULTS.headless)
-  const consoleBuffer = numberValue(value.console_buffer, DEFAULTS.console_buffer)
-  const networkBuffer = numberValue(value.network_buffer, DEFAULTS.network_buffer)
-  const timeout = numberValue(value.default_timeout_ms, DEFAULTS.default_timeout_ms)
+  const consoleBuffer = numberValue(
+    value.console_buffer,
+    DEFAULTS.console_buffer,
+  )
+  const networkBuffer = numberValue(
+    value.network_buffer,
+    DEFAULTS.network_buffer,
+  )
+  const timeout = numberValue(
+    value.default_timeout_ms,
+    DEFAULTS.default_timeout_ms,
+  )
   const idle = numberValue(value.idle_stop_ms, DEFAULTS.idle_stop_ms)
 
   const sections: Array<{
@@ -333,12 +374,18 @@ function ConfigNav({
       description: 'Timeouts and navigation',
       summary: `${formatDuration(timeout)} · idle ${formatDuration(idle)}`,
     },
+    {
+      id: 'scraping',
+      label: 'Scraping',
+      description: 'Fetch tiers and agent guidance',
+      summary: `guidance ${booleanValue(asObject(value.scrapling).inject_guidance, true) ? 'on' : 'off'}`,
+    },
   ]
 
   return (
     <nav className="br-cfg-nav" aria-label="Browser configuration sections">
       <div className="br-cfg-nav-head">
-        <p className="br-cfg-nav-label">browser settings</p>
+        <p className="br-cfg-nav-label">Browser settings</p>
         <p>Settings are grouped by when and where they apply.</p>
       </div>
       <ul className="br-cfg-nav-list">
@@ -354,7 +401,9 @@ function ConfigNav({
               >
                 <span className="br-cfg-nav-copy">
                   <span className="br-cfg-nav-name">{section.label}</span>
-                  <span className="br-cfg-nav-description">{section.description}</span>
+                  <span className="br-cfg-nav-description">
+                    {section.description}
+                  </span>
                   <span className="br-cfg-nav-meta">{section.summary}</span>
                 </span>
                 <ChevronLeftIcon className="br-cfg-nav-chevron" />
@@ -385,7 +434,12 @@ function EditorHeader({
   return (
     <header className="br-cfg-editor-head">
       {narrow ? (
-        <button type="button" className="br-cfg-back" onClick={onBack} aria-label="Back to configuration sections">
+        <button
+          type="button"
+          className="br-cfg-back"
+          onClick={onBack}
+          aria-label="Back to configuration sections"
+        >
           <ChevronLeftIcon />
         </button>
       ) : null}
@@ -452,6 +506,10 @@ function ConfigEditor({
       title: 'Runtime behavior',
       description: 'Control timeouts, idle cleanup, and allowed destinations.',
     },
+    scraping: {
+      title: 'Scraping',
+      description: 'Settings for the browser::* fetch and parse surface.',
+    },
   }
 
   return (
@@ -510,13 +568,17 @@ function ConfigEditor({
                   field="allow_attach"
                   label="Allow attaching to existing browsers"
                   hint="Attached tabs can access the real browser profile and its signed-in sessions."
-                  checked={booleanValue(value.allow_attach, DEFAULTS.allow_attach)}
+                  checked={booleanValue(
+                    value.allow_attach,
+                    DEFAULTS.allow_attach,
+                  )}
                   onChange={(next) => setBoolean('allow_attach', next)}
                 />
               </div>
               {booleanValue(value.allow_attach, DEFAULTS.allow_attach) ? (
                 <div className="br-cfg-warning" role="note">
-                  Attach mode is enabled. Only connect to browser instances you trust.
+                  Attach mode is enabled. Only connect to browser instances you
+                  trust.
                 </div>
               ) : null}
             </section>
@@ -558,8 +620,12 @@ function ConfigEditor({
                   }}
                 >
                   <span>
-                    {numberValue(value.viewport_width, DEFAULTS.viewport_width)} ×{' '}
-                    {numberValue(value.viewport_height, DEFAULTS.viewport_height)}
+                    {numberValue(value.viewport_width, DEFAULTS.viewport_width)}{' '}
+                    ×{' '}
+                    {numberValue(
+                      value.viewport_height,
+                      DEFAULTS.viewport_height,
+                    )}
                   </span>
                 </div>
                 <p>Aspect-ratio preview for newly launched sessions.</p>
@@ -676,14 +742,37 @@ function ConfigEditor({
               <SchemesField
                 value={
                   Array.isArray(value.allowed_schemes)
-                    ? value.allowed_schemes.filter((scheme): scheme is string => typeof scheme === 'string')
+                    ? value.allowed_schemes.filter(
+                        (scheme): scheme is string =>
+                          typeof scheme === 'string',
+                      )
                     : [...DEFAULTS.allowed_schemes]
                 }
                 error={fieldError(errors, 'allowed_schemes')}
-                onChange={(schemes) => onChange({ ...value, allowed_schemes: schemes })}
+                onChange={(schemes) =>
+                  onChange({ ...value, allowed_schemes: schemes })
+                }
               />
             </section>
           </>
+        ) : null}
+
+        {selection === 'scraping' ? (
+          <section className="br-cfg-section">
+            <SectionHeader
+              title="Agent guidance"
+              description="Whether the worker teaches agents its scraping surface via the system prompt."
+            />
+            <CheckField
+              field="scrapling.inject_guidance"
+              label="Inject scraping guidance into agent system prompts"
+              hint="Hot-applies on save: turning this off unbinds the pre-generate hook immediately, no worker restart."
+              checked={booleanValue(asObject(value.scrapling).inject_guidance, true)}
+              onChange={(next) =>
+                onChange({ ...value, scrapling: { ...asObject(value.scrapling), inject_guidance: next } })
+              }
+            />
+          </section>
         ) : null}
       </div>
     </section>
@@ -718,7 +807,9 @@ export function BrowserConfigForm(props: ConfigFormProps) {
   useEffect(() => {
     if (!focusKey || !domRef.current) return
     const field = props.focusField?.[0] ?? focusKey
-    const target = domRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(field)}"]`)
+    const target = domRef.current.querySelector<HTMLElement>(
+      `[data-field="${CSS.escape(field)}"]`,
+    )
     target?.focus()
     target?.scrollIntoView({ block: 'center' })
   }, [focusKey, selection])
@@ -729,7 +820,9 @@ export function BrowserConfigForm(props: ConfigFormProps) {
   return (
     <div className={`br-cfg${narrow ? ' narrow' : ''}`} ref={setRoot}>
       <div className="br-cfg-workbench">
-        {showNav ? <ConfigNav value={value} selection={selection} onSelect={choose} /> : null}
+        {showNav ? (
+          <ConfigNav value={value} selection={selection} onSelect={choose} />
+        ) : null}
         {showEditor ? (
           <ConfigEditor
             selection={selection}

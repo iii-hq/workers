@@ -1,0 +1,15 @@
+The adaptive tracker reproduces the Public Suffix List snapshot bundled with
+tld 0.13.2. The complete base list is supplied by the pinned psl 2.1.180 Rust
+crate; src/scrapling/adaptive.rs carries the exact rule delta needed to restore
+the frozen snapshot.
+
+Frozen source metadata:
+
+  VERSION: 2026-03-06_02-20-37_UTC
+  COMMIT: a7621207f34b3a739a5cfb2c47a518b0b9054fe6
+  SHA-256: abf32ce9987d505b89765d76f35760543851235508f1f426b5b259a2062b5f68
+
+The Public Suffix List is licensed under the Mozilla Public License, v. 2.0:
+https://mozilla.org/MPL/2.0/
+
+Canonical source: https://publicsuffix.org/list/public_suffix_list.dat

@@ -533,11 +533,12 @@ Apply it everywhere, including the surfaces that are easy to leave untyped:
   subscribers): type the event payload (only the fields you read; the rest are
   ignored) and return a small typed ack (e.g. `struct Ack { ok: bool }`) instead
   of `Ok(Value::Null)`.
-- **Custom bad-request errors:** if you previously hand-deserialized `Value` to
-  control the error code, use
-  `RegisterFunction::new_async_with_bad_request(handler, map_err)` — it
-  auto-extracts the typed schema **and** lets you own the malformed-payload
-  contract.
+- **Custom bad-request errors:** `RegisterFunction::new_async` reports typed
+  deserialization failures through the SDK's generic serde error. If a public
+  function must preserve a stable custom error code, use a small worker-owned
+  registration adapter that deserializes a `Value`, maps that error, and then
+  overrides `request_format` with the Draft 7 schema for the typed input. See
+  [`provider_scaffold/registration.rs`](../../llm-router/src/provider_scaffold/registration.rs).
 - **Genuinely freeform sub-fields** (a verbatim-forwarded `messages` array,
   provider passthrough options): keep that one field `Value` *inside* a typed
   struct. The top-level request schema stays concrete; only the nested blob is
@@ -554,9 +555,10 @@ Prefer **async closures** passed to `RegisterFunction::new_async` that return
 `Ok::<_, IIIError>(YourOutput { ... })`. Put shared logic in plain `async fn`
 helpers if the body gets large.
 
-Serde performs shape validation when building `YourInput`; map failures to
-`IIIError::Handler` if you need a specific message, or let the SDK surface
-deserialization errors when that is acceptable.
+Serde performs shape validation when building `YourInput`; let the SDK surface
+its generic deserialization error when that is acceptable. Use the
+worker-owned adapter described above only when compatibility requires a stable
+custom code or message.
 
 Rules:
 

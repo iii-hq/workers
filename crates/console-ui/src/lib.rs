@@ -381,12 +381,11 @@ fn register_asset_trigger(
     kind: AssetKind,
     path: &str,
 ) -> Result<iii_sdk::trigger::Trigger, Error> {
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: kind.trigger_type().to_string(),
-        function_id: function_id.to_string(),
-        config: serde_json::json!({ "path": path }),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        kind.trigger_type().to_string(),
+        function_id.to_string(),
+        serde_json::json!({ "path": path }),
+    ))
 }
 
 fn watch_target(env: &str, default_dir: &Path) -> Option<PathBuf> {

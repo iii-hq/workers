@@ -73,8 +73,12 @@ fn register_ui_state_entry(iii: IIIClient) {
             "schema": { "type": "object", "additionalProperties": true },
             "initial_value": {},
         });
-        if let Err(e) =
-            crate::configuration::trigger_with_retry(&iii, "configuration::register", payload).await
+        if let Err(e) = crate::configuration::trigger_configuration_with_retry(
+            &iii,
+            "configuration::register",
+            payload,
+        )
+        .await
         {
             tracing::warn!(
                 error = %e,

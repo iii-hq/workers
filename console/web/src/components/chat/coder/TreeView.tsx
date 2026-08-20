@@ -105,7 +105,7 @@ function TreeRows({ node, path, depth }: TreeRowsProps) {
     <>
       <div className="flex items-center gap-1.5 px-3 py-0.5" title={path}>
         <Indent depth={depth} />
-        <Icon aria-hidden className="w-3.5 h-3.5 shrink-0 text-ink-faint" />
+        <Icon aria-hidden className="size-4 shrink-0 text-ink-faint" />
         <span className="text-ink truncate">
           {isDir ? `${node.name}/` : node.name}
         </span>

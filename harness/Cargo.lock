@@ -628,8 +628,8 @@ dependencies = [
  "clap",
  "globset",
  "iii-console-ui",
- "iii-helpers",
- "iii-sdk",
+ "iii-helpers 0.23.0-rc.2",
+ "iii-sdk 0.23.0-rc.2",
  "jsonschema",
  "schemars",
  "serde",
@@ -652,7 +652,7 @@ dependencies = [
  "chrono",
  "clap",
  "harness",
- "iii-sdk",
+ "iii-sdk 0.21.8",
  "mime_guess",
  "rust-embed",
  "schemars",
@@ -672,7 +672,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "iii-sdk",
+ "iii-sdk 0.21.8",
  "jsonschema",
  "nix",
  "regex",
@@ -973,7 +973,7 @@ dependencies = [
 name = "iii-console-ui"
 version = "0.1.0"
 dependencies = [
- "iii-sdk",
+ "iii-sdk 0.23.0-rc.2",
  "schemars",
  "serde",
  "serde_json",
@@ -1003,6 +1003,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-helpers"
+version = "0.23.0-rc.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2443aa052dc9ec4cdf47d16610d16b33db0535f7aa94145b2612a5e848b0b24"
+dependencies = [
+ "futures-util",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "iii-sdk"
 version = "0.21.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1011,7 +1032,28 @@ dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
- "iii-helpers",
+ "iii-helpers 0.21.8",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-sdk"
+version = "0.23.0-rc.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf3b3688765a07605d732ad6bb7ae99a417c1552a3a4e612945fc3b1c7f225f1"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hostname",
+ "iii-helpers 0.23.0-rc.2",
  "reqwest",
  "schemars",
  "serde",
@@ -1505,9 +1547,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

@@ -1,0 +1,11 @@
+{
+  "function": "browser::to-markdown",
+  "case": "markdown_inline_defaults",
+  "request": {
+    "html": "\n         <h1> A *title* </h1><h2>Sub_head</h2><h3>Third\n head</h3>\n         <p><strong> bold </strong> <em>em</em> <del>gone</del>\n         <code>a``b</code><br><q>quote</q> H<sub>2</sub>O x<sup>2</sup></p>\n         <p><a href=\"https://e.test/a_b\">https://e.test/a_b</a>\n         <a href=\"/x\" title='a\"b'> Link </a>\n         <img alt=\"A\" src=\"i.png\" title='t\"x'></p><hr>\n     "
+  },
+  "ok": {
+    "format": "markdown",
+    "content": "A \\*title\\*\n===========\n\nSub\\_head\n---------\n\n### Third head\n\n**bold**  *em* ~~gone~~\n``` a``b ```  \n\"quote\" H2O x2\n\n<https://e.test/a_b>\n [Link](/x \"a\\\"b\") \n![A](i.png \"t\\\"x\")\n\n---"
+  }
+}

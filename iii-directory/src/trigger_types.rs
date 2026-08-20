@@ -16,7 +16,7 @@
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
-//! `iii.register_trigger(RegisterTriggerInput { trigger_type: "directory::skills::on-change", ... })`.
+//! `iii.register_trigger(RegisterTriggerInput::new("directory::skills::on-change", ...))`.
 //! The engine routes that registration through our
 //! [`SkillsTriggerHandler`] which stashes the subscriber in
 //! [`SubscriberSet`]. When a download lands, the `functions::download`
@@ -72,14 +72,16 @@ impl SubscriberSet {
         map.remove(id);
     }
 
-    /// Snapshot of the current subscribers as a Vec of `function_id`s.
+    /// Snapshot of the current subscribers and their target namespaces.
     /// Returns a snapshot so the mutex isn't held across awaits.
-    pub fn function_ids(&self) -> Vec<String> {
+    pub fn targets(&self) -> Vec<(String, Option<String>)> {
         let map = self
             .inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        map.values().map(|c| c.function_id.clone()).collect()
+        map.values()
+            .map(|c| (c.function_id.clone(), c.namespace.clone()))
+            .collect()
     }
 }
 
@@ -89,18 +91,18 @@ impl SubscriberSet {
 /// because a slow / misbehaving subscriber must not break the write
 /// path.
 pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Value) {
-    let targets = subscribers.function_ids();
-    for function_id in targets {
+    let targets = subscribers.targets();
+    for (function_id, namespace) in targets {
         let fid = function_id.clone();
         let payload_copy = payload.clone();
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: fid,
-                payload: payload_copy,
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: fid,
+            payload: payload_copy,
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        };
+        let namespace = namespace.as_deref().unwrap_or("default");
+        let res = iii.trigger(request.namespace(namespace)).await;
         if let Err(e) = res {
             tracing::warn!(
                 function_id = %function_id,
@@ -202,26 +204,32 @@ mod tests {
             function_id: function_id.to_string(),
             config: json!({}),
             metadata: None,
+            namespace: None,
         }
     }
 
     #[test]
     fn subscriber_set_insert_and_remove() {
         let set = SubscriberSet::new();
-        assert!(set.function_ids().is_empty());
-        set.insert(make_config("sub-1", "mcp::__on_skills_changed"));
+        assert!(set.targets().is_empty());
+        let mut namespaced = make_config("sub-1", "mcp::__on_skills_changed");
+        namespaced.namespace = Some("project-a".into());
+        set.insert(namespaced);
         set.insert(make_config("sub-2", "other::receiver"));
-        let mut fns = set.function_ids();
-        fns.sort();
+        let mut targets = set.targets();
+        targets.sort();
         assert_eq!(
-            fns,
+            targets,
             vec![
-                "mcp::__on_skills_changed".to_string(),
-                "other::receiver".to_string()
+                (
+                    "mcp::__on_skills_changed".to_string(),
+                    Some("project-a".to_string())
+                ),
+                ("other::receiver".to_string(), None)
             ]
         );
         set.remove("sub-1");
-        assert_eq!(set.function_ids(), vec!["other::receiver".to_string()]);
+        assert_eq!(set.targets(), vec![("other::receiver".to_string(), None)]);
     }
 
     #[test]
@@ -229,6 +237,6 @@ mod tests {
         let set = SubscriberSet::new();
         set.insert(make_config("sub-1", "a"));
         set.insert(make_config("sub-1", "b"));
-        assert_eq!(set.function_ids(), vec!["b".to_string()]);
+        assert_eq!(set.targets(), vec![("b".to_string(), None)]);
     }
 }

@@ -795,7 +795,7 @@ export function TraceTimeline({
                         }}
                       >
                         <Icon
-                          className="h-3 w-3 shrink-0"
+                          className="size-4 shrink-0"
                           strokeWidth={2.5}
                           style={{ color: iconColorFor(color) }}
                         />

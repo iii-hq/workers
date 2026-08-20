@@ -1,0 +1,9 @@
+{
+  "function": "browser::xpath",
+  "case": "true_scalar_type_error",
+  "request": {
+    "html": "<p>Alpha</p>",
+    "query": "boolean(//p)"
+  },
+  "err": "'bool' object is not iterable"
+}

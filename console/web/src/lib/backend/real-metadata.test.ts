@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTurnMetadata,
   FALLBACK_FUNCTION_POLICY,
+  toHarnessSendError,
   toProviderOptions,
   toThinkingLevel,
 } from './real'
@@ -49,5 +50,20 @@ describe('model reasoning effort forwarding', () => {
     expect(toProviderOptions('openai-codex', 'high')).toEqual({
       'openai-codex': { reasoning_effort: 'high' },
     })
+  })
+})
+
+describe('harness send error formatting', () => {
+  it('keeps the useful message from a structured SDK error', () => {
+    const error = toHarnessSendError({
+      code: 'invocation_failed',
+      message:
+        'handler error: {"code":"enqueue_error","message":"serialization error: unknown field namespace"}',
+    })
+
+    expect(error.message).toBe(
+      'enqueue_error: serialization error: unknown field namespace',
+    )
+    expect(error.message).not.toContain('[object Object]')
   })
 })

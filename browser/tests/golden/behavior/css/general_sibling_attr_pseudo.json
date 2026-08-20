@@ -1,0 +1,14 @@
+{
+  "function": "browser::css",
+  "case": "general_sibling_attr_pseudo",
+  "request": {
+    "html": "<h1>H</h1><p data-x='a'>A</p><p data-x='b'>B</p>",
+    "query": "h1 ~ p::attr(data-x)"
+  },
+  "ok": {
+    "result": [
+      "a",
+      "b"
+    ]
+  }
+}

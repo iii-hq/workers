@@ -81,12 +81,11 @@ fn bind_best_effort(
     function_id: &str,
     config: serde_json::Value,
 ) {
-    let res = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    let res = iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-    });
+    ));
     match res {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
         Err(e) => {

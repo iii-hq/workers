@@ -1,0 +1,215 @@
+{
+  "function_id": "browser::dynamic-fetch",
+  "description": "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string"
+      },
+      "urls": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "headless": {
+        "type": "boolean"
+      },
+      "network_idle": {
+        "type": "boolean"
+      },
+      "load_dom": {
+        "type": "boolean"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "milliseconds (browser fetcher)"
+      },
+      "wait": {
+        "type": "number",
+        "description": "extra ms to wait after load"
+      },
+      "wait_selector": {
+        "type": "string"
+      },
+      "wait_selector_state": {
+        "type": "string",
+        "enum": [
+          "attached",
+          "detached",
+          "visible",
+          "hidden"
+        ]
+      },
+      "disable_resources": {
+        "type": "boolean"
+      },
+      "block_ads": {
+        "type": "boolean"
+      },
+      "blocked_domains": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "proxy": {
+        "type": "string"
+      },
+      "useragent": {
+        "type": "string"
+      },
+      "cookies": {
+        "type": "object"
+      },
+      "extra_headers": {
+        "type": "object"
+      },
+      "google_search": {
+        "type": "boolean"
+      },
+      "capture_xhr": {
+        "type": "string"
+      },
+      "locale": {
+        "type": "string"
+      },
+      "timezone_id": {
+        "type": "string"
+      },
+      "dns_over_https": {
+        "type": "boolean"
+      },
+      "extra_flags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "max_pages": {
+        "type": "integer"
+      },
+      "retries": {
+        "type": "integer"
+      },
+      "retry_delay": {
+        "type": "number"
+      },
+      "real_chrome": {
+        "type": "boolean"
+      },
+      "cdp_url": {
+        "type": "string"
+      },
+      "selectors": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            },
+            "regex": {
+              "type": "string"
+            },
+            "attr": {
+              "type": "string",
+              "description": "extract this attribute instead of text"
+            },
+            "html": {
+              "type": "boolean",
+              "description": "extract inner HTML instead of text"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "return every match as a list"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      "include_html": {
+        "type": "boolean"
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "markdown",
+          "text"
+        ],
+        "description": "render page body to this format"
+      },
+      "main_content_only": {
+        "type": "boolean",
+        "description": "strip nav/scripts/hidden before rendering"
+      },
+      "css_selector": {
+        "type": "string",
+        "description": "scope the render to this CSS subtree (e.g. a page's content div)"
+      }
+    }
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "url": {
+        "type": "string"
+      },
+      "headers": {
+        "type": "object"
+      },
+      "cookies": {
+        "type": "object"
+      },
+      "encoding": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "extracted": {
+        "type": "object"
+      },
+      "html": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string",
+        "description": "markdown/text render when `format` requested"
+      },
+      "format": {
+        "type": "string"
+      },
+      "captured_xhr": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  }
+}

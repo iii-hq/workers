@@ -1,51 +1,57 @@
 {
-  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
   "function_id": "browser::act",
+  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ActInput",
+    "type": "object",
+    "required": [
+      "action",
+      "session_id"
+    ],
     "properties": {
       "action": {
         "description": "`click`, `hover`, `type`, `press`, or `scroll`.",
         "type": "string"
       },
       "button": {
-        "default": null,
         "description": "Mouse button for `click`: `left` (default), `right`, or `middle`.",
+        "default": null,
         "type": [
           "string",
           "null"
         ]
       },
       "click_count": {
-        "default": null,
         "description": "Clicks in the gesture: 2 double-clicks (`click` only, default 1).",
-        "format": "uint32",
-        "minimum": 0.0,
+        "default": null,
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "format": "uint32",
+        "minimum": 0.0
       },
       "delta_y": {
-        "default": null,
         "description": "Scroll distance in pixels; positive scrolls down (`scroll`).",
-        "format": "double",
+        "default": null,
         "type": [
           "number",
           "null"
-        ]
+        ],
+        "format": "double"
       },
       "key": {
-        "default": null,
         "description": "Key name for `press`: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown.",
+        "default": null,
         "type": [
           "string",
           "null"
         ]
       },
       "ref": {
-        "default": null,
         "description": "Element ref from `browser::snapshot` (`e3`) or `browser::picked` (`p1`). Refs die on navigation; re-snapshot after.",
+        "default": null,
         "type": [
           "string",
           "null"
@@ -55,41 +61,41 @@
         "type": "string"
       },
       "text": {
-        "default": null,
         "description": "Text to insert (`type`).",
+        "default": null,
         "type": [
           "string",
           "null"
         ]
       },
       "x": {
-        "default": null,
         "description": "Viewport x, when acting by coordinates instead of ref.",
-        "format": "double",
+        "default": null,
         "type": [
           "number",
           "null"
-        ]
+        ],
+        "format": "double"
       },
       "y": {
-        "default": null,
         "description": "Viewport y, when acting by coordinates instead of ref.",
-        "format": "double",
+        "default": null,
         "type": [
           "number",
           "null"
-        ]
+        ],
+        "format": "double"
       }
-    },
-    "required": [
-      "action",
-      "session_id"
-    ],
-    "title": "ActInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ActOutput",
+    "type": "object",
+    "required": [
+      "detail",
+      "ok"
+    ],
     "properties": {
       "detail": {
         "description": "What was done, for the transcript.",
@@ -98,12 +104,6 @@
       "ok": {
         "type": "boolean"
       }
-    },
-    "required": [
-      "detail",
-      "ok"
-    ],
-    "title": "ActOutput",
-    "type": "object"
+    }
   }
 }
