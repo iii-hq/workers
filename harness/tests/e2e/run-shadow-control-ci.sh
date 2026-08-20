@@ -143,7 +143,10 @@ add_with_retry() {
   local label=$1
   shift
   for attempt in 1 2 3; do
-    if (cd "$project_dir" && timeout --signal=TERM --kill-after=15s 600 "$iii_bin" worker add -y "$@") \
+    # `wait_for_functions` below is the single readiness barrier for the
+    # complete pinned stack. Waiting here makes one slow worker serially hold
+    # every add invocation even though the engine can boot them together.
+    if (cd "$project_dir" && timeout --signal=TERM --kill-after=15s 600 "$iii_bin" worker add -y --no-wait "$@") \
       2>&1 | tee -a "$artifact_dir/logs/$label.log"; then
       return 0
     fi
