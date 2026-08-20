@@ -45,6 +45,7 @@ seed=$(jq -r '.plan.definition.seed' "$contract_path")
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-e2e-shadow.XXXXXX")
 project_dir="$run_root/project"
+project_config="$project_dir/iii.config.yaml"
 e2e_home="$run_root/home"
 mkdir -p "$project_dir" "$e2e_home" "$artifact_dir/logs" "$artifact_dir/stack"
 
@@ -74,7 +75,7 @@ fail() {
 }
 
 snapshot_stack() {
-  for file in config.yaml iii.lock workers.json; do
+  for file in iii.config.yaml iii.lock workers.json; do
     [[ -f "$project_dir/$file" ]] && cp "$project_dir/$file" "$artifact_dir/stack/$file"
   done
   if [[ -f "$project_dir/iii.lock" ]]; then
@@ -173,8 +174,8 @@ if [[ "$contract_schema" == 2 && "$observed_cli_version" != *"$cli_version"* ]];
 fi
 export HARNESS_E2E_ENGINE_REVISION="$observed_cli_version"
 
-printf 'workers: []\n' >"$project_dir/config.yaml"
-(cd "$project_dir" && exec setsid "$iii_bin" -c config.yaml --no-update-check) \
+printf 'workers: []\n' >"$project_config"
+(cd "$project_dir" && exec setsid "$iii_bin" -c iii.config.yaml --no-update-check) \
   >"$artifact_dir/logs/engine.log" 2>&1 &
 engine_pid=$!
 wait_for_engine
