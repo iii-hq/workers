@@ -355,6 +355,9 @@ export interface ReviewContents {
   /** Raster image rows: data URL of the working copy, `null` once deleted.
       Text fields stay empty because the bytes are not diffable. */
   image?: string | null
+  /** Raster image rows whose new side is a committed revision: the bytes
+      only stream as text, so the row explains instead of previewing. */
+  imageUnavailable?: true
   /** Set when the old side is the last commit rather than this turn's
       pre-turn snapshot. */
   baselineSource?: 'committed'
@@ -393,8 +396,11 @@ async function loadImageContents(
   entry: ReviewEntry,
   mime: string,
 ): Promise<ReviewContents> {
+  if (entry.change.status === 'deleted') {
+    return { oldContents: '', newContents: '', image: null }
+  }
   const path = reviewEntryWorktreePath(entry)
-  if (path === null) return { oldContents: '', newContents: '', image: null }
+  if (path === null) return { oldContents: '', newContents: '', imageUnavailable: true }
   const out = await coderReadFileBase64(host, joinPath(root, path))
   return {
     oldContents: '',
@@ -1198,6 +1204,10 @@ function ReviewFile({
         <div className="shui-review-message warn">{state.message}</div>
       ) : !editing && options.richPreview && rich !== null ? (
         rich
+      ) : !editing && state.imageUnavailable ? (
+        <div className="shui-review-message">
+          binary image; preview is available for working-tree files only
+        </div>
       ) : !editing && state.image !== undefined ? (
         <div className="shui-review-message">
           {state.image === null ? 'image deleted' : 'binary image; enable rich preview to view it'}

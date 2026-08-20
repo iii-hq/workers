@@ -1257,7 +1257,7 @@
 }
 [data-iii-ui="shell"] .shui-diff-style-icon .frame {
   fill: none;
-  stroke: currentColor;
+  stroke: currentcolor;
   stroke-width: 1.2;
   opacity: 0.75;
 }

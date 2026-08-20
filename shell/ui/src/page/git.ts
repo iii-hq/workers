@@ -1086,7 +1086,10 @@ export type GitPatchScope =
   | { kind: 'commit'; sha: string }
   | { kind: 'branch'; ref: string }
 
-function patchArgs(scope: GitPatchScope): string[] {
+/** The same bases the comparisons use: a commit against its first parent
+    (`diff-tree --root` for a root commit), a branch's merge base against the
+    working tree. */
+async function patchArgs(host: Host, root: string, scope: GitPatchScope): Promise<string[]> {
   switch (scope.kind) {
     case 'uncommitted':
       return ['diff', 'HEAD']
@@ -1094,17 +1097,38 @@ function patchArgs(scope: GitPatchScope): string[] {
       return ['diff']
     case 'staged':
       return ['diff', '--cached']
-    case 'commit':
-      return ['show', '--format=', scope.sha]
-    case 'branch':
-      return ['diff', `${scope.ref}...HEAD`]
+    case 'commit': {
+      const sha = await resolveCommit(host, root, scope.sha)
+      const parentsOut = await checkedGit(
+        host,
+        root,
+        ['rev-list', '--parents', '--max-count=1', sha],
+        'git rev-list parents',
+      )
+      const parentSha = parseParents(parentsOut.stdout, sha)[0] ?? null
+      return parentSha === null
+        ? ['diff-tree', '--root', '--no-commit-id', '-p', sha]
+        : ['diff', parentSha, sha]
+    }
+    case 'branch': {
+      const baseSha = await resolveCommit(host, root, scope.ref)
+      const headSha = await resolveCommit(host, root, 'HEAD')
+      const mergeBaseOut = await checkedGit(
+        host,
+        root,
+        ['merge-base', baseSha, headSha],
+        'git merge-base',
+      )
+      return ['diff', parseObjectId(mergeBaseOut.stdout, 'git merge-base')]
+    }
   }
 }
 
 /** Unified patch for a git-backed scope, ready for `git apply` at the
     repository root. Untracked files are outside every `git diff`. */
 export async function gitPatch(host: Host, root: string, scope: GitPatchScope): Promise<string> {
-  const out = await git(host, root, [...patchArgs(scope), '--no-color'])
+  const args = await patchArgs(host, root, scope)
+  const out = await git(host, root, [...args, '--no-color', '--no-ext-diff', '--no-textconv'])
   if (out.exit_code !== 0) {
     throw new Error(out.stderr.trim() || `git exited with ${out.exit_code}`)
   }

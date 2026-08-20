@@ -547,6 +547,23 @@ describe('loadReviewContents for raster images', () => {
     expect(trigger).toHaveBeenCalledTimes(1)
   })
 
+  it('flags a committed image as unavailable instead of deleted', async () => {
+    const { host, trigger } = execHost({})
+    const committed: ReviewEntry = {
+      path: 'docs/logo.png',
+      change: { path: 'docs/logo.png', status: 'modified', staged: false },
+      before: { kind: 'revision', revision: 'aaaa', path: 'docs/logo.png' },
+      after: { kind: 'revision', revision: 'bbbb', path: 'docs/logo.png' },
+    }
+
+    await expect(loadReviewContents(host, '/root', committed)).resolves.toEqual({
+      oldContents: '',
+      newContents: '',
+      imageUnavailable: true,
+    })
+    expect(trigger).not.toHaveBeenCalled()
+  })
+
   it('marks a deleted image without reading anything', async () => {
     const { host, trigger } = execHost({})
     const deleted: ReviewEntry = {
