@@ -180,6 +180,7 @@ export function withColumnRemoved(
 }
 
 export const EXT_SCREEN_PREFIX = 'ext:'
+export const PREVIEW_SCREEN_PREFIX = 'preview:'
 export const CHAT_SCREEN: TabScreen = 'chat'
 
 /**
@@ -214,6 +215,17 @@ export function screenForExtPage(pageId: string): TabScreen {
   return `${EXT_SCREEN_PREFIX}${pageId}`
 }
 
+/** The file path of a `preview:<path>` screen, or null for any other. */
+export function previewPathForScreen(screen: TabScreen): string | null {
+  return screen.startsWith(PREVIEW_SCREEN_PREFIX)
+    ? screen.slice(PREVIEW_SCREEN_PREFIX.length)
+    : null
+}
+
+export function screenForPreview(path: string): TabScreen {
+  return `${PREVIEW_SCREEN_PREFIX}${path}`
+}
+
 /**
  * The screen a routed view (+ ext page id) resolves to; `null` when the
  * view has no tab representation — configuration (an overlay page, not a
@@ -237,7 +249,9 @@ const isValidScreen = (s: unknown): s is TabScreen =>
   typeof s === 'string' &&
   (s === CHAT_SCREEN ||
     isRoutedScreen(s) ||
-    (s.startsWith(EXT_SCREEN_PREFIX) && s.length > EXT_SCREEN_PREFIX.length))
+    (s.startsWith(EXT_SCREEN_PREFIX) && s.length > EXT_SCREEN_PREFIX.length) ||
+    (s.startsWith(PREVIEW_SCREEN_PREFIX) &&
+      s.length > PREVIEW_SCREEN_PREFIX.length))
 
 function isValidTab(v: unknown): v is WorkspaceTab {
   if (!v || typeof v !== 'object') return false
@@ -440,6 +454,8 @@ export function screenLabel(
 ): string {
   const extId = extPageIdForScreen(screen)
   if (extId !== null) return extPageTitles.get(extId) ?? extId
+  const previewPath = previewPathForScreen(screen)
+  if (previewPath !== null) return previewPath.split('/').pop() || 'preview'
   return screen
 }
 

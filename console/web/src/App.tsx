@@ -58,6 +58,7 @@ import {
   extPageIdForScreen,
   MAX_COLUMNS,
   MIN_COLUMN_FRACTION,
+  previewPathForScreen,
   screenForView,
   type TabScreen,
   tabColumns,
@@ -65,6 +66,7 @@ import {
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
+import { PreviewPane } from '@/pages/Preview'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PanelSide } from '@/types/injectable-ui'
@@ -575,6 +577,16 @@ function ScreenBody({
   // The active conversation's working dir, forwarded live so ext pages
   // (e.g. the shell explorer) can follow the chat's folder in a split.
   const { active } = useConversationsCtx()
+  const previewPath = previewPathForScreen(screen)
+  if (previewPath !== null) {
+    return (
+      <PreviewPane
+        path={previewPath}
+        panelSide={panelSide}
+        onRequestClose={onClose}
+      />
+    )
+  }
   const extId = extPageIdForScreen(screen)
   if (extId !== null) {
     return (

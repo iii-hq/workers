@@ -6,7 +6,9 @@ import {
   MAX_COLUMNS,
   parseActiveTabId,
   parseWorkspaceTabs,
+  previewPathForScreen,
   resolveActiveTab,
+  screenForPreview,
   screenForView,
   screenLabel,
   shouldFlushPendingWrite,
@@ -459,5 +461,31 @@ describe('shouldFlushPendingWrite', () => {
     expect(shouldFlushPendingWrite('server', false)).toBe(false)
     expect(shouldFlushPendingWrite('server', true)).toBe(true)
     expect(shouldFlushPendingWrite('local', true)).toBe(true)
+  })
+})
+
+describe('preview screens', () => {
+  it('round-trips a preview path and rejects an empty one', () => {
+    expect(screenForPreview('/tmp/plan.html')).toBe('preview:/tmp/plan.html')
+    expect(previewPathForScreen('preview:/tmp/plan.html')).toBe(
+      '/tmp/plan.html',
+    )
+    expect(previewPathForScreen('ext:shell')).toBeNull()
+    expect(previewPathForScreen('chat')).toBeNull()
+    expect(
+      parseWorkspaceTabs({
+        workspace: { tabs: [{ id: 't', screens: ['preview:/a.html', null] }] },
+      })[0].screens,
+    ).toEqual(['preview:/a.html', null])
+    // A malformed `preview:` (no path) is invalid, so its tab is dropped.
+    expect(
+      parseWorkspaceTabs({
+        workspace: { tabs: [{ id: 't', screens: ['preview:'] }] },
+      }),
+    ).toEqual([])
+  })
+
+  it('labels a preview by its basename', () => {
+    expect(screenLabel('preview:/x/y/report.html', NO_EXT)).toBe('report.html')
   })
 })

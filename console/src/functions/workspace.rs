@@ -20,6 +20,7 @@ use crate::configuration::{existing_value, set_value};
 
 pub const CHAT_SCREEN: &str = "chat";
 pub const EXT_SCREEN_PREFIX: &str = "ext:";
+pub const PREVIEW_SCREEN_PREFIX: &str = "preview:";
 pub const ROUTED_SCREENS: [&str; 2] = ["traces", "workers"];
 pub const MAX_COLUMNS: usize = 64;
 
@@ -98,6 +99,9 @@ pub fn is_valid_screen(screen: &str) -> bool {
         || screen
             .strip_prefix(EXT_SCREEN_PREFIX)
             .is_some_and(|id| !id.is_empty())
+        || screen
+            .strip_prefix(PREVIEW_SCREEN_PREFIX)
+            .is_some_and(|path| !path.is_empty())
 }
 
 fn migrate_screen(screen: Option<String>) -> Option<String> {
@@ -558,7 +562,8 @@ pub fn register(iii: &Arc<IIIClient>) {
              Reuses the tab that already shows it, else places it beside chat in the active \
              tab, else opens a new chat + screen tab. Every browser on this engine updates. \
              Use `ext:shell` for the file explorer, `ext:browser` for browser sessions, \
-             `ext:editor` for the editor, `workers` for the worker catalog.",
+             `ext:editor` for the editor, `workers` for the worker catalog, and \
+             `preview:<path>` to render an HTML file the agent wrote beside the chat.",
         ),
     );
 
@@ -604,10 +609,24 @@ mod tests {
 
     #[test]
     fn screen_validation() {
-        for ok in ["chat", "traces", "workers", "ext:shell", "ext:browser"] {
+        for ok in [
+            "chat",
+            "traces",
+            "workers",
+            "ext:shell",
+            "ext:browser",
+            "preview:/tmp/p.html",
+        ] {
             assert!(is_valid_screen(ok), "{ok}");
         }
-        for bad in ["", "ext:", "configuration", "settings", "http://x"] {
+        for bad in [
+            "",
+            "ext:",
+            "preview:",
+            "configuration",
+            "settings",
+            "http://x",
+        ] {
             assert!(!is_valid_screen(bad), "{bad}");
         }
     }
