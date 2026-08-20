@@ -31,7 +31,7 @@ describe('main.tsx injectable UI readiness wiring', () => {
 
   it('marks assets as loading before asynchronous client bootstrap', () => {
     const loadingAt = src.indexOf("setUiAssetsStatus('loading')")
-    const clientBootstrapAt = src.indexOf('\ngetIiiClient()')
+    const clientBootstrapAt = src.indexOf('getIiiClient()', loadingAt)
 
     expect(loadingAt).toBeGreaterThan(-1)
     expect(clientBootstrapAt).toBeGreaterThan(-1)

@@ -274,6 +274,30 @@ export function applyCatalogModelFallback(
   return changed ? next : conversations
 }
 
+/** Keep a just-selected session even if `session::created` has not yet
+ *  inserted it into the sidebar list. Without this, the boot-time "always
+ *  have an active chat" effect snaps back to conversations[0]. */
+export function resolveActiveConversationId(input: {
+  conversationIds: readonly string[]
+  activeId: string | null
+  pendingSelectId: string | null
+}): { activeId: string | null; pendingSelectId: string | null } {
+  const { conversationIds, activeId, pendingSelectId } = input
+  if (conversationIds.length === 0) {
+    return { activeId, pendingSelectId }
+  }
+  if (pendingSelectId) {
+    if (conversationIds.includes(pendingSelectId)) {
+      return { activeId: pendingSelectId, pendingSelectId: null }
+    }
+    return { activeId: pendingSelectId, pendingSelectId }
+  }
+  if (!activeId || !conversationIds.includes(activeId)) {
+    return { activeId: conversationIds[0], pendingSelectId: null }
+  }
+  return { activeId, pendingSelectId: null }
+}
+
 /**
  * Mark every backgrounded server-backed conversation stale so the next
  * activation re-hydrates it. A transcript subscription exists only for the
@@ -482,6 +506,7 @@ export function useConversations(
     emptyConversation(loadLastModel()),
   ])
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
+  const pendingSelectIdRef = useRef<string | null>(null)
 
   /** Highest seen `message-updated` revision per (session, entry). */
   const revisionsRef = useRef(new Map<string, Map<string, number>>())
@@ -822,10 +847,13 @@ export function useConversations(
 
   /* Ensure there's always a sensible "active" pointer at the start. */
   useEffect(() => {
-    if (conversations.length === 0) return
-    if (!activeId || !conversations.some((c) => c.id === activeId)) {
-      setActiveId(conversations[0].id)
-    }
+    const next = resolveActiveConversationId({
+      conversationIds: conversations.map((c) => c.id),
+      activeId,
+      pendingSelectId: pendingSelectIdRef.current,
+    })
+    pendingSelectIdRef.current = next.pendingSelectId
+    if (next.activeId !== activeId) setActiveId(next.activeId)
   }, [conversations, activeId])
 
   const active = useMemo(
@@ -851,7 +879,10 @@ export function useConversations(
     return next.id
   }, [conversations, activeId])
 
-  const select = useCallback((id: string) => setActiveId(id), [])
+  const select = useCallback((id: string) => {
+    pendingSelectIdRef.current = id
+    setActiveId(id)
+  }, [])
 
   const rename = useCallback(
     (id: string, title: string) => {

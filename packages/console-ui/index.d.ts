@@ -329,6 +329,10 @@ export interface Host {
     registerTranscriptRenderer?(
       renderer: TranscriptRendererRegistration,
     ): () => void
+    /** Optional on consoles that predate worker-driven conversation switching. */
+    selectConversation?(sessionId: string): void
+    /** Live composer model for a conversation, including unsaved drafts. */
+    composerModel?(conversationId?: string | null): string | null
   }
 }
 

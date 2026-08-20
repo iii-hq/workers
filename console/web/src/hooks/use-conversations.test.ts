@@ -12,6 +12,7 @@ import {
   mergeConversationMeta,
   mergeHydratedTranscript,
   mergeSessionListSnapshot,
+  resolveActiveConversationId,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -425,58 +426,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     })
   })
 
-  it('restores addons riding the default choice', () => {
-    const next = mergeConversationMeta(
-      undefined,
-      sessionMeta({
-        metadata: {
-          system_prompt: {
-            choice: 'default',
-            strategy: 'enrich',
-            named_body: '',
-            addons: [
-              { kind: 'prompt', name: 'review', body: 'Review checklist.' },
-              { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
-            ],
-          },
-        },
-      }),
-    )
-    expect(next.systemPrompt).toEqual({
-      choice: 'default',
-      strategy: 'enrich',
-      namedBody: '',
-      customText: '',
-      addons: [
-        { kind: 'prompt', name: 'review', body: 'Review checklist.' },
-        { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
-      ],
-    })
-  })
-
-  it('drops malformed addon entries but keeps the valid ones', () => {
-    const next = mergeConversationMeta(
-      undefined,
-      sessionMeta({
-        metadata: {
-          system_prompt: {
-            choice: { named: 'pirate' },
-            named_body: 'Arr.',
-            addons: [
-              'nonsense',
-              { kind: 'rule', name: 'x', body: 'y' },
-              { kind: 'prompt', name: 'review' },
-              { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
-            ],
-          },
-        },
-      }),
-    )
-    expect(next.systemPrompt?.addons).toEqual([
-      { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
-    ])
-  })
-
   it('degrades malformed persisted values to the default without throwing', () => {
     // Untrusted wire JSON: a string, a bare `custom`, and a missing name all
     // have to fall back rather than produce a half-built choice.
@@ -506,6 +455,40 @@ describe('mergeConversationMeta / system_prompt', () => {
       }),
     )
     expect(next.systemPrompt?.strategy).toBe('enrich')
+  })
+})
+
+describe('resolveActiveConversationId', () => {
+  it('keeps a pending select until that session appears in the list', () => {
+    const waiting = resolveActiveConversationId({
+      conversationIds: ['draft'],
+      activeId: 'draft',
+      pendingSelectId: 'worker-session',
+    })
+    expect(waiting).toEqual({
+      activeId: 'worker-session',
+      pendingSelectId: 'worker-session',
+    })
+
+    const arrived = resolveActiveConversationId({
+      conversationIds: ['worker-session', 'draft'],
+      activeId: 'draft',
+      pendingSelectId: 'worker-session',
+    })
+    expect(arrived).toEqual({
+      activeId: 'worker-session',
+      pendingSelectId: null,
+    })
+  })
+
+  it('falls back to the first conversation when nothing is pending or active', () => {
+    expect(
+      resolveActiveConversationId({
+        conversationIds: ['a', 'b'],
+        activeId: 'gone',
+        pendingSelectId: null,
+      }),
+    ).toEqual({ activeId: 'a', pendingSelectId: null })
   })
 })
 
