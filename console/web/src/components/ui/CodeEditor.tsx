@@ -1,9 +1,14 @@
 import type * as monacoNs from 'monaco-editor'
 import * as React from 'react'
+import { centeredScrollTop, clampLine, scrollParentOf } from '@/lib/reveal-line'
 import { cn } from '@/lib/utils'
 
 export interface CodeEditorHandle {
   focus(): void
+  /** Put the cursor on `line` (1-based, clamped), scroll the pane that
+      holds the editor so the line sits centered, and focus. Before Monaco
+      mounts the request is kept and replayed once it does. */
+  revealLine(line: number, column?: number): void
 }
 
 export interface CodeEditorProps {
@@ -108,7 +113,48 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     const fallbackRef = React.useRef<HTMLTextAreaElement>(null)
     const editorRef = React.useRef<monacoNs.editor.IStandaloneCodeEditor>(null)
     const applyingRef = React.useRef(false)
+    const pendingRevealRef = React.useRef<{
+      line: number
+      column: number
+    } | null>(null)
     const [ready, setReady] = React.useState(false)
+
+    const revealLine = React.useCallback((line: number, column = 1) => {
+      const editor = editorRef.current
+      if (!editor) {
+        pendingRevealRef.current = { line, column }
+        return
+      }
+      const lineNumber = clampLine(line, editor.getModel()?.getLineCount() ?? 1)
+      editor.setPosition({ lineNumber, column: Math.max(1, column) })
+      editor.revealLineInCenter(lineNumber)
+      const host = hostRef.current
+      const scroller = scrollParentOf(host)
+      if (host && scroller) {
+        const hostTop =
+          host.getBoundingClientRect().top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop
+        const lineTop = editor.getTopForLineNumber(lineNumber)
+        const lineHeight = Math.max(
+          0,
+          editor.getTopForLineNumber(lineNumber + 1) - lineTop,
+        )
+        scroller.scrollTo({
+          top: centeredScrollTop(
+            hostTop,
+            lineTop,
+            scroller.clientHeight,
+            lineHeight,
+          ),
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)')
+            .matches
+            ? 'auto'
+            : 'smooth',
+        })
+      }
+      editor.focus()
+    }, [])
 
     // The mount effect runs once; it reads mount-time props through here.
     const latest = React.useRef({ value, language, autoFocus })
@@ -121,6 +167,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         if (editorRef.current) editorRef.current.focus()
         else fallbackRef.current?.focus()
       },
+      revealLine,
     }))
 
     React.useEffect(() => {
@@ -152,6 +199,11 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           fitHeight()
           if (latest.current.autoFocus) editor.focus()
           setReady(true)
+          const pending = pendingRevealRef.current
+          if (pending) {
+            pendingRevealRef.current = null
+            revealLine(pending.line, pending.column)
+          }
         })
         .catch((err) => {
           console.warn(
@@ -164,7 +216,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         editorRef.current?.dispose()
         editorRef.current = null
       }
-    }, [])
+    }, [revealLine])
 
     // Prop → editor sync (external value swaps, language, options).
     React.useEffect(() => {
