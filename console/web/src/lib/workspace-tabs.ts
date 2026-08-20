@@ -360,6 +360,16 @@ export function withActiveTabId(
     it is not (the localStorage copy). */
 export type WorkspaceLayoutSource = 'pending' | 'server' | 'local'
 
+/** A queued pre-hydration write should replay once the layout source is no
+    longer `pending` (server hydrated, or known unavailable) and something is
+    actually queued. */
+export function shouldFlushPendingWrite(
+  source: WorkspaceLayoutSource,
+  hasPending: boolean,
+): boolean {
+  return source !== 'pending' && hasPending
+}
+
 export function workspaceLayoutSource(
   fetched: boolean,
   available: boolean,
