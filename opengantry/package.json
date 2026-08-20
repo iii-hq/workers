@@ -1,0 +1,38 @@
+{
+  "name": "opengantry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenGantry governance worker for iii: kernel verify and middleware gate.",
+  "license": "Apache-2.0",
+  "author": "Jürgen Eger (https://github.com/jeger-at)",
+  "contributors": [
+    "Jürgen Eger (https://github.com/jeger-at)"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "start": "node ./index.mjs",
+    "test": "node --test",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "verify:sandbox": "node scripts/verify-sandbox-boot.mjs",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
+  },
+  "dependencies": {
+    "@jeger-ai/opengantry": "^3.2.5",
+    "iii-sdk": "^0.22.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "esbuild": "^0.25.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

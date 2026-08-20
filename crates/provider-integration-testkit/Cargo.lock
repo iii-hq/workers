@@ -1048,7 +1048,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.4.9"
+version = "1.4.11"
 dependencies = [
  "async-trait",
  "clap",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "1.2.5"
+version = "1.2.7"
 dependencies = [
  "clap",
  "futures",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.4"
+version = "1.2.6"
 dependencies = [
  "clap",
  "futures",

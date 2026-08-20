@@ -329,6 +329,10 @@ export interface Host {
     registerTranscriptRenderer?(
       renderer: TranscriptRendererRegistration,
     ): () => void
+    /** Optional on consoles that predate worker-driven conversation switching. */
+    selectConversation?(sessionId: string): void
+    /** Live composer model for a conversation, including unsaved drafts. */
+    composerModel?(conversationId?: string | null): string | null
   }
 }
 
@@ -954,6 +958,10 @@ export declare const TooltipContent: React.ComponentType<TooltipContentProps>
 
 export interface CodeEditorHandle {
   focus(): void
+  /** Put the cursor on `line` (1-based, clamped), scroll the pane that holds
+      the editor so the line sits centered, and focus. Before the editor
+      mounts the request is kept and replayed once it does. */
+  revealLine(line: number, column?: number): void
 }
 export interface CodeEditorProps {
   value: string

@@ -11,34 +11,47 @@
  */
 
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   type Host,
+  IconButton,
   PageBody,
   PageHeader,
   PageMain,
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  Selector,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
 import {
   Check,
   ChevronsDownUp,
   ChevronsUpDown,
-  Columns2,
+  ClipboardCopy,
   Eye,
   EyeOff,
+  FileSearch,
+  FileStack,
   FolderTree,
+  Image,
   MoreHorizontal,
   PanelLeft,
   PanelRight,
   RefreshCw,
-  Rows3,
   Search,
+  Space,
   SquareTerminal,
   Terminal,
+  WholeWord,
+  WrapText,
   X,
 } from 'lucide-react'
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -87,9 +100,17 @@ import {
   gitChanges,
   gitCommitComparison,
   gitComparison,
+  gitPatch,
   gitRecentCommits,
   gitRefs,
 } from './git'
+import {
+  fetchSessionTurn,
+  fetchSessionTurns,
+  reviewEntriesFromTurn,
+  type SessionTurnSummary,
+  turnLabel,
+} from './turns'
 import { HoverTip } from './HoverTip'
 import { useWorkspaceChanges } from './live'
 import { normalizeLiveReviewEvent } from './live-review'
@@ -189,26 +210,74 @@ type RootChangeOutcome = RootTargetValidation['outcome'] | 'declined'
 
 function ReviewOption({
   label,
+  icon,
   checked,
   onChange,
 }: {
   label: string
+  icon: ReactNode
   checked: boolean
   onChange: (checked: boolean) => void
 }) {
   return (
-    <button
-      type="button"
+    <DropdownMenuItem
       className="shui-review-option"
       role="menuitemcheckbox"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      onSelect={(event) => {
+        event.preventDefault()
+        onChange(!checked)
+      }}
     >
+      <span className="menu-icon" aria-hidden>
+        {icon}
+      </span>
       <span>{label}</span>
       <span className="check" aria-hidden>
         {checked ? <Check /> : null}
       </span>
-    </button>
+    </DropdownMenuItem>
+  )
+}
+
+function SplitDiffIcon() {
+  return (
+    <svg className="shui-diff-style-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" className="frame" />
+      <rect x="3" y="4" width="4.5" height="8" rx="1.2" className="del" />
+      <rect x="8.5" y="4" width="4.5" height="8" rx="1.2" className="add" />
+    </svg>
+  )
+}
+
+function UnifiedDiffIcon() {
+  return (
+    <svg className="shui-diff-style-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" className="frame" />
+      <rect x="3" y="4" width="10" height="3.5" rx="1.2" className="del" />
+      <rect x="3" y="8.5" width="10" height="3.5" rx="1.2" className="add" />
+    </svg>
+  )
+}
+
+function ReviewMenuAction({
+  label,
+  icon,
+  disabled,
+  onSelect,
+}: {
+  label: string
+  icon: ReactNode
+  disabled?: boolean
+  onSelect: () => void
+}) {
+  return (
+    <DropdownMenuItem className="shui-review-option" disabled={disabled} onSelect={onSelect}>
+      <span className="menu-icon" aria-hidden>
+        {icon}
+      </span>
+      <span>{label}</span>
+    </DropdownMenuItem>
   )
 }
 
@@ -290,6 +359,8 @@ export function ShellExplorerPage({
   const theme = host.useTheme()
   const observedReview = useHarnessTurn(host, conversationId)
   const observedReviewKey = observedReview.turnId
+  const observedReviewKeyRef = useRef(observedReviewKey)
+  observedReviewKeyRef.current = observedReviewKey
   const [reviewKey, setReviewKey] = useState<string | null>(observedReviewKey)
   const [info, setInfo] = useState<CoderInfo | null>(null)
   const [infoError, setInfoError] = useState<string | null>(null)
@@ -388,7 +459,41 @@ export function ShellExplorerPage({
   const [reviewRefreshEpoch, setReviewRefreshEpoch] = useState(0)
   const [reviewCollapseEpoch, setReviewCollapseEpoch] = useState(0)
   const [reviewExpandEpoch, setReviewExpandEpoch] = useState(0)
+  const [reviewAllCollapsed, setReviewAllCollapsed] = useState(false)
+  const toggleAllDiffs = () => {
+    if (reviewAllCollapsed) setReviewExpandEpoch((value) => value + 1)
+    else setReviewCollapseEpoch((value) => value + 1)
+    setReviewAllCollapsed((value) => !value)
+  }
   const [reviewMenuOpen, setReviewMenuOpen] = useState(false)
+  const [copyingPatch, setCopyingPatch] = useState(false)
+  const reloadReview = () => {
+    refreshTree()
+    void refreshGit()
+    if (reviewScope.kind === 'last-turn') {
+      setReviewRefreshEpoch((value) => value + 1)
+    } else {
+      loadReviewScope(reviewScope)
+    }
+  }
+  const copyApplyCommand = async () => {
+    if (
+      reviewScope.kind === 'last-turn' ||
+      reviewScope.kind === 'turn' ||
+      copyingPatch ||
+      root === null
+    )
+      return
+    setCopyingPatch(true)
+    try {
+      const patch = await gitPatch(host, root, reviewScope)
+      await navigator.clipboard.writeText(`git apply <<'PATCH'\n${patch}\nPATCH\n`)
+    } catch (error: unknown) {
+      setScopeError(errorMessage(error))
+    } finally {
+      setCopyingPatch(false)
+    }
+  }
   const [reviewScope, setReviewScope] =
     useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
   const reviewScopeRef = useRef(reviewScope)
@@ -407,6 +512,8 @@ export function ShellExplorerPage({
     [],
   )
   const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
+  const [sessionTurns, setSessionTurns] = useState<readonly SessionTurnSummary[]>([])
+  const [turnOutside, setTurnOutside] = useState(0)
   const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
   const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(
     null,
@@ -1092,6 +1199,13 @@ export function ShellExplorerPage({
     const seq = ++scopeMetadataSeqRef.current
     setScopeMetadataLoading(true)
     setScopeMetadataError(null)
+    if (conversationId) {
+      void fetchSessionTurns(host, conversationId)
+        .then((turns) => {
+          if (scopeMetadataSeqRef.current === seq) setSessionTurns(turns)
+        })
+        .catch(() => {})
+    }
     void Promise.all([gitRecentCommits(host, root), gitRefs(host, root)])
       .then(([commits, refs]) => {
         if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
@@ -1111,7 +1225,7 @@ export function ShellExplorerPage({
       .finally(() => {
         if (scopeMetadataSeqRef.current === seq) setScopeMetadataLoading(false)
       })
-  }, [host, root])
+  }, [host, root, conversationId])
 
   const loadReviewScope = useCallback(
     (scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>) => {
@@ -1119,6 +1233,47 @@ export function ShellExplorerPage({
       const seq = ++scopeLoadSeqRef.current
       setScopeLoading(true)
       setScopeError(null)
+      setTurnOutside(0)
+      if (scope.kind === 'turn') {
+        if (!conversationId) {
+          setScopeLoading(false)
+          setScopeError('no chat session')
+          return
+        }
+        void fetchSessionTurn(host, conversationId, scope.turnId)
+          .then((turn) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            const mapped = turn
+              ? reviewEntriesFromTurn(turn, root)
+              : { entries: new Map(), outside: 0 }
+            scopeEntriesRef.current = mapped.entries
+            setScopeEntries(mapped.entries)
+            setTurnOutside(mapped.outside)
+            const activePath = diffRef.current?.change.path
+            const entry =
+              (activePath ? mapped.entries.get(activePath) : undefined) ??
+              mapped.entries.values().next().value
+            if (entry) openReviewEntry(entry)
+            else {
+              diffRequestRef.current += 1
+              setDiff(null)
+            }
+          })
+          .catch((error: unknown) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            scopeEntriesRef.current = new Map()
+            setScopeEntries(new Map())
+            setScopeError(errorMessage(error))
+            diffRequestRef.current += 1
+            setDiff(null)
+          })
+          .finally(() => {
+            if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
+          })
+        return
+      }
       const comparison =
         scope.kind === 'uncommitted' ||
         scope.kind === 'unstaged' ||
@@ -1167,8 +1322,44 @@ export function ShellExplorerPage({
           if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
         })
     },
-    [host, root, openReviewEntry],
+    [host, root, conversationId, openReviewEntry],
   )
+
+  // A chat reopened after its work is done has no live turn to follow; its
+  // latest stored turn stands in, loaded from the shell's durable history.
+  const autoTurnSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!conversationId || root === null) {
+      autoTurnSessionRef.current = null
+      return
+    }
+    if (observedReview.turnId !== null) return
+    if (autoTurnSessionRef.current === conversationId) return
+    autoTurnSessionRef.current = conversationId
+    let cancelled = false
+    void fetchSessionTurns(host, conversationId)
+      .then((turns) => {
+        if (cancelled || rootRef.current !== root) return
+        setSessionTurns(turns)
+        const latest = turns.find((turn) => turn.file_count > 0) ?? turns[0]
+        if (!latest || observedReviewKeyRef.current !== null) return
+        if (reviewEntriesRef.current.size > 0) return
+        const scope = {
+          kind: 'turn' as const,
+          turnId: latest.turn_id,
+          label: turnLabel(latest),
+        }
+        scopeLoadSeqRef.current += 1
+        setReviewScope(scope)
+        scopeEntriesRef.current = new Map()
+        setScopeEntries(new Map())
+        loadReviewScope(scope)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [host, conversationId, root, observedReview.turnId, loadReviewScope])
 
   const onReviewEditDirtyChange = useCallback(
     (path: string, dirty: boolean) => {
@@ -1624,6 +1815,28 @@ export function ShellExplorerPage({
       else previewFile(relPath)
     },
     [openReviewEntry, previewFile],
+  )
+
+  const [revealLineRequest, setRevealLineRequest] = useState<{
+    path: string
+    line: number
+    seq: number
+  } | null>(null)
+  const openFileAtLine = useCallback(
+    (relPath: string, line: number) => {
+      if (!confirmDiscardReviewEdits()) return
+      setTerminalActive(false)
+      diffRequestRef.current += 1
+      setContextDiff(null)
+      setDiff(null)
+      setTabs((s) => openPinned(s, relPath))
+      setRevealLineRequest((previous) => ({
+        path: relPath,
+        line,
+        seq: (previous?.seq ?? 0) + 1,
+      }))
+    },
+    [confirmDiscardReviewEdits],
   )
 
   const pinFile = useCallback(
@@ -2470,6 +2683,12 @@ export function ShellExplorerPage({
                 <ReviewScopePicker
                   value={reviewScope}
                   commits={scopeCommits}
+                  turns={sessionTurns.map((turn) => ({
+                    turnId: turn.turn_id,
+                    label: turnLabel(turn),
+                    fileCount: turn.file_count,
+                    active: turn.ended_at == null,
+                  }))}
                   branches={scopeRefs.map((ref) => ({
                     ref: ref.fullName,
                     name: ref.name,
@@ -2488,6 +2707,14 @@ export function ShellExplorerPage({
                 {scopeError ? (
                   <span className="shui-review-scope-error" title={scopeError}>
                     unavailable
+                  </span>
+                ) : null}
+                {reviewScope.kind === 'turn' && turnOutside > 0 ? (
+                  <span
+                    className="shui-review-count"
+                    title="files this turn changed outside the folder you are browsing"
+                  >
+                    +{turnOutside} outside
                   </span>
                 ) : null}
                 {reviewScope.kind === 'last-turn' && baselineCoverage?.capped ? (
@@ -2520,137 +2747,142 @@ export function ShellExplorerPage({
                   </span>
                 ) : null}
                 <span className="spacer" />
-                <HoverTip label="Reload this review">
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() => {
-                      refreshTree()
-                      void refreshGit()
-                      if (reviewScope.kind === 'last-turn') {
-                        setReviewRefreshEpoch((value) => value + 1)
-                      } else {
-                        loadReviewScope(reviewScope)
-                      }
-                    }}
-                    aria-label="Reload this review"
-                  >
-                    <RefreshCw aria-hidden />
-                  </button>
-                </HoverTip>
-                <HoverTip label="Expand all diffs">
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() => setReviewExpandEpoch((value) => value + 1)}
-                    aria-label="Expand all diffs"
-                  >
-                    <ChevronsUpDown aria-hidden />
-                  </button>
-                </HoverTip>
-                <HoverTip label="Collapse all diffs">
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() => setReviewCollapseEpoch((value) => value + 1)}
-                    aria-label="Collapse all diffs"
-                  >
-                    <ChevronsDownUp aria-hidden />
-                  </button>
-                </HoverTip>
-                <HoverTip
-                  label={
-                    reviewOptions.diffStyle === 'unified'
-                      ? 'Show split diff (side by side)'
-                      : 'Show unified diff (one column)'
-                  }
-                >
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() =>
-                      setReviewOptions((previous) => ({
-                        ...previous,
-                        diffStyle:
-                          previous.diffStyle === 'unified'
-                            ? 'split'
-                            : 'unified',
-                      }))
-                    }
-                    aria-label={
-                      reviewOptions.diffStyle === 'unified'
-                        ? 'Show split diff'
-                        : 'Show unified diff'
-                    }
-                  >
-                    {reviewOptions.diffStyle === 'unified' ? (
-                      <Columns2 aria-hidden />
-                    ) : (
-                      <Rows3 aria-hidden />
-                    )}
-                  </button>
-                </HoverTip>
-                <div className="shui-review-menu-wrap">
-                  <HoverTip label="Diff display options">
-                    <button
-                      type="button"
-                      className={`shui-review-action${reviewMenuOpen ? ' active' : ''}`}
-                      onClick={() => setReviewMenuOpen((value) => !value)}
-                      aria-expanded={reviewMenuOpen}
-                      aria-label="Diff display options"
+                <DropdownMenu open={reviewMenuOpen} onOpenChange={setReviewMenuOpen}>
+                  <DropdownMenuTrigger asChild>
+                    <IconButton
+                      label="Review options"
+                      className={reviewMenuOpen ? 'active' : undefined}
                     >
                       <MoreHorizontal aria-hidden />
-                    </button>
-                  </HoverTip>
-                  {reviewMenuOpen ? (
-                    <div className="shui-review-menu" role="menu">
-                      <ReviewOption
-                        label="Enable word wrap"
-                        checked={reviewOptions.wordWrap}
-                        onChange={(wordWrap) =>
-                          setReviewOptions((value) => ({ ...value, wordWrap }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Enable word diffs"
-                        checked={reviewOptions.wordDiffs}
-                        onChange={(wordDiffs) =>
-                          setReviewOptions((value) => ({ ...value, wordDiffs }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Hide whitespace"
-                        checked={reviewOptions.hideWhitespace}
-                        onChange={(hideWhitespace) =>
-                          setReviewOptions((value) => ({
-                            ...value,
-                            hideWhitespace,
-                          }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Load full files"
-                        checked={reviewOptions.expandUnchanged}
-                        onChange={(expandUnchanged) =>
-                          setReviewOptions((value) => ({
-                            ...value,
-                            expandUnchanged,
-                          }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Enable rich preview"
-                        checked={reviewOptions.richPreview}
-                        onChange={(richPreview) =>
-                          setReviewOptions((value) => ({
-                            ...value,
-                            richPreview,
-                          }))
-                        }
+                    </IconButton>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="shui-review-menu-content">
+                    <ReviewMenuAction
+                      label="Refresh"
+                      icon={<RefreshCw />}
+                      onSelect={reloadReview}
+                    />
+                    <ReviewOption
+                      label="Enable word wrap"
+                      icon={<WrapText />}
+                      checked={reviewOptions.wordWrap}
+                      onChange={(wordWrap) =>
+                        setReviewOptions((value) => ({ ...value, wordWrap }))
+                      }
+                    />
+                    <DropdownMenuSeparator />
+                    <ReviewOption
+                      label="Load full files"
+                      icon={<FileStack />}
+                      checked={reviewOptions.expandUnchanged}
+                      onChange={(expandUnchanged) =>
+                        setReviewOptions((value) => ({
+                          ...value,
+                          expandUnchanged,
+                        }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Enable rich preview"
+                      icon={<Image />}
+                      checked={reviewOptions.richPreview}
+                      onChange={(richPreview) =>
+                        setReviewOptions((value) => ({
+                          ...value,
+                          richPreview,
+                        }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Enable word diffs"
+                      icon={<WholeWord />}
+                      checked={reviewOptions.wordDiffs}
+                      onChange={(wordDiffs) =>
+                        setReviewOptions((value) => ({ ...value, wordDiffs }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Hide whitespace"
+                      icon={<Space />}
+                      checked={reviewOptions.hideWhitespace}
+                      onChange={(hideWhitespace) =>
+                        setReviewOptions((value) => ({
+                          ...value,
+                          hideWhitespace,
+                        }))
+                      }
+                    />
+                    <DropdownMenuSeparator />
+                    <ReviewMenuAction
+                      label={
+                        reviewScope.kind === 'last-turn' || reviewScope.kind === 'turn'
+                          ? 'Copy git apply command (git scopes only)'
+                          : 'Copy git apply command'
+                      }
+                      icon={<ClipboardCopy />}
+                      disabled={
+                        reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'turn' ||
+                        copyingPatch
+                      }
+                      onSelect={() => void copyApplyCommand()}
+                    />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {orderedReviewEntries.length > 0 ? (
+                  <HoverTip label="Jump to file">
+                    <div className="shui-review-jump-wrap">
+                      <Selector
+                        aria-label="Jump to file"
+                        className="shui-review-jump"
+                        contentClassName="shui-review-jump-list"
+                        value={undefined}
+                        options={orderedReviewEntries.map((entry) => ({
+                          value: entry.path,
+                          label: entry.path,
+                        }))}
+                        placeholder=""
+                        searchPlaceholder="Jump to file…"
+                        emptyMessage="no matching file"
+                        triggerIcon={<FileSearch aria-hidden />}
+                        onChange={(path) => {
+                          const entry = visibleReviewEntriesRef.current.get(path)
+                          if (entry) openReviewEntry(entry)
+                        }}
                       />
                     </div>
-                  ) : null}
-                </div>
+                  </HoverTip>
+                ) : null}
+                <IconButton
+                  label={reviewAllCollapsed ? 'Expand all diffs' : 'Collapse all diffs'}
+                  onClick={toggleAllDiffs}
+                >
+                  {reviewAllCollapsed ? (
+                    <ChevronsUpDown aria-hidden />
+                  ) : (
+                    <ChevronsDownUp aria-hidden />
+                  )}
+                </IconButton>
+                <IconButton
+                  label={
+                    reviewOptions.diffStyle === 'unified'
+                      ? 'Switch to split diff'
+                      : 'Switch to unified diff'
+                  }
+                  onClick={() =>
+                    setReviewOptions((previous) => ({
+                      ...previous,
+                      diffStyle:
+                        previous.diffStyle === 'unified' ? 'split' : 'unified',
+                    }))
+                  }
+                >
+                  {reviewOptions.diffStyle === 'unified' ? (
+                    <SplitDiffIcon />
+                  ) : (
+                    <UnifiedDiffIcon />
+                  )}
+                </IconButton>
               </div>
             ) : null}
             {(diff === null && tabs.tabs.length > 0) ||
@@ -2780,6 +3012,7 @@ export function ShellExplorerPage({
                 onEditDirtyChange={onReviewEditDirtyChange}
                 onEditSavingChange={onReviewEditSavingChange}
                 onFileSaved={onReviewFileSaved}
+                onOpenLine={openFileAtLine}
                 onActivate={(path) => {
                   const entry = visibleReviewEntriesRef.current.get(path)
                   if (entry) openReviewEntry(entry)
@@ -2806,6 +3039,12 @@ export function ShellExplorerPage({
               </div>
             ) : tabs.active !== null ? (
               <EditorPane
+                richPreview={reviewOptions.richPreview}
+                reveal={
+                  revealLineRequest?.path === tabs.active
+                    ? revealLineRequest
+                    : null
+                }
                 // fileBump remounts after an agent-side write to the active
                 // file: the pane rehydrates from the refreshed cache entry.
                 key={`${tabs.active}:${fileBump}`}

@@ -8,5 +8,5 @@ bin: canvas
 tags: [diagram, mermaid, flowchart, whiteboard, drawing, svg]
 description: Create, edit and render diagrams in the console — stored as editable source, drawn live in chat and on a canvas page.
 dependencies:
-  state: "0.x"
+  state: "^0.22.1"
   configuration: "0.x"

@@ -1103,7 +1103,7 @@
 [data-iii-ui="shell"] .shui-review-scope-button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-height: 30px;
   padding: 0 7px;
   border: 0;
@@ -1117,6 +1117,12 @@
     "Segoe UI",
     sans-serif;
   cursor: pointer;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-review-scope-button .menu-icon {
+  color: var(--color-ink-faint);
 }
 [data-iii-ui="shell"] .shui-review-scope-button:hover,
 [data-iii-ui="shell"] .shui-review-scope-button[aria-expanded="true"] {
@@ -1165,9 +1171,12 @@
 [data-iii-ui="shell"] .shui-review-scope-menu button:hover {
   background: var(--color-surface-hover);
 }
-[data-iii-ui="shell"] .shui-review-scope-menu button > :first-child:not(svg) {
+[data-iii-ui="shell"] .shui-review-scope-menu button > span:not(.menu-icon-gap) {
   min-width: 0;
   flex: 1;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu button > .menu-icon {
+  color: var(--color-ink-faint);
 }
 [data-iii-ui="shell"] .shui-review-scope-menu button > svg,
 [data-iii-ui="shell"] .shui-review-scope-menu .menu-icon-gap {
@@ -1238,66 +1247,73 @@
 [data-iii-ui="shell"] .shui-review-total.del {
   color: var(--color-git-deleted, #fa423e);
 }
-[data-iii-ui="shell"] .shui-review-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex: none;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="shell"] .shui-review-action:hover,
-[data-iii-ui="shell"] .shui-review-action.active {
+[data-iii-ui="shell"] .shui-review-toolbar .active {
   color: var(--color-ink);
   background: var(--color-surface-hover);
 }
-[data-iii-ui="shell"] .shui-review-action:focus-visible {
-  outline: 1px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="shell"] .shui-review-action svg {
+[data-iii-ui="shell"] .shui-diff-style-icon {
   width: 16px;
   height: 16px;
 }
-[data-iii-ui="shell"] .shui-review-menu-wrap {
-  position: relative;
+[data-iii-ui="shell"] .shui-diff-style-icon .frame {
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.2;
+  opacity: 0.75;
 }
-[data-iii-ui="shell"] .shui-review-menu {
-  position: absolute;
-  top: calc(100% + 5px);
-  right: 0;
-  display: flex;
-  flex-direction: column;
-  width: 224px;
-  padding: 5px;
-  border: 1px solid var(--color-edge);
-  border-radius: 12px;
-  background: var(--color-panel-raised);
-  box-shadow: 0 12px 36px rgb(0 0 0 / 32%);
+[data-iii-ui="shell"] .shui-diff-style-icon .del {
+  fill: var(--color-git-deleted, #c05353);
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .add {
+  fill: var(--color-git-added, #4d9a57);
+}
+[data-iii-ui="shell"] .shui-review-menu-content {
+  min-width: 248px;
+}
+[data-iii-ui="shell"] .shui-review-jump > button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-jump > button:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-review-jump > button > span:not(:first-child),
+[data-iii-ui="shell"] .shui-review-jump > button > svg:last-child {
+  display: none;
+}
+[data-iii-ui="shell"] .shui-review-jump > button > span:first-child {
+  color: inherit;
+}
+[data-iii-ui="shell"] .shui-review-jump > button > span:first-child svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-review-jump-list {
+  width: min(420px, 80vw);
 }
 [data-iii-ui="shell"] .shui-review-option {
   display: flex;
   align-items: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 34px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--color-ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  gap: 10px;
+  min-height: 32px;
 }
-[data-iii-ui="shell"] .shui-review-option:hover {
-  background: var(--color-surface-hover);
+[data-iii-ui="shell"] .shui-review-option .menu-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-option .menu-icon svg {
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-review-option .check {
   display: inline-flex;
@@ -1346,10 +1362,34 @@
     sans-serif;
   text-align: left;
 }
+[data-iii-ui="shell"] .shui-review-file-head {
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
 [data-iii-ui="shell"] .shui-review-file.active > .shui-review-file-head,
 [data-iii-ui="shell"] .shui-review-file-head:hover {
   color: var(--color-ink);
   background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-review-file-toggle .chevron {
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-review-file-toggle .chevron.open {
+  transform: rotate(90deg);
+}
+[data-iii-ui="shell"] .shui-review-file > :not(.shui-review-file-head) {
+  animation: shui-review-reveal var(--motion-duration-panel) var(--motion-ease-enter) both;
+}
+@keyframes shui-review-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 [data-iii-ui="shell"] .shui-review-file-toggle {
   display: flex;
@@ -1371,8 +1411,105 @@
   height: 16px;
   flex: none;
 }
-[data-iii-ui="shell"] .shui-review-file-head .file-icon {
-  color: var(--color-accent);
+[data-iii-ui="shell"] {
+  --shui-icon-blue: light-dark(#1a85d4, #69b1ff);
+  --shui-icon-cyan: light-dark(#1ca1c7, #68cdf2);
+  --shui-icon-gray: light-dark(#84848a, #adadb1);
+  --shui-icon-green: light-dark(#199f43, #5ecc71);
+  --shui-icon-indigo: light-dark(#693acf, #9d6afb);
+  --shui-icon-mauve: light-dark(#594c5b, #79697b);
+  --shui-icon-orange: light-dark(#d47628, #ffa359);
+  --shui-icon-pink: light-dark(#d32a61, #ff678d);
+  --shui-icon-purple: light-dark(#a631be, #d568ea);
+  --shui-icon-red: light-dark(#d52c36, #ff6762);
+  --shui-icon-teal: light-dark(#17a5af, #64d1db);
+  --shui-icon-vermilion: light-dark(#ff8c5b, #d5512f);
+  --shui-icon-yellow: light-dark(#d5a910, #ffd452);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="astro"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="database"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="vite"] {
+  color: var(--shui-icon-purple);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="babel"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="browserslist"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="javascript"] {
+  color: var(--shui-icon-yellow);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="bash"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="markdown"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="svgo"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="vue"] {
+  color: var(--shui-icon-green);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="biome"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="c"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="cpp"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="docker"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="python"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="typescript"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="vscode"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="webpack"] {
+  color: var(--shui-icon-blue);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="bootstrap"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="css"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="eslint"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="terraform"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="wasm"] {
+  color: var(--shui-icon-indigo);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="bun"] {
+  color: var(--shui-icon-mauve);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="claude"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="html"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="json"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="rust"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="svg"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="swift"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="zig"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="zip"] {
+  color: var(--shui-icon-orange);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="go"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="react"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="tailwind"] {
+  color: var(--shui-icon-cyan);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="graphql"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="image"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="sass"] {
+  color: var(--shui-icon-pink);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="mcp"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="prettier"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="table"] {
+  color: var(--shui-icon-teal);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="npm"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="postcss"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="ruby"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="svelte"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="yml"] {
+  color: var(--shui-icon-red);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="text"] {
+  color: var(--shui-icon-gray);
+}
+[data-iii-ui="shell"] .shui-editor-preview {
+  height: 100%;
+  overflow: auto;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-editor-preview .shui-rich-preview {
+  min-height: 100%;
+}
+[data-iii-ui="shell"] .shui-file-type-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--shui-icon-gray);
 }
 [data-iii-ui="shell"] .shui-review-file-toggle .path {
   min-width: 0;
@@ -1396,6 +1533,11 @@
   background: transparent;
   color: var(--color-ink-faint);
   cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-file-action {
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
 }
 [data-iii-ui="shell"] .shui-review-file-action:hover {
   color: var(--color-ink);

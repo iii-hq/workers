@@ -11,7 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SHARED_DEPENDENCY_RANGES = {
     "configuration": "0.x",
     "llm-router": "^1.0.0",
-    "state": "0.x",
+    "queue": "^0.21.4",
+    "state": "^0.22.1",
 }
 
 
@@ -35,7 +36,7 @@ def test_shared_dependencies_use_compatible_ranges() -> None:
                 assert dependency_range == expected_range, (
                     f"{manifest.relative_to(REPO_ROOT)} pins shared dependency "
                     f"{dependency} to {dependency_range!r}; use {expected_range!r} so "
-                    "compatible releases remain allowed without crossing majors"
+                    "all consumers resolve the same compatible worker version"
                 )
 
     for dependency, workers in consumers.items():

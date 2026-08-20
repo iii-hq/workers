@@ -72,6 +72,15 @@ console (**Configuration -> Workers -> cron**) or seed it once via
 scheduler under a serialized apply lock: existing jobs are stopped, re-created
 with the new backend, and never run in two scheduler instances at once.
 
+## Console page
+
+While the worker is connected it injects a **cron** page into the console
+(`#/ext/cron`): every agent-owned schedule with its cadence, next UTC run and
+fire count, the cron bindings other workers registered for themselves, and a
+composer that turns "every weekday at 09:00, summarise open PRs" into a
+registered schedule. Schedules created there live in a session of their own,
+so each routine keeps its own transcript.
+
 ## Trigger type
 
 This worker always registers the `cron` trigger type. Bind a function to it
@@ -84,6 +93,9 @@ with:
 
 All schedules use UTC. Missed fires while the worker is stopped are skipped;
 there is no catch-up replay.
+
+Write the day of week as a name (`Mon` ... `Sun`). Numerically the crate counts
+Sunday as 1, so `0 0 9 * * 1` fires on Sunday, not Monday.
 
 ### Requires removing the legacy built-in cron worker
 

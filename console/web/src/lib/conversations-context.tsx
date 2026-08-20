@@ -3,6 +3,8 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -27,11 +29,14 @@ import {
 } from '@/hooks/use-worktree-status'
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
+import type { IiiClient } from '@/lib/iii-client'
 import {
   type ProviderListEntry,
   refreshProviderModels,
 } from '@/lib/models-catalog'
+import { type ConversationAdapter, startUiLoader } from '@/lib/ui-loader'
 import type { ModelOption } from '@/types/chat'
+import type { ConsoleApi } from '@/types/injectable-ui'
 
 const backend = getDefaultBackend()
 
@@ -88,8 +93,17 @@ const ConversationsContext = createContext<ConversationsContextValue | null>(
   null,
 )
 
+export interface InjectableUiRuntime {
+  client: IiiClient
+  api: ConsoleApi
+}
+
 interface ConversationsProviderProps {
   children: ReactNode
+  injectableUiRuntime?: Promise<InjectableUiRuntime>
+  /** Called when an injected page asks for a conversation, so the host can
+      place the chat pane when none is open. */
+  onConversationRequested?: (sessionId: string) => void
 }
 
 /**
@@ -100,6 +114,8 @@ interface ConversationsProviderProps {
  */
 export function ConversationsProvider({
   children,
+  injectableUiRuntime,
+  onConversationRequested,
 }: ConversationsProviderProps) {
   const harnessStatus = useHarnessStatus(backend.id === 'real')
   const harnessAvailable = isHarnessAvailable(harnessStatus)
@@ -147,6 +163,53 @@ export function ConversationsProvider({
       setRefreshingModels(false)
     }
   }, [harnessAvailable, refresh, presentProviders])
+
+  const selectConversationRef = useRef(api.select)
+  selectConversationRef.current = api.select
+  const conversationsRef = useRef(api.conversations)
+  conversationsRef.current = api.conversations
+  const activeIdRef = useRef(api.activeId)
+  activeIdRef.current = api.activeId
+  const conversationRequestedRef = useRef(onConversationRequested)
+  conversationRequestedRef.current = onConversationRequested
+  const conversationAdapterRef = useRef<ConversationAdapter | null>(null)
+  if (!conversationAdapterRef.current) {
+    conversationAdapterRef.current = {
+      selectConversation(sessionId) {
+        const id = sessionId.trim()
+        if (!id) return
+        selectConversationRef.current(id)
+        // Selecting is only half of it: a page that started a turn wants the
+        // operator to see it, and the chat pane may not be on screen at all.
+        conversationRequestedRef.current?.(id)
+      },
+      composerModel(conversationId) {
+        const requested = conversationId?.trim()
+        const id = requested || activeIdRef.current
+        if (!id) return null
+        const model = conversationsRef.current.find(
+          (conversation) => conversation.id === id,
+        )?.model
+        return typeof model === 'string' && model.trim() ? model.trim() : null
+      },
+    }
+  }
+
+  useEffect(() => {
+    if (!injectableUiRuntime) return
+    let active = true
+    let stop: (() => void) | undefined
+    void injectableUiRuntime
+      .then(({ client, api: consoleApi }) => {
+        if (!active || !conversationAdapterRef.current) return
+        stop = startUiLoader(client, consoleApi, conversationAdapterRef.current)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [injectableUiRuntime])
 
   const value: ConversationsContextValue = {
     ...api,

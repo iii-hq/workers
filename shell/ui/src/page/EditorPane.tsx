@@ -7,7 +7,13 @@
    remounted per file (key=path) and rehydrates from the cache instead
    of re-reading. */
 
-import { CodeEditor, type Host } from '@iii-dev/console-ui'
+import {
+  CodeEditor,
+  type CodeEditorHandle,
+  type Host,
+  IconButton,
+} from '@iii-dev/console-ui'
+import { Code, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
 import {
@@ -16,6 +22,7 @@ import {
   coderWriteFile,
   joinPath,
 } from './coder'
+import { isRichPreviewPath, richPreviewNode } from './rich-preview'
 
 /** File-extension → Monaco language id (unknown ids render plain). */
 export function monacoLangFromPath(path: string): string {
@@ -131,6 +138,11 @@ interface EditorPaneProps {
   onSaved: () => void
   /** Dirty-flag transitions — the page pins the tab on first edit. */
   onDirtyChange: (relPath: string, dirty: boolean) => void
+  /** Global review-pane preference; the header toggle overrides it per file. */
+  richPreview?: boolean
+  /** Land the cursor on a line once the file is loaded; `seq` distinguishes
+      repeated requests for the same line. */
+  reveal?: { line: number; seq: number } | null
 }
 
 export function EditorPane({
@@ -138,10 +150,19 @@ export function EditorPane({
   root,
   relPath,
   cache,
+  richPreview = false,
+  reveal = null,
   onSaved,
   onDirtyChange,
 }: EditorPaneProps) {
   const absPath = joinPath(root, relPath)
+  const editorRef = useRef<CodeEditorHandle>(null)
+  const previewable = isRichPreviewPath(relPath)
+  const [previewChoice, setPreviewChoice] = useState<boolean | null>(null)
+  useEffect(() => {
+    setPreviewChoice(null)
+  }, [richPreview, relPath])
+  const showPreview = previewable && (previewChoice ?? richPreview)
   const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
   const [draft, setDraftState] = useState('')
   const [savedContent, setSavedContent] = useState('')
@@ -220,6 +241,14 @@ export function EditorPane({
 
   const dirty = pane.phase === 'ready' && draft !== savedContent
   const readOnly = entry?.readOnly ?? null
+  const ready = pane.phase === 'ready'
+  useEffect(() => {
+    if (!reveal || !ready) return
+    const handle = editorRef.current as
+      | (CodeEditorHandle & { revealLine?: (line: number) => void })
+      | null
+    handle?.revealLine?.(reveal.line)
+  }, [reveal, ready])
   const canSave = pane.phase === 'ready' && readOnly === null && dirty && !saving
 
   const setDraft = useCallback(
@@ -296,6 +325,15 @@ export function EditorPane({
         ) : null}
         <span className="spacer" />
         {saveError ? <span className="shui-ro-note warn">{saveError}</span> : null}
+        {previewable ? (
+          <IconButton
+            label={showPreview ? 'Show source' : 'Show preview'}
+            aria-pressed={showPreview}
+            onClick={() => setPreviewChoice(!showPreview)}
+          >
+            {showPreview ? <Code aria-hidden /> : <Eye aria-hidden />}
+          </IconButton>
+        ) : null}
         <button
           type="button"
           className="shui-save-btn"
@@ -316,8 +354,11 @@ export function EditorPane({
           <div className="shui-image-wrap">
             <img src={entry.image} alt={relPath} />
           </div>
+        ) : showPreview ? (
+          <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
         ) : (
           <CodeEditor
+            ref={editorRef}
             value={draft}
             onChange={setDraft}
             language={monacoLangFromPath(relPath)}

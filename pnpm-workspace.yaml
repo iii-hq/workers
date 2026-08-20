@@ -25,6 +25,7 @@ packages:
   - pdf/ui
   - state/ui
   - storage/ui
+  - cron/ui
   - shell/ui
   - worktree/ui
   - github/ui

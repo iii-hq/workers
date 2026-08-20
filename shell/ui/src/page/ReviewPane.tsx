@@ -4,9 +4,8 @@ import {
   type Host,
 } from '@iii-dev/console-ui'
 import {
-  ChevronDown,
   ChevronRight,
-  FileCode2,
+  FileSymlink,
   Pencil,
   Save,
   X,
@@ -15,10 +14,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
 import {
   coderReadFile,
+  coderReadFileBase64,
   coderWriteFile,
   joinPath,
   type ReadFileResponse,
 } from './coder'
+import { imageMimeFromPath } from './EditorPane'
+import { FileTypeIcon } from './file-type-icon'
+import {
+  firstChangedLine,
+  gutterLineFromPath,
+  resolveEditorLine,
+} from './open-line'
+import { richPreviewNode } from './rich-preview'
 import { diffLines, diffTotals } from './diff'
 import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
 import type { ReviewEntry } from './review'
@@ -66,6 +74,8 @@ interface ReviewPaneProps {
   onEditSavingChange: (path: string, saving: boolean) => void
   onFileSaved: (path: string, contents: string, revision?: string) => void
   onSummaryChange: (files: readonly ReviewFileSummary[]) => void
+  /** Open the working file in an editor tab with the cursor on `line`. */
+  onOpenLine?: (path: string, line: number) => void
 }
 
 type FileState =
@@ -350,6 +360,12 @@ export interface ReviewContents {
   newContents: string
   worktreeRevision?: string
   mode?: number | null
+  /** Raster image rows: data URL of the working copy, `null` once deleted.
+      Text fields stay empty because the bytes are not diffable. */
+  image?: string | null
+  /** Raster image rows whose new side is a committed revision: the bytes
+      only stream as text, so the row explains instead of previewing. */
+  imageUnavailable?: true
   /** Set when the old side is the last commit rather than this turn's
       pre-turn snapshot. */
   baselineSource?: 'committed'
@@ -382,11 +398,34 @@ async function loadCommittedFallback(
   }
 }
 
+async function loadImageContents(
+  host: Host,
+  root: string,
+  entry: ReviewEntry,
+  mime: string,
+): Promise<ReviewContents> {
+  if (entry.change.status === 'deleted') {
+    return { oldContents: '', newContents: '', image: null }
+  }
+  const path = reviewEntryWorktreePath(entry)
+  if (path === null) return { oldContents: '', newContents: '', imageUnavailable: true }
+  const out = await coderReadFileBase64(host, joinPath(root, path))
+  return {
+    oldContents: '',
+    newContents: '',
+    worktreeRevision: out.revision ?? undefined,
+    mode: out.mode,
+    image: `data:${mime};base64,${out.content ?? ''}`,
+  }
+}
+
 export async function loadReviewContents(
   host: Host,
   root: string,
   entry: ReviewEntry,
 ): Promise<ReviewContents> {
+  const mime = imageMimeFromPath(entry.path)
+  if (mime !== null) return loadImageContents(host, root, entry, mime)
   if (entry.before !== undefined && entry.after !== undefined) {
     const oldSide = gitReadSource(host, root, entry.before)
     if (entry.after.kind === 'worktree') {
@@ -463,6 +502,7 @@ export function ReviewPane({
   onEditSavingChange,
   onFileSaved,
   onSummaryChange,
+  onOpenLine,
 }: ReviewPaneProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
     defaultCollapsedReviewPaths(entries),
@@ -785,6 +825,7 @@ export function ReviewPane({
             onEditDirtyChange={onEditDirtyChange}
             onEditSavingChange={onEditSavingChange}
             onSave={saveFile}
+            onOpenLine={onOpenLine}
             onActivate={() => onActivate(entry.path)}
             onToggle={() => {
               const isCollapsed = collapsed.has(entry.path)
@@ -823,6 +864,7 @@ function ReviewFile({
   onEditDirtyChange,
   onEditSavingChange,
   onSave,
+  onOpenLine,
   onActivate,
   onToggle,
   onStats,
@@ -846,6 +888,7 @@ function ReviewFile({
     contents: string,
     expectedRevision: string | undefined,
   ) => Promise<void>
+  onOpenLine?: (path: string, line: number) => void
   onActivate: () => void
   onToggle: () => void
   onStats: (summary: ReviewFileSummary | null, path: string) => void
@@ -916,6 +959,27 @@ function ReviewFile({
         : null,
     [state, options.hideWhitespace],
   )
+  const openable =
+    onOpenLine !== undefined &&
+    reviewEntryWorktreePath(entry) !== null &&
+    state.phase === 'ready' &&
+    state.image === undefined &&
+    !state.imageUnavailable
+  const lineOps = useMemo(
+    () => (openable && state.phase === 'ready' ? diffLines(state.oldContents, state.newContents) : []),
+    [openable, state],
+  )
+  const openAtLine = (line: number) => {
+    const path = reviewEntryWorktreePath(entry)
+    if (path !== null && onOpenLine) onOpenLine(path, line)
+  }
+  const openFromGutter = (event: React.MouseEvent<HTMLElement>) => {
+    if (!openable || editing) return
+    const target = gutterLineFromPath(event.nativeEvent.composedPath())
+    if (target === null) return
+    event.preventDefault()
+    openAtLine(resolveEditorLine(lineOps, target))
+  }
   useEffect(() => {
     onStats(
       totals === null || state.phase !== 'ready'
@@ -934,7 +998,8 @@ function ReviewFile({
   const editable =
     reviewEntryWorktreePath(entry) !== null &&
     state.phase === 'ready' &&
-    state.worktreeRevision !== undefined
+    state.worktreeRevision !== undefined &&
+    state.image === undefined
   const dirty = editing && draft !== editBaseContents
   const changedOnDisk =
     editing &&
@@ -1058,15 +1123,14 @@ function ReviewFile({
   const editStatus = reviewEditStatus(editing, editorState, saving)
 
   const rich =
-    renderBody && state.phase === 'ready'
-      ? richPreviewFor(entry.path, state.newContents)
-      : null
+    renderBody && state.phase === 'ready' ? richPreviewFor(entry.path, state) : null
   return (
     <section
       ref={sectionRef}
       className={`shui-review-file${active ? ' active' : ''}`}
       data-review-path={entry.path}
       aria-busy={saving}
+      onClick={openFromGutter}
       onKeyDownCapture={(event) => {
         if (
           editing &&
@@ -1085,8 +1149,8 @@ function ReviewFile({
           onClick={onToggle}
           aria-expanded={!collapsed}
         >
-          {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}
-          <FileCode2 aria-hidden className="file-icon" />
+          <ChevronRight aria-hidden className={collapsed ? 'chevron' : 'chevron open'} />
+          <FileTypeIcon path={entry.path} className="file-icon" />
           <span className="path" title={entry.path}>
             {entry.change.from ? `${entry.change.from} → ${entry.path}` : entry.path}
           </span>
@@ -1098,6 +1162,17 @@ function ReviewFile({
           </span>
         ) : null}
         {dirty ? <span className="shui-dirty" title="unsaved diff edit" /> : null}
+        {openable && !editing ? (
+          <button
+            type="button"
+            className="shui-review-file-action"
+            onClick={() => openAtLine(firstChangedLine(lineOps))}
+            aria-label={`open ${entry.path} in the editor`}
+            title="open in editor at the first change (or click a line number)"
+          >
+            <FileSymlink aria-hidden />
+          </button>
+        ) : null}
         {editable && state.phase === 'ready' ? (
           editing ? (
             <>
@@ -1174,10 +1249,19 @@ function ReviewFile({
         <div className="shui-review-message warn">{state.message}</div>
       ) : !editing && options.richPreview && rich !== null ? (
         rich
+      ) : !editing && state.imageUnavailable ? (
+        <div className="shui-review-message">
+          binary image; preview is available for working-tree files only
+        </div>
+      ) : !editing && state.image !== undefined ? (
+        <div className="shui-review-message">
+          {state.image === null ? 'image deleted' : 'binary image; enable rich preview to view it'}
+        </div>
       ) : !editing && totals?.add === 0 && totals.del === 0 ? (
         <div className="shui-review-message">no line changes</div>
       ) : (
         <FileDiff
+          key={options.diffStyle}
           oldFile={{ name: entry.change.from ?? entry.path, contents: state.oldContents }}
           newFile={{ name: entry.path, contents: editing ? draft : state.newContents }}
           diffStyle={options.diffStyle}
@@ -1200,38 +1284,14 @@ function ReviewFile({
   )
 }
 
-function richPreviewFor(path: string, contents: string): React.ReactNode | null {
-  const lower = path.toLowerCase()
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) {
-    return <iframe className="shui-rich-preview" title={`preview ${path}`} sandbox="" srcDoc={contents} />
+function richPreviewFor(
+  path: string,
+  state: Extract<FileState, { phase: 'ready' }>,
+): React.ReactNode | null {
+  if (state.image !== undefined) {
+    return state.image === null ? null : (
+      <img className="shui-rich-preview-image" src={state.image} alt={`preview ${path}`} />
+    )
   }
-  if (lower.endsWith('.svg')) {
-    const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(contents)}`
-    return <img className="shui-rich-preview-image" src={src} alt={`preview ${path}`} />
-  }
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
-    return <MarkdownPreview contents={contents} />
-  }
-  return null
-}
-
-function MarkdownPreview({ contents }: { contents: string }) {
-  return (
-    <article className="shui-markdown-preview">
-      {contents.split('\n').map((line, index) => {
-        const heading = /^(#{1,4})\s+(.*)$/.exec(line)
-        if (heading) {
-          const level = heading[1].length
-          const text = heading[2]
-          if (level === 1) return <h1 key={index}>{text}</h1>
-          if (level === 2) return <h2 key={index}>{text}</h2>
-          if (level === 3) return <h3 key={index}>{text}</h3>
-          return <h4 key={index}>{text}</h4>
-        }
-        if (/^[-*]\s+/.test(line)) return <li key={index}>{line.slice(2)}</li>
-        if (line.trim() === '') return <br key={index} />
-        return <p key={index}>{line}</p>
-      })}
-    </article>
-  )
+  return richPreviewNode(path, state.newContents)
 }

@@ -3,8 +3,13 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FilePen,
   GitBranch,
   GitCommitHorizontal,
+  History,
+  Layers,
+  ListChecks,
+  MessagesSquare,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -15,6 +20,14 @@ export type ReviewScopeSelection =
   | { kind: 'staged' }
   | { kind: 'commit'; sha: string; subject: string }
   | { kind: 'branch'; ref: string; name: string }
+  | { kind: 'turn'; turnId: string; label: string }
+
+export interface ReviewTurnChoice {
+  turnId: string
+  label: string
+  fileCount: number
+  active: boolean
+}
 
 export interface ReviewCommitChoice {
   sha: string
@@ -41,6 +54,27 @@ export function reviewScopeLabel(scope: ReviewScopeSelection): string {
       return scope.subject || scope.sha.slice(0, 8)
     case 'branch':
       return scope.name
+    case 'turn':
+      return scope.label
+  }
+}
+
+function scopeIcon(scope: ReviewScopeSelection) {
+  switch (scope.kind) {
+    case 'last-turn':
+      return <History aria-hidden className="menu-icon" />
+    case 'uncommitted':
+      return <FilePen aria-hidden className="menu-icon" />
+    case 'unstaged':
+      return <ListChecks aria-hidden className="menu-icon" />
+    case 'staged':
+      return <Layers aria-hidden className="menu-icon" />
+    case 'commit':
+      return <GitCommitHorizontal aria-hidden className="menu-icon" />
+    case 'branch':
+      return <GitBranch aria-hidden className="menu-icon" />
+    case 'turn':
+      return <MessagesSquare aria-hidden className="menu-icon" />
   }
 }
 
@@ -48,6 +82,7 @@ function scopeMatches(left: ReviewScopeSelection, right: ReviewScopeSelection): 
   if (left.kind !== right.kind) return false
   if (left.kind === 'commit' && right.kind === 'commit') return left.sha === right.sha
   if (left.kind === 'branch' && right.kind === 'branch') return left.ref === right.ref
+  if (left.kind === 'turn' && right.kind === 'turn') return left.turnId === right.turnId
   return true
 }
 
@@ -55,6 +90,7 @@ export function ReviewScopePicker({
   value,
   commits,
   branches,
+  turns = [],
   metadataLoading,
   metadataError,
   onOpen,
@@ -63,13 +99,15 @@ export function ReviewScopePicker({
   value: ReviewScopeSelection
   commits: readonly ReviewCommitChoice[]
   branches: readonly ReviewBranchChoice[]
+  /** Stored turns of the chat this page follows, newest first. */
+  turns?: readonly ReviewTurnChoice[]
   metadataLoading: boolean
   metadataError: string | null
   onOpen: () => void
   onChange: (scope: ReviewScopeSelection) => void
 }) {
   const [open, setOpen] = useState(false)
-  const [subMenu, setSubMenu] = useState<'committed' | 'branch' | null>(null)
+  const [subMenu, setSubMenu] = useState<'committed' | 'branch' | 'turns' | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -120,6 +158,7 @@ export function ReviewScopePicker({
           if (next) onOpen()
         }}
       >
+        {scopeIcon(value)}
         <span>{reviewScopeLabel(value)}</span>
         <ChevronDown aria-hidden />
       </button>
@@ -136,17 +175,27 @@ export function ReviewScopePicker({
                     aria-checked={scopeMatches(value, scope)}
                     onClick={() => choose(scope)}
                   >
+                    {scopeIcon(scope)}
                     <span>{reviewScopeLabel(scope)}</span>
                     {scopeMatches(value, scope) ? <Check aria-hidden /> : <span className="menu-icon-gap" />}
                   </button>
                 </div>
               ))}
               <div className="shui-review-menu-separator" />
+              {turns.length > 0 ? (
+                <button type="button" role="menuitem" onClick={() => setSubMenu('turns')}>
+                  <MessagesSquare aria-hidden className="menu-icon" />
+                  <span>Turns</span>
+                  <ChevronRight aria-hidden />
+                </button>
+              ) : null}
               <button type="button" role="menuitem" onClick={() => setSubMenu('committed')}>
+                <GitCommitHorizontal aria-hidden className="menu-icon" />
                 <span>Committed</span>
                 <ChevronRight aria-hidden />
               </button>
               <button type="button" role="menuitem" onClick={() => setSubMenu('branch')}>
+                <GitBranch aria-hidden className="menu-icon" />
                 <span>Branch</span>
                 <ChevronRight aria-hidden />
               </button>
@@ -155,11 +204,33 @@ export function ReviewScopePicker({
             <>
               <button type="button" className="submenu-back" onClick={() => setSubMenu(null)}>
                 <ChevronLeft aria-hidden />
-                <span>{subMenu === 'committed' ? 'Committed' : 'Branch'}</span>
+                <span>
+                  {subMenu === 'committed' ? 'Committed' : subMenu === 'branch' ? 'Branch' : 'Turns'}
+                </span>
               </button>
               <div className="shui-review-menu-separator" />
-              {metadataLoading ? <div className="shui-review-scope-note">loading…</div> : null}
-              {!metadataLoading && metadataError ? (
+              {subMenu === 'turns'
+                ? turns.map((turn) => (
+                    <button
+                      key={turn.turnId}
+                      type="button"
+                      className="scope-detail"
+                      role="menuitemradio"
+                      aria-checked={value.kind === 'turn' && value.turnId === turn.turnId}
+                      title={turn.turnId}
+                      onClick={() => choose({ kind: 'turn', turnId: turn.turnId, label: turn.label })}
+                    >
+                      <MessagesSquare aria-hidden />
+                      <span className="scope-detail-main">
+                        <span>{turn.label}</span>
+                        <small>{turn.active ? 'running' : turn.turnId.slice(0, 10)}</small>
+                      </span>
+                      {value.kind === 'turn' && value.turnId === turn.turnId ? <Check aria-hidden /> : null}
+                    </button>
+                  ))
+                : null}
+              {subMenu !== 'turns' && metadataLoading ? <div className="shui-review-scope-note">loading…</div> : null}
+              {subMenu !== 'turns' && !metadataLoading && metadataError ? (
                 <div className="shui-review-scope-note warn">{metadataError}</div>
               ) : null}
               {!metadataLoading && metadataError === null && subMenu === 'committed' && commits.length === 0 ? (
