@@ -14,7 +14,7 @@ export interface TurnSummary {
 /** The rail hides below this many turns; fewer is faster to scroll. */
 export const TURN_RAIL_MIN_TURNS = 5
 /** And below this container width, where the gutter would crowd the text. */
-export const TURN_RAIL_MIN_WIDTH_PX = 640
+export const TURN_RAIL_MIN_WIDTH_PX = 480
 
 const REPLY_PREVIEW_CHARS = 240
 const PROMPT_PREVIEW_CHARS = 140
