@@ -1217,7 +1217,12 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let root_s = root.to_string_lossy().into_owned();
         let log = log_in(dir.path());
-        let create = || call("coder::create-file", json!({ "files": [{ "path": "new.txt" }] }));
+        let create = || {
+            call(
+                "coder::create-file",
+                json!({ "files": [{ "path": "new.txt" }] }),
+            )
+        };
         log.on_pre_trigger(hook("s", "t", create(), &root_s, false))
             .await;
         log.on_post_trigger(hook("s", "t", create(), &root_s, true))
