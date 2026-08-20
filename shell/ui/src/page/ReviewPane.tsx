@@ -2,6 +2,7 @@ import {
   FileDiff,
   type FileDiffEditState,
   type Host,
+  Markdown,
 } from '@iii-dev/console-ui'
 import {
   ChevronDown,
@@ -15,10 +16,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '../lib/format'
 import {
   coderReadFile,
+  coderReadFileBase64,
   coderWriteFile,
   joinPath,
   type ReadFileResponse,
 } from './coder'
+import { imageMimeFromPath } from './EditorPane'
 import { diffLines, diffTotals } from './diff'
 import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
 import type { ReviewEntry } from './review'
@@ -350,6 +353,9 @@ export interface ReviewContents {
   newContents: string
   worktreeRevision?: string
   mode?: number | null
+  /** Raster image rows: data URL of the working copy, `null` once deleted.
+      Text fields stay empty because the bytes are not diffable. */
+  image?: string | null
   /** Set when the old side is the last commit rather than this turn's
       pre-turn snapshot. */
   baselineSource?: 'committed'
@@ -382,11 +388,31 @@ async function loadCommittedFallback(
   }
 }
 
+async function loadImageContents(
+  host: Host,
+  root: string,
+  entry: ReviewEntry,
+  mime: string,
+): Promise<ReviewContents> {
+  const path = reviewEntryWorktreePath(entry)
+  if (path === null) return { oldContents: '', newContents: '', image: null }
+  const out = await coderReadFileBase64(host, joinPath(root, path))
+  return {
+    oldContents: '',
+    newContents: '',
+    worktreeRevision: out.revision ?? undefined,
+    mode: out.mode,
+    image: `data:${mime};base64,${out.content ?? ''}`,
+  }
+}
+
 export async function loadReviewContents(
   host: Host,
   root: string,
   entry: ReviewEntry,
 ): Promise<ReviewContents> {
+  const mime = imageMimeFromPath(entry.path)
+  if (mime !== null) return loadImageContents(host, root, entry, mime)
   if (entry.before !== undefined && entry.after !== undefined) {
     const oldSide = gitReadSource(host, root, entry.before)
     if (entry.after.kind === 'worktree') {
@@ -934,7 +960,8 @@ function ReviewFile({
   const editable =
     reviewEntryWorktreePath(entry) !== null &&
     state.phase === 'ready' &&
-    state.worktreeRevision !== undefined
+    state.worktreeRevision !== undefined &&
+    state.image === undefined
   const dirty = editing && draft !== editBaseContents
   const changedOnDisk =
     editing &&
@@ -1058,9 +1085,7 @@ function ReviewFile({
   const editStatus = reviewEditStatus(editing, editorState, saving)
 
   const rich =
-    renderBody && state.phase === 'ready'
-      ? richPreviewFor(entry.path, state.newContents)
-      : null
+    renderBody && state.phase === 'ready' ? richPreviewFor(entry.path, state) : null
   return (
     <section
       ref={sectionRef}
@@ -1174,6 +1199,10 @@ function ReviewFile({
         <div className="shui-review-message warn">{state.message}</div>
       ) : !editing && options.richPreview && rich !== null ? (
         rich
+      ) : !editing && state.image !== undefined ? (
+        <div className="shui-review-message">
+          {state.image === null ? 'image deleted' : 'binary image; enable rich preview to view it'}
+        </div>
       ) : !editing && totals?.add === 0 && totals.del === 0 ? (
         <div className="shui-review-message">no line changes</div>
       ) : (
@@ -1200,7 +1229,16 @@ function ReviewFile({
   )
 }
 
-function richPreviewFor(path: string, contents: string): React.ReactNode | null {
+function richPreviewFor(
+  path: string,
+  state: Extract<FileState, { phase: 'ready' }>,
+): React.ReactNode | null {
+  if (state.image !== undefined) {
+    return state.image === null ? null : (
+      <img className="shui-rich-preview-image" src={state.image} alt={`preview ${path}`} />
+    )
+  }
+  const contents = state.newContents
   const lower = path.toLowerCase()
   if (lower.endsWith('.html') || lower.endsWith('.htm')) {
     return <iframe className="shui-rich-preview" title={`preview ${path}`} sandbox="" srcDoc={contents} />
@@ -1210,28 +1248,11 @@ function richPreviewFor(path: string, contents: string): React.ReactNode | null 
     return <img className="shui-rich-preview-image" src={src} alt={`preview ${path}`} />
   }
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
-    return <MarkdownPreview contents={contents} />
+    return (
+      <article className="shui-markdown-preview">
+        <Markdown>{contents}</Markdown>
+      </article>
+    )
   }
   return null
-}
-
-function MarkdownPreview({ contents }: { contents: string }) {
-  return (
-    <article className="shui-markdown-preview">
-      {contents.split('\n').map((line, index) => {
-        const heading = /^(#{1,4})\s+(.*)$/.exec(line)
-        if (heading) {
-          const level = heading[1].length
-          const text = heading[2]
-          if (level === 1) return <h1 key={index}>{text}</h1>
-          if (level === 2) return <h2 key={index}>{text}</h2>
-          if (level === 3) return <h3 key={index}>{text}</h3>
-          return <h4 key={index}>{text}</h4>
-        }
-        if (/^[-*]\s+/.test(line)) return <li key={index}>{line.slice(2)}</li>
-        if (line.trim() === '') return <br key={index} />
-        return <p key={index}>{line}</p>
-      })}
-    </article>
-  )
 }
