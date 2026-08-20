@@ -5,6 +5,7 @@ import {
 } from '@iii-dev/console-ui'
 import {
   ChevronRight,
+  FileSymlink,
   Pencil,
   Save,
   X,
@@ -20,6 +21,11 @@ import {
 } from './coder'
 import { imageMimeFromPath } from './EditorPane'
 import { FileTypeIcon } from './file-type-icon'
+import {
+  firstChangedLine,
+  gutterLineFromPath,
+  resolveEditorLine,
+} from './open-line'
 import { richPreviewNode } from './rich-preview'
 import { diffLines, diffTotals } from './diff'
 import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
@@ -68,6 +74,8 @@ interface ReviewPaneProps {
   onEditSavingChange: (path: string, saving: boolean) => void
   onFileSaved: (path: string, contents: string, revision?: string) => void
   onSummaryChange: (files: readonly ReviewFileSummary[]) => void
+  /** Open the working file in an editor tab with the cursor on `line`. */
+  onOpenLine?: (path: string, line: number) => void
 }
 
 type FileState =
@@ -494,6 +502,7 @@ export function ReviewPane({
   onEditSavingChange,
   onFileSaved,
   onSummaryChange,
+  onOpenLine,
 }: ReviewPaneProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
     defaultCollapsedReviewPaths(entries),
@@ -816,6 +825,7 @@ export function ReviewPane({
             onEditDirtyChange={onEditDirtyChange}
             onEditSavingChange={onEditSavingChange}
             onSave={saveFile}
+            onOpenLine={onOpenLine}
             onActivate={() => onActivate(entry.path)}
             onToggle={() => {
               const isCollapsed = collapsed.has(entry.path)
@@ -854,6 +864,7 @@ function ReviewFile({
   onEditDirtyChange,
   onEditSavingChange,
   onSave,
+  onOpenLine,
   onActivate,
   onToggle,
   onStats,
@@ -877,6 +888,7 @@ function ReviewFile({
     contents: string,
     expectedRevision: string | undefined,
   ) => Promise<void>
+  onOpenLine?: (path: string, line: number) => void
   onActivate: () => void
   onToggle: () => void
   onStats: (summary: ReviewFileSummary | null, path: string) => void
@@ -947,6 +959,27 @@ function ReviewFile({
         : null,
     [state, options.hideWhitespace],
   )
+  const openable =
+    onOpenLine !== undefined &&
+    reviewEntryWorktreePath(entry) !== null &&
+    state.phase === 'ready' &&
+    state.image === undefined &&
+    !state.imageUnavailable
+  const lineOps = useMemo(
+    () => (openable && state.phase === 'ready' ? diffLines(state.oldContents, state.newContents) : []),
+    [openable, state],
+  )
+  const openAtLine = (line: number) => {
+    const path = reviewEntryWorktreePath(entry)
+    if (path !== null && onOpenLine) onOpenLine(path, line)
+  }
+  const openFromGutter = (event: React.MouseEvent<HTMLElement>) => {
+    if (!openable || editing) return
+    const target = gutterLineFromPath(event.nativeEvent.composedPath())
+    if (target === null) return
+    event.preventDefault()
+    openAtLine(resolveEditorLine(lineOps, target))
+  }
   useEffect(() => {
     onStats(
       totals === null || state.phase !== 'ready'
@@ -1097,6 +1130,7 @@ function ReviewFile({
       className={`shui-review-file${active ? ' active' : ''}`}
       data-review-path={entry.path}
       aria-busy={saving}
+      onClick={openFromGutter}
       onKeyDownCapture={(event) => {
         if (
           editing &&
@@ -1128,6 +1162,17 @@ function ReviewFile({
           </span>
         ) : null}
         {dirty ? <span className="shui-dirty" title="unsaved diff edit" /> : null}
+        {openable && !editing ? (
+          <button
+            type="button"
+            className="shui-review-file-action"
+            onClick={() => openAtLine(firstChangedLine(lineOps))}
+            aria-label={`open ${entry.path} in the editor`}
+            title="open in editor at the first change (or click a line number)"
+          >
+            <FileSymlink aria-hidden />
+          </button>
+        ) : null}
         {editable && state.phase === 'ready' ? (
           editing ? (
             <>
