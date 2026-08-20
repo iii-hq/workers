@@ -13,11 +13,13 @@ interface PreviewPaneProps {
 
 interface ReadResponse {
   content?: string
+  is_utf8?: boolean
+  more_lines?: boolean
 }
 
 type State =
   | { phase: 'loading' }
-  | { phase: 'ready'; html: string }
+  | { phase: 'ready'; html: string; truncated: boolean }
   | { phase: 'error'; message: string }
 
 const MAX_PREVIEW_BYTES = 2_000_000
@@ -31,7 +33,7 @@ function isHtmlPath(path: string): boolean {
 
 /**
  * Renders an HTML (or SVG) file the agent wrote, in a sandboxed iframe beside
- * the chat. The file is read through `shell::fs::read`; nothing is stored in
+ * the chat. The file is read through `coder::read-file`; nothing is stored in
  * the polled console config. The iframe carries an empty `sandbox`, so page
  * scripts never run and it cannot reach the console around it.
  */
@@ -48,14 +50,22 @@ export function PreviewPane({
     setState({ phase: 'loading' })
     getIiiClient()
       .then((client) =>
-        client.trigger<ReadResponse>('shell::fs::read', {
+        client.trigger<ReadResponse>('coder::read-file', {
           path,
           max_output_bytes: MAX_PREVIEW_BYTES,
         }),
       )
       .then((out) => {
         if (seqRef.current !== seq) return
-        setState({ phase: 'ready', html: out.content ?? '' })
+        if (out.is_utf8 === false) {
+          setState({ phase: 'error', message: 'not a text file' })
+          return
+        }
+        setState({
+          phase: 'ready',
+          html: out.content ?? '',
+          truncated: out.more_lines === true,
+        })
       })
       .catch((err: unknown) => {
         if (seqRef.current !== seq) return
@@ -77,7 +87,15 @@ export function PreviewPane({
 
   return (
     <PageShell aria-label={`preview ${name}`}>
-      <PageHeader title={name} description={path} onClose={onRequestClose} />
+      <PageHeader
+        title={name}
+        description={
+          state.phase === 'ready' && state.truncated
+            ? `${path} (truncated)`
+            : path
+        }
+        onClose={onRequestClose}
+      />
       <PageBody side={panelSide} className="min-h-0 p-0">
         {state.phase === 'loading' ? (
           <div className="flex flex-1 items-center justify-center text-sm text-ink-faint">
