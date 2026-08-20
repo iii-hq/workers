@@ -10,7 +10,7 @@ description: Telegram bridge to the harness stack — polling or webhook ingress
 
 dependencies:
   state: "^0.22.1"
-  queue: "^0.2.0"
+  queue: "^0.21.4"
   configuration: "0.x"
   session-manager: "^1.0.0"
   harness: "^1.0.0"

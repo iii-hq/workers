@@ -10,7 +10,7 @@ description: Thin durable turn loop that wires session-manager, context-manager,
 
 dependencies:
   state: "^0.22.1"
-  queue: "^0.21.2"
+  queue: "^0.21.4"
   cron: "^0.21.0"
   configuration: "0.x"
   iii-observability: "^0.21.6"

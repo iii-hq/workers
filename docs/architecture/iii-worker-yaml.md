@@ -57,10 +57,11 @@ Example: [`harness/iii.worker.yaml`](../../harness/iii.worker.yaml).
 
 Shared dependencies that are still pre-1.0 use ranges matched to their runtime
 compatibility contract. Workers declare `^0.22.1` for `state`, the first
-namespace-aware release, and `0.x` for `configuration`. Consumers of
-`llm-router` retain `^1.0.0`: once a dependency is on a stable major, the caret
-accepts compatible `1.x` releases and excludes `2.0.0` and above. These forms
-are understood directly by iii and the Registry.
+namespace-aware release, `^0.21.4` for the namespace-aware `queue` release, and
+`0.x` for `configuration`. Consumers of `llm-router` retain `^1.0.0`: once a
+dependency is on a stable major, the caret accepts compatible `1.x` releases
+and excludes `2.0.0` and above. These forms are understood directly by iii and
+the Registry.
 
 ## Example (minimal Rust binary)
 

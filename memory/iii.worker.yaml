@@ -13,4 +13,4 @@ dependencies:
   session-manager: "^1.0.0"
   llm-router: "^1.0.0"
   state: "^0.22.1"
-  queue: "^0.2.0"
+  queue: "^0.21.4"
