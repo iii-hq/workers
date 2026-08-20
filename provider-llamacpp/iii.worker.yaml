@@ -10,4 +10,4 @@ description: llama.cpp server (llama-server) Chat Completions provider worker; i
 
 dependencies:
   state: "^0.22.2"
-  llm-router: "^1.0.0"
+  llm-router: "^1.4.12"
