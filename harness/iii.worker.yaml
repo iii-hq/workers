@@ -11,7 +11,7 @@ description: Thin durable turn loop that wires session-manager, context-manager,
 dependencies:
   state: "^0.22.2"
   queue: "^0.21.5"
-  cron: "^0.21.7"
+  cron: "^0.21.9"
   configuration: "0.x"
   iii-observability: "^0.21.6"
   iii-stream: "^0.21.6"
