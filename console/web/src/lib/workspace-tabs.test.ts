@@ -20,6 +20,7 @@ import {
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
 } from './workspace-tabs'
+import fixtures from './workspace-open.fixtures.json'
 
 const NO_EXT = new Map<string, string>()
 
@@ -395,4 +396,35 @@ describe('withScreenDetached', () => {
     expect(parsed).toHaveLength(1)
     expect(parsed[0].screens).toEqual([null])
   })
+})
+
+describe('console::workspace fixtures (shared with the Rust worker)', () => {
+  for (const f of fixtures.open) {
+    it(`open: ${f.name}`, () => {
+      const result = withWorkspaceScreenOpened(
+        f.tabs as WorkspaceTab[],
+        f.activeTabId,
+        f.screen,
+        () => 'tab-new',
+      )
+      expect({ tabs: result.tabs, activeTabId: result.activeTabId }).toEqual(
+        f.expect,
+      )
+    })
+  }
+
+  for (const f of fixtures.close) {
+    it(`close: ${f.name}`, () => {
+      const tabIds: string[] = []
+      const tabs = (f.tabs as WorkspaceTab[]).map((tab) => {
+        const column = tab.screens.indexOf(f.screen)
+        if (column < 0) return tab
+        tabIds.push(tab.id)
+        return tabColumns(tab) > 1
+          ? withColumnRemoved(tab, column)
+          : withScreenDetached(tab, column)
+      })
+      expect({ tabIds, tabs }).toEqual(f.expect)
+    })
+  }
 })

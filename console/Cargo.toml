@@ -29,6 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 url = "2"
 sha2 = "0.10"

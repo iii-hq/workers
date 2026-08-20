@@ -158,13 +158,18 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 ### Worker SDK surface
 
-`console` registers a single function against the engine for health probes and `iii worker info` smoke tests:
+`console` registers a health probe for `iii worker info` smoke tests, plus the workspace functions that let an agent show the human a screen next to the conversation:
 
 | Function | Input | Output |
 |---|---|---|
 | `console::status` | `{}` | `{ http_port, engine_url, version }` |
+| `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, active }], active_tab_id }` |
+| `console::workspace::open` | `{ screen, activate? }` | `{ tab_id, column, placement, screens, activated }` |
+| `console::workspace::close` | `{ screen }` | `{ tab_ids }` |
 
-Defined in [`src/functions/status.rs`](src/functions/status.rs).
+A screen is `chat`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:shell`, `ext:browser`, `ext:editor`, ...). The workspace layout is the `workspace` section of the `console` configuration entry, so every browser pointed at this engine picks the change up. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside chat in the active tab (adjacent empty column, any empty column, new column), else opens a fresh chat + screen tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreachable configuration worker with `WORKSPACE_UNAVAILABLE`.
+
+Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs).
 
 ## Architecture
 
@@ -174,7 +179,7 @@ flowchart LR
     Browser -->|"HTTP GET /runtime"| Console
     Browser -->|"WS /ws"| Console
     Console["console binary<br/>(axum + rust-embed)"] -->|"WebSocket"| Engine["iii engine<br/>:49134"]
-    Console -. "registers console::status" .-> Engine
+    Console -. "registers console::status, console::workspace::*" .-> Engine
 ```
 
 `console` is a thin HTTP server. It serves the embedded SPA bundle and

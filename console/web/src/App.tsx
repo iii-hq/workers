@@ -145,7 +145,9 @@ export function App() {
     if (view === 'configuration') closeSettings()
     else setView('configuration')
   }, [view, setView, closeSettings])
+  const workspaceReady = workspace.ready
   useEffect(() => {
+    if (!workspaceReady) return
     if (lastHashScreenRef.current === hashScreen) return
     lastHashScreenRef.current = hashScreen
     // No tab representation (settings overlay, unresolved ext route):
@@ -157,7 +159,7 @@ export function App() {
     const existing = ws.tabs.find((t) => t.screens.includes(hashScreen))
     if (existing) ws.activateTab(existing.id)
     else ws.createTab({ columns: 1, screens: [hashScreen] })
-  }, [hashScreen])
+  }, [hashScreen, workspaceReady])
 
   // ── Tabs → hash ──
   // Activating a tab whose screens don't cover the current hash points the
@@ -165,6 +167,10 @@ export function App() {
   // deep links keep working. Chat-only and empty tabs leave the hash alone.
   const prevActiveTabIdRef = useRef<string | null>(null)
   useEffect(() => {
+    if (!workspaceReady) {
+      prevActiveTabIdRef.current = null
+      return
+    }
     const prev = prevActiveTabIdRef.current
     prevActiveTabIdRef.current = activeTabId
     if (prev === null || prev === activeTabId) return
@@ -181,7 +187,7 @@ export function App() {
     const extId = extPageIdForScreen(primary)
     if (extId) window.location.hash = hashForExtPage(extId)
     else setView(primary as View)
-  }, [activeTabId, activeTab, hashScreen, setView])
+  }, [activeTabId, activeTab, hashScreen, setView, workspaceReady])
 
   /* Every global shortcut the console has, dispatched from the registry.
      Which keys reach here while the caret is in a field, and which stand

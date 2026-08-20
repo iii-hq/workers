@@ -80,6 +80,8 @@ function persistLocal(state: LocalState): void {
 }
 
 export interface UseWorkspaceTabsReturn {
+  /** Server layout hydrated (or known unavailable); false while `tabs` is the local copy. */
+  ready: boolean
   tabs: WorkspaceTab[]
   activeTabId: string
   activeTab: WorkspaceTab
@@ -109,7 +111,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 
   // Shares the traces saved-views cache entry; refetchInterval keeps the
   // strip reactive to writes from other browsers/tabs.
-  const { data } = useQuery<ConsoleConfigValue | null>({
+  const { data, isFetched } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,
     queryFn: fetchConsoleConfigValue,
     staleTime: 3_000,
@@ -118,6 +120,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     retry: 1,
   })
   const available = data !== null && data !== undefined
+  const ready = isFetched
 
   const [local, setLocal] = useState<LocalState>(loadLocal)
 
@@ -304,6 +307,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   )
 
   return {
+    ready,
     tabs,
     activeTabId,
     activeTab,
