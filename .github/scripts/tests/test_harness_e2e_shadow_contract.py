@@ -170,6 +170,8 @@ class ShadowContractTest(unittest.TestCase):
         self.assertEqual(request["run_contract"]["mode"]["decision"], "observe_only")
         self.assertEqual(request["run_contract"]["runner"]["revision"], "e" * 40)
         self.assertEqual(request["run_contract"]["selected_cases"][0]["scenario_version"], 2)
+        self.assertEqual(request["idempotency_key"], MODULE.observation_idempotency_key(request))
+        self.assertNotEqual(request["idempotency_key"], contract()["idempotency_key"])
 
     def test_rejects_catalog_seed_drift(self):
         changed = catalog()
