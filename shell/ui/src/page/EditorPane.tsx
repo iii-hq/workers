@@ -7,7 +7,12 @@
    remounted per file (key=path) and rehydrates from the cache instead
    of re-reading. */
 
-import { CodeEditor, type Host, IconButton } from '@iii-dev/console-ui'
+import {
+  CodeEditor,
+  type CodeEditorHandle,
+  type Host,
+  IconButton,
+} from '@iii-dev/console-ui'
 import { Code, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
@@ -135,6 +140,9 @@ interface EditorPaneProps {
   onDirtyChange: (relPath: string, dirty: boolean) => void
   /** Global review-pane preference; the header toggle overrides it per file. */
   richPreview?: boolean
+  /** Land the cursor on a line once the file is loaded; `seq` distinguishes
+      repeated requests for the same line. */
+  reveal?: { line: number; seq: number } | null
 }
 
 export function EditorPane({
@@ -143,10 +151,12 @@ export function EditorPane({
   relPath,
   cache,
   richPreview = false,
+  reveal = null,
   onSaved,
   onDirtyChange,
 }: EditorPaneProps) {
   const absPath = joinPath(root, relPath)
+  const editorRef = useRef<CodeEditorHandle>(null)
   const previewable = isRichPreviewPath(relPath)
   const [previewChoice, setPreviewChoice] = useState<boolean | null>(null)
   useEffect(() => {
@@ -231,6 +241,14 @@ export function EditorPane({
 
   const dirty = pane.phase === 'ready' && draft !== savedContent
   const readOnly = entry?.readOnly ?? null
+  const ready = pane.phase === 'ready'
+  useEffect(() => {
+    if (!reveal || !ready) return
+    const handle = editorRef.current as
+      | (CodeEditorHandle & { revealLine?: (line: number) => void })
+      | null
+    handle?.revealLine?.(reveal.line)
+  }, [reveal, ready])
   const canSave = pane.phase === 'ready' && readOnly === null && dirty && !saving
 
   const setDraft = useCallback(
@@ -340,6 +358,7 @@ export function EditorPane({
           <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
         ) : (
           <CodeEditor
+            ref={editorRef}
             value={draft}
             onChange={setDraft}
             language={monacoLangFromPath(relPath)}

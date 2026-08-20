@@ -1716,6 +1716,28 @@ export function ShellExplorerPage({
     [openReviewEntry, previewFile],
   )
 
+  const [revealLineRequest, setRevealLineRequest] = useState<{
+    path: string
+    line: number
+    seq: number
+  } | null>(null)
+  const openFileAtLine = useCallback(
+    (relPath: string, line: number) => {
+      if (!confirmDiscardReviewEdits()) return
+      setTerminalActive(false)
+      diffRequestRef.current += 1
+      setContextDiff(null)
+      setDiff(null)
+      setTabs((s) => openPinned(s, relPath))
+      setRevealLineRequest((previous) => ({
+        path: relPath,
+        line,
+        seq: (previous?.seq ?? 0) + 1,
+      }))
+    },
+    [confirmDiscardReviewEdits],
+  )
+
   const pinFile = useCallback(
     (relPath: string) => {
       const entry = visibleReviewEntriesRef.current.get(relPath)
@@ -2871,6 +2893,7 @@ export function ShellExplorerPage({
                 onEditDirtyChange={onReviewEditDirtyChange}
                 onEditSavingChange={onReviewEditSavingChange}
                 onFileSaved={onReviewFileSaved}
+                onOpenLine={openFileAtLine}
                 onActivate={(path) => {
                   const entry = visibleReviewEntriesRef.current.get(path)
                   if (entry) openReviewEntry(entry)
@@ -2898,6 +2921,11 @@ export function ShellExplorerPage({
             ) : tabs.active !== null ? (
               <EditorPane
                 richPreview={reviewOptions.richPreview}
+                reveal={
+                  revealLineRequest?.path === tabs.active
+                    ? revealLineRequest
+                    : null
+                }
                 // fileBump remounts after an agent-side write to the active
                 // file: the pane rehydrates from the refreshed cache entry.
                 key={`${tabs.active}:${fileBump}`}
