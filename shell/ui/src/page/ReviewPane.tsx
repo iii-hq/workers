@@ -2,7 +2,6 @@ import {
   FileDiff,
   type FileDiffEditState,
   type Host,
-  Markdown,
 } from '@iii-dev/console-ui'
 import {
   ChevronRight,
@@ -21,6 +20,7 @@ import {
 } from './coder'
 import { imageMimeFromPath } from './EditorPane'
 import { FileTypeIcon } from './file-type-icon'
+import { richPreviewNode } from './rich-preview'
 import { diffLines, diffTotals } from './diff'
 import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
 import type { ReviewEntry } from './review'
@@ -1206,6 +1206,7 @@ function ReviewFile({
         <div className="shui-review-message">no line changes</div>
       ) : (
         <FileDiff
+          key={options.diffStyle}
           oldFile={{ name: entry.change.from ?? entry.path, contents: state.oldContents }}
           newFile={{ name: entry.path, contents: editing ? draft : state.newContents }}
           diffStyle={options.diffStyle}
@@ -1237,21 +1238,5 @@ function richPreviewFor(
       <img className="shui-rich-preview-image" src={state.image} alt={`preview ${path}`} />
     )
   }
-  const contents = state.newContents
-  const lower = path.toLowerCase()
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) {
-    return <iframe className="shui-rich-preview" title={`preview ${path}`} sandbox="" srcDoc={contents} />
-  }
-  if (lower.endsWith('.svg')) {
-    const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(contents)}`
-    return <img className="shui-rich-preview-image" src={src} alt={`preview ${path}`} />
-  }
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
-    return (
-      <article className="shui-markdown-preview">
-        <Markdown>{contents}</Markdown>
-      </article>
-    )
-  }
-  return null
+  return richPreviewNode(path, state.newContents)
 }

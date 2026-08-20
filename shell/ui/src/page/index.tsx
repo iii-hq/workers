@@ -2897,6 +2897,7 @@ export function ShellExplorerPage({
               </div>
             ) : tabs.active !== null ? (
               <EditorPane
+                richPreview={reviewOptions.richPreview}
                 // fileBump remounts after an agent-side write to the active
                 // file: the pane rehydrates from the refreshed cache entry.
                 key={`${tabs.active}:${fileBump}`}

@@ -1497,6 +1497,14 @@
 [data-iii-ui="shell"] .shui-file-type-icon[data-token="text"] {
   color: var(--shui-icon-gray);
 }
+[data-iii-ui="shell"] .shui-editor-preview {
+  height: 100%;
+  overflow: auto;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-editor-preview .shui-rich-preview {
+  min-height: 100%;
+}
 [data-iii-ui="shell"] .shui-file-type-icon {
   width: 16px;
   height: 16px;
