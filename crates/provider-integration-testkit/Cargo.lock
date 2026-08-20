@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "clap",
  "futures",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "clap",
  "futures",

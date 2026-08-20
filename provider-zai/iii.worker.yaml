@@ -9,5 +9,5 @@ tags: [llm, zai, glm, chat-completions, provider]
 description: Z.AI Chat Completions provider worker; implements provider::zai::stream and provider::zai::refresh_models behind llm-router.
 
 dependencies:
-  state: "0.x"
+  state: "^0.22.1"
   llm-router: "^1.0.0"

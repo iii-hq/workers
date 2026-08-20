@@ -9,5 +9,5 @@ tags: [llm, router, models, providers]
 description: One front door + provider protocol in front of every LLM provider.
 
 dependencies:
-  state: "0.x"
+  state: "^0.22.1"
   configuration: "0.x"
