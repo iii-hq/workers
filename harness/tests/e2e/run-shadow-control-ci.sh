@@ -8,7 +8,6 @@ repo_root=$(cd -- "$script_dir/../../.." && pwd)
 contract_tool="$repo_root/.github/scripts/harness_e2e_shadow_contract.py"
 artifact_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e-shadow"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
-cli_channel=${III_CLI_CHANNEL:-latest}
 engine_port=${HARNESS_E2E_ENGINE_PORT:-49134}
 wait_seconds=${HARNESS_E2E_WAIT_SECONDS:-180}
 run_timeout_seconds=${HARNESS_E2E_RUN_TIMEOUT_SECONDS:-10800}
@@ -17,16 +16,27 @@ case "$artifact_dir" in
   "$repo_root"/target/*) ;;
   *) echo "HARNESS_E2E_ARTIFACTS_DIR must be below $repo_root/target" >&2; exit 2 ;;
 esac
-case "$cli_channel" in latest | next) ;; *) echo "III_CLI_CHANNEL must be latest or next" >&2; exit 2 ;; esac
-
 mkdir -p "$artifact_dir"
 artifact_dir=$(cd "$artifact_dir" && pwd)
 contract_path="$artifact_dir/execution-contract.json"
 printf '%s\n' "$HARNESS_E2E_EXECUTION_CONTRACT" >"$contract_path"
 python3 "$contract_tool" validate --contract "$contract_path" >/dev/null
 
-stack_versions=$(jq -c '.target.stack_versions' "$contract_path")
-stack_digest=$(jq -r '.target.stack_digest' "$contract_path")
+contract_schema=$(jq -r '.schema_version' "$contract_path")
+if [[ "$contract_schema" == 2 ]]; then
+  stack_versions=$(jq -c '.target.stack.resolved_versions' "$contract_path")
+  stack_digest=$(jq -r '.target.stack.resolution_sha256' "$contract_path")
+  runtime_versions=$(jq -c '.runtime.stack_versions' "$contract_path")
+  cli_version=$(jq -r '.runtime.cli.version' "$contract_path")
+  cli_channel=""
+else
+  stack_versions=$(jq -c '.target.stack_versions' "$contract_path")
+  stack_digest=$(jq -r '.target.stack_digest' "$contract_path")
+  runtime_versions='{}'
+  cli_version=""
+  cli_channel=${III_CLI_CHANNEL:-latest}
+  case "$cli_channel" in latest | next) ;; *) echo "III_CLI_CHANNEL must be latest or next" >&2; exit 2 ;; esac
+fi
 runner_worker=$(jq -r '.runner.registry_worker' "$contract_path")
 runner_ref=$(jq -r '.runner.registry_ref' "$contract_path")
 subject_provider=$(jq -r '.plan.definition.subject.provider' "$contract_path")
@@ -35,6 +45,7 @@ seed=$(jq -r '.plan.definition.seed' "$contract_path")
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-e2e-shadow.XXXXXX")
 project_dir="$run_root/project"
+project_config="$project_dir/iii.config.yaml"
 e2e_home="$run_root/home"
 mkdir -p "$project_dir" "$e2e_home" "$artifact_dir/logs" "$artifact_dir/stack"
 
@@ -64,7 +75,7 @@ fail() {
 }
 
 snapshot_stack() {
-  for file in config.yaml iii.lock workers.json; do
+  for file in iii.config.yaml iii.lock workers.json; do
     [[ -f "$project_dir/$file" ]] && cp "$project_dir/$file" "$artifact_dir/stack/$file"
   done
   if [[ -f "$project_dir/iii.lock" ]]; then
@@ -142,34 +153,50 @@ add_with_retry() {
   return 1
 }
 
-log "Installing iii CLI from $cli_channel"
+if [[ "$contract_schema" == 2 ]]; then
+  log "Installing exact iii CLI $cli_version"
+else
+  log "Installing iii CLI from $cli_channel"
+fi
 curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 "$install_url" -o "$run_root/install.sh"
-if [[ "$cli_channel" == next ]]; then
+if [[ "$contract_schema" == 2 ]]; then
+  VERSION="$cli_version" sh "$run_root/install.sh" 2>&1 | tee "$artifact_dir/logs/install.log"
+elif [[ "$cli_channel" == next ]]; then
   sh "$run_root/install.sh" --next 2>&1 | tee "$artifact_dir/logs/install.log"
 else
   sh "$run_root/install.sh" 2>&1 | tee "$artifact_dir/logs/install.log"
 fi
 iii_bin=$(command -v iii)
-cli_version=$("$iii_bin" --version 2>&1)
-printf '%s\n' "$cli_version" >"$artifact_dir/iii-version.txt"
-export HARNESS_E2E_ENGINE_REVISION="$cli_version"
+observed_cli_version=$("$iii_bin" --version 2>&1)
+printf '%s\n' "$observed_cli_version" >"$artifact_dir/iii-version.txt"
+if [[ "$contract_schema" == 2 && "$observed_cli_version" != *"$cli_version"* ]]; then
+  fail "iii CLI version mismatch: expected $cli_version, observed $observed_cli_version"
+fi
+export HARNESS_E2E_ENGINE_REVISION="$observed_cli_version"
 
-printf 'workers: []\n' >"$project_dir/config.yaml"
-(cd "$project_dir" && exec setsid "$iii_bin" -c config.yaml --no-update-check) \
+printf 'workers: []\n' >"$project_config"
+(cd "$project_dir" && exec setsid "$iii_bin" -c iii.config.yaml --no-update-check) \
   >"$artifact_dir/logs/engine.log" 2>&1 &
 engine_pid=$!
 wait_for_engine
 
 failure_phase=registry
-support=("database@latest" "storage@latest" "fp@latest" "web@latest")
-declare -A providers=()
-for provider in "$subject_provider" "$judge_provider"; do
-  [[ -n "${providers[$provider]:-}" ]] && continue
-  support+=("provider-$provider@latest")
-  providers[$provider]=1
-done
-log "Installing E2E support workers"
-add_with_retry support "${support[@]}"
+if [[ "$contract_schema" == 2 ]]; then
+  while IFS=$'\t' read -r worker version; do
+    log "Installing exact E2E runtime: $worker@$version"
+    add_with_retry "runtime-$worker" "$worker@$version" --force
+  done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$runtime_versions")
+else
+  support=("database@latest" "storage@latest" "fp@latest" "web@latest")
+  declare -A providers=()
+  for provider in "$subject_provider" "$judge_provider"; do
+    [[ -n "${providers[$provider]:-}" ]] && continue
+    support+=("provider-$provider@latest")
+    providers[$provider]=1
+  done
+  log "Installing E2E support workers"
+  add_with_retry support "${support[@]}"
+fi
 
 while IFS=$'\t' read -r worker version; do
   log "Installing exact target stack: $worker@$version"
@@ -179,23 +206,35 @@ done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_
 log "Installing ephemeral runner: $runner_worker@$runner_ref"
 add_with_retry runner "$runner_worker@$runner_ref" --force
 
-# A runner dependency may resolve a different version of a target worker. The
-# target stack is authoritative, so reapply every exact pin after the runner.
+# A runner dependency may resolve a different version of a runtime or target
+# worker. Reapply every exact pin after the runner, with the target last.
+if [[ "$contract_schema" == 2 ]]; then
+  while IFS=$'\t' read -r worker version; do
+    add_with_retry "repin-runtime-$worker" "$worker@$version" --force
+  done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$runtime_versions")
+fi
 while IFS=$'\t' read -r worker version; do
   add_with_retry "repin-$worker" "$worker@$version" --force
 done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
 
 target_harness_version=$(jq -r '.target.version' "$contract_path")
-python3 "$repo_root/.github/scripts/verify_registry_lock.py" \
-  --lock "$project_dir/iii.lock" \
-  --worker harness \
-  --version "$target_harness_version" \
-  --required harness \
-  --required "$runner_worker" \
-  --required database \
-  --required storage \
-  --expected-versions-json "$stack_versions" \
-  --output "$artifact_dir/stack/lock-verification.json" >/dev/null
+if [[ "$contract_schema" == 2 ]]; then
+  python3 "$contract_tool" verify-lock \
+    --contract "$contract_path" \
+    --lock "$project_dir/iii.lock" \
+    --output "$artifact_dir/stack/stack-manifest.json"
+else
+  python3 "$repo_root/.github/scripts/verify_registry_lock.py" \
+    --lock "$project_dir/iii.lock" \
+    --worker harness \
+    --version "$target_harness_version" \
+    --required harness \
+    --required "$runner_worker" \
+    --required database \
+    --required storage \
+    --expected-versions-json "$stack_versions" \
+    --output "$artifact_dir/stack/lock-verification.json" >/dev/null
+fi
 
 wait_for_functions \
   e2e::scenarios-list e2e::run e2e::status e2e::results-get \

@@ -67,6 +67,71 @@ def catalog():
     }
 
 
+def manual_v2_contract():
+    versions = {"harness": "1.9.0", "state": "0.22.1"}
+    stack_digest = MODULE.canonical_sha256(versions)
+    return {
+        "schema_version": 2,
+        "campaign_id": "11111111-1111-4111-8111-111111111111",
+        "execution_id": "22222222-2222-4222-8222-222222222222",
+        "attempt": 1,
+        "idempotency_key": f"rc:d0:{'a' * 64}",
+        "target": {
+            "application": "harness",
+            "version": "1.9.0",
+            "source_sha": "b" * 40,
+            "deployment_id": "33333333-3333-4333-8333-333333333333",
+            "stack_versions": versions,
+            "stack_digest": stack_digest,
+            "origin": None,
+            "base": {"kind": "deployment", "id": "33333333-3333-4333-8333-333333333333"},
+            "stack": {
+                "requested_versions": versions,
+                "resolved_versions": versions,
+                "resolution_sha256": stack_digest,
+                "provenance": [
+                    {
+                        "worker": "harness",
+                        "version": "1.9.0",
+                        "source_sha": "b" * 40,
+                        "operation_id": "33333333-3333-4333-8333-333333333333",
+                    },
+                    {"worker": "state", "version": "0.22.1"},
+                ],
+            },
+        },
+        "plan": {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "revision": 2,
+            "sha256": f"sha256:{'c' * 64}",
+            "definition": {
+                "mode": "demonstrative",
+                "entrypoint": "e2e::run",
+                "label": "Manual stack",
+                "lane": "release-control-shadow",
+                "subject": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+                "judge": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+                "scenarios": ["direct_answer"],
+                "runs": 1,
+                "seed": 4404,
+                "technicalRetries": 1,
+                "progressIntervalSeconds": 15,
+            },
+        },
+        "runner": {"registry_worker": "harness-e2e", "registry_ref": "0.1.0-experimental"},
+        "workflow": {"repository": "iii-hq/workers", "file": "harness-e2e-shadow.yml", "ref": "main"},
+        "runtime": {"cli": {"version": "0.22.1"}, "stack_versions": versions, "stack_digest": stack_digest},
+        "security": {"oidc_audience": "release-control-harness-e2e"},
+    }
+
+
+def manual_v2_catalog():
+    return {
+        **catalog(),
+        "runner": {"name": "harness-e2e", "version": "0.1.0-experimental", "revision": "e" * 40},
+    }
+
+
 class ShadowContractTest(unittest.TestCase):
     def test_materializes_observe_only_request(self):
         request = MODULE.materialize_request(contract(), catalog())
@@ -84,6 +149,23 @@ class ShadowContractTest(unittest.TestCase):
         changed = contract()
         changed["target"]["stack_versions"]["database"] = "0.11.0-next.5"
         MODULE.validate_contract(changed)
+
+    def test_materializes_the_release_control_manual_v2_contract_without_an_origin_step(self):
+        request = MODULE.materialize_request(manual_v2_contract(), manual_v2_catalog())
+
+        self.assertEqual(
+            request["run_contract"]["target"]["stack"]["stack_versions"],
+            {"harness": "1.9.0", "state": "0.22.1"},
+        )
+        self.assertEqual(request["run_contract"]["runner"]["version"], "0.1.0-experimental")
+        self.assertEqual(request["run_contract"]["selected_cases"][0]["scenario_id"], "direct_answer")
+
+    def test_rejects_a_manual_v2_contract_when_the_resolved_stack_digest_is_tampered(self):
+        changed = manual_v2_contract()
+        changed["target"]["stack"]["resolution_sha256"] = f"sha256:{'0' * 64}"
+
+        with self.assertRaisesRegex(ValueError, "resolution_sha256 does not match"):
+            MODULE.validate_contract(changed)
 
     def test_packages_raw_file_digests(self):
         with tempfile.TemporaryDirectory() as directory:
