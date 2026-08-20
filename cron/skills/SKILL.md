@@ -29,6 +29,11 @@ The schedule grammar is the Rust `cron` crate dialect: six or seven fields,
 optional. The leading field is always seconds, so `0 */5 * * * *` fires every
 5 minutes at second 0, while `*/5 * * * * *` fires every 5 seconds.
 
+Write the day of week as a name: `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`,
+`Sun`. Numerically this dialect counts Sunday as 1, one ahead of the Unix
+convention, so `0 0 9 * * 1` fires on Sunday and a `1` written for Monday
+fires a day early. Names avoid the whole question.
+
 Two lock backends govern duplicate firing. `local` is the default and is only
 process-local; every worker instance can fire the same job in a multi-instance
 deployment. `redis` uses Redis locking and is required for once-only firing

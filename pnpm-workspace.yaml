@@ -22,6 +22,7 @@ packages:
   - harness/ui
   - memory/ui
   - pdf/ui
+  - cron/ui
   - state/ui
   - storage/ui
   - iii-directory/ui

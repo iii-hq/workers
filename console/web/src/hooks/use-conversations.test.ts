@@ -12,6 +12,7 @@ import {
   mergeConversationMeta,
   mergeHydratedTranscript,
   mergeSessionListSnapshot,
+  resolveActiveConversationId,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -542,5 +543,39 @@ describe('isUntouchedDraft', () => {
     expect(isUntouchedDraft(conversation({ draft: false, messages: [] }))).toBe(
       false,
     )
+  })
+})
+
+describe('resolveActiveConversationId', () => {
+  it('keeps a pending select until that session appears in the list', () => {
+    const waiting = resolveActiveConversationId({
+      conversationIds: ['draft'],
+      activeId: 'draft',
+      pendingSelectId: 'worker-session',
+    })
+    expect(waiting).toEqual({
+      activeId: 'worker-session',
+      pendingSelectId: 'worker-session',
+    })
+
+    const arrived = resolveActiveConversationId({
+      conversationIds: ['worker-session', 'draft'],
+      activeId: 'draft',
+      pendingSelectId: 'worker-session',
+    })
+    expect(arrived).toEqual({
+      activeId: 'worker-session',
+      pendingSelectId: null,
+    })
+  })
+
+  it('falls back to the first conversation when nothing is pending or active', () => {
+    expect(
+      resolveActiveConversationId({
+        conversationIds: ['a', 'b'],
+        activeId: 'gone',
+        pendingSelectId: null,
+      }),
+    ).toEqual({ activeId: 'a', pendingSelectId: null })
   })
 })

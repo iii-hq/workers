@@ -51,9 +51,13 @@ pub struct SubscribeRequest {
     /// signaller call `state::set` on it (no dedicated emit needed — the
     /// engine fans the trigger out to every subscriber).
     pub trigger_type: String,
-    /// The trigger config, passed verbatim to the engine — e.g.
+    /// The trigger config OBJECT, passed verbatim to the engine — e.g.
     /// `{ "expression": "0 */5 * * * *" }` for cron, or a `state` scope/key.
-    #[serde(default)]
+    /// Not a string: `"{\"expression\":\"...\"}"` is a JSON document
+    /// serialised twice. One that parses to an object is decoded rather than
+    /// refused, because models emit that form routinely and the trigger type
+    /// would otherwise reject a registration the model got right in substance.
+    #[serde(default, deserialize_with = "decode_config")]
     pub config: Value,
     /// A short human label echoed back in the notification text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,6 +97,23 @@ pub struct SubscribeRequest {
     /// level (the shorthand every prompt uses).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<LifecycleRequest>,
+}
+
+/// Accepts the config object, and the double-encoded string models keep
+/// sending for an untyped field. Anything else is passed through untouched so
+/// the owning trigger type still gives the real error.
+fn decode_config<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Value::deserialize(deserializer)?;
+    let Value::String(text) = &raw else {
+        return Ok(raw);
+    };
+    match serde_json::from_str::<Value>(text) {
+        Ok(parsed) if parsed.is_object() => Ok(parsed),
+        _ => Ok(raw),
+    }
 }
 
 /// The caller-settable half of a binding's lifecycle.
@@ -1156,6 +1177,34 @@ fn error_result(msg: String) -> ResultData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config sent as a JSON string is the same document serialised twice;
+    /// decode it rather than hand the trigger type a string it cannot read.
+    #[test]
+    fn config_accepts_the_double_encoded_string() {
+        let request: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "cron",
+            "config": "{\"expression\": \"0 0 8 * * Mon\"}",
+        }))
+        .expect("string config decodes");
+        assert_eq!(request.config, json!({ "expression": "0 0 8 * * Mon" }));
+
+        let object: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "cron",
+            "config": { "expression": "0 0 8 * * Mon" },
+        }))
+        .expect("object config decodes");
+        assert_eq!(object.config, json!({ "expression": "0 0 8 * * Mon" }));
+
+        // A string that is not a JSON object is left alone, so the trigger
+        // type still reports what is actually wrong with it.
+        let plain: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "cron",
+            "config": "0 0 8 * * Mon",
+        }))
+        .expect("plain string decodes");
+        assert_eq!(plain.config, json!("0 0 8 * * Mon"));
+    }
 
     /// An agent may gate itself and its own `<session>-` children; anything
     /// else is out of scope. No patterns → just itself.

@@ -313,6 +313,10 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
+    /** Optional on consoles that predate worker-driven conversation switching. */
+    selectConversation?(sessionId: string): void
+    /** Live composer model for a conversation, including unsaved drafts. */
+    composerModel?(conversationId?: string | null): string | null
   }
 }
 
