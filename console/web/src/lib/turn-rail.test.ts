@@ -35,27 +35,36 @@ const call = (): Message =>
   }) as Message
 
 describe('turnsFromMessages', () => {
-  it('opens a turn per real user message and previews the first reply', () => {
+  it('ticks user prompts and agent prose, attributing calls to the tick before them', () => {
     const turns = turnsFromMessages([
       user('  first\nquestion  '),
       call(),
       call(),
       assistant(''),
       assistant('the answer\nwith detail'),
+      call(),
       user('ping', { notification: true } as Partial<Message>),
       user('second'),
       assistant('ok', { streaming: true } as Partial<Message>),
     ])
-    expect(turns.map((t) => t.prompt)).toEqual(['first question', 'second'])
+    expect(turns.map((t) => [t.kind, t.calls, t.tone])).toEqual([
+      ['user', 2, 'ink'],
+      ['agent', 1, 'ink'],
+      ['user', 0, 'ink'],
+      ['agent', 0, 'accent'],
+    ])
     expect(turns[0]).toMatchObject({
+      prompt: 'first question',
       reply: 'the answer with detail',
-      calls: 2,
-      tone: 'ink',
     })
-    expect(turns[1]).toMatchObject({ reply: 'ok', calls: 0, tone: 'accent' })
+    expect(turns[1]).toMatchObject({
+      prompt: '',
+      reply: 'the answer with detail',
+    })
+    expect(turns[3].reply).toBe('ok')
   })
 
-  it('marks failed turns and keeps alert over accent', () => {
+  it('marks failed replies and system errors alert', () => {
     const turns = turnsFromMessages([
       user('one'),
       assistant('boom', { stopReason: 'error' } as Partial<Message>),
@@ -67,9 +76,13 @@ describe('turnsFromMessages', () => {
         content: 'x',
         tone: 'error',
       } as Message,
-      assistant('retrying', { streaming: true } as Partial<Message>),
+      assistant('', { streaming: true } as Partial<Message>),
     ])
-    expect(turns.map((t) => t.tone)).toEqual(['alert', 'alert'])
+    expect(turns.map((t) => [t.kind, t.tone])).toEqual([
+      ['user', 'ink'],
+      ['agent', 'alert'],
+      ['user', 'alert'],
+    ])
   })
 
   it('truncates long prompts and replies', () => {
@@ -80,6 +93,7 @@ describe('turnsFromMessages', () => {
     expect(turns[0].prompt.length).toBe(140)
     expect(turns[0].prompt.endsWith('…')).toBe(true)
     expect(turns[0].reply.length).toBe(240)
+    expect(turns[1].reply.length).toBe(240)
   })
 
   it('ignores leading replies with no turn and empty input', () => {

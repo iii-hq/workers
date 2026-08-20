@@ -13,6 +13,7 @@ import {
   steppedTickIndex,
   TURN_RAIL_MIN_TURNS,
   TURN_RAIL_MIN_WIDTH_PX,
+  type TurnKind,
   type TurnSummary,
   type TurnTone,
   turnsFromMessages,
@@ -39,6 +40,11 @@ const TICK_TONE: Record<TurnTone, string> = {
   ink: 'bg-ink-ghost group-hover/tick:bg-ink',
   accent: 'bg-accent',
   alert: 'bg-alert',
+}
+
+function tickWidth(kind: TurnKind, active: boolean): string {
+  if (kind === 'user') return active ? 'w-5' : 'w-3'
+  return active ? 'w-4' : 'w-2'
 }
 
 const JUMP_MARGIN_PX = 16
@@ -242,7 +248,11 @@ export function TurnRail({ messages, container, content }: TurnRailProps) {
             key={tick.id}
             type="button"
             tabIndex={-1}
-            aria-label={`turn ${index + 1}: ${tick.prompt}`}
+            aria-label={
+              tick.kind === 'user'
+                ? `turn ${index + 1}: ${tick.prompt}`
+                : `agent step ${index + 1}: ${tick.reply}`
+            }
             className="group/tick absolute left-0 flex h-3 w-5 -translate-y-1/2 items-center"
             style={{ top: `${tick.fraction * 100}%` }}
             onPointerEnter={() => setHover(index)}
@@ -253,7 +263,8 @@ export function TurnRail({ messages, container, content }: TurnRailProps) {
               className={cn(
                 'block h-px rounded-full transition-[width,background-color] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)]',
                 TICK_TONE[tick.tone],
-                active === index ? 'w-5' : 'w-3',
+                tickWidth(tick.kind, active === index),
+                tick.kind === 'agent' && tick.tone === 'ink' && 'opacity-60',
                 tick.tone === 'accent' && 'animate-pulse',
               )}
             />
@@ -274,9 +285,22 @@ export function TurnRail({ messages, container, content }: TurnRailProps) {
             top: `min(calc(100% - 48px), max(24px, ${preview.fraction * 100}%))`,
           }}
         >
-          <p className="line-clamp-1 font-medium text-ink">{preview.prompt}</p>
+          {preview.kind === 'user' ? (
+            <p className="line-clamp-1 font-medium text-ink">
+              {preview.prompt}
+            </p>
+          ) : (
+            <p className="text-ink-ghost">Agent</p>
+          )}
           {preview.reply ? (
-            <p className="mt-1 line-clamp-3 text-ink-faint">{preview.reply}</p>
+            <p
+              className={cn(
+                'mt-1 line-clamp-3',
+                preview.kind === 'user' ? 'text-ink-faint' : 'text-ink',
+              )}
+            >
+              {preview.reply}
+            </p>
           ) : null}
           {preview.calls > 0 ? (
             <p className="mt-1 text-ink-ghost">

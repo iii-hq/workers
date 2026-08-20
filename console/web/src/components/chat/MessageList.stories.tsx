@@ -74,6 +74,46 @@ export const LongSessionWithTurnRail: Story = {
   args: { messages: longSession(40) },
 }
 
+function agentLoop(steps: number): Message[] {
+  const messages: Message[] = [
+    {
+      id: 'u-0',
+      createdAt: 1,
+      role: 'user',
+      content:
+        'Port the python client to rust, keep the public API, and prove it with the existing fixtures.',
+    },
+  ]
+  let clock = 2
+  for (let index = 0; index < steps; index += 1) {
+    messages.push({
+      id: `f-${index}`,
+      createdAt: clock++,
+      role: 'function-trigger',
+      functionId: index % 2 === 0 ? 'coder::read-file' : 'shell::exec',
+      input: { path: `src/step-${index}.rs` },
+      output: { ok: true },
+      durationMs: 80 + index,
+    })
+    messages.push({
+      id: `a-${index}`,
+      createdAt: clock++,
+      role: 'assistant',
+      model: 'anthropic::claude-haiku-4-5-20251001',
+      mode: 'agent',
+      content: `Step ${index + 1}: ${index % 5 === 4 ? 'tests pass for this module, moving on.' : 'reading the module and sketching the rust signature before writing it.'}`,
+      stopReason: 'end',
+      streaming: index === steps - 1,
+    })
+  }
+  return messages
+}
+
+export const AgentLoopWithTurnRail: Story = {
+  name: 'single prompt, long agent loop',
+  args: { messages: agentLoop(30) },
+}
+
 export const ShortSessionNoRail: Story = {
   name: 'short session, no rail',
   args: { messages: longSession(3) },

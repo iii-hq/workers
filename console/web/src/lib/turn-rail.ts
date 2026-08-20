@@ -1,17 +1,22 @@
 import type { Message } from '@/types/chat'
 
 export type TurnTone = 'ink' | 'accent' | 'alert'
+export type TurnKind = 'user' | 'agent'
 
 export interface TurnSummary {
-  /** Id of the user message that opens the turn. */
+  /** Id of the message the tick anchors to. */
   id: string
+  kind: TurnKind
+  /** User prompt for a user tick; empty for an agent tick. */
   prompt: string
+  /** First reply after a user tick; the agent text for an agent tick. */
   reply: string
+  /** Function calls between this tick and the next. */
   calls: number
   tone: TurnTone
 }
 
-/** The rail hides below this many turns; fewer is faster to scroll. */
+/** The rail hides below this many ticks; fewer is faster to scroll. */
 export const TURN_RAIL_MIN_TURNS = 5
 /** And below this container width, where the gutter would crowd the text. */
 export const TURN_RAIL_MIN_WIDTH_PX = 480
@@ -33,41 +38,59 @@ function opensTurn(message: Message): boolean {
   )
 }
 
-/** One entry per user turn: prompt, first reply, call count, and a tone
-    (alert for a failed turn, accent while the reply streams). */
+/** A tick per user prompt and per agent prose message, in order. Agent
+    loops are mostly one prompt followed by many steps, so the agent's own
+    messages are the landmarks. Calls land on the tick before them; a failed
+    reply turns its tick alert, a streaming one accent. */
 export function turnsFromMessages(messages: readonly Message[]): TurnSummary[] {
   const turns: TurnSummary[] = []
   let current: TurnSummary | null = null
-  let replyFound = false
+  let lastUser: TurnSummary | null = null
   for (const message of messages) {
     if (opensTurn(message) && message.role === 'user') {
       current = {
         id: message.id,
+        kind: 'user',
         prompt: firstLines(message.content, PROMPT_PREVIEW_CHARS),
         reply: '',
         calls: 0,
         tone: 'ink',
       }
-      replyFound = false
+      lastUser = current
       turns.push(current)
       continue
     }
     if (current === null) continue
     if (message.role === 'function-trigger') {
       current.calls += 1
-    } else if (message.role === 'assistant') {
-      if (!replyFound && message.content.trim() !== '') {
-        current.reply = firstLines(message.content, REPLY_PREVIEW_CHARS)
-        replyFound = true
-      }
-      if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-        current.tone = 'alert'
-      } else if (message.streaming && current.tone !== 'alert') {
-        current.tone = 'accent'
-      }
-    } else if (message.role === 'system' && message.tone === 'error') {
-      current.tone = 'alert'
+      continue
     }
+    if (message.role === 'system' && message.tone === 'error') {
+      current.tone = 'alert'
+      continue
+    }
+    if (message.role !== 'assistant') continue
+    const text = firstLines(message.content, REPLY_PREVIEW_CHARS)
+    const failed =
+      message.stopReason === 'error' || message.stopReason === 'aborted'
+    if (lastUser !== null && lastUser.reply === '' && text !== '') {
+      lastUser.reply = text
+    }
+    if (text === '') {
+      if (failed) current.tone = 'alert'
+      else if (message.streaming && current.tone !== 'alert')
+        current.tone = 'accent'
+      continue
+    }
+    current = {
+      id: message.id,
+      kind: 'agent',
+      prompt: '',
+      reply: text,
+      calls: 0,
+      tone: failed ? 'alert' : message.streaming ? 'accent' : 'ink',
+    }
+    turns.push(current)
   }
   return turns
 }
