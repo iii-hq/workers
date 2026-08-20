@@ -1,0 +1,77 @@
+{
+  "description": "Internal: stamp authoritative Harness context onto A2UI function arguments before dispatch.",
+  "function_id": "a2ui::stamp-session",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "StampCall": {
+        "properties": {
+          "arguments": {
+            "default": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Trusted pre-trigger envelope supplied by the Harness hook runner.",
+    "properties": {
+      "call": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/StampCall"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "session_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "StampSessionEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/StampSessionResponse"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "HookMutations": {
+        "properties": {
+          "arguments": true
+        },
+        "required": [
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "StampSessionResponse": {
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "mutations": {
+            "$ref": "#/definitions/HookMutations"
+          }
+        },
+        "required": [
+          "decision",
+          "mutations"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "Nullable_StampSessionResponse"
+  }
+}

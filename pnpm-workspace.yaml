@@ -13,6 +13,7 @@ packages:
   - context-manager/ui
   - browser/ui
   - web/ui
+  - a2ui/ui
   - canvas/ui
   - sandbox-code-runner/ui
   - code-runner/ui

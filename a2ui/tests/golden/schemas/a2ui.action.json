@@ -1,0 +1,88 @@
+{
+  "description": "Console-only: persist an A2UI component action and forward it as a structured message to the originating Harness session.",
+  "function_id": "a2ui::action",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "action_id": {
+        "description": "Stable client-generated id reused when Harness delivery is retried.",
+        "type": "string"
+      },
+      "context": {
+        "default": null
+      },
+      "data_model": {
+        "default": null,
+        "description": "Full client-side model when createSurface.sendDataModel requested it."
+      },
+      "expected_revision": {
+        "description": "Reject a gesture rendered from stale surface state.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "name": {
+        "type": "string"
+      },
+      "source_component_id": {
+        "type": "string"
+      },
+      "surface_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action_id",
+      "expected_revision",
+      "name",
+      "source_component_id",
+      "surface_id"
+    ],
+    "title": "ActionRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "accepted": {
+        "type": "boolean"
+      },
+      "forward_error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "forwarded": {
+        "type": "boolean"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "turn_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "accepted",
+      "forwarded",
+      "revision",
+      "session_id",
+      "surface_id"
+    ],
+    "title": "ActionResponse",
+    "type": "object"
+  }
+}

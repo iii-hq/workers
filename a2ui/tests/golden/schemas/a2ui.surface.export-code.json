@@ -1,0 +1,73 @@
+{
+  "description": "Export a generated interface as a runnable React app or a data-serving iii worker template.",
+  "function_id": "a2ui::surface::export-code",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "CodeTarget": {
+        "enum": [
+          "react",
+          "worker"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "surface_id": {
+        "description": "Surface to turn into source files.",
+        "type": "string"
+      },
+      "target": {
+        "$ref": "#/definitions/CodeTarget"
+      }
+    },
+    "required": [
+      "surface_id",
+      "target"
+    ],
+    "title": "ExportCodeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CodeFile": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "files": {
+        "items": {
+          "$ref": "#/definitions/CodeFile"
+        },
+        "type": "array"
+      },
+      "format": {
+        "type": "string"
+      },
+      "surface_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "files",
+      "format",
+      "surface_id"
+    ],
+    "title": "CodeExport",
+    "type": "object"
+  }
+}

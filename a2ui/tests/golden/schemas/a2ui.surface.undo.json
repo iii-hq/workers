@@ -1,0 +1,86 @@
+{
+  "description": "Restore an A2UI surface from a prior revision while creating a new monotonic revision.",
+  "function_id": "a2ui::surface::undo",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "surface_id": {
+        "description": "Surface to restore.",
+        "type": "string"
+      },
+      "to_revision": {
+        "default": null,
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "surface_id"
+    ],
+    "title": "UndoRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SurfaceStatus": {
+        "enum": [
+          "active",
+          "deleted"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "catalog_id": {
+        "type": "string"
+      },
+      "component_count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page": {
+        "type": "string"
+      },
+      "protocol_version": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SurfaceStatus"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "catalog_id",
+      "component_count",
+      "page",
+      "protocol_version",
+      "revision",
+      "session_id",
+      "status",
+      "surface_id",
+      "title"
+    ],
+    "title": "SurfaceReceipt",
+    "type": "object"
+  }
+}

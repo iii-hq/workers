@@ -1,0 +1,88 @@
+{
+  "description": "Create a new A2UI surface from a reusable template in the current Harness session.",
+  "function_id": "a2ui::template::apply",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "surface_id": {
+        "type": "string"
+      },
+      "template_id": {
+        "description": "Template to instantiate.",
+        "type": "string"
+      },
+      "title": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "surface_id",
+      "template_id"
+    ],
+    "title": "TemplateApplyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SurfaceStatus": {
+        "enum": [
+          "active",
+          "deleted"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "catalog_id": {
+        "type": "string"
+      },
+      "component_count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page": {
+        "type": "string"
+      },
+      "protocol_version": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SurfaceStatus"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "catalog_id",
+      "component_count",
+      "page",
+      "protocol_version",
+      "revision",
+      "session_id",
+      "status",
+      "surface_id",
+      "title"
+    ],
+    "title": "SurfaceReceipt",
+    "type": "object"
+  }
+}

@@ -1,0 +1,16 @@
+iii: v1
+name: a2ui
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: a2ui
+tags: [a2ui, generative-ui, agent-ui, console, harness]
+description: Compose, validate, persist, and render A2UI v0.9.1 surfaces for Harness sessions in chat and on an injectable Console page.
+
+dependencies:
+  state: "^0.22.0"
+  configuration: "^0.21.6"
+  llm-router: "^1.0.0"
+  harness: "^1.0.0"
+  shell: "^0.11.0"
