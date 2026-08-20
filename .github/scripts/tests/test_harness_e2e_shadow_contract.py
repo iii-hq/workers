@@ -175,7 +175,7 @@ class ShadowContractTest(unittest.TestCase):
 
     def test_ephemeral_runner_keeps_the_bootstrapped_target_binary_and_checks_runtime_identity(self):
         runner = RUNNER_SCRIPT.read_text()
-        self.assertIn('install_exact_stack stack-bootstrap "$exact_stack_versions" true', runner)
+        self.assertIn('install_exact_stack stack-bootstrap "$exact_stack_versions" false', runner)
         self.assertIn('install_exact_stack stack-repin "$exact_stack_versions" false', runner)
         self.assertIn('verify_target_harness_runtime', runner)
         self.assertIn('harness runtime version mismatch:', runner)

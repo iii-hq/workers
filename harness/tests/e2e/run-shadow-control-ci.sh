@@ -239,7 +239,10 @@ if [[ "$contract_schema" == 2 ]]; then
     --argjson runtime "$runtime_versions" \
     --argjson target "$stack_versions" \
     '$runtime + $target')
-  install_exact_stack stack-bootstrap "$exact_stack_versions" true
+  # Every job has a fresh HOME and project directory, so there is no prior
+  # target artifact to replace. Avoid force here: a transient Registry retry
+  # would otherwise restart every worker that the first batch already booted.
+  install_exact_stack stack-bootstrap "$exact_stack_versions" false
 else
   support=("database@latest" "storage@latest" "fp@latest" "web@latest")
   declare -A providers=()
