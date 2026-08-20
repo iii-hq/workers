@@ -10,8 +10,11 @@ import {
 import {
   type CSSProperties,
   Fragment,
+  type MutableRefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -29,6 +32,15 @@ import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
 import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
 import { EdgeAddZone, ResizeHandle } from '@/components/workspace/pane-controls'
+import {
+  enqueuePanelCommand,
+  type PendingPanelCommand,
+} from '@/components/workspace/panel-command-queue'
+import {
+  dividerForPanel,
+  type PanelMotionDirection,
+  panelMotionDirection,
+} from '@/components/workspace/panel-motion'
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
@@ -38,6 +50,7 @@ import {
   type View,
 } from '@/hooks/use-hash-route'
 import { useKeybindings } from '@/hooks/use-keybindings'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useTheme } from '@/hooks/use-theme'
 import {
   type UseWorkspaceTabsReturn,
@@ -61,6 +74,7 @@ import {
   screenForView,
   type TabScreen,
   tabColumns,
+  tabPaneIds,
   tabSizes,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
@@ -73,6 +87,11 @@ function hasExplicitHash(): boolean {
   if (typeof window === 'undefined') return false
   const hash = window.location.hash
   return hash !== '' && hash !== '#' && hash !== '#/'
+}
+
+interface WorkspacePanelCommands {
+  openScreen: (screen: TabScreen) => void
+  splitRight: () => void
 }
 
 export function App({
@@ -123,12 +142,26 @@ export function App({
   )
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
+  const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
+  const openWorkspaceScreen = useCallback((screen: TabScreen) => {
+    const commands = panelCommandsRef.current
+    if (commands) commands.openScreen(screen)
+    else workspaceRef.current.openScreen(screen)
+  }, [])
+  const splitWorkspacePanel = useCallback(() => {
+    const commands = panelCommandsRef.current
+    if (commands) commands.splitRight()
+    else {
+      const current = workspaceRef.current
+      current.addColumn(current.activeTab.id, 'right')
+    }
+  }, [])
   useEffect(
     () =>
       subscribePanelOpen((event) => {
-        workspaceRef.current.openScreen(`ext:${event.pageId}`)
+        openWorkspaceScreen(`ext:${event.pageId}`)
       }),
-    [],
+    [openWorkspaceScreen],
   )
   // Closing settings routes back to the ACTIVE tab's own screen (never to
   // whichever tab happens to own the previous view — that would switch
@@ -214,11 +247,7 @@ export function App({
     'shortcuts.open': () => setShortcutsOpen(true),
     'app.settings': toggleSettings,
     'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
-    'panel.split': () =>
-      workspaceRef.current.addColumn(
-        workspaceRef.current.activeTab.id,
-        'right',
-      ),
+    'panel.split': splitWorkspacePanel,
     // Out of range is a no-op rather than a wrap: pressing 7 with four
     // workspaces open should do nothing, not land somewhere surprising.
     'workspace.selectByIndex': (index) => {
@@ -231,7 +260,7 @@ export function App({
     <ConversationsProvider
       injectableUiRuntime={injectableUiRuntime}
       onConversationRequested={() => {
-        workspaceRef.current.openScreen(CHAT_SCREEN)
+        openWorkspaceScreen(CHAT_SCREEN)
       }}
     >
       <Sheet>
@@ -246,6 +275,7 @@ export function App({
         />
         <WorkspacePanes
           workspace={workspace}
+          commandsRef={panelCommandsRef}
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
           onExtMissing={onExtMissing}
@@ -261,7 +291,7 @@ export function App({
         <PaletteHost
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
-          openScreen={workspace.openScreen}
+          openScreen={openWorkspaceScreen}
           onOpenSettings={() => setView('configuration')}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
@@ -274,10 +304,34 @@ export function App({
 
 interface WorkspacePanesProps {
   workspace: UseWorkspaceTabsReturn
+  commandsRef: MutableRefObject<WorkspacePanelCommands | null>
   mobilePanelIndex: number
   onMobilePanelIndexChange: (index: number) => void
   onExtMissing: () => void
 }
+
+interface PanelPresence {
+  tabId: string
+  paneId: string
+  direction: PanelMotionDirection
+  token: number
+}
+
+interface PendingPanelEntry {
+  tabId: string
+  column: number
+  direction: PanelMotionDirection
+}
+
+interface PendingPanelRemoval {
+  tabId: string
+  paneId: string
+}
+
+const DESKTOP_PANEL_MOTION_QUERY = '(min-width: 640px)'
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+/** Conservative safety net if CSS animation events are interrupted. */
+const PANEL_MOTION_FALLBACK_MS = 400
 
 /**
  * The active tab's columns, each a floating panel over the canvas. An
@@ -291,6 +345,7 @@ interface WorkspacePanesProps {
  */
 function WorkspacePanes({
   workspace,
+  commandsRef,
   mobilePanelIndex,
   onMobilePanelIndexChange,
   onExtMissing,
@@ -299,9 +354,137 @@ function WorkspacePanes({
   const { activeTab } = workspace
   const columns = tabColumns(activeTab)
   const containerRef = useRef<HTMLElement>(null)
+  const desktopPanelMotion = useMediaQuery(DESKTOP_PANEL_MOTION_QUERY)
+  const reducedMotion = useMediaQuery(REDUCED_MOTION_QUERY)
+  const paneIds = useMemo(() => tabPaneIds(activeTab), [activeTab])
+  const layoutSignature = JSON.stringify([activeTab.id, ...paneIds])
+  const workspaceSignature = useMemo(
+    () => JSON.stringify([workspace.activeTabId, workspace.tabs]),
+    [workspace.activeTabId, workspace.tabs],
+  )
+  const workspaceSignatureRef = useRef(workspaceSignature)
+  workspaceSignatureRef.current = workspaceSignature
+
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+  const pendingPanelEntryRef = useRef<PendingPanelEntry | undefined>(undefined)
+  const previousPanelLayoutRef = useRef({
+    tabId: activeTab.id,
+    paneIds,
+    signature: layoutSignature,
+  })
+  const panelMotionTokenRef = useRef(0)
+  const panelEntryCommandAckRef = useRef(false)
+  const queuedPanelCommandsRef = useRef<PendingPanelCommand[]>([])
+  const panelCommandInFlightRef = useRef<string | null>(null)
+  const dispatchPanelCommandRef = useRef<
+    ((command: PendingPanelCommand) => void) | null
+  >(null)
+  const pendingPanelRemovalsRef = useRef<PendingPanelRemoval[]>([])
+  const [panelCommandRevision, setPanelCommandRevision] = useState(0)
+  const [panelWritePending, setPanelWritePending] = useState(false)
+  const [enteringPanel, setEnteringPanel] = useState<PanelPresence | null>(null)
+  const [exitingPanel, setExitingPanel] = useState<PanelPresence | null>(null)
+  const exitingPanelRef = useRef<PanelPresence | null>(null)
+
+  const setPanelCommandInFlight = useCallback((signature: string | null) => {
+    if (panelCommandInFlightRef.current === signature) return
+    panelCommandInFlightRef.current = signature
+    setPanelWritePending(signature !== null)
+    setPanelCommandRevision((revision) => revision + 1)
+  }, [])
+
+  // Reconcile only after React commits. A layout effect can mark the new
+  // pane before paint, while an interrupted concurrent render cannot consume
+  // the pending intent or advance the previous-layout snapshot.
+  useLayoutEffect(() => {
+    const commandWorkspaceArrived =
+      panelCommandInFlightRef.current !== null &&
+      panelCommandInFlightRef.current !== workspaceSignature
+    const exiting = exitingPanelRef.current
+    if (exiting?.tabId === activeTab.id && !paneIds.includes(exiting.paneId)) {
+      exitingPanelRef.current = null
+      setExitingPanel(null)
+    }
+    const previousLayout = previousPanelLayoutRef.current
+    if (previousLayout.signature === layoutSignature) {
+      if (commandWorkspaceArrived) setPanelCommandInFlight(null)
+      if (reducedMotion) setEnteringPanel(null)
+      return
+    }
+
+    const pendingEntry = pendingPanelEntryRef.current
+    const addedWithinActiveTab =
+      previousLayout.tabId === activeTab.id &&
+      paneIds.length === previousLayout.paneIds.length + 1
+    const addedPaneIds = addedWithinActiveTab
+      ? paneIds.filter((paneId) => !previousLayout.paneIds.includes(paneId))
+      : []
+    const addedPaneId = addedPaneIds.length === 1 ? addedPaneIds[0] : undefined
+    const column = addedPaneId ? paneIds.indexOf(addedPaneId) : -1
+
+    const nextEntry: PanelPresence | null =
+      addedPaneId && !reducedMotion && !exitingPanelRef.current
+        ? {
+            tabId: activeTab.id,
+            paneId: addedPaneId,
+            direction:
+              pendingEntry?.tabId === activeTab.id &&
+              pendingEntry.column === column
+                ? pendingEntry.direction
+                : panelMotionDirection(column, columns),
+            token: ++panelMotionTokenRef.current,
+          }
+        : null
+    setEnteringPanel(nextEntry)
+    if (commandWorkspaceArrived) {
+      if (nextEntry) panelEntryCommandAckRef.current = true
+      else setPanelCommandInFlight(null)
+    }
+    pendingPanelEntryRef.current = undefined
+    previousPanelLayoutRef.current = {
+      tabId: activeTab.id,
+      paneIds,
+      signature: layoutSignature,
+    }
+  }, [
+    activeTab.id,
+    columns,
+    layoutSignature,
+    paneIds,
+    reducedMotion,
+    setPanelCommandInFlight,
+    workspaceSignature,
+  ])
+
+  useLayoutEffect(() => {
+    if (!enteringPanel || !panelEntryCommandAckRef.current) return
+    panelEntryCommandAckRef.current = false
+    setPanelCommandInFlight(null)
+  }, [enteringPanel, setPanelCommandInFlight])
+
+  const clearPanelEntry = useCallback((token: number) => {
+    setEnteringPanel((current) => (current?.token === token ? null : current))
+  }, [])
+
+  const enteringPanelToken = enteringPanel?.token
+  useEffect(() => {
+    if (enteringPanelToken === undefined) return
+    if (reducedMotion) {
+      clearPanelEntry(enteringPanelToken)
+      return
+    }
+    const fallback = window.setTimeout(
+      () => clearPanelEntry(enteringPanelToken),
+      PANEL_MOTION_FALLBACK_MS,
+    )
+    return () => window.clearTimeout(fallback)
+  }, [clearPanelEntry, enteringPanelToken, reducedMotion])
+
   const pendingMobileColumnRef = useRef<{
     tabId: string
     index: number
+    armed: boolean
   } | null>(null)
 
   // First-run discoverability for the edge add zones: nudge until the user
@@ -310,24 +493,31 @@ function WorkspacePanes({
   // the default workspace already ships a 2-column tab.
   const [edgeNudge, setEdgeNudge] = useState(() => !loadEdgeAddDiscovered())
   const addEdgeColumn = useCallback(
-    (side: 'left' | 'right') => {
-      if (edgeNudge) {
-        saveEdgeAddDiscovered()
-        setEdgeNudge(false)
-      }
-      workspace.addColumn(activeTab.id, side)
-    },
-    [activeTab.id, edgeNudge, workspace],
+    (side: 'left' | 'right', mobileIndex?: number) =>
+      dispatchPanelCommandRef.current?.({
+        type: 'add',
+        tabId: activeTab.id,
+        side,
+        mobileIndex,
+      }),
+    [activeTab.id],
   )
 
   const addMobileColumn = useCallback(() => {
-    if (columns >= MAX_COLUMNS || pendingMobileColumnRef.current) return
+    if (
+      columns >= MAX_COLUMNS ||
+      pendingMobileColumnRef.current ||
+      enteringPanel ||
+      exitingPanelRef.current
+    )
+      return
     pendingMobileColumnRef.current = {
       tabId: activeTab.id,
       index: columns,
+      armed: false,
     }
-    addEdgeColumn('right')
-  }, [activeTab.id, addEdgeColumn, columns])
+    addEdgeColumn('right', columns)
+  }, [activeTab.id, addEdgeColumn, columns, enteringPanel])
 
   // A tab switch always lands on its first panel. Inside a tab, native
   // horizontal scrolling does the gesture work and this index only mirrors
@@ -342,7 +532,11 @@ function WorkspacePanes({
 
   useEffect(() => {
     const pending = pendingMobileColumnRef.current
-    if (pending?.tabId === activeTab.id && pending.index < columns) {
+    if (
+      pending?.armed &&
+      pending.tabId === activeTab.id &&
+      pending.index < columns
+    ) {
       pendingMobileColumnRef.current = null
       onMobilePanelIndexChange(pending.index)
       const container = containerRef.current
@@ -391,6 +585,21 @@ function WorkspacePanes({
   const [dragSizes, setDragSizes] = useState<number[] | null>(null)
   const dragSizesRef = useRef<number[] | null>(null)
   const commitPendingRef = useRef(false)
+  const [isResizing, setIsResizing] = useState(false)
+  const isResizingRef = useRef(false)
+  const startResize = useCallback(() => {
+    isResizingRef.current = true
+    setIsResizing(true)
+  }, [])
+  const endResize = useCallback(() => {
+    isResizingRef.current = false
+    setIsResizing(false)
+  }, [])
+  useEffect(() => {
+    void activeTab.id
+    isResizingRef.current = false
+    setIsResizing(false)
+  }, [activeTab.id])
   const sizesKey = `${activeTab.id}:${columns}`
   const prevSizesKeyRef = useRef(sizesKey)
   if (prevSizesKeyRef.current !== sizesKey) {
@@ -416,6 +625,7 @@ function WorkspacePanes({
   const sizes = dragSizes ?? storedSizes
 
   const resizePair = (index: number, delta: number) => {
+    if (enteringPanel || exitingPanelRef.current) return
     const current = dragSizesRef.current ?? tabSizes(activeTab)
     // With many horizontally scrollable panels, an equal share can be below
     // the normal split minimum. Scale the floor with the panel count so the
@@ -435,11 +645,329 @@ function WorkspacePanes({
   }
 
   const commitResize = () => {
+    if (enteringPanel || exitingPanelRef.current) return
     const next = dragSizesRef.current
     if (!next) return
+    if (
+      next.length === storedSizes.length &&
+      next.every((size, index) => Math.abs(size - storedSizes[index]) < 0.001)
+    ) {
+      commitPendingRef.current = false
+      dragSizesRef.current = null
+      setDragSizes(null)
+      return
+    }
     commitPendingRef.current = true
+    setPanelCommandInFlight(workspaceSignatureRef.current)
     workspace.resizeColumns(activeTab.id, next)
   }
+
+  const finalizePanelExit = useCallback(
+    (token: number) => {
+      const exiting = exitingPanelRef.current
+      if (!exiting || exiting.token !== token) return
+
+      exitingPanelRef.current = null
+      const current = workspaceRef.current
+      const target = current.tabs.find((tab) => tab.id === exiting.tabId)
+      if (
+        target &&
+        tabColumns(target) > 1 &&
+        tabPaneIds(target).includes(exiting.paneId)
+      ) {
+        setPanelCommandInFlight(workspaceSignatureRef.current)
+        current.removeColumn(exiting.tabId, exiting.paneId)
+      }
+      setExitingPanel(null)
+    },
+    [setPanelCommandInFlight],
+  )
+
+  const requestPanelRemoval = useCallback(
+    (column: number) => {
+      if (columns <= 1 || column < 0 || column >= columns) return
+      const paneId = paneIds[column]
+      if (!paneId) return
+
+      // Presence motion and optimistic workspace writes are serialized. A
+      // second close is queued by pane identity instead of being discarded.
+      if (
+        enteringPanel ||
+        exitingPanelRef.current ||
+        panelCommandInFlightRef.current !== null ||
+        isResizingRef.current
+      ) {
+        const alreadyQueued = pendingPanelRemovalsRef.current.some(
+          (pending) =>
+            pending.tabId === activeTab.id && pending.paneId === paneId,
+        )
+        if (!alreadyQueued) {
+          pendingPanelRemovalsRef.current.push({
+            tabId: activeTab.id,
+            paneId,
+          })
+        }
+        return
+      }
+
+      const panel = containerRef.current?.querySelector<HTMLElement>(
+        `[data-workspace-panel="${column}"]`,
+      )
+      if (panel?.contains(document.activeElement)) {
+        const neighborColumn = column < columns - 1 ? column + 1 : column - 1
+        containerRef.current
+          ?.querySelector<HTMLElement>(
+            `[data-workspace-panel="${neighborColumn}"]`,
+          )
+          ?.focus({ preventScroll: true })
+      }
+
+      if (reducedMotion) {
+        setPanelCommandInFlight(workspaceSignatureRef.current)
+        workspaceRef.current.removeColumn(activeTab.id, paneId)
+        return
+      }
+
+      const nextExit: PanelPresence = {
+        tabId: activeTab.id,
+        paneId,
+        direction: panelMotionDirection(column, columns),
+        token: ++panelMotionTokenRef.current,
+      }
+      exitingPanelRef.current = nextExit
+      setExitingPanel(nextExit)
+    },
+    [
+      activeTab.id,
+      columns,
+      enteringPanel,
+      paneIds,
+      reducedMotion,
+      setPanelCommandInFlight,
+    ],
+  )
+
+  useEffect(() => {
+    // Background-tab writes can leave the active pane ids unchanged.
+    void workspaceSignature
+    if (
+      enteringPanel ||
+      exitingPanelRef.current ||
+      panelCommandInFlightRef.current !== null ||
+      isResizing
+    )
+      return
+    while (pendingPanelRemovalsRef.current.length > 0) {
+      const pending = pendingPanelRemovalsRef.current.shift()
+      if (!pending) return
+
+      if (pending.tabId !== activeTab.id) {
+        const target = workspaceRef.current.tabs.find(
+          (tab) => tab.id === pending.tabId,
+        )
+        if (
+          !target ||
+          tabColumns(target) <= 1 ||
+          !tabPaneIds(target).includes(pending.paneId)
+        )
+          continue
+        setPanelCommandInFlight(workspaceSignatureRef.current)
+        workspaceRef.current.removeColumn(pending.tabId, pending.paneId)
+        return
+      }
+      const column = paneIds.indexOf(pending.paneId)
+      if (column < 0 || columns <= 1) continue
+      requestPanelRemoval(column)
+      return
+    }
+  }, [
+    activeTab.id,
+    columns,
+    enteringPanel,
+    isResizing,
+    paneIds,
+    requestPanelRemoval,
+    setPanelCommandInFlight,
+    workspaceSignature,
+  ])
+
+  const exitingPanelToken = exitingPanel?.token
+  useEffect(() => {
+    if (exitingPanelToken === undefined) return
+    if (reducedMotion || exitingPanel?.tabId !== activeTab.id) {
+      finalizePanelExit(exitingPanelToken)
+      return
+    }
+    const fallback = window.setTimeout(
+      () => finalizePanelExit(exitingPanelToken),
+      PANEL_MOTION_FALLBACK_MS,
+    )
+    return () => window.clearTimeout(fallback)
+  }, [
+    activeTab.id,
+    exitingPanel,
+    exitingPanelToken,
+    finalizePanelExit,
+    reducedMotion,
+  ])
+
+  const enteringColumn = enteringPanel
+    ? paneIds.indexOf(enteringPanel.paneId)
+    : -1
+  const exitingColumn =
+    exitingPanel?.tabId === activeTab.id
+      ? paneIds.indexOf(exitingPanel.paneId)
+      : -1
+  const enteringDivider =
+    enteringColumn >= 0 ? dividerForPanel(enteringColumn, columns) : null
+  const exitingDivider =
+    exitingColumn >= 0 ? dividerForPanel(exitingColumn, columns) : null
+  const panelMotionActive = enteringPanel !== null || exitingPanel !== null
+  const panelMotionActiveRef = useRef(panelMotionActive)
+  panelMotionActiveRef.current = panelMotionActive
+
+  const executePanelCommand = useCallback(
+    (command: PendingPanelCommand): boolean => {
+      const current = workspaceRef.current
+      if (command.type === 'open') {
+        const origin = current.tabs.find((tab) => tab.id === command.tabId)
+        if (!origin || origin.id === current.activeTab.id) {
+          if (current.activeTab.screens.includes(command.screen)) return false
+          current.openScreen(command.screen)
+          return true
+        }
+        if (current.tabs.some((tab) => tab.screens.includes(command.screen))) {
+          return false
+        }
+        current.openScreenInTab(origin.id, command.screen)
+        return true
+      }
+
+      const side = command.type === 'add' ? command.side : 'right'
+      const target = current.tabs.find((tab) => tab.id === command.tabId)
+      if (!target || tabColumns(target) >= MAX_COLUMNS) {
+        if (
+          command.type === 'add' &&
+          command.mobileIndex !== undefined &&
+          pendingMobileColumnRef.current?.tabId === command.tabId &&
+          pendingMobileColumnRef.current.index === command.mobileIndex
+        ) {
+          pendingMobileColumnRef.current = null
+        }
+        return false
+      }
+
+      if (
+        command.type === 'add' &&
+        command.mobileIndex !== undefined &&
+        pendingMobileColumnRef.current?.tabId === command.tabId &&
+        pendingMobileColumnRef.current.index === command.mobileIndex
+      ) {
+        pendingMobileColumnRef.current = {
+          tabId: command.tabId,
+          index: tabColumns(target),
+          armed: true,
+        }
+      }
+
+      if (current.activeTab.id === command.tabId) {
+        if (!reducedMotion) {
+          pendingPanelEntryRef.current = {
+            tabId: target.id,
+            column: side === 'left' ? 0 : tabColumns(target),
+            direction: side,
+          }
+        }
+      }
+      if (edgeNudge) {
+        saveEdgeAddDiscovered()
+        setEdgeNudge(false)
+      }
+      current.addColumn(command.tabId, side)
+      return true
+    },
+    [edgeNudge, reducedMotion],
+  )
+
+  const startPanelCommand = useCallback(
+    (command: PendingPanelCommand) => {
+      setPanelCommandInFlight(workspaceSignatureRef.current)
+      if (!executePanelCommand(command)) {
+        // A model no-op still releases the gate and wakes the next command.
+        setPanelCommandInFlight(null)
+      }
+    },
+    [executePanelCommand, setPanelCommandInFlight],
+  )
+
+  const dispatchPanelCommand = useCallback(
+    (command: PendingPanelCommand) => {
+      if (
+        panelMotionActiveRef.current ||
+        exitingPanelRef.current ||
+        panelCommandInFlightRef.current !== null ||
+        isResizingRef.current ||
+        pendingPanelRemovalsRef.current.length > 0 ||
+        queuedPanelCommandsRef.current.length > 0
+      ) {
+        if (enqueuePanelCommand(queuedPanelCommandsRef.current, command)) {
+          setPanelCommandRevision((revision) => revision + 1)
+        }
+        return
+      }
+
+      startPanelCommand(command)
+    },
+    [startPanelCommand],
+  )
+
+  useLayoutEffect(() => {
+    dispatchPanelCommandRef.current = dispatchPanelCommand
+    return () => {
+      if (dispatchPanelCommandRef.current === dispatchPanelCommand) {
+        dispatchPanelCommandRef.current = null
+      }
+    }
+  }, [dispatchPanelCommand])
+
+  useLayoutEffect(() => {
+    const commands: WorkspacePanelCommands = {
+      openScreen: (screen) =>
+        dispatchPanelCommand({ type: 'open', screen, tabId: activeTab.id }),
+      splitRight: () =>
+        dispatchPanelCommand({ type: 'split', tabId: activeTab.id }),
+    }
+    commandsRef.current = commands
+    return () => {
+      if (commandsRef.current === commands) commandsRef.current = null
+    }
+  }, [activeTab.id, commandsRef, dispatchPanelCommand])
+
+  useEffect(() => {
+    // A no-op command still increments this revision so the queue advances.
+    void panelCommandRevision
+    // A committed workspace snapshot acknowledges the previous command.
+    void workspaceSignature
+    if (
+      panelMotionActive ||
+      exitingPanelRef.current ||
+      panelCommandInFlightRef.current !== null ||
+      isResizing ||
+      pendingPanelRemovalsRef.current.length > 0
+    )
+      return
+    const next = queuedPanelCommandsRef.current.shift()
+    if (next) startPanelCommand(next)
+  }, [
+    panelCommandRevision,
+    panelMotionActive,
+    isResizing,
+    startPanelCommand,
+    workspaceSignature,
+  ])
+
+  const panelCommandQueued = queuedPanelCommandsRef.current.length > 0
+  const panelRemovalQueued = pendingPanelRemovalsRef.current.length > 0
 
   return (
     <section
@@ -450,6 +978,18 @@ function WorkspacePanes({
     >
       {Array.from({ length: columns }, (_, column) => {
         const screen = activeTab.screens[column] ?? null
+        const paneId = paneIds[column]
+        const isExiting =
+          exitingPanel?.tabId === activeTab.id && exitingPanel.paneId === paneId
+        const isEntering =
+          !isExiting &&
+          enteringPanel?.tabId === activeTab.id &&
+          enteringPanel.paneId === paneId
+        const motionDirection = isExiting
+          ? exitingPanel.direction
+          : isEntering
+            ? enteringPanel.direction
+            : undefined
         // 'right' only for the rightmost column of a multi-column tab —
         // a full-width single column keeps the default 'left' orientation.
         const panelSide: PanelSide =
@@ -459,12 +999,11 @@ function WorkspacePanes({
         // affordance) — a tab never loses its final pane.
         const closePane = () =>
           columns > 1
-            ? workspace.removeColumn(activeTab.id, column)
+            ? requestPanelRemoval(column)
             : workspace.detachScreen(activeTab.id, column)
         const pane = (
           <section
-            // biome-ignore lint/suspicious/noArrayIndexKey: the column POSITION is the identity — the composite key deliberately remounts a pane when its tab or attached screen changes
-            key={`${activeTab.id}:${column}:${screen ?? 'empty'}`}
+            key="panel"
             // ×1000: flex-grow sums below 1 only distribute that fraction
             // of the free space — scaling keeps the ratios AND fills the row.
             style={
@@ -472,44 +1011,105 @@ function WorkspacePanes({
                 '--panel-grow': sizes[column] * 1000,
               } as CSSProperties
             }
-            className="flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden border-y border-edge bg-panel [scroll-snap-stop:always] sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)] sm:rounded-sm sm:border"
-            aria-label={`panel ${column + 1} of ${columns}`}
-          >
-            {screen === null ? (
-              <EmptyPane
-                screenOptions={screenOptions}
-                onAttach={(next) =>
-                  workspace.attachScreen(activeTab.id, column, next)
-                }
-                onRemove={
-                  columns > 1
-                    ? () => workspace.removeColumn(activeTab.id, column)
-                    : undefined
-                }
-              />
-            ) : (
-              <ScreenBody
-                screen={screen}
-                panelSide={panelSide}
-                tabId={activeTab.id}
-                onClose={closePane}
-                onExtMissing={onExtMissing}
-              />
+            className={cn(
+              'flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
+              'focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent',
+              'sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)]',
+              isEntering &&
+                (motionDirection === 'left'
+                  ? 'workspace-panel-enter-left'
+                  : 'workspace-panel-enter-right'),
+              isExiting &&
+                (motionDirection === 'left'
+                  ? 'workspace-panel-exit-left pointer-events-none'
+                  : 'workspace-panel-exit-right pointer-events-none'),
             )}
+            data-workspace-panel={column}
+            data-workspace-pane-id={paneId}
+            data-motion-state={
+              isEntering ? 'entering' : isExiting ? 'exiting' : 'idle'
+            }
+            inert={isExiting || undefined}
+            aria-hidden={isExiting || undefined}
+            aria-label={`panel ${column + 1} of ${columns}`}
+            tabIndex={-1}
+            onAnimationEnd={(event) => {
+              const rootGeometryFinished =
+                event.target === event.currentTarget &&
+                (event.animationName === 'workspace-panel-expand' ||
+                  event.animationName === 'workspace-panel-collapse')
+              const mobileSurfaceFinished =
+                !desktopPanelMotion &&
+                event.target !== event.currentTarget &&
+                event.animationName.startsWith('workspace-panel-surface-')
+              if (
+                isEntering &&
+                enteringPanel &&
+                (rootGeometryFinished || mobileSurfaceFinished)
+              ) {
+                clearPanelEntry(enteringPanel.token)
+              }
+              if (
+                isExiting &&
+                exitingPanel &&
+                (rootGeometryFinished || mobileSurfaceFinished)
+              ) {
+                finalizePanelExit(exitingPanel.token)
+              }
+            }}
+          >
+            <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
+              {screen === null ? (
+                <EmptyPane
+                  screenOptions={screenOptions}
+                  onAttach={(next) =>
+                    workspace.attachScreen(activeTab.id, column, next)
+                  }
+                  onRemove={
+                    columns > 1 ? () => requestPanelRemoval(column) : undefined
+                  }
+                />
+              ) : (
+                <ScreenBody
+                  key={screen}
+                  screen={screen}
+                  panelSide={panelSide}
+                  tabId={activeTab.id}
+                  onClose={closePane}
+                  onExtMissing={onExtMissing}
+                />
+              )}
+            </div>
           </section>
         )
-        if (column === 0) return pane
         return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: handles are positional by nature
-          <Fragment key={`divider:${activeTab.id}:${column}`}>
-            <ResizeHandle
-              value={sizes[column - 1] * 100}
-              onResize={(delta) => resizePair(column - 1, delta)}
-              onCommit={commitResize}
-              containerWidth={() =>
-                containerRef.current?.getBoundingClientRect().width ?? 0
-              }
-            />
+          <Fragment key={`${activeTab.id}:${paneId}`}>
+            {column > 0 ? (
+              <ResizeHandle
+                key="divider"
+                value={sizes[column - 1] * 100}
+                disabled={
+                  panelMotionActive ||
+                  panelWritePending ||
+                  panelCommandQueued ||
+                  panelRemovalQueued
+                }
+                motionState={
+                  column === exitingDivider
+                    ? 'exiting'
+                    : column === enteringDivider
+                      ? 'entering'
+                      : undefined
+                }
+                onResize={(delta) => resizePair(column - 1, delta)}
+                onCommit={commitResize}
+                onResizeStart={startResize}
+                onResizeEnd={endResize}
+                containerWidth={() =>
+                  containerRef.current?.getBoundingClientRect().width ?? 0
+                }
+              />
+            ) : null}
             {pane}
           </Fragment>
         )
@@ -536,11 +1136,25 @@ function WorkspacePanes({
         <>
           <EdgeAddZone
             side="left"
+            disabled={
+              panelMotionActive ||
+              panelWritePending ||
+              panelCommandQueued ||
+              panelRemovalQueued ||
+              isResizing
+            }
             nudge={edgeNudge}
             onAdd={() => addEdgeColumn('left')}
           />
           <EdgeAddZone
             side="right"
+            disabled={
+              panelMotionActive ||
+              panelWritePending ||
+              panelCommandQueued ||
+              panelRemovalQueued ||
+              isResizing
+            }
             nudge={edgeNudge}
             onAdd={() => addEdgeColumn('right')}
           />

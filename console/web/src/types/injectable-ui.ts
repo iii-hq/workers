@@ -139,10 +139,13 @@ export interface PageRegistration {
 export interface FunctionTriggerRenderer {
   /** e.g. `state/page.js#renderer` */
   id: string
+  /** The host calls `tryRender*` only for function ids claimed here. */
   isMatch(functionId: string): boolean
   tryRender(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
+  /** Compact settled-state surface shown directly in the chat feed. */
+  tryRenderDisplay?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
   /**
@@ -152,6 +155,8 @@ export interface FunctionTriggerRenderer {
    */
   metadata?: {
     display?: boolean
+    /** Keep the display as the card header and expand details underneath it. */
+    displayAction?: 'expand'
   }
   /**
    * Redact the raw request/response before the card DISPLAYS OR COPIES it —
@@ -171,6 +176,62 @@ export interface FunctionTriggerRenderer {
    * CLOSED to a placeholder, never back to the raw value.
    */
   redactRaw?(value: unknown): unknown
+}
+
+/**
+ * A host-normalized trigger activity. The host owns the surrounding message
+ * chrome, raw details, and lifecycle controls; trigger renderers receive this
+ * common shape only to render the source-specific section.
+ */
+export interface TriggerActivityMessage {
+  /** Stable activity/message id. */
+  id: string
+  kind: 'registration' | 'fired' | 'retirement'
+  /** e.g. `cron`, `state`, or a worker-defined trigger source. */
+  triggerType: string
+  config?: unknown
+  label?: string
+  conditions?: readonly unknown[]
+  delivery: { kind: 'notify' } | { kind: 'call'; functionId: string }
+  lifecycle: {
+    /** Whether the binding remains usable after this activity. */
+    state: 'active' | 'retired'
+    once: boolean
+    maxFires?: number
+    expiresAt?: number
+    fires: number
+  }
+  subscriptionId?: string
+  triggerId?: string
+  payload?: unknown
+  firedAt?: number
+  note?: string
+  outcome?:
+    | 'delivered'
+    | 'delivery_failed'
+    | 'skipped'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+  retirementReason?:
+    | 'once_consumed'
+    | 'max_fires'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+    | 'exhausted'
+}
+
+/**
+ * Renders only the source-specific section of a trigger activity. Dispatch is
+ * registration-ordered and `null` falls through to the next renderer before
+ * the host's generic source fallback.
+ */
+export interface TriggerActivityRenderer {
+  /** e.g. `cron/page.js#trigger-activity` */
+  id: string
+  isMatch(triggerType: string): boolean
+  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
 }
 
 export type JsonValue =
@@ -297,6 +358,9 @@ export interface Host {
   }
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void
+  }
+  triggerRenderers: {
+    register(renderer: TriggerActivityRenderer): () => void
   }
   panels: {
     /** Place/reuse a registered page and deliver its worker-defined context. */

@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::bindings::{Binding, ConditionSpec};
 use crate::deps::Deps;
 use crate::error::HarnessError;
+use crate::subscriptions::fired;
 
 pub const TRIGGERS_LIST_ID: &str = "harness::triggers::list";
 pub const TRIGGERS_LIST_DESC: &str =
@@ -116,20 +117,7 @@ fn row_from(binding: &Binding) -> TriggerRow {
         .unwrap_or((None, None));
     let target = (binding.target.function_id != crate::functions::SEND_ID)
         .then(|| binding.target.function_id.clone());
-    let label = binding
-        .dedup_key
-        .as_ref()
-        .and_then(|k| k.get("label"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            binding
-                .target
-                .payload
-                .as_ref()
-                .and_then(|p| p.get("label"))
-                .and_then(Value::as_str)
-        })
-        .map(str::to_string);
+    let label = binding_label(binding).map(str::to_string);
     TriggerRow {
         subscription_id: binding.id.clone(),
         trigger_id: binding.trigger_id.clone(),
@@ -194,8 +182,52 @@ pub async fn unregister(
             },
         )
         .await;
+    } else {
+        record_unregistered(deps, &binding).await;
     }
     Ok(TriggersUnregisterResponse { removed: true })
+}
+
+/// Persist the explicit retirement for bindings that do not warrant waking a
+/// parked session. The armed, unfired wake branch above keeps its existing
+/// notification + custom-record pair; every other shape gets only this
+/// model-invisible lifecycle record.
+async fn record_unregistered(deps: &Deps, binding: &Binding) {
+    fired::emit(
+        &deps.session().await,
+        &binding.owner.session_id,
+        &format!("e_trigunregistered_{}", binding.id),
+        unregistered_record(binding, fired::now_ms()),
+    )
+    .await;
+}
+
+/// Pure wire-record builder kept separate so its source/config/count contract
+/// can be pinned without a session-manager test double.
+fn unregistered_record(binding: &Binding, fired_at: i64) -> fired::TriggerFired<'_> {
+    fired::retirement_record(
+        binding,
+        fired::TriggerOutcome::Unregistered,
+        fired::RetirementReason::Unregistered,
+        Some("unregistered by harness::triggers::unregister"),
+        fired_at,
+    )
+}
+
+fn binding_label(binding: &Binding) -> Option<&str> {
+    binding
+        .dedup_key
+        .as_ref()
+        .and_then(|key| key.get("label"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            binding
+                .target
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("label"))
+                .and_then(Value::as_str)
+        })
 }
 
 #[cfg(test)]
@@ -278,5 +310,30 @@ mod tests {
         let row = row_from(&b);
         assert_eq!(row.label.as_deref(), Some("wake-label"));
         assert_eq!(row.trigger_type.as_deref(), Some("timer"));
+    }
+
+    #[test]
+    fn recurring_call_unregistration_builds_one_complete_custom_record() {
+        let mut b = binding("sub_call", "state::set", 30);
+        b.lifecycle.once = false;
+        b.lifecycle.max_fires = Some(10);
+        b.fires = 4;
+
+        assert!(
+            !crate::bindings::expiry::is_unfired_wake(&b),
+            "a call must take the custom-only branch"
+        );
+        let record = serde_json::to_value(unregistered_record(&b, 42)).unwrap();
+        assert_eq!(record["subscription_id"], "sub_call");
+        assert_eq!(record["trigger_id"], "trg_sub_call");
+        assert_eq!(record["target"], "state::set");
+        assert_eq!(record["trigger_type"], "state");
+        assert_eq!(record["config"], json!({ "scope": "run", "key": "done" }));
+        assert_eq!(record["fires"], 4);
+        assert_eq!(record["outcome"], "unregistered");
+        assert_eq!(record["retirement_reason"], "unregistered");
+        assert_eq!(record["retired"], true);
+        assert_eq!(record["fired_at"], 42);
+        assert!(record.get("payload").is_none());
     }
 }

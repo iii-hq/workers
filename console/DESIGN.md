@@ -372,6 +372,7 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   --color-panel-raised: #f7f5f2;
   --color-paper-2: #ebe8e3;
   --color-surface: rgba(20, 16, 8, 0.055);
+  --color-card-highlight: #dbdbdb63;
   --color-surface-hover: rgba(20, 16, 8, 0.085);
   --color-surface-selected: rgba(20, 16, 8, 0.12);
   --color-surface-active: rgba(20, 16, 8, 0.12);
@@ -463,6 +464,7 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   --color-panel-raised: #171717;
   --color-paper-2: #171717;
   --color-surface: rgba(255, 255, 255, 0.055);
+  --color-card-highlight: #0d0d0e63;
   --color-surface-hover: rgba(255, 255, 255, 0.085);
   --color-surface-selected: rgba(255, 255, 255, 0.12);
   --color-surface-active: rgba(255, 255, 255, 0.12);
@@ -718,9 +720,28 @@ alpha fill in both themes; it never inherits the orange/blue accent.
 | `panel-raised`     | Composer, trace details, popovers, active tool cards       |
 | `paper-2`          | Legacy alias for `panel-raised` (kept for existing code)   |
 | `surface`          | Inputs, controls, pills, chips, secondary cards            |
+| `card-highlight`   | Borderless neutral inset for related content inside a card |
 | `surface-hover`    | Hover state on rows, items, and ghost controls             |
 | `surface-selected` | Selected conversation, trace row, list item, card, tab, or chip (neutral wash) |
 | `surface-active`   | Strong active/pressed state                                |
+
+`card-highlight` is structural emphasis inside an existing card. Use
+`CardHighlight`, `uiClasses.cardHighlight`, or `bg-card-highlight`; never add
+a border or shadow. Do not use it for hover, selection, focus, status, or as a
+standalone card surface.
+
+### Collapsible cards
+
+Use the public `CollapsibleCard`, `CollapsibleCardTrigger`, and
+`CollapsibleCardContent` composition whenever a card has a concise summary and
+optional details. The primitive owns keyboard and ARIA behavior and animates
+between intrinsic content heights with the panel motion tokens. Content stays
+mounted while collapsed so tabs, forms, and worker-local state survive.
+
+Keep padding and borders inside the content child; padding on the animated
+content wrapper prevents a complete collapse. Never place a nested button or
+link inside `CollapsibleCardTrigger`. The global duration tokens make the
+transition immediate when `prefers-reduced-motion` is enabled.
 
 ### Ink (4-step contrast)
 

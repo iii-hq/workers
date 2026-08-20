@@ -15,6 +15,7 @@ import type {
   ProviderConfigFormProps,
   SessionChipRegistration,
   SessionTurnSummaryRegistration,
+  TriggerActivityRenderer,
 } from '@/types/injectable-ui'
 
 export interface RegisteredPage extends PageRegistration {
@@ -26,6 +27,12 @@ export interface RegisteredPage extends PageRegistration {
 
 export interface RegisteredRenderer {
   renderer: FunctionTriggerRenderer
+  scope: string
+  path: string
+}
+
+export interface RegisteredTriggerActivityRenderer {
+  renderer: TriggerActivityRenderer
   scope: string
   path: string
 }
@@ -125,6 +132,8 @@ export type UiAssetsStatus = 'loading' | 'ready' | 'unavailable'
 
 const pagesStore = createStore<RegisteredPage>()
 const renderersStore = createStore<RegisteredRenderer>()
+const triggerActivityRenderersStore =
+  createStore<RegisteredTriggerActivityRenderer>()
 const configFormsStore = createStore<RegisteredConfigForm>()
 const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
@@ -149,6 +158,12 @@ export function registerExtPage(entry: RegisteredPage): () => void {
 
 export function registerExtRenderer(entry: RegisteredRenderer): () => void {
   return renderersStore.add(entry)
+}
+
+export function registerExtTriggerActivityRenderer(
+  entry: RegisteredTriggerActivityRenderer,
+): () => void {
+  return triggerActivityRenderersStore.add(entry)
 }
 
 /** Duplicate configuration id: last registration wins in lookups. */
@@ -215,6 +230,10 @@ export function getExtPages(): readonly RegisteredPage[] {
   return pagesStore.get()
 }
 
+export function getExtTriggerActivityRenderers(): readonly RegisteredTriggerActivityRenderer[] {
+  return triggerActivityRenderersStore.get()
+}
+
 /** Last registration wins for duplicate ids. */
 export function getExtPage(id: string): RegisteredPage | undefined {
   const pages = pagesStore.get()
@@ -271,6 +290,14 @@ export function useExtRenderers(): readonly RegisteredRenderer[] {
   return useSyncExternalStore(
     renderersStore.subscribe,
     renderersStore.get,
+    () => EMPTY,
+  )
+}
+
+export function useExtTriggerActivityRenderers(): readonly RegisteredTriggerActivityRenderer[] {
+  return useSyncExternalStore(
+    triggerActivityRenderersStore.subscribe,
+    triggerActivityRenderersStore.get,
     () => EMPTY,
   )
 }

@@ -12,7 +12,13 @@ import {
   type FilesystemAccessAction,
   FilesystemAccessPrompt,
 } from '@/components/permissions/FilesystemAccessPrompt'
+import { TriggerJsonPane } from '@/components/trigger-activity/TriggerDetails'
 import { Button } from '@/components/ui/Button'
+import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+} from '@/components/ui/CollapsibleCard'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { copyTextToClipboard } from '@/lib/clipboard'
@@ -300,15 +306,18 @@ export function FunctionTriggerCard({
   >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const customPreview = firstNonNull(
-    renderers,
-    (r) => r.tryRenderPreview?.(message) ?? null,
+  const customPreview = firstNonNull(renderers, (r) =>
+    r.isMatch(message.functionId)
+      ? (r.tryRenderPreview?.(message) ?? null)
+      : null,
   )
   const terminalRender = !pending
     ? firstRendered(renderers, (r) =>
-        running
-          ? (r.tryRenderRunning ?? r.tryRender)(message)
-          : r.tryRender(message),
+        r.isMatch(message.functionId)
+          ? running
+            ? (r.tryRenderRunning ?? r.tryRender)(message)
+            : r.tryRender(message)
+          : null,
       )
     : null
   const customTerminal = terminalRender?.node ?? null
@@ -318,6 +327,12 @@ export function FunctionTriggerCard({
     !running &&
     hasCustomTerminal &&
     terminalRender?.renderer.metadata?.display === true
+  const customDisplay = displayCustomTerminal
+    ? (terminalRender?.renderer.tryRenderDisplay?.(message) ?? null)
+    : null
+  const displayAction = terminalRender?.renderer.metadata?.displayAction
+  const expandableCustomDisplay =
+    displayCustomTerminal && displayAction === 'expand' && customDisplay
   // The top request pane renders only while the call is in flight and no
   // richer view covers it; the settled (done) branch below renders its own
   // request/response panes, so showing it there would duplicate the pane.
@@ -371,6 +386,55 @@ export function FunctionTriggerCard({
   // one line that renders without anyone expanding the card.
   const preview = argsPreview(rawInput)
   const description = message.description?.trim() || undefined
+
+  if (expandableCustomDisplay) {
+    return (
+      <section
+        className="function-trigger-surface"
+        data-message-id={message.id}
+        data-message-role="function-call"
+        data-function-id={message.functionId}
+        data-expanded={open}
+        data-function-status={errored ? 'error' : 'done'}
+      >
+        <CollapsibleCard
+          open={open}
+          onOpenChange={setOpen}
+          className="@container"
+        >
+          <CollapsibleCardTrigger
+            className="p-4 select-none sm:p-3"
+            aria-label={`${open ? 'Hide' : 'Show'} details for ${message.functionId}`}
+          >
+            {customDisplay}
+          </CollapsibleCardTrigger>
+          <CollapsibleCardContent>
+            <Tabs
+              value={tab}
+              onValueChange={(value) => setTab(value as 'terminal' | 'json')}
+              className="border-t border-edge"
+            >
+              <div className="overflow-x-auto px-4 sm:px-3">
+                <TabsList>
+                  <TabsTrigger value="terminal">Terminal</TabsTrigger>
+                  <TabsTrigger value="json">Raw JSON</TabsTrigger>
+                </TabsList>
+              </div>
+              <TabsContent value="terminal" className="p-4 sm:p-3">
+                {customTerminal}
+              </TabsContent>
+              <TabsContent value="json" className="p-4 sm:p-3">
+                <div className="flex min-w-0 flex-col gap-3">
+                  <TriggerJsonPane label="Request" value={rawInput} />
+                  <TriggerJsonPane label="Response" value={rawOutput} />
+                </div>
+              </TabsContent>
+            </Tabs>
+          </CollapsibleCardContent>
+        </CollapsibleCard>
+      </section>
+    )
+  }
 
   return (
     <section
@@ -550,22 +614,25 @@ export function FunctionTriggerCard({
           ) : null}
           {!pending && !running ? (
             displayCustomTerminal ? (
-              <div className="border-t border-rule-2 bg-paper-2">
-                <button
-                  type="button"
-                  aria-expanded={showRawDetails}
-                  onClick={() => setShowRawDetails((value) => !value)}
-                  className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
-                >
-                  {showRawDetails ? 'hide' : 'show'} raw request and response
-                </button>
-                {showRawDetails ? (
-                  <>
-                    <ValuePane label="request" value={rawInput} />
-                    <ValuePane label="response" value={rawOutput} bordered />
-                  </>
-                ) : null}
-              </div>
+              <>
+                {customDisplay ? customTerminal : null}
+                <div className="border-t border-rule-2 bg-paper-2">
+                  <button
+                    type="button"
+                    aria-expanded={showRawDetails}
+                    onClick={() => setShowRawDetails((value) => !value)}
+                    className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                  >
+                    {showRawDetails ? 'hide' : 'show'} raw request and response
+                  </button>
+                  {showRawDetails ? (
+                    <>
+                      <ValuePane label="request" value={rawInput} />
+                      <ValuePane label="response" value={rawOutput} bordered />
+                    </>
+                  ) : null}
+                </div>
+              </>
             ) : hasCustomTerminal ? (
               <Tabs
                 value={tab}
@@ -592,8 +659,22 @@ export function FunctionTriggerCard({
         </div>
       ) : null}
 
-      {displayCustomTerminal ? (
-        <div className={cn(!open && 'pt-1')}>{customTerminal}</div>
+      {displayCustomTerminal && (!open || !customDisplay) ? (
+        displayAction === 'expand' && customDisplay ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`Show details for ${message.functionId}`}
+            onClick={() => setOpen(true)}
+            className="w-full cursor-pointer pt-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            {customDisplay}
+          </button>
+        ) : (
+          <div className={cn(!open && 'pt-1')}>
+            {customDisplay ?? customTerminal}
+          </div>
+        )
       ) : null}
 
       {pending && filesystemAccess ? (

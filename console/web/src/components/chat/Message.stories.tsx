@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { registrationFromCall } from '@/components/trigger-activity/model'
 import type {
   AssistantMessage,
   Attachment,
@@ -96,6 +97,60 @@ const triggerFiredCall: SystemMessage = {
   createdAt: 1785948999879,
 }
 
+const triggerFiredOnce: SystemMessage = {
+  id: 'e_trigfired_sub_story_1',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'daily report · notified this chat · once consumed',
+  trigger: {
+    subscription_id: 'sub_story',
+    trigger_id: 'trigger-story',
+    trigger_type: 'cron',
+    config: { expression: '0 30 9 * * *' },
+    target: 'harness::send',
+    label: 'daily report',
+    once: true,
+    retired: true,
+    fires: 1,
+    fired_at: 1_785_948_999_879,
+    outcome: 'delivered',
+    retirement_reason: 'once_consumed',
+  },
+  createdAt: 1_785_948_999_879,
+}
+
+const triggerNotification: UserMessage = {
+  id: 'e_fire_sub_story_1',
+  role: 'user',
+  content: '[notification] daily report: {"report_id":"rpt-42","rows":128}',
+  notification: true,
+  triggerBindingId: 'sub_story',
+  createdAt: 1_785_948_999_879,
+}
+
+const triggerManuallyRemoved: SystemMessage = {
+  id: 'e_trigexpired_sub_manual',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'orders watch · binding manually removed',
+  trigger: {
+    subscription_id: 'sub_manual',
+    trigger_type: 'database::row-changed',
+    config: { database: 'primary', table: 'orders' },
+    target: 'orders::reindex',
+    label: 'orders watch',
+    once: false,
+    retired: true,
+    fires: 4,
+    fired_at: 1_785_949_099_879,
+    outcome: 'unregistered',
+    retirement_reason: 'unregistered',
+  },
+  createdAt: 1_785_949_099_879,
+}
+
 const meta = {
   title: 'Chat/Message',
   component: Message,
@@ -133,4 +188,27 @@ export const AssistantThinking: Story = {
 export const TriggerFiredWithPayload: Story = {
   name: 'system, trigger fired · ƒ-call with payload',
   args: { message: triggerFiredCall },
+}
+
+export const TriggerFiredOnceConsumed: Story = {
+  name: 'system, trigger fired · once consumed',
+  args: {
+    message: triggerFiredOnce,
+    triggerNotification,
+    registration: registrationFromCall({
+      id: 'register-story',
+      subscriptionId: 'sub_story',
+      effectiveOnce: true,
+      input: {
+        trigger_type: 'cron',
+        config: { expression: '0 30 9 * * *' },
+        label: 'daily report',
+      },
+    }),
+  },
+}
+
+export const TriggerBindingManuallyRemoved: Story = {
+  name: 'system, trigger binding · manually removed',
+  args: { message: triggerManuallyRemoved },
 }

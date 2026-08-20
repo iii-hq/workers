@@ -1,10 +1,11 @@
 //! Durable `trigger_fired` bookkeeping entries.
 //!
-//! Every real subscription fire — a wake or a mechanical call — appends a
-//! `kind: "custom"` `trigger_fired` entry into the OWNER session's
-//! transcript (the chat that registered the trigger). Custom entries are
-//! model-invisible (excluded from default `session::messages` reads and the
-//! model context), so this is a pure UI signal with two uses on the console:
+//! Every subscription delivery attempt — plus lifecycle endings that happen
+//! without a fire — appends a `kind: "custom"` `trigger_fired` entry into the
+//! OWNER session's transcript (the chat that registered the trigger). Custom
+//! entries are model-invisible (excluded from default `session::messages`
+//! reads and the model context), so this is a pure UI signal with two uses on
+//! the console:
 //!   * render a turn-less "trigger fired" notice in the timeline, and
 //!   * keep a fired `once` trigger visible in the panel after the engine
 //!     unregisters it (the console's list refetch can no longer see it, but
@@ -16,11 +17,39 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::bindings::Binding;
 use crate::clients::session::SessionClient;
 use crate::types::message::AgentMessage;
 
 /// custom_type stamped on the transcript entry (mirrored by the console mapper).
 pub const CUSTOM_TYPE: &str = "trigger_fired";
+
+/// What happened when the engine attempted to deliver a binding event. The
+/// custom type predates lifecycle-only records, so the outer name remains
+/// `trigger_fired`; this field is the authoritative semantic discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerOutcome {
+    Delivered,
+    DeliveryFailed,
+    Skipped,
+    Expired,
+    Unregistered,
+    Invalidated,
+}
+
+/// Why a binding disappeared after this activity. Kept separate from
+/// [`TriggerOutcome`] because a delivered fire can also consume its binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementReason {
+    OnceConsumed,
+    MaxFires,
+    Expired,
+    Unregistered,
+    Invalidated,
+    Exhausted,
+}
 
 /// The `data` payload of a `trigger_fired` custom entry. Carries enough for the
 /// console to render both the chat notice and a standalone fired panel row after
@@ -38,9 +67,22 @@ pub struct TriggerFired<'a> {
     pub target: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<&'a str>,
+    /// Registered event source and its source-owned configuration. Records
+    /// predating the durable binding dedup key legitimately omit both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<&'a Value>,
+    pub outcome: TriggerOutcome,
     pub once: bool,
-    /// This fire unregistered the binding (once teardown).
+    /// The binding's durable fire counter immediately after this activity.
+    /// Delivery records use the post-claim count; non-delivery records retain
+    /// the count already persisted on the binding.
+    pub fires: u64,
+    /// This activity retired the binding. The structured reason explains why.
     pub retired: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retirement_reason: Option<RetirementReason>,
     /// state-trigger watch, extracted from the fired event when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<&'a str>,
@@ -56,6 +98,61 @@ pub struct TriggerFired<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<&'a Value>,
     pub fired_at: i64,
+}
+
+/// Build a lifecycle-only record from the teardown's authoritative binding
+/// snapshot. Race-prone callers emit it only after winning retirement; expiry,
+/// explicit unregistration, and invalidation share this shape so their
+/// source/config/count fields cannot drift.
+pub fn retirement_record<'a>(
+    binding: &'a Binding,
+    outcome: TriggerOutcome,
+    reason: RetirementReason,
+    note: Option<&'a str>,
+    fired_at: i64,
+) -> TriggerFired<'a> {
+    let (trigger_type, config) = binding
+        .trigger_watch()
+        .map_or((None, None), |(trigger_type, config)| {
+            (Some(trigger_type), Some(config))
+        });
+    let (scope, key) = config.map_or((None, None), |config| {
+        (
+            config.get("scope").and_then(Value::as_str),
+            config.get("key").and_then(Value::as_str),
+        )
+    });
+    let label = binding
+        .dedup_key
+        .as_ref()
+        .and_then(|key| key.get("label"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            binding
+                .target
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("label"))
+                .and_then(Value::as_str)
+        });
+    TriggerFired {
+        subscription_id: &binding.id,
+        trigger_id: binding.trigger_id.as_deref(),
+        target: &binding.target.function_id,
+        label,
+        trigger_type,
+        config,
+        outcome,
+        once: binding.lifecycle.once,
+        fires: binding.fires,
+        retired: true,
+        retirement_reason: Some(reason),
+        scope,
+        key,
+        note,
+        payload: None,
+        fired_at,
+    }
 }
 
 /// Append the fired record into the owner session. Best-effort — logs and
@@ -202,8 +299,13 @@ mod tests {
             trigger_id: None,
             target: "harness::send",
             label: None,
+            trigger_type: None,
+            config: None,
+            outcome: TriggerOutcome::Delivered,
             once: true,
+            fires: 1,
             retired: true,
+            retirement_reason: Some(RetirementReason::OnceConsumed),
             scope: None,
             key: None,
             note: None,
@@ -213,13 +315,92 @@ mod tests {
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["subscription_id"], "sub_1");
         assert_eq!(v["target"], "harness::send");
+        assert_eq!(v["outcome"], "delivered");
         assert_eq!(v["once"], true);
+        assert_eq!(v["fires"], 1);
         assert_eq!(v["retired"], true);
+        assert_eq!(v["retirement_reason"], "once_consumed");
         assert_eq!(v["fired_at"], 42);
         // Skipped optionals must not appear.
         assert!(v.get("trigger_id").is_none());
         assert!(v.get("label").is_none());
+        assert!(v.get("trigger_type").is_none());
+        assert!(v.get("config").is_none());
         assert!(v.get("payload").is_none());
+    }
+
+    #[test]
+    fn record_serializes_the_registration_and_exact_enum_names() {
+        let config = json!({ "expression": "0 * * * * *" });
+        let rec = TriggerFired {
+            subscription_id: "sub_1",
+            trigger_id: Some("trig_1"),
+            target: "state::set",
+            label: Some("heartbeat"),
+            trigger_type: Some("cron"),
+            config: Some(&config),
+            outcome: TriggerOutcome::DeliveryFailed,
+            once: false,
+            fires: 7,
+            retired: true,
+            retirement_reason: Some(RetirementReason::MaxFires),
+            scope: None,
+            key: None,
+            note: Some("dispatch failed"),
+            payload: None,
+            fired_at: 42,
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["trigger_type"], "cron");
+        assert_eq!(v["config"], config);
+        assert_eq!(v["outcome"], "delivery_failed");
+        assert_eq!(v["fires"], 7);
+        assert_eq!(v["retirement_reason"], "max_fires");
+
+        let outcomes = [
+            TriggerOutcome::Delivered,
+            TriggerOutcome::DeliveryFailed,
+            TriggerOutcome::Skipped,
+            TriggerOutcome::Expired,
+            TriggerOutcome::Unregistered,
+            TriggerOutcome::Invalidated,
+        ];
+        assert_eq!(
+            outcomes
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                json!("delivered"),
+                json!("delivery_failed"),
+                json!("skipped"),
+                json!("expired"),
+                json!("unregistered"),
+                json!("invalidated"),
+            ]
+        );
+        let reasons = [
+            RetirementReason::OnceConsumed,
+            RetirementReason::MaxFires,
+            RetirementReason::Expired,
+            RetirementReason::Unregistered,
+            RetirementReason::Invalidated,
+            RetirementReason::Exhausted,
+        ];
+        assert_eq!(
+            reasons
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                json!("once_consumed"),
+                json!("max_fires"),
+                json!("expired"),
+                json!("unregistered"),
+                json!("invalidated"),
+                json!("exhausted"),
+            ]
+        );
     }
 
     #[test]
@@ -230,8 +411,13 @@ mod tests {
             trigger_id: None,
             target: "receiving::check_completion",
             label: None,
+            trigger_type: Some("database::row-changed"),
+            config: None,
+            outcome: TriggerOutcome::Delivered,
             once: false,
+            fires: 3,
             retired: false,
+            retirement_reason: None,
             scope: None,
             key: None,
             note: None,
@@ -240,6 +426,7 @@ mod tests {
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["payload"], payload);
+        assert_eq!(v["fires"], 3);
     }
 
     #[test]
@@ -250,8 +437,13 @@ mod tests {
             trigger_id: Some("trig_1"),
             target: "receiving::check_completion",
             label: Some("lbl"),
+            trigger_type: Some("state"),
+            config: None,
+            outcome: TriggerOutcome::DeliveryFailed,
             once: false,
+            fires: 4,
             retired: false,
+            retirement_reason: None,
             scope: Some("scope"),
             key: Some("key"),
             note: Some("note"),
@@ -263,8 +455,12 @@ mod tests {
         assert_eq!(stripped.trigger_id, Some("trig_1"));
         assert_eq!(stripped.target, "receiving::check_completion");
         assert_eq!(stripped.label, Some("lbl"));
+        assert_eq!(stripped.trigger_type, Some("state"));
+        assert_eq!(stripped.outcome, TriggerOutcome::DeliveryFailed);
         assert!(!stripped.once);
+        assert_eq!(stripped.fires, 4);
         assert!(!stripped.retired);
+        assert_eq!(stripped.retirement_reason, None);
         assert_eq!(stripped.scope, Some("scope"));
         assert_eq!(stripped.key, Some("key"));
         assert_eq!(stripped.note, Some("note"));

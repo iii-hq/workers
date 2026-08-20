@@ -9,13 +9,16 @@ import type {
   RegisteredConfigForm,
   RegisteredProviderConfigForm,
   RegisteredSessionChip,
+  RegisteredTriggerActivityRenderer,
 } from './ui-slots'
 import {
   getExtProviderConfigForm,
   getExtSessionChips,
+  getExtTriggerActivityRenderers,
   isExtConfigFormPending,
   registerExtProviderConfigForm,
   registerExtSessionChip,
+  registerExtTriggerActivityRenderer,
 } from './ui-slots'
 
 function chip(id: string, path: string): RegisteredSessionChip {
@@ -83,5 +86,44 @@ describe('provider config form slot', () => {
     expect(getExtProviderConfigForm('openai-codex')?.path).toBe('first/page.js')
     offA()
     expect(getExtProviderConfigForm('openai-codex')).toBeUndefined()
+  })
+})
+
+describe('trigger activity renderer slot', () => {
+  function renderer(
+    id: string,
+    path: string,
+  ): RegisteredTriggerActivityRenderer {
+    return {
+      path,
+      scope: path.split('/')[0],
+      renderer: {
+        id,
+        isMatch: () => true,
+        tryRender: () => null,
+      },
+    }
+  }
+
+  it('keeps registration order and removes exactly the disposed entry', () => {
+    const offA = registerExtTriggerActivityRenderer(
+      renderer('first', 'first/page.js'),
+    )
+    const offB = registerExtTriggerActivityRenderer(
+      renderer('second', 'second/page.js'),
+    )
+
+    expect(
+      getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+    ).toEqual(['first', 'second'])
+
+    offA()
+    offA()
+    expect(
+      getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+    ).toEqual(['second'])
+
+    offB()
+    expect(getExtTriggerActivityRenderers()).toEqual([])
   })
 })

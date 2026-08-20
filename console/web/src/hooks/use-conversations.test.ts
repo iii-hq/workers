@@ -184,6 +184,22 @@ describe('mergeConversationMeta', () => {
     expect(spawned('something-else')).toBeUndefined()
     expect(spawned(undefined)).toBeUndefined()
   })
+
+  it('preserves the parent function call used to open a spawned child', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          parent_session_id: 'console-parent',
+          function_call_id: 'call-spawn-1',
+          spawned_by: 'agent',
+        },
+      }),
+    )
+
+    expect(next.parentId).toBe('console-parent')
+    expect(next.parentFunctionCallId).toBe('call-spawn-1')
+  })
 })
 
 describe('mergeSessionListSnapshot', () => {

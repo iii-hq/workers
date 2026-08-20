@@ -10,6 +10,7 @@ workers in this monorepo. Per-worker deep docs stay inside each worker folder
 |---|---|
 | Add a new worker to the repo | [`sops/new-worker.md`](sops/new-worker.md) |
 | Scaffold a Rust `deploy: binary` worker | [`sops/binary-worker.md`](sops/binary-worker.md) |
+| Ship worker-owned Console UI or trigger renderers | [`sops/injectable-console-ui.md`](sops/injectable-console-ui.md) |
 | Ship a version to the registry | [`sops/release.md`](sops/release.md) |
 | Fix a failed release | [`sops/release.md`](sops/release.md) § Troubleshooting |
 | Write a consumer `README.md` | [`worker-readme.md`](https://github.com/iii-hq/workers/blob/main/worker-readme.md) |

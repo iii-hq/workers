@@ -15,6 +15,7 @@ import {
 import {
   getExtConfigForm,
   getExtProviderConfigForm,
+  getExtTriggerActivityRenderers,
   getUiAssetsStatus,
   setUiAssetsStatus,
 } from './ui-slots'
@@ -38,6 +39,18 @@ function setupForm(label: string): UiModule {
       host.providerConfigForms.register('openai-codex', () => (
         <p>{label} provider</p>
       ))
+    },
+  }
+}
+
+function setupTriggerRenderer(label: string): UiModule {
+  return {
+    default(host) {
+      host.triggerRenderers.register({
+        id: `cron-${label}`,
+        isMatch: (triggerType) => triggerType === 'cron',
+        tryRender: () => <p>{label}</p>,
+      })
     },
   }
 }
@@ -199,6 +212,46 @@ describe('injectable UI script updates', () => {
     expect(renderCurrentForm()).toContain('old form')
 
     harness.stop()
+  })
+
+  it('hot-reloads trigger renderers atomically and cleans them up on stop', async () => {
+    const candidate = deferred<UiModule>()
+    const importModule = vi
+      .fn<(url: string) => Promise<UiModule>>()
+      .mockResolvedValueOnce(setupTriggerRenderer('old'))
+      .mockImplementationOnce(() => candidate.promise)
+    const harness = createHarness({ importModule })
+
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'cron/page.js', kind: 'script', hash: 'old' }],
+    })
+    await vi.waitFor(() =>
+      expect(
+        getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+      ).toEqual(['cron-old']),
+    )
+
+    harness.emit({
+      event: 'set',
+      path: 'cron/page.js',
+      kind: 'script',
+      hash: 'new',
+    })
+    await vi.waitFor(() => expect(importModule).toHaveBeenCalledTimes(2))
+    expect(
+      getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+    ).toEqual(['cron-old'])
+
+    candidate.resolve(setupTriggerRenderer('new'))
+    await vi.waitFor(() =>
+      expect(
+        getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+      ).toEqual(['cron-new']),
+    )
+
+    harness.stop()
+    expect(getExtTriggerActivityRenderers()).toEqual([])
   })
 })
 

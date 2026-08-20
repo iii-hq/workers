@@ -10,6 +10,8 @@ fn main() {
         std::env::var("TARGET").unwrap()
     );
 
+    println!("cargo:rerun-if-env-changed=SKIP_UI_BUILD");
+    println!("cargo:rerun-if-env-changed=PNPM");
     println!("cargo:rerun-if-changed=ui/page.tsx");
     println!("cargo:rerun-if-changed=ui/styles.css");
     println!("cargo:rerun-if-changed=ui/src");
@@ -134,5 +136,5 @@ fn locate_pnpm() -> PathBuf {
             }
         }
     }
-    panic!("pnpm not found on PATH");
+    panic!("pnpm not found on PATH; set PNPM or build cron/ui manually");
 }

@@ -237,6 +237,8 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
         : undefined,
+    parentFunctionCallId:
+      typeof md.function_call_id === 'string' ? md.function_call_id : undefined,
     depth: typeof md.depth === 'number' ? md.depth : undefined,
     spawnedBy:
       md.spawned_by === 'trigger' || md.spawned_by === 'agent'
@@ -630,6 +632,10 @@ export function useConversations(
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id
                   : c.parentId,
+              parentFunctionCallId:
+                typeof md.function_call_id === 'string'
+                  ? md.function_call_id
+                  : c.parentFunctionCallId,
               depth: typeof md.depth === 'number' ? md.depth : c.depth,
               spawnedBy:
                 md.spawned_by === 'trigger' || md.spawned_by === 'agent'
