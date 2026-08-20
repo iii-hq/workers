@@ -381,8 +381,7 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
             "operation_id": contract["campaign_id"],
         },
     }
-    return {
-        "idempotency_key": contract["idempotency_key"],
+    request = {
         "label": f"{definition['label']} · Harness {contract['target']['version']}",
         "lane": definition["lane"],
         "model": definition["subject"]["model"],
@@ -397,6 +396,29 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
         "progress_interval_seconds": definition["progressIntervalSeconds"],
         "run_contract": run_contract,
     }
+    # The runner validates a D0 key over the fully materialized request,
+    # including cases and their contract fingerprints. Those fields only exist
+    # after scenarios-list, so the GitHub dispatch key cannot be reused here.
+    # This remains deterministic for transport retries of the same catalog.
+    request["idempotency_key"] = observation_idempotency_key(request)
+    return request
+
+
+def observation_idempotency_key(request: dict[str, Any]) -> str:
+    intent = {
+        "run_contract": request["run_contract"],
+        "lane": request["lane"],
+        "model": request["model"],
+        "provider": request["provider"],
+        "judge_model": request["judge_model"],
+        "judge_provider": request["judge_provider"],
+        "scenarios": request["scenarios"],
+        "runs": request["runs"],
+        "seed": request["seed"],
+        "rotating_seeds": request["rotating_seeds"],
+        "technical_retries": request["technical_retries"],
+    }
+    return f"rc:d0:{canonical_sha256(intent).removeprefix('sha256:')}"
 
 
 def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
