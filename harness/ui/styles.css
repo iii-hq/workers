@@ -204,6 +204,10 @@
 
 [data-iii-ui="harness"] .harness-ui-pop-session-id {
   font-family: var(--font-mono);
+  /* Flex items refuse to shrink past their content without this, so a long
+     session id would push the copy button out of the 300px popover instead
+     of ellipsing. Same pairing as .harness-ui-pop-model above. */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -7,7 +7,7 @@ into five surfaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
-| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, path, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [Layout](#layout)). | Orientation: "when and why to use my worker's tools" |
+| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, path, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Command templates listed by `directory::prompts::list`, read by `get`, authored by `create`, edited by `update`. Stored under any `prompts/` path segment; `create` writes `<skills_folder>/prompts/<name>.md`. | Parametric command templates the *user* invokes |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts with the same four verbs and the same response shapes as Prompts — including the `prompts` field name on `list`. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Search** (`directory::search_functions`) | One natural-language query → the API reference of only the relevant functions (installed, plus installable registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
@@ -138,7 +138,10 @@ Both folder settings are also watch roots, and the watcher creates each one at
 boot if it is missing (so a fresh install is watched rather than silently
 unwatched until the next restart). `agents_skills_folder` is a watch root too,
 but only when it already exists — the worker never creates (or writes)
-anything under it. `local_skills_folder` defaults to the
+anything under it. Install your first agents skill while the worker is
+running and that root stays unwatched until the next restart: reads still
+serve it, since every read re-scans disk, but the live `external` doorbell
+is missing until then. `local_skills_folder` defaults to the
 CWD-relative `./.iii/skills`, so expect an empty `.iii/skills` directory to
 appear in whatever working directory the engine launches the worker from. An
 empty local root shadows nothing. Because both are restart-required, the watch

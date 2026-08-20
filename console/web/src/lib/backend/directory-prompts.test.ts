@@ -130,4 +130,25 @@ describe('skillBodyWithBaseDir', () => {
   it('is body-only when the worker predates the path field', () => {
     expect(skillBodyWithBaseDir(skill)).toBe('Run scripts/context.mjs.')
   })
+
+  it('handles a Windows path from a Windows worker build', () => {
+    const out = skillBodyWithBaseDir({
+      ...skill,
+      path: 'C:\\Users\\u\\.agents\\skills\\impeccable\\SKILL.md',
+    })
+    expect(out).toContain(
+      'Skill base directory: C:\\Users\\u\\.agents\\skills\\impeccable',
+    )
+  })
+
+  it('falls back to body-only rather than emit a truncated path', () => {
+    // No separator at all: naive `slice(0, lastIndexOf(...))` would shave the
+    // final character off and present the result as a directory.
+    expect(skillBodyWithBaseDir({ ...skill, path: 'SKILL.md' })).toBe(
+      'Run scripts/context.mjs.',
+    )
+    expect(skillBodyWithBaseDir({ ...skill, path: '/SKILL.md' })).toBe(
+      'Run scripts/context.mjs.',
+    )
+  })
 })
