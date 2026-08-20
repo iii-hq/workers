@@ -213,7 +213,23 @@ describe('entrySegments', () => {
     ).toMatchObject({ notification: true })
     expect(entrySegments(userItem('e_notify_sub_1', 'wake'))[0]).toMatchObject({
       notification: true,
+      triggerBindingId: 'sub_1',
     })
+    expect(entrySegments(userItem('e_fire_sub_2_4', 'wake'))[0]).toMatchObject({
+      notification: true,
+      triggerBindingId: 'sub_2',
+    })
+    expect(
+      entrySegments(userItem('e_condfail_sub_3', 'delivery failed'))[0],
+    ).toMatchObject({ notification: true, triggerBindingId: 'sub_3' })
+    expect(
+      entrySegments(
+        userItem('opaque-id', 'wake', {
+          notification: true,
+          binding: 'sub_live',
+        }),
+      )[0],
+    ).toMatchObject({ notification: true, triggerBindingId: 'sub_live' })
   })
 
   it('splits a reaction task from its appended event block', () => {
@@ -545,7 +561,7 @@ describe('entrySegments', () => {
       },
     })
     expect((notice as { content: string }).content).toBe(
-      'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · unregistered',
+      'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · once consumed',
     )
   })
 
@@ -569,7 +585,47 @@ describe('entrySegments', () => {
         retired: true,
         fired_at: 0,
       }),
-    ).toBe('ping · notified this chat · unregistered')
+    ).toBe('ping · notified this chat · once consumed')
+  })
+
+  it('does not invent delivery for lifecycle-only or skipped records', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'state::set',
+        label: 'cleanup',
+        once: false,
+        retired: true,
+        outcome: 'unregistered',
+        retirement_reason: 'unregistered',
+        fired_at: 0,
+      }),
+    ).toBe('cleanup · binding manually removed')
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'state::set',
+        label: 'guarded',
+        once: false,
+        retired: false,
+        outcome: 'skipped',
+        fired_at: 0,
+      }),
+    ).toBe('guarded · delivery skipped')
+  })
+
+  it('uses an enriched trigger type when no label or state key exists', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        trigger_type: 'cron',
+        target: 'harness::send',
+        once: false,
+        retired: false,
+        outcome: 'delivered',
+        fired_at: 0,
+      }),
+    ).toBe('cron · notified this chat')
   })
 
   it('renders a persisted failure with partial-output and recovery context', () => {

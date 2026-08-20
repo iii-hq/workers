@@ -1,11 +1,13 @@
 # Injectable console UI — shipping worker UI into the running console
 
-How a worker ships React pages, function-trigger renderers, configuration
-forms, and stylesheets into every open console tab **at runtime** — no console
-rebuild, no iframe, hot-reloaded on re-registration. The full design rationale
+How a worker ships React pages, function-trigger renderers, trigger-activity
+renderers, configuration forms, and stylesheets into every open console tab
+**at runtime** — no console rebuild, no iframe, hot-reloaded on
+re-registration. The full design rationale
 lives in the tech spec (`iii/tech-specs/2026-07-17-injectable-ui/`); this SOP
 is the operational guide for worker authors, grounded in the shipped
-implementation. The `state` worker is the living reference — copy it.
+implementation. The `state` worker is the broad delivery reference; the
+`cron` worker is the focused trigger-activity renderer reference.
 
 | Piece | Reference |
 |---|---|
@@ -17,6 +19,7 @@ implementation. The `state` worker is the living reference — copy it.
 | The `@iii-dev/console-ui` package (types + component manifest) | `workers/packages/console-ui/` |
 | The `iii-console-ui` crate (Rust worker-side registration) | `workers/crates/console-ui/` |
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
+| Trigger-activity renderer reference | `workers/cron/src/ui.rs` + `workers/cron/ui/` |
 
 > **Companion skill — keep it in sync.** `workers/console/SKILL.md` is a
 > standalone skill teaching this same workflow to authors *outside* this
@@ -81,6 +84,8 @@ export default function setup(host: Host) {
     render: () => <StateManagerPage host={host} />,
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
+  // When the worker owns a trigger type:
+  host.triggerRenderers?.register(createTriggerActivityRenderer())
   host.configForms.register('state', StateConfigForm)
   host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
   // optional: return a teardown fn; the loader runs it on dispose
@@ -128,6 +133,35 @@ hierarchy, `--color-edge` for structure, semantic status tokens, font tokens,
 and `--motion-duration-*`/`--motion-ease-*` for transitions. Dark mode is a
 variable flip on `html[data-theme]`, so token-based styles theme for free.
 Never hardcode theme colors.
+
+For related content that needs emphasis inside an existing card, use
+`CardHighlight` or `uiClasses.cardHighlight`. It uses
+`--color-card-highlight` and is always borderless and shadowless. It is not a
+hover, selection, focus, status, or standalone-card treatment.
+
+Expandable worker cards use the public `CollapsibleCard` composition:
+
+```tsx
+import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+} from '@iii-dev/console-ui'
+
+<CollapsibleCard>
+  <CollapsibleCardTrigger className="p-3">
+    Activity summary
+  </CollapsibleCardTrigger>
+  <CollapsibleCardContent>
+    <div className="border-t border-edge p-3">Activity details</div>
+  </CollapsibleCardContent>
+</CollapsibleCard>
+```
+
+The trigger owns keyboard and ARIA behavior. Content stays mounted while
+collapsed so local state survives, and the auto-height transition uses the
+Console motion tokens, including automatic reduced-motion handling. Keep
+padding inside the content child so the animated grid can fully collapse.
 
 Selection is neutral in both themes: `--color-surface-selected`, stronger
 `--color-ink`, and an optional `--color-edge`. Do not change selected names,
@@ -425,8 +459,9 @@ interface FunctionTriggerRenderer {
   tryRender(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
+  tryRenderDisplay?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
-  metadata?: { display?: boolean }
+  metadata?: { display?: boolean; displayAction?: 'expand' }
   redactRaw?(value: unknown): unknown
 }
 ```
@@ -435,8 +470,9 @@ Injected renderers dispatch **before** the first-party families
 (`useFunctionTriggerRenderers`,
 `workers/console/web/src/components/function-trigger/renderer-registry.tsx`),
 so you can override built-in rendering for your worker's functions. Return
-`null` to fall through to the next renderer — match narrowly (your own
-function ids) and let errors and everything else keep the default cards.
+`null` to fall through to the next renderer. The host calls `tryRender*` only
+after that renderer's `isMatch(functionId)` returns true — match narrowly (your
+own function ids) and let errors and everything else keep the default cards.
 Renderer callbacks are fenced: a throwing `isMatch` counts as no-match, a
 throwing `tryRender` degrades to an error chip, never a broken feed.
 
@@ -452,6 +488,16 @@ request/response remain collapsed. Metadata is tied to the renderer that
 actually produced the node: a focused renderer can return `null` for errors
 or unsupported output and safely fall through to a general renderer. Do not
 mark ordinary terminal/status cards for display.
+
+Use `tryRenderDisplay` when that inline artifact needs a compact receipt while
+`tryRender` supplies its complete detail body. Add
+`metadata.displayAction: 'expand'` to make a single continuous collapsible
+card: the receipt remains mounted as the header and the detail body expands
+underneath it with the host-owned transition, terminal tab, and raw JSON tab.
+In this mode the receipt must not render its own outer card or interactive
+controls because the host owns the surface, padding, and focus target. Omit
+`displayAction` when the receipt owns another action such as opening a child
+session.
 
 #### `redactRaw` — your card is not the only exit
 
@@ -481,6 +527,72 @@ pattern belongs in shared console code.
 - It covers the card's raw panes only. A session export dumps the transcript
   verbatim by design; do not treat `redactRaw` as an access control — the
   payload still crosses the wire and lands in the trace store.
+
+### `host.triggerRenderers?.register(renderer)`
+
+Render the source-specific section of a normalized trigger activity. This is
+separate from `host.functionTriggers`: match the inner trigger type (`cron`,
+`state`, or a worker-defined value), never the shared function
+`engine::register_trigger`.
+
+```ts
+interface TriggerActivityRenderer {
+  id: string
+  isMatch(triggerType: string): boolean
+  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+}
+
+interface TriggerActivityMessage {
+  id: string
+  kind: 'registration' | 'fired' | 'retirement'
+  triggerType: string
+  config?: unknown
+  delivery:
+    | { kind: 'notify' }
+    | { kind: 'call'; functionId: string }
+  lifecycle: {
+    state: 'active' | 'retired'
+    once: boolean
+    maxFires?: number
+    expiresAt?: number
+    fires: number
+  }
+  payload?: unknown
+  // See packages/console-ui/index.d.ts for the remaining optional fields.
+}
+```
+
+Register through the script host and feature-detect for older consoles:
+
+```tsx
+export default function setup(host: Host) {
+  host.triggerRenderers?.register({
+    id: 'cron/page.js#trigger-activity',
+    isMatch: (triggerType) => triggerType === 'cron',
+    tryRender: (activity) => {
+      const config = parseCronConfig(activity.config)
+      return config ? <CronSource config={config} /> : null
+    },
+  })
+}
+```
+
+The worker owns only source interpretation: schedule, filter, topic, event
+shape, or similar worker-specific meaning. The host retains the activity
+chrome, **Trigger fired** label, delivery target/result, lifecycle and
+controls, raw JSON, and generic fallback. A once trigger that fires and is
+automatically retired remains one host activity; never duplicate it with a
+worker-rendered unbind notice.
+
+Renderers dispatch in registration order and the first non-null node wins.
+Return `null` for a different type or an unrecognized config. A throwing
+matcher is treated as no match; render failures are error-bounded. The same
+renderer should tolerate all three `kind` values because source identity does
+not change as the binding moves through its lifecycle.
+
+See
+[`console/web/docs/custom-trigger-components.md`](../../console/web/docs/custom-trigger-components.md)
+for the complete authoring guide and test matrix.
 
 ### `host.configForms.register(configurationId, component)`
 
@@ -549,13 +661,30 @@ fetch their own data over `host.iii` (subscribe to your worker's triggers,
 hydrate with a function call on mount); the host passes identity only.
 Feature-detect on older consoles: `host.chat?.registerSessionChip`.
 
+### `host.chat` conversation helpers
+
+Newer Consoles expose two optional, non-rendering helpers on the same
+feature-detected namespace:
+
+- `host.chat?.selectConversation?.(sessionId)` switches the active
+  conversation. Call it only after an explicit operator action such as opening
+  a schedule's transcript; never steal focus on mount or during background
+  refresh.
+- `host.chat?.composerModel?.(conversationId?)` returns the live model id for
+  that conversation, including an unsaved composer draft, or `null` when none
+  is selected. Treat it as a read-only snapshot and keep a fallback for older
+  Consoles.
+
+Both methods are optional independently of `registerSessionChip`; check the
+specific method before use.
+
 ### The rest of `host`
 
 | Surface | What it is |
 |---|---|
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
 | `host.panels` | Optional compatibility-gated contextual navigation: `open({ pageId, context })` places/reuses a registered page beside chat and sends it JSON context. |
-| shared UI | Typed, zero-bundle-cost components include page chrome; `List`/`ListItem`, `Card`, `Panel`, `Chip`, `IconButton`; line `Tabs` and `SegmentedControl`; `Selector` and `Select`; buttons, inputs, dialogs, menus, tooltips; status/empty/loading surfaces; Markdown/JSON; `CodeEditor`, `FileDiff`; and terminal atoms. `uiClasses` supplies stable recipes and `tokens` supplies the canonical CSS-variable inventory. Import from `@iii-dev/console-ui`; `host.components` mirrors React components as an untyped compatibility record. Promote repeated cross-worker behavior here instead of carrying private copies. Monaco, diff, ANSI parsing, selector behavior, tooltip geometry, and portal scope are single shared contracts. |
+| shared UI | Typed, zero-bundle-cost components include page chrome; `List`/`ListItem`, `Card`, `CollapsibleCard`, `CardHighlight`, `Panel`, `Chip`, `IconButton`; line `Tabs` and `SegmentedControl`; `Selector` and `Select`; buttons, inputs, dialogs, menus, tooltips; status/empty/loading surfaces; Markdown/JSON; `CodeEditor`, `FileDiff`; and terminal atoms. `uiClasses` supplies stable recipes and `tokens` supplies the canonical CSS-variable inventory. Import from `@iii-dev/console-ui`; `host.components` mirrors React components as an untyped compatibility record. Promote repeated cross-worker behavior here instead of carrying private copies. Monaco, diff, ANSI parsing, selector behavior, tooltip geometry, and portal scope are single shared contracts. |
 | `host.useTheme()` | `'light' \| 'dark'`, reactive. Extensions follow the theme, never set it. |
 | `host.path` | Your script's asset path. |
 
@@ -682,6 +811,9 @@ its own board: the registry refuses to disable it.
 - Rendering correctness stays a browser concern — Storybook in your worker's
   UI project against the workspace-linked `@iii-dev/console-ui` types is the
   recommended harness.
+- For a trigger-activity renderer, test exact type matching, malformed-config
+  fallthrough, every activity kind, generic fallback, and that the worker
+  does not duplicate host-owned delivery or lifecycle status.
 - Exercise light and dark themes at 320–430 px, narrow split-pane, and wide
   widths; keyboard and touch; reduced motion; loading/empty/error/success;
   streaming or rapidly updating data; and long content. Selected rows, cards,
@@ -698,8 +830,8 @@ its own board: the registry refuses to disable it.
 
 ## Status: shipped vs spec
 
-The 2026-07-21 implementation covers the spec's protocol, loader, and three
-slot kinds. The spec's composer slot (`host.composer`) shipped later as
+The implementation covers the spec's protocol, loader, and runtime slot
+registry. The spec's composer slot (`host.composer`) shipped later as
 `host.chat.registerSessionChip` — chips render in the chat header's right
 cluster, not the composer toolbar. Not shipped yet (don't design against
 them):
@@ -713,9 +845,9 @@ them):
 | Manifest `worker` attribution | always `null` |
 | Scope-preserving shared portals | shipped for `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and `BottomSheet`; stamp only custom domain portals |
 
-Naming note: the renderer slot is `host.functionTriggers` and the message
-role is `function-trigger` — the console web codebase deliberately does not
-use the older two-word term for these.
+Naming note: function messages use `host.functionTriggers` and the
+`function-trigger` role. Normalized trigger lifecycle activities use the
+separate `host.triggerRenderers` slot and `TriggerActivityMessage` contract.
 
 ## Security posture (know what you're shipping)
 

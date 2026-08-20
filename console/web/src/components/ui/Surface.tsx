@@ -36,6 +36,19 @@ export const CardBody = React.forwardRef<
 ))
 CardBody.displayName = 'CardBody'
 
+/** Borderless neutral inset for related content that needs emphasis inside a card. */
+export const CardHighlight = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(uiClasses.cardHighlight, className)}
+    {...props}
+  />
+))
+CardHighlight.displayName = 'CardHighlight'
+
 export const Panel = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>

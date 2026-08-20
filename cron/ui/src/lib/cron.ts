@@ -36,6 +36,14 @@ function step(value: string, maximum: number): number | null {
   return parsed > 0 && parsed <= maximum ? parsed : null
 }
 
+/** A step only describes a uniform cadence when it divides the field's full
+    period. A seven-minute wildcard step is valid cron, but its hour-boundary
+    gap is not seven minutes, so that plain-language label would mislead. */
+function uniformStepIn(value: string, period: number): number | null {
+  const parsed = step(value, period)
+  return parsed !== null && period % parsed === 0 ? parsed : null
+}
+
 interface FieldRules {
   label: string
   minimum: number
@@ -87,6 +95,33 @@ const WEEKDAY_NAMES: Record<string, number> = {
   friday: 6,
   sat: 7,
   saturday: 7,
+}
+
+const MONTH_LABELS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+]
+
+const WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+function joinWords(values: readonly string[]): string {
+  if (values.length <= 1) return values[0] ?? ''
+  if (values.length === 2) return `${values[0]} and ${values[1]}`
+  return `${values.slice(0, -1).join(', ')}, and ${values.at(-1)}`
+}
+
+function lowerFirst(value: string): string {
+  return value ? value[0].toLowerCase() + value.slice(1) : value
 }
 
 function isEveryWeekday(field: string): boolean {
@@ -147,30 +182,90 @@ export function validateCron(expression: string): string | null {
     richer is left unlabelled rather than described wrongly. */
 function calendarFields(expression: string): CronFields | null {
   const parsed = fields(expression)
-  if (!parsed || parsed.year !== '*' || numberIn(parsed.sec, 0, 59) !== 0) return null
+  if (parsed?.year !== '*' || numberIn(parsed.sec, 0, 59) !== 0) return null
   return parsed.dom === '*' && parsed.month === '*' ? parsed : null
 }
 
 export function describeCron(expression: string): string | null {
-  const parsed = calendarFields(expression)
-  if (!parsed) return null
+  const parsed = fields(expression)
+  if (parsed?.year !== '*') return null
+
+  const calendarIsEveryDay = parsed.dom === '*' && parsed.month === '*' && isEveryWeekday(parsed.weekday)
+
+  const secondStep = uniformStepIn(parsed.sec, 60)
+  if (secondStep !== null) {
+    if (parsed.min !== '*' || parsed.hour !== '*' || !calendarIsEveryDay) {
+      return null
+    }
+    return secondStep === 1 ? 'Every second' : `Every ${secondStep} seconds`
+  }
+  if (parsed.sec === '*') {
+    return parsed.min === '*' && parsed.hour === '*' && calendarIsEveryDay ? 'Every second' : null
+  }
+
+  const second = numberIn(parsed.sec, 0, 59)
+  if (second === null) return null
 
   const hour = numberIn(parsed.hour, 0, 23)
   const minute = numberIn(parsed.min, 0, 59)
-  const minuteStep = parsed.hour === '*' ? step(parsed.min, 59) : null
+  const secondSuffix = second === 0 ? '' : ` at second ${pad(second)}`
+
   let time: string | null = null
-  if (hour !== null && minute !== null) time = `${pad(hour)}:${pad(minute)} UTC`
-  else if (minuteStep !== null) time = `every ${minuteStep} minutes`
-  else if (parsed.hour === '*' && minute !== null) time = `hourly at :${pad(minute)} UTC`
+  let fixedTime = false
+  if (hour !== null && minute !== null) {
+    const clock = second === 0 ? `${pad(hour)}:${pad(minute)}` : `${pad(hour)}:${pad(minute)}:${pad(second)}`
+    time = `At ${clock}`
+    fixedTime = true
+  } else if (parsed.hour === '*') {
+    const minuteStep = uniformStepIn(parsed.min, 60)
+    if (minuteStep !== null) {
+      const interval = minuteStep === 1 ? 'Every minute' : `Every ${minuteStep} minutes`
+      time = `${interval}${secondSuffix}`
+    } else if (parsed.min === '*') {
+      time = `Every minute${secondSuffix}`
+    } else if (minute !== null) {
+      time = `At minute ${pad(minute)}${secondSuffix} of every hour`
+    }
+  } else {
+    const hourStep = uniformStepIn(parsed.hour, 24)
+    if (hourStep !== null && minute !== null) {
+      const interval = hourStep === 1 ? 'Every hour' : `Every ${hourStep} hours`
+      time = `${interval} at ${pad(minute)}:${pad(second)}`
+    }
+  }
   if (!time) return null
 
-  if (isEveryWeekday(parsed.weekday)) {
-    return hour !== null ? `every day at ${time}` : time
+  const day = numberIn(parsed.dom, 1, 31)
+  const month = ordinal(parsed.month, {
+    label: 'Month',
+    minimum: 1,
+    maximum: 12,
+    names: MONTH_NAMES,
+  })
+  if (parsed.dom !== '*' && day === null) return null
+  if (parsed.month !== '*' && month === null) return null
+
+  let date: string | null = null
+  if (day !== null && month !== null) date = `on ${MONTH_LABELS[month - 1]} ${day}`
+  else if (day !== null) date = `on day ${day} of every month`
+  else if (month !== null) date = `in ${MONTH_LABELS[month - 1]}`
+
+  let weekdays: string[] | null = null
+  if (!isEveryWeekday(parsed.weekday)) {
+    const ordinals = weekdayOrdinals(parsed.weekday)
+    if (!ordinals) return null
+    weekdays = ordinals.map((value) => WEEKDAY_LABELS[value - 1])
   }
-  const ordinals = weekdayOrdinals(parsed.weekday)
-  if (!ordinals || hour === null) return null
-  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  return `${ordinals.map((ordinal) => names[ordinal - 1]).join(', ')} at ${time}`
+
+  // Restricting both calendar axes has subtle crate-specific semantics. Keep
+  // the raw expression instead of hiding that behavior behind a short label.
+  if (date && weekdays) return null
+  if (weekdays) {
+    const names = joinWords(weekdays)
+    return fixedTime ? `Every ${names} ${lowerFirst(time)}` : `${time} on ${names}`
+  }
+  if (date) return `${time} ${date}`
+  return fixedTime ? `Every day ${lowerFirst(time)}` : time
 }
 
 /** Weekday ordinals as the Rust `cron` crate counts them: 1 is Sunday

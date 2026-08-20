@@ -226,8 +226,9 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 
 ## Injectable UI
 
-Workers extend the console at **runtime** — whole pages and function-trigger
-renderers as plain React components sharing the console's React instance
+Workers extend the console at **runtime** — whole pages, function-trigger
+renderers, and source-specific trigger-activity renderers as plain React
+components sharing the console's React instance
 (spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns three
 trigger types:
 
@@ -245,14 +246,17 @@ export `setup(host)` and register through `host.pages` (whole pages at
 `#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
 built-in id overrides it; `metadata.display` promotes the winning renderer's
-rich result into the collapsed chat flow), and `host.configForms` (replace the workers-tab
+rich result into the collapsed chat flow), `host.triggerRenderers` (render
+the source section of normalized registration/fired/retirement activities
+while the host retains delivery, lifecycle, raw data, and fallback), and
+`host.configForms` (replace the workers-tab
 form region for one configuration id; dirty/save/reset stay host-owned). A
 configuration form can opt into `{ layout: 'full' }` to receive the entire
 available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under
 `data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
-loadable assets. The `state` worker's `ui/` directory is the working
-reference implementation of all three slot kinds.
+loadable assets. The `state` worker's `ui/` directory is the broad delivery
+reference; `cron/ui/` is the trigger-activity renderer reference.
 
 ## Tech stack
 

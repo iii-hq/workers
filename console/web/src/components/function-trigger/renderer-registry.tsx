@@ -11,10 +11,15 @@
 
 import { useMemo } from 'react'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
-import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import {
+  EngineFunctionIdLabel,
+  EngineRegisterTriggerToolView,
+  EngineToolView,
+} from '@/components/chat/engine'
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import {
   HarnessFunctionIdLabel,
+  HarnessSpawnToolView,
   HarnessToolView,
 } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
@@ -43,6 +48,15 @@ import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
   // sandbox::* rendering is no longer first-party: the sandbox-code-runner
   // worker ships it as injected UI (sandbox-code-runner/ui/src/sandbox-family).
+  {
+    id: 'first-party/engine-register-trigger',
+    isMatch: EngineRegisterTriggerToolView.isRegisterTriggerFunction,
+    tryRender: EngineRegisterTriggerToolView.tryRender,
+    tryRenderRunning: EngineRegisterTriggerToolView.tryRenderRunning,
+    tryRenderDisplay: EngineRegisterTriggerToolView.tryRenderDisplay,
+    FunctionIdLabel: EngineFunctionIdLabel,
+    metadata: { display: true, displayAction: 'expand' },
+  },
   {
     id: 'first-party/engine',
     isMatch: EngineToolView.isEngineListFunction,
@@ -104,6 +118,15 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     FunctionIdLabel: RouterFunctionIdLabel,
   },
   {
+    id: 'first-party/harness-spawn',
+    isMatch: HarnessSpawnToolView.isHarnessSpawnFunction,
+    tryRender: HarnessSpawnToolView.tryRender,
+    tryRenderRunning: HarnessSpawnToolView.tryRenderRunning,
+    tryRenderDisplay: HarnessSpawnToolView.tryRenderDisplay,
+    FunctionIdLabel: HarnessFunctionIdLabel,
+    metadata: { display: true },
+  },
+  {
     id: 'first-party/harness',
     isMatch: HarnessToolView.isHarnessFunction,
     tryRender: HarnessToolView.tryRender,
@@ -147,10 +170,22 @@ export const RAW_REDACTION_FAILED = '[redaction failed — value withheld]'
  */
 function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
   const { renderer, scope, path } = entry
+  const matches = (functionId: string): boolean => {
+    try {
+      return renderer.isMatch(functionId)
+    } catch {
+      return false
+    }
+  }
   const wrap = (
     render: (message: FunctionTriggerMessage) => React.ReactNode | null,
   ) => {
     return (message: FunctionTriggerMessage): React.ReactNode | null => {
+      // A React element is already a non-null dispatch result even when the
+      // component later renders null. Gate before calling worker code so a
+      // renderer cannot accidentally claim every function and starve the
+      // matching injected/first-party renderer behind it.
+      if (!matches(message.functionId)) return null
       let node: React.ReactNode | null = null
       try {
         node = render(message)
@@ -173,19 +208,16 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
   }
   return {
     id: renderer.id,
-    isMatch: (functionId) => {
-      try {
-        return renderer.isMatch(functionId)
-      } catch {
-        return false
-      }
-    },
+    isMatch: matches,
     tryRender: wrap((m) => renderer.tryRender(m)),
     tryRenderRunning: renderer.tryRenderRunning
       ? wrap((m) => renderer.tryRenderRunning?.(m) ?? null)
       : undefined,
     tryRenderPreview: renderer.tryRenderPreview
       ? wrap((m) => renderer.tryRenderPreview?.(m) ?? null)
+      : undefined,
+    tryRenderDisplay: renderer.tryRenderDisplay
+      ? wrap((m) => renderer.tryRenderDisplay?.(m) ?? null)
       : undefined,
     FunctionIdLabel: renderer.FunctionIdLabel,
     primaryTabLabel: renderer.primaryTabLabel,

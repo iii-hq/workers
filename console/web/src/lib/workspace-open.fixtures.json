@@ -34,27 +34,42 @@
     },
     {
       "name": "fills the empty column beside chat",
-      "tabs": [{ "id": "a", "columns": 3, "screens": ["traces", "chat", null] }],
+      "tabs": [
+        { "id": "a", "columns": 3, "screens": ["traces", "chat", null] }
+      ],
       "activeTabId": "a",
       "screen": "workers",
       "expect": {
         "activeTabId": "a",
-        "tabs": [{ "id": "a", "columns": 3, "screens": ["traces", "chat", "workers"] }]
+        "tabs": [
+          { "id": "a", "columns": 3, "screens": ["traces", "chat", "workers"] }
+        ]
       }
     },
     {
       "name": "falls back to any empty column",
-      "tabs": [{ "id": "a", "columns": 3, "screens": [null, "chat", "traces"] }],
+      "tabs": [
+        { "id": "a", "columns": 3, "screens": [null, "chat", "traces"] }
+      ],
       "activeTabId": "a",
       "screen": "workers",
       "expect": {
         "activeTabId": "a",
-        "tabs": [{ "id": "a", "columns": 3, "screens": ["workers", "chat", "traces"] }]
+        "tabs": [
+          { "id": "a", "columns": 3, "screens": ["workers", "chat", "traces"] }
+        ]
       }
     },
     {
       "name": "inserts a new column after chat and rescales widths",
-      "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"], "sizes": [0.5, 0.5] }],
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat", "traces"],
+          "sizes": [0.5, 0.5]
+        }
+      ],
       "activeTabId": "a",
       "screen": "ext:shell",
       "expect": {
@@ -64,7 +79,10 @@
             "id": "a",
             "columns": 3,
             "screens": ["chat", "ext:shell", "traces"],
-            "sizes": [0.33333333333333337, 0.3333333333333333, 0.33333333333333337]
+            "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
+            "sizes": [
+              0.33333333333333337, 0.3333333333333333, 0.33333333333333337
+            ]
           }
         ]
       }
@@ -76,7 +94,15 @@
       "screen": "workers",
       "expect": {
         "activeTabId": "a",
-        "tabs": [{ "id": "a", "columns": 2, "screens": ["traces", "workers"], "sizes": [0.5, 0.5] }]
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 2,
+            "screens": ["traces", "workers"],
+            "paneIds": ["a:pane:0", "pane-new"],
+            "sizes": [0.5, 0.5]
+          }
+        ]
       }
     }
   ],
@@ -84,7 +110,12 @@
     {
       "name": "drops the column in multi-column tabs and empties a lone column",
       "tabs": [
-        { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"], "sizes": [0.25, 0.75] },
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat", "ext:shell"],
+          "sizes": [0.25, 0.75]
+        },
         { "id": "b", "columns": 1, "screens": ["ext:shell"] },
         { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
       ],
@@ -92,7 +123,13 @@
       "expect": {
         "tabIds": ["a", "b"],
         "tabs": [
-          { "id": "a", "columns": 1, "screens": ["chat"], "sizes": [1.0] },
+          {
+            "id": "a",
+            "columns": 1,
+            "screens": ["chat"],
+            "paneIds": ["a:pane:0"],
+            "sizes": [1.0]
+          },
           { "id": "b", "columns": 1, "screens": [null] },
           { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
         ]

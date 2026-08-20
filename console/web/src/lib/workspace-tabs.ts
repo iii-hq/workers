@@ -37,6 +37,12 @@ export interface WorkspaceTab {
    */
   screens: (TabScreen | null)[]
   /**
+   * Stable identities for the pane frames, index-aligned with `columns`.
+   * Older configurations omit them; `tabPaneIds` supplies deterministic
+   * fallbacks until the next structural edit persists explicit ids.
+   */
+  paneIds?: string[]
+  /**
    * Column width fractions (drag-to-resize), index-aligned with the
    * columns. Absent or mismatched = equal widths; normalized through
    * `tabSizes`.
@@ -75,6 +81,29 @@ export function tabSizes(tab: WorkspaceTab): number[] {
   return Array.from({ length: columns }, () => 1 / columns)
 }
 
+/** Stable pane-frame ids, including a backwards-compatible legacy fallback. */
+export function tabPaneIds(tab: WorkspaceTab): string[] {
+  const columns = tabColumns(tab)
+  const stored = tab.paneIds
+  if (isUsablePaneIdList(tab, stored)) {
+    return [...stored]
+  }
+  return Array.from(
+    { length: columns },
+    (_, index) => `${tab.id}:pane:${index}`,
+  )
+}
+
+export function newPaneId(): string {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
+    return `pane-${crypto.randomUUID()}`
+  }
+  return `pane-${Math.random().toString(36).slice(2, 10)}`
+}
+
 /**
  * Grow the tab by one column on the chosen side (no-op at MAX_COLUMNS).
  * The new column arrives empty at `1/(n+1)` width; existing columns keep
@@ -83,6 +112,7 @@ export function tabSizes(tab: WorkspaceTab): number[] {
 export function withColumnAdded(
   tab: WorkspaceTab,
   side: 'left' | 'right',
+  makePaneId: () => string = newPaneId,
 ): WorkspaceTab {
   const columns = tabColumns(tab)
   if (columns >= MAX_COLUMNS) return tab
@@ -91,16 +121,25 @@ export function withColumnAdded(
     (_, i) => tab.screens[i] ?? null,
   )
   const sizes = tabSizes(tab)
+  const paneIds = tabPaneIds(tab)
   const newFraction = 1 / (columns + 1)
   const scaled = sizes.map((s) => s * (1 - newFraction))
   if (side === 'left') {
     screens.unshift(null)
     scaled.unshift(newFraction)
+    paneIds.unshift(makePaneId())
   } else {
     screens.push(null)
     scaled.push(newFraction)
+    paneIds.push(makePaneId())
   }
-  return { ...tab, columns: columns + 1, screens, sizes: scaled }
+  return {
+    ...tab,
+    columns: columns + 1,
+    screens,
+    paneIds,
+    sizes: scaled,
+  }
 }
 
 /**
@@ -112,6 +151,7 @@ export function withScreenOpenedBeside(
   tab: WorkspaceTab,
   screen: TabScreen,
   anchor: TabScreen = CHAT_SCREEN,
+  makePaneId: () => string = newPaneId,
 ): WorkspaceTab | null {
   const columns = tabColumns(tab)
   const screens: (TabScreen | null)[] = Array.from(
@@ -132,10 +172,12 @@ export function withScreenOpenedBeside(
 
   const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : columns
   screens.splice(insertAt, 0, screen)
+  const paneIds = tabPaneIds(tab)
+  paneIds.splice(insertAt, 0, makePaneId())
   const newFraction = 1 / (columns + 1)
   const sizes = tabSizes(tab).map((size) => size * (1 - newFraction))
   sizes.splice(insertAt, 0, newFraction)
-  return { ...tab, columns: columns + 1, screens, sizes }
+  return { ...tab, columns: columns + 1, screens, paneIds, sizes }
 }
 
 /**
@@ -170,13 +212,23 @@ export function withColumnRemoved(
     (_, i) => tab.screens[i] ?? null,
   ).filter((_, i) => i !== column)
   const remaining = tabSizes(tab).filter((_, i) => i !== column)
+  const paneIds = tabPaneIds(tab).filter((_, i) => i !== column)
   const total = remaining.reduce((sum, s) => sum + s, 0)
   return {
     ...tab,
     columns: columns - 1,
     screens,
+    paneIds,
     sizes: remaining.map((s) => s / total),
   }
+}
+
+/** Drop the pane that currently owns `paneId`, regardless of its position. */
+export function withPaneRemoved(
+  tab: WorkspaceTab,
+  paneId: string,
+): WorkspaceTab {
+  return withColumnRemoved(tab, tabPaneIds(tab).indexOf(paneId))
 }
 
 export const EXT_SCREEN_PREFIX = 'ext:'
@@ -239,6 +291,25 @@ const isValidScreen = (s: unknown): s is TabScreen =>
     isRoutedScreen(s) ||
     (s.startsWith(EXT_SCREEN_PREFIX) && s.length > EXT_SCREEN_PREFIX.length))
 
+function isValidPaneIdList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_COLUMNS &&
+    value.every((id) => typeof id === 'string' && id.length > 0)
+  )
+}
+
+function isUsablePaneIdList(
+  tab: WorkspaceTab,
+  value: unknown,
+): value is string[] {
+  return (
+    isValidPaneIdList(value) &&
+    value.length === tabColumns(tab) &&
+    new Set(value).size === value.length
+  )
+}
+
 function isValidTab(v: unknown): v is WorkspaceTab {
   if (!v || typeof v !== 'object') return false
   const tab = v as WorkspaceTab
@@ -258,7 +329,8 @@ function isValidTab(v: unknown): v is WorkspaceTab {
         tab.sizes.length <= MAX_COLUMNS &&
         tab.sizes.every(
           (s) => typeof s === 'number' && Number.isFinite(s) && s > 0,
-        )))
+        ))) &&
+    (tab.paneIds === undefined || isValidPaneIdList(tab.paneIds))
   )
 }
 
@@ -307,8 +379,10 @@ export function parseWorkspaceTabs(
     )
       return t
     const tab = t as WorkspaceTab
+    const { paneIds, ...tabWithoutPaneIds } = tab
     return {
-      ...tab,
+      ...tabWithoutPaneIds,
+      ...(isUsablePaneIdList(tab, paneIds) ? { paneIds } : {}),
       screens: tab.screens.map((s) => {
         if (s === 'configuration') return null
         if (typeof s === 'string' && s in MIGRATED_SCREENS)
@@ -393,6 +467,7 @@ export function withWorkspaceScreenOpened(
   activeTabId: string,
   screen: TabScreen,
   makeTabId: () => string = newTabId,
+  makePaneId: () => string = newPaneId,
 ): OpenWorkspaceScreenResult {
   const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
   // Where you already are beats where it happens to be mounted: opening chat
@@ -406,7 +481,12 @@ export function withWorkspaceScreenOpened(
   if (existing) return { tabs, activeTabId: existing.id }
 
   if (active) {
-    const placed = withScreenOpenedBeside(active, screen)
+    const placed = withScreenOpenedBeside(
+      active,
+      screen,
+      CHAT_SCREEN,
+      makePaneId,
+    )
     if (placed) {
       return {
         tabs: tabs.map((tab) => (tab.id === active.id ? placed : tab)),

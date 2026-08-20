@@ -1,11 +1,11 @@
 ---
 name: console-injectable-ui
-description: Build, structure, and validate polished responsive worker UI (React pages, function-trigger renderers, configuration forms, and stylesheets) injected into the running iii console. Use when adding or changing a worker's console UI, especially when it must match the visual quality of database, console functions/triggers, iii-directory, and state; retain the shared header and visual system; work in narrow/mobile-sized panes; preserve state safely; hot reload; and ship without rebuilding the console.
+description: Build, structure, and validate polished responsive worker UI (React pages, function-trigger and trigger-activity renderers, configuration forms, and stylesheets) injected into the running iii console. Use when adding or changing a worker's console UI, especially when it must match the visual quality of database, console functions/triggers, iii-directory, and state; retain the shared header and visual system; work in narrow/mobile-sized panes; preserve state safely; hot reload; and ship without rebuilding the console.
 ---
 
 # Injectable console UI
 
-A worker can ship pages, renderers, forms, and stylesheets into every console tab
+A worker can ship pages, function and trigger-activity renderers, forms, and stylesheets into every console tab
 **at runtime**—no rebuild, no iframe, and hot reload. Treat `database`, console functions/triggers,
 `iii-directory`, and `state` as proven patterns, not visual templates: reuse
 their visual grammar and interaction mechanics while choosing the information
@@ -206,6 +206,7 @@ export default function setup(host: Host) {
 
   // Register other slots only when their implementations exist.
   // host.functionTriggers.register(createMyTriggerRenderer(host))
+  // host.triggerRenderers?.register(createMyTriggerActivityRenderer())
   // host.configForms.register('mywork', MyConfigForm)
   // host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
 }
@@ -217,7 +218,7 @@ bundle bytes because they resolve to the running console's React tree.
 
 ### The shared component library
 
-The package exports page chrome; `List`/`ListItem`, `Card`, `Panel`, `Chip`,
+The package exports page chrome; `List`/`ListItem`, `Card`, `CollapsibleCard`, `CardHighlight`, `Panel`, `Chip`,
 `IconButton`, and semantic `Table` parts; line `Tabs` and `SegmentedControl`;
 `Selector` and `Select`; buttons, inputs, dialogs, menus and tooltips;
 status/empty/loading components; Markdown and JSON renderers; the terminal atoms (`AnsiText`,
@@ -245,6 +246,16 @@ Use `IconButton` for icon-only actions such as Refresh or Configure so the
 Selection is always neutral in both themes: `--color-surface-selected`,
 `--color-ink`, and optionally `--color-edge`. Reserve `--color-accent` for a
 primary action, form focus, live activity, or semantic domain data.
+
+Use `CardHighlight` or `uiClasses.cardHighlight` only for related content that
+needs emphasis inside an existing card. It is a borderless, shadowless inset
+backed by `--color-card-highlight`; never use it for interaction states,
+status, or as a standalone card.
+
+Use `CollapsibleCard`, `CollapsibleCardTrigger`, and `CollapsibleCardContent`
+for expandable cards. The shared primitive owns accessible state, auto-height
+motion, reduced-motion behavior, and mounted content; workers must not copy a
+private disclosure or height-animation implementation.
 
 **`PageShell` and `PageHeader` are the stable outer contract for full
 pages.** They keep identity, height behavior, close affordance, and header
@@ -480,9 +491,10 @@ the nav. Its `render` receives:
 | Surface | What it is |
 |---|---|
 | `host.functionTriggers` | Custom chat/trace renderers. Match only the worker's function ids and return `null` to fall through. `message.description` is the harness's short activity label. Set renderer `metadata: { display: true }` only for successful rich artifacts that should remain visible while raw details are collapsed; the hint applies to the renderer that returned the winning node. If raw data contains secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
+| `host.triggerRenderers?` | Source-specific sections for normalized trigger registration, firing, and retirement activities. Match the inner `triggerType`, parse `config` defensively, and return `null` for another type or unsupported shape. The host retains activity chrome, delivery, lifecycle/controls, raw data, and generic fallback. Feature-detect for older consoles. |
 | `host.configForms` | Replace one configuration form. Render fields and call `onChange`; the host retains dirty tracking, validation, save, and reset. Honor `focusField`. Pass `{ layout: 'full' }` as the third `register` argument only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
 | `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the chat model picker. Use it for provider-owned OAuth, device flow, or companion-app login. The host retains the provider slice, schema validation, dirty guard, save/reset, and model refresh; the component receives `{ providerId, schema, value, onChange, errors, configured, available, modelCount }`. Feature-detect for older consoles. Never solicit plaintext API keys here—direct operators to the provider's declared environment variable. |
-| `host.chat?` | Optional session-chip slot. Feature-detect it for older consoles. |
+| `host.chat?` | Optional chat integrations: session chips, turn summaries and transcript renderers, plus `selectConversation?` for explicit worker-driven navigation and `composerModel?` for the live model selection (including unsaved drafts). Feature-detect the namespace and each newer method. |
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
 | `host.components` / `host.path` | Runtime component record and the current script asset path. |
 
@@ -495,6 +507,31 @@ Every injected render is error-bounded; import or setup failures remove the
 extension contribution and appear in the browser console instead of breaking
 the entire console. Scripts still run with full console-origin privileges;
 the wrapper scopes styles but is not a security sandbox.
+
+### Keep trigger activity lifecycle host-owned
+
+Use a `TriggerActivityRenderer` only to explain a trigger's source-specific
+meaning:
+
+```ts
+interface TriggerActivityRenderer {
+  id: string
+  isMatch(triggerType: string): boolean
+  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+}
+```
+
+`TriggerActivityMessage.kind` is `registration`, `fired`, or `retirement`;
+the normalized model also carries `triggerType`, opaque `config`, delivery,
+lifecycle, and optional payload/outcome fields. Match `triggerType`, not
+`engine::register_trigger`, because many sources share that registration
+function. Parse opaque worker config without throwing and return `null` to
+reach the next renderer or the generic host view.
+
+Do not draw **Trigger fired**, the destination, once/consumed/unbound/expired
+state, controls, or raw JSON inside the worker component. One source renderer
+should work across all three kinds while the host turns a once firing and its
+automatic retirement into one coherent activity.
 
 ## The dev loop (hot reload)
 
@@ -548,6 +585,10 @@ Validate all four layers; a successful esbuild run alone is not enough.
    and dark themes; keyboard-only navigation; reduced motion; long names and
    payloads; loading, empty, error, success, and live-update states; dirty
    navigation; and worker reconnect.
+
+For `host.triggerRenderers`, additionally cover exact type match, malformed
+config fallthrough, all three activity kinds, worker disable/disconnect
+fallback, and absence of duplicated host delivery/lifecycle content.
 
 The UI is done only when:
 

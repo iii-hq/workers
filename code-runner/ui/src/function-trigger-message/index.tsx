@@ -9,9 +9,9 @@
  * console's first-party families and override how those calls render in chat
  * and in the traces span tab.
  *
- * The console asks EVERY registered renderer on every message (`isMatch` is
- * only used to pick a `FunctionIdLabel`), so each `tryRender*` gates on its own
- * function id and returns null to fall through.
+ * The console calls a registered renderer only when `isMatch` claims the
+ * function id. Each `tryRender*` can still return null for an unsupported
+ * payload or state to fall through.
  *
  * These cards do NOT fall through on error outputs: code-runner's error
  * messages quote the `runtime_id` by design (`unknown runtime_id {id}` —

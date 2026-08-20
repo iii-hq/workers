@@ -56,15 +56,7 @@ function failed(message: FunctionTriggerMessage): boolean {
   return output.is_error === true || typeof output.error === 'string'
 }
 
-function OpenAgentTerminal({ host, message }: { host: Host; message: FunctionTriggerMessage }) {
-  const cwd = cwdOf(message)
-  const command = cliOf(message.functionId)
-  // A failed call belongs to the host card: its error text is the thing worth
-  // reading, and replacing it with a button hides why the run died.
-  if (failed(message)) return null
-  // Without a directory there is nothing to root a terminal at, and an older
-  // console has no contextual panels to open the shell page into.
-  if (!cwd || !host.panels) return null
+function OpenAgentTerminal({ host, cwd, command }: { host: Host; cwd: string; command: string }) {
   return (
     <div className="shell-agent-card-actions">
       <Button
@@ -90,7 +82,20 @@ function OpenAgentTerminal({ host, message }: { host: Host; message: FunctionTri
 }
 
 export function createAgentRunRenderer(host: Host): FunctionTriggerRenderer {
-  const control = (message: FunctionTriggerMessage) => <OpenAgentTerminal host={host} message={message} />
+  const control = (message: FunctionTriggerMessage): React.ReactNode | null => {
+    // Reject before creating a React element. Returning an element whose
+    // component later renders null would still win the host's first-non-null
+    // dispatch and hide the renderer that actually owns this function.
+    if (!isAgentRunFunction(message.functionId)) return null
+    // A failed call belongs to the host card: its error text is the thing worth
+    // reading, and replacing it with a button hides why the run died.
+    if (failed(message)) return null
+    const cwd = cwdOf(message)
+    // Without a directory there is nothing to root a terminal at, and an older
+    // console has no contextual panels to open the shell page into.
+    if (!cwd || !host.panels) return null
+    return <OpenAgentTerminal host={host} cwd={cwd} command={cliOf(message.functionId)} />
+  }
   return {
     id: 'shell/page.js#agent-run',
     isMatch: isAgentRunFunction,

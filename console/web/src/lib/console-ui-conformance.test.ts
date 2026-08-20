@@ -28,6 +28,11 @@ import { Button } from '@/components/ui/Button'
 import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+} from '@/components/ui/CollapsibleCard'
+import {
   Dialog,
   DialogClose,
   DialogContent,
@@ -67,6 +72,7 @@ import {
   Card,
   CardBody,
   CardHeader,
+  CardHighlight,
   Panel,
   PanelBody,
   PanelHeader,
@@ -107,10 +113,14 @@ const conformance: {
   Button: typeof ConsoleUi.Button
   Card: typeof ConsoleUi.Card
   CardBody: typeof ConsoleUi.CardBody
+  CardHighlight: typeof ConsoleUi.CardHighlight
   CardHeader: typeof ConsoleUi.CardHeader
   Chip: typeof ConsoleUi.Chip
   CodeEditor: typeof ConsoleUi.CodeEditor
   CodeHighlight: typeof ConsoleUi.CodeHighlight
+  CollapsibleCard: typeof ConsoleUi.CollapsibleCard
+  CollapsibleCardContent: typeof ConsoleUi.CollapsibleCardContent
+  CollapsibleCardTrigger: typeof ConsoleUi.CollapsibleCardTrigger
   Dialog: typeof ConsoleUi.Dialog
   DialogClose: typeof ConsoleUi.DialogClose
   DialogContent: typeof ConsoleUi.DialogContent
@@ -175,10 +185,14 @@ const conformance: {
   Button,
   Card,
   CardBody,
+  CardHighlight,
   CardHeader,
   Chip,
   CodeEditor,
   CodeHighlight,
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
   Dialog,
   DialogClose,
   DialogContent,
@@ -239,6 +253,8 @@ const conformance: {
   WorkerConfigurationDialog,
 }
 
+const workerBadgeProps: ConsoleUi.BadgeProps = { variant: 'ok' }
+
 describe('@iii-dev/console-ui surface', () => {
   it('the curated components record matches the package manifest', () => {
     expect(Object.keys(components).sort()).toEqual([...componentNames].sort())
@@ -254,6 +270,11 @@ describe('@iii-dev/console-ui surface', () => {
         conformance[name as keyof typeof conformance],
       )
     }
+  })
+
+  it('publishes the positive Badge treatment to worker UIs', () => {
+    expect(workerBadgeProps.variant).toBe('ok')
+    expect(components.Badge).toBe(Badge)
   })
 
   it('publishes only tokens declared by the Console theme', () => {
@@ -275,6 +296,63 @@ describe('@iii-dev/console-ui surface', () => {
     for (const className of uiClassNames) {
       expect(recipesCss, className).toContain(`.${className}`)
     }
+  })
+
+  it('publishes the borderless card-highlight inset in both themes', () => {
+    const themeCss = readFileSync(
+      new URL('../index.css', import.meta.url),
+      'utf8',
+    )
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    const recipe = recipesCss.match(
+      /\.iii-ui-card-highlight\s*\{([^}]*)\}/,
+    )?.[1]
+
+    expect(themeCss).toContain('--color-card-highlight: #dbdbdb63;')
+    expect(themeCss).toContain('--color-card-highlight: #0d0d0e63;')
+    expect(recipe).toContain('border: 0;')
+    expect(recipe).toContain('background: var(--color-card-highlight);')
+  })
+
+  it('publishes the collapsible card transition with shared motion tokens', () => {
+    const themeCss = readFileSync(
+      new URL('../index.css', import.meta.url),
+      'utf8',
+    )
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    const contentRecipe = recipesCss.match(
+      /\.iii-ui-collapsible-card__content\s*\{([^}]*)\}/,
+    )?.[1]
+    const triggerRecipe = recipesCss.match(
+      /\.iii-ui-collapsible-card__trigger\s*\{([^}]*)\}/,
+    )?.[1]
+    const innerRecipe = recipesCss.match(
+      /\.iii-ui-collapsible-card__content-inner\s*\{([^}]*)\}/,
+    )?.[1]
+
+    expect(contentRecipe).toContain('grid-template-rows: 0fr;')
+    // The caller owns header density (`p-*`). Declaring padding in this
+    // unlayered public recipe would override Tailwind utilities in workers.
+    expect(triggerRecipe).not.toMatch(/(?:^|\s)padding(?:-[^:]+)?:/)
+    expect(contentRecipe).toContain('var(--motion-duration-panel)')
+    expect(contentRecipe).toContain('var(--motion-ease-exit)')
+    expect(innerRecipe).toContain(
+      'transition: transform var(--motion-duration-panel)',
+    )
+    expect(recipesCss).toContain(
+      '.iii-ui-collapsible-card__content[data-state="open"]',
+    )
+    expect(recipesCss).toContain('grid-template-rows: 1fr;')
+    expect(recipesCss).toContain('var(--motion-ease-enter)')
+    expect(themeCss).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?--motion-duration-panel: 0ms;/,
+    )
   })
 
   it('keeps selection recipes neutral instead of accent-colored', () => {

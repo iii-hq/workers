@@ -2,6 +2,11 @@
 
 How to add bespoke UI for `function-call` chat messages in the console, instead of falling back to the default request/response JSON panes.
 
+Trigger registration, firing, and retirement use a separate source-renderer
+contract. See
+[`../web/docs/custom-trigger-components.md`](../web/docs/custom-trigger-components.md)
+and match its normalized `triggerType`, not `engine::register_trigger`.
+
 This is the end-to-end authoring guide: architecture, the message contract, the parser/view layer, how to wire a new family into the host component, and the two Storybook surfaces (fixture galleries + Playground scenarios) every renderer must ship with.
 
 **Reference implementations** (five families are wired today):

@@ -24,6 +24,7 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 import { FunctionTriggerCard, paneCopyText } from './FunctionTriggerCard'
 import {
+  firstRendered,
   functionTriggerRenderers,
   RAW_REDACTION_FAILED,
   rawRedactor,
@@ -295,6 +296,94 @@ describe('rawRedactor', () => {
   })
 })
 
+describe('injected renderer dispatch', () => {
+  it('does not call render methods when isMatch rejects the function id', () => {
+    const tryRender = vi.fn(() => <span>wrong settled renderer</span>)
+    const tryRenderRunning = vi.fn(() => <span>wrong running renderer</span>)
+    const tryRenderPreview = vi.fn(() => <span>wrong preview renderer</span>)
+    const tryRenderDisplay = vi.fn(() => <span>wrong display renderer</span>)
+    register({
+      isMatch: () => false,
+      tryRender,
+      tryRenderRunning,
+      tryRenderPreview,
+      tryRenderDisplay,
+    })
+    const [renderer] = functionTriggerRenderers(injected)
+    const m = message({ functionId: 'coder::tree' })
+
+    expect(renderer.tryRender(m)).toBeNull()
+    expect(renderer.tryRenderRunning?.(m)).toBeNull()
+    expect(renderer.tryRenderPreview?.(m)).toBeNull()
+    expect(renderer.tryRenderDisplay?.(m)).toBeNull()
+    expect(tryRender).not.toHaveBeenCalled()
+    expect(tryRenderRunning).not.toHaveBeenCalled()
+    expect(tryRenderPreview).not.toHaveBeenCalled()
+    expect(tryRenderDisplay).not.toHaveBeenCalled()
+  })
+
+  it('falls through a non-matching renderer to the matching owner', () => {
+    const wrong = vi.fn(() => <span>wrong renderer</span>)
+    const right = vi.fn(() => <span>right renderer</span>)
+    register({
+      id: 'shell/page.js#agent-run',
+      isMatch: () => false,
+      tryRender: wrong,
+      metadata: { display: true },
+    })
+    register({
+      id: 'worker/page.js#coder',
+      isMatch: (functionId) => functionId === 'coder::tree',
+      tryRender: right,
+    })
+    const m = message({ functionId: 'coder::tree' })
+    const rendered = firstRendered(functionTriggerRenderers(injected), (r) =>
+      r.tryRender(m),
+    )
+
+    expect(rendered?.renderer.id).toBe('worker/page.js#coder')
+    expect(wrong).not.toHaveBeenCalled()
+    expect(right).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the first-party function view when an earlier display renderer does not match', () => {
+    const NullView = () => null
+    const accidental = vi.fn(() => <NullView />)
+    register({
+      id: 'shell/page.js#agent-run',
+      isMatch: () => false,
+      tryRender: accidental,
+      metadata: { display: true },
+    })
+
+    const out = html({
+      functionId: 'coder::tree',
+      input: { path: '.' },
+      output: {
+        path: '/workspace/project',
+        root: {
+          name: 'project',
+          kind: 'dir',
+          size: 0,
+          mtime: 1_760_000_000,
+          children: [
+            {
+              name: 'README.md',
+              kind: 'file',
+              size: 128,
+              mtime: 1_760_000_000,
+            },
+          ],
+        },
+      },
+    })
+
+    expect(accidental).not.toHaveBeenCalled()
+    expect(out).toContain('/workspace/project')
+    expect(out).toContain('README.md')
+  })
+})
+
 describe('agent activity and prominent injected content', () => {
   it('uses the short description as the collapsed activity label', () => {
     const out = collapsedHtml({ description: 'Updating project files' })
@@ -328,10 +417,34 @@ describe('agent activity and prominent injected content', () => {
     expect(out).not.toContain('raw json')
   })
 
-  it('keeps unmarked renderer content behind the collapsed activity row', () => {
+  it('keeps the display surface mounted while its details expand underneath', () => {
+    register({
+      metadata: { display: true, displayAction: 'expand' },
+      tryRender: () => <div>full trigger details</div>,
+      tryRenderDisplay: () => <div>trigger registered summary</div>,
+    })
+
+    const closed = collapsedHtml({ description: 'Registering a trigger' })
+    expect(closed).toContain('trigger registered summary')
+    expect(closed).toContain('full trigger details')
+    expect(closed).toContain('Show details for sandbox-code-runner::run')
+    expect(closed).toContain('aria-expanded="false"')
+    expect(closed).toContain('aria-hidden="true"')
+    expect(closed).not.toContain('fcall-chrome')
+
+    const expanded = html({ description: 'Registering a trigger' })
+    expect(expanded).toContain('full trigger details')
+    expect(expanded).toContain('trigger registered summary')
+    expect(expanded).toContain('Hide details for sandbox-code-runner::run')
+    expect(expanded).toContain('aria-expanded="true"')
+    expect(expanded).not.toContain('fcall-chrome')
+  })
+
+  it('hides an unmarked renderer when collapsed but uses it when expanded', () => {
     register({ tryRender: () => <div>compact terminal</div> })
-    expect(
-      collapsedHtml({ description: 'Running a compact action' }),
-    ).not.toContain('compact terminal')
+    const message = { description: 'Running a compact action' }
+
+    expect(collapsedHtml(message)).not.toContain('compact terminal')
+    expect(html(message)).toContain('compact terminal')
   })
 })

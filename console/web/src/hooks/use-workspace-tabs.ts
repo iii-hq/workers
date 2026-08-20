@@ -15,8 +15,12 @@
  * tabs degrade to localStorage so the strip keeps working offline.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useRef, useState } from 'react'
+import {
+  type ConfigTransform,
+  SerializedConfigWriter,
+} from '@/hooks/lib/serialized-config-writer'
 import {
   type ConsoleConfigValue,
   fetchConsoleConfigValue,
@@ -31,11 +35,12 @@ import {
   resolveActiveTab,
   type TabScreen,
   tabColumns,
+  tabPaneIds,
   type WorkspaceLayoutSource,
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
-  withColumnRemoved,
+  withPaneRemoved,
   withScreenDetached,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
@@ -48,6 +53,48 @@ const LOCAL_KEY = 'iii-workspace-tabs'
 interface LocalState {
   tabs: WorkspaceTab[]
   activeTabId: string
+}
+
+type WorkspaceTransform = (state: LocalState) => LocalState
+
+function workspaceState(value: ConsoleConfigValue): LocalState {
+  const parsedTabs = parseWorkspaceTabs(value)
+  const tabs = parsedTabs.length > 0 ? parsedTabs : defaultTabs()
+  const activeTabId = resolveActiveTab(tabs, parseActiveTabId(value)).id
+  return { tabs, activeTabId }
+}
+
+function workspaceConfigTransform(update: WorkspaceTransform): ConfigTransform {
+  return (value) => {
+    const next = update(workspaceState(value))
+    return withActiveTabId(
+      withWorkspaceTabs(value, next.tabs),
+      next.activeTabId,
+    )
+  }
+}
+
+/** Keep a newly inserted pane's identity stable across optimistic replays. */
+function stabilizeAddedPane(
+  before: WorkspaceTab[],
+  after: WorkspaceTab[],
+  stablePaneId: { current: string | null },
+): WorkspaceTab[] {
+  const beforeById = new Map(before.map((tab) => [tab.id, tab]))
+  return after.map((tab) => {
+    const previous = beforeById.get(tab.id)
+    if (!previous || tabColumns(tab) !== tabColumns(previous) + 1) return tab
+
+    const previousIds = new Set(tabPaneIds(previous))
+    const nextIds = tabPaneIds(tab)
+    const addedIndex = nextIds.findIndex((id) => !previousIds.has(id))
+    if (addedIndex < 0) return tab
+
+    stablePaneId.current ??= nextIds[addedIndex]
+    if (nextIds[addedIndex] === stablePaneId.current) return tab
+    nextIds[addedIndex] = stablePaneId.current
+    return { ...tab, paneIds: nextIds }
+  })
 }
 
 function loadLocal(): LocalState {
@@ -102,22 +149,43 @@ export interface UseWorkspaceTabsReturn {
   detachScreen: (id: string, column: number) => void
   /** Grow the tab by one empty column on that side (up to the safety ceiling). */
   addColumn: (id: string, side: 'left' | 'right') => void
-  /** Drop one column (the last one never goes). */
-  removeColumn: (id: string, column: number) => void
+  /** Drop one pane by stable identity (the last one never goes). */
+  removeColumn: (id: string, paneId: string) => void
   /** Persist drag-to-resize column fractions (index-aligned). */
   resizeColumns: (id: string, sizes: number[]) => void
   /** Reuse an existing screen or place it beside chat without replacing panes. */
   openScreen: (screen: TabScreen) => void
+  /** Open relative to a specific tab without stealing a later tab selection. */
+  openScreenInTab: (id: string, screen: TabScreen) => void
 }
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
+  const writerRef = useRef<SerializedConfigWriter | null>(null)
+  const writer =
+    writerRef.current ??
+    new SerializedConfigWriter({
+      readRemote: fetchConsoleConfigValue,
+      writeRemote: setConsoleConfigValue,
+      readCached: () =>
+        qc.getQueryData<ConsoleConfigValue | null>(CONSOLE_CONFIG_QUERY_KEY),
+      publish: (value) => {
+        qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, value)
+      },
+      cancelReads: () => {
+        void qc.cancelQueries({
+          queryKey: CONSOLE_CONFIG_QUERY_KEY,
+          exact: true,
+        })
+      },
+    })
+  writerRef.current = writer
 
   // Shares the traces saved-views cache entry; refetchInterval keeps the
   // strip reactive to writes from other browsers/tabs.
   const { data, isFetched } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,
-    queryFn: fetchConsoleConfigValue,
+    queryFn: () => writer.readForQuery(),
     staleTime: 3_000,
     refetchInterval: 5_000,
     refetchOnWindowFocus: true,
@@ -147,47 +215,33 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const activeTab = resolveActiveTab(tabs, pointer)
   const activeTabId = activeTab.id
 
-  const mutation = useMutation({
-    mutationFn: async (
-      transform: (value: ConsoleConfigValue) => ConsoleConfigValue,
-    ) => {
-      const current = (await fetchConsoleConfigValue()) ?? {}
-      const next = transform(current)
-      await setConsoleConfigValue(next)
-      return next
-    },
-    onSuccess: (next) => {
-      qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, next)
-    },
-  })
-
   const persist = useCallback(
-    (nextTabs: WorkspaceTab[], nextActiveId: string) => {
+    (update: WorkspaceTransform) => {
       if (available) {
-        const transform = (value: ConsoleConfigValue) =>
-          withActiveTabId(withWorkspaceTabs(value, nextTabs), nextActiveId)
         // Optimistic: the strip reflects the change in this frame; the
-        // server write (and the next poll) reconcile behind it.
-        qc.setQueryData<ConsoleConfigValue | null>(
-          CONSOLE_CONFIG_QUERY_KEY,
-          (old) => transform(old ?? {}),
+        // serialized server writes rebase it behind the UI.
+        const optimistic = writer.enqueue(
+          workspaceConfigTransform(update),
+          data ?? {},
         )
-        mutation.mutateAsync(transform).catch(() => {})
+        qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, optimistic)
       } else {
-        const nextState = { tabs: nextTabs, activeTabId: nextActiveId }
-        setLocal(nextState)
-        persistLocal(nextState)
+        setLocal((current) => {
+          const next = update(current)
+          persistLocal(next)
+          return next
+        })
       }
     },
-    [available, mutation, qc],
+    [available, data, qc, writer],
   )
 
   const activateTab = useCallback(
     (id: string) => {
       setChosenTabId(id)
-      persist(tabs, id)
+      persist((state) => ({ ...state, activeTabId: id }))
     },
-    [persist, tabs],
+    [persist],
   )
 
   const createTab = useCallback(
@@ -199,19 +253,36 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         screens,
       }
       setChosenTabId(tab.id)
-      persist([...tabs, tab], tab.id)
+      persist((state) => ({
+        tabs: state.tabs.some((existing) => existing.id === tab.id)
+          ? state.tabs
+          : [...state.tabs, tab],
+        activeTabId: tab.id,
+      }))
     },
-    [persist, tabs],
+    [persist],
   )
 
   const closeTab = useCallback(
     (id: string) => {
       if (tabs.length <= 1) return
-      const remaining = tabs.filter((t) => t.id !== id)
-      const nextActive =
-        id === activeTabId ? remaining[remaining.length - 1].id : activeTabId
-      setChosenTabId(nextActive)
-      persist(remaining, nextActive)
+      const update: WorkspaceTransform = (state) => {
+        if (
+          state.tabs.length <= 1 ||
+          !state.tabs.some((tab) => tab.id === id)
+        ) {
+          return state
+        }
+        const remaining = state.tabs.filter((tab) => tab.id !== id)
+        const nextActive =
+          id === state.activeTabId
+            ? remaining[remaining.length - 1].id
+            : state.activeTabId
+        return { tabs: remaining, activeTabId: nextActive }
+      }
+      const preview = update({ tabs, activeTabId })
+      setChosenTabId(preview.activeTabId)
+      persist(update)
     },
     [persist, tabs, activeTabId],
   )
@@ -219,95 +290,163 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const renameTab = useCallback(
     (id: string, name: string) => {
       const trimmed = name.trim()
-      persist(
-        tabs.map((t) => {
-          if (t.id !== id) return t
-          const { name: _prev, ...rest } = t
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) => {
+          if (tab.id !== id) return tab
+          const { name: _prev, ...rest } = tab
           return trimmed ? { ...rest, name: trimmed } : rest
         }),
-        activeTabId,
-      )
+      }))
     },
-    [persist, tabs, activeTabId],
+    [persist],
   )
 
   const reorderTab = useCallback(
     (from: number, to: number) => {
       if (from === to) return
-      persist(moveItem(tabs, from, to), activeTabId)
+      const movingId = tabs[from]?.id
+      const targetId = tabs[to]?.id
+      if (!movingId || !targetId) return
+
+      persist((state) => {
+        const currentFrom = state.tabs.findIndex((tab) => tab.id === movingId)
+        const currentTo = state.tabs.findIndex((tab) => tab.id === targetId)
+        if (currentFrom < 0 || currentTo < 0 || currentFrom === currentTo) {
+          return state
+        }
+        return {
+          ...state,
+          tabs: moveItem(state.tabs, currentFrom, currentTo),
+        }
+      })
     },
-    [persist, tabs, activeTabId],
+    [persist, tabs],
   )
 
   const attachScreen = useCallback(
     (id: string, column: number, screen: TabScreen) => {
-      persist(
-        tabs.map((t) => {
-          if (t.id !== id) return t
-          const columns = tabColumns(t)
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) => {
+          if (tab.id !== id) return tab
+          const columns = tabColumns(tab)
           const screens: (TabScreen | null)[] = Array.from(
             { length: columns },
-            (_, i) => t.screens[i] ?? null,
+            (_, i) => tab.screens[i] ?? null,
           )
-          if (column < 0 || column >= columns) return t
+          if (column < 0 || column >= columns) return tab
           screens[column] = screen
-          return { ...t, columns, screens }
+          return { ...tab, columns, screens }
         }),
-        activeTabId,
-      )
+      }))
     },
-    [persist, tabs, activeTabId],
+    [persist],
   )
 
   const detachScreen = useCallback(
     (id: string, column: number) => {
-      persist(
-        tabs.map((t) => (t.id === id ? withScreenDetached(t, column) : t)),
-        activeTabId,
-      )
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.id === id ? withScreenDetached(tab, column) : tab,
+        ),
+      }))
     },
-    [persist, tabs, activeTabId],
+    [persist],
   )
 
   const addColumn = useCallback(
     (id: string, side: 'left' | 'right') => {
-      persist(
-        tabs.map((t) => (t.id === id ? withColumnAdded(t, side) : t)),
-        activeTabId,
-      )
+      const stablePaneId = { current: null as string | null }
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) => {
+          if (tab.id !== id) return tab
+          const next = withColumnAdded(tab, side)
+          if (next === tab) return tab
+          const paneIds = tabPaneIds(next)
+          const addedIndex = side === 'left' ? 0 : paneIds.length - 1
+          stablePaneId.current ??= paneIds[addedIndex]
+          paneIds[addedIndex] = stablePaneId.current
+          return { ...next, paneIds }
+        }),
+      }))
     },
-    [persist, tabs, activeTabId],
+    [persist],
   )
 
   const removeColumn = useCallback(
-    (id: string, column: number) => {
-      persist(
-        tabs.map((t) => (t.id === id ? withColumnRemoved(t, column) : t)),
-        activeTabId,
-      )
+    (id: string, paneId: string) => {
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) => {
+          if (tab.id !== id) return tab
+          return withPaneRemoved(tab, paneId)
+        }),
+      }))
     },
-    [persist, tabs, activeTabId],
+    [persist],
   )
 
   const resizeColumns = useCallback(
     (id: string, sizes: number[]) => {
-      persist(
-        tabs.map((t) =>
-          t.id === id && sizes.length === tabColumns(t) ? { ...t, sizes } : t,
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.id === id && sizes.length === tabColumns(tab)
+            ? { ...tab, sizes }
+            : tab,
         ),
-        activeTabId,
-      )
+      }))
     },
-    [persist, tabs, activeTabId],
+    [persist],
   )
 
   const openScreen = useCallback(
     (screen: TabScreen) => {
-      const next = withWorkspaceScreenOpened(tabs, activeTabId, screen)
-      setChosenTabId(next.activeTabId)
-      persist(next.tabs, next.activeTabId)
+      const newScreenTabId = newTabId()
+      const stablePaneId = { current: null as string | null }
+      const update: WorkspaceTransform = (state) => {
+        const next = withWorkspaceScreenOpened(
+          state.tabs,
+          state.activeTabId,
+          screen,
+          () => newScreenTabId,
+        )
+        return {
+          ...next,
+          tabs: stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+        }
+      }
+      const preview = update({ tabs, activeTabId })
+      setChosenTabId(preview.activeTabId)
+      persist(update)
     },
     [activeTabId, persist, tabs],
+  )
+
+  const openScreenInTab = useCallback(
+    (id: string, screen: TabScreen) => {
+      const newScreenTabId = newTabId()
+      const stablePaneId = { current: null as string | null }
+      persist((state) => {
+        const requestedTabExists = state.tabs.some((tab) => tab.id === id)
+        const next = withWorkspaceScreenOpened(
+          state.tabs,
+          requestedTabExists ? id : state.activeTabId,
+          screen,
+          () => newScreenTabId,
+        )
+        return {
+          tabs: stabilizeAddedPane(state.tabs, next.tabs, stablePaneId),
+          activeTabId: requestedTabExists
+            ? state.activeTabId
+            : next.activeTabId,
+        }
+      })
+    },
+    [persist],
   )
 
   return {
@@ -326,5 +465,6 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     removeColumn,
     resizeColumns,
     openScreen,
+    openScreenInTab,
   }
 }
