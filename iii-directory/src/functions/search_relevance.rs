@@ -53,6 +53,7 @@ async fn ask(deps: &Deps, query: &str) -> SearchFunctionsResponse {
         deps,
         SearchFunctionsRequest {
             query: query.into(),
+            capabilities: Vec::new(),
         },
     )
     .await
@@ -175,6 +176,16 @@ async fn gibberish_query_returns_refine_guidance() {
         "guidance: {}",
         response.guidance
     );
+    assert!(response.guidance.contains("next decision point"));
+    assert!(response
+        .guidance
+        .contains("all unmet external capabilities"));
+    assert!(response
+        .guidance
+        .contains("Do not search for intrinsic reasoning, summarization, planning, or formatting"));
+    assert!(response
+        .guidance
+        .contains("do not repeat needs already represented"));
 }
 
 #[tokio::test]
@@ -204,7 +215,7 @@ async fn results_respect_worker_and_function_caps() {
     )
     .await;
     assert!(
-        response.workers.len() <= 3,
+        response.workers.len() <= 6,
         "workers: {:?}",
         workers(&response)
     );
@@ -282,14 +293,20 @@ async fn repeat_query_in_one_session_omits_delivered_contracts() {
 }
 
 #[tokio::test]
-async fn guidance_carries_the_override_and_requery_contract() {
+async fn guidance_hands_selected_candidates_to_batched_function_info() {
     let deps = fixture_deps();
     let response = ask(&deps, "run a shell command on this machine").await;
-    assert!(response.guidance.contains("OVERRIDES"));
+    assert!(response.guidance.contains("candidates"));
+    assert!(response.guidance.contains("engine::functions::info"));
+    assert!(response.guidance.contains("function_ids"));
+    assert!(response.guidance.contains("smallest candidate set"));
+    assert!(response
+        .guidance
+        .contains("all unmet external capabilities"));
+    assert!(!response.guidance.contains("listed request fields"));
     assert!(response
         .guidance
         .contains("directory::search_functions again"));
-    assert!(response.guidance.contains("agent_trigger"));
 }
 
 #[tokio::test]
@@ -478,7 +495,7 @@ async fn multi_intent_query_returns_every_clause_in_one_call() {
     assert!(ids.contains(&"state::get"), "ids: {ids:?}");
     assert!(ids.contains(&"browser::screenshot"), "ids: {ids:?}");
     assert!(
-        response.workers.len() <= 3,
+        response.workers.len() <= 6,
         "workers: {:?}",
         workers(&response)
     );
@@ -502,27 +519,14 @@ async fn todo_app_query_resolves_in_one_call() {
 }
 
 #[tokio::test]
-async fn two_empty_results_widen_the_third_to_single_term_matches() {
+async fn repeated_empty_searches_stay_empty() {
     use opentelemetry::baggage::BaggageExt;
     use opentelemetry::{Context, KeyValue};
     let deps = fixture_deps();
-    // Without a desperation streak, a single-term query stays empty.
-    let cold = ask(&deps, "zzz presign qqq").await;
-    assert!(cold.workers.is_empty(), "min-match must hold normally");
     let context =
-        Context::current_with_baggage(vec![KeyValue::new("iii.session.id", "desperate-session")]);
+        Context::current_with_baggage(vec![KeyValue::new("iii.session.id", "empty-session")]);
     let _guard = context.attach();
     assert!(ask(&deps, "zzz qqq").await.workers.is_empty());
     assert!(ask(&deps, "xxx yyy").await.workers.is_empty());
-    // Third consecutive would-be-empty answer widens to single-term matches.
-    let widened = ask(&deps, "zzz presign qqq").await;
-    let ids = function_ids(&widened);
-    assert!(ids.contains(&"storage::presignUrl"), "ids: {ids:?}");
-    // The widened (non-empty) answer resets the streak, so the next weak
-    // query is strict — and empty — again.
-    let strict_again = ask(&deps, "xxx presign yyy").await;
-    assert!(
-        strict_again.workers.is_empty(),
-        "streak must reset after a non-empty answer"
-    );
+    assert!(ask(&deps, "zzz presign qqq").await.workers.is_empty());
 }

@@ -39,7 +39,7 @@ pub fn search_catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SearchFunctionsRequest, SearchFunctionsResponse>(
             "directory::search_functions",
-            "Search every available function with one natural-language query describing everything the task needs; returns the full API reference for each relevant function, grouped by worker.",
+            "Search available functions for an overall goal and optional capability queries; returns compact function-id candidates grouped by worker.",
         ),
         spec::<PreGenerateHookRequest, PreGenerateHookResponse>(
             "directory::pre-generate",

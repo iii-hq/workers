@@ -48,6 +48,7 @@ impl Ctx {
 async fn fetch_targets<F, Fut>(
     payload: &Value,
     concurrency: usize,
+    body_budget: Option<usize>,
     fetch_one: F,
 ) -> Result<Value, String>
 where
@@ -58,13 +59,14 @@ where
     let include_html = page::include_html(payload);
     if !bulk {
         let p = fetch_one(urls[0].clone()).await?;
-        return page::serialize_page(&p, payload, include_html);
+        return page::serialize_page(&p, payload, include_html, body_budget);
     }
+    let body_budget = body_budget.map(|budget| budget / urls.len());
     let out = futures::stream::iter(urls.into_iter().map(|url| {
         let fetch_one = &fetch_one;
         async move {
             match fetch_one(url.clone()).await {
-                Ok(page) => page::serialize_page(&page, payload, include_html)
+                Ok(page) => page::serialize_page(&page, payload, include_html, body_budget)
                     .map_err(|error| (url.clone(), error)),
                 Err(error) => Err((url, error)),
             }
@@ -121,11 +123,14 @@ async fn raw_browser_targets(ctx: &Ctx, payload: &Value, stealth: bool) -> Resul
         .max(1);
     let (urls, bulk) = page::targets(&request)?;
     let include_html = page::include_html(&request);
+    let body_budget =
+        (config.scrapling.security_mode == SecurityMode::Safe).then_some(page::SAFE_BODY_BUDGET);
     if !bulk {
         let browser = RawBrowser::start(&config, &options, stealth, false).await?;
         let fetched = browser.fetch(&urls[0], &options, stealth).await?;
-        return page::serialize_page(&fetched, &request, include_html);
+        return page::serialize_page(&fetched, &request, include_html, body_budget);
     }
+    let body_budget = body_budget.map(|budget| budget / urls.len());
     let output = futures::stream::iter(urls.into_iter().map(|url| {
         let config = config.clone();
         let options = options.clone();
@@ -137,7 +142,7 @@ async fn raw_browser_targets(ctx: &Ctx, payload: &Value, stealth: bool) -> Resul
             }
             .await;
             match fetched {
-                Ok(page) => page::serialize_page(&page, &request, include_html)
+                Ok(page) => page::serialize_page(&page, &request, include_html, body_budget)
                     .map_err(|error| (url.clone(), error)),
                 Err(error) => Err((url, error)),
             }
@@ -159,7 +164,9 @@ pub async fn op_fetch(ctx: &Ctx, payload: &Value) -> Result<Value, String> {
     let concurrency = usize::try_from(config.scrapling.max_bulk_concurrency)
         .unwrap_or(usize::MAX)
         .max(1);
-    fetch_targets(&request, concurrency, |url| {
+    let body_budget =
+        (config.scrapling.security_mode == SecurityMode::Safe).then_some(page::SAFE_BODY_BUDGET);
+    fetch_targets(&request, concurrency, body_budget, |url| {
         let opts = &opts;
         let policy = &policy;
         async move { fetch::fetch_page(&url, opts, policy).await }
@@ -259,7 +266,9 @@ pub async fn op_session_fetch(ctx: &Ctx, payload: &Value) -> Result<Value, Strin
                             options.compat_session = backend.compat.clone();
                         }
                         let fetched = fetch::fetch_page(&url, &options, &policy).await?;
-                        page::serialize_page(&fetched, &request, include_html)
+                        let body_budget =
+                            (backend.mode == HttpMode::Safe).then_some(page::SAFE_BODY_BUDGET);
+                        page::serialize_page(&fetched, &request, include_html, body_budget)
                     }),
                 )
                 .await
@@ -286,7 +295,9 @@ pub async fn op_session_fetch(ctx: &Ctx, payload: &Value) -> Result<Value, Strin
                             .browser
                             .fetch_session(&url, &options, backend.stealth, proxy_override)
                             .await?;
-                        page::serialize_page(&fetched, &request, include_html)
+                        let body_budget =
+                            (security_mode == SecurityMode::Safe).then_some(page::SAFE_BODY_BUDGET);
+                        page::serialize_page(&fetched, &request, include_html, body_budget)
                     }),
                 )
                 .await
@@ -335,6 +346,7 @@ pub async fn op_crawl(ctx: &Ctx, payload: &Value) -> Result<Value, String> {
     let outcome = crawl::run(
         &opts,
         payload,
+        (mode == SecurityMode::Safe).then_some(page::SAFE_BODY_BUDGET),
         |url| {
             let cfg = cfg.clone();
             let policy = &policy;
@@ -520,5 +532,34 @@ mod tests {
         );
         assert!(validate_session_mode(true, SecurityMode::Compat).is_ok());
         assert!(validate_session_mode(false, SecurityMode::Safe).is_ok());
+    }
+
+    #[tokio::test]
+    async fn safe_bulk_divides_body_budget_by_requested_urls_and_preserves_results() {
+        let out = fetch_targets(
+            &json!({"urls": ["a", "b", "c"], "format": "text"}),
+            3,
+            Some(page::SAFE_BODY_BUDGET),
+            |url| async move {
+                if url == "b" {
+                    return Err("boom".to_string());
+                }
+                Ok(PageData {
+                    url: url.clone(),
+                    html: format!("<p>{}</p>", url.repeat(30_000)),
+                    ..Default::default()
+                })
+            },
+        )
+        .await
+        .unwrap();
+        let results = out["results"].as_array().unwrap();
+        let per_page = page::SAFE_BODY_BUDGET / 3;
+
+        assert_eq!(results[0]["url"], "a");
+        assert_eq!(results[0]["content"].as_str().unwrap().len(), per_page);
+        assert_eq!(results[1], json!({"url": "b", "error": "boom"}));
+        assert_eq!(results[2]["url"], "c");
+        assert_eq!(results[2]["content"].as_str().unwrap().len(), per_page);
     }
 }

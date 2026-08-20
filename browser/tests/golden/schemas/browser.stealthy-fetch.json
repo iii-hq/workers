@@ -1,6 +1,6 @@
 {
   "function_id": "browser::stealthy-fetch",
-  "description": "Camoufox stealth browser: solves Cloudflare, hardens WebRTC/canvas; extraction + bulk.",
+  "description": "`browser::stealthy-fetch` is only an escalation for anti-bot/Cloudflare pages after cheaper tiers fail. It supports inline extraction and concurrent bulk `urls`.",
   "request_schema": {
     "type": "object",
     "properties": {

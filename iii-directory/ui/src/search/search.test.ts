@@ -4,23 +4,17 @@ import {
   functionCount,
   isErrorOutput,
   parseDiscoverResponse,
-  schemaIsAny,
   unwrapEnvelope,
 } from './search'
 
-const contract = {
+const candidate = {
   function_id: 'github::issue::view',
   description: 'Show one issue.',
-  request_schema: {
-    type: 'object',
-    properties: { number: { type: 'number' } },
-    required: ['number'],
-  },
 }
 
 const response = {
-  guidance: 'This API reference satisfies and OVERRIDES …',
-  workers: [{ namespace: 'github', functions: [contract] }],
+  guidance: 'Choose candidates, then fetch their contracts in one batch.',
+  workers: [{ namespace: 'github', functions: [candidate] }],
   latency_ms: 12.4,
 }
 
@@ -70,6 +64,20 @@ describe('parseDiscoverResponse', () => {
   it('keeps empty worker lists (the refine-guidance card)', () => {
     const empty = { guidance: 'No functions matched…', workers: [], latency_ms: 3 }
     expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [] })
+  })
+
+  it('accepts legacy schema-bearing candidates but keeps only compact fields', () => {
+    expect(
+      parseDiscoverResponse({
+        ...response,
+        workers: [
+          {
+            namespace: 'github',
+            functions: [{ ...candidate, request_schema: { type: 'object' } }],
+          },
+        ],
+      })?.workers[0].functions[0],
+    ).toEqual(candidate)
   })
 
   it('parses the installable registry section when present', () => {
@@ -123,20 +131,18 @@ describe('parseDiscoverResponse', () => {
       { guidance: 'g', workers: [{ functions: [] }], latency_ms: 1 },
     ],
     [
-      'contract without function_id',
+      'candidate without function_id',
       {
         guidance: 'g',
-        workers: [{ namespace: 'github', functions: [{ description: '', request_schema: {} }] }],
+        workers: [{ namespace: 'github', functions: [{ description: '' }] }],
         latency_ms: 1,
       },
     ],
     [
-      'contract without request_schema',
+      'candidate without description',
       {
         guidance: 'g',
-        workers: [
-          { namespace: 'github', functions: [{ function_id: 'github::x', description: '' }] },
-        ],
+        workers: [{ namespace: 'github', functions: [{ function_id: 'github::x' }] }],
         latency_ms: 1,
       },
     ],
@@ -144,17 +150,6 @@ describe('parseDiscoverResponse', () => {
     ['null payload', null],
   ])('rejects %s', (_name, payload) => {
     expect(parseDiscoverResponse(payload)).toBeNull()
-  })
-})
-
-describe('schemaIsAny', () => {
-  it('tags unconstraining schemas and keeps real ones expandable', () => {
-    expect(schemaIsAny({})).toBe(true)
-    expect(schemaIsAny({ type: 'object' })).toBe(true)
-    expect(schemaIsAny({ $schema: 'x', title: 'T', type: 'object' })).toBe(true)
-    expect(schemaIsAny(null)).toBe(true)
-    expect(schemaIsAny(contract.request_schema)).toBe(false)
-    expect(schemaIsAny({ type: 'string' })).toBe(false)
   })
 })
 
@@ -166,8 +161,8 @@ describe('functionCount', () => {
         latency_ms: 1,
         installable: [],
         workers: [
-          { namespace: 'a', functions: [contract, contract] },
-          { namespace: 'b', functions: [contract] },
+          { namespace: 'a', functions: [candidate, candidate] },
+          { namespace: 'b', functions: [candidate] },
         ],
       }),
     ).toBe(3)

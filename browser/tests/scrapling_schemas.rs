@@ -53,6 +53,20 @@ fn catalog_lists_all_scraping_functions_at_browser_root() {
 }
 
 #[test]
+fn default_fetch_first_sentence_covers_web_page_spellings_within_slim_cap() {
+    let description = catalog()
+        .into_iter()
+        .find(|spec| spec.function_id == "browser::fetch")
+        .unwrap()
+        .description;
+    let first_sentence = description.split_once(". ").unwrap().0;
+
+    assert!(first_sentence.contains("web pages"));
+    assert!(first_sentence.contains("webpages"));
+    assert!(first_sentence.len() <= 160, "{first_sentence}");
+}
+
+#[test]
 fn wire_schemas_match_python_goldens_byte_for_byte() {
     let mut failures = Vec::new();
     for spec in catalog() {

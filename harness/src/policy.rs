@@ -194,7 +194,9 @@ pub fn agent_trigger_schema() -> AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
         description:
             "Trigger any allowed iii function by id. Discover what is callable at runtime \
-                      via engine::functions::list / engine::functions::info."
+                      via engine::functions::list / engine::functions::info. Ordinary calls in one \
+                      assistant response execute sequentially in content order. For independent same-function \
+                      work, use that function's supported bulk input."
                 .to_string(),
         parameters: json!({
             "type": "object",
@@ -626,6 +628,16 @@ mod tests {
         assert!(schema.parameters["required"]
             .as_array()
             .is_some_and(|required| required.contains(&json!("description"))));
+    }
+
+    #[test]
+    fn agent_trigger_schema_explains_serial_and_bulk_dispatch() {
+        let description = agent_trigger_schema().description;
+        assert!(
+            description.contains("one assistant response execute sequentially in content order")
+        );
+        assert!(description.contains("independent same-function work"));
+        assert!(description.contains("supported bulk input"));
     }
 
     #[test]

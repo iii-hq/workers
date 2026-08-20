@@ -294,6 +294,13 @@ fn mode_agent_prepends_before_identity() {
 }
 
 #[test]
+fn mode_agent_matches_the_requested_scope_and_detail() {
+    let out = super::paragraph(Mode::Agent);
+    assert!(out.contains("Match the user's requested scope and level of detail"));
+    assert!(out.contains("do not expand the task"));
+}
+
+#[test]
 fn mode_prepends_before_a_fetched_identity_too() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
