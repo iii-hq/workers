@@ -5,9 +5,7 @@ import {
   Markdown,
 } from '@iii-dev/console-ui'
 import {
-  ChevronDown,
   ChevronRight,
-  FileCode2,
   Pencil,
   Save,
   X,
@@ -22,6 +20,7 @@ import {
   type ReadFileResponse,
 } from './coder'
 import { imageMimeFromPath } from './EditorPane'
+import { FileTypeIcon } from './file-type-icon'
 import { diffLines, diffTotals } from './diff'
 import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
 import type { ReviewEntry } from './review'
@@ -1110,8 +1109,8 @@ function ReviewFile({
           onClick={onToggle}
           aria-expanded={!collapsed}
         >
-          {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}
-          <FileCode2 aria-hidden className="file-icon" />
+          <ChevronRight aria-hidden className={collapsed ? 'chevron' : 'chevron open'} />
+          <FileTypeIcon path={entry.path} className="file-icon" />
           <span className="path" title={entry.path}>
             {entry.change.from ? `${entry.change.from} → ${entry.path}` : entry.path}
           </span>

@@ -74,6 +74,7 @@ export function FilesTab({
   const { model } = useFileTree({
     fileTreeSearchMode: 'hide-non-matches',
     flattenEmptyDirectories: true,
+    icons: { set: 'complete', colored: true },
     itemHeight: 29,
     paths: tree?.paths ?? [],
     search: false,

@@ -1079,6 +1079,39 @@ function parseRefs(stdout: string): GitRefSummary[] | string {
 
 /** Local and remote-tracking branch refs. Symbolic aliases such as
     `refs/remotes/origin/HEAD` are omitted so menu entries are unique. */
+export type GitPatchScope =
+  | { kind: 'uncommitted' }
+  | { kind: 'unstaged' }
+  | { kind: 'staged' }
+  | { kind: 'commit'; sha: string }
+  | { kind: 'branch'; ref: string }
+
+function patchArgs(scope: GitPatchScope): string[] {
+  switch (scope.kind) {
+    case 'uncommitted':
+      return ['diff', 'HEAD']
+    case 'unstaged':
+      return ['diff']
+    case 'staged':
+      return ['diff', '--cached']
+    case 'commit':
+      return ['show', '--format=', scope.sha]
+    case 'branch':
+      return ['diff', `${scope.ref}...HEAD`]
+  }
+}
+
+/** Unified patch for a git-backed scope, ready for `git apply` at the
+    repository root. Untracked files are outside every `git diff`. */
+export async function gitPatch(host: Host, root: string, scope: GitPatchScope): Promise<string> {
+  const out = await git(host, root, [...patchArgs(scope), '--no-color'])
+  if (out.exit_code !== 0) {
+    throw new Error(out.stderr.trim() || `git exited with ${out.exit_code}`)
+  }
+  if (out.stdout_truncated) throw new Error('patch is larger than the shell output cap')
+  return out.stdout
+}
+
 export async function gitRefs(host: Host, root: string): Promise<GitRefsState> {
   const repository = await probeRepository(host, root)
   if (repository.kind !== 'ready') return repository

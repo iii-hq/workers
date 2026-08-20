@@ -11,34 +11,51 @@
  */
 
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   type Host,
+  IconButton,
   PageBody,
   PageHeader,
   PageMain,
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  Selector,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
 import {
   Check,
   ChevronsDownUp,
   ChevronsUpDown,
+  ClipboardCopy,
   Columns2,
   Eye,
   EyeOff,
+  FileSearch,
+  FileStack,
   FolderTree,
+  Image,
   MoreHorizontal,
   PanelLeft,
   PanelRight,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCw,
   Rows3,
   Search,
+  Space,
   SquareTerminal,
   Terminal,
+  WholeWord,
+  WrapText,
   X,
 } from 'lucide-react'
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -87,6 +104,7 @@ import {
   gitChanges,
   gitCommitComparison,
   gitComparison,
+  gitPatch,
   gitRecentCommits,
   gitRefs,
 } from './git'
@@ -189,26 +207,54 @@ type RootChangeOutcome = RootTargetValidation['outcome'] | 'declined'
 
 function ReviewOption({
   label,
+  icon,
   checked,
   onChange,
 }: {
   label: string
+  icon: ReactNode
   checked: boolean
   onChange: (checked: boolean) => void
 }) {
   return (
-    <button
-      type="button"
+    <DropdownMenuItem
       className="shui-review-option"
       role="menuitemcheckbox"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      onSelect={(event) => {
+        event.preventDefault()
+        onChange(!checked)
+      }}
     >
+      <span className="menu-icon" aria-hidden>
+        {icon}
+      </span>
       <span>{label}</span>
       <span className="check" aria-hidden>
         {checked ? <Check /> : null}
       </span>
-    </button>
+    </DropdownMenuItem>
+  )
+}
+
+function ReviewMenuAction({
+  label,
+  icon,
+  disabled,
+  onSelect,
+}: {
+  label: string
+  icon: ReactNode
+  disabled?: boolean
+  onSelect: () => void
+}) {
+  return (
+    <DropdownMenuItem className="shui-review-option" disabled={disabled} onSelect={onSelect}>
+      <span className="menu-icon" aria-hidden>
+        {icon}
+      </span>
+      <span>{label}</span>
+    </DropdownMenuItem>
   )
 }
 
@@ -389,6 +435,28 @@ export function ShellExplorerPage({
   const [reviewCollapseEpoch, setReviewCollapseEpoch] = useState(0)
   const [reviewExpandEpoch, setReviewExpandEpoch] = useState(0)
   const [reviewMenuOpen, setReviewMenuOpen] = useState(false)
+  const [copyingPatch, setCopyingPatch] = useState(false)
+  const reloadReview = () => {
+    refreshTree()
+    void refreshGit()
+    if (reviewScope.kind === 'last-turn') {
+      setReviewRefreshEpoch((value) => value + 1)
+    } else {
+      loadReviewScope(reviewScope)
+    }
+  }
+  const copyApplyCommand = async () => {
+    if (reviewScope.kind === 'last-turn' || copyingPatch || root === null) return
+    setCopyingPatch(true)
+    try {
+      const patch = await gitPatch(host, root, reviewScope)
+      await navigator.clipboard.writeText(`git apply <<'PATCH'\n${patch}\nPATCH\n`)
+    } catch (error: unknown) {
+      setScopeError(errorMessage(error))
+    } finally {
+      setCopyingPatch(false)
+    }
+  }
   const [reviewScope, setReviewScope] =
     useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
   const reviewScopeRef = useRef(reviewScope)
@@ -2520,137 +2588,145 @@ export function ShellExplorerPage({
                   </span>
                 ) : null}
                 <span className="spacer" />
-                <HoverTip label="Reload this review">
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() => {
-                      refreshTree()
-                      void refreshGit()
-                      if (reviewScope.kind === 'last-turn') {
-                        setReviewRefreshEpoch((value) => value + 1)
-                      } else {
-                        loadReviewScope(reviewScope)
-                      }
-                    }}
-                    aria-label="Reload this review"
-                  >
-                    <RefreshCw aria-hidden />
-                  </button>
-                </HoverTip>
-                <HoverTip label="Expand all diffs">
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() => setReviewExpandEpoch((value) => value + 1)}
-                    aria-label="Expand all diffs"
-                  >
-                    <ChevronsUpDown aria-hidden />
-                  </button>
-                </HoverTip>
-                <HoverTip label="Collapse all diffs">
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() => setReviewCollapseEpoch((value) => value + 1)}
-                    aria-label="Collapse all diffs"
-                  >
-                    <ChevronsDownUp aria-hidden />
-                  </button>
-                </HoverTip>
-                <HoverTip
-                  label={
-                    reviewOptions.diffStyle === 'unified'
-                      ? 'Show split diff (side by side)'
-                      : 'Show unified diff (one column)'
-                  }
-                >
-                  <button
-                    type="button"
-                    className="shui-review-action"
-                    onClick={() =>
-                      setReviewOptions((previous) => ({
-                        ...previous,
-                        diffStyle:
-                          previous.diffStyle === 'unified'
-                            ? 'split'
-                            : 'unified',
-                      }))
-                    }
-                    aria-label={
-                      reviewOptions.diffStyle === 'unified'
-                        ? 'Show split diff'
-                        : 'Show unified diff'
-                    }
-                  >
-                    {reviewOptions.diffStyle === 'unified' ? (
-                      <Columns2 aria-hidden />
-                    ) : (
-                      <Rows3 aria-hidden />
-                    )}
-                  </button>
-                </HoverTip>
-                <div className="shui-review-menu-wrap">
-                  <HoverTip label="Diff display options">
-                    <button
-                      type="button"
-                      className={`shui-review-action${reviewMenuOpen ? ' active' : ''}`}
-                      onClick={() => setReviewMenuOpen((value) => !value)}
-                      aria-expanded={reviewMenuOpen}
-                      aria-label="Diff display options"
-                    >
-                      <MoreHorizontal aria-hidden />
-                    </button>
-                  </HoverTip>
-                  {reviewMenuOpen ? (
-                    <div className="shui-review-menu" role="menu">
-                      <ReviewOption
-                        label="Enable word wrap"
-                        checked={reviewOptions.wordWrap}
-                        onChange={(wordWrap) =>
-                          setReviewOptions((value) => ({ ...value, wordWrap }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Enable word diffs"
-                        checked={reviewOptions.wordDiffs}
-                        onChange={(wordDiffs) =>
-                          setReviewOptions((value) => ({ ...value, wordDiffs }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Hide whitespace"
-                        checked={reviewOptions.hideWhitespace}
-                        onChange={(hideWhitespace) =>
-                          setReviewOptions((value) => ({
-                            ...value,
-                            hideWhitespace,
-                          }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Load full files"
-                        checked={reviewOptions.expandUnchanged}
-                        onChange={(expandUnchanged) =>
-                          setReviewOptions((value) => ({
-                            ...value,
-                            expandUnchanged,
-                          }))
-                        }
-                      />
-                      <ReviewOption
-                        label="Enable rich preview"
-                        checked={reviewOptions.richPreview}
-                        onChange={(richPreview) =>
-                          setReviewOptions((value) => ({
-                            ...value,
-                            richPreview,
-                          }))
-                        }
+                {orderedReviewEntries.length > 1 ? (
+                  <HoverTip label="Jump to file">
+                    <div className="shui-review-jump-wrap">
+                      <Selector
+                        aria-label="Jump to file"
+                        className="shui-review-jump"
+                        contentClassName="shui-review-jump-list"
+                        value={undefined}
+                        options={orderedReviewEntries.map((entry) => ({
+                          value: entry.path,
+                          label: entry.path,
+                        }))}
+                        placeholder=""
+                        searchPlaceholder="Jump to file…"
+                        emptyMessage="no matching file"
+                        triggerIcon={<FileSearch aria-hidden />}
+                        onChange={(path) => {
+                          const entry = visibleReviewEntriesRef.current.get(path)
+                          if (entry) openReviewEntry(entry)
+                        }}
                       />
                     </div>
-                  ) : null}
-                </div>
+                  </HoverTip>
+                ) : null}
+                <DropdownMenu open={reviewMenuOpen} onOpenChange={setReviewMenuOpen}>
+                  <DropdownMenuTrigger asChild>
+                    <IconButton
+                      label="Review options"
+                      className={reviewMenuOpen ? 'active' : undefined}
+                    >
+                      <MoreHorizontal aria-hidden />
+                    </IconButton>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="shui-review-menu-content">
+                    <ReviewMenuAction
+                      label="Refresh"
+                      icon={<RefreshCw />}
+                      onSelect={reloadReview}
+                    />
+                    <ReviewOption
+                      label="Enable word wrap"
+                      icon={<WrapText />}
+                      checked={reviewOptions.wordWrap}
+                      onChange={(wordWrap) =>
+                        setReviewOptions((value) => ({ ...value, wordWrap }))
+                      }
+                    />
+                    <DropdownMenuSeparator />
+                    <ReviewOption
+                      label="Load full files"
+                      icon={<FileStack />}
+                      checked={reviewOptions.expandUnchanged}
+                      onChange={(expandUnchanged) =>
+                        setReviewOptions((value) => ({
+                          ...value,
+                          expandUnchanged,
+                        }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Enable rich preview"
+                      icon={<Image />}
+                      checked={reviewOptions.richPreview}
+                      onChange={(richPreview) =>
+                        setReviewOptions((value) => ({
+                          ...value,
+                          richPreview,
+                        }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Enable word diffs"
+                      icon={<WholeWord />}
+                      checked={reviewOptions.wordDiffs}
+                      onChange={(wordDiffs) =>
+                        setReviewOptions((value) => ({ ...value, wordDiffs }))
+                      }
+                    />
+                    <ReviewOption
+                      label="Hide whitespace"
+                      icon={<Space />}
+                      checked={reviewOptions.hideWhitespace}
+                      onChange={(hideWhitespace) =>
+                        setReviewOptions((value) => ({
+                          ...value,
+                          hideWhitespace,
+                        }))
+                      }
+                    />
+                    <DropdownMenuSeparator />
+                    <ReviewMenuAction
+                      label={
+                        reviewScope.kind === 'last-turn'
+                          ? 'Copy git apply command (git scopes only)'
+                          : 'Copy git apply command'
+                      }
+                      icon={<ClipboardCopy />}
+                      disabled={reviewScope.kind === 'last-turn' || copyingPatch}
+                      onSelect={() => void copyApplyCommand()}
+                    />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <IconButton label="Expand all diffs" onClick={() => setReviewExpandEpoch((value) => value + 1)}>
+                  <ChevronsUpDown aria-hidden />
+                </IconButton>
+                <IconButton label="Collapse all diffs" onClick={() => setReviewCollapseEpoch((value) => value + 1)}>
+                  <ChevronsDownUp aria-hidden />
+                </IconButton>
+                <IconButton
+                  label={
+                    reviewOptions.diffStyle === 'unified'
+                      ? 'Switch to split diff'
+                      : 'Switch to unified diff'
+                  }
+                  onClick={() =>
+                    setReviewOptions((previous) => ({
+                      ...previous,
+                      diffStyle:
+                        previous.diffStyle === 'unified' ? 'split' : 'unified',
+                    }))
+                  }
+                >
+                  {reviewOptions.diffStyle === 'unified' ? (
+                    <Columns2 aria-hidden />
+                  ) : (
+                    <Rows3 aria-hidden />
+                  )}
+                </IconButton>
+                <IconButton
+                  label={collapsed ? 'Show files' : 'Hide files'}
+                  aria-pressed={collapsed}
+                  onClick={() => setCollapsed((value) => !value)}
+                >
+                  {collapsed ? (
+                    <PanelRightOpen aria-hidden />
+                  ) : (
+                    <PanelRightClose aria-hidden />
+                  )}
+                </IconButton>
               </div>
             ) : null}
             {(diff === null && tabs.tabs.length > 0) ||

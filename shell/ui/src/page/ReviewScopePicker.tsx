@@ -3,8 +3,12 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FilePen,
   GitBranch,
   GitCommitHorizontal,
+  History,
+  Layers,
+  ListChecks,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -41,6 +45,23 @@ export function reviewScopeLabel(scope: ReviewScopeSelection): string {
       return scope.subject || scope.sha.slice(0, 8)
     case 'branch':
       return scope.name
+  }
+}
+
+function scopeIcon(scope: ReviewScopeSelection) {
+  switch (scope.kind) {
+    case 'last-turn':
+      return <History aria-hidden className="menu-icon" />
+    case 'uncommitted':
+      return <FilePen aria-hidden className="menu-icon" />
+    case 'unstaged':
+      return <ListChecks aria-hidden className="menu-icon" />
+    case 'staged':
+      return <Layers aria-hidden className="menu-icon" />
+    case 'commit':
+      return <GitCommitHorizontal aria-hidden className="menu-icon" />
+    case 'branch':
+      return <GitBranch aria-hidden className="menu-icon" />
   }
 }
 
@@ -120,6 +141,7 @@ export function ReviewScopePicker({
           if (next) onOpen()
         }}
       >
+        {scopeIcon(value)}
         <span>{reviewScopeLabel(value)}</span>
         <ChevronDown aria-hidden />
       </button>
@@ -136,6 +158,7 @@ export function ReviewScopePicker({
                     aria-checked={scopeMatches(value, scope)}
                     onClick={() => choose(scope)}
                   >
+                    {scopeIcon(scope)}
                     <span>{reviewScopeLabel(scope)}</span>
                     {scopeMatches(value, scope) ? <Check aria-hidden /> : <span className="menu-icon-gap" />}
                   </button>
@@ -143,10 +166,12 @@ export function ReviewScopePicker({
               ))}
               <div className="shui-review-menu-separator" />
               <button type="button" role="menuitem" onClick={() => setSubMenu('committed')}>
+                <GitCommitHorizontal aria-hidden className="menu-icon" />
                 <span>Committed</span>
                 <ChevronRight aria-hidden />
               </button>
               <button type="button" role="menuitem" onClick={() => setSubMenu('branch')}>
+                <GitBranch aria-hidden className="menu-icon" />
                 <span>Branch</span>
                 <ChevronRight aria-hidden />
               </button>
