@@ -1592,8 +1592,8 @@ export default function GeneratedSurface({ onAction }: Props) {
       case 'Text': { const text = String(resolve(component.text, model) ?? ''); return component.variant === 'h1' ? <h1>{text}</h1> : component.variant === 'h2' ? <h2>{text}</h2> : <p>{text}</p>; }
       case 'Badge': return <span className="a2ui-badge">{String(resolve(component.text, model) ?? '')}</span>;
       case 'Button': { const event = component.action?.event; return <button className="a2ui-button" type="button" disabled={!event?.name} onClick={() => event?.name && onAction?.({ name: event.name, context: resolve(event.context ?? {}, model), dataModel: sendDataModel ? model : undefined })}>{children}</button>; }
-      case 'TextField': { const path = component.value?.path; return <label className="a2ui-field">{component.label}<input value={String(at(model, path) ?? '')} placeholder={component.placeholder} onChange={(event) => path?.startsWith('/') && setModel((current) => setAt(current, segments(path), event.currentTarget.value))} /></label>; }
-      case 'CheckBox': { const path = component.value?.path; return <label className="a2ui-check"><input type="checkbox" checked={Boolean(at(model, path))} onChange={(event) => path?.startsWith('/') && setModel((current) => setAt(current, segments(path), event.currentTarget.checked))} />{component.label}</label>; }
+      case 'TextField': { const path = component.value?.path; return <label className="a2ui-field">{component.label}<input value={String(at(model, path) ?? '')} placeholder={component.placeholder} onChange={(event) => { const value = event.currentTarget.value; if (path?.startsWith('/')) setModel((current) => setAt(current, segments(path), value)); }} /></label>; }
+      case 'CheckBox': { const path = component.value?.path; return <label className="a2ui-check"><input type="checkbox" checked={Boolean(at(model, path))} onChange={(event) => { const checked = event.currentTarget.checked; if (path?.startsWith('/')) setModel((current) => setAt(current, segments(path), checked)); }} />{component.label}</label>; }
       case 'Divider': return <hr className="a2ui-divider" />;
       default: return null;
     }
@@ -2017,6 +2017,9 @@ mod tests {
         assert!(!source.contains("__SURFACE_ID__"));
         assert!(source.contains("useState<JsonValue>"));
         assert!(source.contains("dataModel: sendDataModel ? model : undefined"));
+        assert!(source.contains("const value = event.currentTarget.value"));
+        assert!(source.contains("const checked = event.currentTarget.checked"));
+        assert!(!source.contains("setAt(current, segments(path), event.currentTarget"));
     }
 
     #[test]

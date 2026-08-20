@@ -10,6 +10,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   EmptyState,
+  List,
+  ListItem,
   PageBody,
   PageHeader,
   PageMain,
@@ -25,7 +27,7 @@ import { Surface } from './surface'
 import type { SurfaceExport, SurfaceRecord, SurfaceSummary, SurfaceTemplate } from './types'
 import { writeCodeBundle, type WorkspaceExport } from './workspace'
 
-export function A2uiPage({ host, panelSide, onRequestClose, conversationId, workingDir }: PageRenderProps & { host: Host }) {
+export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationId, workingDir }: PageRenderProps & { host: Host }) {
   const [surfaces, setSurfaces] = useState<SurfaceSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selected, setSelected] = useState<SurfaceRecord | null>(null)
@@ -169,45 +171,56 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
   return (
     <PageShell className="a2ui-page">
       <PageHeader
-        title="a2ui"
-        description={<span className="a2ui-page-description">generative interfaces for this conversation</span>}
+        title="A2UI"
+        description={<span className="a2ui-page-description">Generative interfaces for this conversation</span>}
         actions={<Badge variant="accent">v0.9.1</Badge>}
         onClose={onRequestClose}
       />
       <PageBody side={panelSide}>
-        <PageSidebar width={272} className="a2ui-sidebar">
-          <div className="a2ui-sidebar-head">
-            <span>surfaces</span>
-            <span>{surfaces.length}</span>
-          </div>
+        <PageSidebar
+          label="Interfaces"
+          side={panelSide}
+          header={
+            <div className="a2ui-sidebar-head">
+              <span>Interfaces</span>
+              <span>{surfaces.length}</span>
+            </div>
+          }
+          defaultWidth={272}
+          minWidth={220}
+          maxWidth={420}
+          collapsible
+          resizable
+          storageKey={`a2ui:${tabId || 'page'}:interfaces`}
+          className="a2ui-sidebar"
+        >
           {!conversationId ? (
             <div className="a2ui-note">Open the page beside a Harness conversation.</div>
           ) : surfaces.length === 0 ? (
-            <div className="a2ui-note">{loading ? 'loading…' : 'Ask the agent to create an interface.'}</div>
+            <div className="a2ui-note">{loading ? 'Loading…' : 'Ask the agent to create an interface.'}</div>
           ) : (
-            <ul className="a2ui-list">
+            <List className="a2ui-list">
               {surfaces.map((surface) => (
-                <li key={surface.surface_id}>
-                  <button
-                    type="button"
-                    className={`a2ui-list-item${selectedId === surface.surface_id ? ' selected' : ''}`}
-                    onClick={() => setSelectedId(surface.surface_id)}
-                  >
-                    <span className="a2ui-list-title">{surface.title}</span>
+                <ListItem
+                  key={surface.surface_id}
+                  selected={selectedId === surface.surface_id}
+                  label={<span className="a2ui-list-title">{surface.title}</span>}
+                  description={
                     <span className="a2ui-list-meta">
                       {surface.component_count} components · r{surface.revision}
                       {surface.pinned ? ' · pinned' : ''}
                     </span>
-                  </button>
-                </li>
+                  }
+                  onClick={() => setSelectedId(surface.surface_id)}
+                />
               ))}
-            </ul>
+            </List>
           )}
         </PageSidebar>
         <PageMain className="a2ui-main">
           {surfaces.length > 0 ? (
             <label className="a2ui-mobile-switcher">
-              <span>surface</span>
+              <span>Interface</span>
               <select
                 aria-label="surface"
                 value={selectedId ?? ''}
@@ -228,7 +241,7 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
               disabled={!conversationId}
               onClick={() => importInput.current?.click()}
             >
-              import JSON
+              Import JSON
             </Button>
             <input
               ref={importInput}
@@ -277,7 +290,7 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
             <div className="a2ui-page-error" role="alert">
               <StatusPanel variant="alert" headline="A2UI page error" detail={error} />
               <Button variant="ghost" size="sm" onClick={() => setError(null)}>
-                dismiss
+                Dismiss
               </Button>
             </div>
           ) : null}
@@ -314,11 +327,11 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="sm" disabled={exporting} aria-label="surface actions">
-                        {exporting ? 'working…' : 'actions'}
+                        {exporting ? 'Working…' : 'Actions'}
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuLabel>surface</DropdownMenuLabel>
+                      <DropdownMenuLabel>Interface</DropdownMenuLabel>
                       <DropdownMenuItem
                         title="Keep this surface at the top of the conversation library"
                         onSelect={() =>
@@ -328,7 +341,7 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
                           })
                         }
                       >
-                        {selected.pinned ? 'unpin surface' : 'pin surface'}
+                        {selected.pinned ? 'Unpin interface' : 'Pin interface'}
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         title="Restore the previous saved revision"
@@ -339,7 +352,7 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
                           })
                         }
                       >
-                        undo latest change
+                        Undo latest change
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         title="Create an independent copy in this conversation"
@@ -350,7 +363,7 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
                           })
                         }
                       >
-                        duplicate surface
+                        Duplicate interface
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         title="Reuse this surface as a starting point later"
@@ -362,22 +375,22 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
                           })
                         }
                       >
-                        save as template
+                        Save as template
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel>workspace</DropdownMenuLabel>
+                      <DropdownMenuLabel>Workspace</DropdownMenuLabel>
                       <DropdownMenuItem
                         disabled={!workingDir}
                         title={workingDir ? 'Create a complete editable React app as workspace files' : 'Choose a working directory in Harness first'}
                         onSelect={() => void writeReactApp()}
                       >
-                        write React app to workspace
+                        Write React app to workspace
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel>export</DropdownMenuLabel>
-                      <DropdownMenuItem title="Portable A2UI data for re-import" onSelect={() => void downloadSelected()}>JSON package</DropdownMenuItem>
-                      <DropdownMenuItem title="ZIP with a complete runnable React app" onSelect={() => void downloadCode('react')}>React app ZIP</DropdownMenuItem>
-                      <DropdownMenuItem title="ZIP with an iii worker template that serves this surface as data" onSelect={() => void downloadCode('worker')}>data worker template ZIP</DropdownMenuItem>
+                      <DropdownMenuLabel>Export</DropdownMenuLabel>
+                      <DropdownMenuItem title="Portable A2UI data for re-import" onSelect={() => void downloadSelected()}>Download JSON package</DropdownMenuItem>
+                      <DropdownMenuItem title="ZIP with a complete runnable React app" onSelect={() => void downloadCode('react')}>Download React app ZIP</DropdownMenuItem>
+                      <DropdownMenuItem title="ZIP with an iii worker template that serves this surface as data" onSelect={() => void downloadCode('worker')}>Download data worker template</DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         title="Permanently remove this surface"
@@ -387,7 +400,7 @@ export function A2uiPage({ host, panelSide, onRequestClose, conversationId, work
                           }
                         }}
                       >
-                        delete surface
+                        Delete interface
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>

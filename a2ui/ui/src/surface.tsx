@@ -141,7 +141,7 @@ export function Surface({ host, surface, compact = false }: SurfaceProps) {
               }
             }}
           >
-            {busy === component.id ? 'sending…' : children}
+            {busy === component.id ? 'Sending…' : children}
           </Button>
         )
       }

@@ -20,7 +20,7 @@ export function createA2uiTriggerRenderer(host: Host): FunctionTriggerRenderer {
     tryRender: (message) => renderResult(host, message),
     tryRenderRunning: (message) => renderRunning(message),
     tryRenderPreview: (message) => renderRunning(message),
-    primaryTabLabel: 'interface',
+    primaryTabLabel: 'Interface',
     redactRaw,
   }
 }
@@ -33,7 +33,7 @@ function renderResult(host: Host, message: FunctionTriggerMessage): ReactNode | 
     return (
       <div className="a2ui-trigger">
         <div className="a2ui-trigger-head">
-          <Badge>deleted</Badge>
+          <Badge>Deleted</Badge>
           <span>{receipt.surface_id}</span>
         </div>
       </div>
@@ -53,8 +53,8 @@ function renderRunning(message: FunctionTriggerMessage): ReactNode | null {
   return (
     <div className="a2ui-trigger">
       <div className="a2ui-trigger-head">
-        <Badge variant="accent">composing</Badge>
-        <span>building interface…</span>
+        <Badge variant="accent">Composing</Badge>
+        <span>Building interface…</span>
       </div>
       <Skeleton className="a2ui-trigger-skeleton" />
     </div>
@@ -77,10 +77,10 @@ function GeneratedSurface({ host, receipt }: { host: Host; receipt: SurfaceRecei
   return (
     <div className="a2ui-trigger">
       <div className="a2ui-trigger-head">
-        <Badge variant="accent">a2ui</Badge>
+        <Badge variant="accent">A2UI</Badge>
         <strong>{receipt.title}</strong>
         <span>{receipt.component_count} components</span>
-        <a href={PAGE_HASH}>open page</a>
+        <a href={PAGE_HASH}>Open page</a>
       </div>
       {error ? (
         <StatusPanel variant="alert" headline="Could not load generated surface" detail={error} />

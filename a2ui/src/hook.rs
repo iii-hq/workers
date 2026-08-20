@@ -58,10 +58,10 @@ pub fn register(iii: &IIIClient) {
 }
 
 pub fn bind(iii: &IIIClient) -> Result<(), iii_sdk::errors::Error> {
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::hook::pre-trigger".into(),
-        function_id: STAMP_SESSION_ID.into(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::pre-trigger",
+        STAMP_SESSION_ID,
+        json!({
             "functions": [
                 "a2ui::generate",
                 "a2ui::surface::apply",
@@ -88,8 +88,7 @@ pub fn bind(iii: &IIIClient) -> Result<(), iii_sdk::errors::Error> {
             "timeout_ms": 5_000,
             "on_error": "fail_closed"
         }),
-        metadata: None,
-    })?;
+    ))?;
     Ok(())
 }
 

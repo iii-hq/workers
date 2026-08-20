@@ -35,13 +35,14 @@ or the selection/motion rules change.
 
 ## Injectable worker sweep
 
-All 22 checked-in injectable UI packages were inspected. “Domain adapter”
+All 23 checked-in injectable UI packages were inspected. “Domain adapter”
 means a local component still adds information architecture or semantics; it
 must compose shared controls/tokens and is not permission to fork base hover,
 selection, tooltip, or selector behavior.
 
 | Worker UI | Shared/conformance result | Retained domain surface |
 |---|---|---|
+| `a2ui` | Shared page chrome, sidebar, lists, overlays, controls, and neutral selection | Validated A2UI component graph rendering and workspace export |
 | `browser` | Shared segmented controls; neutral rail/config selection; shared motion tokens | Browser feed, element references, and metadata chips |
 | `canvas` | Existing shared controls and token styling audited | Infinite canvas gestures and graph semantics |
 | `code-runner` | Shared tooltip and terminal contracts audited | Execution-result composition |
