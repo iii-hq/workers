@@ -141,6 +141,40 @@ jobs:
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
         run: |
           set -euo pipefail
+
+          # Some binary workers use the stdio transport. A background process
+          # started directly by Actions inherits an EOF on stdin and exits
+          # before it can register its interface. Keep a pipe open for the
+          # worker and forward termination to the child so cleanup remains
+          # deterministic.
+          start_worker_with_open_stdin() {
+            local pidfile="$1"
+            local log="$2"
+            shift 2
+            python3 - "$@" >"$log" 2>&1 <<'PY' &
+          import signal
+          import subprocess
+          import sys
+
+          child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE)
+
+          def stop(signum, _frame):
+              if child.poll() is None:
+                  child.terminate()
+                  try:
+                      child.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      child.kill()
+                      child.wait()
+              raise SystemExit(128 + signum)
+
+          signal.signal(signal.SIGTERM, stop)
+          signal.signal(signal.SIGINT, stop)
+          raise SystemExit(child.wait())
+          PY
+            echo "$!" > "$pidfile"
+          }
+
           mode=$(python3 .github/scripts/manifest_version.py deploy-mode "$WORKER")
 
           case "$mode" in
@@ -172,8 +206,7 @@ jobs:
               worker_log="worker-$WORKER.log"
               pushd "$WORKER" >/dev/null
               echo "Starting local worker with: (cd $WORKER && $bin_path ${collect_args[*]})"
-              "$bin_path" "${collect_args[@]}" > "../$worker_log" 2>&1 &
-              echo "$!" > ../worker.pid
+              start_worker_with_open_stdin "../worker.pid" "../$worker_log" "$bin_path" "${collect_args[@]}"
               popd >/dev/null
 
               sleep 2
@@ -215,8 +248,7 @@ jobs:
                 sh -c "$install_cmd"
               fi
               echo "Starting local worker with: (cd $stage_dir && $start_cmd)"
-              sh -c "$start_cmd" > "$workspace_root/$worker_log" 2>&1 &
-              echo "$!" > "$workspace_root/worker.pid"
+              start_worker_with_open_stdin "$workspace_root/worker.pid" "$workspace_root/$worker_log" sh -c "$start_cmd"
               popd >/dev/null
 
               sleep 2
@@ -247,8 +279,7 @@ jobs:
               fi
 
               echo "Starting local worker with: (cd $WORKER && cargo ${cargo_args[*]})"
-              cargo "${cargo_args[@]}" > "../$worker_log" 2>&1 &
-              echo "$!" > ../worker.pid
+              start_worker_with_open_stdin "../worker.pid" "../$worker_log" cargo "${cargo_args[@]}"
               popd >/dev/null
 
               sleep 2

@@ -250,6 +250,13 @@ def test_registry_publish_authenticates_iii_installer() -> None:
     assert "GITHUB_TOKEN: ${{ github.token }}" in body
 
 
+def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
+    body = (WORKFLOWS / "_publish-registry.yml").read_text()
+    assert "start_worker_with_open_stdin" in body
+    assert "stdin=subprocess.PIPE" in body
+    assert "signal.signal(signal.SIGTERM" in body
+
+
 def test_rust_binary_cache_is_keyed_by_frontend_bundle_digest() -> None:
     jobs = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
     web_build = jobs["web-build"]
