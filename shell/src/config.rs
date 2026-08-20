@@ -101,9 +101,57 @@ pub struct ShellConfig {
     #[serde(default)]
     pub code: crate::code::config::CoderConfig,
 
+    /// Durable per-session change history (`shell::turns::*`): where the
+    /// records and pre-image blobs live and how much disk they may use.
+    #[serde(default)]
+    pub turns: TurnsConfig,
+
     #[serde(default, skip)]
     #[schemars(skip)]
     pub compiled_denylist: Vec<Regex>,
+}
+
+/// On-disk store for the per-session change history. Records are small JSON
+/// files; pre-image bodies are content-addressed blobs shared across turns
+/// and sessions, pruned oldest-first once `max_blob_bytes` is exceeded.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct TurnsConfig {
+    /// Directory for `sessions/<id>.json` and `objects/<sha>`. A leading `~/`
+    /// expands to `$HOME`. Default `~/.iii/data/shell/turns`.
+    #[serde(default = "default_turns_data_dir")]
+    pub data_dir: String,
+    /// Cap on the blob store in bytes. Default 256 MiB.
+    #[serde(default = "default_turns_max_blob_bytes")]
+    pub max_blob_bytes: u64,
+}
+
+impl Default for TurnsConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: default_turns_data_dir(),
+            max_blob_bytes: default_turns_max_blob_bytes(),
+        }
+    }
+}
+
+impl TurnsConfig {
+    /// `data_dir` with a leading `~/` expanded to `$HOME`.
+    pub fn resolved_data_dir(&self) -> PathBuf {
+        if let Some(rest) = self.data_dir.strip_prefix("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join(rest);
+            }
+        }
+        PathBuf::from(&self.data_dir)
+    }
+}
+
+fn default_turns_data_dir() -> String {
+    "~/.iii/data/shell/turns".to_string()
+}
+
+fn default_turns_max_blob_bytes() -> u64 {
+    256 * 1024 * 1024
 }
 
 fn default_max_timeout_ms() -> u64 {
@@ -478,6 +526,7 @@ impl Default for ShellConfig {
             fs: FsConfig::default(),
             sandbox: SandboxConfig::default(),
             code: crate::code::config::CoderConfig::default(),
+            turns: TurnsConfig::default(),
             compiled_denylist: Vec::new(),
         }
     }

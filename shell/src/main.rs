@@ -22,6 +22,7 @@ mod scode;
 mod target;
 mod telemetry;
 mod triggers;
+mod turns;
 mod ui;
 
 use configuration::AppState;
@@ -429,6 +430,10 @@ async fn main() -> Result<()> {
     // shell::changed trigger type — subscribers name the directory in their
     // binding config.
     events::register_changed_trigger(&iii, watch_resolver);
+
+    // Durable per-session change history: harness hooks on shell/coder
+    // writes, read back by shell::turns::list / shell::turns::get.
+    let _turn_log = turns::register(&iii, &cfg.turns);
 
     // Background reaper: time-based eviction of finished JobRecords. Without
     // it, an agent that uses exec_bg + status-polling (and never calls

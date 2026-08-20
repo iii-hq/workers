@@ -104,6 +104,13 @@ import {
   gitRecentCommits,
   gitRefs,
 } from './git'
+import {
+  fetchSessionTurn,
+  fetchSessionTurns,
+  reviewEntriesFromTurn,
+  type SessionTurnSummary,
+  turnLabel,
+} from './turns'
 import { HoverTip } from './HoverTip'
 import { useWorkspaceChanges } from './live'
 import { normalizeLiveReviewEvent } from './live-review'
@@ -352,6 +359,8 @@ export function ShellExplorerPage({
   const theme = host.useTheme()
   const observedReview = useHarnessTurn(host, conversationId)
   const observedReviewKey = observedReview.turnId
+  const observedReviewKeyRef = useRef(observedReviewKey)
+  observedReviewKeyRef.current = observedReviewKey
   const [reviewKey, setReviewKey] = useState<string | null>(observedReviewKey)
   const [info, setInfo] = useState<CoderInfo | null>(null)
   const [infoError, setInfoError] = useState<string | null>(null)
@@ -468,7 +477,13 @@ export function ShellExplorerPage({
     }
   }
   const copyApplyCommand = async () => {
-    if (reviewScope.kind === 'last-turn' || copyingPatch || root === null) return
+    if (
+      reviewScope.kind === 'last-turn' ||
+      reviewScope.kind === 'turn' ||
+      copyingPatch ||
+      root === null
+    )
+      return
     setCopyingPatch(true)
     try {
       const patch = await gitPatch(host, root, reviewScope)
@@ -497,6 +512,8 @@ export function ShellExplorerPage({
     [],
   )
   const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
+  const [sessionTurns, setSessionTurns] = useState<readonly SessionTurnSummary[]>([])
+  const [turnOutside, setTurnOutside] = useState(0)
   const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
   const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(
     null,
@@ -1182,6 +1199,13 @@ export function ShellExplorerPage({
     const seq = ++scopeMetadataSeqRef.current
     setScopeMetadataLoading(true)
     setScopeMetadataError(null)
+    if (conversationId) {
+      void fetchSessionTurns(host, conversationId)
+        .then((turns) => {
+          if (scopeMetadataSeqRef.current === seq) setSessionTurns(turns)
+        })
+        .catch(() => {})
+    }
     void Promise.all([gitRecentCommits(host, root), gitRefs(host, root)])
       .then(([commits, refs]) => {
         if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
@@ -1201,7 +1225,7 @@ export function ShellExplorerPage({
       .finally(() => {
         if (scopeMetadataSeqRef.current === seq) setScopeMetadataLoading(false)
       })
-  }, [host, root])
+  }, [host, root, conversationId])
 
   const loadReviewScope = useCallback(
     (scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>) => {
@@ -1209,6 +1233,47 @@ export function ShellExplorerPage({
       const seq = ++scopeLoadSeqRef.current
       setScopeLoading(true)
       setScopeError(null)
+      setTurnOutside(0)
+      if (scope.kind === 'turn') {
+        if (!conversationId) {
+          setScopeLoading(false)
+          setScopeError('no chat session')
+          return
+        }
+        void fetchSessionTurn(host, conversationId, scope.turnId)
+          .then((turn) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            const mapped = turn
+              ? reviewEntriesFromTurn(turn, root)
+              : { entries: new Map(), outside: 0 }
+            scopeEntriesRef.current = mapped.entries
+            setScopeEntries(mapped.entries)
+            setTurnOutside(mapped.outside)
+            const activePath = diffRef.current?.change.path
+            const entry =
+              (activePath ? mapped.entries.get(activePath) : undefined) ??
+              mapped.entries.values().next().value
+            if (entry) openReviewEntry(entry)
+            else {
+              diffRequestRef.current += 1
+              setDiff(null)
+            }
+          })
+          .catch((error: unknown) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            scopeEntriesRef.current = new Map()
+            setScopeEntries(new Map())
+            setScopeError(errorMessage(error))
+            diffRequestRef.current += 1
+            setDiff(null)
+          })
+          .finally(() => {
+            if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
+          })
+        return
+      }
       const comparison =
         scope.kind === 'uncommitted' ||
         scope.kind === 'unstaged' ||
@@ -1257,8 +1322,44 @@ export function ShellExplorerPage({
           if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
         })
     },
-    [host, root, openReviewEntry],
+    [host, root, conversationId, openReviewEntry],
   )
+
+  // A chat reopened after its work is done has no live turn to follow; its
+  // latest stored turn stands in, loaded from the shell's durable history.
+  const autoTurnSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!conversationId || root === null) {
+      autoTurnSessionRef.current = null
+      return
+    }
+    if (observedReview.turnId !== null) return
+    if (autoTurnSessionRef.current === conversationId) return
+    autoTurnSessionRef.current = conversationId
+    let cancelled = false
+    void fetchSessionTurns(host, conversationId)
+      .then((turns) => {
+        if (cancelled || rootRef.current !== root) return
+        setSessionTurns(turns)
+        const latest = turns.find((turn) => turn.file_count > 0) ?? turns[0]
+        if (!latest || observedReviewKeyRef.current !== null) return
+        if (reviewEntriesRef.current.size > 0) return
+        const scope = {
+          kind: 'turn' as const,
+          turnId: latest.turn_id,
+          label: turnLabel(latest),
+        }
+        scopeLoadSeqRef.current += 1
+        setReviewScope(scope)
+        scopeEntriesRef.current = new Map()
+        setScopeEntries(new Map())
+        loadReviewScope(scope)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [host, conversationId, root, observedReview.turnId, loadReviewScope])
 
   const onReviewEditDirtyChange = useCallback(
     (path: string, dirty: boolean) => {
@@ -2582,6 +2683,12 @@ export function ShellExplorerPage({
                 <ReviewScopePicker
                   value={reviewScope}
                   commits={scopeCommits}
+                  turns={sessionTurns.map((turn) => ({
+                    turnId: turn.turn_id,
+                    label: turnLabel(turn),
+                    fileCount: turn.file_count,
+                    active: turn.ended_at == null,
+                  }))}
                   branches={scopeRefs.map((ref) => ({
                     ref: ref.fullName,
                     name: ref.name,
@@ -2600,6 +2707,14 @@ export function ShellExplorerPage({
                 {scopeError ? (
                   <span className="shui-review-scope-error" title={scopeError}>
                     unavailable
+                  </span>
+                ) : null}
+                {reviewScope.kind === 'turn' && turnOutside > 0 ? (
+                  <span
+                    className="shui-review-count"
+                    title="files this turn changed outside the folder you are browsing"
+                  >
+                    +{turnOutside} outside
                   </span>
                 ) : null}
                 {reviewScope.kind === 'last-turn' && baselineCoverage?.capped ? (
@@ -2700,12 +2815,16 @@ export function ShellExplorerPage({
                     <DropdownMenuSeparator />
                     <ReviewMenuAction
                       label={
-                        reviewScope.kind === 'last-turn'
+                        reviewScope.kind === 'last-turn' || reviewScope.kind === 'turn'
                           ? 'Copy git apply command (git scopes only)'
                           : 'Copy git apply command'
                       }
                       icon={<ClipboardCopy />}
-                      disabled={reviewScope.kind === 'last-turn' || copyingPatch}
+                      disabled={
+                        reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'turn' ||
+                        copyingPatch
+                      }
                       onSelect={() => void copyApplyCommand()}
                     />
                   </DropdownMenuContent>
