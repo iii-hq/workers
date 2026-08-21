@@ -921,3 +921,34 @@ export async function removeBrowserDownload(
     guid,
   })
 }
+
+export const BROWSER_RESIZE_FUNCTION_ID = 'browser::resize'
+
+const resizeSchema = z.object({
+  ok: z.boolean(),
+  width: z.number(),
+  height: z.number(),
+})
+
+/** Set the session's live viewport to `width` x `height` CSS pixels. */
+export async function resizeBrowser(
+  iii: ExtensionIii,
+  sessionId: string,
+  width: number,
+  height: number,
+  options: { deviceScaleFactor?: number; mobile?: boolean } = {},
+): Promise<{ width: number; height: number } | null> {
+  const res = await iii.trigger<unknown>(BROWSER_RESIZE_FUNCTION_ID, {
+    session_id: sessionId,
+    width: Math.round(width),
+    height: Math.round(height),
+    ...(options.deviceScaleFactor
+      ? { device_scale_factor: options.deviceScaleFactor }
+      : {}),
+    ...(options.mobile ? { mobile: options.mobile } : {}),
+  })
+  const parsed = resizeSchema.safeParse(res)
+  return parsed.success
+    ? { width: parsed.data.width, height: parsed.data.height }
+    : null
+}

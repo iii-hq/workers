@@ -1,0 +1,74 @@
+{
+  "function_id": "browser::resize",
+  "description": "Set the session's live viewport size (CSS pixels). The console calls this as its browser pane resizes so the streamed frame fills the pane with no letterboxing and clicks map 1:1; the device toolbar calls it with a preset. Clamped 200..4000.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ResizeInput",
+    "type": "object",
+    "required": [
+      "height",
+      "session_id",
+      "width"
+    ],
+    "properties": {
+      "device_scale_factor": {
+        "description": "Device pixel ratio. Default 1.",
+        "default": null,
+        "type": [
+          "number",
+          "null"
+        ],
+        "format": "double"
+      },
+      "height": {
+        "description": "Viewport height in CSS pixels (clamped 200..4000).",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "mobile": {
+        "description": "Emulate a mobile device (viewport meta, overlay scrollbars, touch). Default false. The device toolbar sets this for phone presets.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "width": {
+        "description": "Viewport width in CSS pixels (clamped 200..4000).",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ResizeOutput",
+    "type": "object",
+    "required": [
+      "height",
+      "ok",
+      "width"
+    ],
+    "properties": {
+      "height": {
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "width": {
+        "description": "The clamped size actually applied.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      }
+    }
+  }
+}

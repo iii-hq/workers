@@ -46,6 +46,7 @@ import {
   pinLabel,
   pressBrowserKey,
   printBrowserPageToPdf,
+  resizeBrowser,
   resolveBrowserPick,
   screenshotFileName,
   scrollBrowserAt,
@@ -515,6 +516,29 @@ export function SessionView({
     [host, sessionId],
   )
 
+  // Match the Chromium viewport to the pane as it resizes, so the streamed
+  // frame fills the surface with no letterboxing and clicks map 1:1. The
+  // observer fires often; debounce and skip sub-pixel-ish changes.
+  const resizeTimerRef = useRef<number | undefined>(undefined)
+  const lastSentSizeRef = useRef<{ w: number; h: number } | null>(null)
+  const onSurfaceResize = useCallback(
+    (width: number, height: number) => {
+      const last = lastSentSizeRef.current
+      if (last && Math.abs(last.w - width) < 4 && Math.abs(last.h - height) < 4)
+        return
+      window.clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = window.setTimeout(() => {
+        lastSentSizeRef.current = { w: width, h: height }
+        void resizeBrowser(host.iii, sessionId, width, height).catch(() => {})
+      }, 180)
+    },
+    [host, sessionId],
+  )
+  useEffect(() => {
+    lastSentSizeRef.current = null
+    return () => window.clearTimeout(resizeTimerRef.current)
+  }, [sessionId])
+
   // Find in page: the worker keeps the match list in the document; this
   // side keeps the query, the count and the current index for the bar.
   const [find, setFind] = useState<FindState | null>(null)
@@ -967,6 +991,7 @@ export function SessionView({
               loading={live.loading}
               error={live.error}
               annotation={viewportAnnotation}
+              onSurfaceResize={onSurfaceResize}
               onClickAt={handleClickAt}
               onScrollAt={handleScrollAt}
               onTextInput={handleTextInput}

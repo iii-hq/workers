@@ -5,7 +5,7 @@
 //! the live feed the console UI subscribes to.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -304,8 +304,12 @@ pub struct Session {
     /// Viewport captured at launch. Config viewport is a session-start
     /// setting (a running session keeps the browser it launched with), so
     /// per-call consumers read these fields, not the live config.
-    pub viewport_width: u32,
-    pub viewport_height: u32,
+    /// The live viewport the session renders at. Set at launch, then tracked
+    /// to the console pane's size by browser::resize (or overridden by the
+    /// device toolbar), so the streamed frame fills the pane with no
+    /// letterboxing and click coordinates map 1:1.
+    pub viewport_width: AtomicU32,
+    pub viewport_height: AtomicU32,
     pub created_ms: i64,
     /// Temp profile dir removed on shutdown. None in persistent
     /// `user_data_dir` mode.
@@ -361,6 +365,18 @@ pub struct Session {
 impl Session {
     pub fn touch(&self) {
         self.last_used_ms.store(now_ms() as u64, Ordering::Relaxed);
+    }
+
+    pub fn viewport(&self) -> (u32, u32) {
+        (
+            self.viewport_width.load(Ordering::Relaxed),
+            self.viewport_height.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_viewport(&self, width: u32, height: u32) {
+        self.viewport_width.store(width, Ordering::Relaxed);
+        self.viewport_height.store(height, Ordering::Relaxed);
     }
 
     pub fn last_used_ms(&self) -> i64 {
@@ -730,8 +746,8 @@ impl Sessions {
             headless,
             kind: SessionKind::Launched,
             read_only,
-            viewport_width: cfg.viewport_width,
-            viewport_height: cfg.viewport_height,
+            viewport_width: AtomicU32::new(cfg.viewport_width),
+            viewport_height: AtomicU32::new(cfg.viewport_height),
             created_ms: now,
             ephemeral_profile,
             latest_frame: Mutex::new(None),
@@ -828,8 +844,8 @@ impl Sessions {
             headless: false,
             kind: SessionKind::Attached { owns_page },
             read_only,
-            viewport_width: cfg.viewport_width,
-            viewport_height: cfg.viewport_height,
+            viewport_width: AtomicU32::new(cfg.viewport_width),
+            viewport_height: AtomicU32::new(cfg.viewport_height),
             created_ms: now,
             ephemeral_profile: None,
             latest_frame: Mutex::new(None),

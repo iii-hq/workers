@@ -23,6 +23,7 @@ pub mod overlays;
 pub mod pdf;
 pub mod pick;
 pub mod recording;
+pub mod resize;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
@@ -37,6 +38,7 @@ use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
 use chromiumoxide::cdp::browser_protocol::css as cdp_css;
 use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
+use chromiumoxide::cdp::browser_protocol::emulation as cdp_emulation;
 use chromiumoxide::cdp::browser_protocol::input;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::browser_protocol::overlay;
@@ -213,6 +215,11 @@ pub const DOWNLOAD_DESC: &str =
 pub const DOWNLOAD_REMOVE_ID: &str = "browser::download::remove";
 pub const DOWNLOAD_REMOVE_DESC: &str =
     "Forget a download and delete its file from the session's download dir.";
+pub const RESIZE_ID: &str = "browser::resize";
+pub const RESIZE_DESC: &str =
+    "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
+     pane resizes so the streamed frame fills the pane with no letterboxing and clicks map \
+     1:1; the device toolbar calls it with a preset. Clamped 200..4000.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -321,6 +328,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             DOWNLOAD_REMOVE_ID,
             DOWNLOAD_REMOVE_DESC,
         ),
+        spec::<resize::ResizeInput, resize::ResizeOutput>(RESIZE_ID, RESIZE_DESC),
     ]
 }
 
@@ -362,6 +370,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_downloads_list(iii, sessions);
     register_download(iii, sessions);
     register_download_remove(iii, sessions);
+    register_resize(iii, sessions);
     tracing::info!("all functions registered");
 }
 
@@ -761,8 +770,8 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     details: screenshot::ScreenshotDetails {
                         session_id: session.id.clone(),
                         url,
-                        width: session.viewport_width,
-                        height: session.viewport_height,
+                        width: session.viewport().0,
+                        height: session.viewport().1,
                     },
                 })
             }
@@ -1035,8 +1044,8 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             action_point(&session, &req).await?
                         } else {
                             (
-                                session.viewport_width as f64 / 2.0,
-                                session.viewport_height as f64 / 2.0,
+                                session.viewport().0 as f64 / 2.0,
+                                session.viewport().1 as f64 / 2.0,
                             )
                         };
                         let delta_y = req.delta_y.unwrap_or(600.0);
@@ -1719,6 +1728,42 @@ fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(PDF_DESC),
+    );
+}
+
+fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        RESIZE_ID,
+        RegisterFunction::new_async(move |req: resize::ResizeInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let width = resize::clamp(req.width);
+                let height = resize::clamp(req.height);
+                let dpr = req.device_scale_factor.unwrap_or(1.0).clamp(0.5, 3.0);
+                let params = cdp_emulation::SetDeviceMetricsOverrideParams::builder()
+                    .width(i64::from(width))
+                    .height(i64::from(height))
+                    .device_scale_factor(dpr)
+                    .mobile(req.mobile.unwrap_or(false))
+                    .build()
+                    .map_err(handler_err)?;
+                session
+                    .page
+                    .execute(params)
+                    .await
+                    .map_err(|e| handler_err(format!("resize failed: {e}")))?;
+                session.set_viewport(width, height);
+                Ok::<_, Error>(resize::ResizeOutput {
+                    ok: true,
+                    width,
+                    height,
+                })
+            }
+        })
+        .description(RESIZE_DESC),
     );
 }
 
