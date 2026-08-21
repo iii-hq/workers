@@ -10,9 +10,16 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SHARED_DEPENDENCY_RANGES = {
     "configuration": "0.x",
+    "cron": "0.x",
+    "iii-observability": "0.x",
+    "iii-stream": "0.x",
     "llm-router": "^1.4.12",
-    "queue": "^0.21.5",
-    "state": "^0.22.2",
+    "memory": "0.x",
+    "provider-openai-codex": "0.x",
+    "queue": "0.x",
+    "shell": "0.x",
+    "skills": "0.x",
+    "state": "0.x",
 }
 
 

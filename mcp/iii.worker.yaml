@@ -9,4 +9,4 @@ tags: [mcp, model-context-protocol, bridge, http, agents]
 description: MCP 2025-06-18 Streamable HTTP bridge for the iii engine.
 
 dependencies:
-  skills: "^0.2.1"
+  skills: "0.x"
