@@ -27,13 +27,21 @@ import {
   EmptyState,
   type Host,
   JsonHighlight,
+  type PageCommandsApi,
   PageHeader,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type MutableRefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { ActivityFeed, formatDuration } from './ActivityFeed'
 import { nextCronRun, untilLabel } from './cron'
 import {
@@ -83,15 +91,21 @@ export function FunctionsPage({
   host,
   side,
   onRequestClose,
+  commands,
 }: {
   host: Host
   side?: 'left' | 'right'
   onRequestClose?: () => void
+  commands?: PageCommandsApi
 }) {
   const [showInternal, setShowInternal] = useState(false)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const groupState = useGroupToggle(alwaysOpen)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  // Set by the mounted InvokePanel (invoke tab only) so Mod+Enter can reach
+  // its run() without lifting the whole invoke form up to this page.
+  const invokeRunRef = useRef<(() => void) | null>(null)
 
   // Functions and workers together: the sidebar groups by worker and the
   // document names each worker's runtime, so both loads share one beat.
@@ -178,6 +192,49 @@ export function FunctionsPage({
     }
   }, [catalog.data, selected])
 
+  // The page's primary verbs, for the palette and the keyboard while this
+  // pane has focus.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'search',
+          title: 'Search functions',
+          detail: 'Focus the function search field',
+          keywords: ['find', 'filter'],
+          shortcut: '/',
+          run: () => searchInputRef.current?.focus(),
+        },
+        {
+          id: 'toggle-internal',
+          title: 'Toggle internal functions',
+          detail: 'Show or hide console and worker plumbing functions',
+          keywords: ['internal', 'plumbing', 'hidden'],
+          shortcut: 'I',
+          run: () => setShowInternal((v) => !v),
+        },
+        {
+          id: 'refresh',
+          title: 'Refresh functions',
+          detail: 'Reload the function catalog',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: () => catalog.reload(),
+        },
+        {
+          id: 'run-function',
+          title: 'Run function',
+          detail: 'Trigger the selected function with its current payload',
+          keywords: ['invoke', 'trigger', 'call'],
+          shortcut: 'Mod+Enter',
+          firesWhileTyping: true,
+          enabled: () => invokeRunRef.current !== null,
+          run: () => invokeRunRef.current?.(),
+        },
+      ]),
+    [commands, catalog.reload],
+  )
+
   return (
     <CatalogShell
       side={side}
@@ -215,6 +272,7 @@ export function FunctionsPage({
             value={search}
             onChange={setSearch}
             placeholder="search functions…"
+            inputRef={searchInputRef}
           />
           <Button
             variant="pill"
@@ -312,6 +370,7 @@ export function FunctionsPage({
             runtimeOf={runtimeOf}
             lastCall={activity.lastCall.get(selected)}
             onBack={() => setSelected(null)}
+            invokeRunRef={invokeRunRef}
           />
         ) : (
           <Hero
@@ -347,6 +406,7 @@ function FunctionDocument({
   runtimeOf,
   lastCall,
   onBack,
+  invokeRunRef,
 }: {
   host: Host
   functionId: string
@@ -354,6 +414,7 @@ function FunctionDocument({
   runtimeOf: (worker: string) => string | undefined
   lastCall?: SpanEvent
   onBack: () => void
+  invokeRunRef: MutableRefObject<(() => void) | null>
 }) {
   const load = useCallback(
     () => functionInfo(host, functionId),
@@ -472,6 +533,7 @@ function FunctionDocument({
                 prefill={prefill}
                 label="run function"
                 runningLabel="running…"
+                runRef={invokeRunRef}
               />
             </TabsContent>
             <TabsContent value="input">

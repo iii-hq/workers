@@ -32,11 +32,12 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'functions',
     title: 'functions',
-    render: ({ panelSide, onRequestClose }: PageRenderProps) => (
+    render: ({ panelSide, onRequestClose, commands }: PageRenderProps) => (
       <FunctionsPage
         host={host}
         side={panelSide}
         onRequestClose={onRequestClose}
+        commands={commands}
       />
     ),
   })
@@ -44,12 +45,33 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'triggers',
     title: 'triggers',
-    render: ({ panelSide, onRequestClose }: PageRenderProps) => (
+    render: ({ panelSide, onRequestClose, commands }: PageRenderProps) => (
       <TriggersPage
         host={host}
         side={panelSide}
         onRequestClose={onRequestClose}
+        commands={commands}
       />
     ),
   })
+
+  host.commands?.register('functions', [
+    {
+      id: 'open',
+      title: 'Open functions',
+      detail: 'Every registered function, grouped by worker',
+      keywords: ['catalog', 'invoke', 'trigger'],
+      run: () => host.panels?.open({ pageId: 'functions', context: {} }),
+    },
+  ])
+
+  host.commands?.register('triggers', [
+    {
+      id: 'open',
+      title: 'Open triggers',
+      detail: 'Trigger types and their live bindings',
+      keywords: ['catalog', 'bindings'],
+      run: () => host.panels?.open({ pageId: 'triggers', context: {} }),
+    },
+  ])
 }

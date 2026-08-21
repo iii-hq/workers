@@ -31,6 +31,7 @@ import {
 } from '@iii-dev/console-ui'
 import {
   type KeyboardEvent,
+  type MutableRefObject,
   useCallback,
   useEffect,
   useRef,
@@ -92,7 +93,15 @@ function useCalledFeed(host: Host) {
   return { entries, clear, paused, setPaused }
 }
 
-export function ActivityFeed({ host }: { host: Host }) {
+export function ActivityFeed({
+  host,
+  liveRef,
+  closeDetailRef,
+}: {
+  host: Host
+  liveRef?: MutableRefObject<(() => void) | null>
+  closeDetailRef?: MutableRefObject<(() => void) | null>
+}) {
   const { entries, clear, paused, setPaused } = useCalledFeed(host)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
@@ -104,6 +113,22 @@ export function ActivityFeed({ host }: { host: Host }) {
     return () => window.clearInterval(id)
   }, [])
   const now = Date.now()
+
+  useEffect(() => {
+    if (!liveRef) return
+    liveRef.current = () => setPaused((p) => !p)
+    return () => {
+      liveRef.current = null
+    }
+  }, [liveRef, setPaused])
+
+  useEffect(() => {
+    if (!closeDetailRef) return
+    closeDetailRef.current = expanded !== null ? () => setExpanded(null) : null
+    return () => {
+      closeDetailRef.current = null
+    }
+  }, [closeDetailRef, expanded])
 
   return (
     <div className={`gh-ui-view${narrow ? ' narrow' : ''}`} ref={rootRef}>

@@ -32,6 +32,7 @@ import {
 } from '@iii-dev/console-ui'
 import {
   type KeyboardEvent,
+  type MutableRefObject,
   memo,
   useCallback,
   useEffect,
@@ -247,7 +248,17 @@ function useGitGraph(host: Host) {
   }
 }
 
-export function GitGraph({ host }: { host: Host }) {
+export function GitGraph({
+  host,
+  liveRef,
+  refreshRef,
+  closeDetailRef,
+}: {
+  host: Host
+  liveRef?: MutableRefObject<(() => void) | null>
+  refreshRef?: MutableRefObject<(() => void) | null>
+  closeDetailRef?: MutableRefObject<(() => void) | null>
+}) {
   const { commits, status, error, live, setLive, refreshing, refresh } =
     useGitGraph(host)
   const [selected, setSelected] = useState<string | null>(null)
@@ -257,6 +268,30 @@ export function GitGraph({ host }: { host: Host }) {
 
   // Narrow: one pane at a time — the graph, or the drilled-in commit detail.
   const showGraph = !narrow || selected === null
+
+  useEffect(() => {
+    if (!liveRef) return
+    liveRef.current = () => setLive((v) => !v)
+    return () => {
+      liveRef.current = null
+    }
+  }, [liveRef, setLive])
+
+  useEffect(() => {
+    if (!refreshRef) return
+    refreshRef.current = () => void refresh()
+    return () => {
+      refreshRef.current = null
+    }
+  }, [refreshRef, refresh])
+
+  useEffect(() => {
+    if (!closeDetailRef) return
+    closeDetailRef.current = selected !== null ? () => setSelected(null) : null
+    return () => {
+      closeDetailRef.current = null
+    }
+  }, [closeDetailRef, selected])
 
   return (
     <div
@@ -277,6 +312,7 @@ export function GitGraph({ host }: { host: Host }) {
           size="sm"
           aria-pressed={live}
           onClick={() => setLive((v) => !v)}
+          data-autofocus=""
         >
           <StatusDot tone={live ? 'accent' : 'warn'} pulse={live} aria-hidden />
           {live ? 'live' : 'paused'}
@@ -465,10 +501,21 @@ const CommitRow = memo(function CommitRow({
   onSelect: (hash: string) => void
 }) {
   const labels = refLabels(commit.refs)
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       onSelect(commit.hash)
+      return
+    }
+    // Rows are flat siblings in `.gh-ui-graph-rows`, so up/down just walks
+    // the DOM — cheaper than tracking an index for up to MAX_COMMITS rows.
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const sibling =
+        e.key === 'ArrowDown'
+          ? e.currentTarget.nextElementSibling
+          : e.currentTarget.previousElementSibling
+      if (sibling instanceof HTMLElement) sibling.focus()
     }
   }
   return (

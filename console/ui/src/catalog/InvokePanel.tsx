@@ -21,7 +21,7 @@ import {
   type Host,
   JsonHighlight,
 } from '@iii-dev/console-ui'
-import { useEffect, useMemo, useState } from 'react'
+import { type MutableRefObject, useEffect, useMemo, useState } from 'react'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
@@ -79,6 +79,7 @@ export function InvokePanel({
   runningLabel = 'triggering…',
   hint,
   prefill,
+  runRef,
 }: {
   host: Host
   functionId: string
@@ -89,6 +90,9 @@ export function InvokePanel({
   hint?: string
   /** A recorded input pushed in from the activity feed; changes replace the body. */
   prefill?: { value: unknown; nonce: number }
+  /** Kept current with this panel's run() while mounted, so the page's
+      Mod+Enter command can reach it without lifting this form up. */
+  runRef?: MutableRefObject<(() => void) | null>
 }) {
   const [body, setBody] = useState('{}')
   const [running, setRunning] = useState(false)
@@ -155,6 +159,14 @@ export function InvokePanel({
       ...prev.slice(0, 9),
     ])
   }
+
+  if (runRef) runRef.current = run
+  useEffect(() => {
+    return () => {
+      if (runRef) runRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="console-catalog-invoke">

@@ -1,5 +1,5 @@
 import { EmptyState, type Host, type PageRenderProps, Skeleton, StatusPanel } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createEvalApi, errorMessage, isTerminal } from '../api'
 import { useEvalCompleted } from '../events'
 import type { CatalogModel, EvalRequest, EvalResultResponse, EvalStatusResponse, EvalSummary } from '../types'
@@ -8,9 +8,11 @@ import { History } from './History'
 import { NewEvaluationForm } from './NewEvaluationForm'
 import { SessionComparison } from './SessionComparison'
 
-export function EvalPage({ host, panelSide = 'left' }: { host: Host } & Partial<PageRenderProps>) {
+export function EvalPage({ host, panelSide = 'left', panelContext, commands }: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createEvalApi(host), [host])
   const [surface, setSurface] = useState<'sessions' | 'experiments'>('sessions')
+  const sessionsTabRef = useRef<HTMLButtonElement>(null)
+  const experimentsTabRef = useRef<HTMLButtonElement>(null)
   const [evaluations, setEvaluations] = useState<EvalSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -186,12 +188,72 @@ export function EvalPage({ host, panelSide = 'left' }: { host: Host } & Partial<
     [api, loadDetail, loadHistory, selectedId],
   )
 
+  // Context from `host.panels.open` — the palette source and the setup-time
+  // "new evaluation" command both open the page this way.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context as
+      | { type?: string; evaluationId?: string }
+      | undefined
+    if (context?.type === 'new') {
+      setSurface('experiments')
+      setCreating(true)
+    } else if (context?.type === 'evaluation' && context.evaluationId) {
+      setSurface('experiments')
+      setCreating(false)
+      setSelectedId(context.evaluationId)
+    }
+  }, [panelContext])
+
+  const switchSurface = useCallback((next: 'sessions' | 'experiments') => {
+    setSurface(next)
+    ;(next === 'sessions' ? sessionsTabRef : experimentsTabRef).current?.focus()
+  }, [])
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new-evaluation',
+          title: 'New evaluation',
+          detail: 'Start a prompt comparison',
+          keywords: ['experiment', 'compare prompts'],
+          shortcut: 'N',
+          run: () => {
+            setSurface('experiments')
+            setCreating(true)
+          },
+        },
+        {
+          id: 'refresh-history',
+          title: 'Refresh evaluation history',
+          keywords: ['reload'],
+          shortcut: 'R',
+          enabled: () => surface === 'experiments',
+          run: () => void loadHistory(),
+        },
+      ]),
+    [commands, loadHistory, surface],
+  )
+
   const selected = evaluations.find((item) => item.evaluation_id === selectedId) ?? null
 
   return (
     <div className="eval-ui-container">
-      <div className="eval-ui-tabs" role="tablist" aria-label="Eval views">
+      <div
+        className="eval-ui-tabs"
+        role="tablist"
+        aria-label="Eval views"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+          event.preventDefault()
+          switchSurface(surface === 'sessions' ? 'experiments' : 'sessions')
+        }}
+      >
         <button
+          ref={sessionsTabRef}
           className={surface === 'sessions' ? 'active' : ''}
           type="button"
           role="tab"
@@ -201,6 +263,7 @@ export function EvalPage({ host, panelSide = 'left' }: { host: Host } & Partial<
           Sessions
         </button>
         <button
+          ref={experimentsTabRef}
           className={surface === 'experiments' ? 'active' : ''}
           type="button"
           role="tab"

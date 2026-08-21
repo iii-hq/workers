@@ -178,6 +178,7 @@ interface Delta {
 export function EditorPage({
   host,
   panelSide = 'left',
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createApi(host), [host])
   // Follows the console's own light/dark toggle, not the OS preference.
@@ -834,6 +835,22 @@ export function EditorPage({
       setBusy(false)
     }
   }, [activeBuffer, activeDraft, activePath, api, applyWorkspace, refreshGit])
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'save',
+          title: 'Save',
+          detail: 'Write the active file to disk',
+          shortcut: 'Mod+S',
+          firesWhileTyping: true,
+          enabled: () => dirty,
+          run: () => void save(),
+        },
+      ]),
+    [commands, dirty, save],
+  )
 
   const closeTab = useCallback(
     async (path: string) => {
