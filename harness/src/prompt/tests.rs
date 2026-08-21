@@ -3,14 +3,10 @@ use super::{
     SystemPromptStrategy,
 };
 
-/// Stand-in for a router-served (provider-declared or operator-overridden)
-/// identity prompt.
-const IDENTITY: &str = "You are an iii agent worker. TEST-VOICE identity.";
-
 fn default_prompt() -> String {
     build_system_prompt(SystemPromptOpts {
         mode: None,
-        identity: None,
+        identity: variants::DEFAULT,
     })
 }
 
@@ -21,7 +17,7 @@ fn resolve_non_empty_override_returns_verbatim() {
             Some("custom".into()),
             SystemPromptStrategy::Override,
             Some(Mode::Ask),
-            Some(IDENTITY)
+            variants::DEFAULT
         ),
         Some("custom".into())
     );
@@ -33,22 +29,27 @@ fn resolve_empty_override_falls_through_to_builtin() {
         Some(String::new()),
         SystemPromptStrategy::Override,
         None,
-        None,
+        variants::DEFAULT,
     )
     .expect("built-in prompt");
     assert!(out.contains("You are an iii agent worker"));
 }
 
 #[test]
-fn resolve_missing_override_uses_fetched_identity_verbatim() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, None, Some(IDENTITY))
-        .expect("built-in prompt");
-    assert_eq!(out, IDENTITY);
+fn resolve_missing_override_uses_embedded_default() {
+    let out = resolve_system_prompt(
+        None,
+        SystemPromptStrategy::Override,
+        None,
+        variants::DEFAULT,
+    )
+    .expect("built-in prompt");
+    assert_eq!(out, variants::DEFAULT);
 }
 
 #[test]
-fn resolve_absent_identity_falls_back_to_embedded_default() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, None)
+fn resolve_enrich_without_a_custom_prompt_uses_embedded_default() {
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, variants::DEFAULT)
         .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
@@ -59,11 +60,11 @@ fn resolve_enrich_appends_custom_to_builtin() {
         Some("Speak only in haiku.".into()),
         SystemPromptStrategy::Enrich,
         None,
-        Some(IDENTITY),
+        variants::DEFAULT,
     )
     .expect("enriched prompt");
     // Built-in identity is preserved...
-    assert!(out.starts_with(IDENTITY));
+    assert!(out.starts_with(variants::DEFAULT));
     // ...and the caller prompt is appended after it.
     assert!(out.ends_with("Speak only in haiku."));
 }
@@ -74,12 +75,12 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
         Some(String::new()),
         SystemPromptStrategy::Enrich,
         None,
-        Some(IDENTITY),
+        variants::DEFAULT,
     )
     .expect("built-in prompt");
     let built_in = build_system_prompt(SystemPromptOpts {
         mode: None,
-        identity: Some(IDENTITY),
+        identity: variants::DEFAULT,
     });
     assert_eq!(out, built_in);
 }
@@ -91,7 +92,7 @@ fn resolve_disabled_omits_system_prompt() {
             Some("ignored".into()),
             SystemPromptStrategy::Disabled,
             Some(Mode::Agent),
-            Some(IDENTITY),
+            variants::DEFAULT,
         ),
         None
     );
@@ -313,7 +314,7 @@ fn prompt_injection_defense() {
 fn mode_ask_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
-        identity: None,
+        identity: variants::DEFAULT,
     });
     assert!(out.contains("operating in ask mode"));
     assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
@@ -323,7 +324,7 @@ fn mode_ask_prepends_before_identity() {
 fn mode_agent_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Agent),
-        identity: None,
+        identity: variants::DEFAULT,
     });
     assert!(out.contains("operating in agent mode"));
     assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
@@ -337,13 +338,13 @@ fn mode_agent_matches_the_requested_scope_and_detail() {
 }
 
 #[test]
-fn mode_prepends_before_a_fetched_identity_too() {
+fn mode_prepends_before_embedded_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
-        identity: Some(IDENTITY),
+        identity: variants::DEFAULT,
     });
     assert!(out.starts_with("You are operating in ask mode"));
-    assert!(out.ends_with(IDENTITY));
+    assert!(out.ends_with(variants::DEFAULT));
 }
 
 #[test]
@@ -452,8 +453,7 @@ fn default_variant_teaches_only_the_two_binding_shapes() {
     assert!(out.contains("TOP-LEVEL, never inside metadata"));
 }
 
-/// Invariants shared by every identity prompt. Provider-declared variants pin
-/// their own copies in each provider worker; the harness pins the fallback.
+/// Invariants for the sole top-level system prompt default owned by the harness.
 #[test]
 fn default_variant_invariants() {
     let out = variants::DEFAULT;

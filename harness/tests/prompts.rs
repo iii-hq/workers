@@ -1,13 +1,8 @@
 //! Every shipped identity prompt must describe the surface the harness
 //! actually serves.
 //!
-//! An agent sees `harness/prompts/default.txt` unless the operator enables
-//! provider prompts (`provider_identity_prompt: true`, served via
-//! `router::system_prompt::get`). When `harness::react`
-//! was removed, the fallback was rewritten and all eight provider prompts were
-//! not — so every agent kept being told to bind a function that no longer
-//! existed. A test that reads only the harness's own copy cannot catch that,
-//! so this one walks the whole repo.
+//! Top-level agents see `harness/prompts/default.txt`; sub-agents see
+//! `harness/prompts/subagent.txt`.
 
 use std::path::{Path, PathBuf};
 
@@ -32,31 +27,13 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every `*/prompts/*.txt` in the repo — the harness's own two plus each
-/// provider's identity prompt.
+/// The two prompt files that the harness owns and sends to agents.
 fn shipped_prompts() -> Vec<PathBuf> {
-    let mut found = Vec::new();
     let root = repo_root();
-    let Ok(workers) = std::fs::read_dir(&root) else {
-        return found;
-    };
-    for worker in workers.flatten() {
-        let prompts = worker.path().join("prompts");
-        if !prompts.is_dir() {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&prompts) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "txt") {
-                found.push(path);
-            }
-        }
-    }
-    found.sort();
-    found
+    vec![
+        root.join("harness/prompts/default.txt"),
+        root.join("harness/prompts/subagent.txt"),
+    ]
 }
 
 fn label(path: &Path) -> String {
@@ -67,13 +44,11 @@ fn label(path: &Path) -> String {
 }
 
 #[test]
-fn the_sweep_actually_finds_the_shipped_prompts() {
-    // A silent zero-file walk would make every assertion below vacuous.
+fn harness_owns_the_only_shipped_prompts() {
     let prompts = shipped_prompts();
     assert!(
-        prompts.len() >= 8,
-        "expected the harness prompts plus one identity prompt per provider, found {}: {:?}",
-        prompts.len(),
+        prompts.iter().all(|path| path.is_file()),
+        "expected the two harness prompts, found: {:?}",
         prompts.iter().map(|p| label(p)).collect::<Vec<_>>()
     );
     assert!(prompts
@@ -81,7 +56,23 @@ fn the_sweep_actually_finds_the_shipped_prompts() {
         .any(|p| label(p).ends_with("harness/prompts/default.txt")));
     assert!(prompts
         .iter()
-        .any(|p| label(p).contains("provider-anthropic")));
+        .any(|p| label(p).ends_with("harness/prompts/subagent.txt")));
+
+    let provider_prompts: Vec<PathBuf> = std::fs::read_dir(repo_root())
+        .expect("repo root is readable")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("provider-"))
+        .map(|entry| entry.path().join("prompts/identity.txt"))
+        .filter(|path| path.is_file())
+        .collect();
+    assert!(
+        provider_prompts.is_empty(),
+        "provider identity prompts must stay removed: {:?}",
+        provider_prompts
+            .iter()
+            .map(|path| label(path))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -120,9 +111,8 @@ fn no_shipped_prompt_preempts_worker_discovery() {
     );
 }
 
-/// Identity prompts only: the file a top-level agent is booted with. Other
-/// workers ship prompts for their own purposes (a Slack channel preamble, a
-/// summarizer) and owe the binding contract nothing.
+/// The top-level identity prompt teaches the orchestration surface. The
+/// sub-agent prompt intentionally omits it because children are leaves.
 fn is_identity_prompt(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|n| n.to_str()),

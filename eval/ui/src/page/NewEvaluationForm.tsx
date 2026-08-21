@@ -28,12 +28,10 @@ const SYSTEM_PROMPT_SOURCE_OPTIONS = [
 export function NewEvaluationForm({
   models,
   modelCatalogError,
-  onLoadDefaultSystemPrompt,
   onCreate,
 }: {
   models: CatalogModel[]
   modelCatalogError: string | null
-  onLoadDefaultSystemPrompt: (provider?: string) => Promise<string | null>
   onCreate: (request: EvalRequest) => Promise<void>
 }) {
   const formRef = useRef<HTMLFormElement>(null)
@@ -42,16 +40,6 @@ export function NewEvaluationForm({
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [manualModel, setManualModel] = useState(models.length === 0)
-  const [loadingDefaultFor, setLoadingDefaultFor] = useState<
-    | 'sharedSystemPrompt'
-    | 'controlSystemPrompt'
-    | 'treatmentSystemPrompt'
-    | null
-  >(null)
-  const [defaultPromptError, setDefaultPromptError] = useState<string | null>(
-    null,
-  )
-
   useEffect(() => {
     if (models.length > 0 && !form.model) setManualModel(false)
   }, [form.model, models.length])
@@ -88,7 +76,6 @@ export function NewEvaluationForm({
     value: EvalFormState[K],
   ) => {
     setForm((current) => ({ ...current, [key]: value }))
-    if (key === 'model' || key === 'provider') setDefaultPromptError(null)
     setErrors((current) => {
       const relatedKey =
         key === 'sharedSystemPromptSource'
@@ -138,38 +125,6 @@ export function NewEvaluationForm({
       setSubmitError(errorMessage(error))
     } finally {
       setSubmitting(false)
-    }
-  }
-
-  const loadDefaultSystemPrompt = async (
-    target:
-      | 'sharedSystemPrompt'
-      | 'controlSystemPrompt'
-      | 'treatmentSystemPrompt',
-  ) => {
-    if (form.systemPromptStrategy !== 'override') return
-    const provider = form.provider.trim()
-    if (!provider) {
-      setDefaultPromptError(
-        'Select a catalog model or enter its provider before loading the current default.',
-      )
-      return
-    }
-    setLoadingDefaultFor(target)
-    setDefaultPromptError(null)
-    try {
-      const prompt = await onLoadDefaultSystemPrompt(provider)
-      if (!prompt) {
-        setDefaultPromptError(
-          'No provider prompt is exposed by the router. Choose “current default” to use the prompt resolved by the harness.',
-        )
-        return
-      }
-      update(target, prompt)
-    } catch (error) {
-      setDefaultPromptError(errorMessage(error))
-    } finally {
-      setLoadingDefaultFor(null)
     }
   }
 
@@ -291,15 +246,6 @@ export function NewEvaluationForm({
                 : update('controlSystemPrompt', value)
             }
             onSource={(source) => update('controlSystemPromptSource', source)}
-            onLoadDefault={
-              form.dimension === 'system_prompt' &&
-              form.controlSystemPromptSource === 'custom' &&
-              form.systemPromptStrategy === 'override'
-                ? () => void loadDefaultSystemPrompt('controlSystemPrompt')
-                : undefined
-            }
-            loadingDefault={loadingDefaultFor === 'controlSystemPrompt'}
-            defaultAvailable={Boolean(form.provider.trim())}
           />
           <VariantEditor
             marker="B"
@@ -329,15 +275,6 @@ export function NewEvaluationForm({
                 : update('treatmentSystemPrompt', value)
             }
             onSource={(source) => update('treatmentSystemPromptSource', source)}
-            onLoadDefault={
-              form.dimension === 'system_prompt' &&
-              form.treatmentSystemPromptSource === 'custom' &&
-              form.systemPromptStrategy === 'override'
-                ? () => void loadDefaultSystemPrompt('treatmentSystemPrompt')
-                : undefined
-            }
-            loadingDefault={loadingDefaultFor === 'treatmentSystemPrompt'}
-            defaultAvailable={Boolean(form.provider.trim())}
           />
         </div>
 
@@ -384,31 +321,6 @@ export function NewEvaluationForm({
                       }
                     />
                   </Field>
-                  {form.systemPromptStrategy === 'override' ? (
-                    <div className="eval-ui-load-default">
-                      <span className="eval-ui-label">starting point</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        type="button"
-                        disabled={
-                          loadingDefaultFor !== null || !form.provider.trim()
-                        }
-                        onClick={() =>
-                          void loadDefaultSystemPrompt('sharedSystemPrompt')
-                        }
-                      >
-                        {loadingDefaultFor === 'sharedSystemPrompt'
-                          ? 'loading…'
-                          : form.provider.trim()
-                            ? 'load current default'
-                            : 'select model to load default'}
-                      </Button>
-                      <span className="eval-ui-hint">
-                        Uses the selected provider, or the router default.
-                      </span>
-                    </div>
-                  ) : null}
                   <Field
                     label="custom system prompt"
                     error={errors.sharedSystemPrompt}
@@ -481,13 +393,6 @@ export function NewEvaluationForm({
           </>
         )}
 
-        {defaultPromptError ? (
-          <StatusPanel
-            variant="warn"
-            headline="default system prompt unavailable"
-            detail={defaultPromptError}
-          />
-        ) : null}
       </section>
 
       <section className="eval-ui-panel">
@@ -507,7 +412,6 @@ export function NewEvaluationForm({
               onChange={(value) => {
                 const [provider, model] = value.split(MODEL_SEPARATOR)
                 setForm((current) => ({ ...current, provider, model }))
-                setDefaultPromptError(null)
                 setErrors((current) => {
                   const next = { ...current }
                   delete next.model
@@ -878,9 +782,6 @@ function VariantEditor({
   onLabel,
   onValue,
   onSource,
-  onLoadDefault,
-  loadingDefault = false,
-  defaultAvailable = true,
 }: {
   marker: string
   role: string
@@ -893,9 +794,6 @@ function VariantEditor({
   onLabel: (value: string) => void
   onValue: (value: string) => void
   onSource?: (source: SystemPromptSource) => void
-  onLoadDefault?: () => void
-  loadingDefault?: boolean
-  defaultAvailable?: boolean
 }) {
   return (
     <div className="eval-ui-variant">
@@ -935,20 +833,6 @@ function VariantEditor({
               rows={10}
             />
           </Field>
-          {onLoadDefault ? (
-            <button
-              type="button"
-              className="eval-ui-link eval-ui-load-variant-default"
-              disabled={loadingDefault || !defaultAvailable}
-              onClick={onLoadDefault}
-            >
-              {loadingDefault
-                ? 'loading current default…'
-                : defaultAvailable
-                  ? 'load current default'
-                  : 'select model to load default'}
-            </button>
-          ) : null}
         </>
       ) : (
         <SystemPromptSourceState source={source} />
@@ -969,8 +853,8 @@ function SystemPromptSourceState({
       </strong>
       <span>
         {source === 'default'
-          ? 'Uses the system prompt resolved by the selected provider and harness.'
-          : 'Disables the provider and harness system prompt for this variant.'}
+          ? 'Uses the system prompt resolved by the harness.'
+          : 'Disables the harness system prompt for this variant.'}
       </span>
     </div>
   )

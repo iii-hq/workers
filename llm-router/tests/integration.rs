@@ -15,7 +15,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::channels::create_router_channel;
-use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value};
+use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
@@ -250,6 +250,73 @@ async fn configuration_entry_uses_default_namespace_from_a_namespaced_worker() {
         .await
         .expect("configuration entry updates in the engine namespace");
     assert_eq!(read_entry_value(&router).await.unwrap(), value);
+
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_provider_prompts_are_removed_before_closed_schema_registration() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, test_init_options());
+    let stored = json!({
+        "default_provider": "custom",
+        "providers": {
+            "custom": {
+                "api_key": "${CUSTOM_KEY:secret}",
+                "region": "us-east-1",
+                "system_prompt": "legacy prompt"
+            }
+        }
+    });
+    call(
+        &router,
+        "configuration::register",
+        json!({
+            "id": ENTRY_ID,
+            "name": "LLM Router",
+            "description": "Legacy router configuration.",
+            "schema": { "type": "object", "additionalProperties": true },
+            "initial_value": stored
+        }),
+    )
+    .await
+    .expect("legacy configuration registers");
+
+    let mut schemas = BTreeMap::new();
+    schemas.insert(
+        "custom".to_string(),
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "api_key": { "type": "string", "writeOnly": true },
+                "region": { "type": "string" }
+            }
+        }),
+    );
+    register_entry(&router, &schemas)
+        .await
+        .expect("closed provider schema accepts the migrated value");
+
+    let raw = call(
+        &router,
+        "configuration::get",
+        json!({ "id": ENTRY_ID, "raw": true }),
+    )
+    .await
+    .expect("migrated configuration remains readable");
+    assert_eq!(
+        raw["value"],
+        json!({
+            "default_provider": "custom",
+            "providers": {
+                "custom": {
+                    "api_key": "${CUSTOM_KEY:secret}",
+                    "region": "us-east-1"
+                }
+            }
+        })
+    );
 
     router.shutdown();
 }
@@ -813,92 +880,6 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
 
     provider.iii.shutdown();
     second.shutdown();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn system_prompt_get_resolves_declared_override_unset_and_default_provider() {
-    let engine = engine_or_skip!();
-
-    let router_iii = register_worker(&engine.url, test_init_options());
-    register_router(router_iii.clone())
-        .await
-        .expect("router boots");
-
-    // a provider that declares an identity prompt (registry only; no stream fn needed)
-    let provider_iii = register_worker(&engine.url, test_init_options());
-    call(
-        &provider_iii,
-        "router::provider::register",
-        json!({ "id": "prompty", "system_prompt": "DECLARED IDENTITY" }),
-    )
-    .await
-    .expect("provider declared");
-
-    // declared prompt serves
-    let res = call(
-        &router_iii,
-        "router::system_prompt::get",
-        json!({ "provider": "prompty" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(res["provider"], "prompty");
-    assert_eq!(res["system_prompt"], "DECLARED IDENTITY");
-
-    // unknown provider → resolved id, null prompt (caller falls back)
-    let res = call(
-        &router_iii,
-        "router::system_prompt::get",
-        json!({ "provider": "nope" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(res["system_prompt"], Value::Null);
-
-    // operator override wins; default_provider resolves an absent provider
-    call(
-        &router_iii,
-        "configuration::set",
-        json!({ "id": "llm-router", "value": {
-            "default_provider": "prompty",
-            "providers": { "prompty": { "system_prompt": "OPERATOR OVERRIDE" } }
-        } }),
-    )
-    .await
-    .unwrap();
-    let res = call_until(
-        &router_iii,
-        "router::system_prompt::get",
-        json!({}),
-        |value| value["system_prompt"] == json!("OPERATOR OVERRIDE"),
-    )
-    .await;
-    assert_eq!(res["provider"], "prompty");
-    assert_eq!(res["system_prompt"], "OPERATOR OVERRIDE");
-
-    // override unset (null, as the console's set/unset toggle writes) →
-    // back to the provider-declared default
-    call(
-        &router_iii,
-        "configuration::set",
-        json!({ "id": "llm-router", "value": {
-            "default_provider": "prompty",
-            "providers": { "prompty": { "system_prompt": null } }
-        } }),
-    )
-    .await
-    .unwrap();
-    let res = call_until(
-        &router_iii,
-        "router::system_prompt::get",
-        json!({}),
-        |value| value["system_prompt"] == json!("DECLARED IDENTITY"),
-    )
-    .await;
-    assert_eq!(res["system_prompt"], "DECLARED IDENTITY");
-
-    provider_iii.shutdown();
-    router_iii.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

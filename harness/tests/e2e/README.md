@@ -1,7 +1,7 @@
 # Harness E2E tests
 
 This package validates agent behavior with code-defined user scenarios running
-against a real iii stack and real models. The subject uses the provider's
+against a real iii stack and real models. The subject uses the harness's
 production system prompt; the runner never injects a test-only subject prompt.
 The separately configured judge receives an evaluation-only system prompt.
 

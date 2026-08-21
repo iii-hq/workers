@@ -202,7 +202,7 @@ async fn seed_child(
         })?;
     let provider = child_provider(req, parent_record);
     // Children get the embedded minimal sub-agent identity, never the
-    // orchestrator prompt the router serves to top-level agents: a child
+    // top-level orchestrator prompt: a child
     // knows its one task, its state destination, and nothing else — by
     // design. Spawn `options.system_prompt` (+ override strategy) is the
     // escape hatch for a child that genuinely needs a different identity.
@@ -300,7 +300,7 @@ async fn seed_child(
                 .map(|o| o.system_prompt_strategy)
                 .unwrap_or_default(),
             req.options.as_ref().and_then(|o| o.mode),
-            Some(identity),
+            identity,
         ),
         skills_prompt: None,
         mode: req.options.as_ref().and_then(|o| o.mode),

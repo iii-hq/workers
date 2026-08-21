@@ -89,14 +89,6 @@ pub struct WorkerConfig {
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
 
-    /// Use the provider-served identity prompt (`router::system_prompt::get`)
-    /// as the turn's system prompt. Off (the default) pins every turn to the
-    /// harness's embedded default prompt; on trusts the provider prompt to
-    /// track the harness's actual surface. Sub-agents are unaffected: they
-    /// always take the embedded sub-agent prompt.
-    #[serde(default = "default_provider_identity_prompt")]
-    pub provider_identity_prompt: bool,
-
     /// Working-directory root stamped onto the FIRST turn of a session whose
     /// send carries no `metadata.fs_scope.root`. Absent/null → the harness
     /// process's working directory at boot (the local stack launches every
@@ -265,10 +257,6 @@ fn default_functions() -> Option<FunctionPolicy> {
         expose: Default::default(),
     })
 }
-fn default_provider_identity_prompt() -> bool {
-    false
-}
-
 fn expand_env(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -311,7 +299,6 @@ impl Default for WorkerConfig {
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
-            provider_identity_prompt: default_provider_identity_prompt(),
             default_filesystem_root: None,
         }
     }

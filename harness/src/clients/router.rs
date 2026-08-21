@@ -546,31 +546,6 @@ impl RouterClient {
         }
     }
 
-    /// Effective per-provider identity prompt from the router: operator
-    /// override → provider-declared → `None`. `None` also when the router is
-    /// absent/old or the provider's prompt is disabled — the caller falls back
-    /// to the embedded default prompt.
-    pub async fn system_prompt_get(&self, provider: Option<&str>) -> Option<String> {
-        let mut payload = json!({});
-        if let Some(p) = provider {
-            payload["provider"] = json!(p);
-        }
-        let resp = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "router::system_prompt::get".into(),
-                payload,
-                action: None,
-                timeout_ms: Some(self.timeout_ms),
-            })
-            .await
-            .ok()?;
-        resp.get("system_prompt")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-    }
-
     /// Exact token count for a request shape via the resolved provider's
     /// tokenizer (`None` when the router is absent, the provider has no
     /// counter, or the call fails — the caller falls back to its estimate).

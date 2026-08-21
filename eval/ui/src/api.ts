@@ -29,7 +29,6 @@ export interface EvalApi {
   cancel(evaluationId: string): Promise<{ cancelled: boolean; status: EvalStatus }>
   delete(evaluationId: string): Promise<{ deleted: boolean }>
   models(): Promise<CatalogModel[]>
-  systemPrompt(provider?: string): Promise<string | null>
 }
 
 export function createEvalApi(host: Host): EvalApi {
@@ -84,15 +83,6 @@ export function createEvalApi(host: Host): EvalApi {
         {},
       )
       return response.models
-    },
-    async systemPrompt(provider) {
-      const response = await trigger<{
-        system_prompt?: string | null
-      }>(
-        'router::system_prompt::get',
-        provider ? { provider } : {},
-      )
-      return response.system_prompt?.trim() || null
     },
   }
 }

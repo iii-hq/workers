@@ -21,8 +21,7 @@
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-card p,
 [data-iii-ui='provider-openai-codex'] .codex-provider-card li,
-[data-iii-ui='provider-openai-codex'] .codex-provider-action span,
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt small {
+[data-iii-ui='provider-openai-codex'] .codex-provider-action span {
   font-size: 14px;
   line-height: 1.55;
   color: var(--color-ink-faint);
@@ -47,8 +46,7 @@
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-status,
-[data-iii-ui='provider-openai-codex'] .codex-provider-action,
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt label {
+[data-iii-ui='provider-openai-codex'] .codex-provider-action {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -79,45 +77,6 @@
   justify-content: space-between;
 }
 
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt label {
-  min-height: 48px;
-  justify-content: space-between;
-  cursor: pointer;
-}
-
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt label > span {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt input {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  accent-color: var(--color-accent);
-}
-
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt textarea {
-  box-sizing: border-box;
-  width: 100%;
-  margin-top: 10px;
-  padding: 10px 12px;
-  resize: vertical;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--color-ink);
-  background: var(--color-panel-raised, var(--color-bg));
-  border: 1px solid var(--color-edge, var(--color-rule));
-  border-radius: 2px;
-}
-
-[data-iii-ui='provider-openai-codex'] .codex-provider-prompt textarea:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: -1px;
-}
-
 @media (min-width: 640px) {
   [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
     font-size: 14px;
@@ -125,9 +84,7 @@
 
   [data-iii-ui='provider-openai-codex'] .codex-provider-card p,
   [data-iii-ui='provider-openai-codex'] .codex-provider-card li,
-  [data-iii-ui='provider-openai-codex'] .codex-provider-action span,
-  [data-iii-ui='provider-openai-codex'] .codex-provider-prompt small,
-  [data-iii-ui='provider-openai-codex'] .codex-provider-prompt textarea {
+  [data-iii-ui='provider-openai-codex'] .codex-provider-action span {
     font-size: 13px;
   }
 }
