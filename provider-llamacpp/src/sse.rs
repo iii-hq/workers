@@ -4,6 +4,7 @@
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -36,6 +37,7 @@ pub struct PartialState {
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    terminated: bool,
 }
 
 impl PartialState {
@@ -51,11 +53,30 @@ impl PartialState {
             native_stop_reason: None,
             error_message: None,
             warnings,
+            terminated: false,
         }
     }
 
     pub fn stop_reason(&self) -> StopReason {
         self.stop_reason
+    }
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.terminated
+    }
+
+    fn has_content(&self) -> bool {
+        !self.text.is_empty() || !self.thinking.is_empty() || !self.function_calls.is_empty()
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        matches!(self.open_block, Some(OpenBlock::Call(_)))
+            || self
+                .function_calls
+                .iter()
+                .any(|fc| arguments_incomplete(&fc.args_json))
     }
 }
 
@@ -337,6 +358,7 @@ pub fn handle_chunk(
 
     if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
         state.stop_reason = map_finish_reason(finish);
+        state.terminated = true;
         state.native_stop_reason = Some(finish.to_string());
         close_open_block(state, model, &mut events);
     }
