@@ -231,7 +231,10 @@ A few rules:
   `directory::skills::get` in preference to a body `# H1`), `name:`
   (title fallback when `title:` is absent — the `~/.agents/skills`
   convention), and `type:` (free-form classifier surfaced verbatim on
-  both responses). Any other YAML keys are ignored.
+  both responses), and `disable-model-invocation:` (boolean, default
+  `false`, surfaced as `disable_model_invocation` on both responses).
+  Disabled skills remain visible to ordinary directory clients; model
+  index consumers decide whether to filter them. Any other YAML keys are ignored.
 - **Prompts** live under any `*/prompts/*.md` path. They must start with
   a YAML frontmatter block declaring at least `description`; `name`
   is optional and overrides the file-stem default.

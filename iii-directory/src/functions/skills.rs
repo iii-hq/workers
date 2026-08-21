@@ -4,11 +4,11 @@
 //!
 //!   * `directory::skills::list` — enriched listing of every markdown
 //!     skill under `skills_folder`, sorted by id. Each row carries
-//!     `id`, `title`, `type`, `description`, `bytes`, and `modified_at`
+//!     `id`, `title`, `type`, `function_id`, `disable_model_invocation`, `description`, `bytes`, and `modified_at`
 //!     so a consumer can render a picker / index in one round trip
 //!     without follow-up `get` calls per row.
 //!   * `directory::skills::get`  — fetch one skill by id. Returns
-//!     `{ id, title, type, function_id, body, modified_at }`. The
+//!     `{ id, title, type, function_id, disable_model_invocation, body, modified_at }`. The
 //!     teaser `description` field that `list` rows carry is omitted
 //!     here on purpose: the full `body` is already in the response,
 //!     and repeating its first paragraph wastes ~200 tokens per fetch
@@ -133,6 +133,8 @@ struct SkillEntry {
     /// agent should pass to `agent_trigger`. `null` for skills that
     /// aren't 1:1 with a single function (index/reference).
     function_id: Option<String>,
+    /// Whether model-facing indexes should omit this skill from invocation candidates.
+    disable_model_invocation: bool,
     /// First paragraph of the body, empty when the file has only
     /// headings. Also empty when the caller passed
     /// `list { include_description: false }` for a token-light row.
@@ -198,6 +200,8 @@ pub struct SkillGetOutput {
     /// is what the agent should pass to `agent_trigger`. `null` when
     /// the skill isn't 1:1 with a single function.
     pub function_id: Option<String>,
+    /// Whether model-facing indexes should omit this skill from invocation candidates.
+    pub disable_model_invocation: bool,
     /// Absolute on-disk path of the skill file. Its parent directory is
     /// the skill's base directory — where payload the body references by
     /// relative path (`scripts/`, `reference/`, agent-skills convention)
@@ -535,7 +539,7 @@ fn register_list_skills(
             }
         })
         .description(
-            "List skills as one row PER SKILL (id, title, type, function_id, description, \
+            "List skills as one row PER SKILL (id, title, type, function_id, disable_model_invocation, description, \
              bytes, modified_at) from skills_folder — use this when you need individual \
              skill ids. A worker overview row's `id` is the bare worker name (e.g. \
              `iii-sandbox`); pass it straight to directory::skills::get. For a per-WORKER \
@@ -721,6 +725,7 @@ fn read_skill_output(
     let title = resolve_title(&fm, &body, &display);
     let kind = clean_optional(fm.kind);
     let function_id = clean_optional(fm.function_id);
+    let disable_model_invocation = fm.disable_model_invocation;
     let (_, modified_at) = fs_metadata(fs);
     let raw = if include_raw {
         Some(fs_source::read_raw(&fs.abs_path)?)
@@ -732,6 +737,7 @@ fn read_skill_output(
         title,
         kind,
         function_id,
+        disable_model_invocation,
         path: fs.abs_path.display().to_string(),
         body,
         raw,
@@ -1000,6 +1006,7 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     let title = resolve_title(&fm, &body, &display);
     let kind = clean_optional(fm.kind);
     let function_id = clean_optional(fm.function_id);
+    let disable_model_invocation = fm.disable_model_invocation;
     let (_, modified_at) = fs_metadata(&fs);
     let raw = if include_raw {
         Some(fs_source::read_raw(&fs.abs_path)?)
@@ -1011,6 +1018,7 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
         title,
         kind,
         function_id,
+        disable_model_invocation,
         path: fs.abs_path.display().to_string(),
         body,
         raw,
@@ -1457,12 +1465,13 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
     // to the same display id. Filtering already ran against the raw on-disk
     // id (see list_skills_filtered), so stripping here is display-only.
     let display = display_id(&fs.id, siblings);
-    let (title, kind, function_id, description) =
+    let (title, kind, function_id, disable_model_invocation, description) =
         match fs_source::read_skill_with_frontmatter(&fs.abs_path) {
             Ok((fm, body)) => {
                 let title = resolve_title(&fm, &body, &display);
                 let kind = clean_optional(fm.kind);
                 let function_id = clean_optional(fm.function_id);
+                let disable_model_invocation = fm.disable_model_invocation;
                 // Prefer frontmatter description; fall back to body
                 // first-paragraph so skills with NO frontmatter
                 // description still get the body-derived text.
@@ -1473,9 +1482,15 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
                     .filter(|s| !s.is_empty())
                     .or_else(|| extract_description(&body))
                     .unwrap_or_default();
-                (title, kind, function_id, description)
+                (
+                    title,
+                    kind,
+                    function_id,
+                    disable_model_invocation,
+                    description,
+                )
             }
-            Err(_) => (display.clone(), None, None, String::new()),
+            Err(_) => (display.clone(), None, None, false, String::new()),
         };
     SkillEntry {
         id: display,
@@ -1483,6 +1498,7 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
         title,
         kind,
         function_id,
+        disable_model_invocation,
         description,
         bytes,
         modified_at,
@@ -1964,6 +1980,59 @@ First paragraph.
         // `path` announces the on-disk location so payload skills
         // (scripts/, reference/ beside the file) can self-locate.
         assert_eq!(out.path, ns.join("doc.md").display().to_string());
+    }
+
+    #[tokio::test]
+    async fn invocation_metadata_defaults_false_and_surfaces_true_on_list_and_get() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("enabled.md"), "# Enabled\n\nBody.\n").unwrap();
+        std::fs::write(
+            ns.join("disabled.md"),
+            "---\ndisable-model-invocation: true\n---\n# Disabled\n\nBody.\n",
+        )
+        .unwrap();
+        let enabled = skill_entry_from_fs(
+            FsSkill {
+                id: "ns/enabled".into(),
+                abs_path: ns.join("enabled.md"),
+            },
+            &HashSet::new(),
+        );
+        let disabled = skill_entry_from_fs(
+            FsSkill {
+                id: "ns/disabled".into(),
+                abs_path: ns.join("disabled.md"),
+            },
+            &HashSet::new(),
+        );
+        assert!(!enabled.disable_model_invocation);
+        assert_eq!(
+            serde_json::to_value(&enabled).unwrap()["disable_model_invocation"],
+            false
+        );
+        assert!(disabled.disable_model_invocation);
+        assert_eq!(
+            serde_json::to_value(&disabled).unwrap()["disable_model_invocation"],
+            true
+        );
+
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "ns/disabled".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.disable_model_invocation);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap()["disable_model_invocation"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -2509,6 +2578,7 @@ First paragraph.
             title: title.into(),
             kind: kind.map(String::from),
             function_id: None,
+            disable_model_invocation: false,
             description: description.into(),
             bytes: 0,
             modified_at: String::new(),
@@ -2694,6 +2764,7 @@ First paragraph.
             title: "agent-memory".into(),
             kind: Some("index".into()),
             function_id: None,
+            disable_model_invocation: false,
             description: "Memory worker overview.".into(),
             bytes: 10,
             modified_at: String::new(),
