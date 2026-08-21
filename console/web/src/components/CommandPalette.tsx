@@ -104,6 +104,7 @@ const KIND_STYLE = {
 } as const
 
 const SOURCE_DEBOUNCE_MS = 120
+const SLOW_ANSWER_MS = 200
 const EMPTY_SOURCES: readonly RegisteredPaletteSource[] = []
 
 function placeholderFor(prefix: string | null): string {
@@ -272,7 +273,12 @@ export function CommandPalette({
         setSourceEntries([])
         return
       }
-      setSearching(true)
+      // The indicator waits for a slow answer: a label that flashes for a
+      // fast one makes the palette feel slower than it is.
+      const slow = window.setTimeout(() => setSearching(true), SLOW_ANSWER_MS)
+      controller.signal.addEventListener('abort', () =>
+        window.clearTimeout(slow),
+      )
       void searchPaletteSources(sources, {
         text: parsed.text,
         prefix: parsed.prefix,
@@ -281,6 +287,7 @@ export function CommandPalette({
         conversationId,
         signal: controller.signal,
       }).then((entries) => {
+        window.clearTimeout(slow)
         if (controller.signal.aborted) return
         setSourceEntries(entries)
         setSearching(false)
@@ -355,9 +362,19 @@ export function CommandPalette({
   )
   const flat = useMemo(() => groups.flatMap(([, entries]) => entries), [groups])
 
+  // Rows arrive on their own schedule (sources answer late, the engine
+  // inventory lands), so the highlight follows the row, not its position:
+  // Enter always runs what was lit a moment ago.
+  const activeIdRef = useRef<string | null>(null)
   useEffect(() => {
-    setActive((current) => (current < flat.length ? current : 0))
-  }, [flat.length])
+    activeIdRef.current = flat[active]?.id ?? null
+  }, [active, flat])
+  useEffect(() => {
+    const at = flat.findIndex((entry) => entry.id === activeIdRef.current)
+    setActive((current) =>
+      at !== -1 ? at : current < flat.length ? current : 0,
+    )
+  }, [flat])
 
   if (!open) return null
 
@@ -534,7 +551,7 @@ export function CommandPalette({
                       data-palette-index={index}
                       onMouseEnter={() => setActive(index)}
                       onClick={() => choose(entry)}
-                      className={`flex min-h-12 w-full items-center gap-3 border-l-2 py-2.5 pr-4 pl-3.5 text-left transition-colors sm:min-h-0 sm:py-2 ${
+                      className={`flex min-h-12 w-full items-center gap-3 border-l-2 py-2.5 pr-4 pl-3.5 text-left sm:min-h-0 sm:py-2 ${
                         selected
                           ? 'border-edge bg-surface-selected'
                           : 'border-transparent hover:bg-surface-hover'

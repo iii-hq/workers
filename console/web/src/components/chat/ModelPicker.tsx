@@ -568,7 +568,7 @@ export function ModelPickerPanel({
                           }
                           aria-pressed={selectedOption}
                           className={cn(
-                            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:outline-none focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40',
+                            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover active:bg-surface-selected focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:outline-none focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40',
                             selectedOption && 'bg-surface-selected',
                             highlighted &&
                               !selectedOption &&

@@ -1630,7 +1630,7 @@ function Header({
             onClick={onOpenPalette}
             aria-label={hoverTitle('Search and commands', 'palette.toggle')}
             title={hoverTitle('Search and commands', 'palette.toggle')}
-            className="relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
+            className="relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
           >
             <KeyCombo
               binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
