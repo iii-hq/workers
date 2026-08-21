@@ -99,6 +99,16 @@ export function Crosshair(props: IconProps) {
   )
 }
 
+/** lucide `message-square-plus`: a comment with a plus, for annotating. */
+export function MessageSquarePlus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M12 7v6M9 10h6" />
+    </Svg>
+  )
+}
+
 export function Square(props: IconProps) {
   return (
     <Svg {...props}>

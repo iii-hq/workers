@@ -203,6 +203,44 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.toggleInspect(),
         },
         {
+          id: 'annotate',
+          title: 'Annotate the view',
+          detail: 'Freeze the live view and drop numbered pins with notes',
+          keywords: ['pin', 'comment', 'markup', 'feedback', 'screenshot'],
+          shortcut: 'C',
+          enabled: () => selected !== null,
+          run: () => sessionActionsRef.current?.toggleAnnotate(),
+        },
+        {
+          id: 'send-annotations',
+          title: 'Send annotations to the chat',
+          detail:
+            'Attach the annotated picture and the notes to the conversation',
+          keywords: ['annotations', 'chat', 'share', 'send'],
+          shortcut: 'Mod+Enter',
+          firesWhileTyping: true,
+          enabled: () =>
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.sendAnnotations(),
+        },
+        {
+          id: 'download-annotations',
+          title: 'Download the annotated picture',
+          detail: 'Save the frozen view with its pins as a PNG',
+          keywords: ['annotations', 'save', 'png', 'export'],
+          enabled: () =>
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.downloadAnnotations(),
+        },
+        {
+          id: 'clear-annotations',
+          title: 'Clear the annotations',
+          keywords: ['annotations', 'remove', 'reset'],
+          enabled: () =>
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.clearAnnotations(),
+        },
+        {
           id: 'focus-url',
           title: 'Focus the address bar',
           detail: 'Type a url to navigate the selected session',
