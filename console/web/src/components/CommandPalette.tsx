@@ -337,7 +337,7 @@ export function CommandPalette({
               setQuery(event.target.value)
               setActive(0)
             }}
-            placeholder="Search workers, functions, pages, chats…"
+            placeholder="Search actions, workspaces, pages, chats, workers, functions…"
             aria-label="Search the console"
             // Under 16px iOS Safari zooms the page on focus, which strands a
             // fixed overlay off screen. Worker and function ids are not prose,
