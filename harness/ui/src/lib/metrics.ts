@@ -14,6 +14,8 @@ export interface SnapshotMessages {
 
 export interface SnapshotCategories {
   system_prompt: number
+  /** Optional on the wire: absent in snapshots written before Skills. */
+  skills?: number
   tools: number
   messages: SnapshotMessages
   overhead: number

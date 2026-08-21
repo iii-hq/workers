@@ -47,6 +47,7 @@ const COLOR_FREE = 'var(--color-rule-2)'
 
 type CategoryKey =
   | 'system'
+  | 'skills'
   | 'tools'
   | 'user'
   | 'assistant'
@@ -78,6 +79,12 @@ function categories(snapshot: ContextSnapshot): Category[] {
       label: 'System prompt',
       color: ink(80),
       tokens: cats.system_prompt,
+    },
+    {
+      key: 'skills',
+      label: 'Skills',
+      color: ink(65),
+      tokens: cats.skills ?? 0,
     },
     {
       key: 'tools',
@@ -148,7 +155,7 @@ interface LegendEntry {
 
 /**
  * The legend, derived from the same category array the bar draws: the three
- * conversation entries collapse into one row, an empty hook row is dropped,
+ * conversation entries collapse into one row, empty optional rows are dropped,
  * and the two rows that are not bar segments (the compaction summary, free
  * space) take their place around the overhead row.
  */
@@ -168,7 +175,11 @@ function legendRows(
       continue
     }
     if (CONVERSATION_KEYS.includes(category.key)) continue
-    if (category.key === 'hooks' && category.tokens <= 0) continue
+    if (
+      (category.key === 'hooks' || category.key === 'skills') &&
+      category.tokens <= 0
+    )
+      continue
     if (category.key === 'overhead' && snapshot.compacted) {
       rows.push({
         key: 'summary',
