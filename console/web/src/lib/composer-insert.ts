@@ -19,6 +19,33 @@ export function insertIntoComposer(text: string): void {
   for (const listener of listeners) listener(text)
 }
 
+type ComposerAttachListener = (files: File[]) => void
+
+const attachListeners = new Set<ComposerAttachListener>()
+let pendingFiles: File[][] = []
+
+/** Hand files to the composer as attachments; buffered like inserts. */
+export function attachToComposer(files: File[]): void {
+  if (files.length === 0) return
+  if (attachListeners.size === 0) {
+    pendingFiles.push(files)
+    return
+  }
+  for (const listener of attachListeners) listener(files)
+}
+
+export function onComposerAttach(listener: ComposerAttachListener): () => void {
+  attachListeners.add(listener)
+  if (pendingFiles.length > 0) {
+    const drained = pendingFiles
+    pendingFiles = []
+    for (const files of drained) listener(files)
+  }
+  return () => {
+    attachListeners.delete(listener)
+  }
+}
+
 type ComposerFocusListener = () => void
 
 const focusListeners = new Set<ComposerFocusListener>()

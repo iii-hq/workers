@@ -22,6 +22,7 @@ import componentNames from '@iii-dev/console-ui/component-names'
 import tokenNames from '@iii-dev/console-ui/token-names'
 import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
+import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -110,6 +111,8 @@ import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConf
  * check's data — its keys must equal the manifest.
  */
 const conformance: {
+  AnnotationLayer: typeof ConsoleUi.AnnotationLayer
+  AnnotationList: typeof ConsoleUi.AnnotationList
   AnsiText: typeof ConsoleUi.AnsiText
   Badge: typeof ConsoleUi.Badge
   Button: typeof ConsoleUi.Button
@@ -185,6 +188,8 @@ const conformance: {
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
   WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
 } = {
+  AnnotationLayer,
+  AnnotationList,
   AnsiText,
   Badge,
   Button,

@@ -489,6 +489,12 @@ export interface Host {
     ): () => void
   }
   chat: {
+    /**
+     * Hand text and files to the active conversation's composer, the way a
+     * drop or a paste would, and put the caret there. Files become
+     * attachments.
+     */
+    compose(draft: { text?: string; files?: File[] }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
