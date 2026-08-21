@@ -203,6 +203,13 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --draft --prerelease --title "${{ inputs.worker }} ${{ inputs.candidate_version }}" --notes "Release candidate managed by Release Control."
           fi
+          # Older prepare artifacts carry digests only inside prepared.json;
+          # materialize the .sha256 siblings the Registry resolver reads.
+          jq -r '.artifacts[]? | select(.name | endswith(".tar.gz")) | "\(.sha256) \(.name)"' release-prepared/prepared.json | \
+          while read -r digest name; do
+            sha_file="release-prepared/${name%.tar.gz}.sha256"
+            [[ -f "$sha_file" ]] || printf '%s  %s\n' "$digest" "$name" > "$sha_file"
+          done
           existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
           while IFS= read -r asset; do
             [[ -z "$asset" ]] && continue
