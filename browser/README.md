@@ -107,7 +107,9 @@ panel), `browser::find-in-page` (find bar: highlight matches, step
 next/previous), `browser::zoom` (page zoom 50-200 %), `browser::pdf` (print
 the page to a PDF), `browser::downloads::list` / `browser::download` /
 `browser::download::remove` (files the session downloaded), `browser::clear-data`
-(cookies, cache, storage), `browser::network::read` (requests + failures),
+(cookies, cache, storage), `browser::resize` (live viewport size / device
+presets), `browser::cookies::list` / `set` / `clear` (import a cookie file),
+`browser::network::read` (requests + failures),
 `browser::dom::read` (DOM tree with refs), `browser::styles::read` /
 `browser::styles::write` (computed styles + live inline edits, the design
 panel backing), and `browser::sessions::list` / `browser::sessions::stop`.
