@@ -48,16 +48,19 @@ fn fixture_deps() -> Deps {
     }
 }
 
-async fn ask(deps: &Deps, query: &str) -> SearchFunctionsResponse {
+async fn ask_capabilities(deps: &Deps, capabilities: &[&str]) -> SearchFunctionsResponse {
     search_functions(
         deps,
         SearchFunctionsRequest {
-            query: query.into(),
-            capabilities: Vec::new(),
+            capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
         },
     )
     .await
     .expect("search succeeds")
+}
+
+async fn ask(deps: &Deps, capability: &str) -> SearchFunctionsResponse {
+    ask_capabilities(deps, &[capability]).await
 }
 
 fn workers(response: &SearchFunctionsResponse) -> Vec<&str> {
@@ -263,9 +266,9 @@ async fn repeat_query_in_one_session_omits_delivered_contracts() {
     let first = ask(&deps, "persist a value under a key and read it back later").await;
     let first_ids: Vec<&str> = function_ids(&first);
     assert!(first_ids.contains(&"state::set"));
-    // A different query overlapping the first: overlapping contracts are
+    // A different request overlapping the first: overlapping contracts are
     // omitted and named in the guidance instead.
-    let second = ask(&deps, "update the persisted value and list the state keys").await;
+    let second = ask_capabilities(&deps, &["update persisted value", "list state keys"]).await;
     for id in function_ids(&second) {
         assert!(
             !first_ids.contains(&id),
@@ -479,11 +482,15 @@ async fn compare_and_set_query_puts_the_atomic_function_first() {
 }
 
 #[tokio::test]
-async fn multi_intent_query_returns_every_clause_in_one_call() {
+async fn multiple_capabilities_return_every_need_in_one_call() {
     let deps = fixture_deps();
-    let response = ask(
+    let response = ask_capabilities(
         &deps,
-        "register javascript functions on the engine bus, read and write persistent state values, and take a screenshot of the page",
+        &[
+            "register javascript functions on the engine bus",
+            "read and write persistent state values",
+            "take a screenshot of the page",
+        ],
     )
     .await;
     let ids = function_ids(&response);
@@ -502,11 +509,14 @@ async fn multi_intent_query_returns_every_clause_in_one_call() {
 }
 
 #[tokio::test]
-async fn todo_app_query_resolves_in_one_call() {
+async fn todo_app_capabilities_resolve_in_one_call() {
     let deps = fixture_deps();
-    let response = ask(
+    let response = ask_capabilities(
         &deps,
-        "register todo CRUD functions on the bus with the code runner, and read and write persistent todo state under a scope",
+        &[
+            "register todo CRUD functions on the bus with the code runner",
+            "read and write persistent todo state under a scope",
+        ],
     )
     .await;
     let ids = function_ids(&response);

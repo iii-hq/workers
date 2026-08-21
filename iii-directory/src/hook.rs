@@ -271,15 +271,15 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
 fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     let call_instruction = match expose {
         ExposeKind::AgentTrigger => {
-            "Invoke it through agent_trigger with this call envelope: { \"function\": \"directory::search_functions\", \"payload\": { \"query\": \"<overall goal>\", \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
+            "Invoke it through agent_trigger with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the user's language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
         }
         ExposeKind::Native | ExposeKind::Other => {
-            "Call directory::search_functions directly with its `query` and optional `capabilities` request fields.\n"
+            "Call directory::search_functions directly with its required `capabilities` request field.\n"
         }
     };
     format!(
         "<discovery_assist functions_generation={functions_generation}>\n\
-If this task needs functions you do not already know, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Set `query` to the overall goal. Include up to six short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities. Always write `query` and every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. When an unmet external capability is more precise than the overall `query`, include it in `capabilities`, even if it is the only one. When `capabilities` is absent, the overall `query` provides fallback ranking. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. If the task's needs are already clear from the conversation, call no discovery at all. {call_instruction}\
+Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include one to six short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. {call_instruction}\
 </discovery_assist>"
     )
 }
@@ -486,18 +486,26 @@ mod tests {
         let prompt = &response.mutations.as_ref().unwrap().system_prompt;
         assert!(prompt.starts_with("base discovery prompt\n\n<discovery_assist"));
         assert!(prompt.contains("call directory::search_functions ONCE"));
-        assert!(prompt.contains("call no discovery at all"));
+        assert!(prompt
+            .contains("Before calling any task function whose ID has not already been verified"));
+        assert!(prompt.contains("Never invent or call an unverified function ID"));
+        assert!(prompt.contains("A clear capability need is not a verified function ID"));
+        assert!(prompt.contains("do not look up its contract first"));
+        assert!(prompt.contains("\"description\""));
+        assert!(!prompt.contains("functions you do not already know"));
+        assert!(!prompt.contains("call no discovery at all"));
         assert!(prompt.contains("agent_trigger"));
         assert!(prompt.contains("\"capabilities\""));
+        assert!(!prompt.contains("\"query\""));
         assert!(prompt.contains("current execution state"));
         assert!(prompt.contains("all unmet external capabilities"));
-        assert!(prompt.contains("include it in `capabilities`, even if it is the only one"));
+        assert!(prompt.contains("one to six short, non-overlapping `capabilities`"));
         assert!(!prompt.contains("For one capability, omit the field"));
         assert!(prompt.contains(
             "Do not search for intrinsic reasoning, summarization, planning, or formatting"
         ));
         assert!(prompt.contains("Requests to summarize provided text or content are ignored"));
-        assert!(prompt.contains("Always write `query` and every `capabilities` entry in English"));
+        assert!(prompt.contains("Always write every `capabilities` entry in English"));
         assert!(prompt.contains("even when the user writes in another language"));
         assert!(prompt.contains("preserve proper names, URLs, and function IDs"));
         assert!(prompt.contains("do not repeat needs already represented"));
@@ -519,7 +527,7 @@ mod tests {
         request.generate.expose = ExposeKind::Native;
         let response = pre_generate(&deps, request).await;
         let prompt = &response.mutations.as_ref().unwrap().system_prompt;
-        assert!(prompt.contains("Call directory::search_functions directly"));
+        assert!(prompt.contains("required `capabilities` request field"));
         assert!(!prompt.contains("agent_trigger"));
     }
 

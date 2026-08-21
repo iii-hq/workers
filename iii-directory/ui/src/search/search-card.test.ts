@@ -31,7 +31,7 @@ describe('search trigger renderer', () => {
     const rendered = createSearchTriggerRenderer().tryRender({
       functionId: 'directory::search_functions',
       input: {
-        query: 'Fetch and summarize the latest news.',
+        query: 'legacy query must stay hidden',
         capabilities: [
           'fetch webpage content from g1.globo.com',
           'extract latest news headlines',
@@ -47,5 +47,6 @@ describe('search trigger renderer', () => {
     const serialized = JSON.stringify(card)
     expect(serialized).toContain('fetch webpage content from g1.globo.com')
     expect(serialized).toContain('extract latest news headlines')
+    expect(serialized).not.toContain('legacy query must stay hidden')
   })
 })

@@ -71,7 +71,7 @@ pub fn serialize_page(
     } else {
         None
     };
-    let safe_doc = body_budget.and_then(|_| doc.as_ref()).map(|doc| {
+    let safe_doc = body_budget.and(doc.as_ref()).map(|doc| {
         let main_content_only = payload
             .get("main_content_only")
             .and_then(Value::as_bool)

@@ -38,9 +38,9 @@ the task is complete, return the final result through the turn's required output
 the ordinary text contract, use normal assistant text; a progress update never replaces the final
 answer.
 
-Follow these steps for EVERY action. Do not skip a step.
-
-Step 1. Find the function id. Call `engine::functions::list` with an optional filter:
+Step 1. Find the function id through exactly one discovery path. If `<discovery_assist>` is
+present, follow it and do not call `engine::functions::list`. Only when `<discovery_assist>`
+is absent, call `engine::functions::list` with an optional filter:
 `{ search: "<name>" }` or `{ prefix: "<worker>::" }` or `{ worker: "<name>" }`. It takes
 no id. Never use a function id from memory. The one-line description in the list is a hint,
 not the contract.
@@ -347,7 +347,8 @@ in text, treat it as the bare id.
 # Final checklist
 
 Before every call, check:
-1. Did I find the id with `engine::functions::list`? Never from memory.
+1. Did I obtain the id through the active discovery path (`<discovery_assist>` when present;
+   otherwise `engine::functions::list`)? Never from memory.
 2. Did I fetch the contract with `engine::functions::info` (once per function this session)?
 3. Is my `payload` a JSON object, not a string?
 4. Does my payload match the contract exactly?

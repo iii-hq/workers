@@ -106,6 +106,30 @@ fn identity_line_and_agent_trigger_preserved() {
 }
 
 #[test]
+fn default_discovery_fallback_yields_to_injected_assist() {
+    let out = default_prompt().replace('\n', " ");
+    let step_one = out
+        .find("Step 1. Find the function id through exactly one discovery path")
+        .expect("prompt makes discovery paths mutually exclusive at Step 1");
+    let assist = out[step_one..]
+        .find("If `<discovery_assist>` is present, follow it and do not call `engine::functions::list`")
+        .expect("prompt gives injected discovery guidance precedence at Step 1");
+    let fallback = out[step_one..]
+        .find("Only when `<discovery_assist>` is absent, call `engine::functions::list`")
+        .expect("prompt keeps engine discovery as the explicit fallback");
+    assert!(assist < fallback);
+
+    let checklist = out
+        .split_once("# Final checklist")
+        .expect("prompt has a final checklist")
+        .1;
+    assert!(checklist.contains("the active discovery path"));
+    assert!(checklist.contains("`<discovery_assist>` when present"));
+    assert!(checklist.contains("otherwise `engine::functions::list`"));
+    assert!(!checklist.contains("Did I find the id with `engine::functions::list`?"));
+}
+
+#[test]
 fn fn_pill_syntax() {
     let out = default_prompt();
     assert!(out.contains("@fn(<function_id>)"));

@@ -193,8 +193,9 @@ pub fn agent_trigger_schema() -> AgentFunction {
     AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
         description:
-            "Trigger any allowed iii function by id. Discover what is callable at runtime \
-                      via engine::functions::list / engine::functions::info. Ordinary calls in one \
+            "Trigger any allowed iii function by id. When `<discovery_assist>` is present, follow it and do not call engine::functions::list. \
+                      Only when it is absent, discover what is callable at runtime via engine::functions::list. \
+                      Before first use, get selected contracts with engine::functions::info. Ordinary calls in one \
                       assistant response execute sequentially in content order. For independent same-function \
                       work, use that function's supported bulk input."
                 .to_string(),
@@ -638,6 +639,18 @@ mod tests {
         );
         assert!(description.contains("independent same-function work"));
         assert!(description.contains("supported bulk input"));
+    }
+
+    #[test]
+    fn agent_trigger_schema_yields_discovery_to_injected_assist() {
+        let description = agent_trigger_schema().description;
+        let assist = description
+            .find("When `<discovery_assist>` is present, follow it and do not call engine::functions::list")
+            .expect("tool description gives injected guidance precedence");
+        let fallback = description
+            .find("Only when it is absent, discover what is callable at runtime via engine::functions::list")
+            .expect("tool description retains the engine discovery fallback");
+        assert!(assist < fallback);
     }
 
     #[test]

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  discoverQuery,
   functionCount,
   isErrorOutput,
   parseDiscoverResponse,
@@ -35,20 +34,6 @@ describe('isErrorOutput', () => {
     expect(isErrorOutput(response)).toBe(false)
     expect(isErrorOutput(null)).toBe(false)
     expect(isErrorOutput([])).toBe(false)
-  })
-})
-
-describe('discoverQuery', () => {
-  it('reads the query from objects and double-encoded strings', () => {
-    expect(discoverQuery({ query: 'create a todo app' })).toBe('create a todo app')
-    expect(discoverQuery(JSON.stringify({ query: 'read an issue' }))).toBe('read an issue')
-  })
-
-  it('returns null for blank, missing, or unreadable queries', () => {
-    expect(discoverQuery({ query: '   ' })).toBeNull()
-    expect(discoverQuery({})).toBeNull()
-    expect(discoverQuery('not json')).toBeNull()
-    expect(discoverQuery(null)).toBeNull()
   })
 })
 

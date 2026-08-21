@@ -16,7 +16,6 @@ import {
   type DiscoverInstallableView,
   type DiscoverView,
   discoverCapabilities,
-  discoverQuery,
   functionCount,
   isErrorOutput,
   parseDiscoverResponse,
@@ -126,11 +125,9 @@ function GuidanceDetails({ guidance }: { guidance: string }) {
 }
 
 export function DiscoverCard({
-  query,
   capabilities,
   view,
 }: {
-  query: string | null
   capabilities: string[]
   view: DiscoverView
 }) {
@@ -148,11 +145,6 @@ export function DiscoverCard({
         ) : null}
         <KvChip label="latency">{`${Math.round(view.latency_ms)}ms`}</KvChip>
       </MetaRow>
-      {query ? (
-        <ActionLine symbol="»" tone="ink">
-          {query}
-        </ActionLine>
-      ) : null}
       {capabilities.length > 0 ? (
         <section aria-label="capabilities">
           <div className="discovery-search-section-head">
@@ -206,7 +198,6 @@ export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
       return (
         <DiscoverCard
           capabilities={discoverCapabilities(message.input)}
-          query={discoverQuery(message.input)}
           view={view}
         />
       )

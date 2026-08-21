@@ -9,27 +9,24 @@ type: how-to
 
 # Function search
 
-One overall goal plus optional capability queries returns only compact
+A required list of one to six unmet external capabilities returns only compact
 `function_id` + description candidates, grouped by worker. Choose the needed
 ids, then fetch their contracts in one batched `engine::functions::info` call.
 
 ## When to Use
 
-- `directory::search_functions`: set `query` to the overall goal. Add up to
-  six short, non-overlapping `capabilities` derived from the goal and current
-  execution state, omitting work already satisfied. Include every unmet
-  external capability once; when one is more precise than the overall
-  `query`, include it even if it is the only one. Write `query` and every
-  capability in English, translating non-English requests while preserving
-  proper names, URLs, and function IDs. Exclude intrinsic reasoning,
+- `directory::search_functions`: call once with
+  `{ "capabilities": ["<unmet external capability>", "<another>"] }`. Provide
+  one to six short, non-overlapping capabilities derived from the goal and
+  current execution state, omitting work already satisfied. Include every
+  unmet external capability once in the same call. Write every capability in
+  English, translating non-English requests while preserving proper names,
+  URLs, and function IDs. Exclude intrinsic reasoning,
   summarization, planning, and formatting; requests to summarize provided
-  text or content are ignored. Explicit capabilities are authoritative; when
-  the field is absent, the overall `query` provides fallback ranking, with
-  commas and "and" providing a deterministic clause fallback. Each capability
-  ranks independently and candidates merge
-  round-robin. The result contains at most six workers and twelve compact
-  candidates, never request schemas or a whole worker surface. Choose the
-  smallest needed id set and call `engine::functions::info` once with
+  text or content are ignored. Each capability ranks independently and
+  candidates merge round-robin. The result contains at most six workers and
+  twelve compact candidates, never request schemas or a whole worker surface.
+  Choose the smallest needed id set and call `engine::functions::info` once with
   `{ "function_ids": [...] }` before using them. Repeat queries in one
   session omit candidates already delivered.
 - The response may also carry an `installable` section: workers from the

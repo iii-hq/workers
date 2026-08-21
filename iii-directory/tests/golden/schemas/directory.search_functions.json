@@ -1,25 +1,21 @@
 {
-  "description": "Search available functions for an overall goal and optional capability queries; returns compact function-id candidates grouped by worker.",
+  "description": "Search available functions for one to six external capabilities; returns compact function-id candidates grouped by worker.",
   "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "capabilities": {
-        "default": [],
-        "description": "Up to six non-empty capability searches derived from the goal and current execution state. For one search at each decision point, include all unmet external capabilities once. When an unmet external capability is more precise than the overall `query`, include it in `capabilities`, even if it is the only one. Exclude intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented or satisfied. Requests to summarize provided text or content are ignored. Write every entry in English, translating non-English user requests while preserving proper names, URLs, and function IDs. When `capabilities` is absent, the overall `query` provides fallback ranking.",
+        "description": "One to six non-empty capability searches derived from the goal and current execution state. For one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented or satisfied. Requests to summarize provided text or content are ignored. Write every entry in English, translating non-English user requests while preserving proper names, URLs, and function IDs.",
         "items": {
           "type": "string"
         },
         "maxItems": 6,
+        "minItems": 1,
         "type": "array"
-      },
-      "query": {
-        "description": "The overall task goal as one natural-language query. Always write it in English, translating non-English user requests while preserving proper names, URLs, and function IDs.",
-        "type": "string"
       }
     },
     "required": [
-      "query"
+      "capabilities"
     ],
     "title": "SearchFunctionsRequest",
     "type": "object"
@@ -44,7 +40,7 @@
         "type": "object"
       },
       "InstallCall": {
-        "description": "A ready-made `worker::add` invocation: `{ function, payload }` matches the agent_trigger call envelope so the model can execute it verbatim.",
+        "description": "A ready-made `worker::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
         "properties": {
           "function": {
             "type": "string"
@@ -58,7 +54,7 @@
         "type": "object"
       },
       "InstallableWorker": {
-        "description": "A registry worker that is NOT installed but carries functions matching the query. `name` is the registry slug `worker::add` installs.",
+        "description": "A registry worker that is NOT installed but carries functions matching the requested capabilities. `name` is the registry slug `worker::add` installs.",
         "properties": {
           "description": {
             "type": "string"
@@ -76,7 +72,7 @@
                 "$ref": "#/definitions/InstallCall"
               }
             ],
-            "description": "The exact call that installs this worker, ready to execute."
+            "description": "The `worker::add` target and payload; agent-trigger callers add `description`."
           },
           "name": {
             "type": "string"

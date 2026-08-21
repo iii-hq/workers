@@ -10,7 +10,7 @@ into five surfaces (all MCP-agnostic):
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, path, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Command templates listed by `directory::prompts::list`, read by `get`, authored by `create`, edited by `update`. Stored under any `prompts/` path segment; `create` writes `<skills_folder>/prompts/<name>.md`. | Parametric command templates the *user* invokes |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts with the same four verbs and the same response shapes as Prompts — including the `prompts` field name on `list`. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
-| **Search** (`directory::search_functions`) | One overall goal plus optional capability queries → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
+| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Engine introspection (functions / triggers / registered triggers /
@@ -375,7 +375,7 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ query, capabilities? }` → `{ guidance, workers[], installable[]?, latency_ms }`: BM25 rank over the live engine catalog (at most 6 workers / 12 candidates) plus matching NOT-installed registry workers under `installable`. `query` is the overall goal; `capabilities` is an optional list of up to six non-empty capability searches. Include an unmet external capability when it is more precise than the overall query, even when it is the only one; requests to summarize provided text/content are ignored, and when the field is absent, `query` provides fallback ranking. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: BM25 rank over the live engine catalog (at most 6 workers / 12 candidates) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of one to six non-empty unmet external capability searches. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
@@ -390,26 +390,23 @@ Ranking pipeline:
 2. **Scoring**: Okapi BM25 (k1 1.2, b 0.75) with the function name indexed at
    3× weight, camelCase segmentation (`presignUrl` → presign + url), a
    22-word grammatical stoplist, conservative plural folding, JSON-key
-   stripping from the query, and a two-distinct-terms minimum match.
-3. **Capability queries**: when supplied, each `capabilities` entry is ranked
-   independently against its own leader and is authoritative: overall-query
-   words cannot add candidates. Include an unmet external capability when it
-   is more precise than the overall query, even when it is the only one.
-   Write the overall query and every capability in English, translating
-   non-English requests while preserving proper names, URLs, and function ids.
-   Requests to summarize provided text or content are ignored.
-   Otherwise, multi-intent `query` clauses split on list punctuation and
-   "and" (only when both sides keep two informative terms). Results merge
-   round-robin before whole-query fallbacks.
+   stripping from capability text, and a two-distinct-terms minimum match.
+3. **Capability queries**: each `capabilities` entry is ranked independently
+   against its own leader and is authoritative. Include every currently unmet
+   external capability once in the same call. Write every capability in
+   English, translating non-English requests while preserving proper names,
+   URLs, and function ids. Requests to summarize provided text or content are
+   ignored. Results merge round-robin so every capability gets a candidate
+   before any gets a rider.
 4. **Pruning**: coverage-aware function floor (≥50% of the leader AND full
    term coverage or ≥85% score) drops same-worker family riders; a
    namespace-level floor (40% of the leader) drops trailing workers.
 5. **Registry search** (`registry_search`, default on): every call also
-   consults the public workers registry in-process with the same authoritative
-   capability queries (a query-only search also gets informative-term retries;
-   all concurrent; verified authors only). Candidates merge round-robin across
-   query variants, returning up to 2 workers / 6 candidates that WOULD match
-   if installed, with `worker::add` guidance.
+   consults the public workers registry in-process with the same capability
+   queries plus informative-term retries (all concurrent; verified authors
+   only). Candidates merge round-robin across search variants, returning up to
+   2 workers / 6 candidates that WOULD match if installed, with `worker::add`
+   guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
 

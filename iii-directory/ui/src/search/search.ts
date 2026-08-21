@@ -10,9 +10,9 @@ export interface DiscoverWorkerView {
 }
 
 /** A registry worker the search offered as installable: not on the stack,
- * but its functions matched the query. `name` is the registry slug
- * `worker::add` installs. Functions carry names + descriptions only —
- * the worker deliberately withholds schemas so nothing looks callable. */
+ * but its functions matched the requested capabilities. `name` is the
+ * registry slug `worker::add` installs. Functions carry names + descriptions
+ * only — the worker deliberately withholds schemas so nothing looks callable. */
 export interface DiscoverInstallableView {
   name: string
   version: string
@@ -63,14 +63,6 @@ function discoverInput(input: unknown): Record<string, unknown> | null {
     }
   }
   return isRecord(value) ? value : null
-}
-
-/** The request's `query`. Null when no readable query exists. */
-export function discoverQuery(input: unknown): string | null {
-  const value = discoverInput(input)
-  if (!value || typeof value.query !== 'string') return null
-  const query = value.query.trim()
-  return query.length > 0 ? query : null
 }
 
 /** Valid, non-empty capability searches submitted with the request. */
