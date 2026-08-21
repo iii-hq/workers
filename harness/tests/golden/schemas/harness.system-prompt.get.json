@@ -62,6 +62,11 @@
       }
     },
     "properties": {
+      "default_only": {
+        "default": false,
+        "description": "Return only the embedded Harness default, without session, runtime, registry, or hook layers.",
+        "type": "boolean"
+      },
       "filesystem_root": {
         "type": [
           "string",

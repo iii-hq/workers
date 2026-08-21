@@ -183,7 +183,8 @@ registry-notice, and declarative worker-injection layers with
 passes no `selected_prompt` and the session has a turn record, the preview
 reports the record's RESOLVED prompt (labeled `session (frozen at send)`) —
 the truth for what ran and what the next send inherits — instead of
-rebuilding the built-in. Static
+rebuilding the built-in. Set `default_only: true` to read the exact embedded
+Harness default without consulting session or runtime state. Static
 `pre_generate` hooks publish their exact contribution as trigger metadata
 `inject_prompt`; request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.

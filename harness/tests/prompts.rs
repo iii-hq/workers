@@ -57,6 +57,22 @@ fn harness_owns_the_only_shipped_prompts() {
     assert!(prompts
         .iter()
         .any(|p| label(p).ends_with("harness/prompts/subagent.txt")));
+
+    let provider_prompts: Vec<PathBuf> = std::fs::read_dir(repo_root())
+        .expect("repo root is readable")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("provider-"))
+        .map(|entry| entry.path().join("prompts/identity.txt"))
+        .filter(|path| path.is_file())
+        .collect();
+    assert!(
+        provider_prompts.is_empty(),
+        "provider identity prompts must stay removed: {:?}",
+        provider_prompts
+            .iter()
+            .map(|path| label(path))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

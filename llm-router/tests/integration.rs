@@ -15,7 +15,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::channels::create_router_channel;
-use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value};
+use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
@@ -250,6 +250,73 @@ async fn configuration_entry_uses_default_namespace_from_a_namespaced_worker() {
         .await
         .expect("configuration entry updates in the engine namespace");
     assert_eq!(read_entry_value(&router).await.unwrap(), value);
+
+    router.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_provider_prompts_are_removed_before_closed_schema_registration() {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, test_init_options());
+    let stored = json!({
+        "default_provider": "custom",
+        "providers": {
+            "custom": {
+                "api_key": "${CUSTOM_KEY:secret}",
+                "region": "us-east-1",
+                "system_prompt": "legacy prompt"
+            }
+        }
+    });
+    call(
+        &router,
+        "configuration::register",
+        json!({
+            "id": ENTRY_ID,
+            "name": "LLM Router",
+            "description": "Legacy router configuration.",
+            "schema": { "type": "object", "additionalProperties": true },
+            "initial_value": stored
+        }),
+    )
+    .await
+    .expect("legacy configuration registers");
+
+    let mut schemas = BTreeMap::new();
+    schemas.insert(
+        "custom".to_string(),
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "api_key": { "type": "string", "writeOnly": true },
+                "region": { "type": "string" }
+            }
+        }),
+    );
+    register_entry(&router, &schemas)
+        .await
+        .expect("closed provider schema accepts the migrated value");
+
+    let raw = call(
+        &router,
+        "configuration::get",
+        json!({ "id": ENTRY_ID, "raw": true }),
+    )
+    .await
+    .expect("migrated configuration remains readable");
+    assert_eq!(
+        raw["value"],
+        json!({
+            "default_provider": "custom",
+            "providers": {
+                "custom": {
+                    "api_key": "${CUSTOM_KEY:secret}",
+                    "region": "us-east-1"
+                }
+            }
+        })
+    );
 
     router.shutdown();
 }

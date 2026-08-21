@@ -17,11 +17,15 @@ vi.mock('@iii-dev/console-ui', () => ({
 }))
 
 it('exposes the Harness default system prompt as read only', async () => {
-  const trigger = vi.fn(async (functionId: string) => {
+  const trigger = vi.fn(async (functionId: string, payload?: unknown) => {
     if (functionId === 'directory::system-prompts::list') {
       return { prompts: [] }
     }
     if (functionId === 'harness::system-prompt::get') {
+      expect(payload).toEqual({
+        session_id: 'iii-directory:browser-1',
+        default_only: true,
+      })
       return {
         parts: [
           {
@@ -34,7 +38,9 @@ it('exposes the Harness default system prompt as read only', async () => {
     }
     throw new Error(`unexpected function: ${functionId}`)
   })
-  const host = { iii: { trigger } } as unknown as Host
+  const host = {
+    iii: { browserId: 'browser-1', trigger },
+  } as unknown as Host
 
   const rows = await systemPromptsAdapter.list(host)
   const builtIn = rows.find(

@@ -18,6 +18,10 @@ pub struct SelectedSystemPrompt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemPromptRequest {
     pub session_id: String,
+    /// Return only the embedded Harness default, without session, runtime,
+    /// registry, or hook layers.
+    #[serde(default)]
+    pub default_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +57,9 @@ pub async fn handle(
     deps: &Deps,
     req: SystemPromptRequest,
 ) -> Result<SystemPromptPreview, HarnessError> {
+    if req.default_only {
+        return Ok(default_only_preview());
+    }
     let cfg = deps.cfg().await;
     let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let mode = req
@@ -122,6 +129,16 @@ pub async fn handle(
     })
 }
 
+fn default_only_preview() -> SystemPromptPreview {
+    SystemPromptPreview {
+        parts: vec![SystemPromptPart {
+            kind: SystemPromptPartKind::BuiltIn,
+            name: Some("embedded harness default".into()),
+            body: prompt::DEFAULT.into(),
+        }],
+    }
+}
+
 fn worker_name(function_id: &str) -> String {
     function_id
         .split_once("::")
@@ -181,6 +198,20 @@ fn build_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_only_preview_is_the_exact_embedded_prompt() {
+        assert_eq!(
+            default_only_preview(),
+            SystemPromptPreview {
+                parts: vec![SystemPromptPart {
+                    kind: SystemPromptPartKind::BuiltIn,
+                    name: Some("embedded harness default".into()),
+                    body: prompt::DEFAULT.into(),
+                }],
+            }
+        );
+    }
 
     #[test]
     fn enrich_preview_keeps_layers_separate_and_in_send_order() {

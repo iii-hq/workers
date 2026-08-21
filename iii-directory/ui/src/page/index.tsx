@@ -176,7 +176,10 @@ export const systemPromptsAdapter: BrowserAdapter = {
     if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
       const out = await host.iii.trigger<SystemPromptPreview>(
         'harness::system-prompt::get',
-        { session_id: `iii-directory:${host.iii.browserId}` },
+        {
+          session_id: `iii-directory:${host.iii.browserId}`,
+          default_only: true,
+        },
       )
       const builtIn = out.parts.find((part) => part.kind === 'built_in')
       if (!builtIn) throw new Error('Harness default system prompt is unavailable')
