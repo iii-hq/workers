@@ -748,6 +748,14 @@ enum ResponseKind {
         message: String,
         kind: ErrorKind,
     },
+    TruncatedFunctionCall {
+        text: String,
+        call_id: String,
+        function_id: String,
+        argument_delta: String,
+        degraded_arguments: Value,
+        message: String,
+    },
 }
 
 impl Response {
@@ -797,6 +805,35 @@ impl Response {
                 chunks: chunks.into_iter().map(Into::into).collect(),
                 message: message.to_string(),
                 kind,
+            },
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
+    /// A body cut mid-arguments: text, an open call, part of its arguments,
+    /// then one transient error whose partial carries the call degraded.
+    pub(super) fn truncated_function_call(
+        text: &str,
+        call_id: &str,
+        function: &ControlledFunction,
+        degraded_arguments: Value,
+        message: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        let argument_delta = degraded_arguments
+            .get("_raw")
+            .and_then(Value::as_str)
+            .unwrap_or("{")
+            .to_string();
+        Self {
+            kind: ResponseKind::TruncatedFunctionCall {
+                text: text.to_string(),
+                call_id: call_id.to_string(),
+                function_id: function.id().to_string(),
+                argument_delta,
+                degraded_arguments,
+                message: message.to_string(),
             },
             usage: usage(input_tokens, output_tokens),
         }
@@ -941,6 +978,32 @@ impl Response {
                 false,
                 Some(ErrorShape {
                     code: error_kind_code(kind).to_string(),
+                    message,
+                }),
+            ),
+            ResponseKind::TruncatedFunctionCall {
+                text,
+                call_id,
+                function_id,
+                argument_delta,
+                degraded_arguments,
+                message,
+            } => (
+                truncated_function_call_frames(
+                    &text,
+                    &call_id,
+                    &function_id,
+                    &argument_delta,
+                    degraded_arguments,
+                    &message,
+                    &usage,
+                    model,
+                    timestamp,
+                ),
+                StopReason::Error,
+                false,
+                Some(ErrorShape {
+                    code: error_kind_code(ErrorKind::Transient).to_string(),
                     message,
                 }),
             ),
@@ -1263,6 +1326,90 @@ fn streamed_error_frames(
         AssistantMessageEvent::Error { error },
     ]);
     frames
+}
+
+#[allow(clippy::too_many_arguments)]
+fn truncated_function_call_frames(
+    text: &str,
+    call_id: &str,
+    function_id: &str,
+    argument_delta: &str,
+    degraded_arguments: Value,
+    message: &str,
+    usage: &Usage,
+    model: &ModelFixtureV1,
+    timestamp: i64,
+) -> Vec<AssistantMessageEvent> {
+    let text_block = ContentBlock::Text {
+        text: text.to_string(),
+    };
+    let open_call = ContentBlock::FunctionCall {
+        id: call_id.to_string(),
+        function_id: function_id.to_string(),
+        arguments: json!({}),
+    };
+    let mut error = assistant_message(
+        vec![
+            text_block.clone(),
+            ContentBlock::FunctionCall {
+                id: call_id.to_string(),
+                function_id: function_id.to_string(),
+                arguments: degraded_arguments,
+            },
+        ],
+        StopReason::Error,
+        Some(usage.clone()),
+        model,
+        timestamp,
+    );
+    error.error_message = Some(message.to_string());
+    error.error_kind = Some(ErrorKind::Transient);
+
+    vec![
+        AssistantMessageEvent::Start {
+            partial: assistant_message(Vec::new(), StopReason::End, None, model, timestamp),
+        },
+        AssistantMessageEvent::TextStart {
+            partial: assistant_message(
+                vec![ContentBlock::Text {
+                    text: String::new(),
+                }],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta: text.to_string(),
+        },
+        AssistantMessageEvent::TextEnd {
+            partial: assistant_message(
+                vec![text_block.clone()],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::FunctioncallStart {
+            partial: assistant_message(
+                vec![text_block, open_call],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::FunctioncallDelta {
+            partial: None,
+            delta: argument_delta.to_string(),
+            id: call_id.to_string(),
+        },
+        AssistantMessageEvent::Ping,
+        AssistantMessageEvent::Error { error },
+    ]
 }
 
 fn error_kind_code(kind: ErrorKind) -> &'static str {
