@@ -69,7 +69,7 @@ fn is_hidden(doc: &Doc, id: NodeId) -> bool {
 /// `scope_id` is always a `<body>` or the document's `<html>` root, never one
 /// of those tag names — but exempting it from the whole predicate uniformly
 /// is simpler than splitting the check in two, and is a no-op for that half.
-fn sanitize_main_content(doc: &mut Doc, scope_id: NodeId) {
+pub(crate) fn sanitize_main_content(doc: &mut Doc, scope_id: NodeId) {
     let drop_ids: Vec<_> = doc
         .tree
         .descendants(doc.tree.root())

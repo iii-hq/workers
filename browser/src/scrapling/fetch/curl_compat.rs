@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(page.cookies["sid"], json!("abc"));
         assert_eq!(page.encoding.as_deref(), Some("iso-8859-1"));
         assert_eq!(page.html, "OK");
-        let envelope = crate::scrapling::page::serialize_page(&page, &payload, true).unwrap();
+        let envelope = crate::scrapling::page::serialize_page(&page, &payload, true, None).unwrap();
         assert_eq!(envelope["status"], json!(201));
         assert_eq!(envelope["url"], json!(format!("{url}?b=2&b=3&a=x")));
         assert_eq!(envelope["headers"]["set-cookie"], json!("sid=abc; Path=/"));

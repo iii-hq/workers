@@ -1593,6 +1593,7 @@ mod tests {
             &page,
             &json!({"selectors": [{"name": "title", "css": "h1"}], "format": "text"}),
             false,
+            None,
         )
         .unwrap();
         assert_eq!(out["extracted"]["title"], json!("Example Domain"));

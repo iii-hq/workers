@@ -13,12 +13,16 @@ pub const GUIDANCE_HOOK_DESC: &str =
 
 pub const GUIDANCE: &str = "\
 ## Scraping and HTML parsing (browser::*)
-Use `browser::fetch` for plain HTTP, `browser::dynamic-fetch` for JavaScript, \
-and `browser::stealthy-fetch` for automation masking. Use \
+Start with `browser::fetch` for static web pages, RSS/Atom feeds, and APIs; \
+its `urls` input fetches concurrently. Do not refetch successful entries, and \
+cite returned URLs. Escalate to `browser::dynamic-fetch` only for \
+JavaScript-rendered pages, or `browser::stealthy-fetch` only for \
+anti-bot/Cloudflare pages after cheaper tiers fail. Use \
 `browser::screenshot-url` to capture a URL; `browser::screenshot` captures an \
-existing interactive session. `browser::session-open`, \
-`browser::session-fetch`, `browser::session-close`, and \
-`browser::session-list` preserve cookies and browser state. `browser::crawl` \
+existing interactive session. Use `browser::session-fetch` only for an \
+already-open session whose cookies/state must be reused; \
+`browser::session-open`, `browser::session-close`, and `browser::session-list` \
+manage those sessions. `browser::crawl` \
 walks same-domain links and streams results. For HTML already in hand, use \
 `browser::extract`, `browser::css`, `browser::xpath`, `browser::regex`, \
 `browser::find`, `browser::find-by-text`, `browser::find-by-regex`, \

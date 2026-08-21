@@ -9,8 +9,8 @@ tags: [a2ui, generative-ui, agent-ui, console, harness]
 description: Compose, validate, persist, and render A2UI v0.9.1 surfaces for Harness sessions in chat and on an injectable Console page.
 
 dependencies:
-  state: "^0.22.2"
+  state: "0.x"
   configuration: "0.x"
   llm-router: "^1.4.12"
   harness: "^1.0.0"
-  shell: "^0.11.0"
+  shell: "0.x"

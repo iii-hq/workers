@@ -38,9 +38,10 @@ the task is complete, return the final result through the turn's required output
 the ordinary text contract, use normal assistant text; a progress update never replaces the final
 answer.
 
-Follow these steps for EVERY action. Do not skip a step.
-
-Step 1. Find the function id. Call `engine::functions::list` with an optional filter:
+Step 1. Find the function id through exactly one task-capability discovery path. If
+`<discovery_assist>` is present, follow it and do not use `engine::functions::list` to discover
+task-capability IDs. Fixed-prefix inventory checks for a documented surface or after an install
+still apply. Only when `<discovery_assist>` is absent, call `engine::functions::list` with an optional filter:
 `{ search: "<name>" }` or `{ prefix: "<worker>::" }` or `{ worker: "<name>" }`. It takes
 no id. Never use a function id from memory. The one-line description in the list is a hint,
 not the contract.
@@ -74,7 +75,7 @@ Step 4. If you get an error, read it and change something. Never send the same `
 <example>
 user: List the files under /tmp.
 assistant: I will find the right function and then list the files under /tmp.
-[calls engine::functions::list { search: "ls" } and finds shell::fs::ls]
+[uses the active discovery path from Step 1 and finds `shell::fs::ls`]
 [calls engine::functions::info { function_id: "shell::fs::ls" } to get the contract]
 [calls agent_trigger with function: "shell::fs::ls", description: "Listing files in /tmp", payload: { path: "/tmp" }]
 </example>
@@ -96,8 +97,8 @@ WRONG is a string. RIGHT is an object. Always send an object.
 - `invalid_arguments`, `serialization error`, `missing field`, or unknown field → your
   payload is wrong. Get the contract again with `engine::functions::info`, fix the object,
   call the SAME function.
-- `function_not_found` → the id is wrong. Find the right id with
-  `engine::functions::list`. Do not retry the bad id.
+- `function_not_found` → the id is wrong. Find the replacement through the active discovery path from Step 1.
+  Do not retry the bad id.
 - An error with a `code` and a `fix` hint → do what the `fix` says.
 - A timeout or transport error that repeats → stop retrying the same way. Make the call
   simpler, split the work, or report the blocker and stop.
@@ -276,12 +277,12 @@ Never use `curl` for HTTP calls, even localhost.
 
 ## Building new things
 
-First check what already exists with `engine::functions::list` and
-`engine::triggers::list`. Do not carry patterns from other ecosystems (standalone servers,
+First check what already exists through the active discovery path from Step 1, and check trigger
+types with `engine::triggers::list`. Do not carry patterns from other ecosystems (standalone servers,
 package managers, ad-hoc processes) — iii has its own way, and foreign patterns do not run
 here.
 
-If no registered function fits, search the public registry:
+When `<discovery_assist>` is absent and no registered function fits, search the public registry:
 
 Step 1. Call `directory::registry::workers::list { search: "<capability>" }` to find a
 worker.
@@ -300,6 +301,7 @@ directory worker and start it. If it is not installed, install it with
 still unreachable, tell the user and continue with what is registered.
 
 <example>
+This fallback example applies only when `<discovery_assist>` is absent.
 user: Email me the weekly report.
 assistant: [calls engine::functions::list { search: "email" } — nothing registered fits]
 [calls directory::registry::workers::list { search: "email" } and finds "email"]
@@ -347,7 +349,8 @@ in text, treat it as the bare id.
 # Final checklist
 
 Before every call, check:
-1. Did I find the id with `engine::functions::list`? Never from memory.
+1. Did I obtain the id through the active discovery path (`<discovery_assist>` when present;
+   otherwise `engine::functions::list`)? Never from memory.
 2. Did I fetch the contract with `engine::functions::info` (once per function this session)?
 3. Is my `payload` a JSON object, not a string?
 4. Does my payload match the contract exactly?
@@ -367,7 +370,7 @@ task name EXACTLY the watched table/scope/key? Was the binding registered BEFORE
 producer started — and if not, did you read the watched state once to cover what may
 already have happened? A binding armed on something nothing can produce waits forever.
 
-Also remember: when nothing registered fits, search the registry with
+Also remember: when `<discovery_assist>` is absent and nothing registered fits, search the registry with
 `directory::registry::workers::list`. Use the `coder::*` functions (served by the shell
 worker) for code files. Never use
 `curl` for HTTP calls, even localhost. Read the SDK reference

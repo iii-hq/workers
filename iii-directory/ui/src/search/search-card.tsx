@@ -1,28 +1,24 @@
 /**
  * Injected call-card view for `directory::search_functions`, mirroring the console's
- * `engine::functions::info` layout (meta row → ƒ line → description →
- * collapsible request schema). The console's card chrome is private to the
+ * compact candidate results. The console's card chrome is private to the
  * console bundle, so the small presentational pieces are ported here under
  * `discovery-search-*` classes — the accepted injected-UI pattern.
  */
 
 import {
   Badge,
-  CodeHighlight,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
-  type JsonValue,
 } from '@iii-dev/console-ui'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode } from 'react'
 import {
-  type DiscoverContractView,
+  type DiscoverCandidateView,
   type DiscoverInstallableView,
   type DiscoverView,
-  discoverQuery,
+  discoverCapabilities,
   functionCount,
   isErrorOutput,
   parseDiscoverResponse,
-  schemaIsAny,
 } from './search'
 
 function MetaRow({ children }: { children: ReactNode }) {
@@ -57,39 +53,8 @@ function ActionLine({
   )
 }
 
-/** Engine-info style collapsible schema section: header row with a caret,
- * highlighted JSON mounted only while open. Unconstraining schemas render
- * as a flat `· any` row instead. */
-function SchemaSection({ schema }: { schema: JsonValue }) {
-  const [open, setOpen] = useState(false)
-  if (schemaIsAny(schema)) {
-    return <div className="discovery-search-schema-any">request · any</div>
-  }
-  return (
-    <div className="discovery-search-schema">
-      <button
-        className="discovery-search-schema-toggle"
-        onClick={() => setOpen((previous) => !previous)}
-        type="button"
-      >
-        <span aria-hidden="true" className={`caret${open ? ' open' : ''}`}>
-          ▸
-        </span>
-        request
-      </button>
-      {open ? (
-        <div className="discovery-search-schema-body">
-          <CodeHighlight code={JSON.stringify(schema, null, 2)} language="json" wrap />
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-/** One function as a collapsed `ƒ` row — a discover result carries whole
- * workers (dozens of contracts), so ids stay scannable and each description
- * plus schema is one click away instead of stacking meters of card. */
-function ContractBlock({ contract }: { contract: DiscoverContractView }) {
+/** One compact function candidate: id first, slim description on demand. */
+function CandidateBlock({ candidate }: { candidate: DiscoverCandidateView }) {
   return (
     <details className="discovery-search-fn">
       <summary>
@@ -99,18 +64,17 @@ function ContractBlock({ contract }: { contract: DiscoverContractView }) {
         <span aria-hidden="true" className="sym">
           ƒ
         </span>
-        <span className="fn-id">{contract.function_id}</span>
+        <span className="fn-id">{candidate.function_id}</span>
       </summary>
-      {contract.description.length > 0 ? (
-        <div className="discovery-search-desc">{contract.description}</div>
+      {candidate.description.length > 0 ? (
+        <div className="discovery-search-desc">{candidate.description}</div>
       ) : null}
-      <SchemaSection schema={contract.request_schema} />
     </details>
   )
 }
 
 /** One installable registry worker: header names it as NOT installed, a
- * description line, its matched contracts, and the exact install call. */
+ * description line, its matched candidates, and the exact install call. */
 function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
   return (
     <section>
@@ -161,10 +125,10 @@ function GuidanceDetails({ guidance }: { guidance: string }) {
 }
 
 export function DiscoverCard({
-  query,
+  capabilities,
   view,
 }: {
-  query: string | null
+  capabilities: string[]
   view: DiscoverView
 }) {
   const empty = view.workers.length === 0 && view.installable.length === 0
@@ -181,10 +145,18 @@ export function DiscoverCard({
         ) : null}
         <KvChip label="latency">{`${Math.round(view.latency_ms)}ms`}</KvChip>
       </MetaRow>
-      {query ? (
-        <ActionLine symbol="»" tone="ink">
-          {query}
-        </ActionLine>
+      {capabilities.length > 0 ? (
+        <section aria-label="capabilities">
+          <div className="discovery-search-section-head">
+            <span>capabilities</span>
+            <span className="count">{capabilities.length}</span>
+          </div>
+          {capabilities.map((capability, index) => (
+            <ActionLine key={`${index}:${capability}`} symbol="·" tone="ink">
+              {capability}
+            </ActionLine>
+          ))}
+        </section>
       ) : null}
       {empty ? (
         <div className="discovery-search-empty">
@@ -199,8 +171,8 @@ export function DiscoverCard({
                 <span>worker · {worker.namespace}</span>
                 <span className="count">{worker.functions.length}</span>
               </div>
-              {worker.functions.map((contract) => (
-                <ContractBlock contract={contract} key={contract.function_id} />
+              {worker.functions.map((candidate) => (
+                <CandidateBlock candidate={candidate} key={candidate.function_id} />
               ))}
             </section>
           ))}
@@ -223,12 +195,12 @@ export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
       if (isErrorOutput(message.output)) return null
       const view = parseDiscoverResponse(message.output)
       if (!view) return null
-      return <DiscoverCard query={discoverQuery(message.input)} view={view} />
+      return (
+        <DiscoverCard
+          capabilities={discoverCapabilities(message.input)}
+          view={view}
+        />
+      )
     },
-    /* The found functions ARE the answer — promote a successful card into
-       the chat flow instead of hiding it behind "show raw request and
-       response". Every non-display path above returns null, so a pending,
-       failed, or unparseable call still falls through to the compact card. */
-    metadata: { display: true },
   }
 }

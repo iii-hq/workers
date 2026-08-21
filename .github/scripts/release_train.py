@@ -63,13 +63,19 @@ def build_attempt(worker: str, out: Path) -> list[Path]:
         run(*test_command)
         run(*build_command)
         binary = manifest.bin or manifest.name
-        binary_path = Path("target/release") / binary
+        # Workers are standalone crates (no root workspace): cargo places the
+        # artifacts under the worker's own target directory.
+        binary_path = root / "target" / "release" / binary
         if not binary_path.exists():
             raise SystemExit(f"{worker}: built binary not found at {binary_path}")
         archive = out / f"{binary}-x86_64-unknown-linux-gnu.tar.gz"
         with tarfile.open(archive, "w:gz") as handle:
             handle.add(binary_path, arcname=binary)
         artifacts.append(archive)
+        # The Registry resolver reads a .sha256 sibling for every binary asset.
+        checksum = out / f"{binary}-x86_64-unknown-linux-gnu.sha256"
+        checksum.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="utf-8")
+        artifacts.append(checksum)
     elif manifest.deploy == "image":
         image = f"release-attempt/{worker}:{os.environ.get('RELEASE_ATTEMPT_ID', 'local')}"
         run("docker", "build", "--tag", image, str(root))

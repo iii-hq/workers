@@ -1533,69 +1533,12 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui="iii-directory"] .discovery-search-schema-any {
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--color-rule-2);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema {
-  border-bottom: 1px solid var(--color-rule-2);
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 12px;
-  border: 0;
-  background: transparent;
-  color: var(--color-ink-faint);
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema-toggle:hover {
-  color: var(--color-ink);
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema-toggle:focus-visible {
-  outline: 2px solid var(--color-rule-focus, var(--color-ring));
-  outline-offset: -2px;
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema-toggle .caret,
 [data-iii-ui="iii-directory"] .discovery-search-guidance .caret {
   flex: 0 0 8px;
   width: 8px;
   color: var(--color-ink-ghost);
   transform-origin: center;
   display: inline-block;
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema-toggle .caret.open {
-  transform: rotate(90deg);
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-schema-body {
-  padding: 4px 12px 10px;
-  font-size: 12px;
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-fn .discovery-search-schema,
-[data-iii-ui="iii-directory"] .discovery-search-fn .discovery-search-schema-any {
-  border-bottom: 0;
-  border-top: 1px solid var(--color-rule-2);
-}
-
-[data-iii-ui="iii-directory"] .discovery-search-fn .discovery-search-schema-toggle,
-[data-iii-ui="iii-directory"] .discovery-search-fn .discovery-search-schema-any,
-[data-iii-ui="iii-directory"] .discovery-search-fn .discovery-search-schema-body {
-  padding-left: 28px;
 }
 
 [data-iii-ui="iii-directory"] .discovery-search-install-tag {
@@ -1714,4 +1657,3 @@
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
-

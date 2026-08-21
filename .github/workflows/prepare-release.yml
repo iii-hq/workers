@@ -68,6 +68,16 @@ jobs:
           fetch-tags: true
           token: ${{ steps.token.outputs.token }}
 
+      # pnpm before setup-node so the pnpm cache resolves the binary — the
+      # worker build.rs compiles its UI with pnpm (same setup as _rust-binary).
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
       - name: Validate exact dispatch and inputs
         env:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
