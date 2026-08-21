@@ -260,7 +260,11 @@ pub struct SearchFunctionsRequest {
     /// summarize provided text or content are ignored. Write every entry in English,
     /// translating non-English user requests while preserving proper names, URLs, and function
     /// IDs.
-    #[schemars(length(min = 1, max = 6))]
+    #[schemars(
+        with = "HashSet<String>",
+        length(min = 1, max = 6),
+        inner(length(min = 1))
+    )]
     pub capabilities: Vec<String>,
 }
 

@@ -66,6 +66,14 @@ fn search_capabilities_schema_advertises_the_runtime_limit() {
         1
     );
     assert_eq!(
+        search.request_schema["properties"]["capabilities"]["items"]["minLength"],
+        1
+    );
+    assert_eq!(
+        search.request_schema["properties"]["capabilities"]["uniqueItems"],
+        true
+    );
+    assert_eq!(
         search.request_schema["required"],
         serde_json::json!(["capabilities"])
     );

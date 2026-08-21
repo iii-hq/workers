@@ -193,7 +193,8 @@ pub fn agent_trigger_schema() -> AgentFunction {
     AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
         description:
-            "Trigger any allowed iii function by id. When `<discovery_assist>` is present, follow it and do not call engine::functions::list. \
+            "Trigger any allowed iii function by id. When `<discovery_assist>` is present, follow it and do not use engine::functions::list to discover task-capability IDs. \
+                      Fixed-prefix inventory checks for a documented surface or after an install still apply. \
                       Only when it is absent, discover what is callable at runtime via engine::functions::list. \
                       Before first use, get selected contracts with engine::functions::info. Ordinary calls in one \
                       assistant response execute sequentially in content order. For independent same-function \
@@ -645,12 +646,16 @@ mod tests {
     fn agent_trigger_schema_yields_discovery_to_injected_assist() {
         let description = agent_trigger_schema().description;
         let assist = description
-            .find("When `<discovery_assist>` is present, follow it and do not call engine::functions::list")
+            .find("When `<discovery_assist>` is present, follow it and do not use engine::functions::list to discover task-capability IDs")
             .expect("tool description gives injected guidance precedence");
+        let inventory = description
+            .find("Fixed-prefix inventory checks for a documented surface or after an install still apply")
+            .expect("tool description preserves inventory verification");
         let fallback = description
             .find("Only when it is absent, discover what is callable at runtime via engine::functions::list")
             .expect("tool description retains the engine discovery fallback");
         assert!(assist < fallback);
+        assert!(inventory < fallback);
     }
 
     #[test]
