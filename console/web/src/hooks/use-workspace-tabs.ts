@@ -18,14 +18,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  type ConfigTransform,
-  SerializedConfigWriter,
-} from '@/hooks/lib/serialized-config-writer'
-import {
-  type ConsoleConfigValue,
-  fetchConsoleConfigValue,
-  setConsoleConfigValue,
-} from '@/lib/console-config'
+  CONSOLE_CONFIG_QUERY_KEY,
+  consoleConfigWriter,
+} from '@/hooks/lib/console-config-writer'
+import type { ConfigTransform } from '@/hooks/lib/serialized-config-writer'
+import type { ConsoleConfigValue } from '@/lib/console-config'
 import { moveItem } from '@/lib/reorder'
 import {
   adjacentTabId,
@@ -55,7 +52,6 @@ import {
   workspaceLayoutSource,
 } from '@/lib/workspace-tabs'
 
-const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
 const LOCAL_KEY = 'iii-workspace-tabs'
 const SESSION_ACTIVE_KEY = 'iii-workspace-active'
 const POINTER_WRITE_DELAY_MS = 150
@@ -206,25 +202,7 @@ export interface UseWorkspaceTabsReturn {
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
-  const writerRef = useRef<SerializedConfigWriter | null>(null)
-  const writer =
-    writerRef.current ??
-    new SerializedConfigWriter({
-      readRemote: fetchConsoleConfigValue,
-      writeRemote: setConsoleConfigValue,
-      readCached: () =>
-        qc.getQueryData<ConsoleConfigValue | null>(CONSOLE_CONFIG_QUERY_KEY),
-      publish: (value) => {
-        qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, value)
-      },
-      cancelReads: () => {
-        void qc.cancelQueries({
-          queryKey: CONSOLE_CONFIG_QUERY_KEY,
-          exact: true,
-        })
-      },
-    })
-  writerRef.current = writer
+  const writer = consoleConfigWriter(qc)
 
   // Shares the traces saved-views cache entry; refetchInterval keeps the
   // strip reactive to writes from other browsers/tabs.
