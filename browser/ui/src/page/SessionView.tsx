@@ -28,13 +28,16 @@ import {
 import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  BROWSER_HANDOFF_REQUESTED_TRIGGER,
   BROWSER_NAVIGATED_TRIGGER,
   BROWSER_PICKED_TRIGGER,
   type BrowserClickOptions,
   type BrowserFindAction,
+  type BrowserHandoffEvent,
   type BrowserSessionInfo,
   clearBrowserData,
   clickBrowserAt,
+  confirmBrowserHandoff,
   controlBrowserHistory,
   downloadFile,
   errorMessage,
@@ -44,6 +47,7 @@ import {
   listBrowserCookies,
   navigateBrowser,
   parseCookieFile,
+  parseHandoffEvent,
   parsePickedEvent,
   pinLabel,
   pressBrowserKey,
@@ -89,6 +93,7 @@ import {
   type DeviceState,
   DeviceToolbar,
 } from './DeviceToolbar'
+import { DoctorDialog } from './DoctorDialog'
 import { DownloadsPanel, useDownloadCount } from './DownloadsPanel'
 import { FindBar, type FindState } from './FindBar'
 import { HistoryPanel } from './HistoryPanel'
@@ -98,6 +103,7 @@ import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
+const HANDOFF_FN = 'iii::browser-ui::handoff'
 const NAVIGATED_FN = 'iii::browser-ui::navigated'
 const FIND_DEBOUNCE_MS = 150
 const TYPE_FLUSH_MS = 200
@@ -125,6 +131,7 @@ export interface SessionActions {
   toggleDeviceToolbar: () => void
   importCookies: () => void
   copyCookies: () => void
+  showDiagnostics: () => void
 }
 
 const FEED_PANES: readonly FeedPane[] = [
@@ -848,6 +855,28 @@ export function SessionView({
 
   const downloadCount = useDownloadCount(host, sessionId, enabled)
   const [confirmingClear, setConfirmingClear] = useState(false)
+  const [showDoctor, setShowDoctor] = useState(false)
+  const [handoff, setHandoff] = useState<BrowserHandoffEvent | null>(null)
+  useEffect(() => setHandoff(null), [sessionId])
+  useBrowserSessionEvent({
+    host,
+    enabled,
+    triggerType: BROWSER_HANDOFF_REQUESTED_TRIGGER,
+    sessionId,
+    fnId: HANDOFF_FN,
+    onEvent: (payload) => {
+      const evt = parseHandoffEvent(payload)
+      if (evt && evt.session_id === sessionId) setHandoff(evt)
+    },
+  })
+  const confirmHandoff = useCallback(() => {
+    const current = handoff
+    if (!current) return
+    setHandoff(null)
+    void confirmBrowserHandoff(host.iii, sessionId, current.handoff_id).catch(
+      () => {},
+    )
+  }, [host, sessionId, handoff])
   const clearData = useCallback(() => {
     void runAction(async () => {
       await clearBrowserData(host.iii, sessionId)
@@ -894,6 +923,7 @@ export function SessionView({
       toggleDeviceToolbar,
       importCookies,
       copyCookies,
+      showDiagnostics: () => setShowDoctor(true),
     }
     return () => {
       actionsRef.current = null
@@ -927,6 +957,7 @@ export function SessionView({
     narrow && narrowPane !== 'viewport' ? narrowPane : dockPane
   const browserMajor = chromiumVersion?.match(/\d+/)?.[0]
   const browserLabel = browserMajor ? `Chromium ${browserMajor}` : null
+  const readOnly = session.read_only === true
 
   return (
     <section
@@ -948,6 +979,9 @@ export function SessionView({
             <span className="br-ui-doc-badge">
               {session.headless ? 'headless' : 'headful'}
             </span>
+            {readOnly ? (
+              <span className="br-ui-doc-badge is-readonly">read-only</span>
+            ) : null}
             {!narrow && browserLabel ? (
               <span className="br-ui-doc-badge">{browserLabel}</span>
             ) : null}
@@ -1137,6 +1171,7 @@ export function SessionView({
                   toggleDeviceToolbar,
                   importCookies,
                   copyCookies,
+                  showDiagnostics: () => setShowDoctor(true),
                 }}
               />
               <button
@@ -1164,6 +1199,11 @@ export function SessionView({
               confirmLabel="Clear"
               onConfirm={clearData}
             />
+            <DoctorDialog
+              host={host}
+              open={showDoctor}
+              onOpenChange={setShowDoctor}
+            />
             {showDevice && device ? (
               <DeviceToolbar
                 device={device}
@@ -1186,6 +1226,19 @@ export function SessionView({
                 onRotate={rotateDevice}
                 onReset={resetDevice}
               />
+            ) : null}
+            {handoff ? (
+              <div className="br-ui-handoff" role="alert">
+                <div className="br-ui-handoff-text">
+                  <span className="br-ui-handoff-title">Waiting for you</span>
+                  <span className="br-ui-handoff-instructions">
+                    {handoff.instructions}
+                  </span>
+                </div>
+                <Button variant="primary" size="sm" onClick={confirmHandoff}>
+                  I'm done
+                </Button>
+              </div>
             ) : null}
             <input
               ref={cookieInputRef}

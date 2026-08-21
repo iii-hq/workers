@@ -26,6 +26,7 @@ export interface PageMenuActions {
   toggleDeviceToolbar: () => void
   importCookies: () => void
   copyCookies: () => void
+  showDiagnostics: () => void
 }
 
 interface PageMenuProps {
@@ -115,6 +116,8 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
         {row('Import cookies…', 'importCookies')}
         {row('Copy cookies', 'copyCookies')}
         {row('Clear browsing data', 'clearData')}
+        <DropdownMenuSeparator />
+        {row('Browser diagnostics', 'showDiagnostics')}
       </DropdownMenuContent>
     </DropdownMenu>
   )

@@ -61,13 +61,28 @@ export const sessionInfoSchema = z.object({
   created_ms: z.number(),
   last_used_ms: z.number(),
   console_entries: z.number(),
+  read_only: z.boolean().optional(),
 })
 export type BrowserSessionInfo = z.infer<typeof sessionInfoSchema>
 
+const doctorIssueSchema = z.object({
+  what: z.string(),
+  enable_how: z.string(),
+})
 const doctorSchema = z.object({
+  ok: z.boolean().optional(),
+  chromium_path: z.string().nullable().optional(),
   chromium_version: z.string().nullable().optional(),
+  headless_default: z.boolean().optional(),
+  max_sessions: z.number().optional(),
+  active_sessions: z.number().optional(),
+  allowed_schemes: z.array(z.string()).optional(),
+  attach_enabled: z.boolean().optional(),
+  recording_available: z.boolean().optional(),
+  issues: z.array(doctorIssueSchema).optional(),
 })
 export type BrowserDoctorInfo = z.infer<typeof doctorSchema>
+export type BrowserDoctorIssue = z.infer<typeof doctorIssueSchema>
 
 const historySchema = z.object({
   ok: z.boolean(),
@@ -1093,4 +1108,33 @@ function str(v: unknown): string | undefined {
 }
 function bool(v: unknown): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined
+}
+
+export const BROWSER_HANDOFF_REQUESTED_TRIGGER = 'browser::handoff-requested'
+export const BROWSER_HANDOFF_CONFIRM_FUNCTION_ID = 'browser::handoff::confirm'
+
+const handoffEventSchema = z.object({
+  session_id: z.string(),
+  handoff_id: z.string(),
+  instructions: z.string(),
+  timestamp: z.number(),
+})
+export type BrowserHandoffEvent = z.infer<typeof handoffEventSchema>
+
+export function parseHandoffEvent(
+  payload: unknown,
+): BrowserHandoffEvent | null {
+  const parsed = handoffEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+export async function confirmBrowserHandoff(
+  iii: ExtensionIii,
+  sessionId: string,
+  handoffId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_HANDOFF_CONFIRM_FUNCTION_ID, {
+    session_id: sessionId,
+    handoff_id: handoffId,
+  })
 }
