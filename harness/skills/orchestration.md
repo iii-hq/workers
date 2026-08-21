@@ -1,7 +1,7 @@
 # Orchestrating a fan-out run (opt-in guidance)
 
-This is **not** part of any system prompt. The built-in and provider identity
-prompts teach the tools and nothing else; how to structure a multi-agent run
+This is **not** part of any system prompt. The built-in identity prompts teach
+the tools and nothing else; how to structure a multi-agent run
 is the operator's choice. To use this guidance, paste it (or the parts that
 fit) into the task prompt you give a top-level agent, or pass it via
 `harness::send` / `harness::spawn` `options.system_prompt` (the default

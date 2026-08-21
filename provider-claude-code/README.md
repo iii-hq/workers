@@ -68,7 +68,7 @@ provider id `anthropic`.
   optional adaptive `thinking` + `output_config.effort`, and automatic prompt
   caching. `system` is always an array whose **first block is the Claude Code
   identity line** (a wire-only artifact required by the subscription backend);
-  the router-supplied identity prompt follows as a second block. Headers:
+  an optional router-supplied harness prompt follows as a second block. Headers:
   `authorization: Bearer`, `anthropic-version: 2023-06-01`,
   `anthropic-beta: oauth-2025-04-20`.
 - **SSE:** `content_block_delta` (`text_delta` → text, `thinking_delta` →

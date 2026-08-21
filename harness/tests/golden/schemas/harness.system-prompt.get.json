@@ -78,12 +78,6 @@
           }
         ]
       },
-      "provider": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "selected_prompt": {
         "anyOf": [
           {

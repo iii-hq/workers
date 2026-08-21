@@ -202,21 +202,8 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     };
 
     // Freeze the per-send options before moving the message out of `req`.
-    // The provider identity prompt is fetched once here and frozen with them.
-    // `provider_identity_prompt: false` skips the fetch entirely — `None` is
-    // what makes `resolve_system_prompt` fall back to the embedded default.
-    // A send that will inherit the prior turn's prompt also skips it: the
-    // fetched identity would be resolved into a prompt we then overwrite.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
-    let identity = if cfg.provider_identity_prompt && !inherits_prompt {
-        deps.router()
-            .await
-            .system_prompt_get(provider.as_deref())
-            .await
-    } else {
-        None
-    };
-    let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
+    let mut options = build_options(&cfg, &req, model, provider);
     inherit_prior_functions(
         &cfg,
         &mut options,
@@ -576,7 +563,6 @@ fn build_options(
     req: &SendRequest,
     model: String,
     provider: Option<String>,
-    identity: Option<&str>,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
@@ -587,7 +573,7 @@ fn build_options(
             opts.system_prompt,
             opts.system_prompt_strategy.unwrap_or_default(),
             opts.mode,
-            identity,
+            prompt::DEFAULT,
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -892,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn build_options_applies_builtin_prompt_when_system_prompt_omitted() {
+    fn build_options_applies_embedded_prompt_when_system_prompt_omitted() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
             session_id: None,
@@ -906,19 +892,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        // Router-served identity used when present…
-        let opts = build_options(
-            &cfg,
-            &req,
-            "claude-sonnet-4".into(),
-            req.provider.clone(),
-            Some("You are an iii agent worker. VOICE."),
-        );
-        let prompt = opts.system_prompt.expect("built-in prompt");
-        assert!(prompt.contains("operating in agent mode"));
-        assert!(prompt.ends_with("You are an iii agent worker. VOICE."));
-        // …embedded default when the router serves none.
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone());
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("# System rules"));
@@ -941,13 +915,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(
-            &cfg,
-            &req,
-            "claude-sonnet-4".into(),
-            req.provider.clone(),
-            Some("You are an iii agent worker. VOICE."),
-        );
+        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -1068,7 +1036,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone());
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
         // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
@@ -1100,7 +1068,7 @@ mod tests {
                     ..Default::default()
                 }),
             };
-            let opts = build_options(&cfg, &req, "m".into(), None, None);
+            let opts = build_options(&cfg, &req, "m".into(), None);
             let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
             assert!(
                 compiled.allows("state::set"),
@@ -1125,15 +1093,9 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(
-            &cfg,
-            &req,
-            "claude-sonnet-4".into(),
-            req.provider.clone(),
-            Some("You are an iii agent worker. VOICE."),
-        );
+        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
         let prompt = opts.system_prompt.expect("enriched prompt");
-        assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
+        assert!(prompt.starts_with(crate::prompt::DEFAULT));
         assert!(prompt.ends_with("Speak only in haiku."));
     }
 
@@ -1150,7 +1112,6 @@ mod tests {
                 options: None,
             },
             "m".into(),
-            None,
             None,
         )
     }

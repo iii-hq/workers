@@ -137,15 +137,9 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 ## System prompt
 
-The identity prompt is assembled once at send/spawn time. For a TOP-LEVEL turn
-(`harness::send`) the harness asks the llm-router for the effective
-per-provider prompt (`router::system_prompt::get` with the request's
-`provider`): provider workers declare their own identity prompt at
-registration, and operators can override it per provider by setting
-`system_prompt` in the `llm-router` configuration entry (unset = provider
-default). When the router serves nothing — router absent, unknown provider,
-or no declared prompt — the harness falls back to its embedded step-by-step
-default prompt ([`prompts/default.txt`](prompts/default.txt)). Spawned
+The identity prompt is assembled once at send/spawn time. A TOP-LEVEL turn
+(`harness::send`) always uses the embedded step-by-step default prompt
+([`prompts/default.txt`](prompts/default.txt)). Spawned
 CHILDREN never get the top-level prompt: every child is seeded with the
 embedded minimal sub-agent identity
 ([`prompts/subagent.txt`](prompts/subagent.txt)) — do the one task, record
@@ -171,8 +165,7 @@ keeps that turn's frozen policy until it finalises.
 A non-empty `options.system_prompt` is combined with the built-in
 prompt per `options.system_prompt_strategy`: `enrich` (default) appends it to
 the built-in prompt, while `override` uses it verbatim. Assembly is tested in
-[`src/prompt/tests.rs`](src/prompt/tests.rs); provider-specific prompt bodies
-live in each provider worker (`provider-*/prompts/identity.txt`).
+[`src/prompt/tests.rs`](src/prompt/tests.rs).
 
 The resolved prompt is STICKY per session, like `model`/`provider` and the
 dispatch policy: a send to an existing session that names neither

@@ -19,8 +19,6 @@ pub struct SelectedSystemPrompt {
 pub struct SystemPromptRequest {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_prompt: Option<SelectedSystemPrompt>,
@@ -57,10 +55,6 @@ pub async fn handle(
 ) -> Result<SystemPromptPreview, HarnessError> {
     let cfg = deps.cfg().await;
     let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
-    let provider = req
-        .provider
-        .as_deref()
-        .or_else(|| record.as_ref().and_then(|r| r.options.provider.as_deref()));
     let mode = req
         .mode
         .or_else(|| record.as_ref().and_then(|r| r.options.mode));
@@ -73,18 +67,13 @@ pub async fn handle(
         (None, Some(record)) => Some(record.options.system_prompt.clone()),
         _ => None,
     };
-    let identity = if cfg.provider_identity_prompt && frozen.is_none() {
-        deps.router().await.system_prompt_get(provider).await
-    } else {
-        None
-    };
     let (built_in_name, built_in) = match frozen {
         Some(prompt) => ("session (frozen at send)".to_string(), prompt),
         None => (
-            built_in_name(provider, identity.as_deref()),
+            "embedded harness default".to_string(),
             Some(prompt::build_system_prompt(SystemPromptOpts {
                 mode,
-                identity: identity.as_deref(),
+                identity: prompt::DEFAULT,
             })),
         ),
     };
@@ -131,17 +120,6 @@ pub async fn handle(
             injections,
         ),
     })
-}
-
-fn built_in_name(provider: Option<&str>, identity: Option<&str>) -> String {
-    match (
-        identity.is_some(),
-        provider.filter(|provider| !provider.is_empty()),
-    ) {
-        (true, Some(provider)) => format!("{provider} identity"),
-        (true, None) => "provider identity".to_string(),
-        (false, _) => "embedded harness default".to_string(),
-    }
 }
 
 fn worker_name(function_id: &str) -> String {
@@ -280,23 +258,6 @@ mod tests {
         );
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].kind, SystemPromptPartKind::Runtime);
-    }
-
-    #[test]
-    fn built_in_label_names_the_actual_source() {
-        assert_eq!(built_in_name(None, None), "embedded harness default");
-        assert_eq!(
-            built_in_name(Some("anthropic"), None),
-            "embedded harness default"
-        );
-        assert_eq!(
-            built_in_name(Some("anthropic"), Some("provider prompt")),
-            "anthropic identity"
-        );
-        assert_eq!(
-            built_in_name(None, Some("provider prompt")),
-            "provider identity"
-        );
     }
 
     #[test]

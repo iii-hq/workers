@@ -62,6 +62,7 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// seeded only when nothing is stored yet (safe to call every boot).
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     discard_legacy_harness_config_if_needed(iii).await?;
+    drop_stored_provider_identity_prompt_if_needed(iii).await?;
 
     let mut payload = json!({
         "id": config_id(),
@@ -93,7 +94,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
 }
 
 async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
+    match try_get_config_value(iii, false).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
         Some(_) => Ok(false),
@@ -101,7 +102,7 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii).await?.ok_or_else(|| {
+    try_get_config_value(iii, false).await?.ok_or_else(|| {
         format!(
             "configuration `{config_entry}` not found",
             config_entry = config_id()
@@ -110,14 +111,22 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 }
 
 /// Returns `Ok(None)` when the entry does not exist (codes vary in case).
-async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
-        .await
+async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
+    match trigger_configuration_with_retry(
+        iii,
+        "configuration::get",
+        configuration_get_payload(raw),
+    )
+    .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+fn configuration_get_payload(raw: bool) -> Value {
+    json!({ "id": config_id(), "raw": raw })
 }
 
 /// True when the stored value matches the pre-Rust harness entry (permissions
@@ -149,7 +158,7 @@ fn legacy_harness_keys(value: &Value) -> Vec<&'static str> {
 /// replace the value with built-in defaults, then let the caller register the
 /// real schema.
 async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), String> {
-    let Some(value) = try_get_config_value(iii).await? else {
+    let Some(value) = try_get_config_value(iii, false).await? else {
         return Ok(());
     };
     if value.is_null() || !is_legacy_harness_value(&value) {
@@ -190,6 +199,46 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
     .await?;
 
     Ok(())
+}
+
+/// Remove the retired provider-owned prompt setting before re-registering the
+/// strict schema. All other stored settings remain intact.
+async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Result<(), String> {
+    let Some(mut value) = try_get_config_value(iii, true).await? else {
+        return Ok(());
+    };
+    if !drop_provider_identity_prompt(&mut value) {
+        return Ok(());
+    }
+
+    tracing::info!("removing retired provider_identity_prompt from harness configuration");
+    trigger_configuration_with_retry(
+        iii,
+        "configuration::register",
+        json!({
+            "id": config_id(),
+            "name": "Harness",
+            "description": "Harness configuration migration.",
+            "schema": {
+                "type": "object",
+                "additionalProperties": true
+            },
+        }),
+    )
+    .await?;
+    trigger_configuration_with_retry(
+        iii,
+        "configuration::set",
+        json!({ "id": config_id(), "value": value }),
+    )
+    .await?;
+    Ok(())
+}
+
+fn drop_provider_identity_prompt(value: &mut Value) -> bool {
+    value
+        .as_object_mut()
+        .is_some_and(|settings| settings.remove("provider_identity_prompt").is_some())
 }
 
 /// Swap the config snapshot under the write lock.
@@ -387,6 +436,36 @@ mod tests {
         })));
         assert!(!is_legacy_harness_value(&WorkerConfig::default().to_json()));
         assert!(!is_legacy_harness_value(&json!(null)));
+    }
+
+    #[test]
+    fn drop_provider_identity_prompt_preserves_other_stored_settings() {
+        let mut stored = json!({
+            "provider_identity_prompt": true,
+            "default_max_turns": "${MAX_TURNS:500}",
+            "nested": { "provider_identity_prompt": true }
+        });
+
+        assert!(drop_provider_identity_prompt(&mut stored));
+        assert_eq!(
+            stored,
+            json!({
+                "default_max_turns": "${MAX_TURNS:500}",
+                "nested": { "provider_identity_prompt": true }
+            })
+        );
+    }
+
+    #[test]
+    fn configuration_get_payload_keeps_raw_reads_separate_from_expanded_reads() {
+        assert_eq!(
+            configuration_get_payload(true),
+            json!({ "id": config_id(), "raw": true })
+        );
+        assert_eq!(
+            configuration_get_payload(false),
+            json!({ "id": config_id(), "raw": false })
+        );
     }
 
     #[tokio::test]

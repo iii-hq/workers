@@ -292,9 +292,9 @@ engine would adopt.
 | — | — | `conditions.rs` | 306 |
 | **total** | **4992** | | **3745** |
 
-Prompts, over the same changes: the fallback and the eight provider identity
-prompts first lost the `harness::react` and join cookbook, then the whole
-wire/spawn/stop orchestration doctrine — what remains is tool guidance, with
+Prompts, over the same changes: the harness identity prompts first lost the
+`harness::react` and join cookbook, then the whole wire/spawn/stop
+orchestration doctrine — what remains is tool guidance, with
 the opt-in process guidance moved to `harness/skills/orchestration.md`
 (`harness/tests/prompts.rs` enforces both halves repo-wide).
 
