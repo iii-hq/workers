@@ -1756,6 +1756,18 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .await
                     .map_err(|e| handler_err(format!("resize failed: {e}")))?;
                 session.set_viewport(width, height);
+                // The page content did not change, so the compositor may not
+                // push a screencast frame at the new size on its own. Restart
+                // the screencast to force one, but only while someone is
+                // watching (acquire/release owns the on/off transitions).
+                if session.screencast_on() {
+                    let restart = cdp_page::StartScreencastParams::builder()
+                        .format(cdp_page::StartScreencastFormat::Jpeg)
+                        .quality(sx.config.load().screenshot_quality as i64)
+                        .every_nth_frame(1)
+                        .build();
+                    let _ = session.page.execute(restart).await;
+                }
                 Ok::<_, Error>(resize::ResizeOutput {
                     ok: true,
                     width,
