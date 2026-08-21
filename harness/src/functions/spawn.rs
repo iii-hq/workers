@@ -47,6 +47,11 @@ pub struct SpawnOptions {
     /// `ask`-mode child is further capped at the configured default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
+    /// Exact skill ids advertised to the child. On a fresh child, omitted or
+    /// empty means all. A reused child inherits when omitted and resets to all
+    /// when empty. Explicit changes require no active child turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
     /// Grant this child the orchestration surface. Default false: a spawned
     /// child is a LEAF — its policy gains deny globs for `harness::spawn`,
     /// `harness::send`, `engine::register_trigger`, `engine::unregister_trigger`
@@ -105,6 +110,21 @@ pub struct SpawnResponse {
     /// `session_id`).
     #[serde(default)]
     pub reused: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_skills_option_is_ids_only_on_the_wire() {
+        let value = serde_json::to_value(SpawnOptions {
+            skills: Some(vec!["review".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(value["skills"], serde_json::json!(["review"]));
+    }
 }
 
 /// Direct-call entry (a consumer starting a linked child). Dispatched from a

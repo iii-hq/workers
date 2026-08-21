@@ -10,7 +10,7 @@
 //!   4. Register the trigger types the harness emits/owns (readiness + turn
 //!      events + the five hook points) BEFORE functions so handlers capture
 //!      subscriber sets.
-//!   5. Seed the function-registry cache and bind `engine::functions-available`.
+//!   5. Seed the function and skill catalog caches and bind their change signals.
 //!   6. Register the `harness::*` functions. Registering `harness::turn`
 //!      allows restored queue deliveries to run, but is not external readiness.
 //!   7. Ensure the dedicated `harness-turn` queue exists (required; bounded
@@ -121,10 +121,12 @@ async fn main() -> Result<()> {
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
     let functions_cell = discovery::new_cell();
+    let skills_cell = harness::skills::new_cell();
     let deps = Arc::new(Deps::new(
         iii.clone(),
         cell.clone(),
         functions_cell.clone(),
+        skills_cell.clone(),
         events,
         hooks,
     ));
@@ -135,6 +137,8 @@ async fn main() -> Result<()> {
     // delivery waiting for this worker to come back.
     discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
     discovery::register_functions_trigger(&iii, functions_cell.clone(), cfg.dispatch_timeout_ms);
+    harness::skills::seed(&iii, &skills_cell, cfg.dispatch_timeout_ms).await;
+    harness::skills::register_trigger(&iii, skills_cell, cfg.dispatch_timeout_ms);
 
     functions::register_all(&iii, &deps);
 

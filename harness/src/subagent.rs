@@ -290,7 +290,7 @@ async fn seed_child(
     // pattern) or clients would render it as something the human typed.
     let task = normalize_message(req.task.clone())?;
     let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
-    let options = TurnOptions {
+    let mut options = TurnOptions {
         model,
         provider,
         system_prompt: prompt::resolve_system_prompt(
@@ -303,6 +303,7 @@ async fn seed_child(
             identity,
         ),
         skills_prompt: None,
+        skill_context: None,
         mode: req.options.as_ref().and_then(|o| o.mode),
         max_turns,
         max_output_tokens: req
@@ -337,6 +338,28 @@ async fn seed_child(
             .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
     };
+    let previous_child = if reused {
+        crate::state::get_turn(&deps.iii, &child_session_id, cfg.session_timeout_ms).await?
+    } else {
+        None
+    };
+    crate::functions::send::validate_active_skill_request(
+        previous_child
+            .as_ref()
+            .is_some_and(|record| !record.status.is_terminal()),
+        req.options
+            .as_ref()
+            .is_some_and(|options| options.skills.is_some()),
+    )?;
+    crate::functions::send::prepare_skill_context(
+        deps,
+        &mut options,
+        child_skill_previous(reused, previous_child.as_ref()),
+        req.options
+            .as_ref()
+            .and_then(|options| options.skills.as_deref()),
+    )
+    .await?;
 
     let lineage = TurnLineage {
         depth,
@@ -370,6 +393,14 @@ async fn seed_child(
             entry_id: entry_id.as_deref(),
             origin: origin.as_ref(),
             lineage: &lineage,
+            caller_holds_session_lock: caller_holds_child_session_lock(
+                parent_record,
+                &child_session_id,
+            ),
+            skills_explicit: req
+                .options
+                .as_ref()
+                .is_some_and(|options| options.skills.is_some()),
         },
     )
     .await?;
@@ -379,6 +410,19 @@ async fn seed_child(
         turn_id: outcome.turn_id,
         reused,
     })
+}
+
+fn child_skill_previous(reused: bool, previous_child: Option<&TurnRecord>) -> Option<&TurnOptions> {
+    reused
+        .then(|| previous_child.map(|record| &record.options))
+        .flatten()
+}
+
+fn caller_holds_child_session_lock(
+    parent_record: Option<&TurnRecord>,
+    child_session_id: &str,
+) -> bool {
+    parent_record.is_some_and(|parent| parent.session_id == child_session_id)
 }
 
 /// The child's provider. An explicit request wins; otherwise the parent's
@@ -485,6 +529,7 @@ mod tests {
                 provider: None,
                 system_prompt: None,
                 skills_prompt: None,
+                skill_context: None,
                 mode: None,
                 max_turns: 16,
                 max_output_tokens: None,
@@ -504,6 +549,8 @@ mod tests {
             display_parent_session_id: None,
             functions_generation: None,
             function_contract_ledger: Default::default(),
+            skill_ack: None,
+            skills_started: false,
             context_snapshot: None,
             result: None,
             result_error: None,
@@ -512,6 +559,18 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn only_an_in_turn_self_session_spawn_inherits_the_callers_lock() {
+        let parent = parent_record(None);
+
+        assert!(caller_holds_child_session_lock(
+            Some(&parent),
+            &parent.session_id
+        ));
+        assert!(!caller_holds_child_session_lock(Some(&parent), "s_child"));
+        assert!(!caller_holds_child_session_lock(None, &parent.session_id));
     }
 
     fn spawn_request(model: Option<&str>, provider: Option<&str>) -> SpawnRequest {
@@ -558,6 +617,22 @@ mod tests {
         );
         // Parentless spawns have nothing to inherit either way.
         assert_eq!(child_provider(&spawn_request(None, None), None), None);
+    }
+
+    #[test]
+    fn fresh_children_ignore_prior_skill_context_while_reused_children_inherit_their_own() {
+        let mut previous_child = parent_record(None);
+        previous_child.options.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["child-only".into()]),
+            baseline: Some("frozen child baseline".into()),
+        });
+
+        assert!(child_skill_previous(false, Some(&previous_child)).is_none());
+        let reused = child_skill_previous(true, Some(&previous_child)).unwrap();
+        assert_eq!(
+            reused.skill_context.as_ref().unwrap().filter,
+            Some(vec!["child-only".into()])
+        );
     }
 
     #[test]

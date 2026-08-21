@@ -63,6 +63,28 @@ pub struct FunctionPolicy {
     pub expose: ExposeMode,
 }
 
+/// New-format, names-only skill context. The filter remains live against the
+/// harness catalog; the baseline is the immutable index admitted to the
+/// session's system-prompt prefix.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillContext {
+    /// `None` means all skills; a non-empty list is an exact-id curation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<String>,
+}
+
+/// The effective skill view this session most recently admitted. A
+/// fingerprint of `None` is the explicit removed view; no `SkillAck` means
+/// the source has not yet produced an authoritative observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillAck {
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
 /// apply unchanged until the turn ends (a merged send never changes them).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -72,11 +94,14 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Aggregate selected-skill bodies frozen from session metadata. `None`
-    /// means provenance has not initialized yet; `Some("")` is initialized
-    /// with no selected skills.
+    /// Legacy-only attribution for skill bodies previously frozen from
+    /// session metadata. New sessions never populate this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_prompt: Option<String>,
+    /// Names-and-descriptions-only skill context for new-format sessions.
+    /// Absence identifies a durable legacy session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_context: Option<SkillContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     pub max_turns: u32,
@@ -271,6 +296,13 @@ pub struct TurnRecord {
     /// most recently assembled model context for this session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
+    /// Last effective names-only skill view admitted to the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_ack: Option<SkillAck>,
+    /// Whether this session has begun a model generation under the new skill
+    /// context. Before then, first availability may still become the baseline.
+    #[serde(default)]
+    pub skills_started: bool,
     /// Latest generation's context accounting (also stored under
     /// `harness_context/<session_id>` once the generation completes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,6 +377,7 @@ mod tests {
                 provider: None,
                 system_prompt: None,
                 skills_prompt: None,
+                skill_context: None,
                 mode: None,
                 max_turns: 16,
                 max_output_tokens: None,
@@ -364,6 +397,8 @@ mod tests {
             display_parent_session_id: None,
             functions_generation: None,
             function_contract_ledger: Default::default(),
+            skill_ack: None,
+            skills_started: false,
             context_snapshot: None,
             result: None,
             result_error: None,
@@ -487,6 +522,32 @@ mod tests {
         assert_eq!(r.options.max_transient_resumes, 3);
         assert_eq!(r.transient_resumes, 0);
         assert_eq!(r.options.output, OutputContract::Text);
+        assert_eq!(r.options.skill_context, None);
+        assert_eq!(r.skill_ack, None);
+        assert!(!r.skills_started);
+    }
+
+    #[test]
+    fn new_skill_context_and_ack_round_trip() {
+        let mut r = record();
+        r.options.skill_context = Some(SkillContext {
+            filter: Some(vec!["review".into()]),
+            baseline: Some("<available_skills>review</available_skills>".into()),
+        });
+        r.skill_ack = Some(SkillAck {
+            generation: 3,
+            fingerprint: Some("sha256:abc".into()),
+        });
+        r.skills_started = true;
+
+        let value = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            value["options"]["skill_context"]["filter"],
+            json!(["review"])
+        );
+        assert_eq!(value["skill_ack"]["generation"], 3);
+        let back: TurnRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(back, r);
     }
 
     #[test]

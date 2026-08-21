@@ -84,6 +84,7 @@ impl TurnCancels {
 #[cfg(test)]
 mod tests {
     use super::{SessionLocks, TurnCancels};
+    use crate::types::turn::SkillContext;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
 
@@ -129,6 +130,39 @@ mod tests {
         // A different session acquires without waiting on `held`.
         let _other = locks.guard("b").await;
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn post_generation_refresh_keeps_a_filter_written_in_the_unlocked_window() {
+        let locks = SessionLocks::new();
+        let initial_guard = locks.guard("s").await;
+        let durable = Arc::new(tokio::sync::Mutex::new(SkillContext {
+            filter: Some(vec!["old".into()]),
+            baseline: Some("durable baseline".into()),
+        }));
+        let writer_locks = locks.clone();
+        let writer_durable = durable.clone();
+        let writer = tokio::spawn(async move {
+            let _guard = writer_locks.guard("s").await;
+            writer_durable.lock().await.filter = Some(vec!["new".into()]);
+        });
+
+        let mut in_memory = Some(SkillContext {
+            filter: Some(vec!["old".into()]),
+            baseline: Some("generation baseline".into()),
+        });
+        drop(initial_guard);
+        writer.await.unwrap();
+
+        let _post_generation_guard = locks.guard("s").await;
+        let durable = durable.lock().await;
+        crate::skills::refresh_filter(&mut in_memory, Some(&durable));
+
+        assert_eq!(in_memory.as_ref().unwrap().filter, Some(vec!["new".into()]));
+        assert_eq!(
+            in_memory.as_ref().unwrap().baseline.as_deref(),
+            Some("generation baseline")
+        );
     }
 
     /// The property the chat-abort backstop relies on: level-triggering. A fire

@@ -301,6 +301,7 @@ pub async fn resolve(
                 &function_id,
                 &arguments,
                 &record.session_id,
+                true, // resolve holds this session's lock
                 Some(crate::functions::subscribe::CallerModel::from_options(
                     &record.options,
                 )),

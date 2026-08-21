@@ -228,6 +228,133 @@ fn cancel_requested(
     local_abort || durable_abort || stop_reason == crate::types::event::StopReason::Aborted
 }
 
+#[async_trait]
+trait SkillCorrectionStore {
+    async fn append_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError>;
+
+    async fn replace_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError>;
+}
+
+#[async_trait]
+impl SkillCorrectionStore for SessionClient {
+    async fn append_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError> {
+        self.append(
+            session_id,
+            &AgentMessage::user_text(message),
+            Some(entry_id),
+            None,
+            Some(&json!({ "skill_update": true })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn replace_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError> {
+        let AgentMessage::User(update) = AgentMessage::user_text(message) else {
+            unreachable!("user_text always creates a user message")
+        };
+        self.update_message(
+            session_id,
+            entry_id,
+            &update.content,
+            None,
+            None,
+            Some(&json!({ "skill_update": true })),
+        )
+        .await
+        .map(|_| ())
+    }
+}
+
+async fn persist_skill_correction(
+    store: &impl SkillCorrectionStore,
+    session_id: &str,
+    entry_id: &str,
+    message: &str,
+    ack_slot: &mut Option<crate::types::turn::SkillAck>,
+    ack: crate::types::turn::SkillAck,
+) -> Result<(), HarnessError> {
+    store
+        .append_correction(session_id, entry_id, message)
+        .await?;
+    store
+        .replace_correction(session_id, entry_id, message)
+        .await?;
+    *ack_slot = Some(ack);
+    Ok(())
+}
+
+async fn sync_skills(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    policy: &CompiledPolicy,
+    functions: &[crate::clients::FunctionDescriptor],
+) -> Result<(), HarnessError> {
+    let Some(context) = record.options.skill_context.as_ref() else {
+        return Ok(());
+    };
+    let catalog = deps.skills().await;
+    let view =
+        crate::skills::effective_view(&catalog, context.filter.as_deref(), policy, functions);
+    if record.skill_ack.is_none() {
+        if let Some(baseline) = context.baseline.as_deref() {
+            let generation = match &view {
+                crate::skills::EffectiveView::Available(view) => view.generation,
+                crate::skills::EffectiveView::Removed { generation } => *generation,
+                crate::skills::EffectiveView::Unavailable => catalog.generation,
+            };
+            record.skill_ack = Some(crate::types::turn::SkillAck {
+                generation,
+                fingerprint: Some(crate::skills::fingerprint(baseline)),
+            });
+        }
+    }
+
+    match crate::skills::plan_sync(record.skill_ack.as_ref(), record.skills_started, &view) {
+        crate::skills::SyncPlan::None => {}
+        crate::skills::SyncPlan::Acknowledge(ack) => record.skill_ack = Some(ack),
+        crate::skills::SyncPlan::FreezeBaseline { body, ack } => {
+            if let Some(context) = record.options.skill_context.as_mut() {
+                context.baseline = Some(body);
+            }
+            record.skill_ack = Some(ack);
+        }
+        crate::skills::SyncPlan::Append { message, ack } => {
+            persist_skill_correction(
+                session,
+                &record.session_id,
+                &ids::skill_update_entry_id(&record.turn_id, record.turn_count),
+                &message,
+                &mut record.skill_ack,
+                ack,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Run one durable loop step.
 pub async fn run_step(
     deps: &Deps,
@@ -351,6 +478,10 @@ pub async fn run_step(
         };
     }
 
+    let functions = deps.functions().await;
+    let policy = CompiledPolicy::from(record.options.functions.as_ref());
+    sync_skills(deps, &session, &mut record, &policy, &functions.functions).await?;
+
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
     // The previous step's watermark marks which entries arrived while that
@@ -367,10 +498,9 @@ pub async fn run_step(
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
     // contracts may be stale. First sighting stamps silently.
-    let functions = deps.functions().await;
     let current_generation = functions.generation;
     let mut assembly_system_prompt =
-        with_filesystem_root_aid(record.options.system_prompt.clone(), &record);
+        with_runtime_context(record.options.system_prompt.clone(), &record);
     if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
         assembly_system_prompt = Some(match assembly_system_prompt.take() {
             Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
@@ -383,7 +513,6 @@ pub async fn run_step(
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let policy = CompiledPolicy::from(record.options.functions.as_ref());
     let decision_tools = concrete_allowed_tools(&policy, &functions.functions);
     let expose = record
         .options
@@ -721,6 +850,9 @@ pub async fn run_step(
         provider_options,
     };
     record.stream_request_id = Some(params.request_id.clone());
+    if record.options.skill_context.is_some() {
+        record.skills_started = true;
+    }
     if let Err(error) = crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await {
         if let Some(reservation) = budget_reservation.as_ref() {
             crate::budget::release(deps, reservation).await?;
@@ -835,7 +967,10 @@ pub async fn run_step(
             snapshot,
             &router,
             gen_system_prompt.as_deref(),
-            record.options.skills_prompt.as_deref(),
+            crate::skills::attribution(
+                record.options.skill_context.as_ref(),
+                record.options.skills_prompt.as_deref(),
+            ),
             &tools,
         )
         .await;
@@ -872,18 +1007,20 @@ pub async fn run_step(
         )
         .await;
 
-    // Re-acquire the lock before any further turn-record write, then re-read the
-    // durable abort flag under it (authoritative — no concurrent writer once
-    // held). A harness::stop that landed during generation set the flag on
-    // durable state while this in-memory `record` stayed stale; if the stream
-    // had already completed normally it carries stop_reason != Aborted, so
-    // without this re-read the stop would be missed until the next step.
+    // Re-acquire the lock before any further turn-record write, then refresh
+    // the durable fields allowed to change while generation held no lock:
+    // abort and an explicit skill filter from a raced send. The frozen skill
+    // baseline remains the one used for this generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
-    let durable_abort =
-        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
-            .await?
-            .map(|r| r.abort)
-            .unwrap_or(false);
+    let durable_record =
+        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?;
+    let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
+    crate::skills::refresh_filter(
+        &mut record.options.skill_context,
+        durable_record
+            .as_ref()
+            .and_then(|record| record.options.skill_context.as_ref()),
+    );
 
     record.turn_count += 1;
 
@@ -1279,6 +1416,7 @@ pub async fn run_step(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
+                true, // run_step holds this session's lock
                 Some(crate::functions::subscribe::CallerModel::from_options(
                     &record.options,
                 )),
@@ -2471,8 +2609,12 @@ async fn assemble_context(
         model_id: record.options.model.clone(),
         provider: record.options.provider.clone(),
         system_prompt: inputs.system_prompt,
-        parts: record.options.skills_prompt.as_ref().map(|prompt| {
-            std::collections::BTreeMap::from([("skills".to_string(), prompt.clone())])
+        parts: crate::skills::attribution(
+            record.options.skill_context.as_ref(),
+            record.options.skills_prompt.as_deref(),
+        )
+        .map(|prompt| {
+            std::collections::BTreeMap::from([("skills".to_string(), prompt.to_string())])
         }),
         previous_summary,
         lease_key: record.session_id.clone(),
@@ -2620,16 +2762,34 @@ fn estimated_prompt_categories(
 /// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
 /// call (`filesystem_scope::inject`) and the policy stays fail-closed at
 /// dispatch.
-fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
+fn compose_system_prompt(base: Option<&str>, skills: Option<&str>, runtime: &str) -> String {
+    [
+        base.filter(|value| !value.is_empty()),
+        skills,
+        Some(runtime),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+fn with_runtime_context(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
     let aid = runtime_context_aid(
         &record.session_id,
         record.options.filesystem_root(),
         record.options.functions.as_ref(),
     );
-    Some(match system_prompt {
-        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{aid}"),
-        _ => aid,
-    })
+    let baseline = record
+        .options
+        .skill_context
+        .as_ref()
+        .and_then(|context| context.baseline.as_deref());
+    Some(compose_system_prompt(
+        system_prompt.as_deref(),
+        baseline,
+        &aid,
+    ))
 }
 
 /// The deterministic session context appended to every model-facing prompt.
@@ -2950,6 +3110,11 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+
     use super::{
         cancel_requested, concrete_allowed_tools, count_model_visible,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
@@ -2959,6 +3124,129 @@ mod tests {
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+    use crate::types::turn::SkillAck;
+
+    #[derive(Default)]
+    struct FakeSkillCorrectionStore {
+        entry: Arc<Mutex<Option<(String, String)>>>,
+        fail_replace: bool,
+    }
+
+    #[async_trait]
+    impl super::SkillCorrectionStore for FakeSkillCorrectionStore {
+        async fn append_correction(
+            &self,
+            _session_id: &str,
+            entry_id: &str,
+            message: &str,
+        ) -> Result<(), HarnessError> {
+            let mut entry = self.entry.lock().await;
+            if entry.is_none() {
+                *entry = Some((entry_id.to_string(), message.to_string()));
+            }
+            Ok(())
+        }
+
+        async fn replace_correction(
+            &self,
+            _session_id: &str,
+            entry_id: &str,
+            message: &str,
+        ) -> Result<(), HarnessError> {
+            if self.fail_replace {
+                return Err(HarnessError::Dependency("replace failed".into()));
+            }
+            let mut entry = self.entry.lock().await;
+            let Some((stored_id, stored_message)) = entry.as_mut() else {
+                return Err(HarnessError::Dependency("missing correction".into()));
+            };
+            assert_eq!(stored_id, entry_id);
+            *stored_message = message.to_string();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn correction_redelivery_replaces_a_same_id_entry_before_acknowledging_newer_content() {
+        let store = FakeSkillCorrectionStore::default();
+        let mut ack = None;
+        super::persist_skill_correction(
+            &store,
+            "s_1",
+            "e_t_1_skills_0",
+            "catalog B",
+            &mut ack,
+            SkillAck {
+                generation: 2,
+                fingerprint: Some("sha256:b".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The transcript write survived, but the process lost the record write.
+        ack = None;
+        super::persist_skill_correction(
+            &store,
+            "s_1",
+            "e_t_1_skills_0",
+            "catalog C",
+            &mut ack,
+            SkillAck {
+                generation: 3,
+                fingerprint: Some("sha256:c".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *store.entry.lock().await,
+            Some(("e_t_1_skills_0".into(), "catalog C".into()))
+        );
+        assert_eq!(
+            ack,
+            Some(SkillAck {
+                generation: 3,
+                fingerprint: Some("sha256:c".into())
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn correction_ack_does_not_advance_when_transcript_replacement_fails() {
+        let store = FakeSkillCorrectionStore {
+            entry: Arc::new(Mutex::new(Some((
+                "e_t_1_skills_0".into(),
+                "catalog B".into(),
+            )))),
+            fail_replace: true,
+        };
+        let mut ack = Some(SkillAck {
+            generation: 2,
+            fingerprint: Some("sha256:b".into()),
+        });
+
+        let result = super::persist_skill_correction(
+            &store,
+            "s_1",
+            "e_t_1_skills_0",
+            "catalog C",
+            &mut ack,
+            SkillAck {
+                generation: 3,
+                fingerprint: Some("sha256:c".into()),
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            *store.entry.lock().await,
+            Some(("e_t_1_skills_0".into(), "catalog B".into()))
+        );
+        assert_eq!(ack.unwrap().generation, 2);
+    }
 
     #[test]
     fn normal_sibling_info_results_wait_for_context_validation_before_reuse() {
@@ -3094,6 +3382,18 @@ mod tests {
             ..breakdown
         };
         assert_eq!(super::estimated_prompt_categories(&oversized), (0, 10));
+    }
+
+    #[test]
+    fn skill_baseline_sits_between_identity_and_runtime_guidance() {
+        assert_eq!(
+            super::compose_system_prompt(Some("identity"), Some("skill index"), "runtime"),
+            "identity\n\nskill index\n\nruntime"
+        );
+        assert_eq!(
+            super::compose_system_prompt(None, None, "runtime"),
+            "runtime"
+        );
     }
 
     #[test]

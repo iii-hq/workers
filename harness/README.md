@@ -182,8 +182,21 @@ hatch. Because the inherited string is frozen at its original resolution,
 changing `mode` on a later send without prompt fields keeps the old
 operating-mode paragraph — resend the prompt fields to re-resolve.
 
-Trusted console surfaces can preview the built-in, selected, runtime-context,
-registry-notice, and declarative worker-injection layers with
+New sessions also freeze a names-and-descriptions-only skill index into the
+system-prompt prefix. `options.skills` on `harness::send` or `harness::spawn`
+accepts exact skill ids. For a fresh session, omitted or empty means all
+model-invocable skills. On an existing new-format session, omission inherits
+the previous filter while an explicit empty list resets to all; explicit
+changes are rejected while its turn is active.
+This is curation, not authorization: the turn's function policy must still
+allow `directory::skills::get`, and the function must exist in the live
+registry. Skill bodies enter context only when the model calls that function.
+Catalog changes are appended as durable user-role corrections, leaving the
+frozen prefix unchanged. Legacy sessions keep their already-frozen prompt;
+start a new session to apply an id filter to one.
+
+Trusted console surfaces can preview the built-in, selected, frozen skill,
+runtime-context, registry-notice, and declarative worker-injection layers with
 `harness::system-prompt::get`, without making a model request. When the caller
 passes no `selected_prompt` and the session has a turn record, the preview
 reports the record's RESOLVED prompt (labeled `session (frozen at send)`) —

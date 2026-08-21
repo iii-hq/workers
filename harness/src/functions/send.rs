@@ -19,7 +19,7 @@ use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionPolicy, IdemRecord, ParentLink, TurnOptions, TurnRecord, TurnStatus,
+    FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions, TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -81,6 +81,12 @@ pub struct SendOptions {
     /// policy until it finalises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
+    /// Exact skill ids advertised to the model. On a fresh session, omitted or
+    /// empty means all. On an existing session, omitted inherits its filter and
+    /// empty resets to all. Explicit changes require no active turn. This is
+    /// index curation, not authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
     /// Tracing passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -153,7 +159,31 @@ pub struct StartOutcome {
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
-    let out = start(deps, req).await?;
+    handle_with_delivery_lock(deps, req, false).await
+}
+
+/// Trusted in-process entry from the invocation chokepoint. Lock ownership is
+/// derived from its caller and never deserialized from the send request.
+pub(crate) async fn handle_from_invoke(
+    deps: &Deps,
+    req: SendRequest,
+    caller_session_id: &str,
+    caller_holds_session_lock: bool,
+) -> Result<SendResponse, HarnessError> {
+    let caller_holds_target_session_lock = caller_holds_target_session_lock(
+        caller_session_id,
+        req.session_id.as_deref(),
+        caller_holds_session_lock,
+    );
+    handle_with_delivery_lock(deps, req, caller_holds_target_session_lock).await
+}
+
+async fn handle_with_delivery_lock(
+    deps: &Deps,
+    req: SendRequest,
+    caller_holds_target_session_lock: bool,
+) -> Result<SendResponse, HarnessError> {
+    let out = start_with_delivery_lock(deps, req, caller_holds_target_session_lock).await?;
     Ok(SendResponse {
         session_id: out.session_id,
         turn_id: out.turn_id,
@@ -166,8 +196,20 @@ pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, Harne
 
 /// Ensure the session, persist the message, and seed/merge the turn.
 pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, HarnessError> {
+    start_with_delivery_lock(deps, req, false).await
+}
+
+async fn start_with_delivery_lock(
+    deps: &Deps,
+    req: SendRequest,
+    caller_holds_target_session_lock: bool,
+) -> Result<StartOutcome, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    let idempotent = match &req.idempotency_key {
+        Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
+        None => None,
+    };
 
     // Steering an EXISTING session may omit `model`: inherit the last turn's
     // model (and provider, unless overridden) instead of failing on a raw
@@ -177,6 +219,16 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         Some(sid) => crate::state::get_turn(&deps.iii, sid, cfg.session_timeout_ms).await?,
         None => None,
     };
+    if let Some(outcome) = resolve_send_gate(
+        idempotent,
+        prev.as_ref()
+            .is_some_and(|record| !record.status.is_terminal()),
+        req.options
+            .as_ref()
+            .is_some_and(|options| options.skills.is_some()),
+    )? {
+        return Ok(outcome);
+    }
     let (model, provider) = match (req.model.clone(), &prev) {
         (Some(m), _) => (m, req.provider.clone()),
         (None, Some(prev)) => (
@@ -202,8 +254,21 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     };
 
     // Freeze the per-send options before moving the message out of `req`.
+    // The provider identity prompt is fetched once here and frozen with them.
+    // `provider_identity_prompt: false` skips the fetch entirely — `None` is
+    // what makes `resolve_system_prompt` fall back to the embedded default.
+    // A send that will inherit the prior turn's prompt also skips it: the
+    // fetched identity would be resolved into a prompt we then overwrite.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
-    let mut options = build_options(&cfg, &req, model, provider);
+    let identity = if cfg.provider_identity_prompt && !inherits_prompt {
+        deps.router()
+            .await
+            .system_prompt_get(provider.as_deref())
+            .await
+    } else {
+        None
+    };
+    let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
     inherit_prior_functions(
         &cfg,
         &mut options,
@@ -212,24 +277,18 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
     }
+    prepare_skill_context(
+        deps,
+        &mut options,
+        prev.as_ref().map(|record| &record.options),
+        req.options
+            .as_ref()
+            .and_then(|options| options.skills.as_deref()),
+    )
+    .await?;
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
-
-    // Idempotency: a repeated key returns the original mapping unchanged.
-    if let Some(key) = &req.idempotency_key {
-        if let Some(existing) =
-            crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
-        {
-            return Ok(StartOutcome {
-                session_id: existing.session_id,
-                turn_id: existing.turn_id,
-                merged: false,
-                queued: false,
-                deduplicated: true,
-            });
-        }
-    }
 
     // Resolve the session (ensure if id given, else create).
     let (title, metadata) = req
@@ -246,10 +305,6 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
-    if options.skills_prompt.is_none() {
-        let metadata = session.metadata_of(&session_id).await;
-        freeze_skill_prompt(&mut options, metadata);
-    }
     crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
 
     // Entry id: idempotent when a dedupe key is set.
@@ -271,6 +326,11 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
             entry_id: entry_id.as_deref(),
             origin: None,
             lineage: &TurnLineage::default(),
+            caller_holds_session_lock: caller_holds_target_session_lock,
+            skills_explicit: req
+                .options
+                .as_ref()
+                .is_some_and(|options| options.skills.is_some()),
         },
     )
     .await?;
@@ -287,6 +347,14 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     }
 
     Ok(outcome)
+}
+
+fn caller_holds_target_session_lock(
+    caller_session_id: &str,
+    target_session_id: Option<&str>,
+    caller_holds_session_lock: bool,
+) -> bool {
+    caller_holds_session_lock && target_session_id == Some(caller_session_id)
 }
 
 /// Inject a message into an EXISTING session and wake/steer a turn, reusing the
@@ -328,6 +396,8 @@ pub async fn inject(
             entry_id,
             origin,
             lineage: &TurnLineage::default(),
+            caller_holds_session_lock: false,
+            skills_explicit: false,
         },
     )
     .await
@@ -412,14 +482,11 @@ pub async fn edit_queued(
 /// no step is running — the caller appends to the transcript as before.
 ///
 /// After the (lock-free, blind-key) enqueue the turn record is re-read: a
-/// still-live turn drains the row at its next step; a turn that went terminal
-/// in the window gets a fresh turn seeded, whose step-0 drain delivers the
-/// row. A row landing after the loop's last queue check is appended by the
-/// finalize drain — queued messages are never silently dropped.
-fn reseed_prior<'a, T>(recheck: Option<&'a T>, existing: Option<&'a T>) -> Option<&'a T> {
-    recheck.or(existing)
-}
-
+/// still-live turn drains the row at its next step. A turn that went terminal
+/// in the window is rechecked under the session lock: seed if still terminal,
+/// or merge if another delivery already seeded. A row landing after the loop's
+/// last queue check is appended by the finalize drain — queued messages are
+/// never silently dropped.
 async fn try_enqueue(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -427,11 +494,15 @@ async fn try_enqueue(
     options: &TurnOptions,
     d: &Delivery<'_>,
 ) -> Result<Option<(StartOutcome, String)>, HarnessError> {
-    let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    match existing.as_ref() {
-        Some(rec) if rec.status == TurnStatus::Running => {}
-        _ => return Ok(None),
+    let Some(existing) =
+        crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?
+    else {
+        return Ok(None);
+    };
+    if existing.status != TurnStatus::Running {
+        return Ok(None);
     }
+    validate_active_skill_request(true, d.skills_explicit)?;
 
     let id = ids::new_queued_id();
     let entry_id = d
@@ -455,35 +526,59 @@ async fn try_enqueue(
 
     let recheck = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     let outcome = match recheck {
-        Some(mut r) if !r.status.is_terminal() => {
-            if r.options.refresh_filesystem_root_from(options) {
-                r.updated_at = AgentMessage::now_ms();
-                crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
-            }
-            StartOutcome {
-                session_id: session_id.to_string(),
-                turn_id: r.turn_id,
-                merged: true,
-                queued: true,
-                deduplicated: false,
+        Some(r) if !r.status.is_terminal() => {
+            if filesystem_root_refresh_needed(&r.options, options) {
+                seed_or_merge_queued(deps, cfg, session_id, options, d).await?
+            } else {
+                StartOutcome {
+                    session_id: session_id.to_string(),
+                    turn_id: r.turn_id,
+                    merged: true,
+                    queued: true,
+                    deduplicated: false,
+                }
             }
         }
-        prior => {
-            let mut seeded = seed_new(
+        _ => seed_or_merge_queued(deps, cfg, session_id, options, d).await?,
+    };
+    Ok(Some((outcome, entry_id)))
+}
+
+fn filesystem_root_refresh_needed(current: &TurnOptions, incoming: &TurnOptions) -> bool {
+    incoming
+        .filesystem_root()
+        .is_some_and(|root| current.filesystem_root() != Some(root))
+}
+
+async fn seed_or_merge_queued(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    options: &TurnOptions,
+    d: &Delivery<'_>,
+) -> Result<StartOutcome, HarnessError> {
+    let mut outcome =
+        with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
+            seed_or_merge(
                 deps,
                 cfg,
                 session_id,
                 options.clone(),
-                reseed_prior(prior.as_ref(), existing.as_ref()),
                 message_preview(d.message),
                 d.lineage,
+                d.skills_explicit,
             )
-            .await?;
-            seeded.queued = true;
-            seeded
-        }
-    };
-    Ok(Some((outcome, entry_id)))
+        })
+        .await?;
+    outcome.queued = true;
+    Ok(outcome)
+}
+
+fn latest_seed_record<'a>(
+    initial: &'a TurnRecord,
+    recheck: Option<&'a TurnRecord>,
+) -> &'a TurnRecord {
+    recheck.unwrap_or(initial)
 }
 
 /// The lineage a seeded turn carries: empty for a top-level send or a
@@ -506,6 +601,34 @@ pub(crate) struct Delivery<'a> {
     pub entry_id: Option<&'a str>,
     pub origin: Option<&'a Value>,
     pub lineage: &'a TurnLineage,
+    pub caller_holds_session_lock: bool,
+    pub skills_explicit: bool,
+}
+
+async fn delivery_guard(
+    locks: &crate::locks::SessionLocks,
+    session_id: &str,
+    caller_holds_session_lock: bool,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    if caller_holds_session_lock {
+        None
+    } else {
+        Some(locks.guard(session_id).await)
+    }
+}
+
+async fn with_delivery_guard<T, F, Fut>(
+    locks: &crate::locks::SessionLocks,
+    session_id: &str,
+    caller_holds_session_lock: bool,
+    operation: F,
+) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let _guard = delivery_guard(locks, session_id, caller_holds_session_lock).await;
+    operation().await
 }
 
 /// The shared delivery tail of every turn-seeding path: park the message when a
@@ -521,6 +644,12 @@ pub(crate) async fn deliver(
     options: TurnOptions,
     d: Delivery<'_>,
 ) -> Result<(StartOutcome, String), HarnessError> {
+    if d.skills_explicit {
+        let active = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
+            .await?
+            .is_some_and(|record| !record.status.is_terminal());
+        validate_active_skill_request(active, true)?;
+    }
     if let Some((outcome, row_entry)) = try_enqueue(deps, cfg, session_id, &options, &d).await? {
         return Ok((outcome, row_entry));
     }
@@ -529,8 +658,22 @@ pub(crate) async fn deliver(
         .await
         .append(session_id, d.message, d.entry_id, None, d.origin)
         .await?;
+    // Every whole-record seed/merge writer uses the turn loop's session lock.
+    // An in-turn spawn targeting its own session already holds that
+    // non-reentrant lock; every other target acquires it here.
     let preview = message_preview(d.message);
-    let outcome = seed_or_merge(deps, cfg, session_id, options, preview, d.lineage).await?;
+    let outcome = with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
+        seed_or_merge(
+            deps,
+            cfg,
+            session_id,
+            options,
+            preview,
+            d.lineage,
+            d.skills_explicit,
+        )
+    })
+    .await?;
     Ok((outcome, appended))
 }
 
@@ -570,6 +713,7 @@ fn build_options(
     req: &SendRequest,
     model: String,
     provider: Option<String>,
+    identity: Option<&str>,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
@@ -580,9 +724,10 @@ fn build_options(
             opts.system_prompt,
             opts.system_prompt_strategy.unwrap_or_default(),
             opts.mode,
-            prompt::DEFAULT,
+            identity,
         ),
         skills_prompt: None,
+        skill_context: None,
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
         max_output_tokens: opts.max_output_tokens,
@@ -634,54 +779,104 @@ fn inherit_prior_functions(
     options.functions = clamp_for_mode(cfg, options.mode, prev_functions.cloned());
 }
 
+fn select_skill_context(
+    previous: Option<&TurnOptions>,
+    requested: Option<&[String]>,
+    view: &crate::skills::EffectiveView,
+) -> Result<Option<SkillContext>, HarnessError> {
+    match previous.and_then(|options| options.skill_context.as_ref()) {
+        Some(previous) => Ok(Some(crate::skills::next_context(previous, requested))),
+        None if previous.is_some() && requested.is_some() => Err(HarnessError::InvalidRequest(
+            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
+                .into(),
+        )),
+        None if previous.is_some() => Ok(None),
+        None => Ok(Some(crate::skills::new_context(requested, view))),
+    }
+}
+
+pub(crate) fn validate_active_skill_request(
+    active: bool,
+    explicit: bool,
+) -> Result<(), HarnessError> {
+    if active && explicit {
+        return Err(HarnessError::InvalidRequest(
+            "cannot change `skills` while the session turn is active; retry after the turn finishes"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_send_gate(
+    idempotent: Option<IdemRecord>,
+    active: bool,
+    skills_explicit: bool,
+) -> Result<Option<StartOutcome>, HarnessError> {
+    if let Some(existing) = idempotent {
+        return Ok(Some(StartOutcome {
+            session_id: existing.session_id,
+            turn_id: existing.turn_id,
+            merged: false,
+            queued: false,
+            deduplicated: true,
+        }));
+    }
+    validate_active_skill_request(active, skills_explicit)?;
+    Ok(None)
+}
+
+fn merge_explicit_skill_filter(
+    active: &mut TurnOptions,
+    requested: &TurnOptions,
+    explicit: bool,
+) -> Result<bool, HarnessError> {
+    if !explicit {
+        return Ok(false);
+    }
+    let requested = requested.skill_context.as_ref().ok_or_else(|| {
+        HarnessError::InvalidRequest(
+            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
+                .into(),
+        )
+    })?;
+    let active = active.skill_context.as_mut().ok_or_else(|| {
+        HarnessError::InvalidRequest(
+            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
+                .into(),
+        )
+    })?;
+    if active.filter == requested.filter {
+        return Ok(false);
+    }
+    active.filter = requested.filter.clone();
+    Ok(true)
+}
+
+pub(crate) async fn prepare_skill_context(
+    deps: &Deps,
+    options: &mut TurnOptions,
+    previous: Option<&TurnOptions>,
+    requested: Option<&[String]>,
+) -> Result<(), HarnessError> {
+    let functions = deps.functions().await;
+    let skills = deps.skills().await;
+    let policy = policy::CompiledPolicy::from(options.functions.as_ref());
+    let view = crate::skills::effective_view(&skills, requested, &policy, &functions.functions);
+    options.skill_context = select_skill_context(previous, requested, &view)?;
+    if options.skill_context.is_none() {
+        options.skills_prompt = previous.and_then(|options| options.skills_prompt.clone());
+    } else {
+        options.skills_prompt = None;
+    }
+    Ok(())
+}
+
 /// True when the send names neither `system_prompt` nor
 /// `system_prompt_strategy` — the condition under which an existing session
 /// inherits the prior turn's prompt instead of resolving fresh.
 fn prompt_fields_omitted(opts: Option<&SendOptions>) -> bool {
     opts.is_none_or(|o| o.system_prompt.is_none() && o.system_prompt_strategy.is_none())
-}
-
-fn selected_skill_prompt(
-    metadata: &serde_json::Map<String, Value>,
-    resolved_prompt: Option<&str>,
-) -> String {
-    let Some(resolved_prompt) = resolved_prompt else {
-        return String::new();
-    };
-    metadata
-        .get("system_prompt")
-        .and_then(|value| value.get("addons"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|addon| {
-            let addon = addon.as_object()?;
-            if addon.get("kind").and_then(Value::as_str) != Some("skill") {
-                return None;
-            }
-            let body = addon.get("body").and_then(Value::as_str)?;
-            (!body.trim().is_empty() && resolved_prompt.contains(body)).then_some(body)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn freeze_skill_prompt(
-    options: &mut TurnOptions,
-    metadata: Result<Option<serde_json::Map<String, Value>>, HarnessError>,
-) {
-    if options.skills_prompt.is_some() {
-        return;
-    }
-    let Ok(metadata) = metadata else {
-        return;
-    };
-    options.skills_prompt = Some(
-        metadata
-            .as_ref()
-            .map(|metadata| selected_skill_prompt(metadata, options.system_prompt.as_deref()))
-            .unwrap_or_default(),
-    );
 }
 
 /// A send that names no prompt fields inherits the prior turn's RESOLVED
@@ -720,16 +915,15 @@ async fn seed_or_merge(
     mut options: TurnOptions,
     message_preview: Option<String>,
     lineage: &TurnLineage,
+    skills_explicit: bool,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    // Carry the session's last-acknowledged registry generation onto a new turn
-    // so run_step can notice a registry change that landed between turns.
     apply_default_filesystem_root(
         &mut options,
         existing.is_none(),
         cfg.resolved_default_filesystem_root().as_deref(),
     );
-    match existing.as_ref() {
+    match existing {
         Some(rec) if !rec.status.is_terminal() => {
             // Merge path: the message is already appended; the running loop's
             // steering check folds it in. Double-check the record didn't go
@@ -738,7 +932,9 @@ async fn seed_or_merge(
                 crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
             match recheck {
                 Some(mut r) if !r.status.is_terminal() => {
-                    if r.options.refresh_filesystem_root_from(&options) {
+                    let changed = r.options.refresh_filesystem_root_from(&options)
+                        | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?;
+                    if changed {
                         r.updated_at = AgentMessage::now_ms();
                         crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
                     }
@@ -750,13 +946,14 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                prior => {
+                recheck => {
+                    let previous = latest_seed_record(&rec, recheck.as_ref());
                     seed_new(
                         deps,
                         cfg,
                         session_id,
                         options,
-                        reseed_prior(prior.as_ref(), existing.as_ref()),
+                        Some(previous),
                         message_preview,
                         lineage,
                     )
@@ -764,13 +961,13 @@ async fn seed_or_merge(
                 }
             }
         }
-        _ => {
+        previous => {
             seed_new(
                 deps,
                 cfg,
                 session_id,
                 options,
-                existing.as_ref(),
+                previous.as_ref(),
                 message_preview,
                 lineage,
             )
@@ -798,6 +995,8 @@ pub(crate) async fn seed_new(
     let function_contract_ledger = prior
         .map(|record| record.function_contract_ledger.clone())
         .unwrap_or_default();
+    let skill_ack = prior.and_then(|record| record.skill_ack.clone());
+    let skills_started = prior.is_some_and(|record| record.skills_started);
     let record = TurnRecord {
         turn_id: turn_id.clone(),
         session_id: session_id.to_string(),
@@ -815,6 +1014,8 @@ pub(crate) async fn seed_new(
         display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
         function_contract_ledger,
+        skill_ack,
+        skills_started,
         context_snapshot: None,
         result: None,
         result_error: None,
@@ -845,66 +1046,157 @@ pub(crate) async fn seed_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    #[test]
-    fn terminal_recheck_wins_when_seeding_the_next_turn() {
-        let initial = 1;
-        let terminal = 2;
+    #[tokio::test]
+    async fn omitted_delivery_cannot_overwrite_an_explicit_filter_writer() {
+        let locks = crate::locks::SessionLocks::new();
+        let explicit_guard = delivery_guard(&locks, "s", false)
+            .await
+            .expect("external delivery acquires the session lock");
+        let mut durable = (false, Some(vec!["old".to_string()]));
+        let stale_omitted_filter = durable.1.clone();
+        let mut omitted_guard = Box::pin(delivery_guard(&locks, "s", false));
 
-        assert_eq!(
-            reseed_prior(Some(&terminal), Some(&initial)),
-            Some(&terminal)
-        );
-        assert_eq!(reseed_prior(None, Some(&initial)), Some(&initial));
+        let blocked = tokio::select! {
+            biased;
+            _ = &mut omitted_guard => false,
+            _ = tokio::task::yield_now() => true,
+        };
+        assert!(blocked, "omitted writer must wait for the explicit writer");
+
+        durable = (true, Some(vec!["requested".to_string()]));
+        drop(explicit_guard);
+        let _omitted_guard = omitted_guard
+            .await
+            .expect("omitted delivery uses the same session lock");
+        if !durable.0 {
+            durable = (true, stale_omitted_filter);
+        }
+
+        assert_eq!(durable.1, Some(vec!["requested".to_string()]));
     }
 
-    #[test]
-    fn selected_skill_prompt_keeps_only_ordered_nonblank_bodies_in_resolved_prompt() {
-        let metadata = serde_json::json!({
-            "system_prompt": {
-                "addons": [
-                    { "kind": "skill", "name": "one", "body": "Skill one." },
-                    { "kind": "prompt", "name": "review", "body": "Review prompt." },
-                    { "kind": "skill", "name": "blank", "body": "   " },
-                    { "kind": "skill", "name": "missing", "body": "Not selected." },
-                    { "kind": "skill", "name": "two", "body": "Skill two." }
-                ]
-            }
-        });
+    #[tokio::test]
+    async fn delivery_skips_reacquiring_a_session_lock_its_caller_owns() {
+        let locks = crate::locks::SessionLocks::new();
+        let _held = locks.guard("s").await;
 
+        let guard = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            delivery_guard(&locks, "s", true),
+        )
+        .await
+        .expect("owned-lock delivery must not deadlock");
+
+        assert!(guard.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_terminal_recheck_waits_for_the_explicit_filter_writer() {
+        let locks = crate::locks::SessionLocks::new();
+        let explicit_guard = delivery_guard(&locks, "s", false)
+            .await
+            .expect("explicit writer acquires the session lock");
+        let durable_filter = Arc::new(tokio::sync::Mutex::new(Some(vec!["old".to_string()])));
+        let queued_filter = durable_filter.clone();
+        let mut queued_recheck = Box::pin(with_delivery_guard(
+            &locks,
+            "s",
+            false,
+            move || async move { queued_filter.lock().await.clone() },
+        ));
+
+        let blocked = tokio::select! {
+            biased;
+            _ = &mut queued_recheck => false,
+            _ = tokio::task::yield_now() => true,
+        };
+        assert!(blocked, "queued terminal recheck must wait");
+
+        *durable_filter.lock().await = Some(vec!["requested".to_string()]);
+        drop(explicit_guard);
+
+        assert_eq!(queued_recheck.await, Some(vec!["requested".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn live_queue_root_refresh_cannot_restore_a_stale_skill_filter() {
+        let mut stale_recheck = options_with(None, None);
+        stale_recheck.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["old".into()]),
+            baseline: Some("frozen".into()),
+        });
+        stale_recheck.set_filesystem_root("/old");
+        let mut incoming = stale_recheck.clone();
+        incoming.set_filesystem_root("/new");
+        assert!(filesystem_root_refresh_needed(&stale_recheck, &incoming));
+
+        let locks = crate::locks::SessionLocks::new();
+        let explicit_guard = delivery_guard(&locks, "s", false)
+            .await
+            .expect("explicit writer acquires the session lock");
+        let durable = Arc::new(tokio::sync::Mutex::new(stale_recheck));
+        let queued_durable = durable.clone();
+        let mut queued_refresh = Box::pin(with_delivery_guard(&locks, "s", false, move || {
+            let incoming = incoming.clone();
+            async move {
+                let mut current = queued_durable.lock().await;
+                current.refresh_filesystem_root_from(&incoming);
+                current.clone()
+            }
+        }));
+
+        let blocked = tokio::select! {
+            biased;
+            _ = &mut queued_refresh => false,
+            _ = tokio::task::yield_now() => true,
+        };
+        assert!(
+            blocked,
+            "live queue refresh must wait for the explicit writer"
+        );
+        durable.lock().await.skill_context.as_mut().unwrap().filter =
+            Some(vec!["requested".into()]);
+        drop(explicit_guard);
+
+        let refreshed = queued_refresh.await;
+        assert_eq!(refreshed.filesystem_root(), Some("/new"));
         assert_eq!(
-            selected_skill_prompt(
-                metadata.as_object().unwrap(),
-                Some("Built in.\n\nSkill one.\n\nReview prompt.\n\nSkill two."),
-            ),
-            "Skill one.\n\nSkill two."
+            refreshed.skill_context.unwrap().filter,
+            Some(vec!["requested".into()])
         );
     }
 
-    #[test]
-    fn skill_prompt_freezing_retries_failures_and_keeps_the_first_success() {
-        let mut options = options_with(None, None);
-        options.system_prompt = Some("Skill one.".into());
+    #[tokio::test]
+    async fn trusted_same_session_send_inherits_the_callers_lock() {
+        let locks = crate::locks::SessionLocks::new();
+        let _held = locks.guard("s_caller").await;
+        let owns_target = caller_holds_target_session_lock("s_caller", Some("s_caller"), true);
+        assert!(owns_target);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            delivery_guard(&locks, "s_caller", owns_target),
+        )
+        .await
+        .expect("same-session delivery must not deadlock")
+        .is_none());
+    }
 
-        freeze_skill_prompt(
-            &mut options,
-            Err(HarnessError::Dependency("session unavailable".into())),
-        );
-        assert_eq!(options.skills_prompt, None);
-
-        freeze_skill_prompt(&mut options, Ok(None));
-        assert_eq!(options.skills_prompt.as_deref(), Some(""));
-
-        let metadata = serde_json::json!({
-            "system_prompt": {
-                "addons": [{ "kind": "skill", "name": "one", "body": "Skill one." }]
-            }
-        });
-        freeze_skill_prompt(
-            &mut options,
-            Ok(Some(metadata.as_object().unwrap().clone())),
-        );
-        assert_eq!(options.skills_prompt.as_deref(), Some(""));
+    #[tokio::test]
+    async fn trusted_other_session_send_acquires_the_target_lock() {
+        let locks = crate::locks::SessionLocks::new();
+        let _held = locks.guard("s_caller").await;
+        let owns_target = caller_holds_target_session_lock("s_caller", Some("s_other"), true);
+        assert!(!owns_target);
+        assert!(delivery_guard(&locks, "s_other", owns_target)
+            .await
+            .is_some());
+        assert!(!caller_holds_target_session_lock(
+            "s_caller",
+            Some("s_caller"),
+            false
+        ));
     }
 
     #[test]
@@ -995,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn build_options_applies_embedded_prompt_when_system_prompt_omitted() {
+    fn build_options_applies_builtin_prompt_when_system_prompt_omitted() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
             session_id: None,
@@ -1009,7 +1301,19 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone());
+        // Router-served identity used when present…
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
+        let prompt = opts.system_prompt.expect("built-in prompt");
+        assert!(prompt.contains("operating in agent mode"));
+        assert!(prompt.ends_with("You are an iii agent worker. VOICE."));
+        // …embedded default when the router serves none.
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("# System rules"));
@@ -1032,7 +1336,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -1042,6 +1352,7 @@ mod tests {
             provider: None,
             system_prompt: None,
             skills_prompt: None,
+            skill_context: None,
             mode,
             max_turns: 16,
             max_output_tokens: None,
@@ -1056,6 +1367,52 @@ mod tests {
             max_validation_retries: 2,
             max_transient_resumes: 1,
         }
+    }
+
+    fn terminal_record_with_skill_state(generation: u64, started: bool) -> TurnRecord {
+        TurnRecord {
+            turn_id: "t_1".into(),
+            session_id: "s_1".into(),
+            status: TurnStatus::Completed,
+            step: 1,
+            turn_count: 1,
+            depth: 0,
+            message_preview: None,
+            abort: false,
+            watermark_entry_id: None,
+            stream_request_id: None,
+            options: options_with(None, None),
+            calls: Default::default(),
+            parent: None,
+            display_parent_session_id: None,
+            functions_generation: Some(generation),
+            function_contract_ledger: Default::default(),
+            skill_ack: Some(crate::types::turn::SkillAck {
+                generation,
+                fingerprint: Some(format!("sha256:{generation}")),
+            }),
+            skills_started: started,
+            context_snapshot: None,
+            result: None,
+            result_error: None,
+            validation_retries: 0,
+            transient_resumes: 0,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn terminal_recheck_is_the_seed_source_after_an_active_turn_finishes() {
+        let stale = terminal_record_with_skill_state(1, false);
+        let final_record = terminal_record_with_skill_state(2, true);
+
+        let selected = latest_seed_record(&stale, Some(&final_record));
+
+        assert_eq!(selected.functions_generation, Some(2));
+        assert_eq!(selected.skill_ack.as_ref().unwrap().generation, 2);
+        assert!(selected.skills_started);
+        assert!(std::ptr::eq(selected, &final_record));
     }
 
     #[test]
@@ -1140,6 +1497,104 @@ mod tests {
     }
 
     #[test]
+    fn skill_context_is_new_for_fresh_sessions_inherited_when_omitted_and_rejects_legacy_changes() {
+        let view = crate::skills::EffectiveView::Removed { generation: 1 };
+        let fresh = select_skill_context(None, None, &view).unwrap().unwrap();
+        assert_eq!(fresh.filter, None);
+
+        let mut previous = options_with(None, None);
+        previous.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["one".into()]),
+            baseline: Some("frozen".into()),
+        });
+        assert_eq!(
+            select_skill_context(Some(&previous), None, &view).unwrap(),
+            previous.skill_context
+        );
+        assert_eq!(
+            select_skill_context(Some(&previous), Some(&[]), &view)
+                .unwrap()
+                .unwrap()
+                .filter,
+            None
+        );
+
+        previous.skill_context = None;
+        previous.skills_prompt = Some("legacy body attribution".into());
+        assert_eq!(
+            select_skill_context(Some(&previous), None, &view).unwrap(),
+            None
+        );
+        let error =
+            select_skill_context(Some(&previous), Some(&["one".into()]), &view).unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(error.to_string().contains("start a new session"));
+    }
+
+    #[test]
+    fn send_skills_option_is_ids_only_on_the_wire() {
+        let value = serde_json::to_value(SendOptions {
+            skills: Some(vec!["review".into(), "release".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(value["skills"], serde_json::json!(["review", "release"]));
+    }
+
+    #[test]
+    fn active_sessions_reject_any_explicit_skill_request_but_allow_omission() {
+        let error = validate_active_skill_request(true, true).unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(error.to_string().contains("turn is active"));
+
+        assert!(validate_active_skill_request(true, false).is_ok());
+        assert!(validate_active_skill_request(false, true).is_ok());
+    }
+
+    #[test]
+    fn lost_response_retry_returns_its_idempotent_outcome_while_the_turn_is_active() {
+        let existing = IdemRecord {
+            session_id: "s_original".into(),
+            turn_id: "t_original".into(),
+            entry_id: "e_original".into(),
+            ts: 1,
+        };
+
+        let outcome = resolve_send_gate(Some(existing), true, true)
+            .unwrap()
+            .expect("idempotency mapping resolves before active validation");
+
+        assert_eq!(outcome.session_id, "s_original");
+        assert_eq!(outcome.turn_id, "t_original");
+        assert!(outcome.deduplicated);
+        assert!(!outcome.merged);
+        assert!(!outcome.queued);
+    }
+
+    #[test]
+    fn post_append_race_merges_only_the_explicit_filter_into_the_active_context() {
+        let mut active = options_with(None, None);
+        active.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["old".into()]),
+            baseline: Some("active frozen baseline".into()),
+        });
+        let mut requested = options_with(None, None);
+        requested.skill_context = Some(crate::types::turn::SkillContext {
+            filter: None,
+            baseline: Some("stale request baseline".into()),
+        });
+
+        assert!(merge_explicit_skill_filter(&mut active, &requested, true).unwrap());
+        assert_eq!(
+            active.skill_context,
+            Some(crate::types::turn::SkillContext {
+                filter: None,
+                baseline: Some("active frozen baseline".into())
+            })
+        );
+    }
+
+    #[test]
     fn build_options_clamps_functions_to_the_default_policy_in_ask_mode() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
@@ -1159,7 +1614,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone());
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
         // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
@@ -1191,7 +1646,7 @@ mod tests {
                     ..Default::default()
                 }),
             };
-            let opts = build_options(&cfg, &req, "m".into(), None);
+            let opts = build_options(&cfg, &req, "m".into(), None, None);
             let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
             assert!(
                 compiled.allows("state::set"),
@@ -1216,9 +1671,15 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         let prompt = opts.system_prompt.expect("enriched prompt");
-        assert!(prompt.starts_with(crate::prompt::DEFAULT));
+        assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
         assert!(prompt.ends_with("Speak only in haiku."));
     }
 
@@ -1235,6 +1696,7 @@ mod tests {
                 options: None,
             },
             "m".into(),
+            None,
             None,
         )
     }

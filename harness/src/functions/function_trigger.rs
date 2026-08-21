@@ -179,6 +179,7 @@ pub async fn handle(
         &req.call.function_id,
         &arguments,
         &req.session_id,
+        false, // external trigger path owns no session lock
         record
             .as_ref()
             .map(|rec| crate::functions::subscribe::CallerModel::from_options(&rec.options)),
