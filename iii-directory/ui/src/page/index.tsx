@@ -35,6 +35,10 @@ interface PromptRow {
   modified_at: string
 }
 
+interface SystemPromptPreview {
+  parts: { kind: string; body: string }[]
+}
+
 const skillsAdapter: BrowserAdapter = {
   noun: 'skill',
   crumbRoot: 'skills',
@@ -137,7 +141,9 @@ const promptsAdapter: BrowserAdapter = {
   },
 }
 
-const systemPromptsAdapter: BrowserAdapter = {
+export const HARNESS_DEFAULT_SYSTEM_PROMPT_KEY = 'harness/default'
+
+export const systemPromptsAdapter: BrowserAdapter = {
   noun: 'system prompt',
   crumbRoot: 'system-prompts',
   slugName: true,
@@ -150,14 +156,32 @@ const systemPromptsAdapter: BrowserAdapter = {
     const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
       'directory::system-prompts::list',
     )
-    return (out.prompts ?? []).map((p) => ({
-      key: p.name,
-      title: '',
-      description: p.description,
-      fine: formatRelativeTime(p.modified_at),
-    }))
+    return [
+      {
+        key: HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
+        title: 'default',
+        description: 'Harness default system prompt',
+        fine: 'Read only',
+        readOnly: true,
+      },
+      ...(out.prompts ?? []).map((p) => ({
+        key: p.name,
+        title: '',
+        description: p.description,
+        fine: formatRelativeTime(p.modified_at),
+      })),
+    ]
   },
   async load(host, name) {
+    if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
+      const out = await host.iii.trigger<SystemPromptPreview>(
+        'harness::system-prompt::get',
+        { session_id: `iii-directory:${host.iii.browserId}` },
+      )
+      const builtIn = out.parts.find((part) => part.kind === 'built_in')
+      if (!builtIn) throw new Error('Harness default system prompt is unavailable')
+      return builtIn.body
+    }
     const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
       'directory::system-prompts::get',
       { name, raw: true },

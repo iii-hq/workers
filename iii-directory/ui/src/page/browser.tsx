@@ -62,6 +62,8 @@ export interface BrowserRow {
   description: string
   /** Fine-print line (size · modified). */
   fine: string
+  /** Built-in entries can be viewed and copied but not changed. */
+  readOnly?: boolean
 }
 
 export interface BrowserAdapter {
@@ -268,7 +270,9 @@ export function CollectionBrowser({
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
-  const dirty = loaded !== null && draft !== loaded.content
+  const row = rows?.find((item) => item.key === (loaded?.key || selected))
+  const readOnly = !creating && row?.readOnly === true
+  const dirty = !readOnly && loaded !== null && draft !== loaded.content
   // Split needs side-by-side room; narrow containers fall back to edit.
   const effMode: EditorMode = narrow && mode === 'split' ? 'edit' : mode
 
@@ -416,7 +420,7 @@ export function CollectionBrowser({
   })
 
   const save = useCallback(() => {
-    if (!loaded || saving || deleting || draft === loaded.content) return
+    if (readOnly || !loaded || saving || deleting || draft === loaded.content) return
     const name = readFrontmatterField(
       draft,
       adapter.nameKeys ?? ['name'],
@@ -494,10 +498,10 @@ export function CollectionBrowser({
         if (selectedRef.current === key) setSaveError(String(e))
       })
       .finally(() => setSaving(false))
-  }, [host, adapter, loaded, draft, saving, deleting, creating, refreshList])
+  }, [host, adapter, loaded, draft, saving, deleting, creating, readOnly, refreshList])
 
   const remove = useCallback(() => {
-    if (!adapter.remove || !loaded || creating || saving || deleting) return
+    if (readOnly || !adapter.remove || !loaded || creating || saving || deleting) return
     const key = loaded.key
     const dirtyNote = dirty ? '\n\nYour unsaved changes will also be lost.' : ''
     if (
@@ -527,7 +531,7 @@ export function CollectionBrowser({
         if (selectedRef.current === key) setDeleteError(String(error))
       })
       .finally(() => setDeleting(false))
-  }, [host, adapter, loaded, creating, saving, deleting, dirty, refreshList])
+  }, [host, adapter, loaded, creating, saving, deleting, dirty, readOnly, refreshList])
 
   const onWorkspaceKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -635,7 +639,6 @@ export function CollectionBrowser({
     ? ['edit', 'preview']
     : ['edit', 'split', 'preview']
 
-  const row = rows?.find((item) => item.key === (loaded?.key || selected))
   const nameField = readFrontmatterField(
     draft,
     adapter.nameKeys ?? ['name'],
@@ -662,6 +665,7 @@ export function CollectionBrowser({
   ]
 
   const editDraft = (next: string) => {
+    if (readOnly) return
     setDraft(next)
     setSaveError(null)
   }
@@ -885,7 +889,7 @@ export function CollectionBrowser({
                   aria-label="Editor mode"
                 />
                 <div className="dir-ui-save-area">
-                  {adapter.remove && !creating ? (
+                  {adapter.remove && !creating && !readOnly ? (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -897,7 +901,7 @@ export function CollectionBrowser({
                     </Button>
                   ) : null}
                   <span className="dir-ui-save-note" aria-live="polite">
-                    {saveStatus}
+                    {readOnly ? 'Read only' : saveStatus}
                   </span>
                   {dirty && !saving ? (
                     <Button
@@ -912,14 +916,16 @@ export function CollectionBrowser({
                       Revert
                     </Button>
                   ) : null}
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={!dirty || saving || deleting}
-                    onClick={save}
-                  >
-                    {saving ? 'Saving…' : 'Save'}
-                  </Button>
+                  {!readOnly ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={!dirty || saving || deleting}
+                      onClick={save}
+                    >
+                      {saving ? 'Saving…' : 'Save'}
+                    </Button>
+                  ) : null}
                 </div>
               </header>
 
@@ -1051,6 +1057,7 @@ export function CollectionBrowser({
                               adapter.slugName ? '[a-z0-9_-]+' : undefined
                             }
                             spellCheck={false}
+                            readOnly={readOnly}
                             className="dir-ui-edit-input"
                           />
                         </label>
@@ -1073,6 +1080,7 @@ export function CollectionBrowser({
                             }
                             placeholder={`what this ${adapter.noun} is for…`}
                             required={adapter.descriptionRequired}
+                            readOnly={readOnly}
                             rows={2}
                             className="dir-ui-edit-textarea"
                           />
@@ -1090,6 +1098,7 @@ export function CollectionBrowser({
                           )
                         }
                         language="markdown"
+                        readOnly={readOnly}
                         className="dir-ui-code"
                         aria-label={`${adapter.noun} markdown content`}
                         placeholder="# markdown…"
@@ -1143,7 +1152,11 @@ export function CollectionBrowser({
                     <span className="fact">{formatKb(draftBytes)}</span>
                     <span className="spacer" />
                     <span className="fact">
-                      {dirty ? '⌘S saves' : 'all changes saved'}
+                      {readOnly
+                        ? 'read only'
+                        : dirty
+                          ? '⌘S saves'
+                          : 'all changes saved'}
                     </span>
                   </footer>
                 </>
