@@ -259,6 +259,10 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
+    if options.skills_prompt.is_none() {
+        let metadata = session.metadata_of(&session_id).await;
+        freeze_skill_prompt(&mut options, metadata);
+    }
     crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
 
     // Entry id: idempotent when a dedupe key is set.
@@ -589,6 +593,7 @@ fn build_options(
             opts.mode,
             identity,
         ),
+        skills_prompt: None,
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
         max_output_tokens: opts.max_output_tokens,
@@ -647,6 +652,49 @@ fn prompt_fields_omitted(opts: Option<&SendOptions>) -> bool {
     opts.is_none_or(|o| o.system_prompt.is_none() && o.system_prompt_strategy.is_none())
 }
 
+fn selected_skill_prompt(
+    metadata: &serde_json::Map<String, Value>,
+    resolved_prompt: Option<&str>,
+) -> String {
+    let Some(resolved_prompt) = resolved_prompt else {
+        return String::new();
+    };
+    metadata
+        .get("system_prompt")
+        .and_then(|value| value.get("addons"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|addon| {
+            let addon = addon.as_object()?;
+            if addon.get("kind").and_then(Value::as_str) != Some("skill") {
+                return None;
+            }
+            let body = addon.get("body").and_then(Value::as_str)?;
+            (!body.trim().is_empty() && resolved_prompt.contains(body)).then_some(body)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn freeze_skill_prompt(
+    options: &mut TurnOptions,
+    metadata: Result<Option<serde_json::Map<String, Value>>, HarnessError>,
+) {
+    if options.skills_prompt.is_some() {
+        return;
+    }
+    let Ok(metadata) = metadata else {
+        return;
+    };
+    options.skills_prompt = Some(
+        metadata
+            .as_ref()
+            .map(|metadata| selected_skill_prompt(metadata, options.system_prompt.as_deref()))
+            .unwrap_or_default(),
+    );
+}
+
 /// A send that names no prompt fields inherits the prior turn's RESOLVED
 /// system prompt, the same way model/provider/functions are inherited. A
 /// prior `disabled` turn's `None` inherits too — disabled stays disabled.
@@ -654,6 +702,7 @@ fn prompt_fields_omitted(opts: Option<&SendOptions>) -> bool {
 /// is the reset-to-default escape hatch.
 fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.system_prompt = prev.system_prompt.clone();
+    options.skills_prompt = prev.skills_prompt.clone();
 }
 
 /// Default a BRAND-NEW session's working directory (MOT-3897): when the very
@@ -803,6 +852,55 @@ pub(crate) async fn seed_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_skill_prompt_keeps_only_ordered_nonblank_bodies_in_resolved_prompt() {
+        let metadata = serde_json::json!({
+            "system_prompt": {
+                "addons": [
+                    { "kind": "skill", "name": "one", "body": "Skill one." },
+                    { "kind": "prompt", "name": "review", "body": "Review prompt." },
+                    { "kind": "skill", "name": "blank", "body": "   " },
+                    { "kind": "skill", "name": "missing", "body": "Not selected." },
+                    { "kind": "skill", "name": "two", "body": "Skill two." }
+                ]
+            }
+        });
+
+        assert_eq!(
+            selected_skill_prompt(
+                metadata.as_object().unwrap(),
+                Some("Built in.\n\nSkill one.\n\nReview prompt.\n\nSkill two."),
+            ),
+            "Skill one.\n\nSkill two."
+        );
+    }
+
+    #[test]
+    fn skill_prompt_freezing_retries_failures_and_keeps_the_first_success() {
+        let mut options = options_with(None, None);
+        options.system_prompt = Some("Skill one.".into());
+
+        freeze_skill_prompt(
+            &mut options,
+            Err(HarnessError::Dependency("session unavailable".into())),
+        );
+        assert_eq!(options.skills_prompt, None);
+
+        freeze_skill_prompt(&mut options, Ok(None));
+        assert_eq!(options.skills_prompt.as_deref(), Some(""));
+
+        let metadata = serde_json::json!({
+            "system_prompt": {
+                "addons": [{ "kind": "skill", "name": "one", "body": "Skill one." }]
+            }
+        });
+        freeze_skill_prompt(
+            &mut options,
+            Ok(Some(metadata.as_object().unwrap().clone())),
+        );
+        assert_eq!(options.skills_prompt.as_deref(), Some(""));
+    }
 
     #[test]
     fn string_message_becomes_user_text() {
@@ -956,6 +1054,7 @@ mod tests {
             model: "m".into(),
             provider: None,
             system_prompt: None,
+            skills_prompt: None,
             mode,
             max_turns: 16,
             max_output_tokens: None,
@@ -1016,10 +1115,15 @@ mod tests {
         let mut options = bare_options();
         let mut prev = options_with(None, None);
         prev.system_prompt = Some("frozen custom prompt".into());
+        prev.skills_prompt = Some("frozen skill prompt".into());
         inherit_prior_system_prompt(&mut options, &prev);
         assert_eq!(
             options.system_prompt.as_deref(),
             Some("frozen custom prompt")
+        );
+        assert_eq!(
+            options.skills_prompt.as_deref(),
+            Some("frozen skill prompt")
         );
 
         // A prior `disabled` turn's None inherits too — disabled stays disabled.

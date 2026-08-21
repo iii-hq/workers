@@ -1,6 +1,7 @@
 //! Required `context-manager` client: context assembly and final token
 //! preflight both fail closed so the harness never bypasses provider budgets.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -38,6 +39,8 @@ pub struct AssembleBreakdown {
     #[serde(default)]
     pub by_role: ByRoleTokens,
     #[serde(default)]
+    pub by_part: Option<BTreeMap<String, u64>>,
+    #[serde(default)]
     pub estimator: Option<String>,
 }
 
@@ -74,6 +77,7 @@ pub struct AssembleParams {
     pub model_id: String,
     pub provider: Option<String>,
     pub system_prompt: Option<String>,
+    pub parts: Option<BTreeMap<String, String>>,
     pub previous_summary: Option<String>,
     pub lease_key: String,
     pub thinking_level: Option<ThinkingLevel>,
@@ -130,6 +134,9 @@ impl ContextClient {
         });
         if let Some(sp) = &params.system_prompt {
             payload["system_prompt"] = json!(sp);
+        }
+        if let Some(parts) = &params.parts {
+            payload["parts"] = json!(parts);
         }
 
         let resp = self

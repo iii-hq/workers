@@ -826,8 +826,14 @@ pub async fn run_step(
                 None
             }
         };
-        crate::context_snapshot::exactify(snapshot, &router, gen_system_prompt.as_deref(), &tools)
-            .await;
+        crate::context_snapshot::exactify(
+            snapshot,
+            &router,
+            gen_system_prompt.as_deref(),
+            record.options.skills_prompt.as_deref(),
+            &tools,
+        )
+        .await;
         if let Err(error) =
             crate::context_snapshot::put(&deps.iii, snapshot, cfg.session_timeout_ms).await
         {
@@ -2408,6 +2414,9 @@ async fn assemble_context(
         model_id: record.options.model.clone(),
         provider: record.options.provider.clone(),
         system_prompt: inputs.system_prompt,
+        parts: record.options.skills_prompt.as_ref().map(|prompt| {
+            std::collections::BTreeMap::from([("skills".to_string(), prompt.clone())])
+        }),
         previous_summary,
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
@@ -2505,6 +2514,7 @@ fn build_context_snapshot(
     // A context-manager that predates the breakdown response reports nothing,
     // which is what the all-zero default says.
     let b = assembled.breakdown.clone().unwrap_or_default();
+    let (system_prompt, skills) = estimated_prompt_categories(&b);
     ContextSnapshotV1 {
         session_id: record.session_id.clone(),
         turn_id: record.turn_id.clone(),
@@ -2518,7 +2528,8 @@ fn build_context_snapshot(
         total: final_request_tokens,
         free: assembled.usable.saturating_sub(final_request_tokens),
         categories: SnapshotCategoriesV1 {
-            system_prompt: b.system_prompt_tokens,
+            system_prompt,
+            skills,
             tools: b.tools_tokens,
             messages: b.by_role.into(),
             overhead: request_overhead_tokens,
@@ -2529,6 +2540,19 @@ fn build_context_snapshot(
         usage: None,
         timestamp: AgentMessage::now_ms(),
     }
+}
+
+fn estimated_prompt_categories(
+    breakdown: &crate::clients::context::AssembleBreakdown,
+) -> (u64, u64) {
+    let skills = breakdown
+        .by_part
+        .as_ref()
+        .and_then(|parts| parts.get("skills"))
+        .copied()
+        .unwrap_or(0)
+        .min(breakdown.system_prompt_tokens);
+    (breakdown.system_prompt_tokens - skills, skills)
 }
 
 /// Append model-facing context aid lines to the system prompt: the session id
@@ -2877,6 +2901,22 @@ mod tests {
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+
+    #[test]
+    fn estimated_prompt_categories_split_and_clamp_named_skills() {
+        let breakdown = crate::clients::context::AssembleBreakdown {
+            system_prompt_tokens: 10,
+            by_part: Some(std::collections::BTreeMap::from([("skills".into(), 4)])),
+            ..Default::default()
+        };
+        assert_eq!(super::estimated_prompt_categories(&breakdown), (6, 4));
+
+        let oversized = crate::clients::context::AssembleBreakdown {
+            by_part: Some(std::collections::BTreeMap::from([("skills".into(), 14)])),
+            ..breakdown
+        };
+        assert_eq!(super::estimated_prompt_categories(&oversized), (0, 10));
+    }
 
     #[test]
     fn llm_failure_preserves_router_contract_and_runtime_attribution() {
