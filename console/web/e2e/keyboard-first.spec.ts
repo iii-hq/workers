@@ -53,6 +53,26 @@ test('the keyboard reaches the chat, the panes and every page command through âŒ
   await row.click()
   await expect(composer(page)).toBeFocused()
 
+  // A prefix narrows the palette to a mode, and the last choice leads the
+  // next empty query.
+  await settle(page)
+  await page.keyboard.press('Meta+k')
+  await palette.getByRole('textbox').fill('>stop')
+  await expect(
+    palette.getByRole('button', { name: /Chat: Stop the turn/ }),
+  ).toHaveCount(0)
+  await palette.getByRole('textbox').fill('>model')
+  await expect(
+    palette.getByRole('button', { name: /Chat: Switch model/ }),
+  ).toBeVisible()
+  await expect(palette.getByRole('button', { name: /^workers/ })).toHaveCount(0)
+  await palette.getByRole('textbox').fill('')
+  await expect(palette.getByText('Recent', { exact: true })).toBeVisible()
+  await expect(
+    palette.getByRole('button', { name: /Chat: Focus the composer/ }).first(),
+  ).toBeVisible()
+  await page.keyboard.press('Escape')
+
   // A second pane, then the braces move the keyboard between panes, and the
   // palette's "open" lands the keyboard in the page it opened.
   await settle(page)
