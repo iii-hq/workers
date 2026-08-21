@@ -20,9 +20,34 @@ export function createA2uiTriggerRenderer(host: Host): FunctionTriggerRenderer {
     tryRender: (message) => renderResult(host, message),
     tryRenderRunning: (message) => renderRunning(message),
     tryRenderPreview: (message) => renderRunning(message),
+    tryRenderDisplay: (message) => renderDisplay(message),
     primaryTabLabel: 'Interface',
+    metadata: { display: true, displayAction: 'expand' },
     redactRaw,
   }
+}
+
+function renderDisplay(message: FunctionTriggerMessage): ReactNode | null {
+  if (message.functionId === 'a2ui::action') return null
+  const receipt = parseReceipt(message.output)
+  if (!receipt) return null
+  const deleted = receipt.status === 'deleted'
+  return (
+    <div
+      className="a2ui-trigger-display"
+      data-a2ui-display-state={deleted ? 'deleted' : 'ready'}
+    >
+      <div className="a2ui-trigger-display-copy">
+        <strong>{receipt.title}</strong>
+        <span>
+          {deleted
+            ? receipt.surface_id
+            : `${receipt.component_count} components · r${receipt.revision}`}
+        </span>
+      </div>
+      <Badge variant={deleted ? undefined : 'accent'}>{deleted ? 'Deleted' : 'Ready'}</Badge>
+    </div>
+  )
 }
 
 function renderResult(host: Host, message: FunctionTriggerMessage): ReactNode | null {

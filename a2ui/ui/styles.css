@@ -9,7 +9,8 @@
 }
 
 [data-iii-ui='a2ui'] .a2ui-page *,
-[data-iii-ui='a2ui'] .a2ui-trigger * {
+[data-iii-ui='a2ui'] .a2ui-trigger *,
+[data-iii-ui='a2ui'] .a2ui-trigger-display * {
   box-sizing: border-box;
 }
 
@@ -376,6 +377,40 @@
 [data-iii-ui='a2ui'] .a2ui-trigger-skeleton {
   display: block;
   min-height: 5rem;
+}
+
+[data-iii-ui='a2ui'] .a2ui-trigger-display {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+[data-iii-ui='a2ui'] .a2ui-trigger-display-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+[data-iii-ui='a2ui'] .a2ui-trigger-display-copy strong,
+[data-iii-ui='a2ui'] .a2ui-trigger-display-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='a2ui'] .a2ui-trigger-display-copy strong {
+  color: var(--color-ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+[data-iii-ui='a2ui'] .a2ui-trigger-display-copy span {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
 }
 
 @container a2ui-page (max-width: 680px) {

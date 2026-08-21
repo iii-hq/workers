@@ -125,12 +125,15 @@ async fn trigger_with_retry(
     let mut last_error = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.into(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: None,
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.into(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: None,
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(value) => return Ok(value),

@@ -24,7 +24,7 @@ Call `a2ui::generate` from a Harness turn. The Harness hook supplies the authori
 }
 ```
 
-The call returns a compact receipt such as `{ "surface_id": "deployment-approval", "revision": 3, "component_count": 11, "page": "#/ext/a2ui" }`. The Console function card loads the full surface inline, while the A2UI page keeps every surface in the active conversation live through an exact-session state subscription.
+The call returns a compact receipt such as `{ "surface_id": "deployment-approval", "revision": 3, "component_count": 11, "page": "#/ext/a2ui" }`. The Console keeps that receipt visible in the chat feed and expands it into the full surface on selection, while the A2UI page keeps every surface in the active conversation live through an exact-session state subscription.
 
 Patch an existing surface with another natural-language request. Supplying `expected_revision` prevents an older composition from overwriting a newer edit:
 
