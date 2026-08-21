@@ -1,4 +1,9 @@
-import { Blocks, File, SquareSlash, X } from 'lucide-react'
+import { Blocks, File, Image as ImageIcon, SquareSlash, X } from 'lucide-react'
+import {
+  ImageThumbnailButton,
+  ImageViewer,
+  useImageViewer,
+} from '@/components/ui/ImageViewer'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
@@ -27,8 +32,9 @@ export function AttachmentChip({
   onRemove,
   className,
 }: AttachmentChipProps) {
-  const isImage = attachment.type.startsWith('image/') && attachment.dataUrl
+  const isImage = attachment.type.startsWith('image/')
   const Icon = chipIcon(attachment.type)
+  const viewer = useImageViewer()
   return (
     <div
       className={cn(
@@ -37,11 +43,31 @@ export function AttachmentChip({
       )}
     >
       {isImage ? (
-        <img
-          src={attachment.dataUrl}
-          alt=""
-          className="size-6 object-cover border border-rule-2"
-        />
+        <>
+          <ImageThumbnailButton
+            title={attachment.name}
+            onClick={viewer.show}
+            className="shrink-0"
+          >
+            {attachment.dataUrl ? (
+              <img
+                src={attachment.dataUrl}
+                alt=""
+                className="size-6 border border-rule-2 object-cover"
+              />
+            ) : (
+              <ImageIcon size={16} aria-hidden className="text-ink-faint" />
+            )}
+          </ImageThumbnailButton>
+          <ImageViewer
+            open={viewer.open}
+            onOpenChange={viewer.setOpen}
+            src={attachment.dataUrl}
+            alt={attachment.name}
+            title={attachment.name}
+            description={`${attachment.type.replace('image/', '')} · ${formatSize(attachment.size)}`}
+          />
+        </>
       ) : (
         <Icon size={16} aria-hidden className="text-ink-faint shrink-0" />
       )}

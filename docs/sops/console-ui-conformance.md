@@ -16,6 +16,10 @@ or the selection/motion rules change.
   and semantic icons by default.
 - Overlays: shared `Tooltip`, `Dialog`, `DropdownMenu`, `Select`, `Selector`,
   and `BottomSheet` preserve injected worker scope through their portals.
+- Images: a picture the user may want to inspect opens the shared
+  `ImageViewer` through an `ImageThumbnailButton`; no worker ships its own
+  lightbox, zoom or pan. Captions carry the attachment name or a relative
+  path, never a host path.
 - Selection: neutral `surface-selected` + `ink`, with an optional neutral
   `edge`. Accent is reserved for primary actions, form focus, live activity,
   and semantic domain data.

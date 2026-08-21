@@ -41,6 +41,8 @@ export const componentNames = [
   'FileDiff',
   'Input',
   'IconButton',
+  'ImageThumbnailButton',
+  'ImageViewer',
   'JsonHighlight',
   'List',
   'ListGroup',

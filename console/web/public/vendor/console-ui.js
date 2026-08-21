@@ -38,6 +38,8 @@ export const {
   FileDiff,
   Input,
   IconButton,
+  ImageThumbnailButton,
+  ImageViewer,
   JsonHighlight,
   List,
   ListGroup,

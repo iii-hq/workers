@@ -12,6 +12,8 @@ import {
   type CodeEditorHandle,
   type Host,
   IconButton,
+  ImageThumbnailButton,
+  ImageViewer,
 } from '@iii-dev/console-ui'
 import { Code, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -307,7 +309,7 @@ export function EditorPane({
   return (
     <div className="shui-main-pane">
       <div className="shui-editor-head">
-        <span className="path" title={absPath}>
+        <span className="path" title={relPath}>
           {relPath}
         </span>
         {dirty ? <span className="shui-dirty" title="unsaved changes" /> : null}
@@ -351,9 +353,11 @@ export function EditorPane({
         ) : pane.phase === 'error' ? (
           <div className="shui-side-note warn">{pane.message}</div>
         ) : entry?.image ? (
-          <div className="shui-image-wrap">
-            <img src={entry.image} alt={relPath} />
-          </div>
+          <ImagePreview
+            src={entry.image}
+            name={relPath}
+            description={entry.size != null ? formatBytes(entry.size) : undefined}
+          />
         ) : showPreview ? (
           <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
         ) : (
@@ -369,6 +373,34 @@ export function EditorPane({
           />
         )}
       </div>
+    </div>
+  )
+}
+
+/** A raster file in the editor body; the picture opens the shared viewer. */
+export function ImagePreview({
+  src,
+  name,
+  description,
+}: {
+  src: string
+  name: string
+  description?: string
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="shui-image-wrap">
+      <ImageThumbnailButton title={name} onClick={() => setOpen(true)}>
+        <img src={src} alt={name} />
+      </ImageThumbnailButton>
+      <ImageViewer
+        open={open}
+        onOpenChange={setOpen}
+        src={src}
+        alt={name}
+        title={name}
+        description={description}
+      />
     </div>
   )
 }
