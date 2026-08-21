@@ -1290,21 +1290,25 @@ mod tests {
             }),
         };
         let deps = search_deps(vec![
+            tool(
+                "web::fetch",
+                "Fetch a URL over HTTP(S) and return the response as a structured envelope.",
+            ),
             fetch_tier(
                 "browser::fetch",
-                "`browser::fetch` is the default fast HTTP path for static web pages/webpages, RSS/Atom feeds, and APIs and accepts `urls` for concurrent bulk fetching.",
+                "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
             ),
             fetch_tier(
                 "browser::dynamic-fetch",
-                "`browser::dynamic-fetch` is only an escalation for JavaScript-rendered pages.",
+                "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
             ),
             fetch_tier(
                 "browser::stealthy-fetch",
-                "`browser::stealthy-fetch` is only an escalation for anti-bot/Cloudflare pages after cheaper tiers fail.",
+                "Camoufox stealth browser: solves Cloudflare, hardens WebRTC/canvas; extraction + bulk.",
             ),
             fetch_tier(
                 "browser::session-fetch",
-                "`browser::session-fetch` is only for an already-open session whose cookies/state must be reused.",
+                "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
             ),
             tool(
                 "browser::extract",

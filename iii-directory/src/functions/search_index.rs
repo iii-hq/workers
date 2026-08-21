@@ -189,6 +189,11 @@ impl Bm25Index {
             // relative function floor prune same-worker family members
             // that match only the namespace token plus a generic word.
             let mut text = format!("{0} {0} {0} {1}", tool.name, tool.description);
+            if tool.name == "browser::fetch" {
+                text.push_str(
+                    " default static web page webpage website RSS Atom API content scrape scraping",
+                );
+            }
             if let Some(properties) = tool
                 .parameters
                 .get("properties")

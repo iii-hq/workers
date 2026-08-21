@@ -604,19 +604,19 @@ pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         FunctionSpec {
             function_id: "browser::fetch",
-            description: "`browser::fetch` is the default fast HTTP path for static web pages/webpages, RSS/Atom feeds, and APIs and accepts `urls` for concurrent bulk fetching. Do not refetch successful entries; cite returned URLs.",
+            description: "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
             request: fetch_request(),
             response: fetch_response(),
         },
         FunctionSpec {
             function_id: "browser::stealthy-fetch",
-            description: "`browser::stealthy-fetch` is only an escalation for anti-bot/Cloudflare pages after cheaper tiers fail. It supports inline extraction and concurrent bulk `urls`.",
+            description: "Camoufox stealth browser: solves Cloudflare, hardens WebRTC/canvas; extraction + bulk.",
             request: stealthy_fetch_request(),
             response: fetch_response(),
         },
         FunctionSpec {
             function_id: "browser::dynamic-fetch",
-            description: "`browser::dynamic-fetch` is only an escalation for JavaScript-rendered pages. It supports waits, XHR capture, inline extraction, and concurrent bulk `urls`.",
+            description: "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
             request: dynamic_fetch_request(),
             response: fetch_response(),
         },
@@ -700,7 +700,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::session-fetch",
-            description: "`browser::session-fetch` is only for an already-open session whose cookies/state must be reused. It returns the same page/extraction output as the matching fetch tier.",
+            description: "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
             request: session_fetch_request(),
             response: fetch_response(),
         },

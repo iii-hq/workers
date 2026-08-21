@@ -1,6 +1,6 @@
 {
   "function_id": "browser::dynamic-fetch",
-  "description": "`browser::dynamic-fetch` is only an escalation for JavaScript-rendered pages. It supports waits, XHR capture, inline extraction, and concurrent bulk `urls`.",
+  "description": "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
   "request_schema": {
     "type": "object",
     "properties": {

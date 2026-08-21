@@ -1,6 +1,6 @@
 {
   "function_id": "browser::session-fetch",
-  "description": "`browser::session-fetch` is only for an already-open session whose cookies/state must be reused. It returns the same page/extraction output as the matching fetch tier.",
+  "description": "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
   "request_schema": {
     "type": "object",
     "properties": {

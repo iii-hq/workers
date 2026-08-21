@@ -1,6 +1,6 @@
 {
   "function_id": "browser::fetch",
-  "description": "`browser::fetch` is the default fast HTTP path for static web pages/webpages, RSS/Atom feeds, and APIs and accepts `urls` for concurrent bulk fetching. Do not refetch successful entries; cite returned URLs.",
+  "description": "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
   "request_schema": {
     "type": "object",
     "properties": {
