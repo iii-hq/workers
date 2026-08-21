@@ -100,6 +100,7 @@ export function ConversationSidebar({
           onChange={setQuery}
           placeholder="Search conversations"
           aria-label="search conversations"
+          data-conversation-search=""
           className="h-12 font-sans text-base normal-case sm:h-9 sm:text-sm"
           onKeyDown={(e) => {
             if (e.key === 'Escape') setQuery('')

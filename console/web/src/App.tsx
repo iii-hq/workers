@@ -1497,9 +1497,9 @@ function ScreenBody({
         />
       )
     case 'workers':
-      return <Workers onRequestClose={onClose} />
+      return <Workers onRequestClose={onClose} commands={commands} />
     default:
-      return <TracesV2 onRequestClose={onClose} />
+      return <TracesV2 onRequestClose={onClose} commands={commands} />
   }
 }
 

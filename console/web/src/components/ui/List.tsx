@@ -2,11 +2,44 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
+/** The arrows walk the list's items; Home and End jump to the ends. */
+function onListKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+  const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+  if (!keys.includes(event.key)) return
+  const target = event.target as HTMLElement
+  if (!target.matches('[data-list-item]')) return
+  const items = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      '[data-list-item]:not([disabled])',
+    ),
+  )
+  const index = items.indexOf(target)
+  if (index === -1) return
+  const next =
+    event.key === 'Home'
+      ? items[0]
+      : event.key === 'End'
+        ? items[items.length - 1]
+        : items[index + (event.key === 'ArrowDown' ? 1 : -1)]
+  if (!next) return
+  event.preventDefault()
+  next.focus()
+}
+
 export const List = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn(uiClasses.list, className)} {...props} />
+>(({ className, onKeyDown, ...props }, ref) => (
+  // biome-ignore lint/a11y/noStaticElementInteractions: the handler only moves focus between the list's own buttons
+  <div
+    ref={ref}
+    className={cn(uiClasses.list, className)}
+    onKeyDown={(event) => {
+      onKeyDown?.(event)
+      if (!event.defaultPrevented) onListKeyDown(event)
+    }}
+    {...props}
+  />
 ))
 List.displayName = 'List'
 
@@ -61,6 +94,7 @@ export const ListItem = React.forwardRef<HTMLButtonElement, ListItemProps>(
     <button
       ref={ref}
       type={type}
+      data-list-item=""
       data-selected={selected || undefined}
       aria-pressed={props['aria-pressed'] ?? selected}
       className={cn(uiClasses.listItem, className)}

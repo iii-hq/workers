@@ -1867,6 +1867,17 @@ export function ChatView({
         viewRef.current?.querySelectorAll<HTMLElement>('[data-message-row]') ??
           [],
       )
+    const focusedRow = () =>
+      messageNodes().find((node) => node.contains(document.activeElement))
+    const actOnFocused = (action: string) => {
+      const row = focusedRow()
+      const button = row?.querySelector<HTMLButtonElement>(
+        `[data-message-action="${action}"]`,
+      )
+      if (button && !button.disabled) button.click()
+    }
+    const pendingApproval = () =>
+      viewRef.current?.querySelector('[data-approval-actions]') !== null
     const focusMessage = (delta: 1 | -1) => {
       const nodes = messageNodes()
       if (nodes.length === 0) return
@@ -1921,6 +1932,58 @@ export function ChatView({
           )
           list?.scrollTo({ top: list.scrollHeight })
         },
+      },
+      {
+        id: 'approve',
+        title: 'Approve the pending call',
+        detail: 'Let the focused (or the only waiting) function call run',
+        keywords: ['allow', 'yes', 'permission'],
+        shortcut: 'A',
+        enabled: pendingApproval,
+        run: () => {
+          const row = focusedRow()
+          const scope = row?.querySelector('[data-approval-actions]')
+            ? row
+            : viewRef.current
+          scope
+            ?.querySelector<HTMLButtonElement>(
+              '[data-message-action="approve"]',
+            )
+            ?.click()
+        },
+      },
+      {
+        id: 'deny',
+        title: 'Deny the pending call',
+        detail: 'Refuse the focused (or the only waiting) function call',
+        keywords: ['reject', 'no', 'permission'],
+        shortcut: 'D',
+        enabled: pendingApproval,
+        run: () => {
+          const row = focusedRow()
+          const scope = row?.querySelector('[data-approval-actions]')
+            ? row
+            : viewRef.current
+          scope
+            ?.querySelector<HTMLButtonElement>('[data-message-action="deny"]')
+            ?.click()
+        },
+      },
+      {
+        id: 'expand',
+        title: 'Expand or collapse the focused message',
+        detail: 'Open a function call card, or fold it',
+        keywords: ['open', 'fold', 'details'],
+        shortcut: 'O',
+        run: () => actOnFocused('toggle'),
+      },
+      {
+        id: 'copy',
+        title: 'Copy the focused message',
+        detail: 'Copy its text to the clipboard',
+        keywords: ['clipboard'],
+        shortcut: 'Y',
+        run: () => actOnFocused('copy'),
       },
       {
         id: 'model',

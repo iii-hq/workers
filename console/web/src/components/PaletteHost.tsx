@@ -66,6 +66,10 @@ const PAGE_ACTIONS: Partial<Record<string, KeybindingActionId>> = {
   traces: 'page.traces',
 }
 
+function capitalised(text: string): string {
+  return text.length === 0 ? text : text[0].toUpperCase() + text.slice(1)
+}
+
 export interface PaletteWorkspace {
   tabs: readonly WorkspaceTab[]
   activeTabId: string
@@ -229,10 +233,11 @@ export function PaletteHost({
         return true
       })
       .map((entry) => {
-        const pageTitle =
+        const pageTitle = capitalised(
           entry.pageTitle ??
-          extPages.find((page) => page.id === entry.pageId)?.title ??
-          entry.pageId
+            extPages.find((page) => page.id === entry.pageId)?.title ??
+            entry.pageId,
+        )
         return {
           id: `command:${entry.key}`,
           kind: 'command' as const,

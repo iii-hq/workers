@@ -79,13 +79,51 @@ export interface TableRowProps
   selected?: boolean
 }
 
+/** Arrow keys walk interactive rows; Enter and Space activate the row. */
+function onInteractiveRowKeyDown(
+  event: React.KeyboardEvent<HTMLTableRowElement>,
+): void {
+  if (event.target !== event.currentTarget) return
+  const row = event.currentTarget
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    row.click()
+    return
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  const rows = Array.from(
+    row
+      .closest('table')
+      ?.querySelectorAll<HTMLTableRowElement>('tr[data-interactive]') ?? [],
+  )
+  const index = rows.indexOf(row)
+  if (index === -1) return
+  const next = rows[index + (event.key === 'ArrowDown' ? 1 : -1)]
+  if (!next) return
+  event.preventDefault()
+  next.focus()
+}
+
 export const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
-  ({ className, interactive, selected, ...props }, ref) => (
+  ({ className, interactive, selected, onKeyDown, ...props }, ref) => (
     <tr
       ref={ref}
       data-interactive={interactive || undefined}
       data-selected={selected || undefined}
-      className={cn(uiClasses.tableRow, className)}
+      // A row that answers a click answers the keyboard too: it joins the
+      // tab order once, and the arrows move between rows from there.
+      tabIndex={interactive ? (props.tabIndex ?? 0) : props.tabIndex}
+      onKeyDown={(event) => {
+        onKeyDown?.(event)
+        if (interactive && !event.defaultPrevented)
+          onInteractiveRowKeyDown(event)
+      }}
+      className={cn(
+        uiClasses.tableRow,
+        interactive &&
+          'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+        className,
+      )}
       {...props}
     />
   ),

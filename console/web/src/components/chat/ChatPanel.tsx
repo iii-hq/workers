@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
@@ -67,6 +67,7 @@ export function ChatPanel({
   } = useConversationsCtx()
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
+  const surfaceRef = useRef<HTMLDivElement | null>(null)
   const mobileViewport = useMediaQuery(MOBILE_VIEWPORT_QUERY)
   const narrow = containerNarrow || mobileViewport
   // Which page the narrow flow shows. Only consulted while narrow; kept
@@ -87,6 +88,40 @@ export function ChatPanel({
     [select],
   )
 
+  // The sidebar's verbs, beside the chat's own: both live in the same pane.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new-chat',
+          title: 'New chat',
+          detail: 'Start a conversation',
+          keywords: ['conversation', 'session', 'create'],
+          shortcut: 'N',
+          run: () => {
+            createNew()
+            setNarrowView('chat')
+          },
+        },
+        {
+          id: 'search-chats',
+          title: 'Search conversations',
+          detail: 'Put the caret in the sidebar search',
+          keywords: ['find', 'sessions', 'filter'],
+          shortcut: '/',
+          run: () => {
+            setNarrowView('list')
+            window.requestAnimationFrame(() => {
+              surfaceRef.current
+                ?.querySelector<HTMLElement>('[data-conversation-search]')
+                ?.focus()
+            })
+          },
+        },
+      ]),
+    [commands, createNew],
+  )
+
   const handleCreate = useCallback(() => {
     createNew()
     setNarrowView('chat')
@@ -103,7 +138,10 @@ export function ChatPanel({
 
   return (
     <div
-      ref={rootRef}
+      ref={(node) => {
+        surfaceRef.current = node
+        rootRef(node)
+      }}
       className={`chat-surface flex-1 flex min-h-0 min-w-0${
         panelSide === 'right' ? ' flex-row-reverse' : ''
       }`}

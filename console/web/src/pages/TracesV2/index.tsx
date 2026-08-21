@@ -43,6 +43,7 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
 import { startTraceSpansStream } from '@/lib/traces-stream'
 import { cn } from '@/lib/utils'
+import type { PageCommandsApi } from '@/types/injectable-ui'
 import { fetchTraces, type StoredSpan } from './api/traces'
 import { GroupedTraceList } from './components/GroupedTraceList'
 import { SpanPanel } from './components/SpanPanel'
@@ -89,9 +90,15 @@ export interface TracesV2Props {
   initialTraceId?: string
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
+  /** The pane's command registrar: the page's verbs and keys. */
+  commands?: PageCommandsApi
 }
 
-export function TracesV2({ initialTraceId, onRequestClose }: TracesV2Props) {
+export function TracesV2({
+  initialTraceId,
+  onRequestClose,
+  commands,
+}: TracesV2Props) {
   // The strip's system/pause/refresh controls were removed; both stay at
   // their defaults (streams live, internal spans hidden) until some other
   // surface grows a toggle.
@@ -504,17 +511,70 @@ export function TracesV2({ initialTraceId, onRequestClose }: TracesV2Props) {
     selectTrace(initialTraceId)
   }, [initialTraceId, selectTrace])
 
-  // Esc walks back out: span panel first, then the expanded detail.
+  // Esc walks back out: span panel first, then the expanded detail. A
+  // pane-scoped command when the host offers one, so it only fires while
+  // this pane has the focus; the raw listener stays for older hosts.
+  const back = useCallback(() => {
+    if (selectedSpan) setSelectedSpan(null)
+    else selectTrace(null)
+  }, [selectedSpan, selectTrace])
   useEffect(() => {
-    if (!selectedTraceId) return
+    if (commands || !selectedTraceId) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (selectedSpan) setSelectedSpan(null)
-      else selectTrace(null)
+      back()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selectedTraceId, selectedSpan, selectTrace])
+  }, [commands, selectedTraceId, back])
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'search',
+          title: 'Search traces',
+          detail: 'Put the caret in the trace search',
+          keywords: ['filter', 'find'],
+          shortcut: '/',
+          run: () =>
+            document
+              .querySelector<HTMLElement>('[placeholder="search traces..."]')
+              ?.focus(),
+        },
+        {
+          id: 'follow',
+          title: followTurns ? 'Stop following turns' : 'Follow turns',
+          detail: 'Jump to each new turn as it arrives',
+          keywords: ['live', 'tail', 'auto'],
+          shortcut: 'F',
+          run: toggleFollowTurns,
+        },
+        {
+          id: 'clear-filters',
+          title: 'Clear the trace filters',
+          detail: 'Back to every trace',
+          keywords: ['reset', 'filters'],
+          run: resetFilters,
+        },
+        {
+          id: 'back',
+          title: 'Close the trace detail',
+          detail: 'Span panel first, then the expanded trace',
+          keywords: ['escape', 'close', 'collapse'],
+          shortcut: 'Escape',
+          enabled: () => selectedTraceId !== null,
+          run: back,
+        },
+      ]),
+    [
+      commands,
+      followTurns,
+      toggleFollowTurns,
+      resetFilters,
+      selectedTraceId,
+      back,
+    ],
+  )
 
   // The expanded detail, rendered as an accordion item under the selected
   // row (or pinned at the top of the scroll area when that row isn't in the
