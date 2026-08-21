@@ -985,6 +985,36 @@ gutters between panels and against the viewport, so the canvas shows
 through as the seam. That gutter + edge frame is the entire column
 chrome; panels draw no other lines.
 
+Workspace tabs behave like this everywhere:
+
+- **Selection is per browser tab.** The server pointer
+  (`workspace.activeTabId` + `activatedAt`/`activatedBy`) is where a new
+  window lands; a live browser keeps its own choice and follows the server
+  only for a newer *function* activation (`console::workspace::open`), never
+  for another browser's click.
+- **Closing** the active tab lands on its right-hand neighbour, else the
+  left one; the last tab never closes. A tab or pane whose page reported
+  unsaved work (`PageRenderProps.setDirty`) asks first through the shared
+  `ConfirmDialog`; the native prompt remains only for a real reload or
+  browser-tab close.
+- **Overflow** scrolls the strip. Fades mark the hidden side, the active tab
+  is kept in view, and an "All workspaces" menu lists every tab with its
+  digit. The `+` and the menu stay visible outside the scrolled region.
+- **Keyboard:** `1`–`9` select by position, `[` / `]` step, `t` creates,
+  `Shift+W` closes, `\` splits, `G then C` / `W` / `T` go to chat, workers or
+  traces (a sequence binding is chords separated by a space in the registry;
+  the prefix arms a 1.5 s pending state and never acts alone, so a new place
+  costs one more letter rather than one more reserved key). Key caps print
+  uppercase. Inside the strip, arrow keys, Home and End
+  move between tabs and Delete closes the focused one. Nothing fires while
+  the caret is in a field (`useKeybindings`). There is no key to memorise
+  first: every action and every open workspace is a row in `⌘K`, each
+  showing its key, and hovering a control spells the same key
+  (`hoverTitle`), so the keys are learned in passing. The full list is a
+  `⌘K` row, not a key of its own.
+- **Phones** switch workspaces from the bottom sheet; each workspace
+  remembers which panel it was showing, per browser tab.
+
 ### Sheet pages
 
 The page is a vertical sheet, max 1200px, sitting on the canvas surface.
@@ -1747,6 +1777,20 @@ export function SearchField({
   )
 }
 ```
+
+### `ImageViewer`
+
+The only full-screen image surface. Opens from an `ImageThumbnailButton`
+(zoom cursor, "View <name>" label) over a `bg-black/85` overlay in both
+themes; the caption and the controls float as `panel-raised` cards with
+`shadow-floating`. Wheel and pinch zoom about the pointer, drag pans a
+zoomed image inside the stage, double-click toggles fit and actual size;
+`+`/`-` step a zoom ladder, `0` fits, `1` is actual size, arrows pan, Escape
+closes and focus returns to the opener. Zoom steps are instant; fit/actual
+toggles move on `motion-duration-control`. Loading, decode failure, a
+missing source and an oversized data URL each render in the stage without
+freezing the page. Captions are attachment names or relative paths, never
+host paths.
 
 ### Shared recipes and primitives
 

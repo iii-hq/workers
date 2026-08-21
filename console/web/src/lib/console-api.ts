@@ -22,6 +22,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -42,6 +43,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { IconButton } from '@/components/ui/IconButton'
+import { ImageThumbnailButton, ImageViewer } from '@/components/ui/ImageViewer'
 import { Input } from '@/components/ui/Input'
 import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
@@ -109,6 +111,7 @@ export const components: ConsoleApi['components'] = {
   CardHighlight,
   CardHeader,
   Chip,
+  ConfirmDialog,
   Dialog,
   CollapsibleCard,
   CollapsibleCardContent,
@@ -128,6 +131,8 @@ export const components: ConsoleApi['components'] = {
   ErrorBoundary,
   FileDiff,
   IconButton,
+  ImageThumbnailButton,
+  ImageViewer,
   Input,
   List,
   ListGroup,

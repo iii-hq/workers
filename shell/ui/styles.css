@@ -465,6 +465,26 @@
   justify-content: center;
   padding: 16px;
 }
+[data-iii-ui="shell"] .shui-image-thumb {
+  display: flex;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline {
+  flex: none;
+  display: block;
+  padding: 20px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline .shui-image-thumb {
+  display: inline-flex;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline img {
+  max-height: 70vh;
+  border: none;
+  background: transparent;
+}
 [data-iii-ui="shell"] .shui-image-wrap img {
   max-width: 100%;
   max-height: 100%;

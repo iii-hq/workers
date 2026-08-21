@@ -56,6 +56,8 @@ interface ExtPageProps {
   workingDir?: string | null
   /** Active chat id for session-scoped reactive pages. */
   conversationId?: string | null
+  /** Report unsaved work so closing the pane or workspace asks first. */
+  setDirty?: (dirty: boolean | string) => void
 }
 
 export function ExtPage({
@@ -66,6 +68,7 @@ export function ExtPage({
   onRequestClose,
   workingDir,
   conversationId,
+  setDirty,
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
@@ -129,6 +132,7 @@ export function ExtPage({
         workingDir={workingDir}
         panelContext={panelContext}
         conversationId={conversationId}
+        setDirty={setDirty}
       />
     </div>
   )

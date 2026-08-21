@@ -32,6 +32,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -52,6 +53,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { IconButton } from '@/components/ui/IconButton'
+import { ImageThumbnailButton, ImageViewer } from '@/components/ui/ImageViewer'
 import { Input } from '@/components/ui/Input'
 import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
@@ -121,6 +123,7 @@ const conformance: {
   CollapsibleCard: typeof ConsoleUi.CollapsibleCard
   CollapsibleCardContent: typeof ConsoleUi.CollapsibleCardContent
   CollapsibleCardTrigger: typeof ConsoleUi.CollapsibleCardTrigger
+  ConfirmDialog: typeof ConsoleUi.ConfirmDialog
   Dialog: typeof ConsoleUi.Dialog
   DialogClose: typeof ConsoleUi.DialogClose
   DialogContent: typeof ConsoleUi.DialogContent
@@ -137,6 +140,8 @@ const conformance: {
   ErrorBoundary: typeof ConsoleUi.ErrorBoundary
   FileDiff: typeof ConsoleUi.FileDiff
   IconButton: typeof ConsoleUi.IconButton
+  ImageThumbnailButton: typeof ConsoleUi.ImageThumbnailButton
+  ImageViewer: typeof ConsoleUi.ImageViewer
   Input: typeof ConsoleUi.Input
   JsonHighlight: typeof ConsoleUi.JsonHighlight
   List: typeof ConsoleUi.List
@@ -193,6 +198,7 @@ const conformance: {
   CollapsibleCard,
   CollapsibleCardContent,
   CollapsibleCardTrigger,
+  ConfirmDialog,
   Dialog,
   DialogClose,
   DialogContent,
@@ -209,6 +215,8 @@ const conformance: {
   ErrorBoundary,
   FileDiff,
   IconButton,
+  ImageThumbnailButton,
+  ImageViewer,
   Input,
   JsonHighlight,
   List,

@@ -4,6 +4,7 @@
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -47,6 +48,7 @@ pub struct PartialState {
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    terminated: bool,
 }
 
 impl PartialState {
@@ -60,6 +62,7 @@ impl PartialState {
             native_stop_reason: None,
             error_message: None,
             warnings,
+            terminated: false,
         }
     }
 
@@ -109,6 +112,28 @@ impl PartialState {
             Segment::Call(c) => c,
             _ => unreachable!("slot came from call_slot / a Call push"),
         }
+    }
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.terminated
+    }
+
+    fn has_content(&self) -> bool {
+        !self.segments.is_empty()
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        let open_call = self
+            .open
+            .and_then(|i| self.segments.get(i))
+            .is_some_and(|s| matches!(s, Segment::Call(_)));
+        open_call
+            || self.segments.iter().any(|s| match s {
+                Segment::Call(c) => arguments_incomplete(&c.args_json),
+                _ => false,
+            })
     }
 }
 
@@ -416,6 +441,7 @@ pub fn handle_chunk(
 
     if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
         state.stop_reason = map_finish_reason(finish);
+        state.terminated = true;
         state.native_stop_reason = Some(finish.to_string());
         if finish == "content_filter" {
             state.warnings.push(

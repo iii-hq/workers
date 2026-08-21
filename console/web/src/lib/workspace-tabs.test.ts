@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import fixtures from './workspace-open.fixtures.json'
 import {
+  adjacentTabId,
   CHAT_SCREEN,
   defaultTabs,
   MAX_COLUMNS,
+  parseActivation,
   parseActiveTabId,
   parseWorkspaceTabs,
   resolveActiveTab,
+  resolvePointer,
   screenForView,
   screenLabel,
   shouldFlushPendingWrite,
@@ -21,6 +24,7 @@ import {
   withPaneRemoved,
   withScreenDetached,
   withScreenOpenedBeside,
+  withTabClosed,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
   workspaceLayoutSource,
@@ -572,5 +576,132 @@ describe('shouldFlushPendingWrite', () => {
     expect(shouldFlushPendingWrite('server', false)).toBe(false)
     expect(shouldFlushPendingWrite('server', true)).toBe(true)
     expect(shouldFlushPendingWrite('local', true)).toBe(true)
+  })
+})
+
+describe('withTabClosed', () => {
+  const tabs: WorkspaceTab[] = [
+    { id: 'a', screens: ['chat'] },
+    { id: 'b', screens: ['traces'] },
+    { id: 'c', screens: ['workers'] },
+  ]
+
+  it('closing the active tab lands on its right-hand neighbour', () => {
+    const next = withTabClosed({ tabs, activeTabId: 'b' }, 'b')
+    expect(next.tabs.map((t) => t.id)).toEqual(['a', 'c'])
+    expect(next.activeTabId).toBe('c')
+  })
+
+  it('closing the active last tab lands on the one before it', () => {
+    const next = withTabClosed({ tabs, activeTabId: 'c' }, 'c')
+    expect(next.tabs.map((t) => t.id)).toEqual(['a', 'b'])
+    expect(next.activeTabId).toBe('b')
+  })
+
+  it('closing another tab keeps the selection', () => {
+    const next = withTabClosed({ tabs, activeTabId: 'a' }, 'c')
+    expect(next.tabs.map((t) => t.id)).toEqual(['a', 'b'])
+    expect(next.activeTabId).toBe('a')
+  })
+
+  it('never closes the final tab and ignores unknown ids', () => {
+    const solo = { tabs: [tabs[0]], activeTabId: 'a' }
+    expect(withTabClosed(solo, 'a')).toBe(solo)
+    const state = { tabs, activeTabId: 'a' }
+    expect(withTabClosed(state, 'zzz')).toBe(state)
+  })
+})
+
+describe('adjacentTabId', () => {
+  const tabs: WorkspaceTab[] = [
+    { id: 'a', screens: [] },
+    { id: 'b', screens: [] },
+    { id: 'c', screens: [] },
+  ]
+
+  it('steps forward and back with wrap-around', () => {
+    expect(adjacentTabId(tabs, 'a', 1)).toBe('b')
+    expect(adjacentTabId(tabs, 'c', 1)).toBe('a')
+    expect(adjacentTabId(tabs, 'a', -1)).toBe('c')
+  })
+
+  it('has nowhere to go with one tab', () => {
+    expect(adjacentTabId([tabs[0]], 'a', 1)).toBeUndefined()
+  })
+})
+
+describe('activation provenance', () => {
+  it('stamps who moved the pointer and when', () => {
+    const value = withActiveTabId({}, 'tab-x', 'browser', 1234)
+    expect(parseActivation(value)).toEqual({
+      tabId: 'tab-x',
+      at: 1234,
+      by: 'browser',
+    })
+  })
+
+  it('reads a pointer written before the fields existed', () => {
+    expect(parseActivation({ workspace: { activeTabId: 'old' } })).toEqual({
+      tabId: 'old',
+      at: 0,
+      by: 'browser',
+    })
+    expect(parseActivation({})).toBeUndefined()
+  })
+
+  it('treats anything but "function" as a browser write', () => {
+    expect(
+      parseActivation({
+        workspace: { activeTabId: 't', activatedAt: 3, activatedBy: 'robot' },
+      }),
+    ).toMatchObject({ by: 'browser' })
+  })
+})
+
+describe('resolvePointer', () => {
+  const browser = { tabId: 'server', at: 50, by: 'browser' as const }
+  const fn = { tabId: 'server', at: 50, by: 'function' as const }
+
+  it('a browser with no choice lands on the server pointer', () => {
+    expect(resolvePointer(null, browser)).toBe('server')
+    expect(resolvePointer(null, fn)).toBe('server')
+    expect(resolvePointer(null, undefined)).toBeUndefined()
+  })
+
+  it("another browser's click never switches this one", () => {
+    expect(resolvePointer({ tabId: 'mine', at: 10 }, browser)).toBe('mine')
+    expect(resolvePointer({ tabId: 'mine', at: 90 }, browser)).toBe('mine')
+  })
+
+  it('an unfollowed function activation wins whatever the clocks say', () => {
+    expect(resolvePointer({ tabId: 'mine', at: 10 }, fn)).toBe('server')
+    expect(resolvePointer({ tabId: 'mine', at: 90 }, fn)).toBe('server')
+  })
+
+  it('a followed function activation yields to the later local choice', () => {
+    expect(resolvePointer({ tabId: 'mine', at: 90, followed: 50 }, fn)).toBe(
+      'mine',
+    )
+    expect(resolvePointer({ tabId: 'mine', at: 90, followed: 40 }, fn)).toBe(
+      'server',
+    )
+  })
+})
+
+describe('persisted shapes from earlier releases', () => {
+  it('restores a 1.9.x layout without activation fields or pane ids', () => {
+    const value = {
+      workspace: {
+        tabs: [
+          { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
+          { id: 'tab-2', name: 'Shell', screens: ['ext:shell'] },
+        ],
+        activeTabId: 'tab-2',
+      },
+    }
+    const tabs = parseWorkspaceTabs(value)
+    expect(tabs.map((t) => t.id)).toEqual(['tab-home', 'tab-2'])
+    expect(tabPaneIds(tabs[1])).toEqual(['tab-2:pane:0'])
+    expect(resolvePointer(null, parseActivation(value))).toBe('tab-2')
   })
 })

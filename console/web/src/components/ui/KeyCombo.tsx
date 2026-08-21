@@ -10,6 +10,7 @@ import {
   formatBinding,
   type Platform,
   shortcutPlatform,
+  THEN,
 } from '@/lib/keybindings/bindings'
 import { cn } from '@/lib/utils'
 
@@ -39,24 +40,34 @@ export function KeyCombo({
   const mac = platform === 'mac'
   return (
     <span className={cn('inline-flex items-center gap-1', className)}>
-      {caps.map((cap, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: a chord can repeat a cap and position is the identity
-        <Fragment key={`${cap}-${index}`}>
-          <kbd
-            className={cn(
-              'inline-flex min-w-5 items-center justify-center rounded border border-edge px-1 py-px font-mono text-[0.65rem] text-ink-ghost',
-              capClassName,
-            )}
+      {caps.map((cap, index) =>
+        cap === THEN ? (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: position is the identity
+            key={`then-${index}`}
+            className="px-0.5 text-[0.65rem] text-ink-ghost"
           >
-            {cap}
-          </kbd>
-          {!mac && index < caps.length - 1 ? (
-            <span aria-hidden className="text-[0.65rem] text-ink-ghost">
-              +
-            </span>
-          ) : null}
-        </Fragment>
-      ))}
+            {THEN}
+          </span>
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a chord can repeat a cap and position is the identity
+          <Fragment key={`${cap}-${index}`}>
+            <kbd
+              className={cn(
+                'inline-flex min-w-5 items-center justify-center rounded border border-edge px-1 py-px font-mono text-[0.65rem] text-ink-ghost',
+                capClassName,
+              )}
+            >
+              {cap}
+            </kbd>
+            {!mac && index < caps.length - 1 && caps[index + 1] !== THEN ? (
+              <span aria-hidden className="text-[0.65rem] text-ink-ghost">
+                +
+              </span>
+            ) : null}
+          </Fragment>
+        ),
+      )}
     </span>
   )
 }

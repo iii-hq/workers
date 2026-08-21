@@ -28,21 +28,28 @@ import {
 } from '@/lib/console-config'
 import { moveItem } from '@/lib/reorder'
 import {
+  adjacentTabId,
   defaultTabs,
+  isUnfollowedFunctionActivation,
+  type LocalActivation,
   newTabId,
+  parseActivation,
   parseActiveTabId,
   parseWorkspaceTabs,
   resolveActiveTab,
+  resolvePointer,
   shouldFlushPendingWrite,
   type TabScreen,
   tabColumns,
   tabPaneIds,
   type WorkspaceLayoutSource,
+  type WorkspaceState,
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
   withPaneRemoved,
   withScreenDetached,
+  withTabClosed,
   withWorkspaceScreenOpened,
   withWorkspaceTabs,
   workspaceLayoutSource,
@@ -50,11 +57,10 @@ import {
 
 const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
 const LOCAL_KEY = 'iii-workspace-tabs'
+const SESSION_ACTIVE_KEY = 'iii-workspace-active'
+const POINTER_WRITE_DELAY_MS = 150
 
-interface LocalState {
-  tabs: WorkspaceTab[]
-  activeTabId: string
-}
+type LocalState = WorkspaceState
 
 export type WorkspaceTransform = (state: LocalState) => LocalState
 
@@ -65,15 +71,49 @@ function workspaceState(value: ConsoleConfigValue): LocalState {
   return { tabs, activeTabId }
 }
 
+/** Lift a transform onto the raw value; the pointer is re-stamped only when it moved. */
 export function workspaceConfigTransform(
   update: WorkspaceTransform,
+  now: () => number = Date.now,
 ): ConfigTransform {
   return (value) => {
     const next = update(workspaceState(value))
-    return withActiveTabId(
-      withWorkspaceTabs(value, next.tabs),
-      next.activeTabId,
+    const withTabs = withWorkspaceTabs(value, next.tabs)
+    if (parseActiveTabId(value) === next.activeTabId) return withTabs
+    return withActiveTabId(withTabs, next.activeTabId, 'browser', now())
+  }
+}
+
+function loadSessionActivation(): LocalActivation | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_ACTIVE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<LocalActivation>
+    if (typeof parsed.tabId !== 'string' || parsed.tabId.length === 0) {
+      return null
+    }
+    return {
+      tabId: parsed.tabId,
+      at: typeof parsed.at === 'number' ? parsed.at : 0,
+      ...(typeof parsed.followed === 'number'
+        ? { followed: parsed.followed }
+        : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+function persistSessionActivation(activation: LocalActivation): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(
+      SESSION_ACTIVE_KEY,
+      JSON.stringify(activation),
     )
+  } catch {
+    // best-effort
   }
 }
 
@@ -144,6 +184,8 @@ export interface UseWorkspaceTabsReturn {
   createTab: (opts: { columns: 1 | 2; screens?: TabScreen[] }) => void
   closeTab: (id: string) => void
   renameTab: (id: string, name: string) => void
+  /** Activate the next (`1`) or previous (`-1`) tab, wrapping around. */
+  activateAdjacent: (steps: 1 | -1) => void
   /** Move the tab at `from` to position `to` (indexes into `tabs`). */
   reorderTab: (from: number, to: number) => void
   /** Attach (or replace) the screen a tab column shows. */
@@ -199,9 +241,21 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 
   const [local, setLocal] = useState<LocalState>(loadLocal)
 
-  // Selection made in THIS browser; wins over the server pointer so a slow
-  // write never lags the strip (same pattern as useTraceViews).
-  const [chosenTabId, setChosenTabId] = useState<string | null>(null)
+  // This browser tab's own selection (sessionStorage); see resolvePointer.
+  const [localChoice, setLocalChoice] = useState<LocalActivation | null>(
+    loadSessionActivation,
+  )
+  const choose = useCallback((id: string, followed?: number) => {
+    setLocalChoice((current) => {
+      const activation: LocalActivation = {
+        tabId: id,
+        at: Date.now(),
+        followed: followed ?? current?.followed,
+      }
+      persistSessionActivation(activation)
+      return activation
+    })
+  }, [])
 
   const serverTabs = available ? parseWorkspaceTabs(data) : []
   const tabs = available
@@ -210,9 +264,17 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
       : defaultTabs()
     : local.tabs
 
-  const serverActiveId = available ? parseActiveTabId(data) : undefined
-  const pointer =
-    chosenTabId ?? (available ? serverActiveId : local.activeTabId)
+  const serverActivation = available ? parseActivation(data) : undefined
+  const pointer = available
+    ? resolvePointer(localChoice, serverActivation)
+    : (localChoice?.tabId ?? local.activeTabId)
+  // Following an agent's activation becomes this browser's own choice, so a
+  // later click elsewhere cannot bounce it back.
+  useEffect(() => {
+    if (!available) return
+    if (!isUnfollowedFunctionActivation(localChoice, serverActivation)) return
+    if (serverActivation) choose(serverActivation.tabId, serverActivation.at)
+  }, [available, localChoice, serverActivation, choose])
   // No pointer (or one at a tab another browser closed) lands on the
   // chat+traces tab, falling back to the first tab.
   const activeTab = resolveActiveTab(tabs, pointer)
@@ -261,12 +323,39 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     if (pending !== null) persist(pending)
   }, [layoutSource, persist])
 
+  // The pointer write trails key repeats: only the last activation in a burst
+  // reaches the configuration worker.
+  const pointerWriteRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (pointerWriteRef.current !== null)
+        window.clearTimeout(pointerWriteRef.current)
+    },
+    [],
+  )
   const activateTab = useCallback(
     (id: string) => {
-      setChosenTabId(id)
-      persist((state) => ({ ...state, activeTabId: id }))
+      choose(id)
+      if (pointerWriteRef.current !== null)
+        window.clearTimeout(pointerWriteRef.current)
+      pointerWriteRef.current = window.setTimeout(() => {
+        pointerWriteRef.current = null
+        persist((state) =>
+          state.tabs.some((tab) => tab.id === id)
+            ? { ...state, activeTabId: id }
+            : state,
+        )
+      }, POINTER_WRITE_DELAY_MS)
     },
-    [persist],
+    [choose, persist],
+  )
+
+  const activateAdjacent = useCallback(
+    (steps: 1 | -1) => {
+      const id = adjacentTabId(tabs, activeTabId, steps)
+      if (id) activateTab(id)
+    },
+    [activateTab, activeTabId, tabs],
   )
 
   const createTab = useCallback(
@@ -277,7 +366,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         columns: opts.columns,
         screens,
       }
-      setChosenTabId(tab.id)
+      choose(tab.id)
       persist((state) => ({
         tabs: state.tabs.some((existing) => existing.id === tab.id)
           ? state.tabs
@@ -285,31 +374,17 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         activeTabId: tab.id,
       }))
     },
-    [persist],
+    [choose, persist],
   )
 
   const closeTab = useCallback(
     (id: string) => {
       if (tabs.length <= 1) return
-      const update: WorkspaceTransform = (state) => {
-        if (
-          state.tabs.length <= 1 ||
-          !state.tabs.some((tab) => tab.id === id)
-        ) {
-          return state
-        }
-        const remaining = state.tabs.filter((tab) => tab.id !== id)
-        const nextActive =
-          id === state.activeTabId
-            ? remaining[remaining.length - 1].id
-            : state.activeTabId
-        return { tabs: remaining, activeTabId: nextActive }
-      }
-      const preview = update({ tabs, activeTabId })
-      setChosenTabId(preview.activeTabId)
-      persist(update)
+      const preview = withTabClosed({ tabs, activeTabId }, id)
+      if (preview.activeTabId !== activeTabId) choose(preview.activeTabId)
+      persist((state) => withTabClosed(state, id))
     },
-    [persist, tabs, activeTabId],
+    [choose, persist, tabs, activeTabId],
   )
 
   const renameTab = useCallback(
@@ -445,10 +520,10 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         }
       }
       const preview = update({ tabs, activeTabId })
-      setChosenTabId(preview.activeTabId)
+      if (preview.activeTabId !== activeTabId) choose(preview.activeTabId)
       persist(update)
     },
-    [activeTabId, persist, tabs],
+    [activeTabId, choose, persist, tabs],
   )
 
   const openScreenInTab = useCallback(
@@ -483,6 +558,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     createTab,
     closeTab,
     renameTab,
+    activateAdjacent,
     reorderTab,
     attachScreen,
     detachScreen,

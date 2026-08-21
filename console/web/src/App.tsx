@@ -1,12 +1,4 @@
-import {
-  CircleQuestionMark,
-  Menu,
-  Plus,
-  Search,
-  SettingsIcon,
-  SquarePen,
-  X,
-} from 'lucide-react'
+import { Menu, Plus, Search, SettingsIcon, SquarePen, X } from 'lucide-react'
 import {
   type CSSProperties,
   Fragment,
@@ -19,7 +11,8 @@ import {
   useState,
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
-import { PaletteHost } from '@/components/PaletteHost'
+import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogContent,
@@ -62,10 +55,27 @@ import {
   useConversationsCtx,
 } from '@/lib/conversations-context'
 import { shortcutPlatform } from '@/lib/keybindings/bindings'
-import { keybindingGroups, resolveBindings } from '@/lib/keybindings/registry'
+import {
+  bindingsFor,
+  hoverTitle,
+  keybindingGroups,
+  resolveBindings,
+} from '@/lib/keybindings/registry'
 import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
+import {
+  clearTabDirty,
+  dirtyReasonsForPane,
+  dirtyReasonsForTab,
+  pruneDirty,
+  setPaneDirty,
+  useDirtyEntries,
+} from '@/lib/workspace-guards'
+import {
+  loadMobilePanelIndexes,
+  persistMobilePanelIndexes,
+} from '@/lib/workspace-mobile'
 import {
   CHAT_SCREEN,
   extPageIdForScreen,
@@ -76,12 +86,17 @@ import {
   tabColumns,
   tabPaneIds,
   tabSizes,
+  type WorkspaceTab,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PanelSide } from '@/types/injectable-ui'
+
+function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
+  return new Map(tabs.map((tab) => [tab.id, new Set(tabPaneIds(tab))]))
+}
 
 function hasExplicitHash(): boolean {
   if (typeof window === 'undefined') return false
@@ -108,14 +123,97 @@ export function App({
   const [paletteOpen, setPaletteOpen] = useState(false)
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
-  const [mobilePanelIndex, setMobilePanelIndex] = useState(0)
-
-  const mobileActiveTabRef = useRef(activeTabId)
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+  // Per-workspace phone panel, derived so a tab switch renders its own panel first.
+  const [mobilePanelIndexes, setMobilePanelIndexes] = useState(
+    loadMobilePanelIndexes,
+  )
+  const mobilePanelIndex = mobilePanelIndexes[activeTabId] ?? 0
+  const setMobilePanelIndex = useCallback((index: number) => {
+    const tabId = workspaceRef.current.activeTabId
+    setMobilePanelIndexes((current) => {
+      if (current[tabId] === index) return current
+      const next = { ...current, [tabId]: index }
+      persistMobilePanelIndexes(next)
+      return next
+    })
+  }, [])
+  const layoutSignature = JSON.stringify(
+    workspace.tabs.map((tab) => [tab.id, tabPaneIds(tab)]),
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the layout signature is the trigger, not a value read here.
   useEffect(() => {
-    if (mobileActiveTabRef.current === activeTabId) return
-    mobileActiveTabRef.current = activeTabId
-    setMobilePanelIndex(0)
-  }, [activeTabId])
+    const live = new Set(workspaceRef.current.tabs.map((tab) => tab.id))
+    setMobilePanelIndexes((current) => {
+      const kept = Object.fromEntries(
+        Object.entries(current).filter(([id]) => live.has(id)),
+      )
+      if (Object.keys(kept).length === Object.keys(current).length)
+        return current
+      persistMobilePanelIndexes(kept)
+      return kept
+    })
+    pruneDirty(live, paneIdsByTab(workspaceRef.current.tabs))
+  }, [layoutSignature])
+
+  // Unsaved work: the console's own dialog on close; the native prompt only for reload.
+  const dirtyEntries = useDirtyEntries()
+  const [discardPrompt, setDiscardPrompt] = useState<{
+    title: string
+    details: string[]
+    proceed: () => void
+  } | null>(null)
+  const discardPromptRef = useRef(discardPrompt)
+  discardPromptRef.current = discardPrompt
+  useEffect(() => {
+    if (dirtyEntries.length === 0) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+      return ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirtyEntries.length])
+  const requestCloseTab = useCallback((id: string) => {
+    if (discardPromptRef.current) return
+    if (workspaceRef.current.tabs.length <= 1) return
+    const reasons = dirtyReasonsForTab(id)
+    const proceed = () => {
+      clearTabDirty(id)
+      workspaceRef.current.closeTab(id)
+    }
+    if (reasons.length === 0) {
+      proceed()
+      return
+    }
+    setDiscardPrompt({
+      title: 'Close this workspace?',
+      details: reasons,
+      proceed,
+    })
+  }, [])
+  const requestClosePane = useCallback(
+    (tabId: string, paneId: string, close: () => void) => {
+      if (discardPromptRef.current) return
+      const reasons = dirtyReasonsForPane(tabId, paneId)
+      const proceed = () => {
+        setPaneDirty(tabId, paneId, false)
+        close()
+      }
+      if (reasons.length === 0) {
+        proceed()
+        return
+      }
+      setDiscardPrompt({
+        title: 'Close this panel?',
+        details: reasons,
+        proceed,
+      })
+    },
+    [],
+  )
 
   // An active extension page that disappears (hot-reload failure, worker
   // disconnect, unregister) falls back to the default view.
@@ -140,8 +238,6 @@ export function App({
   const lastHashScreenRef = useRef<TabScreen | null>(
     hasExplicitHash() ? null : hashScreen,
   )
-  const workspaceRef = useRef(workspace)
-  workspaceRef.current = workspace
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
   const openWorkspaceScreen = useCallback((screen: TabScreen) => {
     const commands = panelCommandsRef.current
@@ -241,14 +337,37 @@ export function App({
     else setView(primary as View)
   }, [activeTabId, activeTab, hashScreen, setView, layoutSource])
 
+  const paletteWorkspace = useMemo(
+    (): PaletteWorkspace => ({
+      tabs: workspace.tabs,
+      activeTabId: workspace.activeTabId,
+      activate: (id) => workspaceRef.current.activateTab(id),
+      create: () => workspaceRef.current.createTab({ columns: 1 }),
+      close: requestCloseTab,
+      step: (delta) => workspaceRef.current.activateAdjacent(delta),
+      split: splitWorkspacePanel,
+    }),
+    [
+      workspace.tabs,
+      workspace.activeTabId,
+      requestCloseTab,
+      splitWorkspacePanel,
+    ],
+  )
+
   /* Every global shortcut the console has, dispatched from the registry.
      Which keys reach here while the caret is in a field, and which stand
      down, is the registry's call — not this component's. */
   useKeybindings({
     'palette.toggle': () => setPaletteOpen((current) => !current),
-    'shortcuts.open': () => setShortcutsOpen(true),
     'app.settings': toggleSettings,
+    'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
+    'page.workers': () => openWorkspaceScreen('workers'),
+    'page.traces': () => openWorkspaceScreen('traces'),
     'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    'workspace.next': () => workspaceRef.current.activateAdjacent(1),
+    'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
+    'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),
     'panel.split': splitWorkspacePanel,
     // Out of range is a no-op rather than a wrap: pressing 7 with four
     // workspaces open should do nothing, not land somewhere surprising.
@@ -269,10 +388,9 @@ export function App({
         <Header
           workspace={workspace}
           mobilePanelIndex={mobilePanelIndex}
-          onMobilePanelIndexChange={setMobilePanelIndex}
+          onCloseTab={requestCloseTab}
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
-          onOpenShortcuts={() => setShortcutsOpen(true)}
           onOpenPalette={() => setPaletteOpen(true)}
         />
         <WorkspacePanes
@@ -280,7 +398,20 @@ export function App({
           commandsRef={panelCommandsRef}
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
+          onRequestClosePane={requestClosePane}
           onExtMissing={onExtMissing}
+        />
+        <ConfirmDialog
+          open={discardPrompt !== null}
+          onOpenChange={(open) => {
+            if (!open) setDiscardPrompt(null)
+          }}
+          title={discardPrompt?.title ?? ''}
+          description="Unsaved work in it will be lost."
+          details={discardPrompt?.details}
+          confirmLabel="Close and discard"
+          cancelLabel="Keep working"
+          onConfirm={() => discardPrompt?.proceed()}
         />
         {view === 'configuration' ? (
           <ConfigurationOverlay
@@ -294,6 +425,7 @@ export function App({
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           openScreen={openWorkspaceScreen}
+          workspace={paletteWorkspace}
           onOpenSettings={() => setView('configuration')}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
@@ -309,6 +441,8 @@ interface WorkspacePanesProps {
   commandsRef: MutableRefObject<WorkspacePanelCommands | null>
   mobilePanelIndex: number
   onMobilePanelIndexChange: (index: number) => void
+  /** Close a pane after the dirty-work guard has had its say. */
+  onRequestClosePane: (tabId: string, paneId: string, close: () => void) => void
   onExtMissing: () => void
 }
 
@@ -350,6 +484,7 @@ function WorkspacePanes({
   commandsRef,
   mobilePanelIndex,
   onMobilePanelIndexChange,
+  onRequestClosePane,
   onExtMissing,
 }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
@@ -521,16 +656,19 @@ function WorkspacePanes({
     addEdgeColumn('right', columns)
   }, [activeTab.id, addEdgeColumn, columns, enteringPanel])
 
-  // A tab switch always lands on its first panel. Inside a tab, native
-  // horizontal scrolling does the gesture work and this index only mirrors
-  // the snapped position for the header indicator.
+  // A tab switch lands on the panel that tab was last showing; native
+  // horizontal scrolling does the gesture work inside a tab.
   useEffect(() => {
     const container = containerRef.current
     if (!container || container.dataset.activeTab === activeTab.id) return
     pendingMobileColumnRef.current = null
     container.dataset.activeTab = activeTab.id
-    container.scrollTo({ left: 0, behavior: 'auto' })
-  }, [activeTab.id])
+    const index = Math.max(0, Math.min(columns - 1, mobilePanelIndex))
+    container.scrollTo({
+      left: container.clientWidth * index,
+      behavior: 'auto',
+    })
+  }, [activeTab.id, columns, mobilePanelIndex])
 
   useEffect(() => {
     const pending = pendingMobileColumnRef.current
@@ -1000,9 +1138,11 @@ function WorkspacePanes({
         // last column detaches its screen instead (back to the attach
         // affordance) — a tab never loses its final pane.
         const closePane = () =>
-          columns > 1
-            ? requestPanelRemoval(column)
-            : workspace.detachScreen(activeTab.id, column)
+          onRequestClosePane(activeTab.id, paneId, () =>
+            columns > 1
+              ? requestPanelRemoval(column)
+              : workspace.detachScreen(activeTab.id, column),
+          )
         const pane = (
           <section
             key="panel"
@@ -1068,7 +1208,12 @@ function WorkspacePanes({
                     workspace.attachScreen(activeTab.id, column, next)
                   }
                   onRemove={
-                    columns > 1 ? () => requestPanelRemoval(column) : undefined
+                    columns > 1
+                      ? () =>
+                          onRequestClosePane(activeTab.id, paneId, () =>
+                            requestPanelRemoval(column),
+                          )
+                      : undefined
                   }
                 />
               ) : (
@@ -1077,6 +1222,7 @@ function WorkspacePanes({
                   screen={screen}
                   panelSide={panelSide}
                   tabId={activeTab.id}
+                  paneId={paneId}
                   onClose={closePane}
                   onExtMissing={onExtMissing}
                 />
@@ -1172,6 +1318,8 @@ interface ScreenBodyProps {
   panelSide: PanelSide
   /** Hosting workspace tab id (forwarded to ext pages for per-tab state). */
   tabId: string
+  /** Hosting pane id; the key under which the page reports unsaved work. */
+  paneId: string
   /** Close this pane — the standard PageHeader ✕ on screens that carry it. */
   onClose: () => void
   onExtMissing: () => void
@@ -1183,12 +1331,22 @@ function ScreenBody({
   screen,
   panelSide,
   tabId,
+  paneId,
   onClose,
   onExtMissing,
 }: ScreenBodyProps) {
   // The active conversation's working dir, forwarded live so ext pages
   // (e.g. the shell explorer) can follow the chat's folder in a split.
   const { active } = useConversationsCtx()
+  const setDirty = useCallback(
+    (dirty: boolean | string) =>
+      setPaneDirty(
+        tabId,
+        paneId,
+        dirty === false ? false : dirty === true ? 'Unsaved changes' : dirty,
+      ),
+    [tabId, paneId],
+  )
   const extId = extPageIdForScreen(screen)
   if (extId !== null) {
     return (
@@ -1197,6 +1355,7 @@ function ScreenBody({
         panelSide={panelSide}
         tabId={tabId}
         onRequestClose={onClose}
+        setDirty={setDirty}
         onMissing={onExtMissing}
         workingDir={active?.workingDir ?? null}
         conversationId={active?.id ?? null}
@@ -1223,21 +1382,20 @@ function ScreenBody({
 
 interface HeaderProps {
   workspace: UseWorkspaceTabsReturn
+  /** Close a workspace after the dirty-work guard has had its say. */
+  onCloseTab: (id: string) => void
   mobilePanelIndex: number
-  onMobilePanelIndexChange: (index: number) => void
   settingsOpen: boolean
   onToggleSettings: () => void
-  onOpenShortcuts: () => void
   onOpenPalette: () => void
 }
 
 function Header({
   workspace,
+  onCloseTab,
   mobilePanelIndex,
-  onMobilePanelIndexChange,
   settingsOpen,
   onToggleSettings,
-  onOpenShortcuts,
   onOpenPalette,
 }: HeaderProps) {
   const { extPageTitles } = useScreenOptions()
@@ -1324,12 +1482,9 @@ function Header({
         workspace={workspace}
         extPageTitles={extPageTitles}
         settingsOpen={settingsOpen}
-        onActivate={(tabId) => {
-          onMobilePanelIndexChange(0)
-          workspace.activateTab(tabId)
-        }}
+        onActivate={workspace.activateTab}
+        onCloseTab={onCloseTab}
         onToggleSettings={onToggleSettings}
-        onOpenShortcuts={onOpenShortcuts}
         onOpenPalette={onOpenPalette}
       />
 
@@ -1341,32 +1496,26 @@ function Header({
             activeTabId={workspace.activeTabId}
             extPageTitles={extPageTitles}
             onActivate={workspace.activateTab}
-            onClose={workspace.closeTab}
+            onClose={onCloseTab}
             onCreate={() => workspace.createTab({ columns: 1 })}
             onRename={workspace.renameTab}
             onReorder={workspace.reorderTab}
           />
         </div>
         <div className="flex items-center gap-2">
+          {/* The key itself is the button: the console is reached through
+              the palette, and the cap teaches the chord on sight. */}
           <button
             type="button"
             onClick={onOpenPalette}
-            aria-label="search the console (⌘K)"
-            title="search the console (⌘K)"
-            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
+            aria-label={hoverTitle('Search and commands', 'palette.toggle')}
+            title={hoverTitle('Search and commands', 'palette.toggle')}
+            className="relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
           >
-            <Search className="size-4 shrink-0" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={onOpenShortcuts}
-            aria-label="keyboard shortcuts (?)"
-            title="keyboard shortcuts (?)"
-            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
-          >
-            <span aria-hidden>
-              <CircleQuestionMark className="size-4 shrink-0" />
-            </span>
+            <KeyCombo
+              binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
+              capClassName="min-w-6 px-1.5 py-0.5 text-[0.72rem] text-current"
+            />
           </button>
           <button
             type="button"
@@ -1451,8 +1600,9 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           Keyboard shortcuts
         </DialogTitle>
         <DialogDescription className="mt-1">
-          Press <kbd className="font-mono text-ink">?</kbd> any time to reopen
-          this list.
+          Every row in{' '}
+          <KeyCombo binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'} />{' '}
+          shows its key, so this list is a reference, not homework.
         </DialogDescription>
         {keybindingGroups().map(([group, entries]) => (
           <section key={group} className="mt-4">

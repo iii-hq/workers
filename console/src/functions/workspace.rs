@@ -233,7 +233,21 @@ pub fn resolve_active<'a>(tabs: &'a [Tab], pointer: Option<&str>) -> Option<&'a 
         .or_else(|| tabs.first())
 }
 
-pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str) -> Value {
+/// Write the layout back. `moved` says the caller changed the resolved
+/// pointer: only then is it stamped as a function activation so live browsers
+/// follow it; housekeeping writes keep whatever provenance the last writer
+/// left, exactly like the SPA's writes.
+pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str, moved: bool) -> Value {
+    with_workspace_at(value, tabs, active_tab_id, moved, now_ms())
+}
+
+pub fn with_workspace_at(
+    value: Value,
+    tabs: &[Value],
+    active_tab_id: &str,
+    moved: bool,
+    now: i64,
+) -> Value {
     let mut root = match value {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -243,9 +257,22 @@ pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str) -> Valu
         _ => Map::new(),
     };
     workspace.insert("tabs".to_string(), json!(tabs));
-    workspace.insert("activeTabId".to_string(), json!(active_tab_id));
+    if moved {
+        workspace.insert("activeTabId".to_string(), json!(active_tab_id));
+        workspace.insert("activatedAt".to_string(), json!(now));
+        workspace.insert("activatedBy".to_string(), json!("function"));
+    } else if !workspace.contains_key("activeTabId") {
+        workspace.insert("activeTabId".to_string(), json!(active_tab_id));
+    }
     root.insert("workspace".to_string(), Value::Object(workspace));
     Value::Object(root)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq)]
@@ -469,9 +496,13 @@ struct Layout {
 impl Layout {
     async fn store(self, iii: &IIIClient, tabs: &[Tab], active_tab_id: &str) -> Result<(), Error> {
         let merged = merge_tabs(&self.raw, tabs);
-        set_value(iii, with_workspace(self.value, &merged, active_tab_id))
-            .await
-            .map_err(|e| remote(CODE_UNAVAILABLE, e))
+        let moved = active_tab_id != self.active_tab_id;
+        set_value(
+            iii,
+            with_workspace(self.value, &merged, active_tab_id, moved),
+        )
+        .await
+        .map_err(|e| remote(CODE_UNAVAILABLE, e))
     }
 }
 
@@ -869,7 +900,7 @@ mod tests {
     fn with_workspace_keeps_sibling_keys() {
         let value =
             json!({ "traces": { "views": [] }, "workspace": { "tabs": [], "other": true } });
-        let next = with_workspace(value, &merge_tabs(&[], &default_tabs()), "tab-home");
+        let next = with_workspace(value, &merge_tabs(&[], &default_tabs()), "tab-home", false);
         assert_eq!(next.pointer("/traces/views"), Some(&json!([])));
         assert_eq!(next.pointer("/workspace/other"), Some(&json!(true)));
         assert_eq!(
@@ -880,5 +911,39 @@ mod tests {
             next.pointer("/workspace/tabs/0/screens"),
             Some(&json!(["chat", "traces"]))
         );
+    }
+
+    #[test]
+    fn a_moved_pointer_is_stamped_as_a_function_activation() {
+        let value = json!({ "workspace": { "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" } });
+        let next = with_workspace_at(value, &[], "tab-b", true, 99);
+        assert_eq!(next["workspace"]["activeTabId"], "tab-b");
+        assert_eq!(next["workspace"]["activatedAt"], 99);
+        assert_eq!(next["workspace"]["activatedBy"], "function");
+    }
+
+    #[test]
+    fn an_unchanged_pointer_keeps_the_previous_activation() {
+        let value = json!({ "workspace": { "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" } });
+        let next = with_workspace_at(value, &[], "tab-a", false, 99);
+        assert_eq!(next["workspace"]["activeTabId"], "tab-a");
+        assert_eq!(next["workspace"]["activatedAt"], 5);
+        assert_eq!(next["workspace"]["activatedBy"], "browser");
+    }
+
+    #[test]
+    fn a_housekeeping_write_over_a_missing_pointer_is_not_an_activation() {
+        let next = with_workspace_at(json!({}), &[], "tab-home", false, 7);
+        assert_eq!(next["workspace"]["activeTabId"], "tab-home");
+        assert!(next["workspace"].get("activatedBy").is_none());
+        assert!(next["workspace"].get("activatedAt").is_none());
+    }
+
+    #[test]
+    fn a_stale_raw_pointer_is_not_restamped_by_a_close() {
+        let value = json!({ "workspace": { "activeTabId": "gone", "activatedAt": 5, "activatedBy": "browser" } });
+        let next = with_workspace_at(value, &[], "tab-home", false, 99);
+        assert_eq!(next["workspace"]["activeTabId"], "gone");
+        assert_eq!(next["workspace"]["activatedBy"], "browser");
     }
 }
