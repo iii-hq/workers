@@ -21,6 +21,7 @@ export const {
   CollapsibleCard,
   CollapsibleCardContent,
   CollapsibleCardTrigger,
+  ConfirmDialog,
   Dialog,
   DialogClose,
   DialogContent,

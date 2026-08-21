@@ -4,7 +4,8 @@
  * The console's subject is the engine and the workers attached to it, so the
  * palette searches that: every connected worker, every function they register,
  * every page the console can show (first-party and worker-injected), the open
- * conversations, and the handful of console actions that have no other home.
+ * conversations, the open workspaces, and every console action the shortcut
+ * registry knows, so nothing needs a memorised key to reach.
  *
  * Worker and function rows come from the engine at open time rather than a
  * cached list — a worker that just disconnected should not stay searchable, and
@@ -14,7 +15,13 @@
 import type { LucideIcon } from 'lucide-react'
 import { getIiiClient } from '@/lib/iii-client'
 
-export type PaletteKind = 'worker' | 'function' | 'page' | 'chat' | 'action'
+export type PaletteKind =
+  | 'worker'
+  | 'function'
+  | 'page'
+  | 'chat'
+  | 'workspace'
+  | 'action'
 
 export interface PaletteEntry {
   id: string
@@ -195,12 +202,14 @@ export const KIND_LABEL: Record<PaletteKind, string> = {
   function: 'Functions',
   page: 'Pages',
   chat: 'Chats',
+  workspace: 'Workspaces',
   action: 'Actions',
 }
 
 /** Group in a fixed order so the list does not reshuffle as scores change. */
 export const KIND_ORDER: PaletteKind[] = [
   'action',
+  'workspace',
   'page',
   'chat',
   'worker',

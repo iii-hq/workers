@@ -75,7 +75,24 @@ function isPunctuationToken(key: string): boolean {
   return !isAlphanumericToken(key) && !isNamedToken(key)
 }
 
+/** A sequence binding is chords separated by a space: `G C` is G, then C. */
+export function isSequence(binding: string): boolean {
+  return splitSequence(binding).length > 1
+}
+
+export function splitSequence(binding: string): string[] {
+  return binding.split(' ').filter((chord) => chord !== '')
+}
+
+/** Every chord of a binding parsed, single chords included; null if any fails. */
+export function parseSequence(binding: string): ParsedBinding[] | null {
+  const chords = splitSequence(binding).map(parseBinding)
+  if (chords.length === 0 || chords.some((chord) => chord === null)) return null
+  return chords as ParsedBinding[]
+}
+
 export function parseBinding(binding: string): ParsedBinding | null {
+  if (isSequence(binding)) return null
   const tokens = binding.split('+').filter((token) => token !== '')
   const key = tokens.pop()
   if (!key) return null
@@ -147,11 +164,25 @@ export function bindingMatchesEvent(
   return event.key === parsed.key
 }
 
-/** One binding as the caps to print, outermost modifier first. */
+/** The word printed between the chords of a sequence; never a key cap. */
+export const THEN = 'then'
+
+/**
+ * One binding as the caps to print, outermost modifier first. A sequence
+ * prints each chord with `THEN` between them: `G C` is `['G', 'then', 'C']`.
+ * Letters print uppercase, the way keyboards label them.
+ */
 export function formatBinding(
   binding: string,
   platform: Platform = shortcutPlatform(),
 ): string[] {
+  if (isSequence(binding)) {
+    return splitSequence(binding).flatMap((chord, index) =>
+      index === 0
+        ? formatBinding(chord, platform)
+        : [THEN, ...formatBinding(chord, platform)],
+    )
+  }
   const parsed = parseBinding(binding)
   if (!parsed) return [binding]
   const mac = platform === 'mac'
@@ -161,7 +192,7 @@ export function formatBinding(
   if (parsed.ctrl) caps.push(mac ? '⌃' : 'ctrl')
   if (parsed.alt) caps.push(mac ? '⌥' : 'alt')
   if (parsed.shift) caps.push(mac ? '⇧' : 'shift')
-  caps.push(KEY_LABELS[parsed.key] ?? parsed.key.toLowerCase())
+  caps.push(KEY_LABELS[parsed.key] ?? parsed.key)
   return caps
 }
 
@@ -171,6 +202,11 @@ export function formatBinding(
  * everywhere else, so a conflict check has to be asked about a platform.
  */
 export function conflictIdentity(binding: string, platform: Platform): string {
+  if (isSequence(binding)) {
+    return splitSequence(binding)
+      .map((chord) => conflictIdentity(chord, platform))
+      .join(' ')
+  }
   const parsed = parseBinding(binding)
   if (!parsed) return binding
   const resolved = resolveModifiers(parsed, platform)
@@ -236,7 +272,9 @@ export function isBrowserReserved(
   const identities = new Set(
     reserved.map((entry) => conflictIdentity(entry, platform)),
   )
-  return identities.has(conflictIdentity(binding, platform))
+  return splitSequence(binding).some((chord) =>
+    identities.has(conflictIdentity(chord, platform)),
+  )
 }
 
 /** The digit a keystroke carries, for shortcuts that select by position. */

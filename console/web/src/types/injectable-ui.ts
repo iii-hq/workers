@@ -116,6 +116,13 @@ export interface PageRenderProps {
   /** Active chat session id. Reactive pages use it to subscribe to exact
       Harness turn boundaries without receiving another chat's events. */
   conversationId?: string | null
+  /**
+   * Report unsaved work: `true` or a short label (e.g. the file name) while
+   * the page holds something the user would lose, `false` once it is saved
+   * or discarded. Closing the pane, its workspace, or the browser tab then
+   * asks first. Absent on older consoles; feature-detect before calling.
+   */
+  setDirty?: (dirty: boolean | string) => void
 }
 
 export interface PageRegistration {

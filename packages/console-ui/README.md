@@ -67,9 +67,11 @@ Use the shared contracts for repeated Console interactions:
 - `Selector` is the searchable single-choice control, with grouped/disabled
   options, caller-owned async filtering, loading/empty/error/validation
   states, and optional free-form creation. `Select` is for small finite lists.
-- Shared `Tooltip`, `Dialog`, `DropdownMenu`, `Select`, and `Selector` portals
-  preserve an injected worker's `data-iii-ui` scope. `IconButton` combines an
-  accessible label with the shared tooltip contract.
+- Shared `Tooltip`, `Dialog`, `ConfirmDialog`, `DropdownMenu`, `Select`, and
+  `Selector` portals preserve an injected worker's `data-iii-ui` scope.
+  `IconButton` combines an accessible label with the shared tooltip contract.
+  `ConfirmDialog` replaces `window.confirm`: cancel owns initial focus, Escape
+  cancels, and unsaved items can be listed under the description.
 - `ImageViewer` is the one full-screen image surface: wheel and pinch zoom
   about the pointer, drag pans, double-click toggles fit and actual size,
   `+`/`-`/`0`/`1` and arrows on the keyboard, Escape closes and focus returns

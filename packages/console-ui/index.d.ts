@@ -94,6 +94,13 @@ export interface PageRenderProps {
   /** Active chat session id. Reactive pages use it to subscribe to exact
       Harness turn boundaries without receiving another chat's events. */
   conversationId?: string | null
+  /**
+   * Report unsaved work: `true` or a short label (e.g. the file name) while
+   * the page holds something the user would lose, `false` once it is saved
+   * or discarded. Closing the pane, its workspace, or the browser tab then
+   * asks first. Absent on older consoles; feature-detect before calling.
+   */
+  setDirty?: (dirty: boolean | string) => void
 }
 
 export interface PageRegistration {
@@ -594,6 +601,24 @@ export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
   tooltipSide?: 'top' | 'right' | 'bottom' | 'left'
 }
 export declare const IconButton: React.ComponentType<IconButtonProps & React.RefAttributes<HTMLButtonElement>>
+
+export interface ConfirmDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description?: React.ReactNode
+  /** Lines listed under the description, e.g. the unsaved items at stake. */
+  details?: readonly string[]
+  confirmLabel?: string
+  cancelLabel?: string
+  onConfirm: () => void
+  onCancel?: () => void
+}
+/**
+ * The console's confirmation in place of `window.confirm`: cancel owns
+ * initial focus, Escape and the close control cancel.
+ */
+export declare const ConfirmDialog: React.ComponentType<ConfirmDialogProps>
 
 /** Root is state-only; compose with `DialogTrigger`/`DialogContent`. */
 export interface DialogProps {

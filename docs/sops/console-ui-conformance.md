@@ -14,8 +14,10 @@ or the selection/motion rules change.
   choice, `Select` for small finite lists, and `Selector` for searchable
   single choice. Line tabs use a neutral underline, 600 weight, natural case,
   and semantic icons by default.
-- Overlays: shared `Tooltip`, `Dialog`, `DropdownMenu`, `Select`, `Selector`,
-  and `BottomSheet` preserve injected worker scope through their portals.
+- Overlays: shared `Tooltip`, `Dialog`, `ConfirmDialog`, `DropdownMenu`,
+  `Select`, `Selector`, and `BottomSheet` preserve injected worker scope
+  through their portals. Confirmation is `ConfirmDialog`, never
+  `window.confirm`; the native prompt is only for browser reload or close.
 - Images: a picture the user may want to inspect opens the shared
   `ImageViewer` through an `ImageThumbnailButton`; no worker ships its own
   lightbox, zoom or pan. Captions carry the attachment name or a relative
@@ -74,7 +76,7 @@ selection, tooltip, or selector behavior.
 
 | Surface | Result |
 |---|---|
-| Workspace tabs and mobile menu | Neutral selected fill/ink; shared control motion |
+| Workspace tabs and mobile menu | Neutral selected fill/ink; shared control motion; roving tab focus, overflow fades + shared `DropdownMenu`, shared `ConfirmDialog` for unsaved work |
 | Trigger/function catalogs | Public list/chip recipes, shared icon tabs, and neutral selected row/title/edge |
 | Schema and chat tables | Shared responsive table parts; natural-case sans headers, horizontal row dividers, selective technical mono |
 | Traces, waterfall, and group-by | Neutral selected trace treatment; group-by uses shared `Selector` |
