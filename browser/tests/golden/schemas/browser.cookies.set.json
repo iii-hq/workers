@@ -1,0 +1,102 @@
+{
+  "function_id": "browser::cookies::set",
+  "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CookiesSetInput",
+    "type": "object",
+    "required": [
+      "cookies",
+      "session_id"
+    ],
+    "properties": {
+      "cookies": {
+        "description": "Cookies to set. A cookie without a domain is scoped to the current page's URL.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/CookieSpec"
+        }
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "definitions": {
+      "CookieSpec": {
+        "description": "One cookie as read from or written to the session. A subset of the CDP cookie shape: what a person setting a cookie actually provides.",
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires": {
+            "description": "Seconds since the Unix epoch; omitted for a session cookie.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "http_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "same_site": {
+            "description": "`Strict`, `Lax`, or `None`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secure": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CookiesSetOutput",
+    "type": "object",
+    "required": [
+      "count",
+      "ok"
+    ],
+    "properties": {
+      "count": {
+        "description": "How many cookies were sent.",
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0.0
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    }
+  }
+}

@@ -6,6 +6,7 @@ pub mod act;
 pub mod attach;
 pub mod clear_data;
 pub mod console;
+pub mod cookies;
 pub mod doctor;
 pub mod dom;
 pub mod downloads;
@@ -220,6 +221,15 @@ pub const RESIZE_DESC: &str =
     "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
      pane resizes so the streamed frame fills the pane with no letterboxing and clicks map \
      1:1; the device toolbar calls it with a preset. Clamped 200..4000.";
+pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
+pub const COOKIES_LIST_DESC: &str =
+    "The cookies visible to the session's current page (name, value, domain, path, flags).";
+pub const COOKIES_SET_ID: &str = "browser::cookies::set";
+pub const COOKIES_SET_DESC: &str =
+    "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
+     scoped to the current page's URL. same_site is Strict, Lax, or None.";
+pub const COOKIES_CLEAR_ID: &str = "browser::cookies::clear";
+pub const COOKIES_CLEAR_DESC: &str = "Clear all of the session's cookies.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -329,6 +339,18 @@ pub fn catalog() -> Vec<FunctionSpec> {
             DOWNLOAD_REMOVE_DESC,
         ),
         spec::<resize::ResizeInput, resize::ResizeOutput>(RESIZE_ID, RESIZE_DESC),
+        spec::<cookies::CookiesListInput, cookies::CookiesListOutput>(
+            COOKIES_LIST_ID,
+            COOKIES_LIST_DESC,
+        ),
+        spec::<cookies::CookiesSetInput, cookies::CookiesSetOutput>(
+            COOKIES_SET_ID,
+            COOKIES_SET_DESC,
+        ),
+        spec::<cookies::CookiesClearInput, cookies::CookiesClearOutput>(
+            COOKIES_CLEAR_ID,
+            COOKIES_CLEAR_DESC,
+        ),
     ]
 }
 
@@ -371,6 +393,9 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_download(iii, sessions);
     register_download_remove(iii, sessions);
     register_resize(iii, sessions);
+    register_cookies_list(iii, sessions);
+    register_cookies_set(iii, sessions);
+    register_cookies_clear(iii, sessions);
     tracing::info!("all functions registered");
 }
 
@@ -1728,6 +1753,125 @@ fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(PDF_DESC),
+    );
+}
+
+fn same_site_from(value: &str) -> Option<cdp_network::CookieSameSite> {
+    match value.to_ascii_lowercase().as_str() {
+        "strict" => Some(cdp_network::CookieSameSite::Strict),
+        "lax" => Some(cdp_network::CookieSameSite::Lax),
+        "none" => Some(cdp_network::CookieSameSite::None),
+        _ => None,
+    }
+}
+
+fn same_site_str(value: &cdp_network::CookieSameSite) -> String {
+    match value {
+        cdp_network::CookieSameSite::Strict => "Strict",
+        cdp_network::CookieSameSite::Lax => "Lax",
+        cdp_network::CookieSameSite::None => "None",
+    }
+    .to_string()
+}
+
+fn register_cookies_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        COOKIES_LIST_ID,
+        RegisterFunction::new_async(move |req: cookies::CookiesListInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let result = session
+                    .page
+                    .execute(cdp_network::GetCookiesParams::default())
+                    .await
+                    .map_err(|e| handler_err(format!("get cookies failed: {e}")))?;
+                let cookies = result
+                    .result
+                    .cookies
+                    .iter()
+                    .map(|c| cookies::CookieSpec {
+                        name: c.name.clone(),
+                        value: c.value.clone(),
+                        domain: Some(c.domain.clone()),
+                        path: Some(c.path.clone()),
+                        expires: if c.expires < 0.0 {
+                            None
+                        } else {
+                            Some(c.expires)
+                        },
+                        secure: Some(c.secure),
+                        http_only: Some(c.http_only),
+                        same_site: c.same_site.as_ref().map(same_site_str),
+                    })
+                    .collect();
+                Ok::<_, Error>(cookies::CookiesListOutput { cookies })
+            }
+        })
+        .description(COOKIES_LIST_DESC),
+    );
+}
+
+fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        COOKIES_SET_ID,
+        RegisterFunction::new_async(move |req: cookies::CookiesSetInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
+                let count = req.cookies.len();
+                let params: Vec<cdp_network::CookieParam> = req
+                    .cookies
+                    .into_iter()
+                    .map(|c| {
+                        let mut param = cdp_network::CookieParam::new(c.name, c.value);
+                        if c.domain.is_some() {
+                            param.domain = c.domain;
+                        } else if !page_url.is_empty() {
+                            param.url = Some(page_url.clone());
+                        }
+                        param.path = c.path;
+                        param.secure = c.secure;
+                        param.http_only = c.http_only;
+                        param.expires = c.expires.map(cdp_network::TimeSinceEpoch::new);
+                        param.same_site = c.same_site.as_deref().and_then(same_site_from);
+                        param
+                    })
+                    .collect();
+                session
+                    .page
+                    .execute(cdp_network::SetCookiesParams::new(params))
+                    .await
+                    .map_err(|e| handler_err(format!("set cookies failed: {e}")))?;
+                Ok::<_, Error>(cookies::CookiesSetOutput { ok: true, count })
+            }
+        })
+        .description(COOKIES_SET_DESC),
+    );
+}
+
+fn register_cookies_clear(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        COOKIES_CLEAR_ID,
+        RegisterFunction::new_async(move |req: cookies::CookiesClearInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                session
+                    .page
+                    .execute(cdp_network::ClearBrowserCookiesParams::default())
+                    .await
+                    .map_err(|e| handler_err(format!("clear cookies failed: {e}")))?;
+                Ok::<_, Error>(cookies::CookiesClearOutput { ok: true })
+            }
+        })
+        .description(COOKIES_CLEAR_DESC),
     );
 }
 

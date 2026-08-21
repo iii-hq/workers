@@ -41,7 +41,9 @@ import {
   fileFromBase64,
   findInBrowserPage,
   hintBrowserPick,
+  listBrowserCookies,
   navigateBrowser,
+  parseCookieFile,
   parsePickedEvent,
   pinLabel,
   pressBrowserKey,
@@ -50,6 +52,7 @@ import {
   resolveBrowserPick,
   screenshotFileName,
   scrollBrowserAt,
+  setBrowserCookies,
   stopBrowserSession,
   takeBrowserScreenshot,
   typeBrowserText,
@@ -81,6 +84,11 @@ import {
   renderAnnotationCrop,
 } from './annotations'
 import { ConsolePanel } from './ConsolePanel'
+import {
+  type DevicePreset,
+  type DeviceState,
+  DeviceToolbar,
+} from './DeviceToolbar'
 import { DownloadsPanel, useDownloadCount } from './DownloadsPanel'
 import { FindBar, type FindState } from './FindBar'
 import { HistoryPanel } from './HistoryPanel'
@@ -114,6 +122,9 @@ export interface SessionActions {
   screenshotToChat: () => void
   printToPdf: () => void
   clearData: () => void
+  toggleDeviceToolbar: () => void
+  importCookies: () => void
+  copyCookies: () => void
 }
 
 const FEED_PANES: readonly FeedPane[] = [
@@ -527,31 +538,164 @@ export function SessionView({
   // observer fires often; debounce and skip sub-pixel-ish changes.
   const resizeTimerRef = useRef<number | undefined>(undefined)
   const lastSentSizeRef = useRef<{ w: number; h: number } | null>(null)
+  const lastPaneSizeRef = useRef<{ w: number; h: number } | null>(null)
+  // A pinned device size takes the viewport out of pane-tracking until reset.
+  const [device, setDevice] = useState<DeviceState | null>(null)
+  const [showDevice, setShowDevice] = useState(false)
+  const deviceRef = useRef(device)
+  deviceRef.current = device
+  const applyViewport = useCallback(
+    (
+      width: number,
+      height: number,
+      dpr?: number,
+      mobile?: boolean,
+      fit?: boolean,
+    ) => {
+      void resizeBrowser(host.iii, sessionId, width, height, {
+        deviceScaleFactor: dpr,
+        mobile,
+        fit,
+      })
+        .then((applied) => {
+          if (!applied) return
+          setReseedToken((t) => t + 1)
+          // The worker clamps (200..4000); a pinned device shows the size
+          // that actually applies, not the raw typed number.
+          setDevice((current) =>
+            current &&
+            (current.width !== applied.width ||
+              current.height !== applied.height)
+              ? { ...current, width: applied.width, height: applied.height }
+              : current,
+          )
+        })
+        .catch(() => {})
+    },
+    [host, sessionId],
+  )
   const onSurfaceResize = useCallback(
     (width: number, height: number) => {
+      lastPaneSizeRef.current = { w: width, h: height }
+      if (deviceRef.current) return
       const last = lastSentSizeRef.current
       if (last && Math.abs(last.w - width) < 4 && Math.abs(last.h - height) < 4)
         return
       window.clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = window.setTimeout(() => {
         lastSentSizeRef.current = { w: width, h: height }
-        void resizeBrowser(host.iii, sessionId, width, height, {
-          fit: true,
-          deviceScaleFactor: Math.min(window.devicePixelRatio || 1, 2),
-        })
-          .then((applied) => {
-            if (applied) setReseedToken((t) => t + 1)
-          })
-          .catch(() => {})
+        applyViewport(
+          width,
+          height,
+          Math.min(window.devicePixelRatio || 1, 2),
+          undefined,
+          true,
+        )
       }, 180)
     },
-    [host, sessionId],
+    [applyViewport],
   )
   useEffect(() => {
     lastSentSizeRef.current = null
     setReseedToken(0)
+    setDevice(null)
+    setShowDevice(false)
     return () => window.clearTimeout(resizeTimerRef.current)
   }, [sessionId])
+  const applyDevice = useCallback(
+    (preset: DevicePreset) => {
+      setDevice({
+        width: preset.width,
+        height: preset.height,
+        deviceScaleFactor: preset.deviceScaleFactor,
+        mobile: preset.mobile,
+        presetId: preset.id,
+      })
+      applyViewport(
+        preset.width,
+        preset.height,
+        preset.deviceScaleFactor,
+        preset.mobile,
+      )
+    },
+    [applyViewport],
+  )
+  const setDeviceDimensions = useCallback(
+    (width: number, height: number) => {
+      setDevice((current) => {
+        const base = current ?? {
+          width,
+          height,
+          deviceScaleFactor: 1,
+          mobile: false,
+          presetId: null,
+        }
+        const next = { ...base, width, height, presetId: null }
+        applyViewport(
+          next.width,
+          next.height,
+          next.deviceScaleFactor,
+          next.mobile,
+        )
+        return next
+      })
+    },
+    [applyViewport],
+  )
+  const rotateDevice = useCallback(() => {
+    setDevice((current) => {
+      if (!current) return current
+      const next = { ...current, width: current.height, height: current.width }
+      applyViewport(
+        next.width,
+        next.height,
+        next.deviceScaleFactor,
+        next.mobile,
+      )
+      return next
+    })
+  }, [applyViewport])
+  const resetDevice = useCallback(() => {
+    setDevice(null)
+    const pane = lastPaneSizeRef.current
+    if (pane) {
+      lastSentSizeRef.current = pane
+      applyViewport(pane.w, pane.h)
+    }
+  }, [applyViewport])
+  const toggleDeviceToolbar = useCallback(() => {
+    setShowDevice((v) => {
+      const next = !v
+      if (!next) resetDevice()
+      return next
+    })
+  }, [resetDevice])
+
+  // Cookie import: read a JSON or Netscape file and set the cookies.
+  const cookieInputRef = useRef<HTMLInputElement>(null)
+  const importCookies = useCallback(() => {
+    cookieInputRef.current?.click()
+  }, [])
+  const onCookieFile = useCallback(
+    (file: File | undefined) => {
+      if (!file) return
+      void runAction(async () => {
+        const cookies = parseCookieFile(await file.text())
+        if (cookies.length === 0)
+          throw new Error('no cookies found in that file')
+        const count = await setBrowserCookies(host.iii, sessionId, cookies)
+        setActionError(`imported ${count} cookie${count === 1 ? '' : 's'}`)
+      })
+    },
+    [host, sessionId, runAction],
+  )
+  const copyCookies = useCallback(() => {
+    void runAction(async () => {
+      const cookies = await listBrowserCookies(host.iii, sessionId)
+      await navigator.clipboard?.writeText(JSON.stringify(cookies, null, 2))
+      setActionError(`copied ${cookies.length} cookies to the clipboard`)
+    })
+  }, [host, sessionId, runAction])
 
   // Find in page: the worker keeps the match list in the document; this
   // side keeps the query, the count and the current index for the bar.
@@ -736,6 +880,9 @@ export function SessionView({
       screenshotToChat,
       printToPdf,
       clearData: () => setConfirmingClear(true),
+      toggleDeviceToolbar,
+      importCookies,
+      copyCookies,
     }
     return () => {
       actionsRef.current = null
@@ -752,6 +899,9 @@ export function SessionView({
     takeScreenshot,
     screenshotToChat,
     printToPdf,
+    toggleDeviceToolbar,
+    importCookies,
+    copyCookies,
   ])
   const annotatingRef = useRef(annotating)
   annotatingRef.current = annotating
@@ -973,6 +1123,9 @@ export function SessionView({
                   zoomOut: () => applyZoom('out'),
                   zoomReset: () => applyZoom('reset'),
                   clearData: () => setConfirmingClear(true),
+                  toggleDeviceToolbar,
+                  importCookies,
+                  copyCookies,
                 }}
               />
               <button
@@ -999,6 +1152,39 @@ export function SessionView({
               description="Cookies, cache and storage for this session are cleared. Other sessions are untouched."
               confirmLabel="Clear"
               onConfirm={clearData}
+            />
+            {showDevice && device ? (
+              <DeviceToolbar
+                device={device}
+                onPreset={applyDevice}
+                onDimensions={setDeviceDimensions}
+                onRotate={rotateDevice}
+                onReset={resetDevice}
+              />
+            ) : showDevice ? (
+              <DeviceToolbar
+                device={{
+                  width: lastPaneSizeRef.current?.w ?? 0,
+                  height: lastPaneSizeRef.current?.h ?? 0,
+                  deviceScaleFactor: 1,
+                  mobile: false,
+                  presetId: null,
+                }}
+                onPreset={applyDevice}
+                onDimensions={setDeviceDimensions}
+                onRotate={rotateDevice}
+                onReset={resetDevice}
+              />
+            ) : null}
+            <input
+              ref={cookieInputRef}
+              type="file"
+              accept=".json,.txt,application/json,text/plain"
+              className="br-ui-visually-hidden"
+              onChange={(event) => {
+                onCookieFile(event.target.files?.[0])
+                event.target.value = ''
+              }}
             />
             <Viewport
               frame={annotating && frozen ? frozen : live.frame}

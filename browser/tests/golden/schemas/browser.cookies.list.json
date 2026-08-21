@@ -1,0 +1,90 @@
+{
+  "function_id": "browser::cookies::list",
+  "description": "The cookies visible to the session's current page (name, value, domain, path, flags).",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CookiesListInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CookiesListOutput",
+    "type": "object",
+    "required": [
+      "cookies"
+    ],
+    "properties": {
+      "cookies": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/CookieSpec"
+        }
+      }
+    },
+    "definitions": {
+      "CookieSpec": {
+        "description": "One cookie as read from or written to the session. A subset of the CDP cookie shape: what a person setting a cookie actually provides.",
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires": {
+            "description": "Seconds since the Unix epoch; omitted for a session cookie.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "http_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "same_site": {
+            "description": "`Strict`, `Lax`, or `None`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secure": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

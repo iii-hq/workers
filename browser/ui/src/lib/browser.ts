@@ -953,3 +953,129 @@ export async function resizeBrowser(
     ? { width: parsed.data.width, height: parsed.data.height }
     : null
 }
+
+export const BROWSER_COOKIES_LIST_FUNCTION_ID = 'browser::cookies::list'
+export const BROWSER_COOKIES_SET_FUNCTION_ID = 'browser::cookies::set'
+export const BROWSER_COOKIES_CLEAR_FUNCTION_ID = 'browser::cookies::clear'
+
+const cookieSpecSchema = z.object({
+  name: z.string(),
+  value: z.string(),
+  domain: z.string().optional(),
+  path: z.string().optional(),
+  expires: z.number().optional(),
+  secure: z.boolean().optional(),
+  http_only: z.boolean().optional(),
+  same_site: z.string().optional(),
+})
+export type BrowserCookie = z.infer<typeof cookieSpecSchema>
+const cookiesListSchema = z.object({ cookies: z.array(cookieSpecSchema) })
+
+export async function listBrowserCookies(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<BrowserCookie[]> {
+  const res = await iii.trigger<unknown>(BROWSER_COOKIES_LIST_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  return cookiesListSchema.safeParse(res).success
+    ? cookiesListSchema.parse(res).cookies
+    : []
+}
+
+export async function setBrowserCookies(
+  iii: ExtensionIii,
+  sessionId: string,
+  cookies: BrowserCookie[],
+): Promise<number> {
+  const res = await iii.trigger<unknown>(BROWSER_COOKIES_SET_FUNCTION_ID, {
+    session_id: sessionId,
+    cookies,
+  })
+  const parsed = z.object({ ok: z.boolean(), count: z.number() }).safeParse(res)
+  return parsed.success ? parsed.data.count : 0
+}
+
+export async function clearBrowserCookies(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_COOKIES_CLEAR_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+}
+
+/**
+ * Parse a cookie file into cookie specs. Accepts a JSON array (the shape
+ * browser export extensions produce, camelCase or snake_case) or the
+ * Netscape `cookies.txt` tab-separated format. Unknown lines are skipped.
+ */
+export function parseCookieFile(text: string): BrowserCookie[] {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      const list = Array.isArray(parsed) ? parsed : (parsed.cookies ?? [])
+      return (list as Record<string, unknown>[])
+        .map(cookieFromJson)
+        .filter((c): c is BrowserCookie => c !== null)
+    } catch {
+      return []
+    }
+  }
+  return trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+    .map(cookieFromNetscape)
+    .filter((c): c is BrowserCookie => c !== null)
+}
+
+function cookieFromJson(raw: Record<string, unknown>): BrowserCookie | null {
+  const name = str(raw.name)
+  if (name === undefined) return null
+  const expiryRaw = raw.expires ?? raw.expirationDate ?? raw.expiry
+  const sameSite = str(raw.sameSite ?? raw.same_site)
+  const cookie: BrowserCookie = { name, value: str(raw.value) ?? '' }
+  const domain = str(raw.domain)
+  if (domain) cookie.domain = domain
+  const path = str(raw.path)
+  if (path) cookie.path = path
+  if (typeof expiryRaw === 'number') cookie.expires = expiryRaw
+  const secure = bool(raw.secure)
+  if (secure !== undefined) cookie.secure = secure
+  const httpOnly = bool(raw.httpOnly ?? raw.http_only)
+  if (httpOnly !== undefined) cookie.http_only = httpOnly
+  if (sameSite) cookie.same_site = normalizeSameSite(sameSite)
+  return cookie
+}
+
+function cookieFromNetscape(line: string): BrowserCookie | null {
+  const parts = line.split('\t')
+  if (parts.length < 7) return null
+  const [domain, , path, secure, expires, name, value] = parts
+  if (!name) return null
+  const cookie: BrowserCookie = { name, value: value ?? '' }
+  if (domain) cookie.domain = domain.replace(/^#HttpOnly_/, '')
+  if (path) cookie.path = path
+  cookie.secure = secure?.toUpperCase() === 'TRUE'
+  cookie.http_only = domain.startsWith('#HttpOnly_')
+  const expiresNum = Number(expires)
+  if (Number.isFinite(expiresNum) && expiresNum > 0) cookie.expires = expiresNum
+  return cookie
+}
+
+function normalizeSameSite(value: string): string | undefined {
+  const v = value.toLowerCase()
+  if (v === 'strict') return 'Strict'
+  if (v === 'lax') return 'Lax'
+  if (v === 'none' || v === 'no_restriction') return 'None'
+  return undefined
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined
+}
+function bool(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined
+}
