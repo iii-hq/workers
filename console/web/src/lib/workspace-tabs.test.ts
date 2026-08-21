@@ -9,6 +9,7 @@ import {
   resolveActiveTab,
   screenForView,
   screenLabel,
+  shouldFlushPendingWrite,
   tabColumns,
   tabLabel,
   tabPaneIds,
@@ -561,5 +562,15 @@ describe('workspaceLayoutSource', () => {
       'local',
       'server',
     ])
+  })
+})
+
+describe('shouldFlushPendingWrite', () => {
+  it('flushes only once hydrated and something is queued', () => {
+    expect(shouldFlushPendingWrite('pending', true)).toBe(false)
+    expect(shouldFlushPendingWrite('pending', false)).toBe(false)
+    expect(shouldFlushPendingWrite('server', false)).toBe(false)
+    expect(shouldFlushPendingWrite('server', true)).toBe(true)
+    expect(shouldFlushPendingWrite('local', true)).toBe(true)
   })
 })

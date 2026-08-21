@@ -16,7 +16,7 @@
  */
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type ConfigTransform,
   SerializedConfigWriter,
@@ -33,6 +33,7 @@ import {
   parseActiveTabId,
   parseWorkspaceTabs,
   resolveActiveTab,
+  shouldFlushPendingWrite,
   type TabScreen,
   tabColumns,
   tabPaneIds,
@@ -55,7 +56,7 @@ interface LocalState {
   activeTabId: string
 }
 
-type WorkspaceTransform = (state: LocalState) => LocalState
+export type WorkspaceTransform = (state: LocalState) => LocalState
 
 function workspaceState(value: ConsoleConfigValue): LocalState {
   const parsedTabs = parseWorkspaceTabs(value)
@@ -64,7 +65,9 @@ function workspaceState(value: ConsoleConfigValue): LocalState {
   return { tabs, activeTabId }
 }
 
-function workspaceConfigTransform(update: WorkspaceTransform): ConfigTransform {
+export function workspaceConfigTransform(
+  update: WorkspaceTransform,
+): ConfigTransform {
   return (value) => {
     const next = update(workspaceState(value))
     return withActiveTabId(
@@ -215,8 +218,23 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const activeTab = resolveActiveTab(tabs, pointer)
   const activeTabId = activeTab.id
 
+  // A write fired before the first server answer arrives (a keyboard
+  // shortcut, a worker's panel-open) must not be lost when `tabs` flips from
+  // the local copy to the server layout. Pre-hydration transforms are
+  // composed and replayed through the server path once hydrated — composed,
+  // because each is a delta rather than a full snapshot.
+  const pendingWriteRef = useRef<WorkspaceTransform | null>(null)
+
   const persist = useCallback(
     (update: WorkspaceTransform) => {
+      if (layoutSource === 'pending') {
+        const previous = pendingWriteRef.current
+        pendingWriteRef.current = previous
+          ? (state) => update(previous(state))
+          : update
+        setLocal((current) => update(current))
+        return
+      }
       if (available) {
         // Optimistic: the strip reflects the change in this frame; the
         // serialized server writes rebase it behind the UI.
@@ -233,8 +251,15 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         })
       }
     },
-    [available, data, qc, writer],
+    [available, data, layoutSource, qc, writer],
   )
+
+  useEffect(() => {
+    const pending = pendingWriteRef.current
+    if (!shouldFlushPendingWrite(layoutSource, pending !== null)) return
+    pendingWriteRef.current = null
+    if (pending !== null) persist(pending)
+  }, [layoutSource, persist])
 
   const activateTab = useCallback(
     (id: string) => {
