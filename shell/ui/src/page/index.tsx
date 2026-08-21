@@ -142,6 +142,7 @@ import {
   activateTab,
   basename,
   closeTab,
+  cycleTab,
   EMPTY_TABS,
   lastSegments,
   openPinned,
@@ -2451,6 +2452,26 @@ export function ShellExplorerPage({
     closeTerminal()
   }, [closeTerminal, terminalActive, terminalDock, terminalOpen])
 
+  const orderedReviewEntriesRef = useRef(orderedReviewEntries)
+  orderedReviewEntriesRef.current = orderedReviewEntries
+  const stepReviewEntry = useCallback(
+    (delta: 1 | -1) => {
+      const entries = orderedReviewEntriesRef.current
+      if (entries.length === 0) return
+      const current = entries.findIndex(
+        (entry) => entry.path === tabsRef.current.active,
+      )
+      const index =
+        current === -1
+          ? delta === 1
+            ? 0
+            : entries.length - 1
+          : (current + delta + entries.length) % entries.length
+      openReviewEntry(entries[index])
+    },
+    [openReviewEntry],
+  )
+
   // The page's verbs, for the palette and for the keyboard while this pane
   // has the focus. The keys stay clear of the console's own.
   useEffect(
@@ -2507,8 +2528,53 @@ export function ShellExplorerPage({
           shortcut: '`',
           run: toggleTerminal,
         },
+        {
+          id: 'next-tab',
+          title: 'Next editor tab',
+          keywords: ['tab', 'file', 'cycle'],
+          shortcut: 'Alt+ArrowRight',
+          enabled: () => tabsRef.current.tabs.length > 1,
+          run: () => setTabs((state) => cycleTab(state, 1)),
+        },
+        {
+          id: 'previous-tab',
+          title: 'Previous editor tab',
+          keywords: ['tab', 'file', 'cycle'],
+          shortcut: 'Alt+ArrowLeft',
+          enabled: () => tabsRef.current.tabs.length > 1,
+          run: () => setTabs((state) => cycleTab(state, -1)),
+        },
+        {
+          id: 'close-tab',
+          title: 'Close the editor tab',
+          keywords: ['tab', 'file', 'close'],
+          shortcut: 'W',
+          enabled: () => tabsRef.current.active !== null,
+          run: () => {
+            const active = tabsRef.current.active
+            if (active !== null) onCloseTab(active)
+          },
+        },
+        {
+          id: 'next-change',
+          title: 'Next changed file',
+          detail: 'Open the next file in the review',
+          keywords: ['review', 'diff', 'change'],
+          shortcut: 'J',
+          enabled: () => orderedReviewEntriesRef.current.length > 0,
+          run: () => stepReviewEntry(1),
+        },
+        {
+          id: 'previous-change',
+          title: 'Previous changed file',
+          detail: 'Open the previous file in the review',
+          keywords: ['review', 'diff', 'change'],
+          shortcut: 'K',
+          enabled: () => orderedReviewEntriesRef.current.length > 0,
+          run: () => stepReviewEntry(-1),
+        },
       ]),
-    [commands, host, toggleTerminal],
+    [commands, host, toggleTerminal, onCloseTab, stepReviewEntry],
   )
 
   const header = (

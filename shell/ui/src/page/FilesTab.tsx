@@ -16,7 +16,10 @@ import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Search, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
-import { reactivateSelectedFile, shouldActivateTreeSelection } from './tree-activation'
+import {
+  reactivateSelectedFile,
+  shouldActivateTreeSelection,
+} from './tree-activation'
 import { TREE_THEME, TREE_UNSAFE_CSS } from './tree-theme'
 
 /** Directory paths live in the model with a trailing slash; callers key
@@ -129,7 +132,10 @@ export function FilesTab({
         const handle = model.getItem(path) ?? model.getItem(`${path}/`)
         // A method call doesn't narrow the handle union — the literal
         // `isDirectory(): true` return type needs the explicit cast.
-        if (handle?.isDirectory() && (handle as FileTreeDirectoryHandle).isExpanded()) {
+        if (
+          handle?.isDirectory() &&
+          (handle as FileTreeDirectoryHandle).isExpanded()
+        ) {
           open.push(path)
         }
       }
@@ -159,7 +165,10 @@ export function FilesTab({
     lastPathsKeyRef.current = pathsKey
     // The model accepts dir ids in either spelling depending on how the
     // row materialized — hand it both.
-    const initialExpandedPaths = expandedRef.current.flatMap((p) => [p, `${p}/`])
+    const initialExpandedPaths = expandedRef.current.flatMap((p) => [
+      p,
+      `${p}/`,
+    ])
     model.resetPaths(tree?.paths ?? [], { initialExpandedPaths })
   }, [model, pathsKey, tree])
 
@@ -191,7 +200,9 @@ export function FilesTab({
   useEffect(() => {
     const query = filter.trim()
     model.setSearch(query === '' ? null : query)
-    setFilterMatchCount(query === '' ? null : model.getSearchMatchingPaths().length)
+    setFilterMatchCount(
+      query === '' ? null : model.getSearchMatchingPaths().length,
+    )
   }, [model, filter, pathsKey])
 
   useEffect(() => {
@@ -232,6 +243,7 @@ export function FilesTab({
             placeholder="Filter files…"
             autoComplete="off"
             spellCheck={false}
+            data-autofocus=""
           />
           {filter !== '' ? (
             <button
@@ -252,7 +264,9 @@ export function FilesTab({
           <div className="shui-side-note">loading tree…</div>
         ) : tree.paths.length === 0 ? (
           <div className="shui-side-note">
-            {hiddenFiltered ? 'nothing visible — hidden entries are filtered' : 'empty folder'}
+            {hiddenFiltered
+              ? 'nothing visible — hidden entries are filtered'
+              : 'empty folder'}
           </div>
         ) : filterMatchCount === 0 ? (
           <div className="shui-side-note">no matching files</div>
@@ -278,8 +292,9 @@ export function FilesTab({
 
       {tree && tree.truncations.length > 0 ? (
         <div className="shui-side-note ghost">
-          partial listing — {tree.truncations.length} {tree.truncations.length === 1 ? 'folder' : 'folders'} truncated
-          by depth/size limits
+          partial listing — {tree.truncations.length}{' '}
+          {tree.truncations.length === 1 ? 'folder' : 'folders'} truncated by
+          depth/size limits
         </div>
       ) : null}
     </div>

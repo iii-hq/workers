@@ -73,7 +73,6 @@ export function SearchTab({
           preserveCase
           aria-label="search query"
           data-shell-search-input=""
-          data-autofocus=""
         />
         <div className="shui-search-opts">
           <label className="opt">
