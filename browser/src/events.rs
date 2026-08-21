@@ -24,6 +24,7 @@ pub const CONSOLE_EVENT: &str = "browser::console-event";
 pub const NETWORK_EVENT: &str = "browser::network-event";
 pub const PICKED: &str = "browser::picked";
 pub const HANDOFF_REQUESTED: &str = "browser::handoff-requested";
+pub const DOWNLOAD_CHANGED: &str = "browser::download-changed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -34,6 +35,7 @@ pub enum EventKind {
     NetworkEvent,
     Picked,
     HandoffRequested,
+    DownloadChanged,
 }
 
 impl EventKind {
@@ -46,10 +48,11 @@ impl EventKind {
             EventKind::NetworkEvent => NETWORK_EVENT,
             EventKind::Picked => PICKED,
             EventKind::HandoffRequested => HANDOFF_REQUESTED,
+            EventKind::DownloadChanged => DOWNLOAD_CHANGED,
         }
     }
 
-    pub fn all() -> [EventKind; 7] {
+    pub fn all() -> [EventKind; 8] {
         [
             EventKind::SessionStarted,
             EventKind::SessionStopped,
@@ -58,6 +61,7 @@ impl EventKind {
             EventKind::NetworkEvent,
             EventKind::Picked,
             EventKind::HandoffRequested,
+            EventKind::DownloadChanged,
         ]
     }
 }
@@ -108,6 +112,15 @@ pub struct SessionStoppedEvent {
 pub struct NavigatedEvent {
     pub session_id: String,
     pub url: String,
+    pub timestamp: i64,
+}
+
+/// `browser::download-changed` — a download in the session started,
+/// progressed, or finished. The durable record is `browser::downloads::list`;
+/// this is the nudge to re-list.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DownloadChangedEvent {
+    pub session_id: String,
     pub timestamp: i64,
 }
 
@@ -294,7 +307,7 @@ impl TriggerHandler for BrowserTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 7] = [
+    let descriptions: [(EventKind, &str); 8] = [
         (
             EventKind::SessionStarted,
             "A Chromium session is up and ready.",
@@ -318,6 +331,10 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         (
             EventKind::Picked,
             "The human picked an element in inspect mode.",
+        ),
+        (
+            EventKind::DownloadChanged,
+            "A download started, progressed, or finished in a session.",
         ),
         (
             EventKind::HandoffRequested,

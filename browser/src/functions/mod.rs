@@ -4,9 +4,11 @@
 
 pub mod act;
 pub mod attach;
+pub mod clear_data;
 pub mod console;
 pub mod doctor;
 pub mod dom;
+pub mod downloads;
 pub mod evaluate;
 pub mod execute;
 pub mod find_in_page;
@@ -14,6 +16,7 @@ pub mod frame;
 pub mod handoff;
 pub mod hint;
 pub mod history;
+pub mod history_list;
 pub mod navigate;
 pub mod network;
 pub mod overlays;
@@ -32,12 +35,15 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
+use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::css as cdp_css;
 use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
 use chromiumoxide::cdp::browser_protocol::input;
+use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::browser_protocol::overlay;
 use chromiumoxide::cdp::browser_protocol::page as cdp_page;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::browser_protocol::storage as cdp_storage;
 use chromiumoxide::cdp::js_protocol::runtime as cdp_rt;
 use chromiumoxide::page::ScreenshotParams;
 use iii_sdk::errors::Error;
@@ -188,6 +194,26 @@ pub const PDF_ID: &str = "browser::pdf";
 pub const PDF_DESC: &str =
     "Print the page to a PDF (the browser's Print -> Save as PDF) and return it base64 with \
      a file name from the title.";
+pub const HISTORY_LIST_ID: &str = "browser::history::list";
+pub const HISTORY_LIST_DESC: &str =
+    "The session's visited pages, newest first, for a history panel or address-bar \
+     suggestions. Filter with query. Distinct from browser::history, which moves back / \
+     forward / reloads.";
+pub const CLEAR_DATA_ID: &str = "browser::clear-data";
+pub const CLEAR_DATA_DESC: &str =
+    "Clear the session's browsing data (cookies, cache, storage), like the browser's Clear \
+     browsing data. Scoped to this session's browser context.";
+pub const DOWNLOADS_LIST_ID: &str = "browser::downloads::list";
+pub const DOWNLOADS_LIST_DESC: &str =
+    "The files this session downloaded (name, url, size, state), newest first. Downloads are \
+     allowed and named per session; read one with browser::download.";
+pub const DOWNLOAD_ID: &str = "browser::download";
+pub const DOWNLOAD_DESC: &str =
+    "Read one downloaded file's bytes by guid (from browser::downloads::list), base64, for \
+     saving or attaching to the chat.";
+pub const DOWNLOAD_REMOVE_ID: &str = "browser::download::remove";
+pub const DOWNLOAD_REMOVE_DESC: &str =
+    "Forget a download and delete its file from the session's download dir.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -279,6 +305,23 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<zoom::ZoomInput, zoom::ZoomOutput>(ZOOM_ID, ZOOM_DESC),
         spec::<pdf::PdfInput, pdf::PdfOutput>(PDF_ID, PDF_DESC),
+        spec::<history_list::HistoryListInput, history_list::HistoryListOutput>(
+            HISTORY_LIST_ID,
+            HISTORY_LIST_DESC,
+        ),
+        spec::<clear_data::ClearDataInput, clear_data::ClearDataOutput>(
+            CLEAR_DATA_ID,
+            CLEAR_DATA_DESC,
+        ),
+        spec::<downloads::DownloadsListInput, downloads::DownloadsListOutput>(
+            DOWNLOADS_LIST_ID,
+            DOWNLOADS_LIST_DESC,
+        ),
+        spec::<downloads::DownloadInput, downloads::DownloadOutput>(DOWNLOAD_ID, DOWNLOAD_DESC),
+        spec::<downloads::DownloadRemoveInput, downloads::DownloadRemoveOutput>(
+            DOWNLOAD_REMOVE_ID,
+            DOWNLOAD_REMOVE_DESC,
+        ),
     ]
 }
 
@@ -315,11 +358,31 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_find_in_page(iii, sessions);
     register_zoom(iii, sessions);
     register_pdf(iii, sessions);
+    register_history_list(iii, sessions);
+    register_clear_data(iii, sessions);
+    register_downloads_list(iii, sessions);
+    register_download(iii, sessions);
+    register_download_remove(iii, sessions);
     tracing::info!("all functions registered");
 }
 
 fn handler_err(msg: impl Into<String>) -> Error {
     Error::Handler(msg.into())
+}
+
+/// `scheme://host[:port]` of a url, for the storage origin. None for
+/// about:blank and other origin-less pages.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() {
+        None
+    } else {
+        Some(format!("{scheme}://{host}"))
+    }
 }
 
 fn get_session(sessions: &Sessions, id: &str) -> Result<Arc<Session>, Error> {
@@ -1638,6 +1701,147 @@ fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(PDF_DESC),
+    );
+}
+
+fn register_history_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HISTORY_LIST_ID,
+        RegisterFunction::new_async(move |req: history_list::HistoryListInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let visits = session.history.lock().unwrap_or_else(|p| p.into_inner());
+                let out =
+                    history_list::select(&visits, req.query.as_deref(), req.limit.unwrap_or(100));
+                Ok::<_, Error>(history_list::HistoryListOutput { visits: out })
+            }
+        })
+        .description(HISTORY_LIST_DESC),
+    );
+}
+
+fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        CLEAR_DATA_ID,
+        RegisterFunction::new_async(move |req: clear_data::ClearDataInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let mut cleared = Vec::new();
+                if req.cookies.unwrap_or(true) {
+                    session
+                        .page
+                        .execute(cdp_network::ClearBrowserCookiesParams::default())
+                        .await
+                        .map_err(|e| handler_err(format!("clear cookies failed: {e}")))?;
+                    cleared.push("cookies".to_string());
+                }
+                if req.cache.unwrap_or(true) {
+                    session
+                        .page
+                        .execute(cdp_network::ClearBrowserCacheParams::default())
+                        .await
+                        .map_err(|e| handler_err(format!("clear cache failed: {e}")))?;
+                    cleared.push("cache".to_string());
+                }
+                if req.storage.unwrap_or(true) {
+                    let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                    if let Some(origin) = origin_of(&url) {
+                        if let Ok(params) = cdp_storage::ClearDataForOriginParams::builder()
+                            .origin(origin)
+                            .storage_types("all".to_string())
+                            .build()
+                        {
+                            let _ = session.page.execute(params).await;
+                            cleared.push("storage".to_string());
+                        }
+                    }
+                }
+                Ok::<_, Error>(clear_data::ClearDataOutput { ok: true, cleared })
+            }
+        })
+        .description(CLEAR_DATA_DESC),
+    );
+}
+
+fn register_downloads_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOWNLOADS_LIST_ID,
+        RegisterFunction::new_async(move |req: downloads::DownloadsListInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let mut list = session
+                    .downloads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                list.reverse();
+                Ok::<_, Error>(downloads::DownloadsListOutput { downloads: list })
+            }
+        })
+        .description(DOWNLOADS_LIST_DESC),
+    );
+}
+
+fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOWNLOAD_ID,
+        RegisterFunction::new_async(move |req: downloads::DownloadInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let (file_name, dir) = {
+                    let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
+                    let record = downloads
+                        .iter()
+                        .find(|d| d.guid == req.guid)
+                        .ok_or_else(|| handler_err(format!("no download '{}'", req.guid)))?;
+                    (record.file_name.clone(), session.downloads_dir.clone())
+                };
+                let dir = dir.ok_or_else(|| {
+                    handler_err("this session does not own downloads (attached session)")
+                })?;
+                let bytes = std::fs::read(dir.join(&req.guid))
+                    .map_err(|e| handler_err(format!("read download failed: {e}")))?;
+                Ok::<_, Error>(downloads::DownloadOutput {
+                    ok: true,
+                    size_bytes: bytes.len() as u64,
+                    data: STANDARD.encode(&bytes),
+                    file_name,
+                })
+            }
+        })
+        .description(DOWNLOAD_DESC),
+    );
+}
+
+fn register_download_remove(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOWNLOAD_REMOVE_ID,
+        RegisterFunction::new_async(move |req: downloads::DownloadRemoveInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                if let Some(dir) = &session.downloads_dir {
+                    let _ = std::fs::remove_file(dir.join(&req.guid));
+                }
+                session
+                    .downloads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .retain(|d| d.guid != req.guid);
+                Ok::<_, Error>(downloads::DownloadRemoveOutput { ok: true })
+            }
+        })
+        .description(DOWNLOAD_REMOVE_DESC),
     );
 }
 

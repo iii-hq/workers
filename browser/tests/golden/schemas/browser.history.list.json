@@ -1,0 +1,74 @@
+{
+  "function_id": "browser::history::list",
+  "description": "The session's visited pages, newest first, for a history panel or address-bar suggestions. Filter with query. Distinct from browser::history, which moves back / forward / reloads.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "HistoryListInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "limit": {
+        "description": "Cap on returned entries. Default 100.",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint",
+        "minimum": 0.0
+      },
+      "query": {
+        "description": "Only entries whose url or title contains this (case-insensitive).",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "HistoryListOutput",
+    "type": "object",
+    "required": [
+      "visits"
+    ],
+    "properties": {
+      "visits": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/HistoryVisit"
+        }
+      }
+    },
+    "definitions": {
+      "HistoryVisit": {
+        "description": "One entry in a session's navigation history.",
+        "type": "object",
+        "required": [
+          "timestamp",
+          "title",
+          "url"
+        ],
+        "properties": {
+          "timestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

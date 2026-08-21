@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::dom;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
@@ -23,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{SharedConfig, WorkerConfig};
 use crate::events::{
-    Bounds, ConsoleEventPayload, Emitter, EventKind, NavigatedEvent, PickedElement, PickedEvent,
-    SessionStoppedEvent,
+    Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, NavigatedEvent,
+    PickedElement, PickedEvent, SessionStoppedEvent,
 };
 
 /// Truncation caps for values that end up in ring buffers and event
@@ -114,6 +115,30 @@ pub struct NetworkEntry {
     pub failed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// One entry in a session's navigation history.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct HistoryVisit {
+    pub url: String,
+    pub title: String,
+    pub timestamp: i64,
+}
+
+/// How many navigations a session keeps for the history panel.
+const HISTORY_CAP: usize = 200;
+
+/// A download Chromium started, tracked by its CDP guid.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct DownloadRecord {
+    pub guid: String,
+    pub file_name: String,
+    pub url: String,
+    /// `in_progress`, `completed`, or `canceled`.
+    pub state: String,
+    pub received_bytes: u64,
+    pub total_bytes: u64,
+    pub started_ms: i64,
 }
 
 pub struct RingBuffer<T> {
@@ -317,6 +342,14 @@ pub struct Session {
     /// Cross-call state for `browser::execute`; lives until the session
     /// stops.
     pub exec_state: Mutex<serde_json::Value>,
+    /// Committed top-document navigations, newest last, for the history
+    /// panel and address-bar suggestions. Capped like the other buffers.
+    pub history: Mutex<Vec<HistoryVisit>>,
+    /// Downloads Chromium started in this session, by CDP guid. None for
+    /// attached sessions, where the worker does not own the download policy.
+    pub downloads: Mutex<Vec<DownloadRecord>>,
+    /// Where `allowAndName` writes files (named by guid); removed on stop.
+    pub downloads_dir: Option<std::path::PathBuf>,
     pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -328,6 +361,60 @@ impl Session {
 
     pub fn last_used_ms(&self) -> i64 {
         self.last_used_ms.load(Ordering::Relaxed) as i64
+    }
+
+    /// Record a committed navigation. Consecutive visits to the same URL
+    /// collapse (a reload is not a new entry); the buffer is capped.
+    pub fn record_visit(&self, url: &str, title: &str) {
+        if url.is_empty() || url == "about:blank" {
+            return;
+        }
+        let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        if history.last().is_some_and(|last| last.url == url) {
+            if let Some(last) = history.last_mut() {
+                if !title.is_empty() {
+                    last.title = title.to_string();
+                }
+                last.timestamp = now_ms();
+            }
+            return;
+        }
+        history.push(HistoryVisit {
+            url: url.to_string(),
+            title: title.to_string(),
+            timestamp: now_ms(),
+        });
+        let len = history.len();
+        if len > HISTORY_CAP {
+            history.drain(0..len - HISTORY_CAP);
+        }
+    }
+
+    /// Note a download beginning; later progress updates it by guid.
+    pub fn download_begin(&self, guid: &str, file_name: &str, url: &str) {
+        let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
+        if downloads.iter().any(|d| d.guid == guid) {
+            return;
+        }
+        downloads.push(DownloadRecord {
+            guid: guid.to_string(),
+            file_name: file_name.to_string(),
+            url: url.to_string(),
+            state: "in_progress".to_string(),
+            received_bytes: 0,
+            total_bytes: 0,
+            started_ms: now_ms(),
+        });
+    }
+
+    /// Update a download's progress and state by guid.
+    pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) {
+        let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(record) = downloads.iter_mut().find(|d| d.guid == guid) {
+            record.received_bytes = received;
+            record.total_bytes = total.max(received);
+            record.state = state.to_string();
+        }
     }
 
     pub fn next_seq(&self) -> u64 {
@@ -462,6 +549,9 @@ impl Session {
                 if let Some(dir) = &self.ephemeral_profile {
                     let _ = std::fs::remove_dir_all(dir);
                 }
+                if let Some(dir) = &self.downloads_dir {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
             }
             SessionKind::Attached { owns_page } => {
                 if owns_page {
@@ -589,6 +679,21 @@ impl Sessions {
         let _ = page.execute(cdp_log::EnableParams::default()).await;
         let _ = page.execute(cdp_network::EnableParams::default()).await;
 
+        // Let the session download files, named by guid into a per-session
+        // dir the worker owns, with progress events. Best-effort: a browser
+        // that refuses leaves downloads disabled, not the session broken.
+        let downloads_dir =
+            std::env::temp_dir().join(format!("iii-browser-dl-{}-{slot}", std::process::id()));
+        let _ = std::fs::create_dir_all(&downloads_dir);
+        if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
+            .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
+            .download_path(downloads_dir.to_string_lossy().to_string())
+            .events_enabled(true)
+            .build()
+        {
+            let _ = page.execute(params).await;
+        }
+
         let id = format!("b{slot}");
         let now = now_ms();
         let session = Arc::new(Session {
@@ -615,6 +720,9 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            history: Mutex::new(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir: Some(downloads_dir.clone()),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
@@ -710,6 +818,9 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            history: Mutex::new(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir: None,
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
@@ -1334,6 +1445,8 @@ async fn spawn_event_pumps(
                     continue; // subframes don't invalidate top-document refs
                 }
                 s.clear_refs();
+                let title = s.page.get_title().await.ok().flatten().unwrap_or_default();
+                s.record_visit(&event.frame.url, &title);
                 sx.emitter
                     .emit(
                         EventKind::Navigated,
@@ -1405,7 +1518,63 @@ async fn spawn_event_pumps(
         }));
     }
 
+    // downloads: guid-named files land in the session's download dir; the
+    // begin/progress events feed the downloads panel. Only armed when the
+    // worker owns the download policy.
+    if session.downloads_dir.is_some() {
+        if let Ok(mut events) = page
+            .event_listener::<cdp_browser::EventDownloadWillBegin>()
+            .await
+        {
+            let s = session.clone();
+            let sx = sessions.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    s.download_begin(&event.guid, &event.suggested_filename, &event.url);
+                    emit_download_changed(&sx, &s).await;
+                }
+            }));
+        }
+        if let Ok(mut events) = page
+            .event_listener::<cdp_browser::EventDownloadProgress>()
+            .await
+        {
+            let s = session.clone();
+            let sx = sessions.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    let state = match event.state {
+                        cdp_browser::DownloadProgressState::InProgress => "in_progress",
+                        cdp_browser::DownloadProgressState::Completed => "completed",
+                        cdp_browser::DownloadProgressState::Canceled => "canceled",
+                    };
+                    s.download_progress(
+                        &event.guid,
+                        event.received_bytes as u64,
+                        event.total_bytes as u64,
+                        state,
+                    );
+                    emit_download_changed(&sx, &s).await;
+                }
+            }));
+        }
+    }
+
     tasks
+}
+
+async fn emit_download_changed(sessions: &Arc<Sessions>, session: &Arc<Session>) {
+    sessions
+        .emitter
+        .emit(
+            EventKind::DownloadChanged,
+            &session.id,
+            &DownloadChangedEvent {
+                session_id: session.id.clone(),
+                timestamp: now_ms(),
+            },
+        )
+        .await;
 }
 
 async fn push_and_emit(sessions: &Arc<Sessions>, session: &Arc<Session>, entry: ConsoleEntry) {

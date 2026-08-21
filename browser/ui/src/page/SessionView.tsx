@@ -18,7 +18,13 @@
  * here — url draft, pick mode, type buffer, pane choices — is session-local.
  */
 
-import { Button, type Host, Input, SegmentedControl } from '@iii-dev/console-ui'
+import {
+  Button,
+  ConfirmDialog,
+  type Host,
+  Input,
+  SegmentedControl,
+} from '@iii-dev/console-ui'
 import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -27,6 +33,7 @@ import {
   type BrowserClickOptions,
   type BrowserFindAction,
   type BrowserSessionInfo,
+  clearBrowserData,
   clickBrowserAt,
   controlBrowserHistory,
   downloadFile,
@@ -73,7 +80,9 @@ import {
   renderAnnotationCrop,
 } from './annotations'
 import { ConsolePanel } from './ConsolePanel'
+import { DownloadsPanel, useDownloadCount } from './DownloadsPanel'
 import { FindBar, type FindState } from './FindBar'
+import { HistoryPanel } from './HistoryPanel'
 import { NetworkPanel } from './NetworkPanel'
 import { PageMenu } from './PageMenu'
 import { type LiveFrame, useLiveFrames } from './useLiveFrames'
@@ -84,7 +93,7 @@ const NAVIGATED_FN = 'iii::browser-ui::navigated'
 const FIND_DEBOUNCE_MS = 150
 const TYPE_FLUSH_MS = 200
 
-type FeedPane = 'console' | 'network'
+type FeedPane = 'console' | 'network' | 'downloads' | 'history'
 type NarrowPane = 'viewport' | FeedPane
 
 /** Verbs the page's commands reach through a ref, since they close over
@@ -103,14 +112,28 @@ export interface SessionActions {
   takeScreenshot: () => void
   screenshotToChat: () => void
   printToPdf: () => void
+  clearData: () => void
 }
 
-const FEED_PANES: readonly FeedPane[] = ['console', 'network']
-const NARROW_PANES: readonly NarrowPane[] = ['viewport', 'console', 'network']
+const FEED_PANES: readonly FeedPane[] = [
+  'console',
+  'network',
+  'downloads',
+  'history',
+]
+const NARROW_PANES: readonly NarrowPane[] = [
+  'viewport',
+  'console',
+  'network',
+  'downloads',
+  'history',
+]
 const PANE_LABELS: Record<NarrowPane, string> = {
   viewport: 'Viewport',
   console: 'Console',
   network: 'Network',
+  downloads: 'Downloads',
+  history: 'History',
 }
 
 function readStored(key: string): string | null {
@@ -176,7 +199,11 @@ export function SessionView({
   const dockStoreKey = `browser-ui:${tabId || 'page'}:dock`
   const [dockPane, setDockPaneState] = useState<FeedPane>(() => {
     const stored = readStored(dockStoreKey)
-    return stored === 'network' ? stored : 'console'
+    return stored === 'network' ||
+      stored === 'downloads' ||
+      stored === 'history'
+      ? (stored as FeedPane)
+      : 'console'
   })
   const dockCollapsedStoreKey = `browser-ui:${tabId || 'page'}:dock-collapsed`
   const [dockCollapsed, setDockCollapsedState] = useState(
@@ -626,6 +653,24 @@ export function SessionView({
     })
   }, [host, sessionId, runAction])
 
+  const downloadCount = useDownloadCount(host, sessionId, enabled)
+  const [confirmingClear, setConfirmingClear] = useState(false)
+  const clearData = useCallback(() => {
+    void runAction(async () => {
+      await clearBrowserData(host.iii, sessionId)
+    })
+  }, [host, sessionId, runAction])
+  const paneBody = (pane: FeedPane) =>
+    pane === 'console' ? (
+      <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
+    ) : pane === 'network' ? (
+      <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
+    ) : pane === 'downloads' ? (
+      <DownloadsPanel host={host} sessionId={sessionId} enabled={enabled} />
+    ) : (
+      <HistoryPanel host={host} sessionId={sessionId} enabled={enabled} />
+    )
+
   const handleStop = useCallback(() => {
     void runAction(async () => {
       await stopBrowserSession(host.iii, sessionId)
@@ -652,6 +697,7 @@ export function SessionView({
       takeScreenshot,
       screenshotToChat,
       printToPdf,
+      clearData: () => setConfirmingClear(true),
     }
     return () => {
       actionsRef.current = null
@@ -678,11 +724,8 @@ export function SessionView({
 
   const displayName =
     session.title?.trim() || hostOf(session.url) || 'about:blank'
-  const feedPane: FeedPane = narrow
-    ? narrowPane === 'network'
-      ? 'network'
-      : 'console'
-    : dockPane
+  const feedPane: FeedPane =
+    narrow && narrowPane !== 'viewport' ? narrowPane : dockPane
   const browserMajor = chromiumVersion?.match(/\d+/)?.[0]
   const browserLabel = browserMajor ? `Chromium ${browserMajor}` : null
 
@@ -891,6 +934,7 @@ export function SessionView({
                   zoomIn: () => applyZoom('in'),
                   zoomOut: () => applyZoom('out'),
                   zoomReset: () => applyZoom('reset'),
+                  clearData: () => setConfirmingClear(true),
                 }}
               />
               <button
@@ -910,6 +954,14 @@ export function SessionView({
                 onClose={closeFind}
               />
             ) : null}
+            <ConfirmDialog
+              open={confirmingClear}
+              onOpenChange={setConfirmingClear}
+              title="Clear browsing data?"
+              description="Cookies, cache and storage for this session are cleared. Other sessions are untouched."
+              confirmLabel="Clear"
+              onConfirm={clearData}
+            />
             <Viewport
               frame={annotating && frozen ? frozen : live.frame}
               loading={live.loading}
@@ -924,13 +976,7 @@ export function SessionView({
           </div>
         </div>
       ) : (
-        <div className="br-ui-pane-fill">
-          {feedPane === 'console' ? (
-            <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
-          ) : (
-            <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
-          )}
-        </div>
+        <div className="br-ui-pane-fill">{paneBody(feedPane)}</div>
       )}
 
       {!narrow ? (
@@ -941,7 +987,10 @@ export function SessionView({
               onChange={setDockPane}
               options={FEED_PANES.map((pane) => ({
                 value: pane,
-                label: PANE_LABELS[pane],
+                label:
+                  pane === 'downloads' && downloadCount > 0
+                    ? `Downloads ${downloadCount}`
+                    : PANE_LABELS[pane],
               }))}
               className="br-ui-tabs"
               aria-label="Session feeds"
@@ -969,21 +1018,7 @@ export function SessionView({
             </button>
           </div>
           {!dockCollapsed ? (
-            <div className="br-ui-dock-body">
-              {dockPane === 'console' ? (
-                <ConsolePanel
-                  host={host}
-                  sessionId={sessionId}
-                  enabled={enabled}
-                />
-              ) : (
-                <NetworkPanel
-                  host={host}
-                  sessionId={sessionId}
-                  enabled={enabled}
-                />
-              )}
-            </div>
+            <div className="br-ui-dock-body">{paneBody(dockPane)}</div>
           ) : null}
         </div>
       ) : null}

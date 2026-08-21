@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the thirty-two `browser::*` functions.
+//! Wire-schema snapshots for the thirty-seven `browser::*` functions.
 //!
 //! `browser::functions::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived
@@ -32,7 +32,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the thirty-two registered functions, in
+/// The catalog must cover exactly the thirty-seven registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
@@ -72,6 +72,11 @@ fn catalog_lists_all_functions_in_registration_order() {
             "browser::find-in-page",
             "browser::zoom",
             "browser::pdf",
+            "browser::history::list",
+            "browser::clear-data",
+            "browser::downloads::list",
+            "browser::download",
+            "browser::download::remove",
         ]
     );
 }
