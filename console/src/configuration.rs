@@ -108,8 +108,11 @@ fn schema() -> Value {
 /// Out-of-the-box preferences seeded when the entry has never been
 /// configured.
 ///
-/// - `views`: `view-sessions` groups traces by session and labels rows with
-///   the tag message; `activeViewId` selects it out of the box, and the
+/// - `views`: `view-sessions` groups traces by `iii.session.id` (stamped on
+///   every harness turn span, so no trace is dropped for lacking it — the
+///   engine's `group_by` skips spans without the grouping attribute, and
+///   `iii.session.name` only exists once a session has a title) and labels
+///   rows with the tag message; `activeViewId` selects it out of the box, and the
 ///   frontend falls back to the same id when the pointer is absent
 ///   (`DEFAULT_VIEW_ID` in web tracesViews.ts — keep the id in sync).
 /// - `followTurns`: follow the active chat's live turn — on out of the box
@@ -122,7 +125,7 @@ fn default_value() -> Value {
             "views": [{
                 "id": "view-sessions",
                 "name": "sessions",
-                "groupBy": "iii.session.name",
+                "groupBy": "iii.session.id",
                 "hiddenFunctions": [],
                 "label": { "mode": "attribute", "attribute": "iii.tag.message" },
                 "filters": {}
@@ -372,6 +375,19 @@ mod tests {
         let section = &s["properties"]["injectableUi"]["properties"]["disabledWorkers"];
         assert_eq!(section["type"], "array");
         assert_eq!(section["items"]["type"], "string");
+    }
+
+    #[test]
+    fn seed_groups_sessions_by_id_not_name() {
+        // Grouping must key on `iii.session.id` — the engine's `group_by`
+        // drops spans lacking the attribute, and `iii.session.name` is only
+        // stamped once a session has a title, which hid every untitled
+        // session's traces from the default view.
+        let v = default_value();
+        let view = &v["traces"]["views"][0];
+        assert_eq!(view["id"], "view-sessions");
+        assert_eq!(view["groupBy"], "iii.session.id");
+        assert_eq!(v["traces"]["activeViewId"], "view-sessions");
     }
 
     #[test]
