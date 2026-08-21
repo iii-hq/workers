@@ -204,10 +204,11 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
 /// Remove the retired provider-owned prompt setting before re-registering the
 /// strict schema. All other stored settings remain intact.
 async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Result<(), String> {
-    let Some(mut value) = try_get_config_value(iii, true).await? else {
+    let Some(value) = try_get_config_value(iii, true).await? else {
         return Ok(());
     };
-    if !drop_provider_identity_prompt(&mut value) {
+    let mut migrated = value.clone();
+    if !drop_provider_identity_prompt(&mut migrated) {
         return Ok(());
     }
 
@@ -226,19 +227,49 @@ async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Resu
         }),
     )
     .await?;
-    trigger_configuration_with_retry(
-        iii,
-        "configuration::set",
-        json!({ "id": config_id(), "value": value }),
-    )
-    .await?;
-    Ok(())
+
+    let mut expected = value;
+    loop {
+        let response = trigger_configuration_with_retry(
+            iii,
+            "configuration::set",
+            json!({ "id": config_id(), "value": migrated }),
+        )
+        .await?;
+        let overwritten = response.get("old_value").cloned().ok_or_else(|| {
+            "configuration::set response missing old_value during harness migration".to_string()
+        })?;
+        let Some(rebased) =
+            reconcile_provider_identity_prompt_write(&mut expected, &migrated, overwritten)
+        else {
+            return Ok(());
+        };
+        tracing::warn!(
+            "harness configuration changed during migration; preserving the intervening update"
+        );
+        migrated = rebased;
+    }
 }
 
 fn drop_provider_identity_prompt(value: &mut Value) -> bool {
     value
         .as_object_mut()
         .is_some_and(|settings| settings.remove("provider_identity_prompt").is_some())
+}
+
+fn reconcile_provider_identity_prompt_write(
+    expected: &mut Value,
+    written: &Value,
+    mut overwritten: Value,
+) -> Option<Value> {
+    // `old_value` is atomic with the set. A mismatch means this write replaced
+    // a newer snapshot, so restore that snapshot with only the retired key gone.
+    if overwritten == *expected {
+        return None;
+    }
+    *expected = written.clone();
+    drop_provider_identity_prompt(&mut overwritten);
+    Some(overwritten)
 }
 
 /// Swap the config snapshot under the write lock.
@@ -453,6 +484,25 @@ mod tests {
                 "default_max_turns": "${MAX_TURNS:500}",
                 "nested": { "provider_identity_prompt": true }
             })
+        );
+    }
+
+    #[test]
+    fn provider_identity_prompt_migration_preserves_an_intervening_update() {
+        let mut expected = json!({ "provider_identity_prompt": true, "turns": 1 });
+        let first_write = json!({ "turns": 1 });
+
+        let rebased = reconcile_provider_identity_prompt_write(
+            &mut expected,
+            &first_write,
+            json!({ "provider_identity_prompt": false, "turns": 2 }),
+        )
+        .expect("the intervening value needs a compensating write");
+
+        assert_eq!(rebased, json!({ "turns": 2 }));
+        assert!(
+            reconcile_provider_identity_prompt_write(&mut expected, &rebased, first_write,)
+                .is_none()
         );
     }
 
