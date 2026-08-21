@@ -1878,7 +1878,7 @@ export function ChatView({
     }
     const pendingApproval = () =>
       viewRef.current?.querySelector('[data-approval-actions]') !== null
-    const answerApproval = (action: 'approve' | 'deny') => {
+    const answerApproval = (action: 'approve' | 'deny' | 'always-allow') => {
       const row = focusedRow()
       const waiting = Array.from(
         viewRef.current?.querySelectorAll('[data-approval-actions]') ?? [],
@@ -1965,6 +1965,15 @@ export function ChatView({
         shortcut: 'D',
         enabled: pendingApproval,
         run: () => answerApproval('deny'),
+      },
+      {
+        id: 'always-allow',
+        title: 'Always allow the pending call',
+        detail: 'Approve it and stop asking for this function',
+        keywords: ['allow', 'permission', 'session', 'trust'],
+        shortcut: 'S',
+        enabled: pendingApproval,
+        run: () => answerApproval('always-allow'),
       },
       {
         id: 'expand',

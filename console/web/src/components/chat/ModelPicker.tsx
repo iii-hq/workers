@@ -30,7 +30,7 @@ const DEFAULT_EFFORT: ReasoningEffortOption = {
   description: 'use the model default',
 }
 
-const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter']
+const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
 
 interface ModelPickerProps {
   value: ModelId | null
@@ -425,6 +425,15 @@ export function ModelPickerPanel({
 
   const onFilterKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (!FILTER_KEYS.includes(event.key)) return
+    // Escape with a filter typed clears it; the menu closes on the next one.
+    if (event.key === 'Escape') {
+      if (filter === '') return
+      event.preventDefault()
+      event.stopPropagation()
+      setFilter('')
+      setActiveIndex(0)
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     if (event.key === 'Enter') {

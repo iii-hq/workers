@@ -185,6 +185,15 @@ export async function readEngine(): Promise<EngineSnapshot> {
  * `engine::workers::list`) comes last, because it is the loosest and would
  * otherwise bury the obvious answers.
  */
+/** Kinds whose titles are ids or paths, where `ewl` for `engine::workers::list`
+    is a real habit. Prose titles rank by words only, so "ping" never lands
+    on "Open settings". */
+const SUBSEQUENCE_KINDS: ReadonlySet<PaletteKind> = new Set([
+  'worker',
+  'function',
+  'file',
+])
+
 export function scoreEntry(entry: PaletteEntry, query: string): number {
   if (!query) return 1
   const haystacks = [
@@ -195,20 +204,25 @@ export function scoreEntry(entry: PaletteEntry, query: string): number {
   // Several words match in any order ("file open" finds "Open file…"); the
   // row scores as its weakest word, so every word has to land somewhere.
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const fuzzy = SUBSEQUENCE_KINDS.has(entry.kind)
   if (words.length > 1) {
     let weakest = Number.POSITIVE_INFINITY
     for (const word of words) {
-      const score = scoreWord(haystacks, word)
+      const score = scoreWord(haystacks, word, fuzzy)
       if (score === 0) return 0
       weakest = Math.min(weakest, score)
     }
-    const whole = scoreWord(haystacks, words.join(' '))
+    const whole = scoreWord(haystacks, words.join(' '), fuzzy)
     return Math.max(whole, weakest)
   }
-  return scoreWord(haystacks, words[0] ?? '')
+  return scoreWord(haystacks, words[0] ?? '', fuzzy)
 }
 
-function scoreWord(haystacks: string[], needle: string): number {
+function scoreWord(
+  haystacks: string[],
+  needle: string,
+  fuzzy: boolean,
+): number {
   if (!needle) return 1
   let best = 0
   for (const hay of haystacks) {
@@ -226,6 +240,7 @@ function scoreWord(haystacks: string[], needle: string): number {
     }
   }
   if (best > 0) return best
+  if (!fuzzy) return 0
 
   // Subsequence: every needle character appears in order.
   const title = haystacks[0]
