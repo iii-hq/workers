@@ -114,12 +114,18 @@ export function PaletteHost({
     const platform = shortcutPlatform()
     const pages: PaletteEntry[] = screenOptions.map((option) => {
       const goTo = PAGE_ACTIONS[option.value]
+      const definition = goTo ? keybinding(goTo) : undefined
       return {
         id: `page:${option.value}`,
         kind: 'page',
         title: option.label,
         detail: option.description,
-        keywords: option.keywords,
+        keywords: [
+          ...(option.keywords ?? []),
+          ...(definition
+            ? [definition.title, ...(definition.keywords ?? [])]
+            : []),
+        ],
         icon: option.icon,
         shortcut: goTo ? bindingsFor(goTo, platform)[0] : undefined,
         run: () => openScreen(option.value),
