@@ -62,6 +62,7 @@ import {
   resolveBindings,
 } from '@/lib/keybindings/registry'
 import { registerPageCommands } from '@/lib/page-commands'
+import { onPaletteOpenRequest } from '@/lib/palette/open-request'
 import {
   focusPane,
   requestPaneFocus,
@@ -187,6 +188,15 @@ export function App({
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
   // search affordance is the other, so the state has to sit above both.
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [paletteQuery, setPaletteQuery] = useState('')
+  useEffect(
+    () =>
+      onPaletteOpenRequest((request) => {
+        setPaletteQuery(request.query ?? '')
+        setPaletteOpen(true)
+      }),
+    [],
+  )
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
   const workspaceRef = useRef(workspace)
@@ -453,7 +463,10 @@ export function App({
      Which keys reach here while the caret is in a field, and which stand
      down, is the registry's call — not this component's. */
   useKeybindings({
-    'palette.toggle': () => setPaletteOpen((current) => !current),
+    'palette.toggle': () => {
+      setPaletteQuery('')
+      setPaletteOpen((current) => !current)
+    },
     'app.settings': toggleSettings,
     'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
     'page.workers': () => openWorkspaceScreen('workers'),
@@ -526,6 +539,7 @@ export function App({
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
           onThemeChange={setTheme}
+          initialQuery={paletteQuery}
         />
       </Sheet>
     </ConversationsProvider>

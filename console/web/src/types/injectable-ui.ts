@@ -163,6 +163,53 @@ export interface PageCommandsApi {
   register(commands: readonly PageCommand[]): () => void
 }
 
+/** One answer a palette source gives for a query. */
+export interface PaletteSourceRow {
+  /** Unique within the source for this query; the console namespaces it. */
+  id: string
+  title: string
+  detail?: string
+  /** Right-hand tag; defaults to the source's title. */
+  meta?: string
+  keywords?: readonly string[]
+  run: () => void
+}
+
+export interface PaletteSearchContext {
+  /** The active chat's working directory, when one is set. */
+  workingDir: string | null
+  /** Set when the palette has moved past this query; drop the answer. */
+  signal: AbortSignal
+}
+
+/**
+ * A live palette source: rows computed per query by a worker, the way an
+ * editor's quick open lists files as you type. Registered from a script's
+ * setup, so it exists only while the worker is connected.
+ */
+export interface PaletteSource {
+  /** Unique within the script. */
+  id: string
+  /** Group label in the palette: "Files". */
+  title: string
+  /** Which kind its rows are; `file` rows get the file icon and answer the
+      `#` prefix, `item` is anything else. */
+  kind: 'file' | 'item'
+  /** A one-character prefix that selects this source alone: `#`. */
+  prefix?: string
+  /** Fewest characters before the source is asked without its prefix. Default 1. */
+  minQuery?: number
+  search(
+    query: string,
+    context: PaletteSearchContext,
+  ): Promise<readonly PaletteSourceRow[]>
+}
+
+export interface PaletteOpenOptions {
+  /** Text to open with; a prefix (`#`) lands the palette in that mode. */
+  query?: string
+}
+
 export interface PageRegistration {
   /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
   id: string
@@ -409,6 +456,12 @@ export interface Host {
      * `panels.open`. Keys are not honoured here, only on a mounted page.
      */
     register(pageId: string, commands: readonly PageCommand[]): () => void
+  }
+  palette: {
+    /** A live source of rows, alive as long as the script. */
+    registerSource(source: PaletteSource): () => void
+    /** Open the palette, optionally on a query or a prefix such as `#`. */
+    open(options?: PaletteOpenOptions): void
   }
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void

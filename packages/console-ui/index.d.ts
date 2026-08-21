@@ -139,6 +139,39 @@ export interface PageCommandsApi {
   register(commands: readonly PageCommand[]): () => void
 }
 
+/** One answer a palette source gives for a query. */
+export interface PaletteSourceRow {
+  id: string
+  title: string
+  detail?: string
+  meta?: string
+  keywords?: readonly string[]
+  run: () => void
+}
+
+export interface PaletteSearchContext {
+  workingDir: string | null
+  signal: AbortSignal
+}
+
+/** A live palette source: rows computed per query by a worker, registered
+    from setup, alive only while the worker is connected. */
+export interface PaletteSource {
+  id: string
+  title: string
+  kind: 'file' | 'item'
+  prefix?: string
+  minQuery?: number
+  search(
+    query: string,
+    context: PaletteSearchContext,
+  ): Promise<readonly PaletteSourceRow[]>
+}
+
+export interface PaletteOpenOptions {
+  query?: string
+}
+
 export interface PageRegistration {
   /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
   id: string
@@ -379,6 +412,12 @@ export interface Host {
    */
   commands?: {
     register(pageId: string, commands: readonly PageCommand[]): () => void
+  }
+  /** Live palette sources and a way to open the palette on a query. Absent
+      on older consoles; feature-detect. */
+  palette?: {
+    registerSource(source: PaletteSource): () => void
+    open(options?: PaletteOpenOptions): void
   }
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void

@@ -18,6 +18,7 @@ import {
   keybinding,
 } from '@/lib/keybindings/registry'
 import { usePageCommands } from '@/lib/page-commands'
+import { usePaletteSources } from '@/lib/palette/providers'
 import type { PaletteEntry } from '@/lib/palette/sources'
 import { useExtPages } from '@/lib/ui-slots'
 import {
@@ -87,6 +88,8 @@ export interface PaletteHostProps {
   onOpenShortcuts: () => void
   theme: 'light' | 'dark'
   onThemeChange: (theme: 'light' | 'dark') => void
+  /** Text the palette opens with this time (`#` for files). */
+  initialQuery?: string
 }
 
 export function PaletteHost({
@@ -98,11 +101,13 @@ export function PaletteHost({
   onOpenShortcuts,
   theme,
   onThemeChange,
+  initialQuery,
 }: PaletteHostProps) {
   const { screenOptions, extPageTitles } = useScreenOptions()
-  const { conversations, select, createNew } = useConversationsCtx()
+  const { conversations, select, createNew, active } = useConversationsCtx()
   const pageCommands = usePageCommands()
   const extPages = useExtPages()
+  const sources = usePaletteSources()
 
   // Both land on the workers page, filtered to what was picked: a worker by
   // its name, a function by the worker that registers it, falling back to the
@@ -306,6 +311,9 @@ export function PaletteHost({
       localEntries={localEntries}
       onOpenWorker={openWorker}
       onOpenFunction={openFunction}
+      sources={sources}
+      workingDir={active?.workingDir ?? null}
+      initialQuery={initialQuery}
     />
   )
 }

@@ -13,6 +13,8 @@
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import type { IiiClient } from '@/lib/iii-client'
 import { registerPageCommands } from '@/lib/page-commands'
+import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { registerPaletteSource } from '@/lib/palette/providers'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
@@ -150,6 +152,14 @@ function makeHost(
         return track(
           registerPageCommands({ pageId, source: 'worker', commands }),
         )
+      },
+    },
+    palette: {
+      registerSource(source) {
+        return track(registerPaletteSource(scope, source))
+      },
+      open(options) {
+        requestPaletteOpen(options)
       },
     },
     functionTriggers: {

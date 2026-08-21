@@ -19,7 +19,10 @@
 import {
   Boxes,
   Command,
+  File,
   FunctionSquare,
+  History,
+  Layers,
   LayoutGrid,
   MessageSquareText,
   Search,
@@ -44,12 +47,23 @@ import {
   matchesKeybinding,
 } from '@/lib/keybindings/registry'
 import {
+  type RegisteredPaletteSource,
+  searchPaletteSources,
+} from '@/lib/palette/providers'
+import {
+  loadRecents,
+  type RecentEntry,
+  recentOf,
+  recordRecent,
+} from '@/lib/palette/recents'
+import {
   type EngineSnapshot,
   filterEntries,
   groupEntries,
   KIND_LABEL,
   type PaletteEntry,
   type PaletteKind,
+  parseQuery,
   readEngine,
 } from '@/lib/palette/sources'
 
@@ -62,6 +76,7 @@ const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
   { id: 'workspace', label: 'Workspaces' },
   { id: 'command', label: 'Commands' },
   { id: 'action', label: 'Actions' },
+  { id: 'file', label: 'Files' },
 ]
 
 /** The footer's key hints, in the order they read. The chords come from the
@@ -84,7 +99,12 @@ const KIND_STYLE = {
   workspace: { Icon: LayoutGrid, chip: 'bg-surface-active text-ink-faint' },
   command: { Icon: Command, chip: 'bg-ok-muted text-ok' },
   action: { Icon: Settings, chip: 'bg-accent-muted text-accent' },
+  file: { Icon: File, chip: 'bg-warn-muted text-warn' },
+  item: { Icon: Layers, chip: 'bg-surface-active text-ink-faint' },
 } as const
+
+const SOURCE_DEBOUNCE_MS = 120
+const EMPTY_SOURCES: readonly RegisteredPaletteSource[] = []
 
 /**
  * The slice of the screen a phone keyboard leaves behind.
@@ -167,6 +187,12 @@ export interface CommandPaletteProps {
   /** Seam for the gallery, which has no engine to read. Must be a stable
    *  reference: the palette re-reads whenever it changes. */
   readInventory?: () => Promise<EngineSnapshot>
+  /** Live sources (files and the like) answering the query as it is typed. */
+  sources?: readonly RegisteredPaletteSource[]
+  /** The active chat's working directory, handed to sources. */
+  workingDir?: string | null
+  /** Text to open with; `#` lands in file mode. Read once per opening. */
+  initialQuery?: string
 }
 
 export function CommandPalette({
@@ -176,12 +202,18 @@ export function CommandPalette({
   onOpenWorker,
   onOpenFunction,
   readInventory = readEngine,
+  sources = EMPTY_SOURCES,
+  workingDir = null,
+  initialQuery = '',
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<PaletteKind | 'all'>('all')
   const [active, setActive] = useState(0)
   const [engineEntries, setEngineEntries] = useState<PaletteEntry[]>([])
   const [engineError, setEngineError] = useState<string | null>(null)
+  const [sourceEntries, setSourceEntries] = useState<PaletteEntry[]>([])
+  const [searching, setSearching] = useState(false)
+  const [recents, setRecents] = useState<RecentEntry[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const viewportStyle = useKeyboardInset(open)
@@ -194,14 +226,47 @@ export function CommandPalette({
   useEffect(() => {
     if (!open) return
     const opener = document.activeElement as HTMLElement | null
-    setQuery('')
+    setQuery(initialQuery)
     setFilter('all')
     setActive(0)
+    setRecents(loadRecents())
     inputRef.current?.focus()
     return () => {
       if (opener?.isConnected) opener.focus()
     }
-  }, [open])
+  }, [open, initialQuery])
+
+  const parsed = useMemo(() => parseQuery(query, filter), [query, filter])
+
+  // Sources answer as you type, one query at a time: a new keystroke aborts
+  // the last ask, and a slow answer to an old query is dropped.
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      const eligible = sources.length > 0
+      if (!eligible) {
+        setSourceEntries([])
+        return
+      }
+      setSearching(true)
+      void searchPaletteSources(sources, {
+        text: parsed.text,
+        prefix: parsed.prefix,
+        kinds: parsed.kinds,
+        workingDir,
+        signal: controller.signal,
+      }).then((entries) => {
+        if (controller.signal.aborted) return
+        setSourceEntries(entries)
+        setSearching(false)
+      })
+    }, SOURCE_DEBOUNCE_MS)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [open, sources, parsed, workingDir])
 
   useEffect(() => {
     if (!open) return
@@ -242,10 +307,28 @@ export function CommandPalette({
   }, [open, onOpenWorker, onOpenFunction, readInventory])
 
   const results = useMemo(
-    () => filterEntries([...localEntries, ...engineEntries], query, filter),
-    [localEntries, engineEntries, query, filter],
+    () => [
+      ...filterEntries(
+        [...localEntries, ...engineEntries],
+        parsed.text,
+        parsed.kinds,
+      ),
+      // Source rows are already the source's answer to the query.
+      ...sourceEntries,
+    ],
+    [localEntries, engineEntries, sourceEntries, parsed],
   )
-  const groups = useMemo(() => groupEntries(results), [results])
+  const recentRows = useMemo(
+    () =>
+      parsed.text === '' && parsed.prefix === null && filter === 'all'
+        ? recentOf(results, recents)
+        : [],
+    [results, recents, parsed, filter],
+  )
+  const groups = useMemo(
+    () => groupEntries(results, recentRows),
+    [results, recentRows],
+  )
   const flat = useMemo(() => groups.flatMap(([, entries]) => entries), [groups])
 
   useEffect(() => {
@@ -256,6 +339,8 @@ export function CommandPalette({
 
   const choose = (entry: PaletteEntry | undefined) => {
     if (!entry) return
+    // A source row is one answer to one query; it has no place in recents.
+    if (!entry.id.startsWith('source:')) recordRecent(entry.id)
     onClose()
     entry.run()
   }
@@ -340,7 +425,13 @@ export function CommandPalette({
               setQuery(event.target.value)
               setActive(0)
             }}
-            placeholder="Search actions, workspaces, pages, chats, workers, functions…"
+            placeholder={
+              parsed.prefix === '#'
+                ? 'File name…'
+                : parsed.prefix !== null
+                  ? 'Command…'
+                  : 'Search, or type > for commands, # for files, @ for chats…'
+            }
             aria-label="Search the console"
             // Under 16px iOS Safari zooms the page on focus, which strands a
             // fixed overlay off screen. Worker and function ids are not prose,
@@ -379,7 +470,11 @@ export function CommandPalette({
                 setActive(0)
               }}
               className={`min-h-11 shrink-0 rounded-full border px-3 text-sm transition-colors sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-xs ${
-                filter === option.id
+                (
+                  parsed.prefix !== null
+                    ? option.id !== 'all' && parsed.kinds?.has(option.id)
+                    : filter === option.id
+                )
                   ? 'border-edge bg-surface-selected text-ink'
                   : 'border-transparent text-ink-faint hover:bg-surface-hover hover:text-ink'
               }`}
@@ -399,7 +494,11 @@ export function CommandPalette({
           ) : null}
           {flat.length === 0 ? (
             <p className="px-4 py-6 text-center text-base text-ink-faint sm:text-sm">
-              No matches
+              {searching
+                ? 'Searching…'
+                : parsed.prefix === '#' && sources.length === 0
+                  ? 'No worker is providing files right now.'
+                  : 'No matches'}
             </p>
           ) : (
             groups.map(([kind, entries]) => (
@@ -414,7 +513,10 @@ export function CommandPalette({
                 {entries.map((entry) => {
                   cursor += 1
                   const index = cursor
-                  const { Icon: KindIcon, chip } = KIND_STYLE[entry.kind]
+                  const { Icon: KindIcon, chip } =
+                    kind === 'recent'
+                      ? { Icon: History, chip: KIND_STYLE[entry.kind].chip }
+                      : KIND_STYLE[entry.kind]
                   const Icon = entry.icon ?? KindIcon
                   const selected = index === active
                   return (
@@ -500,6 +602,7 @@ export function CommandPalette({
             ))}
           </div>
           <span className="ml-auto tabular-nums">
+            {searching ? 'searching… ' : ''}
             {flat.length} result{flat.length === 1 ? '' : 's'}
           </span>
         </div>
