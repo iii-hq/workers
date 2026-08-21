@@ -108,15 +108,19 @@ function firstPartyPageTitle(screen: TabScreen): string {
   return screen
 }
 
+function paneRoot(paneId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-workspace-pane-id="${CSS.escape(paneId)}"]`,
+  )
+}
+
 /** Focus the pane of the screen the keyboard asked for, if it is open. */
 function focusRequestedPane(tab: WorkspaceTab): void {
   const screen = takePaneFocusRequest(tab.screens)
   if (screen === null) return
   const paneId = tabPaneIds(tab)[tab.screens.indexOf(screen)]
   if (!paneId) return
-  const root = document.querySelector<HTMLElement>(
-    `[data-workspace-pane-id="${CSS.escape(paneId)}"]`,
-  )
+  const root = paneRoot(paneId)
   if (root) focusPane(root)
 }
 
@@ -328,22 +332,15 @@ export function App({
   }, [])
   const stepPaneFocus = useCallback((delta: 1 | -1) => {
     const roots = tabPaneIds(workspaceRef.current.activeTab)
-      .map((paneId) =>
-        document.querySelector<HTMLElement>(
-          `[data-workspace-pane-id="${CSS.escape(paneId)}"]`,
-        ),
-      )
+      .map(paneRoot)
       .filter((root): root is HTMLElement => root !== null)
     if (roots.length === 0) return
     const current = roots.findIndex((root) =>
       root.contains(document.activeElement),
     )
+    const start = delta === 1 ? 0 : roots.length - 1
     const next =
-      current === -1
-        ? delta === 1
-          ? 0
-          : roots.length - 1
-        : (current + delta + roots.length) % roots.length
+      current === -1 ? start : (current + delta + roots.length) % roots.length
     focusPane(roots[next])
   }, [])
   const splitWorkspacePanel = useCallback(() => {

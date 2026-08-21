@@ -89,39 +89,43 @@ export function registerPageCommands(
   }
 }
 
+function claimedBindings(
+  registration: PageCommandRegistration,
+  command: PageCommand,
+  platform: ReturnType<typeof shortcutPlatform>,
+): readonly string[] {
+  // Only a mounted page may hold keys: they are scoped to its pane. A
+  // worker-level command is a palette row, so the console's global keymap
+  // stays the console's.
+  if (registration.source !== 'page') return []
+  if (command.shortcut === undefined) return []
+  const wanted =
+    typeof command.shortcut === 'string'
+      ? [command.shortcut]
+      : resolveBindings(command.shortcut, platform)
+  return wanted.filter((binding) => {
+    const reason = shortcutClaimReason(binding, platform)
+    if (reason) {
+      console.warn(
+        `[iii-ui] page '${registration.pageId}' command '${command.id}' cannot bind '${binding}': ${reason}`,
+      )
+    }
+    return reason === null
+  })
+}
+
 function toEntry(
   registration: PageCommandRegistration,
   command: PageCommand,
   platform: ReturnType<typeof shortcutPlatform>,
 ): RegisteredPageCommand {
-  const wanted =
-    command.shortcut === undefined
-      ? []
-      : typeof command.shortcut === 'string'
-        ? [command.shortcut]
-        : resolveBindings(command.shortcut, platform)
-  // Only a mounted page may hold keys: they are scoped to its pane. A
-  // worker-level command is a palette row, so the console's global keymap
-  // stays the console's.
-  const bindings =
-    registration.source === 'page'
-      ? wanted.filter((binding) => {
-          const reason = shortcutClaimReason(binding, platform)
-          if (reason) {
-            console.warn(
-              `[iii-ui] page '${registration.pageId}' command '${command.id}' cannot bind '${binding}': ${reason}`,
-            )
-          }
-          return reason === null
-        })
-      : []
   return {
     key: `${registration.pageId}.${command.id}`,
     pageId: registration.pageId,
     pageTitle: registration.pageTitle,
     source: registration.source,
     paneId: registration.paneId,
-    bindings,
+    bindings: claimedBindings(registration, command, platform),
     command,
   }
 }

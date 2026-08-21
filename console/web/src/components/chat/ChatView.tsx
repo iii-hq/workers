@@ -1878,17 +1878,25 @@ export function ChatView({
     }
     const pendingApproval = () =>
       viewRef.current?.querySelector('[data-approval-actions]') !== null
+    const answerApproval = (action: 'approve' | 'deny') => {
+      const row = focusedRow()
+      const scope = row?.querySelector('[data-approval-actions]')
+        ? row
+        : viewRef.current
+      scope
+        ?.querySelector<HTMLButtonElement>(`[data-message-action="${action}"]`)
+        ?.click()
+    }
     const focusMessage = (delta: 1 | -1) => {
       const nodes = messageNodes()
       if (nodes.length === 0) return
       const current = nodes.findIndex((node) =>
         node.contains(document.activeElement),
       )
+      const start = delta === 1 ? 0 : nodes.length - 1
       const index =
         current === -1
-          ? delta === 1
-            ? 0
-            : nodes.length - 1
+          ? start
           : Math.min(nodes.length - 1, Math.max(0, current + delta))
       const node = nodes[index]
       node.tabIndex = -1
@@ -1940,17 +1948,7 @@ export function ChatView({
         keywords: ['allow', 'yes', 'permission'],
         shortcut: 'A',
         enabled: pendingApproval,
-        run: () => {
-          const row = focusedRow()
-          const scope = row?.querySelector('[data-approval-actions]')
-            ? row
-            : viewRef.current
-          scope
-            ?.querySelector<HTMLButtonElement>(
-              '[data-message-action="approve"]',
-            )
-            ?.click()
-        },
+        run: () => answerApproval('approve'),
       },
       {
         id: 'deny',
@@ -1959,15 +1957,7 @@ export function ChatView({
         keywords: ['reject', 'no', 'permission'],
         shortcut: 'D',
         enabled: pendingApproval,
-        run: () => {
-          const row = focusedRow()
-          const scope = row?.querySelector('[data-approval-actions]')
-            ? row
-            : viewRef.current
-          scope
-            ?.querySelector<HTMLButtonElement>('[data-message-action="deny"]')
-            ?.click()
-        },
+        run: () => answerApproval('deny'),
       },
       {
         id: 'expand',

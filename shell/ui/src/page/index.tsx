@@ -2461,11 +2461,10 @@ export function ShellExplorerPage({
       const current = entries.findIndex(
         (entry) => entry.path === tabsRef.current.active,
       )
+      const start = delta === 1 ? 0 : entries.length - 1
       const index =
         current === -1
-          ? delta === 1
-            ? 0
-            : entries.length - 1
+          ? start
           : (current + delta + entries.length) % entries.length
       openReviewEntry(entries[index])
     },

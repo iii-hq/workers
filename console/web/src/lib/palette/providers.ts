@@ -91,9 +91,8 @@ export async function searchPaletteSources(
 ): Promise<PaletteEntry[]> {
   const asked = sources.filter(({ source }) => {
     if (input.kinds && !input.kinds.has(source.kind)) return false
-    const minQuery = source.minQuery ?? 1
     if (input.prefix !== null && input.prefix === source.prefix) return true
-    return input.text.length >= minQuery
+    return input.text.length >= (source.minQuery ?? 1)
   })
   const settled = await Promise.allSettled(
     asked.map(async ({ key, source }) => {

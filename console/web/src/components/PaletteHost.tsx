@@ -198,11 +198,13 @@ export function PaletteHost({
       workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ??
         workspace.tabs[0],
     )
+    const offered = (id: WorkspaceActionId): boolean => {
+      if (id === 'workspace.create' || id === 'panel.split') return true
+      if (id === 'panel.next' || id === 'panel.previous') return panes > 1
+      return several
+    }
     const workspaceActions: PaletteEntry[] = WORKSPACE_ACTIONS.filter(
-      ({ id }) =>
-        id === 'workspace.create' ||
-        id === 'panel.split' ||
-        (id === 'panel.next' || id === 'panel.previous' ? panes > 1 : several),
+      ({ id }) => offered(id),
     ).map(({ id, detail }) => {
       const definition = keybinding(id)
       return {
@@ -220,34 +222,26 @@ export function PaletteHost({
     // a page-level one is registered by a mounted page, which is the same
     // thing said twice. The same page in two panes registers twice: one row.
     const seenCommands = new Set<string>()
-    const pageCommandRows: PaletteEntry[] = pageCommands
-      .filter(
-        (entry) =>
-          entry.source === 'page' ||
-          extPages.some((page) => page.id === entry.pageId),
+    const pageCommandRows: PaletteEntry[] = []
+    for (const entry of pageCommands) {
+      const page = extPages.find((candidate) => candidate.id === entry.pageId)
+      if (entry.source !== 'page' && !page) continue
+      if (entry.command.enabled?.() === false) continue
+      if (seenCommands.has(entry.key)) continue
+      seenCommands.add(entry.key)
+      const pageTitle = capitalised(
+        entry.pageTitle ?? page?.title ?? entry.pageId,
       )
-      .filter((entry) => entry.command.enabled?.() !== false)
-      .filter((entry) => {
-        if (seenCommands.has(entry.key)) return false
-        seenCommands.add(entry.key)
-        return true
+      pageCommandRows.push({
+        id: `command:${entry.key}`,
+        kind: 'command',
+        title: `${pageTitle}: ${entry.command.title}`,
+        detail: entry.command.detail,
+        keywords: [...(entry.command.keywords ?? []), entry.pageId],
+        shortcut: entry.bindings[0],
+        run: entry.command.run,
       })
-      .map((entry) => {
-        const pageTitle = capitalised(
-          entry.pageTitle ??
-            extPages.find((page) => page.id === entry.pageId)?.title ??
-            entry.pageId,
-        )
-        return {
-          id: `command:${entry.key}`,
-          kind: 'command' as const,
-          title: `${pageTitle}: ${entry.command.title}`,
-          detail: entry.command.detail,
-          keywords: [...(entry.command.keywords ?? []), entry.pageId],
-          shortcut: entry.bindings[0],
-          run: entry.command.run,
-        }
-      })
+    }
 
     const actions: PaletteEntry[] = [
       ...workspaceActions,

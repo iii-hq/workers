@@ -112,7 +112,7 @@ export const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
       data-selected={selected || undefined}
       // A row that answers a click answers the keyboard too: it joins the
       // tab order once, and the arrows move between rows from there.
-      tabIndex={interactive ? (props.tabIndex ?? 0) : props.tabIndex}
+      tabIndex={props.tabIndex ?? (interactive ? 0 : undefined)}
       onKeyDown={(event) => {
         onKeyDown?.(event)
         if (interactive && !event.defaultPrevented)

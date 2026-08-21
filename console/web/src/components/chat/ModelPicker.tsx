@@ -30,6 +30,8 @@ const DEFAULT_EFFORT: ReasoningEffortOption = {
   description: 'use the model default',
 }
 
+const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter']
+
 interface ModelPickerProps {
   value: ModelId | null
   options: ModelOption[]
@@ -422,31 +424,24 @@ export function ModelPickerPanel({
   }, [activeId])
 
   const onFilterKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault()
-      event.stopPropagation()
-      if (visibleIds.length === 0) return
-      const step = event.key === 'ArrowDown' ? 1 : -1
-      setActiveIndex(
-        (current) =>
-          (Math.min(current, visibleIds.length - 1) +
-            step +
-            visibleIds.length) %
-          visibleIds.length,
-      )
+    if (!FILTER_KEYS.includes(event.key)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.key === 'Enter') {
+      if (activeId) selectModel(activeId)
       return
     }
     if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault()
-      event.stopPropagation()
       setActiveIndex(event.key === 'Home' ? 0 : visibleIds.length - 1)
       return
     }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      event.stopPropagation()
-      if (activeId) selectModel(activeId)
-    }
+    if (visibleIds.length === 0) return
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    setActiveIndex(
+      (current) =>
+        (Math.min(current, visibleIds.length - 1) + step + visibleIds.length) %
+        visibleIds.length,
+    )
   }
 
   function selectModel(next: ModelId) {

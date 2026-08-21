@@ -18,7 +18,6 @@ import {
 import {
   KEYBINDINGS,
   type KeybindingActionId,
-  type KeybindingDefinition,
   matchDigitIndex,
   matchesKeybinding,
   sequencesFor,
@@ -64,7 +63,7 @@ export function insideDialog(target: EventTarget | null): boolean {
  */
 export function allowsWhileTyping(
   target: EventTarget | null,
-  actionId: KeybindingActionId | string,
+  actionId: string,
 ): boolean {
   const element = target as HTMLElement | null
   const allow = element?.dataset?.keybindingsAllow
@@ -119,15 +118,15 @@ export function createKeyDispatcher(
     }
   }
   const standsDown = (
-    definition: KeybindingDefinition,
+    binding: { id: string; firesWhileTyping?: boolean },
     event: DispatchEvent,
     typing: boolean,
     inDialog: boolean,
   ): boolean =>
-    (inDialog && !definition.firesWhileTyping) ||
+    (inDialog && !binding.firesWhileTyping) ||
     (typing &&
-      !definition.firesWhileTyping &&
-      !allowsWhileTyping(event.target, definition.id))
+      !binding.firesWhileTyping &&
+      !allowsWhileTyping(event.target, binding.id))
 
   const onKeyDown = (event: DispatchEvent): void => {
     // A shortcut must not fire off the keystroke that finishes a character
@@ -186,30 +185,26 @@ export function createKeyDispatcher(
     // page can never shadow a global chord, and only while focus is inside
     // that pane, so two panes of the same page never both answer.
     const paneId = paneRootOf(event.target)?.dataset.workspacePaneId
-    if (paneId) {
-      for (const entry of getPaneCommands(paneId)) {
-        const { command } = entry
-        if (inDialog && !command.firesWhileTyping) continue
-        if (
-          typing &&
-          !command.firesWhileTyping &&
-          !allowsWhileTyping(event.target, entry.key)
-        )
+    for (const entry of paneId ? getPaneCommands(paneId) : []) {
+      const { command } = entry
+      const guard = {
+        id: entry.key,
+        firesWhileTyping: command.firesWhileTyping,
+      }
+      if (standsDown(guard, event, typing, inDialog)) continue
+      if (command.enabled?.() === false) continue
+      for (const binding of entry.bindings) {
+        if (isSequence(binding)) {
+          const chords = splitSequence(binding)
+          if (bindingMatchesEvent(chords[0] ?? '', event, platform)) {
+            prefixed.push({ chords, run: command.run })
+          }
           continue
-        if (command.enabled?.() === false) continue
-        for (const binding of entry.bindings) {
-          if (isSequence(binding)) {
-            const chords = splitSequence(binding)
-            if (bindingMatchesEvent(chords[0] ?? '', event, platform)) {
-              prefixed.push({ chords, run: command.run })
-            }
-            continue
-          }
-          if (bindingMatchesEvent(binding, event, platform)) {
-            event.preventDefault()
-            command.run()
-            return
-          }
+        }
+        if (bindingMatchesEvent(binding, event, platform)) {
+          event.preventDefault()
+          command.run()
+          return
         }
       }
     }

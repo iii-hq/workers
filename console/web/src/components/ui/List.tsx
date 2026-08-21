@@ -2,10 +2,21 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
+const LIST_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+
+function nextListItem(
+  items: HTMLElement[],
+  index: number,
+  key: string,
+): HTMLElement | undefined {
+  if (key === 'Home') return items[0]
+  if (key === 'End') return items[items.length - 1]
+  return items[index + (key === 'ArrowDown' ? 1 : -1)]
+}
+
 /** The arrows walk the list's items; Home and End jump to the ends. */
 function onListKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
-  const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
-  if (!keys.includes(event.key)) return
+  if (!LIST_KEYS.includes(event.key)) return
   const target = event.target as HTMLElement
   if (!target.matches('[data-list-item]')) return
   const items = Array.from(
@@ -15,12 +26,7 @@ function onListKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
   )
   const index = items.indexOf(target)
   if (index === -1) return
-  const next =
-    event.key === 'Home'
-      ? items[0]
-      : event.key === 'End'
-        ? items[items.length - 1]
-        : items[index + (event.key === 'ArrowDown' ? 1 : -1)]
+  const next = nextListItem(items, index, event.key)
   if (!next) return
   event.preventDefault()
   next.focus()

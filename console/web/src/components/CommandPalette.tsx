@@ -106,6 +106,23 @@ const KIND_STYLE = {
 const SOURCE_DEBOUNCE_MS = 120
 const EMPTY_SOURCES: readonly RegisteredPaletteSource[] = []
 
+function placeholderFor(prefix: string | null): string {
+  if (prefix === '#') return 'File name…'
+  if (prefix !== null) return 'Command…'
+  return 'Search, or type > for commands, # for files, @ for chats…'
+}
+
+function emptyText(
+  searching: boolean,
+  prefix: string | null,
+  sourceCount: number,
+): string {
+  if (searching) return 'Searching…'
+  if (prefix === '#' && sourceCount === 0)
+    return 'No worker is providing files right now.'
+  return 'No matches'
+}
+
 /**
  * The slice of the screen a phone keyboard leaves behind.
  *
@@ -240,6 +257,10 @@ export function CommandPalette({
   }, [open, initialQuery])
 
   const parsed = useMemo(() => parseQuery(query, filter), [query, filter])
+  const filterActive = (id: PaletteKind | 'all'): boolean => {
+    if (parsed.prefix === null) return filter === id
+    return id !== 'all' && parsed.kinds?.has(id) === true
+  }
 
   // Sources answer as you type, one query at a time: a new keystroke aborts
   // the last ask, and a slow answer to an old query is dropped.
@@ -247,8 +268,7 @@ export function CommandPalette({
     if (!open) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      const eligible = sources.length > 0
-      if (!eligible) {
+      if (sources.length === 0) {
         setSourceEntries([])
         return
       }
@@ -429,13 +449,7 @@ export function CommandPalette({
               setQuery(event.target.value)
               setActive(0)
             }}
-            placeholder={
-              parsed.prefix === '#'
-                ? 'File name…'
-                : parsed.prefix !== null
-                  ? 'Command…'
-                  : 'Search, or type > for commands, # for files, @ for chats…'
-            }
+            placeholder={placeholderFor(parsed.prefix)}
             aria-label="Search the console"
             // Under 16px iOS Safari zooms the page on focus, which strands a
             // fixed overlay off screen. Worker and function ids are not prose,
@@ -474,11 +488,7 @@ export function CommandPalette({
                 setActive(0)
               }}
               className={`min-h-11 shrink-0 rounded-full border px-3 text-sm transition-colors sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-xs ${
-                (
-                  parsed.prefix !== null
-                    ? option.id !== 'all' && parsed.kinds?.has(option.id)
-                    : filter === option.id
-                )
+                filterActive(option.id)
                   ? 'border-edge bg-surface-selected text-ink'
                   : 'border-transparent text-ink-faint hover:bg-surface-hover hover:text-ink'
               }`}
@@ -498,11 +508,7 @@ export function CommandPalette({
           ) : null}
           {flat.length === 0 ? (
             <p className="px-4 py-6 text-center text-base text-ink-faint sm:text-sm">
-              {searching
-                ? 'Searching…'
-                : parsed.prefix === '#' && sources.length === 0
-                  ? 'No worker is providing files right now.'
-                  : 'No matches'}
+              {emptyText(searching, parsed.prefix, sources.length)}
             </p>
           ) : (
             groups.map(([kind, entries]) => (
@@ -517,11 +523,9 @@ export function CommandPalette({
                 {entries.map((entry) => {
                   cursor += 1
                   const index = cursor
-                  const { Icon: KindIcon, chip } =
-                    kind === 'recent'
-                      ? { Icon: History, chip: KIND_STYLE[entry.kind].chip }
-                      : KIND_STYLE[entry.kind]
-                  const Icon = entry.icon ?? KindIcon
+                  const { Icon: KindIcon, chip } = KIND_STYLE[entry.kind]
+                  const Icon =
+                    entry.icon ?? (kind === 'recent' ? History : KindIcon)
                   const selected = index === active
                   return (
                     <button
