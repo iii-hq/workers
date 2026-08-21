@@ -56,7 +56,7 @@ interface LocalState {
   activeTabId: string
 }
 
-type WorkspaceTransform = (state: LocalState) => LocalState
+export type WorkspaceTransform = (state: LocalState) => LocalState
 
 function workspaceState(value: ConsoleConfigValue): LocalState {
   const parsedTabs = parseWorkspaceTabs(value)
@@ -65,7 +65,9 @@ function workspaceState(value: ConsoleConfigValue): LocalState {
   return { tabs, activeTabId }
 }
 
-function workspaceConfigTransform(update: WorkspaceTransform): ConfigTransform {
+export function workspaceConfigTransform(
+  update: WorkspaceTransform,
+): ConfigTransform {
   return (value) => {
     const next = update(workspaceState(value))
     return withActiveTabId(
