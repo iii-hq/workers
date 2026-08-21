@@ -573,6 +573,8 @@ export interface Annotation {
   x: number
   y: number
   note: string
+  /** What the pin points at, when the page knows: an element, a window, a page. */
+  label?: string
 }
 
 export interface AnnotationLayerProps {
@@ -586,6 +588,8 @@ export interface AnnotationLayerProps {
   onSelect?: (id: string | null) => void
   onMove?: (id: string, x: number, y: number) => void
   onRemove?: (id: string) => void
+  /** With it, the selected pin opens a callout that edits its note in place. */
+  onNote?: (id: string, note: string) => void
   className?: string
   /** The picture element, rendered by the caller. */
   children: React.ReactNode

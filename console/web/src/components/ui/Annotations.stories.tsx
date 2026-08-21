@@ -17,8 +17,14 @@ const picture = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
 )}`
 
 const seeded: Annotation[] = [
-  { id: 'a', x: 0.12, y: 0.35, note: 'card title wraps on narrow screens' },
-  { id: 'b', x: 0.78, y: 0.24, note: '' },
+  {
+    id: 'a',
+    x: 0.12,
+    y: 0.35,
+    note: 'card title wraps on narrow screens',
+    label: 'h3.card-title "Starter"',
+  },
+  { id: 'b', x: 0.78, y: 0.24, note: '', label: 'button.primary "Upgrade"' },
   { id: 'c', x: 0.5, y: 0.78, note: 'this row should be sticky' },
 ]
 
@@ -40,7 +46,7 @@ function Demo({ initial, active }: { initial: Annotation[]; active: boolean }) {
           </Button>
           <span className="font-sans text-xs text-ink-faint">
             {annotating
-              ? 'click the picture to drop a pin; drag or arrow a pin to move it; Delete removes'
+              ? 'click the picture to drop a pin and write its note beside it; drag or arrow a pin to move it; Delete removes'
               : 'pins stay where they are'}
           </span>
         </div>
@@ -62,6 +68,9 @@ function Demo({ initial, active }: { initial: Annotation[]; active: boolean }) {
           }
           onRemove={(id) =>
             setAnnotations((list) => removeAnnotation(list, id))
+          }
+          onNote={(id, note) =>
+            setAnnotations((list) => noteAnnotation(list, id, note))
           }
           className="min-h-0 flex-1 rounded-sm border border-edge bg-surface"
         >
