@@ -22,6 +22,7 @@ import {
   coderWriteFile,
   joinPath,
 } from './coder'
+import { ImagePreview } from './image-preview'
 import { isRichPreviewPath, richPreviewNode } from './rich-preview'
 
 /** File-extension → Monaco language id (unknown ids render plain). */
@@ -307,7 +308,7 @@ export function EditorPane({
   return (
     <div className="shui-main-pane">
       <div className="shui-editor-head">
-        <span className="path" title={absPath}>
+        <span className="path" title={relPath}>
           {relPath}
         </span>
         {dirty ? <span className="shui-dirty" title="unsaved changes" /> : null}
@@ -351,9 +352,11 @@ export function EditorPane({
         ) : pane.phase === 'error' ? (
           <div className="shui-side-note warn">{pane.message}</div>
         ) : entry?.image ? (
-          <div className="shui-image-wrap">
-            <img src={entry.image} alt={relPath} />
-          </div>
+          <ImagePreview
+            src={entry.image}
+            name={relPath}
+            description={entry.size != null ? formatBytes(entry.size) : undefined}
+          />
         ) : showPreview ? (
           <div className="shui-editor-preview">{richPreviewNode(relPath, draft)}</div>
         ) : (

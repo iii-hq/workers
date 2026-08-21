@@ -1748,6 +1748,20 @@ export function SearchField({
 }
 ```
 
+### `ImageViewer`
+
+The only full-screen image surface. Opens from an `ImageThumbnailButton`
+(zoom cursor, "View <name>" label) over a `bg-black/85` overlay in both
+themes; the caption and the controls float as `panel-raised` cards with
+`shadow-floating`. Wheel and pinch zoom about the pointer, drag pans a
+zoomed image inside the stage, double-click toggles fit and actual size;
+`+`/`-` step a zoom ladder, `0` fits, `1` is actual size, arrows pan, Escape
+closes and focus returns to the opener. Zoom steps are instant; fit/actual
+toggles move on `motion-duration-control`. Loading, decode failure, a
+missing source and an oversized data URL each render in the stage without
+freezing the page. Captions are attachment names or relative paths, never
+host paths.
+
 ### Shared recipes and primitives
 
 `@iii-dev/console-ui` exposes `uiClasses` for stable CSS recipes and React

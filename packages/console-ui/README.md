@@ -70,6 +70,11 @@ Use the shared contracts for repeated Console interactions:
 - Shared `Tooltip`, `Dialog`, `DropdownMenu`, `Select`, and `Selector` portals
   preserve an injected worker's `data-iii-ui` scope. `IconButton` combines an
   accessible label with the shared tooltip contract.
+- `ImageViewer` is the one full-screen image surface: wheel and pinch zoom
+  about the pointer, drag pans, double-click toggles fit and actual size,
+  `+`/`-`/`0`/`1` and arrows on the keyboard, Escape closes and focus returns
+  to the opener. Wrap the thumbnail in `ImageThumbnailButton` and pass a
+  caption that is an attachment name or a relative path.
 - `PageSidebar` owns sidebar collapse motion, stable focus/ARIA, pointer and
   keyboard resize, best-effort persistence, and container breakpoints in the
   Console host. Workers provide navigation content and declarative limits;
