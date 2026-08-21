@@ -72,6 +72,11 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Aggregate selected-skill bodies frozen from session metadata. `None`
+    /// means provenance has not initialized yet; `Some("")` is initialized
+    /// with no selected skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     pub max_turns: u32,
@@ -321,6 +326,7 @@ mod tests {
                 model: "m".into(),
                 provider: None,
                 system_prompt: None,
+                skills_prompt: None,
                 mode: None,
                 max_turns: 16,
                 max_output_tokens: None,

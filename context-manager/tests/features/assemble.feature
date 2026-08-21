@@ -428,3 +428,17 @@ Feature: context::assemble — the model-ready context pipeline
     And the response field "breakdown.by_role.user" exceeds 0
     And the response field "breakdown.by_role.assistant" exceeds 0
     And the response field "breakdown.estimator" is "heuristic"
+
+  # Prevents: prompt segments being double-billed or injected into the model
+  # context when callers request a diagnostic count.
+  Scenario: named prompt parts are reported outside the assembled total
+    Given an empty history
+    When I assemble the history with model "any-model" and request fields:
+      """
+      { "parts": { "skills": "xxxxxxxxxxxxxxxx" } }
+      """
+    Then the call succeeds
+    And the response field "breakdown.by_part.skills" is 4
+    And the response field "token_count" is 0
+    And the response field "messages" has 0 items
+    And the response field "applied.compacted" is false

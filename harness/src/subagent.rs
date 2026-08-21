@@ -302,6 +302,7 @@ async fn seed_child(
             req.options.as_ref().and_then(|o| o.mode),
             Some(identity),
         ),
+        skills_prompt: None,
         mode: req.options.as_ref().and_then(|o| o.mode),
         max_turns,
         max_output_tokens: req
@@ -483,6 +484,7 @@ mod tests {
                 model: "m".into(),
                 provider: None,
                 system_prompt: None,
+                skills_prompt: None,
                 mode: None,
                 max_turns: 16,
                 max_output_tokens: None,
