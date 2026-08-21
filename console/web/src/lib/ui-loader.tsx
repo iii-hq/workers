@@ -11,6 +11,11 @@
  */
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import {
+  attachToComposer,
+  insertIntoComposer,
+  requestComposerFocus,
+} from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
 import { registerPageCommands } from '@/lib/page-commands'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
@@ -244,6 +249,11 @@ function makeHost(
             ),
           }),
         )
+      },
+      compose(draft) {
+        if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
+        if (draft.text) insertIntoComposer(draft.text)
+        requestComposerFocus()
       },
       selectConversation(sessionId) {
         conversationAdapter.selectConversation(sessionId)

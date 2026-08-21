@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { onComposerAttach } from '@/lib/composer-insert'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
 import type {
@@ -316,6 +317,10 @@ export function Composer({
       handleAttach(await attachmentsFromFiles(files))
     },
     [handleAttach],
+  )
+  useEffect(
+    () => onComposerAttach((files) => void attachFiles(files)),
+    [attachFiles],
   )
 
   // The drop zone is the whole chat pane, claimed in the capture phase — see

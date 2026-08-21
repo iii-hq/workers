@@ -8,6 +8,8 @@ export const useTheme = api.useTheme
 export const tokens = api.tokens
 export const uiClasses = api.uiClasses
 export const {
+  AnnotationLayer,
+  AnnotationList,
   AnsiText,
   Badge,
   Button,

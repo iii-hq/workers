@@ -11,6 +11,8 @@
  * the conformance test and the shim validator catch a miss on either side.
  */
 export const componentNames = [
+  'AnnotationLayer',
+  'AnnotationList',
   'AnsiText',
   'Badge',
   'Button',

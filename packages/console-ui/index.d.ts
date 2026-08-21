@@ -484,6 +484,12 @@ export interface Host {
    * declared optional so worker scripts degrade without casts.
    */
   chat?: {
+    /**
+     * Hand text and files to the active conversation's composer, the way a
+     * drop or a paste would, and put the caret there. Files become
+     * attachments. Absent on older consoles; feature-detect.
+     */
+    compose?(draft: { text?: string; files?: File[] }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
@@ -560,6 +566,44 @@ export interface UiClasses {
 }
 
 /* ── the shared component library ───────────────────────────────────── */
+
+/** A numbered pin with a note, positioned as fractions of the picture. */
+export interface Annotation {
+  id: string
+  x: number
+  y: number
+  note: string
+}
+
+export interface AnnotationLayerProps {
+  annotations: readonly Annotation[]
+  /** The picture's pixel size, for the `object-fit: contain` box. */
+  image: { width: number; height: number }
+  /** Clicks add pins while active. */
+  active: boolean
+  selectedId?: string | null
+  onAdd?: (x: number, y: number) => void
+  onSelect?: (id: string | null) => void
+  onMove?: (id: string, x: number, y: number) => void
+  onRemove?: (id: string) => void
+  className?: string
+  /** The picture element, rendered by the caller. */
+  children: React.ReactNode
+}
+/** Numbered pins over a picture: focusable, Delete removes, arrows nudge. */
+export declare const AnnotationLayer: React.ComponentType<AnnotationLayerProps>
+
+export interface AnnotationListProps {
+  annotations: readonly Annotation[]
+  selectedId?: string | null
+  onSelect?: (id: string | null) => void
+  onNote: (id: string, note: string) => void
+  onRemove: (id: string) => void
+  emptyText?: string
+  className?: string
+}
+/** One note field per pin; Enter moves to the next, arrows walk the rows. */
+export declare const AnnotationList: React.ComponentType<AnnotationListProps>
 
 export interface AnsiTextProps {
   /** Raw terminal output, ANSI escapes included. */
