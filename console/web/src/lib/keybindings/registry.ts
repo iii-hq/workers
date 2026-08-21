@@ -17,10 +17,12 @@ import {
   conflictIdentity,
   digitFromEvent,
   formatBinding,
+  isBrowserReserved,
   isSequence,
   type KeyEventLike,
   type Platform,
   parseBinding,
+  parseSequence,
   shortcutPlatform,
   splitSequence,
 } from './bindings'
@@ -41,6 +43,8 @@ export type KeybindingActionId =
   | 'workspace.previous'
   | 'workspace.close'
   | 'panel.split'
+  | 'panel.next'
+  | 'panel.previous'
   | 'palette.next'
   | 'palette.previous'
   | 'palette.cycleFilter'
@@ -179,6 +183,22 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     keywords: ['traces', 'spans', 'go', 'page'],
   },
   {
+    id: 'panel.next',
+    title: 'Focus the next panel',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['}'],
+    keywords: ['panel', 'pane', 'focus', 'split'],
+  },
+  {
+    id: 'panel.previous',
+    title: 'Focus the previous panel',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['{'],
+    keywords: ['panel', 'pane', 'focus', 'split'],
+  },
+  {
     id: 'app.settings',
     title: 'Open settings',
     group: 'Console',
@@ -262,6 +282,43 @@ export function hoverTitle(
   return binding
     ? `${text} (${formatBinding(binding, platform).join(' ')})`
     : text
+}
+
+/**
+ * Why a page may not take `binding` for itself, or null when it may: the
+ * console's global keys, every digit, a sequence prefix and the chords the
+ * browser owns stay the console's. Pages bind what is left.
+ */
+export function shortcutClaimReason(
+  binding: string,
+  platform: Platform = shortcutPlatform(),
+): string | null {
+  if (!parseSequence(binding)) return 'it does not parse'
+  if (isBrowserReserved(binding, platform)) return 'the browser owns it'
+  const identity = conflictIdentity(binding, platform)
+  const head = conflictIdentity(splitSequence(binding)[0] ?? binding, platform)
+  for (const definition of KEYBINDINGS) {
+    if (definition.scope !== 'global') continue
+    for (const own of resolveBindings(definition.bindings, platform)) {
+      const variants = definition.digitIndex
+        ? DIGITS.map((digit) => own.replace(/[1-9]$/, digit))
+        : [own]
+      for (const variant of variants) {
+        const ownIdentity = conflictIdentity(variant, platform)
+        if (ownIdentity === identity || ownIdentity === head) {
+          return `the console uses it for "${definition.title}"`
+        }
+        if (
+          isSequence(variant) &&
+          conflictIdentity(splitSequence(variant)[0] ?? variant, platform) ===
+            head
+        ) {
+          return `it starts like "${definition.title}"`
+        }
+      }
+    }
+  }
+  return null
 }
 
 export function matchesKeybinding(

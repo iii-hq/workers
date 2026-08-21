@@ -17,7 +17,9 @@ import {
   type KeybindingActionId,
   keybinding,
 } from '@/lib/keybindings/registry'
+import { usePageCommands } from '@/lib/page-commands'
 import type { PaletteEntry } from '@/lib/palette/sources'
+import { useExtPages } from '@/lib/ui-slots'
 import {
   type TabScreen,
   tabColumns,
@@ -33,6 +35,8 @@ type WorkspaceActionId = Extract<
   KeybindingActionId,
   | 'workspace.create'
   | 'panel.split'
+  | 'panel.next'
+  | 'panel.previous'
   | 'workspace.next'
   | 'workspace.previous'
   | 'workspace.close'
@@ -44,6 +48,11 @@ const WORKSPACE_ACTIONS: ReadonlyArray<{
 }> = [
   { id: 'workspace.create', detail: 'Open an empty workspace' },
   { id: 'panel.split', detail: 'Add a panel beside the current one' },
+  { id: 'panel.next', detail: 'Move the keyboard to the panel on the right' },
+  {
+    id: 'panel.previous',
+    detail: 'Move the keyboard to the panel on the left',
+  },
   { id: 'workspace.next', detail: 'Switch to the workspace on the right' },
   { id: 'workspace.previous', detail: 'Switch to the workspace on the left' },
   { id: 'workspace.close', detail: 'Close the current workspace' },
@@ -64,6 +73,7 @@ export interface PaletteWorkspace {
   close: (id: string) => void
   step: (delta: 1 | -1) => void
   split: () => void
+  focusPane: (delta: 1 | -1) => void
 }
 
 export interface PaletteHostProps {
@@ -91,6 +101,8 @@ export function PaletteHost({
 }: PaletteHostProps) {
   const { screenOptions, extPageTitles } = useScreenOptions()
   const { conversations, select, createNew } = useConversationsCtx()
+  const pageCommands = usePageCommands()
+  const extPages = useExtPages()
 
   // Both land on the workers page, filtered to what was picked: a worker by
   // its name, a function by the worker that registers it, falling back to the
@@ -110,6 +122,7 @@ export function PaletteHost({
     [openScreen],
   )
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `open` re-asks each command's `enabled` when the palette opens.
   const localEntries = useMemo((): PaletteEntry[] => {
     const platform = shortcutPlatform()
     const pages: PaletteEntry[] = screenOptions.map((option) => {
@@ -165,13 +178,22 @@ export function PaletteHost({
     const workspaceRun: Record<WorkspaceActionId, () => void> = {
       'workspace.create': workspace.create,
       'panel.split': workspace.split,
+      'panel.next': () => workspace.focusPane(1),
+      'panel.previous': () => workspace.focusPane(-1),
       'workspace.next': () => workspace.step(1),
       'workspace.previous': () => workspace.step(-1),
       'workspace.close': () => workspace.close(workspace.activeTabId),
     }
     const several = workspace.tabs.length > 1
+    const panes = tabColumns(
+      workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ??
+        workspace.tabs[0],
+    )
     const workspaceActions: PaletteEntry[] = WORKSPACE_ACTIONS.filter(
-      ({ id }) => several || id === 'workspace.create' || id === 'panel.split',
+      ({ id }) =>
+        id === 'workspace.create' ||
+        id === 'panel.split' ||
+        (id === 'panel.next' || id === 'panel.previous' ? panes > 1 : several),
     ).map(({ id, detail }) => {
       const definition = keybinding(id)
       return {
@@ -184,6 +206,38 @@ export function PaletteHost({
         run: workspaceRun[id],
       }
     })
+
+    // A worker-level command needs its page registered (the worker is here);
+    // a page-level one is registered by a mounted page, which is the same
+    // thing said twice. The same page in two panes registers twice: one row.
+    const seenCommands = new Set<string>()
+    const pageCommandRows: PaletteEntry[] = pageCommands
+      .filter(
+        (entry) =>
+          entry.source === 'page' ||
+          extPages.some((page) => page.id === entry.pageId),
+      )
+      .filter((entry) => entry.command.enabled?.() !== false)
+      .filter((entry) => {
+        if (seenCommands.has(entry.key)) return false
+        seenCommands.add(entry.key)
+        return true
+      })
+      .map((entry) => {
+        const pageTitle =
+          entry.pageTitle ??
+          extPages.find((page) => page.id === entry.pageId)?.title ??
+          entry.pageId
+        return {
+          id: `command:${entry.key}`,
+          kind: 'command' as const,
+          title: `${pageTitle}: ${entry.command.title}`,
+          detail: entry.command.detail,
+          keywords: [...(entry.command.keywords ?? []), entry.pageId],
+          shortcut: entry.bindings[0],
+          run: entry.command.run,
+        }
+      })
 
     const actions: PaletteEntry[] = [
       ...workspaceActions,
@@ -226,11 +280,15 @@ export function PaletteHost({
       },
     ]
 
-    return [...actions, ...workspaces, ...pages, ...chats]
+    return [...actions, ...pageCommandRows, ...workspaces, ...pages, ...chats]
   }, [
     screenOptions,
     extPageTitles,
     workspace,
+    pageCommands,
+    extPages,
+    // `enabled` is re-asked each time the palette opens.
+    open,
     conversations,
     select,
     createNew,

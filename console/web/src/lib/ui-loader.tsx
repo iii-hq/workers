@@ -12,6 +12,7 @@
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import type { IiiClient } from '@/lib/iii-client'
+import { registerPageCommands } from '@/lib/page-commands'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
@@ -141,6 +142,13 @@ function makeHost(
               </ScopedExtension>
             ),
           }),
+        )
+      },
+    },
+    commands: {
+      register(pageId, commands) {
+        return track(
+          registerPageCommands({ pageId, source: 'worker', commands }),
         )
       },
     },

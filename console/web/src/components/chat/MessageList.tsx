@@ -585,6 +585,7 @@ export function MessageList({
     <div className="relative flex min-h-0 min-w-0 flex-1">
       <section
         ref={containerRef}
+        data-message-list=""
         data-tail-scroll={tailState}
         aria-label="conversation messages"
         tabIndex={-1}
@@ -679,12 +680,14 @@ export function MessageList({
                 }
               />
             )
-            return tight ? (
-              <div key={rowKey} className="-mt-6.5">
+            return (
+              <div
+                key={rowKey}
+                data-message-row={rowKey}
+                className={tight ? '-mt-6.5' : undefined}
+              >
                 {node}
               </div>
-            ) : (
-              node
             )
           })}
           {isThinking ? (

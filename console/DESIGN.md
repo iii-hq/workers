@@ -1011,7 +1011,17 @@ Workspace tabs behave like this everywhere:
   first: every action and every open workspace is a row in `⌘K`, each
   showing its key, and hovering a control spells the same key
   (`hoverTitle`), so the keys are learned in passing. The full list is a
-  `⌘K` row, not a key of its own.
+  `⌘K` row, not a key of its own. `{` / `}` move the keyboard between
+  panes, and opening a page from `⌘K`, a chord or `panels.open` lands focus
+  inside it (`lib/pane-focus.ts`).
+- **Page commands:** a page contributes rows to `⌘K` and keys to its own
+  pane through `PageRenderProps.commands` (render time, pane-scoped keys)
+  or `host.commands` (setup time, rows only). They live in
+  `lib/page-commands.ts` and die with the worker, so a worker that is not
+  attached has no rows and no keys. The dispatcher runs the console's keys
+  first, then the focused pane's; a page can never shadow a console chord
+  (`shortcutClaimReason`). Chat is the first consumer: `I` composer, `J`/`K`
+  walk the transcript, `End` latest, `M` model, `Escape` stop.
 - **Phones** switch workspaces from the bottom sheet; each workspace
   remembers which panel it was showing, per browser tab.
 

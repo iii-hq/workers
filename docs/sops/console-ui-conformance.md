@@ -86,6 +86,20 @@ selection, tooltip, or selector behavior.
 | Dialogs, menus, selects, selectors, tooltips, sheets | Shared portal scope and motion vocabulary |
 | Streaming context usage | High-frequency width updates are immediate |
 
+## Commands
+
+A page's primary verbs are palette rows (`PageRenderProps.commands`, or
+`host.commands` for a page not yet open), each with a key where one is
+natural, scoped to the page's pane. No page listens for a key the console
+owns; the registry refuses those at registration. See the injectable-UI SOP,
+"Commands: the keyboard reaches every page".
+
+| Page | Commands | Keys |
+|---|---|---|
+| chat (first-party) | focus composer, next / previous message, latest, switch model, stop | `I`, `J` / `K`, `End`, `M`, `Escape` |
+| shell | pending (MOT-4529) | |
+| every other worker page | pending (MOT-4530) | |
+
 ## Deliberate local-control exceptions
 
 - `DirectoryPicker` and model/provider navigation use hierarchical drill-in

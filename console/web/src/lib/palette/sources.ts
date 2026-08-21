@@ -21,6 +21,7 @@ export type PaletteKind =
   | 'page'
   | 'chat'
   | 'workspace'
+  | 'command'
   | 'action'
 
 export interface PaletteEntry {
@@ -203,12 +204,14 @@ export const KIND_LABEL: Record<PaletteKind, string> = {
   page: 'Pages',
   chat: 'Chats',
   workspace: 'Workspaces',
+  command: 'Commands',
   action: 'Actions',
 }
 
 /** Group in a fixed order so the list does not reshuffle as scores change. */
 export const KIND_ORDER: PaletteKind[] = [
   'action',
+  'command',
   'workspace',
   'page',
   'chat',

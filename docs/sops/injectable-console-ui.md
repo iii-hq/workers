@@ -347,6 +347,11 @@ valid and simply ignores them:
   once it is saved or discarded; closing the pane, its workspace, or the
   browser tab then asks first. Absent on older consoles, so call it as
   `setDirty?.(…)`. The host clears the entry when its pane or workspace tab is removed; unmounting a background tab does not clear it.
+- `commands`: contribute commands while mounted — rows in the command
+  palette (`⌘K`) under the page's name, and keys that fire only while focus
+  is inside this pane. Register in an effect and return its remover:
+  `useEffect(() => commands?.register([...]), [commands])`. Absent on older
+  consoles; feature-detect. See [Commands](#commands-the-keyboard-reaches-every-page).
 
 #### The page chrome — MANDATORY layout for pages
 
@@ -412,6 +417,75 @@ for machine-readable ids, paths, values, payloads, source, terminal output,
 and tabular data. Application icons use a 16 px baseline globally;
 icon-only actions use `IconButton`, which retains an accessible label and the
 shared tooltip. Do not author application icons below 16 px.
+
+### Commands: the keyboard reaches every page
+
+The console is keyboard-first: `⌘K` finds and takes any action, every row
+shows its key, and hovering a control spells the same key. A page joins
+that through commands. There are two registration points and one rule:
+**a command exists only while its worker is connected.** Both paths ride
+the same teardown every other registration uses, so nothing extra is needed
+for that rule to hold.
+
+```ts
+interface PageCommand {
+  id: string                 // unique within the page; namespaced `<pageId>.<id>`
+  title: string              // the palette row reads "Shell: Open file…"
+  detail?: string
+  keywords?: string[]
+  shortcut?: string | { mac: string[]; other: string[] }   // 'Mod+S', 'G L'
+  firesWhileTyping?: boolean // default false: the caret in a field wins
+  enabled?: () => boolean    // asked when the palette opens and before run
+  run: () => void
+}
+```
+
+**`host.commands.register(pageId, commands)`** — setup time, worker level.
+Rows for a page that may not be open yet ("Shell: open file…"). Lives
+exactly as long as the script: removed with the page and every other
+registration when the worker's assets go. `run` usually calls
+`host.panels.open({ pageId, context })` so the page opens and acts on the
+context. Keys are **not** honoured here: the console's global keymap stays
+the console's.
+
+**`PageRenderProps.commands.register(commands)`** — render time, page
+level. Lives while the page is mounted in a pane. Keys are honoured and
+scoped to that pane: they fire only while focus is inside it, so two panes
+of the same page never both answer. Register from an effect:
+
+```tsx
+function Page({ commands }: PageRenderProps) {
+  useEffect(
+    () =>
+      commands?.register([
+        { id: 'open', title: 'Open file…', shortcut: 'P', run: openQuickOpen },
+        { id: 'find', title: 'Search in files', shortcut: 'F', run: focusSearch },
+        { id: 'save', title: 'Save', shortcut: 'Mod+S', firesWhileTyping: true,
+          enabled: () => dirty, run: save },
+      ]),
+    [commands, dirty],
+  )
+}
+```
+
+Keys a page may take: anything the console does not already use. The
+console's own keys (`1`–`9`, `t`, `[`, `]`, `Shift+W`, `\`, `,`, `{`, `}`,
+`Mod+K`), the prefix of any go-to chord (`G`) and the chords the browser owns
+(`Mod+W`, `Mod+T`, `Mod+1`…) are refused at registration with a
+`console.warn`; the row stays, without a key. Single letters and chords
+(`Q L`) are fine; the typing guard keeps them out of fields unless the
+command says `firesWhileTyping`, and a field can hand specific commands back
+with `data-keybindings-allow="<pageId>.<id>"`.
+
+Focus follows the keyboard: opening a page from `⌘K`, a go-to chord or
+`host.panels.open` moves focus into its pane — the first `[data-autofocus]`
+element inside it, else the pane root — so the next keystroke is already
+the page's. Mark the element a page wants focused on arrival with
+`data-autofocus`. `{` / `}` step focus across panes.
+
+Definition of done for a page: its primary verbs are commands, each with a
+key where one is natural, and nothing in the page listens for a key the
+console owns.
 
 ### `host.panels.open({ pageId, context })`
 
@@ -849,6 +923,7 @@ them):
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |
 | Scope-preserving shared portals | shipped for `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and `BottomSheet`; stamp only custom domain portals |
+| Page commands and pane-scoped keys | shipped **beyond spec** as `host.commands` + `PageRenderProps.commands`; chat is the first consumer, shell next |
 
 Naming note: function messages use `host.functionTriggers` and the
 `function-trigger` role. Normalized trigger lifecycle activities use the

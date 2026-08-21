@@ -123,6 +123,44 @@ export interface PageRenderProps {
    * asks first. Absent on older consoles; feature-detect before calling.
    */
   setDirty?: (dirty: boolean | string) => void
+  /**
+   * Contribute commands while mounted: rows in the command palette, and keys
+   * that fire only while focus is inside this pane. Register in an effect and
+   * return its remover. Absent on older consoles; feature-detect.
+   */
+  commands?: PageCommandsApi
+}
+
+/** A binding in the console's shortcut syntax: `Mod+S`, `Shift+Enter`, or a
+    sequence of chords separated by a space, `G L`. */
+export type PageShortcut =
+  | string
+  | { mac: readonly string[]; other: readonly string[] }
+
+/**
+ * One thing a page can do for the keyboard. The palette lists it as
+ * `Page: Title` with its key on the right, so the key is learned in passing.
+ */
+export interface PageCommand {
+  /** Unique within the page; the console namespaces it with the page id. */
+  id: string
+  title: string
+  detail?: string
+  keywords?: readonly string[]
+  /** Keys are honoured for commands registered by a mounted page only, and
+      only while focus is inside its pane. A key the console already uses is
+      refused with a warning; the row stays. */
+  shortcut?: PageShortcut
+  /** Fire while the caret is in a field. Default false. */
+  firesWhileTyping?: boolean
+  /** Checked when the palette opens and again before the command runs; false
+      hides the row and ignores the key. */
+  enabled?: () => boolean
+  run: () => void
+}
+
+export interface PageCommandsApi {
+  register(commands: readonly PageCommand[]): () => void
 }
 
 export interface PageRegistration {
@@ -362,6 +400,15 @@ export interface Host {
   path: string
   pages: {
     register(page: PageRegistration): () => void
+  }
+  commands: {
+    /**
+     * Palette rows for a page this script owns, alive exactly as long as the
+     * script: removed with its other registrations when the worker leaves.
+     * For a page that may not be open yet; `run` usually calls
+     * `panels.open`. Keys are not honoured here, only on a mounted page.
+     */
+    register(pageId: string, commands: readonly PageCommand[]): () => void
   }
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void

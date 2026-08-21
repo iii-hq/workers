@@ -7,7 +7,7 @@ import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtx } from '@/lib/conversations-context'
-import type { PanelSide } from '@/types/injectable-ui'
+import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
 
 export type ChatPanelDensity = 'route' | 'dock'
@@ -18,6 +18,8 @@ interface ChatPanelProps {
   panelSide?: PanelSide
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
+  /** The pane's command registrar; chat's keys and palette rows go through it. */
+  commands?: PageCommandsApi
 }
 
 /**
@@ -43,6 +45,7 @@ export function ChatPanel({
   density = 'route',
   panelSide = 'left',
   onRequestClose,
+  commands,
 }: ChatPanelProps) {
   const {
     conversations,
@@ -159,6 +162,7 @@ export function ChatPanel({
           catalogLoading={catalogLoading}
           density={density}
           onRequestClose={onRequestClose}
+          commands={commands}
           onBack={narrow ? handleBack : undefined}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
