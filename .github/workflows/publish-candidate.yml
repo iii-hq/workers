@@ -132,7 +132,9 @@ jobs:
           PY
           git fetch origin main --quiet
           main_sha=$(git rev-parse origin/main)
-          test "$main_sha" = '${{ inputs.source_sha }}' || test "$main_sha" = "$PREPARED_SHA"
+          test "$main_sha" = '${{ inputs.source_sha }}' \
+            || test "$main_sha" = "$PREPARED_SHA" \
+            || git merge-base --is-ancestor "$PREPARED_SHA" "$main_sha"
           test "$(git rev-parse HEAD)" = "$PREPARED_SHA"
 
       - name: Push candidate commit and annotated tag atomically
@@ -161,7 +163,9 @@ jobs:
             if [[ "$main_sha" == "$SOURCE_SHA" ]]; then
               git push origin "$PREPARED_SHA:refs/heads/main"
             else
-              test "$main_sha" = "$PREPARED_SHA"
+              # Reconciliation: the tag already anchors the prepared commit, so
+              # any main that still contains it is settled even after later work.
+              git merge-base --is-ancestor "$PREPARED_SHA" "$main_sha"
             fi
             exit 0
           fi
