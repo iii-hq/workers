@@ -69,19 +69,17 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', thirdId ?? '')
   expect(secondId).not.toBe(thirdId)
 
-  // Order, the active tab and the server copy survive a reload. Reload until
-  // the server copy shows the close instead of guessing how long the
-  // serialized write takes.
-  await expect
-    .poll(
-      async () => {
-        await page.reload()
-        await strip(page).waitFor()
-        return tabs(page).count()
-      },
-      { intervals: [1_000] },
-    )
-    .toBe(2)
+  // Order, the active tab and the server copy survive a reload. The
+  // serialized write has landed once a fresh browser sees the close.
+  const fresh = await browser.newPage()
+  try {
+    await fresh.goto(stack.consoleUrl)
+    await expect(tabs(fresh)).toHaveCount(2)
+  } finally {
+    await fresh.close()
+  }
+  await page.reload()
+  await expect(tabs(page)).toHaveCount(2)
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', thirdId ?? '')
   const orderAfterReload = await tabs(page).evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-tab-id')),
