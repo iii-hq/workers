@@ -76,6 +76,7 @@ export interface SourceSearchInput {
   prefix: string | null
   kinds: ReadonlySet<PaletteKind> | null
   workingDir: string | null
+  conversationId: string | null
   signal: AbortSignal
 }
 
@@ -98,6 +99,7 @@ export async function searchPaletteSources(
     asked.map(async ({ key, source }) => {
       const rows = await source.search(input.text, {
         workingDir: input.workingDir,
+        conversationId: input.conversationId,
         signal: input.signal,
       })
       return rows.map((row) => toEntry(key, source, row))

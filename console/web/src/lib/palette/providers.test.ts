@@ -89,6 +89,7 @@ describe('palette sources', () => {
         prefix,
         kinds: prefix === '#' ? new Set(['file']) : null,
         workingDir: null,
+        conversationId: null,
         signal: new AbortController().signal,
       })
     expect(await ask('ma', null)).toEqual([])
@@ -116,6 +117,7 @@ describe('palette sources', () => {
       prefix: '>',
       kinds: new Set(['command', 'action']),
       workingDir: null,
+      conversationId: null,
       signal: new AbortController().signal,
     })
     expect(rows).toEqual([])
@@ -124,6 +126,7 @@ describe('palette sources', () => {
       prefix: null,
       kinds: null,
       workingDir: null,
+      conversationId: null,
       signal: new AbortController().signal,
     })
     expect(all.map((e) => e.id)).toEqual(['source:shell.files:src/main.rs'])
@@ -137,6 +140,7 @@ describe('palette sources', () => {
       prefix: null,
       kinds: null,
       workingDir: null,
+      conversationId: null,
       signal: controller.signal,
     })
     controller.abort()

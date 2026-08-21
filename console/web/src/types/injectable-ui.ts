@@ -176,6 +176,8 @@ export interface PaletteSourceRow {
 }
 
 export interface PaletteSearchContext {
+  /** The active chat session, for data that lives per conversation. */
+  conversationId: string | null
   /** The active chat's working directory, when one is set. */
   workingDir: string | null
   /** Set when the palette has moved past this query; drop the answer. */

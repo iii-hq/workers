@@ -191,6 +191,8 @@ export interface CommandPaletteProps {
   sources?: readonly RegisteredPaletteSource[]
   /** The active chat's working directory, handed to sources. */
   workingDir?: string | null
+  /** The active chat session, handed to sources. */
+  conversationId?: string | null
   /** Text to open with; `#` lands in file mode. Read once per opening. */
   initialQuery?: string
 }
@@ -204,6 +206,7 @@ export function CommandPalette({
   readInventory = readEngine,
   sources = EMPTY_SOURCES,
   workingDir = null,
+  conversationId = null,
   initialQuery = '',
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
@@ -255,6 +258,7 @@ export function CommandPalette({
         prefix: parsed.prefix,
         kinds: parsed.kinds,
         workingDir,
+        conversationId,
         signal: controller.signal,
       }).then((entries) => {
         if (controller.signal.aborted) return
@@ -266,7 +270,7 @@ export function CommandPalette({
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [open, sources, parsed, workingDir])
+  }, [open, sources, parsed, workingDir, conversationId])
 
   useEffect(() => {
     if (!open) return

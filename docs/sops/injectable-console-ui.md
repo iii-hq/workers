@@ -494,7 +494,7 @@ host.palette?.registerSource({
   kind: 'item',               // 'file' for real files (answers `#`), 'item' otherwise
   prefix: '#',                // optional: a one-character mode that selects this source alone
   minQuery: 2,                // asked without its prefix from this many characters
-  async search(query, { workingDir, signal }) {
+  async search(query, { workingDir, conversationId, signal }) {
     const tables = await host.iii.trigger('database::listTables', { query })
     if (signal.aborted) return []
     return tables.slice(0, 30).map((table) => ({

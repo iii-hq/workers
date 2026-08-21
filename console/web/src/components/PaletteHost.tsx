@@ -318,6 +318,7 @@ export function PaletteHost({
       onOpenFunction={openFunction}
       sources={sources}
       workingDir={active?.workingDir ?? null}
+      conversationId={active?.id ?? null}
       initialQuery={initialQuery}
     />
   )

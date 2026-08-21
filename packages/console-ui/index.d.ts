@@ -150,6 +150,8 @@ export interface PaletteSourceRow {
 }
 
 export interface PaletteSearchContext {
+  /** The active chat session, for data that lives per conversation. */
+  conversationId: string | null
   workingDir: string | null
   signal: AbortSignal
 }
