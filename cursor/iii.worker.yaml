@@ -1,0 +1,19 @@
+iii: v1
+name: cursor
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags: [coding-agent, cursor, bridge, local-agent, cloud-agent]
+description: Cursor agents as an iii worker through the open sdk.v1 Bridge protocol, with durable sessions, raw Cursor events, and normalized AgentEvent streaming.
+
+runtime:
+  kind: javascript
+
+scripts:
+  start: node ./index.mjs
+
+dependencies:
+  state: "^0.22.2"
+  iii-stream: "^0.21.6"
+  configuration: "0.x"

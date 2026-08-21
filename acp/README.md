@@ -147,6 +147,7 @@ iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anth
 | `--engine-url` (`-e`, `IIIACP_ENGINE_URL`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
 | `--debug` (`-d`) | Verbose tracing on stderr. |
 | `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that runs the prompt turn. Falls back to a built-in echo brain when unset. Canonical value is `run::start_and_wait` (turn-orchestrator). |
+| `--brain-stop-fn` (`IIIACP_BRAIN_STOP_FN`) | Optional iii function id called with `session_id` when ACP cancels an external brain turn. |
 | `--use-canonical-brain` (`IIIACP_USE_CANONICAL_BRAIN`) | Shortcut for `--brain-fn run::start_and_wait`. |
 | `--model` (`IIIACP_MODEL`) | Model id forwarded to the brain (e.g. `claude-sonnet-4-5-20250929`). |
 | `--provider` (`IIIACP_PROVIDER`) | Provider id forwarded to the brain (e.g. `anthropic`). Routes to `provider::<provider>::complete`. |

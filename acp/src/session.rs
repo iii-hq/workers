@@ -128,30 +128,152 @@ fn unwrap_value(v: Value) -> Option<Value> {
     Some(v)
 }
 
-// Read-modify-write. Engine `state::update` (this engine version) only ships
-// set/merge/increment/decrement/remove ops — no array append, so atomic
-// append at the engine level is not available. Concurrent writers for the
-// same session race here. Caller (handler.rs) serializes via a per-session
-// in-process mutex to close the window for the common case (multiple
-// agent::events arriving in parallel from one stream subscriber).
 pub async fn append_history(iii: &IIIClient, session_id: &str, entry: Value) -> Result<(), Error> {
+    append_history_once(iii, session_id, None, None, vec![entry])
+        .await
+        .map(|_| ())
+}
+
+pub async fn append_history_once(
+    iii: &IIIClient,
+    session_id: &str,
+    owner_conn_id: Option<&str>,
+    cursor_item_id: Option<&str>,
+    entries: Vec<Value>,
+) -> Result<bool, Error> {
     let scope = scope();
     let key = session_history_key(session_id);
-    let mut hist = state_get(iii, &scope, &key)
-        .await?
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-    hist.push(entry);
-    state_set(iii, &scope, &key, Value::Array(hist)).await
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        if !apply_history_update(&mut history, owner_conn_id, cursor_item_id, entries.clone()) {
+            return Ok(false);
+        }
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let result = unwrap_value(response).unwrap_or(Value::Null);
+        if result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+        current = result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to append safely".to_string(),
+    ))
+}
+
+pub async fn set_history_owner(
+    iii: &IIIClient,
+    session_id: &str,
+    owner_conn_id: &str,
+) -> Result<(), Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        if history.owner_conn_id.as_deref() == Some(owner_conn_id) {
+            return Ok(());
+        }
+        history.owner_conn_id = Some(owner_conn_id.to_string());
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let result = unwrap_value(response).unwrap_or(Value::Null);
+        if result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        current = result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history owner changed too frequently to update safely".to_string(),
+    ))
 }
 
 pub async fn read_history(iii: &IIIClient, session_id: &str) -> Result<Vec<Value>, Error> {
     let scope = scope();
     let key = session_history_key(session_id);
-    Ok(state_get(iii, &scope, &key)
-        .await?
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default())
+    Ok(decode_history(state_get(iii, &scope, &key).await?.as_ref())?.entries)
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct HistoryState {
+    entries: Vec<Value>,
+    #[serde(default)]
+    cursor_item_ids: Vec<String>,
+    #[serde(default)]
+    owner_conn_id: Option<String>,
+}
+
+fn decode_history(value: Option<&Value>) -> Result<HistoryState, Error> {
+    match value {
+        None => Ok(HistoryState::default()),
+        Some(Value::Array(entries)) => Ok(HistoryState {
+            entries: entries.clone(),
+            cursor_item_ids: Vec::new(),
+            owner_conn_id: None,
+        }),
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|error| Error::Handler(format!("history decode failed: {error}"))),
+    }
+}
+
+fn apply_history_update(
+    history: &mut HistoryState,
+    owner_conn_id: Option<&str>,
+    cursor_item_id: Option<&str>,
+    entries: Vec<Value>,
+) -> bool {
+    if let Some(owner_conn_id) = owner_conn_id
+        && history.owner_conn_id.as_deref() != Some(owner_conn_id)
+    {
+        return false;
+    }
+    if let Some(item_id) = cursor_item_id {
+        if history.cursor_item_ids.iter().any(|seen| seen == item_id) {
+            return false;
+        }
+        history.cursor_item_ids.push(item_id.to_string());
+    }
+    history.entries.extend(entries);
+    true
 }
 
 pub async fn append_session_to_index(iii: &IIIClient, session_id: &str) -> Result<(), Error> {
@@ -241,5 +363,50 @@ mod tests {
         assert_eq!(unwrap_value(json!({"value": 42})), Some(json!(42)));
         assert_eq!(unwrap_value(json!({"a": 1})), Some(json!({"a": 1})));
         assert_eq!(unwrap_value(json!([1, 2, 3])), Some(json!([1, 2, 3])));
+    }
+
+    #[test]
+    fn history_migrates_legacy_arrays_and_claims_cursor_items_once() {
+        let legacy = json!([{ "sessionUpdate": "user_message_chunk" }]);
+        let mut history = decode_history(Some(&legacy)).unwrap();
+
+        assert!(apply_history_update(
+            &mut history,
+            None,
+            Some("cursor-item"),
+            vec![json!({ "sessionUpdate": "agent_message_chunk" })],
+        ));
+        assert!(!apply_history_update(
+            &mut history,
+            None,
+            Some("cursor-item"),
+            vec![json!({ "sessionUpdate": "agent_message_chunk" })],
+        ));
+        assert_eq!(history.entries.len(), 2);
+        assert_eq!(history.cursor_item_ids, vec!["cursor-item"]);
+    }
+
+    #[test]
+    fn history_owner_transfer_routes_new_items_only_to_the_new_connection() {
+        let mut history = HistoryState {
+            owner_conn_id: Some("old".to_string()),
+            ..HistoryState::default()
+        };
+
+        history.owner_conn_id = Some("new".to_string());
+
+        assert!(!apply_history_update(
+            &mut history,
+            Some("old"),
+            Some("cursor-after-transfer"),
+            vec![json!({ "sessionUpdate": "agent_message_chunk" })],
+        ));
+        assert!(apply_history_update(
+            &mut history,
+            Some("new"),
+            Some("cursor-after-transfer"),
+            vec![json!({ "sessionUpdate": "agent_message_chunk" })],
+        ));
+        assert_eq!(history.entries.len(), 1);
     }
 }
