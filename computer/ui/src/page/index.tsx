@@ -38,7 +38,10 @@ import { errorMessage } from '../lib/errors'
 import { formatAge, shortEndpoint } from '../lib/format'
 import { BackButton, LivePill, MonitorIcon } from '../lib/widgets'
 import { SessionRail } from './SessionRail'
-import { StartSessionForm } from './StartSessionForm'
+import {
+  StartSessionForm,
+  type StartSessionFormHandle,
+} from './StartSessionForm'
 import { useLiveFrames } from './useLiveFrames'
 import { useSessionsLive } from './useSessionsLive'
 import { Viewport } from './Viewport'
@@ -81,6 +84,8 @@ export function ComputerPage({
   host,
   panelSide = 'left',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const { sessions, loading, error, live, refresh } = useSessionsLive(
     host,
@@ -205,6 +210,51 @@ export function ComputerPage({
     }
   }
 
+  // The start form owns its own mode/fields; a page-level command submits
+  // whatever the user currently has configured through this handle.
+  const startFormRef = useRef<StartSessionFormHandle>(null)
+
+  // A palette "computer-sessions" row (or any other host.panels.open caller)
+  // selects a session by id through the standard panelContext channel.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context
+    const sessionId =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).sessionId
+        : null
+    if (typeof sessionId === 'string' && sessionId) openSession(sessionId)
+  }, [panelContext, openSession])
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'start-session',
+          title: 'Start session',
+          detail: 'Start a desktop with the current start form settings',
+          keywords: ['new', 'desktop'],
+          shortcut: 'N',
+          enabled: () => !starting,
+          run: () => startFormRef.current?.submit(),
+        },
+        {
+          id: 'stop-session',
+          title: 'Stop session',
+          detail: 'Stop the selected desktop session',
+          keywords: ['close', 'end'],
+          shortcut: 'X',
+          enabled: () => selected !== null,
+          run: () => {
+            if (selected) void handleStop(selected.session_id)
+          },
+        },
+      ]),
+    [commands, starting, selected],
+  )
+
   return (
     <PageShell className="cp-ui-shell">
       <PageHeader
@@ -257,6 +307,7 @@ export function ComputerPage({
             <div className="cp-ui-rail-top">
               <div className="cp-ui-rail-caption">start a session</div>
               <StartSessionForm
+                ref={startFormRef}
                 displays={displays}
                 starting={starting}
                 onStart={(input) => void handleStart(input)}

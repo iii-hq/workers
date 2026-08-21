@@ -19,6 +19,7 @@
  */
 
 import { Button, type Host, Input, SegmentedControl } from '@iii-dev/console-ui'
+import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_PICKED_TRIGGER,
@@ -57,6 +58,14 @@ const TYPE_FLUSH_MS = 200
 type FeedPane = 'console' | 'network'
 type NarrowPane = 'viewport' | FeedPane
 
+/** Verbs the page's commands reach through a ref, since they close over
+ * this component's session-local state. */
+export interface SessionActions {
+  stop: () => void
+  toggleInspect: () => void
+  focusUrl: () => void
+}
+
 const FEED_PANES: readonly FeedPane[] = ['console', 'network']
 const NARROW_PANES: readonly NarrowPane[] = ['viewport', 'console', 'network']
 
@@ -94,6 +103,9 @@ interface SessionViewProps {
   narrow: boolean
   /** Stable workspace-tab id — namespaces persisted UI state. */
   tabId: string
+  /** Populated with this session's stop/inspect/focus-url verbs while
+   * mounted, so the page's commands can reach them. */
+  actionsRef?: RefObject<SessionActions | null>
   onBack: () => void
   onSessionsRefresh: () => void
   onStopped: () => void
@@ -106,6 +118,7 @@ export function SessionView({
   enabled,
   narrow,
   tabId,
+  actionsRef,
   onBack,
   onSessionsRefresh,
   onStopped,
@@ -346,6 +359,20 @@ export function SessionView({
     })
   }, [host, sessionId, runAction, onSessionsRefresh, onStopped])
 
+  const urlInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!actionsRef) return
+    actionsRef.current = {
+      stop: handleStop,
+      toggleInspect: togglePick,
+      focusUrl: () => urlInputRef.current?.focus(),
+    }
+    return () => {
+      actionsRef.current = null
+    }
+  }, [actionsRef, handleStop, togglePick])
+
   const displayName =
     session.title?.trim() || hostOf(session.url) || 'about:blank'
   const feedPane: FeedPane = narrow
@@ -525,6 +552,7 @@ export function SessionView({
               <div className="br-ui-address">
                 <Globe size={16} aria-hidden className="br-ui-address-icon" />
                 <Input
+                  ref={urlInputRef}
                   name="browser-url"
                   value={urlDraft}
                   onChange={setUrlDraft}

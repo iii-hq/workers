@@ -8,6 +8,7 @@
  * color alone.
  */
 
+import type { KeyboardEvent } from 'react'
 import type { BrowserSessionInfo } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { formatMtime } from '../lib/format'
@@ -59,8 +60,23 @@ export function SessionRail({
     )
   }
 
+  // Cheap roving nav: arrow keys step focus between sibling session rows.
+  const onKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    const rows = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        'button.br-ui-rail-row',
+      ),
+    )
+    const index = rows.indexOf(document.activeElement as HTMLButtonElement)
+    if (index === -1) return
+    event.preventDefault()
+    const next = index + (event.key === 'ArrowDown' ? 1 : -1)
+    rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus()
+  }
+
   return (
-    <ul className="br-ui-nav-list">
+    <ul className="br-ui-nav-list" onKeyDown={onKeyDown}>
       {sessions.map((session) => {
         const selected = session.session_id === selectedId
         return (

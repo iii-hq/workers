@@ -8,6 +8,7 @@
  */
 
 import { Badge, Button, StatusDot } from '@iii-dev/console-ui'
+import type { KeyboardEvent } from 'react'
 import { cn } from '../lib/cn'
 import type { ComputerSessionInfo } from '../lib/computer'
 import { formatAge, shortEndpoint } from '../lib/format'
@@ -52,8 +53,23 @@ export function SessionRail({
     )
   }
 
+  // Cheap roving nav: arrow keys step focus between sibling session rows.
+  const onKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    const rows = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        'button.cp-ui-rail-pick',
+      ),
+    )
+    const index = rows.indexOf(document.activeElement as HTMLButtonElement)
+    if (index === -1) return
+    event.preventDefault()
+    const next = index + (event.key === 'ArrowDown' ? 1 : -1)
+    rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus()
+  }
+
   return (
-    <ul className="cp-ui-nav-list">
+    <ul className="cp-ui-nav-list" onKeyDown={onKeyDown}>
       {sessions.map((session) => {
         const selected = session.session_id === selectedId
         return (

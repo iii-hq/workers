@@ -24,7 +24,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { onSandboxSelected, takeSelectedSandbox } from '../lib/selection'
 import { ConsoleTab } from './ConsoleTab'
 import { CreateDialog } from './CreateDialog'
@@ -46,6 +46,8 @@ export function SandboxPage({
   host,
   panelSide = 'left',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & PageRenderProps) {
   const { state, refresh, live } = useFleet(host)
   const [selected, setSelected] = useState<string | null>(null)
@@ -68,6 +70,21 @@ export function SandboxPage({
   }, [])
 
   useEffect(() => onSandboxSelected((id) => setPending(id)), [])
+
+  // A palette "sandboxes" row (or any other host.panels.open caller) selects
+  // a sandbox by id through the standard panelContext channel; it rides the
+  // same pending flow a chat cross-link uses.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context
+    const sandboxId =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).sandboxId
+        : null
+    if (typeof sandboxId === 'string' && sandboxId) setPending(sandboxId)
+  }, [panelContext])
 
   useEffect(() => {
     if (pending && state.sandboxes.some((s) => s.sandbox_id === pending)) {
@@ -101,6 +118,38 @@ export function SandboxPage({
     setSelected(id)
     setTab('overview')
   }
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new',
+          title: 'New sandbox',
+          detail: 'Create a sandbox from a catalog image',
+          keywords: ['create', 'microvm'],
+          shortcut: 'N',
+          enabled: () => !state.daemonAbsent,
+          run: () => setCreateOpen(true),
+        },
+        {
+          id: 'run-code',
+          title: 'Run code',
+          detail: 'Run a snippet against a sandbox',
+          keywords: ['exec', 'code'],
+          shortcut: 'C',
+          run: () => setRunOpen(true),
+        },
+        {
+          id: 'refresh',
+          title: 'Refresh the fleet',
+          detail: 'Re-read sandboxes, runtimes and the catalog',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: refresh,
+        },
+      ]),
+    [commands, state.daemonAbsent, refresh],
+  )
 
   function renderMain(): ReactNode {
     if (state.error && !state.daemonAbsent && state.sandboxes.length === 0) {
@@ -225,6 +274,7 @@ export function SandboxPage({
               size="sm"
               onClick={() => setCreateOpen(true)}
               disabled={state.daemonAbsent}
+              data-autofocus=""
             >
               <PlusIcon aria-hidden /> new sandbox
             </Button>
