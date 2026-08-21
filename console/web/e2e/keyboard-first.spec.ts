@@ -81,41 +81,20 @@ test('the keyboard reaches the chat, the panes and every page command through âŒ
   await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(3)
   // The new pane opens with its search focused, where `}` is a character.
   await pane(page, 0).focus()
+  const focusedPane = page.locator('[data-workspace-pane-id]:focus-within')
   await page.keyboard.press('}')
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const panes = Array.from(
-          document.querySelectorAll('[data-workspace-pane-id]'),
-        )
-        return panes.findIndex((root) => root.contains(document.activeElement))
-      }),
-    )
-    .toBe(1)
+  await expect(focusedPane).toHaveAttribute('data-workspace-panel', '1')
   await page.keyboard.press('{')
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const panes = Array.from(
-          document.querySelectorAll('[data-workspace-pane-id]'),
-        )
-        return panes.findIndex((root) => root.contains(document.activeElement))
-      }),
-    )
-    .toBe(0)
+  await expect(focusedPane).toHaveAttribute('data-workspace-panel', '0')
 
   await page.keyboard.press('Meta+k')
   await palette.getByRole('textbox').fill('go to workers')
   await palette.getByRole('button', { name: /^workers/ }).click()
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const active = document.activeElement
-        const root = active?.closest('[data-workspace-pane-id]')
-        return root?.querySelector('[aria-label="workers"]') !== null
-      }),
-    )
-    .toBe(true)
+  await expect(
+    page.locator(
+      '[data-workspace-pane-id]:focus-within [aria-label="workers"]',
+    ),
+  ).toHaveCount(1)
 
   expectPassingResult(await stack.finish())
 })
