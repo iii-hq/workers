@@ -30,12 +30,12 @@ import {
   type Host,
   Input,
   MarkdownPreview,
+  type PageCommandsApi,
   PageSidebar,
   SegmentedControl,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { draftAction, parseStoredDraft } from './draft-storage'
 import {
   BackButton,
   MarkdownFileIcon,
@@ -43,6 +43,7 @@ import {
   SearchIcon,
   XIcon,
 } from '../lib/widgets'
+import { draftAction, parseStoredDraft } from './draft-storage'
 import {
   frontmatterBody,
   readFrontmatterField,
@@ -145,7 +146,6 @@ function removeStored(key: string) {
   }
 }
 
-
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
 
 /** Observe the browser root's own width. Returns a callback ref to put
@@ -209,6 +209,9 @@ export function CollectionBrowser({
   nav,
   panelSide = 'left',
   storageKey,
+  commands,
+  active = true,
+  pendingOpen,
 }: {
   host: Host
   adapter: BrowserAdapter
@@ -217,6 +220,15 @@ export function CollectionBrowser({
   panelSide?: 'left' | 'right'
   /** localStorage namespace for per-tab+collection UI state. */
   storageKey: string
+  /** The page's command surface — shared across every mounted collection. */
+  commands?: PageCommandsApi
+  /** Whether this collection is the one currently shown (all three stay
+      mounted); only the active one registers page-level commands/keys. */
+  active?: boolean
+  /** A palette row picked this collection's entry — open it (see
+      palette.ts + the page's panelContext handler). `id` is monotonic, so
+      a repeated identical selection still re-applies. */
+  pendingOpen?: { id: number; key: string } | null
 }) {
   const [rows, setRows] = useState<BrowserRow[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
@@ -371,6 +383,13 @@ export function CollectionBrowser({
     },
     [host, adapter, storageKey],
   )
+
+  const appliedOpenRef = useRef(0)
+  useEffect(() => {
+    if (!pendingOpen || pendingOpen.id === appliedOpenRef.current) return
+    appliedOpenRef.current = pendingOpen.id
+    open(pendingOpen.key)
+  }, [pendingOpen, open])
 
   /** Blank editor for a new entry. `loaded.content` is empty rather than the
       template, so the scaffold already counts as unsaved work and ⌘S/save is
@@ -563,6 +582,37 @@ export function CollectionBrowser({
     setStaleOnDisk(false)
   }
 
+  // The collection's primary verbs, for the palette and for the keyboard
+  // while this pane has the focus — only the visible collection registers,
+  // since all three stay mounted at once. The `/` and ⌘S raw handlers above
+  // keep working as-is; these just make the same actions ⌘K-visible.
+  useEffect(() => {
+    if (!active) return
+    return commands?.register([
+      {
+        id: 'new-entry',
+        title: `New ${adapter.noun}`,
+        shortcut: 'N',
+        enabled: () => !!adapter.create,
+        run: startCreate,
+      },
+      {
+        id: 'filter',
+        title: `Filter ${adapter.noun}s`,
+        shortcut: '/',
+        run: () => searchRef.current?.focus(),
+      },
+      {
+        id: 'save',
+        title: 'Save',
+        shortcut: 'Mod+S',
+        firesWhileTyping: true,
+        enabled: () => dirty && !saving && !deleting,
+        run: save,
+      },
+    ])
+  }, [commands, active, adapter, startCreate, save, dirty, saving, deleting])
+
   // ── split divider ───────────────────────────────────────────────────
 
   const draggingRef = useRef(false)
@@ -737,6 +787,7 @@ export function CollectionBrowser({
                 placeholder={`filter ${adapter.noun}s…`}
                 aria-label={`filter ${adapter.noun}s`}
                 className="dir-ui-search-input"
+                data-autofocus={active ? '' : undefined}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape' && search) {
                     e.stopPropagation()

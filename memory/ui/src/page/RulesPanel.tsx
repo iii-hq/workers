@@ -1,5 +1,11 @@
-import { useEffect, useState } from 'react'
-import { Button, CodeEditor, EmptyState, Input } from '@iii-dev/console-ui'
+import {
+  Button,
+  CodeEditor,
+  type CodeEditorHandle,
+  EmptyState,
+  Input,
+} from '@iii-dev/console-ui'
+import { useEffect, useRef, useState } from 'react'
 import { Plus, X } from './icons'
 import type { MemoryRule } from './memory-data'
 import { useDirtyDelta } from './widgets'
@@ -26,13 +32,17 @@ function RuleEditor({
   onSet,
   busy,
   reportDirty,
+  autofocus,
 }: {
   name: string
   initial: string
   onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
   reportDirty: (delta: number) => void
+  /** This is the rules panel's default focus target — see its own comment. */
+  autofocus?: boolean
 }) {
+  const editorRef = useRef<CodeEditorHandle>(null)
   const [content, setContent] = useState(initial)
   // Re-seed the editor when a live refresh changes the rule on disk and
   // the user has no local edits in flight. After a successful save,
@@ -107,8 +117,21 @@ function RuleEditor({
           )}
         </div>
       </div>
-      <div className="mem-ui-rule-editor">
+      <div
+        className="mem-ui-rule-editor"
+        // Forwards a page-level `.focus()` (⌘K, a go-to chord, or
+        // `host.panels.open`) into Monaco — data-autofocus can only target a
+        // DOM node, not the editor's own imperative handle.
+        {...(autofocus
+          ? {
+              'data-autofocus': '',
+              tabIndex: -1,
+              onFocus: () => editorRef.current?.focus(),
+            }
+          : {})}
+      >
         <CodeEditor
+          ref={editorRef}
           value={content}
           onChange={(next) => {
             setContent(next)
@@ -170,7 +193,7 @@ export function RulesPanel({
           description="add one named 'style' with a line like 'answer tersely, code first' — then ask anything in chat on this bank and watch every reply follow it. corrections you make in chat will grow a learned.md here on their own."
         />
       ) : (
-        rules.map((rule) => (
+        rules.map((rule, index) => (
           <RuleEditor
             key={rule.name}
             name={rule.name}
@@ -178,6 +201,7 @@ export function RulesPanel({
             onSet={onSet}
             busy={busy}
             reportDirty={reportDirty}
+            autofocus={index === 0}
           />
         ))
       )}

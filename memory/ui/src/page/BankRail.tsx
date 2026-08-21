@@ -5,8 +5,8 @@
  * `memory_bank`. In the narrow drill-in flow this list is the first pane.
  */
 
-import { useState } from 'react'
 import { Button, Input } from '@iii-dev/console-ui'
+import { useState } from 'react'
 import { Plus } from './icons'
 import type { MemoryBank } from './memory-data'
 
@@ -18,6 +18,8 @@ interface BankRailProps {
   onSelect: (bank: string) => void
   onCreate: (name: string) => Promise<boolean>
   creating: boolean
+  /** Focus the first bank row when the page opens with no bank selected. */
+  autofocusFirst?: boolean
 }
 
 export function BankRail({
@@ -27,6 +29,7 @@ export function BankRail({
   onSelect,
   onCreate,
   creating,
+  autofocusFirst,
 }: BankRailProps) {
   const [draft, setDraft] = useState('')
   const valid = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(draft)
@@ -58,12 +61,15 @@ export function BankRail({
           </div>
         ) : (
           <ul className="mem-ui-nav-list">
-            {banks.map((bank) => (
+            {banks.map((bank, index) => (
               <li key={bank.name}>
                 <button
                   type="button"
                   className={`mem-ui-nav-row${selected === bank.name ? ' active' : ''}`}
                   aria-current={selected === bank.name ? 'true' : undefined}
+                  data-autofocus={
+                    autofocusFirst && index === 0 ? '' : undefined
+                  }
                   onClick={() => onSelect(bank.name)}
                 >
                   <span className="name">{bank.name}</span>
@@ -93,6 +99,7 @@ export function BankRail({
           placeholder="new bank"
           aria-label="new bank name"
           className="mem-ui-rail-input"
+          data-mem-new-bank-input=""
         />
         <Button
           type="submit"

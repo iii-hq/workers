@@ -21,12 +21,18 @@
  * remounted per record (key=id) and rehydrates from the cache.
  */
 
-import { Button, CodeEditor, type Host } from '@iii-dev/console-ui'
+import {
+  Button,
+  CodeEditor,
+  type CodeEditorHandle,
+  type Host,
+} from '@iii-dev/console-ui'
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { animateSvgDrawIn } from '../lib/draw'
 import {
   EXPORT_BG,
   initMermaidOnce,
@@ -34,21 +40,20 @@ import {
   loadMermaid,
   mermaidInitConfig,
 } from '../lib/loaders'
-import { animateSvgDrawIn } from '../lib/draw'
 import type { CanvasRecord } from '../lib/types'
 import { updateCanvas } from './data'
+import { ExportMenu, type ExportOptions } from './ExportMenu'
 import {
   downloadSvg,
   downloadSvgAsPng,
   svgDimensions,
   svgWithBackground,
 } from './export'
-import { ExportMenu, type ExportOptions } from './ExportMenu'
 import { errorMessage, exportFilename } from './helpers'
 import { AlertCircle, Maximize } from './icons'
 import {
-  INITIAL_PREVIEW,
   beginRender,
+  INITIAL_PREVIEW,
   renderFailed,
   renderSucceeded,
 } from './preview'
@@ -88,6 +93,10 @@ interface MermaidPaneProps {
   onSaved: (record: CanvasRecord) => void
   /** Dirty-flag transitions — the page shows dots in the sidebar. */
   onDirtyChange: (id: string, dirty: boolean) => void
+  /** Hands the page an imperative save, for the page-level Mod+S command
+      (the page owns the "dirty"/"which format" checks; this pane owns the
+      actual write). Mirrors FreeformPane's `handleRef`. */
+  saveRef?: (save: (() => void) | null) => void
 }
 
 export function MermaidPane({
@@ -96,7 +105,9 @@ export function MermaidPane({
   cache,
   onSaved,
   onDirtyChange,
+  saveRef,
 }: MermaidPaneProps) {
+  const editorRef = useRef<CodeEditorHandle>(null)
   const theme = host.useTheme()
 
   // ── draft + save (cache-hydrated; the page seeds the entry on select) ──
@@ -146,6 +157,12 @@ export function MermaidPane({
       })
       .finally(() => setSaving(false))
   }, [host, cache, record.id, saving, onSaved, onDirtyChange])
+
+  useEffect(() => {
+    if (!saveRef) return
+    saveRef(save)
+    return () => saveRef(null)
+  }, [saveRef, save])
 
   // ── editor|preview split ratio (drag handle between the halves) ──
   const [splitPct, setSplitPct] = useState(() => {
@@ -507,8 +524,15 @@ export function MermaidPane({
         ref={splitRef}
         style={{ '--cv-split': `${splitPct}%` } as React.CSSProperties}
       >
-        <div className="cv-editor">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: focus relay into the real editor (data-autofocus can only target a DOM node) */}
+        <div
+          className="cv-editor"
+          data-autofocus=""
+          tabIndex={-1}
+          onFocus={() => editorRef.current?.focus()}
+        >
           <CodeEditor
+            ref={editorRef}
             value={draft}
             onChange={setDraft}
             language="plaintext"
