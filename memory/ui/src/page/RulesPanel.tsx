@@ -126,7 +126,10 @@ function RuleEditor({
           ? {
               'data-autofocus': '',
               tabIndex: -1,
-              onFocus: () => editorRef.current?.focus(),
+              onFocus: (event: React.FocusEvent<HTMLDivElement>) => {
+                if (event.target === event.currentTarget)
+                  editorRef.current?.focus()
+              },
             }
           : {})}
       >

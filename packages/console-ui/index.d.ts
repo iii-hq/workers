@@ -36,8 +36,15 @@ export interface ExtensionIii {
    * Subscribe a browser-local handler. Handlers are namespaced per tab
    * (`<functionId>::<browserId>`) and default `metadata.internal = true`.
    */
-  on<P = unknown>(functionId: string, handler: (payload: P) => void | Promise<void>): () => void
-  registerTrigger(input: { type: string; function_id: string; config: Record<string, unknown> }): () => void
+  on<P = unknown>(
+    functionId: string,
+    handler: (payload: P) => void | Promise<void>,
+  ): () => void
+  registerTrigger(input: {
+    type: string
+    function_id: string
+    config: Record<string, unknown>
+  }): () => void
   addConnectionStateListener(handler: (state: unknown) => void): () => void
 }
 
@@ -277,8 +284,20 @@ export interface TriggerActivityMessage {
   payload?: unknown
   firedAt?: number
   note?: string
-  outcome?: 'delivered' | 'delivery_failed' | 'skipped' | 'expired' | 'unregistered' | 'invalidated'
-  retirementReason?: 'once_consumed' | 'max_fires' | 'expired' | 'unregistered' | 'invalidated' | 'exhausted'
+  outcome?:
+    | 'delivered'
+    | 'delivery_failed'
+    | 'skipped'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+  retirementReason?:
+    | 'once_consumed'
+    | 'max_fires'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+    | 'exhausted'
 }
 
 /**
@@ -293,7 +312,13 @@ export interface TriggerActivityRenderer {
   tryRender(activity: TriggerActivityMessage): React.ReactNode | null
 }
 
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue }
 
 /**
  * Props for a configuration-form override (the `configForms` slot). The
@@ -448,7 +473,10 @@ export interface Host {
   }
   /** Optional on consoles that predate provider-specific configuration UI. */
   providerConfigForms?: {
-    register(providerId: string, component: React.ComponentType<ProviderConfigFormProps>): () => void
+    register(
+      providerId: string,
+      component: React.ComponentType<ProviderConfigFormProps>,
+    ): () => void
   }
   /**
    * Optional: absent on consoles that predate session chips. Feature-detect
@@ -470,7 +498,9 @@ export interface Host {
 }
 
 /** The ONLY required export of a script asset. */
-export type SetupFn = (host: Host) => void | (() => void) | Promise<void | (() => void)>
+export type SetupFn = (
+  host: Host,
+) => void | (() => void) | Promise<void | (() => void)>
 
 /* ── module-level api (same objects the Host carries) ───────────────── */
 
@@ -554,20 +584,25 @@ export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 /** Compact semantic status label shared by the Console and worker UIs. */
 export declare const Badge: React.ComponentType<BadgeProps>
 
-export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'ghost' | 'pill' | 'icon' | 'terminal' | 'wiggle'
   size?: 'sm' | 'md' | 'lg' | 'icon'
   /** Render as the child element (Radix Slot) instead of a `<button>`. */
   asChild?: boolean
 }
-export declare const Button: React.ComponentType<ButtonProps & React.RefAttributes<HTMLButtonElement>>
+export declare const Button: React.ComponentType<
+  ButtonProps & React.RefAttributes<HTMLButtonElement>
+>
 
 export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Neutral selected treatment: surface, edge and ink; never accent. */
   selected?: boolean
   interactive?: boolean
 }
-export declare const Card: React.ComponentType<CardProps & React.RefAttributes<HTMLDivElement>>
+export declare const Card: React.ComponentType<
+  CardProps & React.RefAttributes<HTMLDivElement>
+>
 export declare const CardHeader: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
@@ -579,7 +614,8 @@ export declare const CardHighlight: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
 
-export interface CollapsibleCardProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface CollapsibleCardProps
+  extends React.HTMLAttributes<HTMLDivElement> {
   /** Controlled expanded state. */
   open?: boolean
   /** Initial expanded state when the component is uncontrolled. */
@@ -596,7 +632,8 @@ export interface CollapsibleCardProps extends React.HTMLAttributes<HTMLDivElemen
 export declare const CollapsibleCard: React.ComponentType<
   CollapsibleCardProps & React.RefAttributes<HTMLDivElement>
 >
-export type CollapsibleCardTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement>
+export type CollapsibleCardTriggerProps =
+  React.ButtonHTMLAttributes<HTMLButtonElement>
 export declare const CollapsibleCardTrigger: React.ComponentType<
   CollapsibleCardTriggerProps & React.RefAttributes<HTMLButtonElement>
 >
@@ -610,10 +647,13 @@ export interface ChipProps extends React.HTMLAttributes<HTMLSpanElement> {
   tone?: ChipTone
   selected?: boolean
 }
-export declare const Chip: React.ComponentType<ChipProps & React.RefAttributes<HTMLSpanElement>>
+export declare const Chip: React.ComponentType<
+  ChipProps & React.RefAttributes<HTMLSpanElement>
+>
 
 export type TableDensity = 'comfortable' | 'compact'
-export interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
+export interface TableProps
+  extends React.TableHTMLAttributes<HTMLTableElement> {
   density?: TableDensity
 }
 export declare const TableViewport: React.ComponentType<
@@ -622,29 +662,40 @@ export declare const TableViewport: React.ComponentType<
 export declare const TableFrame: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
-export declare const Table: React.ComponentType<TableProps & React.RefAttributes<HTMLTableElement>>
+export declare const Table: React.ComponentType<
+  TableProps & React.RefAttributes<HTMLTableElement>
+>
 export declare const TableHeader: React.ComponentType<
-  React.HTMLAttributes<HTMLTableSectionElement> & React.RefAttributes<HTMLTableSectionElement>
+  React.HTMLAttributes<HTMLTableSectionElement> &
+    React.RefAttributes<HTMLTableSectionElement>
 >
 export declare const TableBody: React.ComponentType<
-  React.HTMLAttributes<HTMLTableSectionElement> & React.RefAttributes<HTMLTableSectionElement>
+  React.HTMLAttributes<HTMLTableSectionElement> &
+    React.RefAttributes<HTMLTableSectionElement>
 >
 export declare const TableFooter: React.ComponentType<
-  React.HTMLAttributes<HTMLTableSectionElement> & React.RefAttributes<HTMLTableSectionElement>
+  React.HTMLAttributes<HTMLTableSectionElement> &
+    React.RefAttributes<HTMLTableSectionElement>
 >
-export interface TableRowProps extends React.HTMLAttributes<HTMLTableRowElement> {
+export interface TableRowProps
+  extends React.HTMLAttributes<HTMLTableRowElement> {
   interactive?: boolean
   selected?: boolean
 }
-export declare const TableRow: React.ComponentType<TableRowProps & React.RefAttributes<HTMLTableRowElement>>
+export declare const TableRow: React.ComponentType<
+  TableRowProps & React.RefAttributes<HTMLTableRowElement>
+>
 export declare const TableHead: React.ComponentType<
-  React.ThHTMLAttributes<HTMLTableCellElement> & React.RefAttributes<HTMLTableCellElement>
+  React.ThHTMLAttributes<HTMLTableCellElement> &
+    React.RefAttributes<HTMLTableCellElement>
 >
 export declare const TableCell: React.ComponentType<
-  React.TdHTMLAttributes<HTMLTableCellElement> & React.RefAttributes<HTMLTableCellElement>
+  React.TdHTMLAttributes<HTMLTableCellElement> &
+    React.RefAttributes<HTMLTableCellElement>
 >
 export declare const TableCaption: React.ComponentType<
-  React.HTMLAttributes<HTMLTableCaptionElement> & React.RefAttributes<HTMLTableCaptionElement>
+  React.HTMLAttributes<HTMLTableCaptionElement> &
+    React.RefAttributes<HTMLTableCaptionElement>
 >
 
 export interface ImageViewerProps {
@@ -686,7 +737,9 @@ export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
   tooltip?: React.ReactNode | false
   tooltipSide?: 'top' | 'right' | 'bottom' | 'left'
 }
-export declare const IconButton: React.ComponentType<IconButtonProps & React.RefAttributes<HTMLButtonElement>>
+export declare const IconButton: React.ComponentType<
+  IconButtonProps & React.RefAttributes<HTMLButtonElement>
+>
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -715,15 +768,22 @@ export interface DialogProps {
   children?: React.ReactNode
 }
 export declare const Dialog: React.ComponentType<DialogProps>
-export interface DialogTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface DialogTriggerProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   asChild?: boolean
 }
 export declare const DialogTrigger: React.ComponentType<DialogTriggerProps>
 export declare const DialogClose: React.ComponentType<DialogTriggerProps>
 /** Portalled, centered, with overlay and close affordance built in. */
-export declare const DialogContent: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
-export declare const DialogTitle: React.ComponentType<React.HTMLAttributes<HTMLHeadingElement>>
-export declare const DialogDescription: React.ComponentType<React.HTMLAttributes<HTMLParagraphElement>>
+export declare const DialogContent: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement>
+>
+export declare const DialogTitle: React.ComponentType<
+  React.HTMLAttributes<HTMLHeadingElement>
+>
+export declare const DialogDescription: React.ComponentType<
+  React.HTMLAttributes<HTMLParagraphElement>
+>
 
 export interface DropdownMenuProps {
   open?: boolean
@@ -733,23 +793,30 @@ export interface DropdownMenuProps {
   children?: React.ReactNode
 }
 export declare const DropdownMenu: React.ComponentType<DropdownMenuProps>
-export interface DropdownMenuTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface DropdownMenuTriggerProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   asChild?: boolean
 }
 export declare const DropdownMenuTrigger: React.ComponentType<DropdownMenuTriggerProps>
-export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface DropdownMenuContentProps
+  extends React.HTMLAttributes<HTMLDivElement> {
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
-export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface DropdownMenuItemProps
+  extends React.HTMLAttributes<HTMLDivElement> {
   disabled?: boolean
   onSelect?(event: Event): void
 }
 export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps>
-export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
-export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const DropdownMenuLabel: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement>
+>
+export declare const DropdownMenuSeparator: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement>
+>
 
 export interface EmptyStateProps {
   icon?: React.ComponentType<{ className?: string }>
@@ -804,13 +871,19 @@ export interface FileDiffProps {
 export declare const FileDiff: React.ComponentType<FileDiffProps>
 
 /** Controlled string input (`onChange` receives the value, not the event). */
-export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange' | 'value'> {
+export interface InputProps
+  extends Omit<
+    React.InputHTMLAttributes<HTMLInputElement>,
+    'onChange' | 'value'
+  > {
   value: string
   onChange: (next: string) => void
   /** @deprecated Inputs preserve case by default; retained for compatibility. */
   preserveCase?: boolean
 }
-export declare const Input: React.ComponentType<InputProps & React.RefAttributes<HTMLInputElement>>
+export declare const Input: React.ComponentType<
+  InputProps & React.RefAttributes<HTMLInputElement>
+>
 
 export declare const List: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
@@ -821,14 +894,17 @@ export declare const ListGroup: React.ComponentType<
 export declare const ListGroupLabel: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
-export interface ListItemProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ListItemProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   selected?: boolean
   leading?: React.ReactNode
   label?: React.ReactNode
   description?: React.ReactNode
   trailing?: React.ReactNode
 }
-export declare const ListItem: React.ComponentType<ListItemProps & React.RefAttributes<HTMLButtonElement>>
+export declare const ListItem: React.ComponentType<
+  ListItemProps & React.RefAttributes<HTMLButtonElement>
+>
 
 /* ── page chrome: THE layout design system for injected pages ─────────
    Every worker page composes the same five pieces so panes stay visually
@@ -845,7 +921,7 @@ export declare const ListItem: React.ComponentType<ListItemProps & React.RefAttr
    PageHeader renders the standard ✕ when `onClose` is present — wire it
    to `PageRenderProps.onRequestClose`. */
 
-export interface PageShellProps extends React.HTMLAttributes<HTMLDivElement> {}
+export interface PageShellProps extends React.ComponentProps<'div'> {}
 /** The pane's root column — fills the pane, `--color-panel` background. */
 export declare const PageShell: React.ComponentType<PageShellProps>
 
@@ -908,7 +984,9 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
 export declare const PageSidebar: React.ComponentType<PageSidebarProps>
 
 /** The primary workspace column: `--color-panel`, takes what's left. */
-export declare const PageMain: React.ComponentType<React.HTMLAttributes<HTMLElement>>
+export declare const PageMain: React.ComponentType<
+  React.HTMLAttributes<HTMLElement>
+>
 
 export declare const Panel: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
@@ -948,7 +1026,9 @@ export interface SelectProps<T extends string = string> {
   onClear?: () => void
   renderGroupHeader?: (group: SelectGroup<T>) => React.ReactNode
 }
-export declare const Select: <T extends string = string>(props: SelectProps<T>) => React.ReactNode
+export declare const Select: <T extends string = string>(
+  props: SelectProps<T>,
+) => React.ReactNode
 
 export interface SegmentedControlOption<T extends string = string> {
   value: T
@@ -967,7 +1047,9 @@ export interface SegmentedControlProps<T extends string = string> {
   variant?: 'tabs' | 'radio'
   'aria-label'?: string
 }
-export declare const SegmentedControl: <T extends string = string>(props: SegmentedControlProps<T>) => React.ReactNode
+export declare const SegmentedControl: <T extends string = string>(
+  props: SegmentedControlProps<T>,
+) => React.ReactNode
 
 export interface SelectorOption<T extends string = string> {
   value: T
@@ -1011,9 +1093,13 @@ export interface SelectorProps<T extends string = string> {
   'aria-label': string
   'aria-describedby'?: string
 }
-export declare const Selector: <T extends string = string>(props: SelectorProps<T>) => React.ReactNode
+export declare const Selector: <T extends string = string>(
+  props: SelectorProps<T>,
+) => React.ReactNode
 
-export declare const Skeleton: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
+export declare const Skeleton: React.ComponentType<
+  React.HTMLAttributes<HTMLSpanElement>
+>
 
 export interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
   tone?: 'accent' | 'alert' | 'warn' | 'ink'
@@ -1030,7 +1116,8 @@ export interface StatusPanelProps {
 }
 export declare const StatusPanel: React.ComponentType<StatusPanelProps>
 
-export interface TabsProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'dir'> {
+export interface TabsProps
+  extends Omit<React.HTMLAttributes<HTMLDivElement>, 'dir'> {
   value?: string
   defaultValue?: string
   onValueChange?(value: string): void
@@ -1042,7 +1129,8 @@ export interface TabsListProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'line'
 }
 export declare const TabsList: React.ComponentType<TabsListProps>
-export interface TabsTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface TabsTriggerProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   value: string
   /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
   icon?: React.ReactNode | false
@@ -1105,11 +1193,13 @@ export interface TooltipProps {
   children?: React.ReactNode
 }
 export declare const Tooltip: React.ComponentType<TooltipProps>
-export interface TooltipTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface TooltipTriggerProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   asChild?: boolean
 }
 export declare const TooltipTrigger: React.ComponentType<TooltipTriggerProps>
-export interface TooltipContentProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface TooltipContentProps
+  extends React.HTMLAttributes<HTMLDivElement> {
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
@@ -1153,7 +1243,9 @@ export interface CodeEditorProps {
     both themes. Grows with content — put it inside an `overflow-auto` pane.
     Never bundle `monaco-editor` (or any other editor) into a worker asset;
     import this instead. */
-export declare const CodeEditor: React.ComponentType<CodeEditorProps & React.RefAttributes<CodeEditorHandle>>
+export declare const CodeEditor: React.ComponentType<
+  CodeEditorProps & React.RefAttributes<CodeEditorHandle>
+>
 
 export interface CodeHighlightProps {
   code: string

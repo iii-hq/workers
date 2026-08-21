@@ -21,7 +21,13 @@ import {
   type Host,
   JsonHighlight,
 } from '@iii-dev/console-ui'
-import { type MutableRefObject, useEffect, useMemo, useState } from 'react'
+import {
+  type MutableRefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
@@ -130,6 +136,7 @@ export function InvokePanel({
     setInvalid(null)
   }
 
+  const inFlightRef = useRef(false)
   const run = async () => {
     let payload: unknown
     try {
@@ -149,10 +156,17 @@ export function InvokePanel({
       )
       return
     }
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     setInvalid(null)
     setRunning(true)
-    const result = await invoke(host, functionId, payload)
-    setRunning(false)
+    let result: Awaited<ReturnType<typeof invoke>>
+    try {
+      result = await invoke(host, functionId, payload)
+    } finally {
+      inFlightRef.current = false
+      setRunning(false)
+    }
     attemptSeq += 1
     setAttempts((prev) => [
       { id: attemptSeq, atMs: Date.now(), body, outcome: result },

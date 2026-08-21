@@ -80,6 +80,9 @@ export type DispatchEvent = KeyEventLike &
 interface ChordCandidate {
   chords: readonly string[]
   run: () => void
+  /** Re-asked on every later chord: focus may have left the pane, or the
+      command may have been disabled, since the prefix. */
+  stillEligible?: (event: DispatchEvent) => boolean
 }
 
 interface PendingChord {
@@ -138,8 +141,10 @@ export function createKeyDispatcher(
     if (pending) {
       const { candidates, depth } = pending
       cancel()
-      const advanced = candidates.filter((candidate) =>
-        bindingMatchesEvent(candidate.chords[depth] ?? '', event, platform),
+      const advanced = candidates.filter(
+        (candidate) =>
+          bindingMatchesEvent(candidate.chords[depth] ?? '', event, platform) &&
+          (candidate.stillEligible?.(event) ?? true),
       )
       if (advanced.length > 0) {
         event.preventDefault()
@@ -197,7 +202,19 @@ export function createKeyDispatcher(
         if (isSequence(binding)) {
           const chords = splitSequence(binding)
           if (bindingMatchesEvent(chords[0] ?? '', event, platform)) {
-            prefixed.push({ chords, run: command.run })
+            prefixed.push({
+              chords,
+              run: command.run,
+              stillEligible: (next) =>
+                paneRootOf(next.target)?.dataset.workspacePaneId === paneId &&
+                !standsDown(
+                  guard,
+                  next,
+                  isTyping(next.target),
+                  insideDialog(next.target),
+                ) &&
+                command.enabled?.() !== false,
+            })
           }
           continue
         }

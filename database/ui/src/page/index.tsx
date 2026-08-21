@@ -373,6 +373,7 @@ export function DatabasePage({
   // Left unapplied rather than clearing selectedTable while it loads — the
   // db/table pair only becomes valid once both requests settle.
   const appliedContextRef = useRef(0)
+  const shellRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
     const context = parseDatabasePanelContext(panelContext.context)
@@ -429,8 +430,8 @@ export function DatabasePage({
           run: () => {
             if (narrow) setDrilled(false)
             window.requestAnimationFrame(() =>
-              document
-                .querySelector<HTMLElement>('[data-db-tables-filter]')
+              shellRef.current
+                ?.querySelector<HTMLElement>('[data-db-tables-filter]')
                 ?.focus(),
             )
           },
@@ -453,7 +454,7 @@ export function DatabasePage({
   const showMain = !narrow || drilled
 
   return (
-    <PageShell className="db-ui-shell">
+    <PageShell ref={shellRef} className="db-ui-shell">
       <PageHeader
         icon={<Database size={16} />}
         title="Database"

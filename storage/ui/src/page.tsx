@@ -256,7 +256,7 @@ function StorageExplorer({
       appliedContextRef.current = panelContext.id
       return
     }
-    if (buckets === null) return
+    if (buckets === null || bucketError) return
     if (!buckets.some((b) => b.name === context.bucket)) {
       appliedContextRef.current = panelContext.id
       return
@@ -266,7 +266,7 @@ function StorageExplorer({
     setPrefix(context.prefix ?? '')
     setObjectKey(context.objectKey ?? null)
     setActionError(null)
-  }, [panelContext, buckets])
+  }, [panelContext, buckets, bucketError])
 
   const openBucket = (name: string) => {
     setBucketName(name)

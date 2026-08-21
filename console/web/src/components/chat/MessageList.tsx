@@ -608,32 +608,33 @@ export function MessageList({
           {rows.map((row, i) => {
             if (row.kind === 'function-trigger-group') {
               return (
-                <FunctionTriggerGroup
-                  key={row.id}
-                  row={row}
-                  renderers={renderers}
-                  defaultOpenCalls={defaultOpenCalls}
-                  onResolveApproval={onResolveApproval}
-                  onAlwaysAllow={onAlwaysAllow}
-                  onResolveFilesystemAccess={onResolveFilesystemAccess}
-                  onManageFilesystemAccess={onManageFilesystemAccess}
-                  workingDir={workingDir}
-                  summaryCopyText={
-                    row.summary
-                      ? (() => {
-                          const calls = fcallsByAssistant.get(row.summary.id)
-                          return calls?.length
-                            ? () =>
-                                assistantCopyText(
-                                  row.summary?.content ?? '',
-                                  calls,
-                                  redactFor,
-                                )
-                            : row.summary.content
-                        })()
-                      : undefined
-                  }
-                />
+                <div key={row.id} data-message-row={row.id}>
+                  <FunctionTriggerGroup
+                    row={row}
+                    renderers={renderers}
+                    defaultOpenCalls={defaultOpenCalls}
+                    onResolveApproval={onResolveApproval}
+                    onAlwaysAllow={onAlwaysAllow}
+                    onResolveFilesystemAccess={onResolveFilesystemAccess}
+                    onManageFilesystemAccess={onManageFilesystemAccess}
+                    workingDir={workingDir}
+                    summaryCopyText={
+                      row.summary
+                        ? (() => {
+                            const calls = fcallsByAssistant.get(row.summary.id)
+                            return calls?.length
+                              ? () =>
+                                  assistantCopyText(
+                                    row.summary?.content ?? '',
+                                    calls,
+                                    redactFor,
+                                  )
+                              : row.summary.content
+                          })()
+                        : undefined
+                    }
+                  />
+                </div>
               )
             }
 

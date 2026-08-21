@@ -2494,8 +2494,8 @@ export function ShellExplorerPage({
             setSideTab('search')
             setCollapsed(false)
             window.requestAnimationFrame(() => {
-              document
-                .querySelector<HTMLElement>('[data-shell-search-input]')
+              frameEl
+                ?.querySelector<HTMLElement>('[data-shell-search-input]')
                 ?.focus()
             })
           },
@@ -2573,7 +2573,7 @@ export function ShellExplorerPage({
           run: () => stepReviewEntry(-1),
         },
       ]),
-    [commands, host, toggleTerminal, onCloseTab, stepReviewEntry],
+    [commands, host, toggleTerminal, onCloseTab, stepReviewEntry, frameEl],
   )
 
   const header = (

@@ -73,7 +73,7 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
           onClose={closeConfiguration}
         />
       ) : (
-        <PageShell aria-label="workers">
+        <PageShell ref={rootRef} aria-label="workers">
           <PageHeader
             icon={<Blocks />}
             title="Workers"

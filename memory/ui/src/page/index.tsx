@@ -210,6 +210,7 @@ export function MemoryPage({
   // page is open. `panelContext.id` is monotonic, so a repeated identical
   // click still re-applies.
   const appliedContextRef = useRef(0)
+  const shellRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
     appliedContextRef.current = panelContext.id
@@ -243,8 +244,8 @@ export function MemoryPage({
           run: () => {
             if (narrow && drilled) backToBanks()
             window.requestAnimationFrame(() => {
-              document
-                .querySelector<HTMLElement>('[data-mem-new-bank-input]')
+              shellRef.current
+                ?.querySelector<HTMLElement>('[data-mem-new-bank-input]')
                 ?.focus()
             })
           },
@@ -262,7 +263,7 @@ export function MemoryPage({
   const showDoc = !narrow || (drilled && selected !== null)
 
   return (
-    <PageShell className="mem-ui-shell">
+    <PageShell ref={shellRef} className="mem-ui-shell">
       <PageHeader
         icon={<Brain size={16} />}
         title="Memory"

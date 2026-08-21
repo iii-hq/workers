@@ -114,6 +114,7 @@ export function TracesV2({
   }, [])
 
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const rootRef = useRef<HTMLElement>(null)
   const [selectedSpan, setSelectedSpan] = useState<VisualizationSpan | null>(
     null,
   )
@@ -537,8 +538,8 @@ export function TracesV2({
           keywords: ['filter', 'find'],
           shortcut: '/',
           run: () =>
-            document
-              .querySelector<HTMLElement>('[placeholder="search traces..."]')
+            rootRef.current
+              ?.querySelector<HTMLElement>('[placeholder="search traces..."]')
               ?.focus(),
         },
         {
@@ -663,6 +664,7 @@ export function TracesV2({
 
   return (
     <section
+      ref={rootRef}
       aria-label="traces"
       className="flex-1 flex flex-col overflow-hidden"
     >

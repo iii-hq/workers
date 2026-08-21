@@ -366,9 +366,10 @@ export function CommandPalette({
   // inventory lands), so the highlight follows the row, not its position:
   // Enter always runs what was lit a moment ago.
   const activeIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    activeIdRef.current = flat[active]?.id ?? null
-  }, [active, flat])
+  const select = (index: number) => {
+    activeIdRef.current = flat[index]?.id ?? null
+    setActive(index)
+  }
   useEffect(() => {
     const at = flat.findIndex((entry) => entry.id === activeIdRef.current)
     setActive((current) =>
@@ -392,7 +393,7 @@ export function CommandPalette({
   const move = (step: number) => {
     if (!flat.length) return
     const next = (active + step + flat.length) % flat.length
-    setActive(next)
+    select(next)
     listRef.current
       ?.querySelector(`[data-palette-index="${next}"]`)
       ?.scrollIntoView({ block: 'nearest' })
@@ -549,7 +550,7 @@ export function CommandPalette({
                       key={entry.id}
                       type="button"
                       data-palette-index={index}
-                      onMouseEnter={() => setActive(index)}
+                      onMouseEnter={() => select(index)}
                       onClick={() => choose(entry)}
                       className={`flex min-h-12 w-full items-center gap-3 border-l-2 py-2.5 pr-4 pl-3.5 text-left sm:min-h-0 sm:py-2 ${
                         selected

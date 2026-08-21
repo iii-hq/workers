@@ -1880,9 +1880,16 @@ export function ChatView({
       viewRef.current?.querySelector('[data-approval-actions]') !== null
     const answerApproval = (action: 'approve' | 'deny') => {
       const row = focusedRow()
+      const waiting = Array.from(
+        viewRef.current?.querySelectorAll('[data-approval-actions]') ?? [],
+      )
+      // The focused row if it is waiting; else the only waiting call. Two
+      // waiting calls and no focus is a choice the keyboard must not make.
       const scope = row?.querySelector('[data-approval-actions]')
         ? row
-        : viewRef.current
+        : waiting.length === 1
+          ? waiting[0]
+          : null
       scope
         ?.querySelector<HTMLButtonElement>(`[data-message-action="${action}"]`)
         ?.click()

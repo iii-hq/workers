@@ -246,13 +246,14 @@ export function ComputerPage({
           detail: 'Stop the selected desktop session',
           keywords: ['close', 'end'],
           shortcut: 'X',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && busyId === null,
           run: () => {
-            if (selected) void handleStop(selected.session_id)
+            if (selected && busyId === null)
+              void handleStop(selected.session_id)
           },
         },
       ]),
-    [commands, starting, selected],
+    [commands, starting, selected, busyId],
   )
 
   return (

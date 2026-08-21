@@ -18,7 +18,11 @@ export function parseCronPanelContext(
   const record = asRecord(value)
   if (!record) return null
   if (record.action === 'new') return { action: 'new' }
-  if (typeof record.subscriptionId === 'string' && record.subscriptionId !== '')
+  if (
+    record.action === 'schedule' &&
+    typeof record.subscriptionId === 'string' &&
+    record.subscriptionId !== ''
+  )
     return { action: 'schedule', subscriptionId: record.subscriptionId }
   return null
 }

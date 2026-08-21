@@ -30,10 +30,7 @@ export { PageSidebar, type PageSidebarProps } from './PageSidebar'
 
 /** The pane's root column. Fills the pane whether the parent is a flex
     column (native screens) or a block scroller (the ext-page host). */
-export function PageShell({
-  className,
-  ...rest
-}: React.HTMLAttributes<HTMLDivElement>) {
+export function PageShell({ className, ...rest }: React.ComponentProps<'div'>) {
   return (
     <div
       className={cn(

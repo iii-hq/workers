@@ -97,7 +97,8 @@ function claimedBindings(
   // Only a mounted page may hold keys: they are scoped to its pane. A
   // worker-level command is a palette row, so the console's global keymap
   // stays the console's.
-  if (registration.source !== 'page') return []
+  if (registration.source !== 'page' || registration.paneId === undefined)
+    return []
   if (command.shortcut === undefined) return []
   const wanted =
     typeof command.shortcut === 'string'
