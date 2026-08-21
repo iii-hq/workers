@@ -134,3 +134,46 @@ export function ExternalLink(props: IconProps) {
     </Svg>
   )
 }
+
+export function MoreVertical(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </Svg>
+  )
+}
+
+export function Search(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </Svg>
+  )
+}
+
+export function ChevronUp(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m18 15-6-6-6 6" />
+    </Svg>
+  )
+}
+
+export function ChevronDown(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m6 9 6 6 6-6" />
+    </Svg>
+  )
+}
+
+export function Minus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 12h14" />
+    </Svg>
+  )
+}

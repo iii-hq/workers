@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod dom;
 pub mod evaluate;
 pub mod execute;
+pub mod find_in_page;
 pub mod frame;
 pub mod handoff;
 pub mod hint;
@@ -16,12 +17,14 @@ pub mod history;
 pub mod navigate;
 pub mod network;
 pub mod overlays;
+pub mod pdf;
 pub mod pick;
 pub mod recording;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
 pub mod styles;
+pub mod zoom;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -171,6 +174,20 @@ pub const PICK_STOP_ID: &str = "browser::pick::stop";
 pub const PICK_STOP_DESC: &str =
     "Internal: leave DevTools inspect mode without picking. Idempotent. Not an agent \
      function.";
+pub const FIND_IN_PAGE_ID: &str = "browser::find-in-page";
+pub const FIND_IN_PAGE_DESC: &str =
+    "Find text in the page like the browser's find bar: highlights every match in the live \
+     document, scrolls the current one into view, and steps with next / previous. close \
+     clears the highlights. Returns count and the 1-based index.";
+pub const ZOOM_ID: &str = "browser::zoom";
+pub const ZOOM_DESC: &str =
+    "Zoom the page in, out, to a level (50-200 %) or back to 100 %, the way the browser's \
+     zoom menu does. The viewport keeps its size; the page scales inside it. The level \
+     belongs to the loaded document and resets on navigation.";
+pub const PDF_ID: &str = "browser::pdf";
+pub const PDF_DESC: &str =
+    "Print the page to a PDF (the browser's Print -> Save as PDF) and return it base64 with \
+     a file name from the title.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -256,6 +273,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<pick::PickStartInput, pick::AckOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickResolveInput, pick::AckOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
         spec::<pick::PickStopInput, pick::AckOutput>(PICK_STOP_ID, PICK_STOP_DESC),
+        spec::<find_in_page::FindInput, find_in_page::FindOutput>(
+            FIND_IN_PAGE_ID,
+            FIND_IN_PAGE_DESC,
+        ),
+        spec::<zoom::ZoomInput, zoom::ZoomOutput>(ZOOM_ID, ZOOM_DESC),
+        spec::<pdf::PdfInput, pdf::PdfOutput>(PDF_ID, PDF_DESC),
     ]
 }
 
@@ -289,6 +312,9 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_pick_start(iii, sessions);
     register_pick_resolve(iii, sessions);
     register_pick_stop(iii, sessions);
+    register_find_in_page(iii, sessions);
+    register_zoom(iii, sessions);
+    register_pdf(iii, sessions);
     tracing::info!("all functions registered");
 }
 
@@ -1385,6 +1411,146 @@ fn register_pick_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         })
         .description(PICK_STOP_DESC)
         .metadata(json!({ "internal": true })),
+    );
+}
+
+/// Runs an injected script and reads one JSON field from its completion
+/// value, for the find / zoom helpers that keep their state in the page.
+async fn evaluate_json(
+    session: &Session,
+    script: String,
+    what: &str,
+) -> Result<serde_json::Value, Error> {
+    let evaluated = session
+        .page
+        .evaluate(script)
+        .await
+        .map_err(|e| handler_err(format!("{what} failed: {e}")))?;
+    evaluated
+        .value()
+        .cloned()
+        .ok_or_else(|| handler_err(format!("{what} returned nothing")))
+}
+
+fn register_find_in_page(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        FIND_IN_PAGE_ID,
+        RegisterFunction::new_async(move |req: find_in_page::FindInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let action = req.action.as_deref().unwrap_or("search");
+                if !matches!(action, "search" | "next" | "previous" | "close") {
+                    return Err(handler_err(format!(
+                        "unknown action '{action}' (search, next, previous, close)"
+                    )));
+                }
+                let script = find_in_page::find_script(
+                    &req.query,
+                    action,
+                    req.case_sensitive.unwrap_or(false),
+                );
+                let value = evaluate_json(&session, script, "find").await?;
+                let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                Ok::<_, Error>(find_in_page::FindOutput {
+                    ok: true,
+                    count,
+                    index,
+                    query: if action == "close" {
+                        String::new()
+                    } else {
+                        req.query
+                    },
+                })
+            }
+        })
+        .description(FIND_IN_PAGE_DESC),
+    );
+}
+
+fn register_zoom(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        ZOOM_ID,
+        RegisterFunction::new_async(move |req: zoom::ZoomInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::zoom")?;
+                session.touch();
+                let current = evaluate_json(&session, zoom::read_script().to_string(), "zoom")
+                    .await?
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(100);
+                let action = req.action.as_deref().unwrap_or(if req.level.is_some() {
+                    "set"
+                } else {
+                    "reset"
+                });
+                let level = match action {
+                    "in" => zoom::step(current, true),
+                    "out" => zoom::step(current, false),
+                    "reset" => 100,
+                    "set" => match req.level {
+                        Some(level) => zoom::snap(level.clamp(50, 200)),
+                        None => return Err(handler_err("set needs a level (50-200)")),
+                    },
+                    other => {
+                        return Err(handler_err(format!(
+                            "unknown action '{other}' (in, out, reset, set)"
+                        )))
+                    }
+                };
+                evaluate_json(&session, zoom::apply_script(level), "zoom").await?;
+                Ok::<_, Error>(zoom::ZoomOutput { ok: true, level })
+            }
+        })
+        .description(ZOOM_DESC),
+    );
+}
+
+fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        PDF_ID,
+        RegisterFunction::new_async(move |req: pdf::PdfInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let mut params = cdp_page::PrintToPdfParams::builder()
+                    .landscape(req.landscape.unwrap_or(false))
+                    .print_background(req.print_background.unwrap_or(true));
+                if let Some(scale) = req.scale {
+                    params = params.scale(scale.clamp(0.1, 2.0));
+                }
+                let bytes = session
+                    .page
+                    .pdf(params.build())
+                    .await
+                    .map_err(|e| handler_err(format!("print to pdf failed: {e}")))?;
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                let title = session
+                    .page
+                    .get_title()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                Ok::<_, Error>(pdf::PdfOutput {
+                    ok: true,
+                    size_bytes: bytes.len() as u64,
+                    data: STANDARD.encode(&bytes),
+                    file_name: pdf::file_name(&title, &url),
+                    url,
+                })
+            }
+        })
+        .description(PDF_DESC),
     );
 }
 
