@@ -4,6 +4,7 @@ import {
   clearTabDirty,
   dirtyReasonsForPane,
   dirtyReasonsForTab,
+  pruneDirty,
   resetDirtyRegistry,
   setPaneDirty,
 } from './workspace-guards'
@@ -35,5 +36,21 @@ describe('workspace dirty registry', () => {
     setPaneDirty('tab-1', 'pane-a', 'main.rs')
     setPaneDirty('tab-1', 'pane-a', 'main.rs')
     expect(dirtyReasonsForTab('tab-1')).toEqual(['main.rs'])
+  })
+
+  it('pruning keeps only panes that still exist in the layout', () => {
+    setPaneDirty('tab-1', 'pane-a', 'main.rs')
+    setPaneDirty('tab-1', 'pane-b', 'notes.md')
+    setPaneDirty('tab-2', 'pane-c', 'Unsaved changes')
+    pruneDirty(new Set(['tab-1']), new Map([['tab-1', new Set(['pane-a'])]]))
+    expect(dirtyReasonsForTab('tab-1')).toEqual(['main.rs'])
+    expect(dirtyReasonsForTab('tab-2')).toEqual([])
+  })
+
+  it('ids with separators never collide', () => {
+    setPaneDirty('a b', 'c', 'one')
+    setPaneDirty('a', 'b c', 'two')
+    expect(dirtyReasonsForTab('a b')).toEqual(['one'])
+    expect(dirtyReasonsForTab('a')).toEqual(['two'])
   })
 })

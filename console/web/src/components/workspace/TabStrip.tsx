@@ -147,6 +147,7 @@ export function TabStrip({
   })
   const suppressClickRef = useRef(false)
   const focusActiveRef = useRef(false)
+  const pendingCloseRef = useRef<string | null>(null)
 
   const measureOverflow = useCallback(() => {
     const strip = stripRef.current
@@ -183,8 +184,15 @@ export function TabStrip({
     }
   }, [measureOverflow])
 
-  // The active tab stays in view whatever selected it.
+  // The active tab stays in view whatever selected it; labels remeasure
+  // overflow when a rename or a page title changes a tab's width.
+  const labels = tabs.map((tab) => tabLabel(tab, extPageTitles)).join('\n')
   useLayoutEffect(() => {
+    const pending = pendingCloseRef.current
+    if (pending !== null) {
+      pendingCloseRef.current = null
+      if (!tabs.some((tab) => tab.id === pending)) focusActiveRef.current = true
+    }
     const strip = stripRef.current
     if (!strip || tabs.length === 0) return
     const el = strip.querySelector<HTMLElement>(
@@ -212,7 +220,7 @@ export function TabStrip({
       el.focus()
     }
     measureOverflow()
-  }, [activeTabId, tabs.length, measureOverflow])
+  }, [activeTabId, tabs, labels, measureOverflow])
 
   const cancelPress = useCallback(() => {
     const press = pressRef.current
@@ -316,7 +324,7 @@ export function TabStrip({
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (tabs.length <= 1) return
         e.preventDefault()
-        focusActiveRef.current = true
+        pendingCloseRef.current = focusedId
         closeTab(focusedId)
         return
       }
@@ -410,6 +418,7 @@ export function TabStrip({
                 setRenamingId(tab.id)
               }}
               onPointerDown={(e) => {
+                if (e.button === 1) e.preventDefault()
                 if (e.button !== 0 || renamingId === tab.id || dragRef.current)
                   return
                 // Presses on the close affordance never arm a drag.

@@ -56,8 +56,12 @@ export function ConfirmDialog({
         ) : null}
         {details && details.length > 0 ? (
           <ul className="mt-3 space-y-1 rounded-sm bg-surface px-3 py-2 font-sans text-[12px] text-ink">
-            {details.map((line) => (
-              <li key={line} className="truncate">
+            {details.map((line, index) => (
+              <li
+                // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional and may repeat
+                key={`${index}:${line}`}
+                className="truncate"
+              >
                 {line}
               </li>
             ))}

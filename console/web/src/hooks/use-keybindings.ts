@@ -30,6 +30,15 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
 
+/** A modal owns the keyboard while it is open; only the palette toggle reaches through. */
+export function insideDialog(target: EventTarget | null): boolean {
+  const element = target as Element | null
+  return (
+    typeof element?.closest === 'function' &&
+    element.closest('[role="dialog"],[role="alertdialog"]') !== null
+  )
+}
+
 /**
  * A field may hand specific shortcuts back with
  * `data-keybindings-allow="workspace.selectByIndex panel.split"`. A search box
@@ -63,8 +72,11 @@ export function useKeybindings(handlers: KeybindingHandlers): void {
       // being composed by an IME.
       if (event.isComposing) return
       const typing = isTyping(event.target)
+      const inDialog = insideDialog(event.target)
       for (const definition of KEYBINDINGS) {
         if (definition.scope !== 'global') continue
+        if (event.repeat && !definition.firesWhileTyping) continue
+        if (inDialog && !definition.firesWhileTyping) continue
         if (
           typing &&
           !definition.firesWhileTyping &&

@@ -30,6 +30,7 @@ import { moveItem } from '@/lib/reorder'
 import {
   adjacentTabId,
   defaultTabs,
+  isUnfollowedFunctionActivation,
   type LocalActivation,
   newTabId,
   parseActivation,
@@ -57,6 +58,7 @@ import {
 const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
 const LOCAL_KEY = 'iii-workspace-tabs'
 const SESSION_ACTIVE_KEY = 'iii-workspace-active'
+const POINTER_WRITE_DELAY_MS = 150
 
 type LocalState = WorkspaceState
 
@@ -94,6 +96,9 @@ function loadSessionActivation(): LocalActivation | null {
     return {
       tabId: parsed.tabId,
       at: typeof parsed.at === 'number' ? parsed.at : 0,
+      ...(typeof parsed.followed === 'number'
+        ? { followed: parsed.followed }
+        : {}),
     }
   } catch {
     return null
@@ -240,10 +245,16 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const [localChoice, setLocalChoice] = useState<LocalActivation | null>(
     loadSessionActivation,
   )
-  const choose = useCallback((id: string) => {
-    const activation = { tabId: id, at: Date.now() }
-    persistSessionActivation(activation)
-    setLocalChoice(activation)
+  const choose = useCallback((id: string, followed?: number) => {
+    setLocalChoice((current) => {
+      const activation: LocalActivation = {
+        tabId: id,
+        at: Date.now(),
+        followed: followed ?? current?.followed,
+      }
+      persistSessionActivation(activation)
+      return activation
+    })
   }, [])
 
   const serverTabs = available ? parseWorkspaceTabs(data) : []
@@ -257,6 +268,13 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const pointer = available
     ? resolvePointer(localChoice, serverActivation)
     : (localChoice?.tabId ?? local.activeTabId)
+  // Following an agent's activation becomes this browser's own choice, so a
+  // later click elsewhere cannot bounce it back.
+  useEffect(() => {
+    if (!available) return
+    if (!isUnfollowedFunctionActivation(localChoice, serverActivation)) return
+    if (serverActivation) choose(serverActivation.tabId, serverActivation.at)
+  }, [available, localChoice, serverActivation, choose])
   // No pointer (or one at a tab another browser closed) lands on the
   // chat+traces tab, falling back to the first tab.
   const activeTab = resolveActiveTab(tabs, pointer)
@@ -305,14 +323,29 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     if (pending !== null) persist(pending)
   }, [layoutSource, persist])
 
+  // The pointer write trails key repeats: only the last activation in a burst
+  // reaches the configuration worker.
+  const pointerWriteRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (pointerWriteRef.current !== null)
+        window.clearTimeout(pointerWriteRef.current)
+    },
+    [],
+  )
   const activateTab = useCallback(
     (id: string) => {
       choose(id)
-      persist((state) =>
-        state.tabs.some((tab) => tab.id === id)
-          ? { ...state, activeTabId: id }
-          : state,
-      )
+      if (pointerWriteRef.current !== null)
+        window.clearTimeout(pointerWriteRef.current)
+      pointerWriteRef.current = window.setTimeout(() => {
+        pointerWriteRef.current = null
+        persist((state) =>
+          state.tabs.some((tab) => tab.id === id)
+            ? { ...state, activeTabId: id }
+            : state,
+        )
+      }, POINTER_WRITE_DELAY_MS)
     },
     [choose, persist],
   )

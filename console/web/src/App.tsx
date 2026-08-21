@@ -71,6 +71,7 @@ import {
   clearTabDirty,
   dirtyReasonsForPane,
   dirtyReasonsForTab,
+  pruneDirty,
   setPaneDirty,
   useDirtyEntries,
 } from '@/lib/workspace-guards'
@@ -88,12 +89,17 @@ import {
   tabColumns,
   tabPaneIds,
   tabSizes,
+  type WorkspaceTab,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PanelSide } from '@/types/injectable-ui'
+
+function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
+  return new Map(tabs.map((tab) => [tab.id, new Set(tabPaneIds(tab))]))
+}
 
 function hasExplicitHash(): boolean {
   if (typeof window === 'undefined') return false
@@ -122,25 +128,34 @@ export function App({
   const { activeTab, activeTabId } = workspace
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
-  // Per-workspace phone panel, so switching back lands where the user left off.
-  const mobilePanelIndexesRef = useRef(loadMobilePanelIndexes())
-  const [mobilePanelIndex, setMobilePanelIndexState] = useState(
-    () => mobilePanelIndexesRef.current[activeTabId] ?? 0,
+  // Per-workspace phone panel, derived so a tab switch renders its own panel first.
+  const [mobilePanelIndexes, setMobilePanelIndexes] = useState(
+    loadMobilePanelIndexes,
   )
+  const mobilePanelIndex = mobilePanelIndexes[activeTabId] ?? 0
   const setMobilePanelIndex = useCallback((index: number) => {
-    mobilePanelIndexesRef.current = {
-      ...mobilePanelIndexesRef.current,
-      [workspaceRef.current.activeTabId]: index,
-    }
-    persistMobilePanelIndexes(mobilePanelIndexesRef.current)
-    setMobilePanelIndexState(index)
+    const tabId = workspaceRef.current.activeTabId
+    setMobilePanelIndexes((current) => {
+      if (current[tabId] === index) return current
+      const next = { ...current, [tabId]: index }
+      persistMobilePanelIndexes(next)
+      return next
+    })
   }, [])
-  const mobileActiveTabRef = useRef(activeTabId)
+  const tabIds = workspace.tabs.map((tab) => tab.id).join(' ')
   useEffect(() => {
-    if (mobileActiveTabRef.current === activeTabId) return
-    mobileActiveTabRef.current = activeTabId
-    setMobilePanelIndexState(mobilePanelIndexesRef.current[activeTabId] ?? 0)
-  }, [activeTabId])
+    const live = new Set(tabIds.split(' '))
+    setMobilePanelIndexes((current) => {
+      const kept = Object.fromEntries(
+        Object.entries(current).filter(([id]) => live.has(id)),
+      )
+      if (Object.keys(kept).length === Object.keys(current).length)
+        return current
+      persistMobilePanelIndexes(kept)
+      return kept
+    })
+    pruneDirty(live, paneIdsByTab(workspaceRef.current.tabs))
+  }, [tabIds])
 
   // Unsaved work: the console's own dialog on close; the native prompt only for reload.
   const dirtyEntries = useDirtyEntries()
@@ -149,6 +164,8 @@ export function App({
     details: string[]
     proceed: () => void
   } | null>(null)
+  const discardPromptRef = useRef(discardPrompt)
+  discardPromptRef.current = discardPrompt
   useEffect(() => {
     if (dirtyEntries.length === 0) return
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -160,11 +177,12 @@ export function App({
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [dirtyEntries.length])
   const requestCloseTab = useCallback((id: string) => {
-    const ws = workspaceRef.current
+    if (discardPromptRef.current) return
+    if (workspaceRef.current.tabs.length <= 1) return
     const reasons = dirtyReasonsForTab(id)
     const proceed = () => {
       clearTabDirty(id)
-      ws.closeTab(id)
+      workspaceRef.current.closeTab(id)
     }
     if (reasons.length === 0) {
       proceed()
@@ -178,6 +196,7 @@ export function App({
   }, [])
   const requestClosePane = useCallback(
     (tabId: string, paneId: string, close: () => void) => {
+      if (discardPromptRef.current) return
       const reasons = dirtyReasonsForPane(tabId, paneId)
       const proceed = () => {
         setPaneDirty(tabId, paneId, false)
@@ -1308,7 +1327,6 @@ function ScreenBody({
       ),
     [tabId, paneId],
   )
-  useEffect(() => () => setPaneDirty(tabId, paneId, false), [tabId, paneId])
   const extId = extPageIdForScreen(screen)
   if (extId !== null) {
     return (

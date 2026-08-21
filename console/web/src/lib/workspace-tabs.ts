@@ -466,20 +466,35 @@ export function parseActivation(
 export interface LocalActivation {
   tabId: string
   at: number
+  /** The `activatedAt` of the last function activation this browser followed. */
+  followed?: number
 }
 
 /**
- * A function activation newer than the local choice wins; otherwise the local
- * choice, else the server pointer. Another browser's click never switches this one.
+ * A function activation this browser has not followed yet wins (compared by
+ * identity, never across clocks); otherwise the local choice, else the server
+ * pointer. Another browser's click never switches this one.
  */
 export function resolvePointer(
   local: LocalActivation | null,
   server: Activation | undefined,
 ): string | undefined {
-  if (server && server.by === 'function' && server.at > (local?.at ?? -1)) {
-    return server.tabId
+  if (isUnfollowedFunctionActivation(local, server)) {
+    return server?.tabId
   }
   return local?.tabId ?? server?.tabId
+}
+
+export function isUnfollowedFunctionActivation(
+  local: LocalActivation | null,
+  server: Activation | undefined,
+): boolean {
+  return (
+    server !== undefined &&
+    server.by === 'function' &&
+    server.at > 0 &&
+    server.at !== local?.followed
+  )
 }
 
 export interface WorkspaceState {

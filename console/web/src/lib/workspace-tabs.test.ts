@@ -673,9 +673,18 @@ describe('resolvePointer', () => {
     expect(resolvePointer({ tabId: 'mine', at: 90 }, browser)).toBe('mine')
   })
 
-  it('a newer function activation wins, an older one does not', () => {
+  it('an unfollowed function activation wins whatever the clocks say', () => {
     expect(resolvePointer({ tabId: 'mine', at: 10 }, fn)).toBe('server')
-    expect(resolvePointer({ tabId: 'mine', at: 90 }, fn)).toBe('mine')
+    expect(resolvePointer({ tabId: 'mine', at: 90 }, fn)).toBe('server')
+  })
+
+  it('a followed function activation yields to the later local choice', () => {
+    expect(resolvePointer({ tabId: 'mine', at: 90, followed: 50 }, fn)).toBe(
+      'mine',
+    )
+    expect(resolvePointer({ tabId: 'mine', at: 90, followed: 40 }, fn)).toBe(
+      'server',
+    )
   })
 })
 
