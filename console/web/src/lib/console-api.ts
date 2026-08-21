@@ -18,6 +18,11 @@ import { Button } from '@/components/ui/Button'
 import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+} from '@/components/ui/CollapsibleCard'
+import {
   Dialog,
   DialogClose,
   DialogContent,
@@ -57,6 +62,7 @@ import {
   Card,
   CardBody,
   CardHeader,
+  CardHighlight,
   Panel,
   PanelBody,
   PanelHeader,
@@ -100,9 +106,13 @@ export const components: ConsoleApi['components'] = {
   Button,
   Card,
   CardBody,
+  CardHighlight,
   CardHeader,
   Chip,
   Dialog,
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
   DialogTrigger,
   DialogClose,
   DialogContent,

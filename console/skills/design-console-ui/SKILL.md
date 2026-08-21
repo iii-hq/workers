@@ -1,6 +1,6 @@
 ---
 name: design-console-ui
-description: Design, implement, or review iii Console interfaces across mobile, narrow split panes, and desktop, including native Console surfaces, runtime-injected worker pages and renderers, worker configuration forms, and provider-owned configuration or authentication flows. Use for responsive Console UX, injectable React UI, configuration editors, model/provider setup, touch and keyboard accessibility, design-token styling, UI delivery, hot reload, or validation of a worker's Console experience.
+description: Design, implement, or review iii Console interfaces across mobile, narrow split panes, and desktop, including native Console surfaces, runtime-injected worker pages, function and trigger-activity renderers, worker configuration forms, and provider-owned configuration or authentication flows. Use for responsive Console UX, injectable React UI, configuration editors, model/provider setup, touch and keyboard accessibility, design-token styling, UI delivery, hot reload, or validation of a worker's Console experience.
 ---
 
 # Design iii Console UI
@@ -15,7 +15,7 @@ when integrating a change; do not invent components, slots, or props.
 
 1. Inventory the behavior, data, states, actions, dirty drafts, async work, and existing constraints before changing markup.
 2. Choose one information architecture for the primary task. Define the wide flow and the narrow flow separately.
-3. Decide whether the surface belongs to the Console itself, a full injected page, a function renderer, a worker configuration form, a provider configuration form, or a compact chat slot.
+3. Decide whether the surface belongs to the Console itself, a full injected page, a function renderer, a trigger-activity source renderer, a worker configuration form, a provider configuration form, or a compact chat slot.
 4. Keep authoritative data, validation, persistence, and navigation guards in the host. Let an injected worker own presentation and worker-specific calls.
 5. Build from shared primitives and design tokens. Add the least scoped CSS needed for the domain.
 6. Exercise loading, empty, unavailable, unconfigured, dirty, saving, saved, error, reconnect, and stale-response states.
@@ -119,6 +119,14 @@ available width changes.
   `--color-panel`, `--color-panel-raised`, `--color-surface`,
   `--color-surface-hover`, `--color-surface-selected`, and
   `--color-surface-active`.
+- Use `CardHighlight`, `uiClasses.cardHighlight`, or `bg-card-highlight` for
+  related content that needs emphasis inside an existing card. This inset is
+  always borderless and shadowless; never repurpose it for hover, selection,
+  focus, status, or a standalone card.
+- Use `CollapsibleCard`, `CollapsibleCardTrigger`, and
+  `CollapsibleCardContent` for expandable cards. Preserve its accessible state,
+  mounted content, auto-height motion, and reduced-motion behavior instead of
+  implementing a worker-local disclosure.
 - Use `--color-ink`, `--color-ink-faint`, and `--color-ink-ghost` for content
   hierarchy. Never use ghost ink for load-bearing text.
 - Use `--color-alert`, `--color-warn`, and `--color-ok`, plus their muted
@@ -290,6 +298,7 @@ export default function setup(host: Host) {
     render: (props) => <WorkerPage host={host} {...props} />,
   })
   host.functionTriggers.register(createMyworkRenderer(host))
+  host.triggerRenderers?.register(createMyworkTriggerActivityRenderer())
   host.configForms.register('mywork', MyworkConfigurationForm)
   host.providerConfigForms?.register('my-provider', MyProviderForm)
   host.chat?.registerSessionChip({ id: 'mywork-status', render: StatusChip })
@@ -316,6 +325,12 @@ older Console versions.
   return `null` for unsupported or error shapes so default renderers can run.
   Mark `metadata.display` only for successful rich artifacts worth keeping
   expanded.
+- `host.triggerRenderers?.register`: match the normalized inner
+  `triggerType`, not `engine::register_trigger`. Render only the
+  source-specific section and return `null` for malformed or unsupported
+  config. The host owns **Trigger fired**, delivery, lifecycle/controls, raw
+  JSON, and fallback. Use one renderer across registration, fired, and
+  retirement kinds; feature-detect for older consoles.
 - Implement `redactRaw` whenever input/output can contain secrets. Make it a
   pure, non-mutating, total, cycle-safe deep walk over values and keys. A
   render card that hides a secret has not protected the raw JSON tab or copy
@@ -326,8 +341,11 @@ older Console versions.
 - `host.providerConfigForms?.register`: replace exactly one provider's editor
   in the model picker. Use it for OAuth, device flow, local/companion login,
   or genuinely provider-specific settings.
-- `host.chat?`: render compact per-session status only. Fetch worker-owned data
-  through `host.iii`; do not turn the header into a dashboard.
+- `host.chat?`: render compact per-session status/summary surfaces and fetch
+  worker-owned data through `host.iii`; do not turn the header into a
+  dashboard. Use `selectConversation?` only in response to explicit navigation
+  and read `composerModel?` when a workflow must follow the live composer
+  choice, including an unsaved draft. Feature-detect each newer method.
 - `host.iii`: call worker functions, hydrate state, subscribe to events, and
   unregister handlers on teardown. Prefix per-tab event handler ids with
   `iii::` when they should stay out of the trace feed.
@@ -512,6 +530,9 @@ restart semantics, complex dictionaries/arrays, or worker-specific actions.
   worker state, and an empty warnings list.
 - Fetch each asset, verify a changed build produces a changed hash, and verify
   disconnect/reconnect does not create duplicate registrations.
+- For trigger-activity renderers, verify exact type matching, malformed-config
+  fallthrough, registration/fired/retirement, once-consumed and explicit
+  unbind lifecycle, and generic fallback when the worker UI is absent.
 
 ### Interaction matrix
 

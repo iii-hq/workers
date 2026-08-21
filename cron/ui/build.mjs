@@ -1,3 +1,5 @@
+/** Build cron's injectable page, forms, trigger renderer, and scoped styles. */
+
 import esbuild from 'esbuild'
 
 const options = {

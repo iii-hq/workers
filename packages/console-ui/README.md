@@ -25,6 +25,9 @@ copying types around:
 
 ```tsx
 import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
   List,
   ListItem,
   Selector,
@@ -39,10 +42,17 @@ import {
 
 Use the shared contracts for repeated Console interactions:
 
-- `List`/`ListItem`, `Card`, `Panel`, `Chip`, `IconButton`, and the `Table`
+- `List`/`ListItem`, `Card`, `CollapsibleCard`, `CardHighlight`, `Panel`, `Chip`, `Badge`, `IconButton`, and the `Table`
   family provide the common structural language. `uiClasses` exposes
   equivalent stable recipes for semantic markup that does not need another
-  React wrapper.
+  React wrapper. `CardHighlight` is the borderless neutral inset for related
+  content that needs emphasis inside a card; it is not a hover, selection, or
+  status treatment. `CollapsibleCard` composes with `CollapsibleCardTrigger`
+  and `CollapsibleCardContent` for an accessible auto-height transition that
+  honors reduced motion and keeps worker-local content mounted. `Badge` is the
+  shared rounded status label; use its
+  `default`, `ok`, `accent`, `warn`, or `alert` variant instead of recreating
+  status-pill colors in worker CSS.
 - Compose simple tables as `TableViewport` → `TableFrame` → `Table`, then use
   the semantic header/body/row/head/cell parts. Tables use natural-case sans
   headers, horizontal row dividers, responsive overflow, and no outer card or

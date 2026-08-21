@@ -111,7 +111,7 @@ function customNotice(
 export function triggerFiredName(t: TriggerFiredData): string {
   if (t.label) return t.label
   if (t.key) return t.scope ? `${t.scope}/${t.key}` : t.key
-  return 'trigger'
+  return t.trigger_type ?? 'trigger'
 }
 
 /**
@@ -123,13 +123,54 @@ export function triggerFiredName(t: TriggerFiredData): string {
  */
 export function triggerFiredSummary(t: TriggerFiredData): string {
   const name = triggerFiredName(t)
-  const action =
+  const deliveredAction =
     t.target === 'spawn'
       ? `spawned${t.model ? ` ${t.model}` : ''}`
       : !t.target || t.target === 'notify' || t.target === 'harness::send'
         ? 'notified this chat'
         : `called ${t.target}`
-  return `${name} · ${action}${t.retired ? ' · unregistered' : ''}`
+  const lifecycle = triggerLifecycleSummary(t)
+  // Lifecycle-only records did not attempt their target. Keeping a call or
+  // notification verb in their fallback summary would invent a delivery.
+  if (
+    t.outcome === 'expired' ||
+    t.outcome === 'unregistered' ||
+    t.outcome === 'invalidated'
+  ) {
+    return `${name} · ${lifecycle ?? 'binding retired'}`
+  }
+  const action =
+    t.outcome === 'skipped'
+      ? 'delivery skipped'
+      : t.outcome === 'delivery_failed'
+        ? !t.target || t.target === 'notify' || t.target === 'harness::send'
+          ? 'notification failed'
+          : `call to ${t.target} failed`
+        : deliveredAction
+  return `${name} · ${action}${lifecycle ? ` · ${lifecycle}` : ''}`
+}
+
+function triggerLifecycleSummary(t: TriggerFiredData): string | null {
+  switch (t.retirement_reason) {
+    case 'once_consumed':
+      return 'once consumed'
+    case 'max_fires':
+      return 'delivery limit reached'
+    case 'expired':
+      return 'binding expired'
+    case 'unregistered':
+      return 'binding manually removed'
+    case 'invalidated':
+      return 'binding invalidated'
+    case 'exhausted':
+      return 'binding exhausted'
+  }
+  if (!t.retired) return null
+  // Historical successful one-shot records predate the structured reason;
+  // "consumed" is accurate, while "unregistered" falsely implies a person.
+  if (t.once && (!t.outcome || t.outcome === 'delivered'))
+    return 'once consumed'
+  return 'binding retired'
 }
 
 function triggerFiredMessage(
@@ -492,13 +533,20 @@ export function entrySegments(
       const origin = item.origin as
         | {
             notification?: unknown
+            binding?: unknown
             reaction?: unknown
             spawn?: unknown
             validation?: unknown
           }
         | undefined
       const isNotif =
-        origin?.notification === true || item.entry_id.startsWith('e_notify_')
+        origin?.notification === true ||
+        /^(?:e_notify_|e_fire_|e_expire_|e_stalespawn_|e_claimfail_|e_condfail_)/.test(
+          item.entry_id,
+        )
+      const triggerBindingId = isNotif
+        ? notificationBindingId(item.entry_id, origin?.binding)
+        : undefined
       // A react-fired task delivered into this session (origin on events;
       // persisted reads carry no origin, so recognize both entry formats).
       const isReaction =
@@ -522,6 +570,7 @@ export function entrySegments(
         createdAt: message.timestamp,
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
+        ...(triggerBindingId ? { triggerBindingId } : {}),
         ...(isReaction ? { reaction: true } : {}),
         ...(isSpawn ? { spawn: true } : {}),
         ...(isValidation ? { validation: true } : {}),
@@ -594,6 +643,34 @@ export function entrySegments(
       return [msg]
     }
   }
+}
+
+/**
+ * Recover the binding identity from the trusted origin first, then from the
+ * deterministic ids used by current and historical Harness versions.
+ */
+export function notificationBindingId(
+  entryId: string,
+  originBinding?: unknown,
+): string | undefined {
+  if (typeof originBinding === 'string' && originBinding) return originBinding
+
+  const ordinalFire = /^e_fire_(.+)_\d+$/.exec(entryId)
+  if (ordinalFire?.[1]) return ordinalFire[1]
+
+  for (const prefix of [
+    'e_expire_',
+    'e_stalespawn_',
+    'e_claimfail_',
+    'e_condfail_',
+    'e_notify_',
+  ]) {
+    if (entryId.startsWith(prefix)) {
+      const id = entryId.slice(prefix.length)
+      return id || undefined
+    }
+  }
+  return undefined
 }
 
 function assistantSegments(

@@ -73,9 +73,42 @@ export function summarizeTriggerConfig(config: unknown): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
-/** The row's lifecycle ghost text, from lifecycle data alone. */
+/**
+ * The row's lifecycle text, from structured lifecycle data alone. Historical
+ * `retired` records do not say how the binding ended, so keep their copy
+ * deliberately neutral instead of presenting every retirement as an unbind.
+ */
 export function lifecycleNote(trigger: SessionTriggerInfo): string | null {
-  if (trigger.fired) return 'fired · unregistered'
+  if (trigger.fired) {
+    switch (trigger.retirementReason) {
+      case 'once_consumed':
+        return 'once · consumed automatically'
+      case 'max_fires':
+        return 'fire limit reached'
+      case 'expired':
+        return 'expired'
+      case 'unregistered':
+        return 'unregistered'
+      case 'invalidated':
+        return 'invalidated'
+      case 'exhausted':
+        return 'exhausted'
+    }
+
+    // Newer records normally repeat these lifecycle events as both outcome
+    // and retirement reason. Tolerate a partially enriched record while
+    // preserving the same distinct labels.
+    switch (trigger.outcome) {
+      case 'expired':
+        return 'expired'
+      case 'unregistered':
+        return 'unregistered'
+      case 'invalidated':
+        return 'invalidated'
+      default:
+        return 'retired'
+    }
+  }
   const parts: string[] = []
   if (trigger.once) parts.push('once')
   if ((trigger.fires ?? 0) > 0)
@@ -216,7 +249,7 @@ export function SessionTriggers({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [clearArming, setClearArming] = useState(false)
   const [clearing, setClearing] = useState(false)
-  // Fired ghost rows the user dismissed — local per-tab view state; they
+  // Inactive ghost rows the user dismissed — local per-tab view state; they
   // resurrect from the transcript on reload, so no persistence needed.
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
 
@@ -229,7 +262,7 @@ export function SessionTriggers({
     [visibleTriggers],
   )
   const registeredCount = liveTriggers.length
-  const firedCount = visibleTriggers.length - registeredCount
+  const inactiveCount = visibleTriggers.length - registeredCount
 
   // Whether each keyed state binding's watched key exists yet — the
   // row-level diagnosis for a wake armed on a key nothing ever writes.
@@ -278,7 +311,7 @@ export function SessionTriggers({
     setSelectedId((current) => (current === id ? null : current))
   }
 
-  // A fired ghost row has no live binding — its ✕ dismisses locally; a live
+  // An inactive ghost row has no live binding — its ✕ dismisses locally; a live
   // row's ✕ tears the subscription down.
   const rowAction = (t: SessionTriggerInfo) =>
     t.fired ? dismiss(t.id) : void unregister(t.id)
@@ -287,7 +320,7 @@ export function SessionTriggers({
     setClearing(true)
     try {
       await onClearAll?.()
-      // Live bindings are unregistered by onClearAll; fired ghosts have no
+      // Live bindings are unregistered by onClearAll; inactive ghosts have no
       // live binding, so sweep them from view here too.
       setDismissed((prev) => {
         const next = new Set(prev)
@@ -347,7 +380,7 @@ export function SessionTriggers({
                 {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
                 registered
                 <span className="text-ink-ghost">
-                  {firedCount > 0 ? ` · ${firedCount} fired` : ''}
+                  {inactiveCount > 0 ? ` · ${inactiveCount} inactive` : ''}
                 </span>
               </span>
             </button>
@@ -423,7 +456,7 @@ export function SessionTriggers({
                 <dt className="text-ink-ghost">Lifetime</dt>
                 <dd className="text-ink">
                   {selected.fired
-                    ? 'fired — already unregistered'
+                    ? (lifecycleNote(selected) ?? 'retired')
                     : selected.once
                       ? 'once — retires after first fire'
                       : (lifecycleNote(selected) ?? 'until unregistered')}
@@ -456,7 +489,7 @@ export function SessionTriggers({
                 <JsonSection label="conditions" value={selected.conditions} />
               ) : null}
               <div className="flex justify-end">
-                {/* A fired row has no live binding left to unregister —
+                {/* An inactive row has no live binding left to unregister —
                     offering it would only produce a guaranteed error. */}
                 {selected.fired ? (
                   <Button

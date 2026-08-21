@@ -173,6 +173,14 @@ class ShadowContractTest(unittest.TestCase):
         self.assertIn('storage::putObject storage::getObject database::execute database::query', runner)
         self.assertIn('trigger state::list --port "$engine_port"', runner)
 
+    def test_ephemeral_runner_keeps_the_bootstrapped_target_binary_and_checks_runtime_identity(self):
+        runner = RUNNER_SCRIPT.read_text()
+        self.assertIn('install_exact_stack stack-bootstrap "$exact_stack_versions" false', runner)
+        self.assertIn('install_exact_stack stack-repin "$exact_stack_versions" false', runner)
+        self.assertIn('verify_target_harness_runtime', runner)
+        self.assertIn('harness runtime version mismatch:', runner)
+        self.assertIn('engine::workers::list --port "$engine_port"', runner)
+
     def test_materializes_observe_only_request(self):
         request = MODULE.materialize_request(contract(), catalog())
         self.assertEqual(request["run_contract"]["mode"]["decision"], "observe_only")

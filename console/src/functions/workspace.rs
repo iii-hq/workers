@@ -8,6 +8,7 @@
 //! placement rules the SPA uses (`web/src/lib/workspace-tabs.ts`); the shared
 //! fixture `web/src/lib/workspace-open.fixtures.json` keeps both sides honest.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -65,6 +66,36 @@ impl Tab {
         vec![1.0 / columns as f64; columns]
     }
 
+    /// Stable pane identities introduced by newer Console clients. Keep the
+    /// field tolerant in `rest` so malformed future/legacy values never make
+    /// the whole tab unreadable, but normalize it before structural writes.
+    fn normalized_pane_ids(&self, columns: usize) -> Vec<String> {
+        let stored = self
+            .rest
+            .get("paneIds")
+            .and_then(Value::as_array)
+            .and_then(|values| {
+                if values.len() != columns {
+                    return None;
+                }
+                let ids: Option<Vec<String>> = values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_string)
+                    })
+                    .collect();
+                ids.filter(|ids| ids.iter().collect::<HashSet<_>>().len() == ids.len())
+            });
+        stored.unwrap_or_else(|| {
+            (0..columns)
+                .map(|index| format!("{}:pane:{index}", self.id))
+                .collect()
+        })
+    }
+
     pub fn has_screen(&self, screen: &str) -> bool {
         self.screen_column(screen).is_some()
     }
@@ -80,14 +111,23 @@ impl Tab {
             && self.screens.get(1).and_then(Option::as_deref) == Some("traces")
     }
 
-    fn with_layout(&self, screens: Vec<Option<String>>, sizes: Option<Vec<f64>>) -> Tab {
+    fn with_layout(
+        &self,
+        screens: Vec<Option<String>>,
+        sizes: Option<Vec<f64>>,
+        pane_ids: Option<Vec<String>>,
+    ) -> Tab {
+        let mut rest = self.rest.clone();
+        if let Some(pane_ids) = pane_ids {
+            rest.insert("paneIds".to_string(), json!(pane_ids));
+        }
         Tab {
             id: self.id.clone(),
             name: self.name.clone(),
             columns: Some(screens.len() as u64),
             screens,
             sizes,
-            rest: self.rest.clone(),
+            rest,
         }
     }
 }
@@ -234,7 +274,11 @@ pub struct Opened {
 /// Place `screen` beside chat in `tab`: the column right after chat when it
 /// is empty, else any empty column, else a new column after chat. `None`
 /// when the tab is full.
-fn place_beside_chat(tab: &Tab, screen: &str) -> Option<(Tab, usize, Placement)> {
+fn place_beside_chat(
+    tab: &Tab,
+    screen: &str,
+    new_pane_id: impl FnOnce() -> String,
+) -> Option<(Tab, usize, Placement)> {
     let columns = tab.column_count();
     let mut screens = tab.normalized_screens(columns);
     let chat_index = screens
@@ -247,7 +291,7 @@ fn place_beside_chat(tab: &Tab, screen: &str) -> Option<(Tab, usize, Placement)>
     if let Some(index) = empty {
         screens[index] = Some(screen.to_string());
         return Some((
-            tab.with_layout(screens, tab.sizes.clone()),
+            tab.with_layout(screens, tab.sizes.clone(), None),
             index,
             Placement::EmptyColumn,
         ));
@@ -257,6 +301,8 @@ fn place_beside_chat(tab: &Tab, screen: &str) -> Option<(Tab, usize, Placement)>
     }
     let insert_at = chat_index.map(|i| i + 1).unwrap_or(columns);
     screens.insert(insert_at, Some(screen.to_string()));
+    let mut pane_ids = tab.normalized_pane_ids(columns);
+    pane_ids.insert(insert_at, new_pane_id());
     let new_fraction = 1.0 / (columns + 1) as f64;
     let mut sizes: Vec<f64> = tab
         .normalized_sizes(columns)
@@ -265,7 +311,7 @@ fn place_beside_chat(tab: &Tab, screen: &str) -> Option<(Tab, usize, Placement)>
         .collect();
     sizes.insert(insert_at, new_fraction);
     Some((
-        tab.with_layout(screens, Some(sizes)),
+        tab.with_layout(screens, Some(sizes), Some(pane_ids)),
         insert_at,
         Placement::NewColumn,
     ))
@@ -279,6 +325,7 @@ pub fn open_screen(
     active_tab_id: &str,
     screen: &str,
     new_id: impl FnOnce() -> String,
+    new_pane_id: impl FnOnce() -> String,
 ) -> Opened {
     let active = tabs
         .iter()
@@ -296,7 +343,8 @@ pub fn open_screen(
             screens: existing.normalized_screens(existing.column_count()),
         };
     }
-    if let Some((placed, column, placement)) = active.and_then(|tab| place_beside_chat(tab, screen))
+    if let Some((placed, column, placement)) =
+        active.and_then(|tab| place_beside_chat(tab, screen, new_pane_id))
     {
         let placed_id = placed.id.clone();
         let mut next = tabs.to_vec();
@@ -349,7 +397,7 @@ pub fn close_screen(tabs: &[Tab], screen: &str) -> (Vec<Tab>, Vec<String>) {
             touched.push(tab.id.clone());
             let columns = tab.column_count();
             if columns <= 1 {
-                return tab.with_layout(vec![None], tab.sizes.clone());
+                return tab.with_layout(vec![None], tab.sizes.clone(), None);
             }
             let screens = tab
                 .normalized_screens(columns)
@@ -366,7 +414,18 @@ pub fn close_screen(tabs: &[Tab], screen: &str) -> (Vec<Tab>, Vec<String>) {
                 .map(|(_, s)| s)
                 .collect();
             let total: f64 = kept.iter().sum();
-            tab.with_layout(screens, Some(kept.into_iter().map(|s| s / total).collect()))
+            let pane_ids = tab
+                .normalized_pane_ids(columns)
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| *i != index)
+                .map(|(_, id)| id)
+                .collect();
+            tab.with_layout(
+                screens,
+                Some(kept.into_iter().map(|s| s / total).collect()),
+                Some(pane_ids),
+            )
         })
         .collect();
     (tabs, touched)
@@ -374,6 +433,10 @@ pub fn close_screen(tabs: &[Tab], screen: &str) -> (Vec<Tab>, Vec<String>) {
 
 fn new_tab_id() -> String {
     format!("tab-{}", uuid::Uuid::new_v4())
+}
+
+fn new_pane_id() -> String {
+    format!("pane-{}", uuid::Uuid::new_v4())
 }
 
 fn remote(code: &str, message: impl Into<String>) -> Error {
@@ -529,7 +592,13 @@ pub fn register(iii: &Arc<IIIClient>) {
                 let activate = input.activate.unwrap_or(true);
                 let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
-                let opened = open_screen(&layout.tabs, &layout.active_tab_id, &screen, new_tab_id);
+                let opened = open_screen(
+                    &layout.tabs,
+                    &layout.active_tab_id,
+                    &screen,
+                    new_tab_id,
+                    new_pane_id,
+                );
                 let active_tab_id = if activate {
                     opened.tab_id.clone()
                 } else {
@@ -598,6 +667,10 @@ mod tests {
         "tab-new".to_string()
     }
 
+    fn fixed_pane_id() -> String {
+        "pane-new".to_string()
+    }
+
     fn tabs_from(value: &Value) -> Vec<Tab> {
         serde_json::from_value(value.clone()).unwrap()
     }
@@ -619,7 +692,13 @@ mod tests {
             let name = case["name"].as_str().unwrap();
             let tabs = tabs_from(&case["tabs"]);
             let active = case["activeTabId"].as_str().unwrap();
-            let opened = open_screen(&tabs, active, case["screen"].as_str().unwrap(), fixed_id);
+            let opened = open_screen(
+                &tabs,
+                active,
+                case["screen"].as_str().unwrap(),
+                fixed_id,
+                fixed_pane_id,
+            );
             let next = opened.tabs.clone().unwrap_or_else(|| tabs.clone());
             assert_eq!(json!(next), case["expect"]["tabs"], "tabs: {name}");
             assert_eq!(
@@ -653,10 +732,35 @@ mod tests {
         let tabs = tabs_from(&json!([
             { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"] }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id);
+        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
         assert_eq!(opened.placement, Placement::Existing);
         assert!(opened.tabs.is_none());
         assert_eq!(opened.column, 1);
+    }
+
+    #[test]
+    fn structural_edits_keep_pane_ids_aligned() {
+        let tabs = tabs_from(&json!([
+            {
+                "id": "a",
+                "columns": 2,
+                "screens": ["chat", "traces"],
+                "paneIds": ["pane-chat", "pane-traces"]
+            }
+        ]));
+        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened_tabs = opened.tabs.unwrap();
+        assert_eq!(
+            opened_tabs[0].rest.get("paneIds"),
+            Some(&json!(["pane-chat", "pane-new", "pane-traces"]))
+        );
+
+        let (closed, touched) = close_screen(&opened_tabs, "ext:shell");
+        assert_eq!(touched, vec!["a"]);
+        assert_eq!(
+            closed[0].rest.get("paneIds"),
+            Some(&json!(["pane-chat", "pane-traces"]))
+        );
     }
 
     #[test]
@@ -678,7 +782,7 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "ext:shell", fixed_id);
+        let opened = open_screen(&[full], "a", "ext:shell", fixed_id, fixed_pane_id);
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tab_id, "tab-new");
         let next = opened.tabs.unwrap();
@@ -725,7 +829,7 @@ mod tests {
         ];
         let tabs: Vec<Tab> = raw.iter().filter_map(parse_tab).collect();
         assert_eq!(tabs.len(), 2);
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id);
+        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
         let merged = merge_tabs(&raw, &opened.tabs.unwrap());
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0]["screens"], json!(["chat", "ext:shell"]));
@@ -735,7 +839,9 @@ mod tests {
 
         let appended = merge_tabs(
             &raw,
-            &open_screen(&tabs, "c", "workers", fixed_id).tabs.unwrap(),
+            &open_screen(&tabs, "c", "workers", fixed_id, fixed_pane_id)
+                .tabs
+                .unwrap(),
         );
         assert_eq!(appended.len(), 3);
         assert_eq!(appended[2]["screens"], json!(["chat", "workers", "traces"]));
@@ -746,10 +852,16 @@ mod tests {
     #[test]
     fn empty_layouts_never_panic() {
         assert!(resolve_active(&[], Some("x")).is_none());
-        let opened = open_screen(&[], "x", "workers", fixed_id);
+        let opened = open_screen(&[], "x", "workers", fixed_id, fixed_pane_id);
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tabs.unwrap().len(), 1);
-        let stale = open_screen(&default_tabs(), "missing", "workers", fixed_id);
+        let stale = open_screen(
+            &default_tabs(),
+            "missing",
+            "workers",
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(stale.tab_id, "tab-home");
     }
 

@@ -76,6 +76,12 @@ export interface UserMessage extends BaseMessage {
   content: string
   attachments?: Attachment[]
   notification?: boolean
+  /**
+   * Harness binding that produced a machine-authored notification. Live
+   * entries carry it in `origin.binding`; persisted histories recover it
+   * from the deterministic `e_fire_*` / `e_expire_*` entry id.
+   */
+  triggerBindingId?: string
   /** A trigger-fired task delivered into this session — machine-sent, not typed. */
   reaction?: boolean
   /** A direct `harness::spawn` task seeding this session — machine-sent, not typed. */
@@ -188,14 +194,35 @@ export interface TriggerFiredData {
    * carry `model` / `child_session_id`.
    */
   target: string
+  /** Trigger source and canonical registration config on newer records. */
+  trigger_type?: string
+  config?: unknown
   label?: string
   model?: string
   once: boolean
-  /** This fire unregistered the binding (once teardown). */
+  /** Durable binding fire counter after this activity; absent on older records. */
+  fires?: number
+  /** This activity retired the binding; inspect `retirement_reason` for why. */
   retired: boolean
   scope?: string
   key?: string
   note?: string
+  /** Structured outcome on newer records; absent on historical transcripts. */
+  outcome?:
+    | 'delivered'
+    | 'delivery_failed'
+    | 'skipped'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+  /** Why a binding was retired, when the outcome ended its lifecycle. */
+  retirement_reason?:
+    | 'once_consumed'
+    | 'max_fires'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+    | 'exhausted'
   /**
    * What the fire delivered: the payload sent to a ƒ-call target (post
    * conditions/projection/stamping; the attempted payload when dispatch
@@ -324,6 +351,8 @@ export interface Conversation {
    * Absent for root/orchestrator chats. Drives the sidebar tree grouping.
    */
   parentId?: string
+  /** Parent function call that created this sub-agent session. */
+  parentFunctionCallId?: string
   /** Spawn depth: 0 = root orchestrator (from `metadata.depth`). */
   depth?: number
   /**

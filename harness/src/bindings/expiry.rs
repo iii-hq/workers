@@ -50,8 +50,9 @@ pub async fn run_loop(deps: Arc<Deps>) {
     }
 }
 
-/// One pass: retire every binding whose lifecycle is spent, and tell the
-/// owner of any wake that died unfired. Returns how many were retired.
+/// One pass: retire every binding whose lifecycle is spent and persist its
+/// structured expiry. An unfired once-wake additionally wakes its owner.
+/// Returns how many were retired.
 pub async fn sweep(deps: &Deps) -> usize {
     let store = deps.bindings().await;
     let bindings = match store.list().await {
@@ -81,9 +82,7 @@ pub async fn sweep(deps: &Deps) -> usize {
             fires = binding.fires,
             "expired binding retired by sweep"
         );
-        if is_unfired_wake(&binding) {
-            notify_wake_lost(deps, &binding, WakeLost::Expired).await;
-        }
+        report_expired_retirement(deps, &binding).await;
     }
     retired
 }
@@ -94,6 +93,20 @@ pub fn is_unfired_wake(binding: &Binding) -> bool {
     binding.lifecycle.once
         && binding.target.function_id == crate::functions::SEND_ID
         && binding.fires == 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpiredRetirementMode {
+    NotifyAndRecord,
+    RecordOnly,
+}
+
+fn expired_retirement_mode(binding: &Binding) -> ExpiredRetirementMode {
+    if is_unfired_wake(binding) {
+        ExpiredRetirementMode::NotifyAndRecord
+    } else {
+        ExpiredRetirementMode::RecordOnly
+    }
 }
 
 /// Why an unfired wake is gone.
@@ -138,26 +151,64 @@ pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_
         ),
         WakeLost::Unregistered { by } => format!("unregistered by {by} before any fire"),
     };
-    let (scope, key) = watch_scope_key(binding);
+    let (outcome, retirement_reason) = wake_lost_classification(&cause);
+    emit_retirement_record(deps, binding, outcome, retirement_reason, Some(&note)).await;
+}
+
+/// Record an expiry after the caller won the binding's retirement CAS. The
+/// wake path deliberately delegates to `notify_wake_lost`, which already
+/// emits exactly one notification and one retirement record.
+pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
+    match expired_retirement_mode(binding) {
+        ExpiredRetirementMode::NotifyAndRecord => {
+            notify_wake_lost(deps, binding, WakeLost::Expired).await;
+        }
+        ExpiredRetirementMode::RecordOnly => {
+            let note = format!(
+                "expired at {}",
+                binding.lifecycle.expires_at.unwrap_or_default()
+            );
+            emit_retirement_record(
+                deps,
+                binding,
+                fired::TriggerOutcome::Expired,
+                fired::RetirementReason::Expired,
+                Some(&note),
+            )
+            .await;
+        }
+    }
+}
+
+async fn emit_retirement_record(
+    deps: &Deps,
+    binding: &Binding,
+    outcome: fired::TriggerOutcome,
+    reason: fired::RetirementReason,
+    note: Option<&str>,
+) {
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
         &format!("e_trigexpired_{}", binding.id),
-        fired::TriggerFired {
-            subscription_id: &binding.id,
-            trigger_id: binding.trigger_id.as_deref(),
-            target: &binding.target.function_id,
-            label: None,
-            once: binding.lifecycle.once,
-            retired: true,
-            scope,
-            key,
-            note: Some(&note),
-            payload: None,
-            fired_at: AgentMessage::now_ms(),
-        },
+        fired::retirement_record(binding, outcome, reason, note, AgentMessage::now_ms()),
     )
     .await;
+}
+
+fn wake_lost_classification(
+    cause: &WakeLost<'_>,
+) -> (fired::TriggerOutcome, fired::RetirementReason) {
+    match cause {
+        WakeLost::Expired => (
+            fired::TriggerOutcome::Expired,
+            fired::RetirementReason::Expired,
+        ),
+        WakeLost::Unregistered { .. } => (
+            fired::TriggerOutcome::Unregistered,
+            fired::RetirementReason::Unregistered,
+        ),
+    }
 }
 
 /// The session a wake delivers to — same resolution the live fire path uses.
@@ -169,16 +220,6 @@ fn wake_session(binding: &Binding) -> &str {
         .and_then(|p| p.get("session_id"))
         .and_then(Value::as_str)
         .unwrap_or(&binding.owner.session_id)
-}
-
-fn watch_scope_key(binding: &Binding) -> (Option<&str>, Option<&str>) {
-    let Some((_, config)) = binding.trigger_watch() else {
-        return (None, None);
-    };
-    (
-        config.get("scope").and_then(Value::as_str),
-        config.get("key").and_then(Value::as_str),
-    )
 }
 
 /// The message the woken session reads. It must carry enough to act on
@@ -243,10 +284,18 @@ mod tests {
     #[test]
     fn only_a_never_fired_once_wake_warrants_a_notification() {
         assert!(is_unfired_wake(&wake(None)));
+        assert_eq!(
+            expired_retirement_mode(&wake(None)),
+            ExpiredRetirementMode::NotifyAndRecord
+        );
 
         let mut fired = wake(None);
         fired.fires = 1;
         assert!(!is_unfired_wake(&fired), "a delivered wake needs no eulogy");
+        assert_eq!(
+            expired_retirement_mode(&fired),
+            ExpiredRetirementMode::RecordOnly
+        );
 
         let mut standing = wake(None);
         standing.lifecycle.once = false;
@@ -254,10 +303,41 @@ mod tests {
             !is_unfired_wake(&standing),
             "a standing notify parks nobody"
         );
+        assert_eq!(
+            expired_retirement_mode(&standing),
+            ExpiredRetirementMode::RecordOnly
+        );
 
         let mut call = wake(None);
         call.target = BindingTarget::new("state::set");
         assert!(!is_unfired_wake(&call), "a call target delivers to no chat");
+        assert_eq!(
+            expired_retirement_mode(&call),
+            ExpiredRetirementMode::RecordOnly
+        );
+    }
+
+    #[test]
+    fn recurring_call_expiry_keeps_source_and_count_in_its_record_only_shape() {
+        let mut call = wake(Some(1_700_000_000_000));
+        call.target = BindingTarget::new("state::set");
+        call.lifecycle.once = false;
+        call.fires = 4;
+        let record = serde_json::to_value(fired::retirement_record(
+            &call,
+            fired::TriggerOutcome::Expired,
+            fired::RetirementReason::Expired,
+            Some("expired at 1700000000000"),
+            42,
+        ))
+        .unwrap();
+        assert_eq!(record["target"], "state::set");
+        assert_eq!(record["trigger_type"], "state");
+        assert_eq!(record["config"]["key"], "report_ready");
+        assert_eq!(record["fires"], 4);
+        assert_eq!(record["outcome"], "expired");
+        assert_eq!(record["retirement_reason"], "expired");
+        assert_eq!(record["retired"], true);
     }
 
     #[test]
@@ -282,15 +362,33 @@ mod tests {
     }
 
     #[test]
+    fn expiry_and_manual_unregistration_have_distinct_structured_reasons() {
+        assert_eq!(
+            wake_lost_classification(&WakeLost::Expired),
+            (
+                fired::TriggerOutcome::Expired,
+                fired::RetirementReason::Expired,
+            )
+        );
+        assert_eq!(
+            wake_lost_classification(&WakeLost::Unregistered { by: "console" }),
+            (
+                fired::TriggerOutcome::Unregistered,
+                fired::RetirementReason::Unregistered,
+            )
+        );
+    }
+
+    #[test]
     fn the_expiry_entry_ids_never_collide_with_a_real_fire() {
-        // A real fire at ordinal 0 appends `e_fire_sub_1_0` + `e_trigfired_sub_1_0`.
+        // A first real fire appends `e_fire_sub_1_1` + `e_trigfired_sub_1_1`.
         // The expiry pair must be distinct from both AND from each other, or
         // session-manager's entry-id idempotence swallows one append.
         let wake_id = format!("e_expire_{}", "sub_1");
         let record_id = format!("e_trigexpired_{}", "sub_1");
         assert_ne!(wake_id, record_id);
-        assert_ne!(wake_id, "e_fire_sub_1_0");
-        assert_ne!(record_id, "e_trigfired_sub_1_0");
+        assert_ne!(wake_id, "e_fire_sub_1_1");
+        assert_ne!(record_id, "e_trigfired_sub_1_1");
     }
 
     #[test]

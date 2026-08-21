@@ -14,6 +14,7 @@ export const tokenNames = Object.freeze([
   '--color-panel-raised',
   '--color-paper-2',
   '--color-surface',
+  '--color-card-highlight',
   '--color-surface-hover',
   '--color-surface-selected',
   '--color-surface-active',

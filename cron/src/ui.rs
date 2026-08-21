@@ -1,4 +1,5 @@
-//! Injectable console UI for the cron worker.
+//! Injectable console UI for the cron worker's schedule page, configuration,
+//! and source-specific trigger activity.
 
 use std::sync::Arc;
 
@@ -31,8 +32,29 @@ mod tests {
     }
 
     #[test]
-    fn embedded_page_is_nonempty_esm() {
+    fn embedded_page_registers_all_cron_surfaces() {
         assert!(PAGE_JS.contains("export"), "built page.js looks wrong");
+        assert!(
+            PAGE_JS.contains("configForms"),
+            "built page.js must register the cron configuration form"
+        );
+        assert!(
+            PAGE_JS.contains("triggerRenderers"),
+            "built page.js must register the trigger activity renderer"
+        );
+        assert!(
+            PAGE_JS.contains("cron/page.js#trigger-activity"),
+            "built page.js must retain the renderer identity"
+        );
+    }
+
+    #[test]
+    fn embedded_page_does_not_bundle_react() {
+        assert!(
+            !PAGE_JS.contains("ReactCurrentDispatcher")
+                && !PAGE_JS.contains("__SECRET_INTERNALS_DO_NOT_USE"),
+            "built page.js must use the Console's React runtime"
+        );
     }
 
     #[test]

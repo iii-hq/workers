@@ -10,5 +10,5 @@ description: A shared code workspace — open buffers, a file tree, unified diff
 
 dependencies:
   shell: "^0.10.3"
-  state: "^0.22.1"
+  state: "^0.22.2"
   configuration: "0.x"

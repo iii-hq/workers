@@ -18,6 +18,15 @@ import {
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
+import {
+  type TriggerAwareMessageListRow,
+  triggerActivityRows,
+} from '@/components/trigger-activity/grouping'
+import {
+  registrationFromCall,
+  registrationFromRow,
+  type TriggerRegistration,
+} from '@/components/trigger-activity/model'
 import { Button } from '@/components/ui/Button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
@@ -26,7 +35,10 @@ import {
   assistantCopyText,
   functionTriggersByAssistant,
 } from '@/lib/function-trigger-copy'
-import { triggerFiredName } from '@/lib/sessions/entry-mapper'
+import {
+  notificationBindingId,
+  triggerFiredName,
+} from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
@@ -99,19 +111,20 @@ interface MessageListProps {
   triggersById?: ReadonlyMap<string, SessionTriggerInfo>
 }
 
-/** What a trigger-fired card shows under "registration". */
-export interface TriggerRegistration {
-  /** Short header hint (trigger type, or the recovery source). */
-  summary?: string
-  detail: unknown
-}
-
 /**
  * Pull `subscription_id` out of a register-call output. Outputs arrive as the
  * `{ content: [{text}], details }` result envelope (see functionResultOutput);
  * the id lives in a JSON text block — bare objects/strings are handled too.
  */
 export function subscriptionIdOf(output: unknown): string | null {
+  return registrationResultOf(output).subscriptionId ?? null
+}
+
+function registrationResultOf(output: unknown): {
+  subscriptionId?: string
+  once?: boolean
+  note?: string
+} {
   const idOf = (v: unknown): string | null => {
     if (typeof v === 'string') {
       try {
@@ -126,15 +139,38 @@ export function subscriptionIdOf(output: unknown): string | null {
     }
     return null
   }
+  const parseRegistrationResult = (
+    v: unknown,
+  ): { subscriptionId?: string; once?: boolean; note?: string } => {
+    if (typeof v === 'string') {
+      try {
+        return parseRegistrationResult(JSON.parse(v))
+      } catch {
+        return {}
+      }
+    }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+    const record = v as Record<string, unknown>
+    return {
+      ...(typeof record.subscription_id === 'string'
+        ? { subscriptionId: record.subscription_id }
+        : {}),
+      ...(typeof record.once === 'boolean' ? { once: record.once } : {}),
+      ...(typeof record.note === 'string' ? { note: record.note } : {}),
+    }
+  }
   const envelope = resultEnvelope(output)
   if (envelope) {
     for (const text of envelope.texts) {
-      const id = idOf(text)
-      if (id) return id
+      const result = parseRegistrationResult(text)
+      if (result.subscriptionId) return result
     }
-    return idOf(envelope.details)
+    return parseRegistrationResult(envelope.details)
   }
-  return idOf(output)
+  const result = parseRegistrationResult(output)
+  return result.subscriptionId
+    ? result
+    : { subscriptionId: idOf(output) ?? undefined }
 }
 
 /**
@@ -143,24 +179,36 @@ export function subscriptionIdOf(output: unknown): string | null {
  * subscription: the harness's live/seen binding row when available, else
  * recovered from the transcript — the `engine::register_trigger` call whose
  * result carries the same subscription id (its input IS the registration).
- * Notifications correlate by the subscription id embedded in their entry id
- * (`e_notify_<sub>`), with a name-match fallback for older records; both are
- * order-independent — an idle-session wake appends the notification BEFORE
- * its fire record.
+ * Notifications correlate by the binding id carried by their trusted origin
+ * or recovered from the current/legacy deterministic entry id, with a
+ * name-match fallback only for older records. Resolution is order-independent:
+ * an idle-session wake appends the notification before its fire record.
  */
 export function resolveRegistrations(
   messages: MessageType[],
   triggersById?: ReadonlyMap<string, SessionTriggerInfo>,
 ): Map<string, TriggerRegistration> {
-  const fromCalls = new Map<string, unknown>()
+  const fromCalls = new Map<string, TriggerRegistration>()
   const notifyFireByName = new Map<string, string>()
   for (const m of messages) {
     if (
       m.role === 'function-trigger' &&
       m.functionId === 'engine::register_trigger'
     ) {
-      const subId = subscriptionIdOf(m.output)
-      if (subId && m.input !== undefined) fromCalls.set(subId, m.input)
+      const result = registrationResultOf(m.output)
+      const subId = result.subscriptionId
+      if (subId && m.input !== undefined) {
+        fromCalls.set(
+          subId,
+          registrationFromCall({
+            id: m.id,
+            input: m.input,
+            subscriptionId: subId,
+            effectiveOnce: result.once,
+            note: result.note,
+          }),
+        )
+      }
     } else if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
       const t = m.trigger
       if (!t.target || t.target === 'notify' || t.target === 'harness::send')
@@ -169,39 +217,52 @@ export function resolveRegistrations(
   }
   const regFor = (subscriptionId: string): TriggerRegistration | undefined => {
     const row = triggersById?.get(subscriptionId)
-    // A post-reload ghost row is thin (no config) — the register call's
-    // input is the richer record then.
+    const fromCall = fromCalls.get(subscriptionId)
+    // A post-reload ghost row is reconstructed from the activity record. Even
+    // when that record carries config, it does not retain registration-only
+    // conditions or lifecycle limits; the transcript call is richer. The
+    // activity record still overlays its current source/state in the card.
+    if (row?.fired && fromCall) return fromCall
     if (row && row.config !== undefined) {
-      return {
-        summary: row.triggerType,
-        detail: {
-          config: row.config,
-          conditions: row.conditions?.length ? row.conditions : undefined,
-          once: row.once,
-          label: row.label,
-          // Keep the delivery target — without it the WHEN/THEN view would
-          // misreport a call binding as "notify this session".
-          function_id:
-            row.delivery.kind === 'call' ? row.delivery.functionId : undefined,
-        },
-      }
+      return registrationFromRow(row)
     }
-    const input = fromCalls.get(subscriptionId)
-    return input !== undefined
-      ? { summary: 'from register call', detail: input }
-      : undefined
+    return fromCall ?? (row ? registrationFromRow(row) : undefined)
   }
   const out = new Map<string, TriggerRegistration>()
   for (const m of messages) {
     if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
-      const reg = regFor(m.trigger.subscription_id)
+      const t = m.trigger
+      const reg =
+        regFor(t.subscription_id) ??
+        (t.trigger_type
+          ? registrationFromCall({
+              id: `trigger-registration:${t.subscription_id}`,
+              subscriptionId: t.subscription_id,
+              effectiveOnce: t.once,
+              input: {
+                trigger_type: t.trigger_type,
+                config: t.config,
+                label: t.label,
+                function_id:
+                  t.target &&
+                  t.target !== 'notify' &&
+                  t.target !== 'harness::send'
+                    ? t.target
+                    : undefined,
+              },
+            })
+          : undefined)
       if (reg) out.set(m.id, reg)
     } else if (m.role === 'user' && m.notification) {
-      // Exact: the persisted entry id is `e_notify_<subscription_id>`.
-      const fromId = /^e_notify_(sub_[A-Za-z0-9]+)/.exec(m.id)?.[1]
+      const fromId = m.triggerBindingId ?? notificationBindingId(m.id)
       const name = /^\[notification\]\s*([^:]+):/.exec(m.content)?.[1]?.trim()
-      const subId = fromId ?? (name ? notifyFireByName.get(name) : undefined)
-      const reg = subId ? regFor(subId) : undefined
+      const fromName = name ? notifyFireByName.get(name) : undefined
+      // Some legacy `e_notify_*` ids append an ordinal that is impossible to
+      // distinguish from an underscore inside the subscription id. Trust an
+      // id only when it resolves; otherwise retain the historical name match.
+      const reg =
+        (fromId ? regFor(fromId) : undefined) ??
+        (fromName ? regFor(fromName) : undefined)
       if (reg) out.set(m.id, reg)
     }
   }
@@ -241,7 +302,10 @@ export function MessageList({
     () => functionTriggersByAssistant(messages),
     [messages],
   )
-  const rows = useMemo(() => functionTriggerGroups(messages), [messages])
+  const rows = useMemo(
+    () => triggerActivityRows(functionTriggerGroups(messages)),
+    [messages],
+  )
   const registrations = useMemo(
     () => resolveRegistrations(messages, triggersById),
     [messages, triggersById],
@@ -585,15 +649,21 @@ export function MessageList({
                 : undefined
             // Consecutive trigger-fired notices share the same compact visual
             // language as call groups, so keep those system rows close too.
-            const triggerFired = (x: MessageListRow | undefined) =>
-              x?.kind === 'message' &&
-              x.message.role === 'system' &&
-              x.message.kind === 'trigger-fired'
+            const triggerFired = (x: TriggerAwareMessageListRow | undefined) =>
+              x?.kind === 'trigger-activity' ||
+              (x?.kind === 'message' &&
+                x.message.role === 'system' &&
+                x.message.kind === 'trigger-fired')
             const tight = triggerFired(row) && triggerFired(rows[i - 1])
+            const rowKey =
+              row.kind === 'trigger-activity' ? row.id : row.message.id
             const node = (
               <Message
-                key={m.id}
+                key={rowKey}
                 message={m}
+                triggerNotification={
+                  row.kind === 'trigger-activity' ? row.notification : undefined
+                }
                 copyText={copyText}
                 defaultOpenCalls={defaultOpenCalls}
                 onResolveApproval={onResolveApproval}
@@ -601,11 +671,16 @@ export function MessageList({
                 onResolveFilesystemAccess={onResolveFilesystemAccess}
                 onManageFilesystemAccess={onManageFilesystemAccess}
                 workingDir={workingDir}
-                registration={registrations.get(m.id)}
+                registration={
+                  registrations.get(m.id) ??
+                  (row.kind === 'trigger-activity' && row.notification
+                    ? registrations.get(row.notification.id)
+                    : undefined)
+                }
               />
             )
             return tight ? (
-              <div key={m.id} className="-mt-6.5">
+              <div key={rowKey} className="-mt-6.5">
                 {node}
               </div>
             ) : (

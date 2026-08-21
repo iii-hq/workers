@@ -21,6 +21,7 @@ import {
   registerExtRenderer,
   registerExtSessionChip,
   registerExtSessionTurnSummary,
+  registerExtTriggerActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
 import type {
@@ -146,6 +147,13 @@ function makeHost(
     functionTriggers: {
       register(renderer) {
         return track(registerExtRenderer({ renderer, scope, path }))
+      },
+    },
+    triggerRenderers: {
+      register(renderer) {
+        return track(
+          registerExtTriggerActivityRenderer({ renderer, scope, path }),
+        )
       },
     },
     panels: {

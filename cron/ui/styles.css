@@ -398,3 +398,80 @@
   border: 1px solid var(--color-rule);
   border-radius: 2px;
 }
+
+/* Trigger activity is a compact source section inside host-owned chrome. */
+
+/* Every selector is scoped because injected CSS is global and unlayered. */
+
+[data-iii-ui='cron'] .cron-trigger-activity {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__schedule {
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__timezone {
+  flex: none;
+  color: var(--color-ink-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__expression,
+[data-iii-ui='cron'] .cron-trigger-activity__condition-value {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__expression {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__condition {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__condition-label {
+  flex: none;
+}
+
+[data-iii-ui='cron'] .cron-trigger-activity__condition-value {
+  min-width: 0;
+  color: var(--color-ink);
+}

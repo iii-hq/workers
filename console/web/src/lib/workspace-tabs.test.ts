@@ -12,11 +12,13 @@ import {
   shouldFlushPendingWrite,
   tabColumns,
   tabLabel,
+  tabPaneIds,
   tabSizes,
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
   withColumnRemoved,
+  withPaneRemoved,
   withScreenDetached,
   withScreenOpenedBeside,
   withWorkspaceScreenOpened,
@@ -92,6 +94,49 @@ describe('parseWorkspaceTabs', () => {
     expect(tabs).toHaveLength(2)
     expect(tabs[0].screens).toEqual(['ext:memory', 'ext:worktree'])
     expect(tabs[1].screens).toEqual(['ext:browser', 'ext:github'])
+  })
+
+  it('round-trips valid pane ids and strips only malformed identity metadata', () => {
+    const tabs = parseWorkspaceTabs({
+      workspace: {
+        tabs: [
+          {
+            id: 'stable',
+            columns: 2,
+            screens: ['chat', 'traces'],
+            paneIds: ['pane-chat', 'pane-traces'],
+          },
+          {
+            id: 'legacy',
+            columns: 2,
+            screens: ['chat', 'traces'],
+            paneIds: ['pane-chat', ''],
+          },
+          {
+            id: 'wrong-shape',
+            columns: 1,
+            screens: ['chat'],
+            paneIds: 'legacy-value',
+          },
+          {
+            id: 'duplicate',
+            columns: 2,
+            screens: ['chat', 'traces'],
+            paneIds: ['same', 'same'],
+          },
+          {
+            id: 'misaligned',
+            columns: 2,
+            screens: ['chat', 'traces'],
+            paneIds: ['only-one'],
+          },
+        ],
+      },
+    })
+
+    expect(tabs).toHaveLength(5)
+    expect(tabs[0].paneIds).toEqual(['pane-chat', 'pane-traces'])
+    for (const tab of tabs.slice(1)) expect(tab).not.toHaveProperty('paneIds')
   })
 })
 
@@ -196,6 +241,37 @@ describe('tabSizes', () => {
   })
 })
 
+describe('tabPaneIds', () => {
+  it('uses stored identities and supplies deterministic ids for legacy tabs', () => {
+    expect(
+      tabPaneIds({
+        id: 'stable',
+        columns: 2,
+        screens: ['chat', 'traces'],
+        paneIds: ['pane-chat', 'pane-traces'],
+      }),
+    ).toEqual(['pane-chat', 'pane-traces'])
+    expect(
+      tabPaneIds({
+        id: 'legacy',
+        columns: 2,
+        screens: ['chat', 'traces'],
+      }),
+    ).toEqual(['legacy:pane:0', 'legacy:pane:1'])
+  })
+
+  it('falls back when stored identities are duplicated or misaligned', () => {
+    expect(
+      tabPaneIds({
+        id: 'legacy',
+        columns: 2,
+        screens: ['chat', 'traces'],
+        paneIds: ['duplicate', 'duplicate'],
+      }),
+    ).toEqual(['legacy:pane:0', 'legacy:pane:1'])
+  })
+})
+
 describe('withColumnAdded / withColumnRemoved', () => {
   const base: WorkspaceTab = { id: 't', columns: 1, screens: ['traces'] }
 
@@ -207,6 +283,39 @@ describe('withColumnAdded / withColumnRemoved', () => {
 
     const left = withColumnAdded(base, 'left')
     expect(left.screens).toEqual([null, 'traces'])
+  })
+
+  it('preserves pane identities across insertion and removal', () => {
+    const stable: WorkspaceTab = {
+      id: 'stable',
+      columns: 2,
+      screens: ['chat', null],
+      paneIds: ['pane-chat', 'pane-empty'],
+    }
+    const inserted = withColumnAdded(stable, 'left')
+    expect(inserted.paneIds?.slice(1)).toEqual(['pane-chat', 'pane-empty'])
+    expect(new Set(inserted.paneIds).size).toBe(3)
+
+    const removed = withColumnRemoved(inserted, 1)
+    expect(removed.paneIds).toEqual([inserted.paneIds?.[0], 'pane-empty'])
+
+    const removedAfterMove = withPaneRemoved(inserted, 'pane-empty')
+    expect(removedAfterMove.paneIds).not.toContain('pane-empty')
+    expect(withPaneRemoved(inserted, 'missing-pane')).toBe(inserted)
+  })
+
+  it('captures deterministic legacy identities on the first structural edit', () => {
+    const legacy: WorkspaceTab = {
+      id: 'legacy',
+      columns: 2,
+      screens: ['chat', 'traces'],
+    }
+    const inserted = withColumnAdded(legacy, 'left')
+
+    expect(inserted.paneIds?.slice(1)).toEqual([
+      'legacy:pane:0',
+      'legacy:pane:1',
+    ])
   })
 
   it('keeps existing ratios inside the remaining space', () => {
@@ -269,9 +378,12 @@ describe('withScreenOpenedBeside', () => {
       id: 'a',
       columns: 2,
       screens: [CHAT_SCREEN, 'traces'],
+      paneIds: ['pane-chat', 'pane-traces'],
     }
     const next = withScreenOpenedBeside(tab, 'ext:shell')
     expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+    expect(next?.paneIds?.[0]).toBe('pane-chat')
+    expect(next?.paneIds?.[2]).toBe('pane-traces')
     expect(next?.sizes?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1)
   })
 
@@ -408,6 +520,7 @@ describe('console::workspace fixtures (shared with the Rust worker)', () => {
         f.activeTabId,
         f.screen,
         () => 'tab-new',
+        () => 'pane-new',
       )
       expect({ tabs: result.tabs, activeTabId: result.activeTabId }).toEqual(
         f.expect,

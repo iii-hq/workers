@@ -125,19 +125,13 @@ pub async fn retire_stale_spawn_binding(deps: &Deps, binding: &crate::bindings::
         &deps.session().await,
         &binding.owner.session_id,
         &format!("e_trigstale_{}", binding.id),
-        crate::subscriptions::fired::TriggerFired {
-            subscription_id: &binding.id,
-            trigger_id: binding.trigger_id.as_deref(),
-            target: &binding.target.function_id,
-            label: None,
-            once: binding.lifecycle.once,
-            retired: true,
-            scope: None,
-            key: None,
-            note: Some("harness::spawn is no longer a binding target; the binding was retired"),
-            payload: None,
-            fired_at: crate::subscriptions::fired::now_ms(),
-        },
+        crate::subscriptions::fired::retirement_record(
+            binding,
+            crate::subscriptions::fired::TriggerOutcome::Invalidated,
+            crate::subscriptions::fired::RetirementReason::Invalidated,
+            Some("harness::spawn is no longer a binding target; the binding was retired"),
+            crate::subscriptions::fired::now_ms(),
+        ),
     )
     .await;
 }

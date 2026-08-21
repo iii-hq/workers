@@ -177,14 +177,21 @@ If they all render correctly, your backend is contract-clean.
 [`../DESIGN.md`](../DESIGN.md) is the canonical visual contract and this
 directory's `DESIGN.md` is a synchronized copy for local discovery. Theme and
 motion tokens live in [`src/index.css`](src/index.css); stable list, card,
-panel, chip, field, segmented-control, and motion recipes live in
+card-highlight, collapsible-card, panel, chip, field, segmented-control, and motion recipes live in
 [`src/styles/ui-recipes.css`](src/styles/ui-recipes.css).
 
 Shared behavior belongs in [`src/components/ui`](src/components/ui) and is
 exported to injected workers through `@iii-dev/console-ui`. Prefer the shared
-`Selector`, `Tooltip`, `SegmentedControl`, `List`, `Card`, `Panel`, `Chip`, and
-`IconButton` contracts over local copies. Selection is neutral in light and
+`Selector`, `Tooltip`, `SegmentedControl`, `List`, `Card`, `CollapsibleCard`, `CardHighlight`,
+`Panel`, `Chip`, and `IconButton` contracts over local copies. Selection is neutral in light and
 dark themes; reserve accent for primary actions, form focus, live activity,
 and semantic domain data. Update the canonical design guide, public
 declarations/manifests, stories, and conformance tests when extending this
 surface.
+
+Worker-owned renderers have focused authoring guides:
+
+- [`docs/custom-function-components.md`](docs/custom-function-components.md)
+  for function invocation request/result UI;
+- [`docs/custom-trigger-components.md`](docs/custom-trigger-components.md)
+  for source-specific trigger registration, firing, and retirement UI.

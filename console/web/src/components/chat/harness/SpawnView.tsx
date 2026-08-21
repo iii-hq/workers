@@ -1,12 +1,28 @@
-import type { ReactNode } from 'react'
+import {
+  Activity,
+  Bot,
+  BrainCircuit,
+  CircleAlert,
+  LoaderCircle,
+  Send,
+} from 'lucide-react'
+import { type ReactNode, useEffect, useState } from 'react'
 import {
   ActionLine,
   Chip,
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import { ActivityMetadata } from '@/components/ui/ActivityMetadata'
+import { ActivityStatus } from '@/components/ui/ActivityStatus'
+import { OpenDetailsAffordance } from '@/components/ui/OpenDetailsAffordance'
+import { useRelativeClock } from '@/hooks/use-relative-clock'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { getIiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
+import { formatElapsed } from '@/lib/relative-time'
+import { fetchTranscript } from '@/lib/sessions/api'
+import { subscribeSessionTranscript } from '@/lib/sessions/events'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import {
@@ -16,6 +32,14 @@ import {
   spawnResponseSchema,
   taskText,
 } from './parsers'
+import {
+  activityFromAgentMessage,
+  displayedSubagentActivity,
+  latestSubagentActivity,
+  resolveChildSessionId,
+  type SubagentActivityKind,
+  type SubagentActivitySignal,
+} from './subagent-activity'
 
 interface SpawnViewProps {
   input: unknown
@@ -60,6 +84,261 @@ export function SpawnView({ input, output, running }: SpawnViewProps) {
       <TaskPane task={req.task} />
       <ResultPane output={output} />
     </div>
+  )
+}
+
+interface SpawnActivityDisplayProps {
+  input: unknown
+  output?: unknown
+  parentSessionId?: string
+  functionTriggerId?: string
+  createdAt?: number
+}
+
+/** Compact live surface for a spawned child. The session directory supplies
+ * coarse lifecycle updates for every child; a scoped transcript subscription
+ * refines a working child into thinking, tool work, or message streaming. */
+export function SpawnActivityDisplay({
+  input,
+  output,
+  parentSessionId,
+  functionTriggerId,
+  createdAt,
+}: SpawnActivityDisplayProps) {
+  const req = safeParseRequest(spawnRequestSchema, input)
+  const response = spawnResponseSchema.safeParse(output)
+  const ctx = useConversationsCtxOptional()
+  const childSessionId = resolveChildSessionId({
+    responseSessionId: response.success
+      ? response.data.child_session_id
+      : undefined,
+    requestSessionId: req?.session_id,
+    parentSessionId,
+    functionTriggerId,
+    conversations: ctx?.conversations ?? [],
+  })
+  const child = ctx?.conversations.find(
+    (conversation) => conversation.id === childSessionId,
+  )
+  const signal = useLiveSubagentActivity(childSessionId, child?.status)
+  const activity = displayedSubagentActivity(child?.status, signal)
+  const clock = useRelativeClock(
+    child?.createdAt ?? createdAt ?? signal?.timestamp ?? child?.updatedAt,
+  )
+
+  if (!req) return null
+  const task = taskText(req.task) ?? 'Waiting for the assigned task.'
+  const childTitle =
+    child?.title && child.title !== child.id ? child.title : task
+  const open =
+    ctx && child
+      ? () => {
+          ctx.select(child.id)
+        }
+      : undefined
+
+  return (
+    <SpawnActivityCard
+      title={childTitle}
+      task={task}
+      status={activity}
+      sessionId={childSessionId}
+      createdAt={child?.createdAt ?? createdAt}
+      activityAt={signal?.timestamp ?? child?.updatedAt ?? child?.createdAt}
+      now={clock}
+      onOpen={open}
+    />
+  )
+}
+
+function useLiveSubagentActivity(
+  sessionId: string | null,
+  status: 'idle' | 'working' | 'done' | 'error' | undefined,
+): SubagentActivitySignal | null {
+  const [signal, setSignal] = useState<SubagentActivitySignal | null>(null)
+
+  useEffect(() => {
+    if (status !== 'working') setSignal(null)
+  }, [status])
+
+  useEffect(() => {
+    setSignal(null)
+    if (!sessionId) return
+    let cancelled = false
+    let off: (() => void) | null = null
+    const accept = (next: SubagentActivitySignal | null) => {
+      if (!next || cancelled) return
+      setSignal((current) =>
+        !current || next.timestamp >= current.timestamp ? next : current,
+      )
+    }
+
+    void fetchTranscript(sessionId)
+      .then((items) => accept(latestSubagentActivity(items)))
+      .catch(() => {})
+    void getIiiClient()
+      .then((client) => {
+        if (cancelled) return
+        off = subscribeSessionTranscript(client, sessionId, {
+          onMessageAdded: (event) =>
+            accept(activityFromAgentMessage(event.message, event.timestamp)),
+          onMessageUpdated: (event) =>
+            accept(activityFromAgentMessage(event.message, event.timestamp)),
+        })
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+      off?.()
+    }
+  }, [sessionId])
+
+  return signal
+}
+
+interface SpawnActivityCardProps {
+  title: string
+  task: string
+  status: SubagentActivityKind
+  sessionId?: string | null
+  createdAt?: number
+  activityAt?: number
+  /** Deterministic clock for stories/tests; live surfaces provide a timer. */
+  now?: number
+  onOpen?: () => void
+}
+
+/** Props-only presentation exported for fixtures and deterministic state tests. */
+export function SpawnActivityCard({
+  title,
+  task,
+  status,
+  sessionId,
+  createdAt,
+  activityAt,
+  now = Date.now(),
+  onOpen,
+}: SpawnActivityCardProps) {
+  const activityAge = formatElapsed(activityAt, now)
+  const content = (
+    <div className="grid min-w-0 gap-4 @xl:grid-cols-[minmax(0,1fr)_auto] @xl:items-center">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-accent-muted text-accent sm:size-9">
+          <Bot aria-hidden className="size-5" strokeWidth={2.25} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="font-sans text-base font-semibold text-ink sm:text-sm">
+              New sub-agent
+            </div>
+            <span className="rounded-md bg-accent-muted px-2 py-0.5 font-sans text-sm font-medium text-accent sm:text-xs">
+              New
+            </span>
+          </div>
+          <div className="mt-1 line-clamp-2 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
+            {task}
+          </div>
+          <ActivityMetadata
+            className="mt-3"
+            createdAt={createdAt}
+            identifier={sessionId}
+            now={now}
+          />
+        </div>
+      </div>
+
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-rule-2 pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
+        <SubagentStatus status={status} activityAge={activityAge} />
+        {onOpen ? (
+          <OpenDetailsAffordance className="group-hover/subagent:bg-surface-hover" />
+        ) : null}
+      </div>
+    </div>
+  )
+  const className = cn(
+    '@container w-full rounded-md bg-panel-raised px-4 py-4 text-left shadow-raised sm:px-3 sm:py-3',
+    onOpen &&
+      'group/subagent cursor-pointer transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+  )
+
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        className={className}
+        data-subagent-status={status}
+        aria-label={`Open sub-agent session ${sessionId ?? title}`}
+        title={sessionId ? `Open sub-agent session ${sessionId}` : undefined}
+        onClick={onOpen}
+      >
+        {content}
+      </button>
+    )
+  }
+  return (
+    <div className={className} data-subagent-status={status}>
+      {content}
+    </div>
+  )
+}
+
+function SubagentStatus({
+  status,
+  activityAge,
+}: {
+  status: SubagentActivityKind
+  activityAge: string | null
+}) {
+  const label =
+    status === 'thinking'
+      ? 'Thinking'
+      : status === 'messaging'
+        ? 'Sending a message'
+        : status === 'working'
+          ? 'Working'
+          : status === 'error'
+            ? 'Needs attention'
+            : 'Active'
+  const detail =
+    activityAge == null
+      ? label
+      : activityAge === 'just now'
+        ? `${label} now`
+        : `${label} for ${activityAge}`
+  const Icon =
+    status === 'thinking'
+      ? BrainCircuit
+      : status === 'messaging'
+        ? Send
+        : status === 'working'
+          ? LoaderCircle
+          : status === 'error'
+            ? CircleAlert
+            : Activity
+
+  return (
+    <ActivityStatus
+      label={label}
+      detail={activityAge ? detail : null}
+      icon={Icon}
+      tone={
+        status === 'active'
+          ? 'positive'
+          : status === 'error'
+            ? 'danger'
+            : status === 'thinking' || status === 'messaging'
+              ? 'accent'
+              : 'neutral'
+      }
+      motion={
+        status === 'working'
+          ? 'spin'
+          : status === 'thinking' || status === 'messaging'
+            ? 'pulse'
+            : 'none'
+      }
+    />
   )
 }
 

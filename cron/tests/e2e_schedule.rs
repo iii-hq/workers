@@ -11,6 +11,23 @@ use common::engine;
 
 #[tokio::test]
 #[serial]
+async fn configuration_calls_reach_default_from_a_custom_namespace() {
+    let Some(iii) = engine::connect_fresh_in_namespace("cron-e2e-custom-namespace").await else {
+        return;
+    };
+
+    iii_cron::configuration::register_config(&iii, None)
+        .await
+        .expect("configuration::register should resolve in default");
+    iii_cron::configuration::fetch_config(&iii)
+        .await
+        .expect("configuration::get should resolve in default");
+
+    iii.shutdown_async().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn cron_trigger_fires_bound_function_with_parity_payload() {
     let Some(iii) = engine::get_or_init().await else {
         return;

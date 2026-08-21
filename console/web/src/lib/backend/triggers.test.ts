@@ -131,18 +131,81 @@ describe('mergeFiredTriggers', () => {
   })
 
   it('annotates a still-polled retired row in place', () => {
-    const merged = mergeFiredTriggers([live()], [fired()])
+    const merged = mergeFiredTriggers(
+      [live()],
+      [
+        fired({
+          fires: 1,
+          outcome: 'delivered',
+          retirement_reason: 'once_consumed',
+        }),
+      ],
+    )
     expect(merged).toHaveLength(1)
     expect(merged[0].fired).toBe(true)
     expect(merged[0].firedAt).toBe(42)
+    expect(merged[0].fires).toBe(1)
+    expect(merged[0].outcome).toBe('delivered')
+    expect(merged[0].retirementReason).toBe('once_consumed')
   })
 
-  it('ghosts a dropped row, preferring the remembered full row', () => {
-    const remembered = new Map([['sub_live', live({ label: 'remembered' })]])
-    const merged = mergeFiredTriggers([], [fired()], remembered)
+  it('ghosts a dropped row, retaining remembered details but preferring record source data', () => {
+    const remembered = new Map([
+      [
+        'sub_live',
+        live({
+          label: 'remembered',
+          conditions: [{ function_id: 'fp::when' }],
+        }),
+      ],
+    ])
+    const merged = mergeFiredTriggers(
+      [],
+      [
+        fired({
+          fires: 4,
+          trigger_type: 'cron',
+          config: { expression: '0 * * * * *' },
+          outcome: 'expired',
+          retirement_reason: 'expired',
+        }),
+      ],
+      remembered,
+    )
     expect(merged).toHaveLength(1)
     expect(merged[0].label).toBe('remembered')
+    expect(merged[0].triggerType).toBe('cron')
+    expect(merged[0].config).toEqual({ expression: '0 * * * * *' })
+    expect(merged[0].conditions).toEqual([{ function_id: 'fp::when' }])
+    expect(merged[0].fires).toBe(4)
+    expect(merged[0].outcome).toBe('expired')
+    expect(merged[0].retirementReason).toBe('expired')
     expect(merged[0].fired).toBe(true)
+  })
+
+  it('enriches a live recurring row without making it inactive', () => {
+    const merged = mergeFiredTriggers(
+      [live({ once: false })],
+      [
+        fired({
+          once: false,
+          retired: false,
+          fires: 3,
+          trigger_type: 'database::row-changed',
+          config: { db: 'primary', table: 'orders' },
+          outcome: 'delivery_failed',
+          retirement_reason: undefined,
+        }),
+      ],
+    )
+    expect(merged[0]).toMatchObject({
+      triggerType: 'database::row-changed',
+      config: { db: 'primary', table: 'orders' },
+      fires: 3,
+      outcome: 'delivery_failed',
+      retirementReason: undefined,
+    })
+    expect(merged[0].fired).toBeUndefined()
   })
 
   it('falls back to a thin record-only ghost after a reload', () => {
@@ -154,6 +217,31 @@ describe('mergeFiredTriggers', () => {
     expect(merged[0].triggerType).toBe('state')
     expect(merged[0].config).toEqual({ scope: 'run', key: 'done' })
     expect(merged[0].delivery).toEqual({ kind: 'notify' })
+    expect(merged[0].fires).toBeUndefined()
+    expect(merged[0].retirementReason).toBeUndefined()
+  })
+
+  it('reconstructs an enriched non-state ghost without a remembered row', () => {
+    const merged = mergeFiredTriggers(
+      [],
+      [
+        fired({
+          fires: 9,
+          trigger_type: 'cron',
+          config: { expression: '*/5 * * * * *' },
+          outcome: 'unregistered',
+          retirement_reason: 'unregistered',
+        }),
+      ],
+    )
+    expect(merged[0]).toMatchObject({
+      triggerType: 'cron',
+      config: { expression: '*/5 * * * * *' },
+      fires: 9,
+      outcome: 'unregistered',
+      retirementReason: 'unregistered',
+      fired: true,
+    })
   })
 
   it('renders a legacy spawn record as a call ghost', () => {
@@ -173,6 +261,64 @@ describe('mergeFiredTriggers', () => {
     expect(merged[0].firedAt).toBe(2)
   })
 
+  it('keeps the newest retirement when a dropped row has newer non-retired activity', () => {
+    const merged = mergeFiredTriggers(
+      [],
+      [
+        fired({
+          fired_at: 1,
+          outcome: 'expired',
+          retirement_reason: 'expired',
+        }),
+        fired({
+          fired_at: 2,
+          outcome: 'unregistered',
+          retirement_reason: 'unregistered',
+        }),
+        fired({
+          retired: false,
+          fired_at: 3,
+          outcome: 'delivered',
+          retirement_reason: undefined,
+        }),
+      ],
+    )
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      fired: true,
+      firedAt: 2,
+      outcome: 'unregistered',
+      retirementReason: 'unregistered',
+    })
+  })
+
+  it('keeps newest-activity semantics while the row is still live', () => {
+    const merged = mergeFiredTriggers(
+      [live({ once: false })],
+      [
+        fired({
+          fired_at: 1,
+          outcome: 'expired',
+          retirement_reason: 'expired',
+        }),
+        fired({
+          retired: false,
+          fired_at: 2,
+          fires: 4,
+          outcome: 'delivered',
+          retirement_reason: undefined,
+        }),
+      ],
+    )
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      fires: 4,
+      outcome: 'delivered',
+    })
+    expect(merged[0].fired).toBeUndefined()
+    expect(merged[0].retirementReason).toBeUndefined()
+  })
+
   it('correlates on the subscription id even without an engine trigger id', () => {
     const merged = mergeFiredTriggers(
       [live({ id: 'sub_x', triggerId: undefined })],
@@ -180,5 +326,6 @@ describe('mergeFiredTriggers', () => {
     )
     expect(merged).toHaveLength(1)
     expect(merged[0].fired).toBe(true)
+    expect(merged[0].fires).toBe(0)
   })
 })

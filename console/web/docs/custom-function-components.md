@@ -2,6 +2,11 @@
 
 How to add bespoke UI for `function-trigger` messages in the console chat, instead of the default request/response JSON panes.
 
+To customize a trigger source such as `cron` across registration, firing,
+and retirement, use [`custom-trigger-components.md`](custom-trigger-components.md)
+and `host.triggerRenderers` instead. Do not match
+`engine::register_trigger` as though each trigger type were a function family.
+
 **Reference implementations:** `shell/ui/` (worker-owned file-change artifact), `browser/ui/` (worker-owned screenshots), and `src/components/chat/sandbox/` (first-party terminal cards).
 
 **Definition of done:** A custom renderer is not complete until it ships with **both** dev surfaces below — static cards on **Examples** and at least one interactive **Playground** scenario. Do not merge UI-only changes without playground coverage.
@@ -44,7 +49,7 @@ flowchart TB
   TR -->|null| JSON[ValuePane JSON fallback]
 ```
 
-Injected worker renderers register through `host.functionTriggers` and dispatch before first-party renderers. The first non-null node wins, and presentation metadata is read from that same winning renderer.
+Injected worker renderers register through `host.functionTriggers` and dispatch before first-party renderers. The host calls `tryRender*` only when `isMatch(functionId)` returns true; among matching renderers, the first non-null node wins, and presentation metadata is read from that same winning renderer.
 
 ---
 
@@ -233,6 +238,7 @@ const renderer: FunctionTriggerRenderer = {
   tryRender: (message) => renderResult(message),
   tryRenderRunning: (message) => renderRunning(message),
   tryRenderPreview: (message) => renderApprovalPreview(message),
+  tryRenderDisplay: (message) => renderCompactReceipt(message),
   metadata: { display: true }, // only for results worth keeping inline
 }
 
@@ -242,6 +248,8 @@ export default function setup(host: Host) {
 ```
 
 Register focused renderers before general family renderers. `display` is honored only when that renderer actually returns a non-null node, so an image renderer can fall through to a general error renderer without promoting the error card.
+
+When `tryRenderDisplay` is present, the host uses that compact surface in the feed and keeps `tryRender` as its detail body. Set `metadata.displayAction: 'expand'` to make one continuous collapsible card: the display surface remains mounted as the card header while `tryRender` expands underneath it, followed by the host-owned raw JSON tab. The display surface must not render its own outer card or interactive controls in this mode; the host owns the surface, focus target, padding, and transition. Leave `displayAction` unset when the compact surface owns another action, such as opening a child session.
 
 For artifacts that have a deeper worker-owned view, make a focused area a
 real button and open the registered page through the host:

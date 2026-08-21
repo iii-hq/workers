@@ -164,6 +164,79 @@ a.iii-ui-list-item,
   outline-offset: 2px;
 }
 
+/* Shared card disclosure. The grid track provides an auto-height transition
+ * without measuring worker content; the inner region remains mounted so local
+ * state survives a collapse. Global duration tokens reduce to 0ms when the
+ * operator prefers reduced motion. */
+.iii-ui-collapsible-card {
+  container-type: inline-size;
+}
+
+.iii-ui-collapsible-card[data-disabled="true"] {
+  opacity: 0.6;
+}
+
+.iii-ui-collapsible-card__trigger {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.iii-ui-collapsible-card__trigger:hover {
+  background: var(--color-surface-hover);
+}
+
+.iii-ui-collapsible-card__trigger:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.iii-ui-collapsible-card__trigger:disabled {
+  cursor: default;
+}
+
+.iii-ui-collapsible-card__trigger:disabled:hover {
+  background: transparent;
+}
+
+.iii-ui-collapsible-card__content {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    grid-template-rows var(--motion-duration-panel) var(--motion-ease-exit),
+    opacity var(--motion-duration-control) var(--motion-ease-exit);
+}
+
+.iii-ui-collapsible-card__content[data-state="open"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--motion-ease-enter);
+}
+
+.iii-ui-collapsible-card__content-inner {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  transform: translateY(-0.25rem);
+  transition: transform var(--motion-duration-panel) var(--motion-ease-exit);
+}
+
+.iii-ui-collapsible-card__content[data-state="open"]
+  > .iii-ui-collapsible-card__content-inner {
+  transform: translateY(0);
+  transition-timing-function: var(--motion-ease-enter);
+}
+
 .iii-ui-card__header,
 .iii-ui-panel__header {
   display: flex;
@@ -190,6 +263,18 @@ a.iii-ui-list-item,
 .iii-ui-panel__body {
   min-width: 0;
   padding: 0.75rem;
+}
+
+/* Borderless inset used to emphasize related content inside a card. It is
+ * structural, never interactive: hover, selection, focus, and status each
+ * keep their own semantic recipes. */
+.iii-ui-card-highlight {
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-card-highlight);
+  color: var(--color-ink);
 }
 
 .iii-ui-chip {

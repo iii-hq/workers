@@ -1,4 +1,4 @@
-"""Regression tests for shared worker dependency ranges."""
+"""Regression tests for worker dependency compatibility."""
 from __future__ import annotations
 
 import tomllib
@@ -10,9 +10,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SHARED_DEPENDENCY_RANGES = {
     "configuration": "0.x",
-    "llm-router": "^1.0.0",
-    "queue": "^0.21.4",
-    "state": "^0.22.1",
+    "llm-router": "^1.4.12",
+    "queue": "^0.21.5",
+    "state": "^0.22.2",
 }
 
 
@@ -20,6 +20,36 @@ def dependencies(worker: str) -> dict[str, str]:
     manifest = REPO_ROOT / worker / "iii.worker.yaml"
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     return data.get("dependencies", {})
+
+
+def test_worker_dependency_graph_is_acyclic() -> None:
+    workers = {
+        manifest.parent.name
+        for manifest in REPO_ROOT.glob("*/iii.worker.yaml")
+    }
+    graph = {
+        worker: set(dependencies(worker)).intersection(workers)
+        for worker in workers
+    }
+    visiting: list[str] = []
+    visited: set[str] = set()
+
+    def visit(worker: str) -> None:
+        if worker in visited:
+            return
+        if worker in visiting:
+            start = visiting.index(worker)
+            cycle = [*visiting[start:], worker]
+            raise AssertionError(f"worker dependency cycle: {' -> '.join(cycle)}")
+
+        visiting.append(worker)
+        for dependency in sorted(graph[worker]):
+            visit(dependency)
+        visiting.pop()
+        visited.add(worker)
+
+    for worker in sorted(workers):
+        visit(worker)
 
 
 def test_shared_dependencies_use_compatible_ranges() -> None:
