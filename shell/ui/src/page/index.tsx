@@ -104,13 +104,6 @@ import {
   gitRecentCommits,
   gitRefs,
 } from './git'
-import {
-  fetchSessionTurn,
-  fetchSessionTurns,
-  reviewEntriesFromTurn,
-  type SessionTurnSummary,
-  turnLabel,
-} from './turns'
 import { HoverTip } from './HoverTip'
 import { useWorkspaceChanges } from './live'
 import { normalizeLiveReviewEvent } from './live-review'
@@ -131,8 +124,8 @@ import {
 } from './ReviewPane'
 import {
   ReviewScopePicker,
-  reviewScopeLabel,
   type ReviewScopeSelection,
+  reviewScopeLabel,
 } from './ReviewScopePicker'
 import {
   diffForReviewEntry,
@@ -144,7 +137,6 @@ import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
 import { ShellLauncher } from './ShellLauncher'
-import { WorkspaceBrowser } from './WorkspaceBrowser'
 import { TerminalPanel } from './TerminalPanel'
 import {
   activateTab,
@@ -170,6 +162,14 @@ import {
   canCaptureHarnessWorkspaceChange,
   type HarnessReviewWindow,
 } from './turn-status'
+import {
+  fetchSessionTurn,
+  fetchSessionTurns,
+  reviewEntriesFromTurn,
+  type SessionTurnSummary,
+  turnLabel,
+} from './turns'
+import { WorkspaceBrowser } from './WorkspaceBrowser'
 import {
   acknowledgeValidatedWorkingDirectory,
   deepLinkRootTarget,
@@ -242,7 +242,12 @@ function ReviewOption({
 
 function SplitDiffIcon() {
   return (
-    <svg className="shui-diff-style-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    <svg
+      className="shui-diff-style-icon"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      focusable="false"
+    >
       <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" className="frame" />
       <rect x="3" y="4" width="4.5" height="8" rx="1.2" className="del" />
       <rect x="8.5" y="4" width="4.5" height="8" rx="1.2" className="add" />
@@ -252,7 +257,12 @@ function SplitDiffIcon() {
 
 function UnifiedDiffIcon() {
   return (
-    <svg className="shui-diff-style-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    <svg
+      className="shui-diff-style-icon"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      focusable="false"
+    >
       <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" className="frame" />
       <rect x="3" y="4" width="10" height="3.5" rx="1.2" className="del" />
       <rect x="3" y="8.5" width="10" height="3.5" rx="1.2" className="add" />
@@ -272,7 +282,11 @@ function ReviewMenuAction({
   onSelect: () => void
 }) {
   return (
-    <DropdownMenuItem className="shui-review-option" disabled={disabled} onSelect={onSelect}>
+    <DropdownMenuItem
+      className="shui-review-option"
+      disabled={disabled}
+      onSelect={onSelect}
+    >
       <span className="menu-icon" aria-hidden>
         {icon}
       </span>
@@ -355,6 +369,7 @@ export function ShellExplorerPage({
   workingDir,
   panelContext,
   conversationId,
+  commands,
 }: { host: Host; terminalRouter: TerminalOutputRouter } & PageRenderProps) {
   const theme = host.useTheme()
   const observedReview = useHarnessTurn(host, conversationId)
@@ -487,7 +502,9 @@ export function ShellExplorerPage({
     setCopyingPatch(true)
     try {
       const patch = await gitPatch(host, root, reviewScope)
-      await navigator.clipboard.writeText(`git apply <<'PATCH'\n${patch}\nPATCH\n`)
+      await navigator.clipboard.writeText(
+        `git apply <<'PATCH'\n${patch}\nPATCH\n`,
+      )
     } catch (error: unknown) {
       setScopeError(errorMessage(error))
     } finally {
@@ -512,7 +529,9 @@ export function ShellExplorerPage({
     [],
   )
   const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
-  const [sessionTurns, setSessionTurns] = useState<readonly SessionTurnSummary[]>([])
+  const [sessionTurns, setSessionTurns] = useState<
+    readonly SessionTurnSummary[]
+  >([])
   const [turnOutside, setTurnOutside] = useState(0)
   const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
   const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(
@@ -2325,11 +2344,16 @@ export function ShellExplorerPage({
   useEffect(() => {
     let cancelled = false
     void host.iii
-      .trigger<{ workers?: Array<{ name?: unknown }> }>('engine::workers::list', {})
+      .trigger<{ workers?: Array<{ name?: unknown }> }>(
+        'engine::workers::list',
+        {},
+      )
       .then((response) => {
         if (cancelled) return
         const workers = Array.isArray(response?.workers) ? response.workers : []
-        setBrowserAvailable(workers.some((worker) => worker?.name === 'browser'))
+        setBrowserAvailable(
+          workers.some((worker) => worker?.name === 'browser'),
+        )
       })
       .catch(() => {
         if (!cancelled) setBrowserAvailable(false)
@@ -2427,6 +2451,66 @@ export function ShellExplorerPage({
     closeTerminal()
   }, [closeTerminal, terminalActive, terminalDock, terminalOpen])
 
+  // The page's verbs, for the palette and for the keyboard while this pane
+  // has the focus. The keys stay clear of the console's own.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'open-file',
+          title: 'Open file…',
+          detail: 'Find a file by name',
+          keywords: ['quick open', 'go to file', 'path'],
+          shortcut: 'P',
+          run: () => host.palette?.open({ query: '#' }),
+        },
+        {
+          id: 'search',
+          title: 'Search in files',
+          detail: 'Find text across the working directory',
+          keywords: ['grep', 'find', 'text'],
+          shortcut: 'F',
+          run: () => {
+            setSideTab('search')
+            setCollapsed(false)
+            window.requestAnimationFrame(() => {
+              document
+                .querySelector<HTMLElement>('[data-shell-search-input]')
+                ?.focus()
+            })
+          },
+        },
+        {
+          id: 'files',
+          title: 'Show the file tree',
+          detail: 'The explorer sidebar',
+          keywords: ['explorer', 'tree', 'sidebar'],
+          shortcut: 'E',
+          run: () => {
+            setSideTab('files')
+            setCollapsed(false)
+          },
+        },
+        {
+          id: 'toggle-sidebar',
+          title: 'Toggle the sidebar',
+          detail: 'Hide or show the file sidebar',
+          keywords: ['collapse', 'explorer'],
+          shortcut: 'B',
+          run: () => setCollapsed((current) => !current),
+        },
+        {
+          id: 'toggle-terminal',
+          title: 'Toggle the terminal',
+          detail: 'Open or close the terminal for this directory',
+          keywords: ['pty', 'console', 'command line'],
+          shortcut: '`',
+          run: toggleTerminal,
+        },
+      ]),
+    [commands, host, toggleTerminal],
+  )
+
   const header = (
     <PageHeader
       className="shui-page-header"
@@ -2513,9 +2597,7 @@ export function ShellExplorerPage({
             {narrow ? (
               <HoverTip
                 label={
-                  collapsed
-                    ? 'Show the file sidebar'
-                    : 'Hide the file sidebar'
+                  collapsed ? 'Show the file sidebar' : 'Hide the file sidebar'
                 }
               >
                 <button
@@ -2717,7 +2799,8 @@ export function ShellExplorerPage({
                     +{turnOutside} outside
                   </span>
                 ) : null}
-                {reviewScope.kind === 'last-turn' && baselineCoverage?.capped ? (
+                {reviewScope.kind === 'last-turn' &&
+                baselineCoverage?.capped ? (
                   <span
                     className="shui-review-count"
                     title={`This workspace holds ${baselineCoverage.candidates} reviewable files; the pre-turn snapshot captured the ${baselineCoverage.captured} most recently modified. Rows outside it fall back to the last commit, or say so when there is none. Open a narrower folder for full coverage.`}
@@ -2747,7 +2830,10 @@ export function ShellExplorerPage({
                   </span>
                 ) : null}
                 <span className="spacer" />
-                <DropdownMenu open={reviewMenuOpen} onOpenChange={setReviewMenuOpen}>
+                <DropdownMenu
+                  open={reviewMenuOpen}
+                  onOpenChange={setReviewMenuOpen}
+                >
                   <DropdownMenuTrigger asChild>
                     <IconButton
                       label="Review options"
@@ -2756,7 +2842,10 @@ export function ShellExplorerPage({
                       <MoreHorizontal aria-hidden />
                     </IconButton>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="shui-review-menu-content">
+                  <DropdownMenuContent
+                    align="end"
+                    className="shui-review-menu-content"
+                  >
                     <ReviewMenuAction
                       label="Refresh"
                       icon={<RefreshCw />}
@@ -2815,7 +2904,8 @@ export function ShellExplorerPage({
                     <DropdownMenuSeparator />
                     <ReviewMenuAction
                       label={
-                        reviewScope.kind === 'last-turn' || reviewScope.kind === 'turn'
+                        reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'turn'
                           ? 'Copy git apply command (git scopes only)'
                           : 'Copy git apply command'
                       }
@@ -2846,7 +2936,8 @@ export function ShellExplorerPage({
                         emptyMessage="no matching file"
                         triggerIcon={<FileSearch aria-hidden />}
                         onChange={(path) => {
-                          const entry = visibleReviewEntriesRef.current.get(path)
+                          const entry =
+                            visibleReviewEntriesRef.current.get(path)
                           if (entry) openReviewEntry(entry)
                         }}
                       />
@@ -2854,7 +2945,11 @@ export function ShellExplorerPage({
                   </HoverTip>
                 ) : null}
                 <IconButton
-                  label={reviewAllCollapsed ? 'Expand all diffs' : 'Collapse all diffs'}
+                  label={
+                    reviewAllCollapsed
+                      ? 'Expand all diffs'
+                      : 'Collapse all diffs'
+                  }
                   onClick={toggleAllDiffs}
                 >
                   {reviewAllCollapsed ? (
