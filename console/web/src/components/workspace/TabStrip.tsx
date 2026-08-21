@@ -394,7 +394,7 @@ export function TabStrip({
               data-tab-id={tab.id}
               aria-selected={active}
               tabIndex={active ? 0 : -1}
-              title={label}
+              title={index < 9 ? `${label} (${index + 1})` : label}
               onClick={() => {
                 if (suppressClickRef.current) {
                   suppressClickRef.current = false

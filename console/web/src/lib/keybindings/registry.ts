@@ -17,10 +17,12 @@ import {
   conflictIdentity,
   digitFromEvent,
   formatBinding,
+  isSequence,
   type KeyEventLike,
   type Platform,
   parseBinding,
   shortcutPlatform,
+  splitSequence,
 } from './bindings'
 
 export type { Platform }
@@ -30,6 +32,9 @@ export type KeybindingScope = 'global' | 'palette'
 export type KeybindingActionId =
   | 'palette.toggle'
   | 'app.settings'
+  | 'page.chat'
+  | 'page.workers'
+  | 'page.traces'
   | 'workspace.selectByIndex'
   | 'workspace.create'
   | 'workspace.next'
@@ -146,6 +151,33 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     bindings: ['\\'],
     keywords: ['panel', 'column', 'split'],
   },
+  // Go-to chords: a prefix key, then a letter for the place. The prefix never
+  // does anything on its own, so the letters stay free for single-key actions
+  // and a new place costs one more letter, not one more reserved key.
+  {
+    id: 'page.chat',
+    title: 'Go to chat',
+    group: 'Go to',
+    scope: 'global',
+    bindings: ['G C'],
+    keywords: ['chat', 'conversation', 'go', 'page'],
+  },
+  {
+    id: 'page.workers',
+    title: 'Go to workers',
+    group: 'Go to',
+    scope: 'global',
+    bindings: ['G W'],
+    keywords: ['workers', 'functions', 'go', 'page'],
+  },
+  {
+    id: 'page.traces',
+    title: 'Go to traces',
+    group: 'Go to',
+    scope: 'global',
+    bindings: ['G T'],
+    keywords: ['traces', 'spans', 'go', 'page'],
+  },
   {
     id: 'app.settings',
     title: 'Open settings',
@@ -237,9 +269,18 @@ export function matchesKeybinding(
   event: KeyEventLike,
   platform: Platform = shortcutPlatform(),
 ): boolean {
-  return bindingsFor(id, platform).some((binding) =>
-    bindingMatchesEvent(binding, event, platform),
+  return bindingsFor(id, platform).some(
+    (binding) =>
+      !isSequence(binding) && bindingMatchesEvent(binding, event, platform),
   )
+}
+
+/** The chords of each sequence binding an action has, in order. */
+export function sequencesFor(
+  id: KeybindingActionId,
+  platform: Platform = shortcutPlatform(),
+): string[][] {
+  return bindingsFor(id, platform).filter(isSequence).map(splitSequence)
 }
 
 /**
@@ -291,6 +332,18 @@ export type KeybindingConflict = {
  */
 export function keybindingConflicts(platform: Platform): KeybindingConflict[] {
   const seen = new Map<string, KeybindingActionId[]>()
+  // A sequence also claims its prefix: a single key bound to `G` would fire
+  // before `G C` ever completed. Sequences may share a prefix with each other.
+  const prefixes = new Map<string, KeybindingActionId[]>()
+  const claim = (
+    map: Map<string, KeybindingActionId[]>,
+    chord: string,
+    id: KeybindingActionId,
+  ) => {
+    const bucket = map.get(chord)
+    if (!bucket) map.set(chord, [id])
+    else if (!bucket.includes(id)) bucket.push(id)
+  }
   for (const definition of KEYBINDINGS) {
     for (const binding of resolveBindings(definition.bindings, platform)) {
       // A digit-index row occupies all nine digits, not just the one it
@@ -300,11 +353,18 @@ export function keybindingConflicts(platform: Platform): KeybindingConflict[] {
         : [binding]
       for (const variant of variants) {
         const chord = `${definition.scope}:${conflictIdentity(variant, platform)}`
-        const bucket = seen.get(chord)
-        if (bucket) bucket.push(definition.id)
-        else seen.set(chord, [definition.id])
+        claim(seen, chord, definition.id)
+        if (isSequence(variant)) {
+          const head = splitSequence(variant)[0] ?? variant
+          const prefix = `${definition.scope}:${conflictIdentity(head, platform)}`
+          claim(prefixes, prefix, definition.id)
+        }
       }
     }
+  }
+  for (const [chord, ids] of prefixes) {
+    if (!seen.has(chord)) continue
+    for (const id of ids) claim(seen, chord, id)
   }
   return [...seen]
     .filter(([, ids]) => ids.length > 1)

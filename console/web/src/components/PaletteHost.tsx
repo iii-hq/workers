@@ -49,6 +49,13 @@ const WORKSPACE_ACTIONS: ReadonlyArray<{
   { id: 'workspace.close', detail: 'Close the current workspace' },
 ]
 
+/** First-party pages with a go-to chord; injected pages have no stable letter. */
+const PAGE_ACTIONS: Partial<Record<string, KeybindingActionId>> = {
+  chat: 'page.chat',
+  workers: 'page.workers',
+  traces: 'page.traces',
+}
+
 export interface PaletteWorkspace {
   tabs: readonly WorkspaceTab[]
   activeTabId: string
@@ -104,15 +111,20 @@ export function PaletteHost({
   )
 
   const localEntries = useMemo((): PaletteEntry[] => {
-    const pages: PaletteEntry[] = screenOptions.map((option) => ({
-      id: `page:${option.value}`,
-      kind: 'page',
-      title: option.label,
-      detail: option.description,
-      keywords: option.keywords,
-      icon: option.icon,
-      run: () => openScreen(option.value),
-    }))
+    const platform = shortcutPlatform()
+    const pages: PaletteEntry[] = screenOptions.map((option) => {
+      const goTo = PAGE_ACTIONS[option.value]
+      return {
+        id: `page:${option.value}`,
+        kind: 'page',
+        title: option.label,
+        detail: option.description,
+        keywords: option.keywords,
+        icon: option.icon,
+        shortcut: goTo ? bindingsFor(goTo, platform)[0] : undefined,
+        run: () => openScreen(option.value),
+      }
+    })
 
     const chats: PaletteEntry[] = conversations
       .slice(0, 40)
@@ -127,7 +139,6 @@ export function PaletteHost({
         },
       }))
 
-    const platform = shortcutPlatform()
     const digit = bindingsFor('workspace.selectByIndex', platform)[0]
     const workspaces: PaletteEntry[] = workspace.tabs.map((tab, index) => {
       const panels = tabColumns(tab)

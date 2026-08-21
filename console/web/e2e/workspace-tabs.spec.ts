@@ -86,8 +86,11 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   )
   expect(orderAfterReload[0]).toBe(homeId)
 
-  // A deep link opens the screen once and never a second tab for it.
-  await page.goto(`${stack.consoleUrl}#/workers`)
+  // The go-to chord and a deep link open the screen once and never a second
+  // tab for it.
+  await settle(page)
+  await page.keyboard.press('g')
+  await page.keyboard.press('w')
   await expect(tabs(page).filter({ hasText: 'workers' })).toHaveCount(1)
   await page.goto(`${stack.consoleUrl}#/traces`)
   await page.goto(`${stack.consoleUrl}#/workers`)

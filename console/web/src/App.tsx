@@ -361,6 +361,9 @@ export function App({
   useKeybindings({
     'palette.toggle': () => setPaletteOpen((current) => !current),
     'app.settings': toggleSettings,
+    'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
+    'page.workers': () => openWorkspaceScreen('workers'),
+    'page.traces': () => openWorkspaceScreen('traces'),
     'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
     'workspace.next': () => workspaceRef.current.activateAdjacent(1),
     'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),

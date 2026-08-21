@@ -1001,7 +1001,11 @@ Workspace tabs behave like this everywhere:
   is kept in view, and an "All workspaces" menu lists every tab with its
   digit. The `+` and the menu stay visible outside the scrolled region.
 - **Keyboard:** `1`–`9` select by position, `[` / `]` step, `t` creates,
-  `Shift+W` closes, `\` splits. Inside the strip, arrow keys, Home and End
+  `Shift+W` closes, `\` splits, `G then C` / `W` / `T` go to chat, workers or
+  traces (a sequence binding is chords separated by a space in the registry;
+  the prefix arms a 1.5 s pending state and never acts alone, so a new place
+  costs one more letter rather than one more reserved key). Key caps print
+  uppercase. Inside the strip, arrow keys, Home and End
   move between tabs and Delete closes the focused one. Nothing fires while
   the caret is in a field (`useKeybindings`). There is no key to memorise
   first: every action and every open workspace is a row in `⌘K`, each

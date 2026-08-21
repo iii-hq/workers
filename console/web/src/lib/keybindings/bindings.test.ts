@@ -4,8 +4,10 @@ import {
   conflictIdentity,
   formatBinding,
   isBrowserReserved,
+  isSequence,
   type KeyEventLike,
   parseBinding,
+  parseSequence,
 } from './bindings'
 
 function press(
@@ -125,9 +127,19 @@ describe('bindingMatchesEvent', () => {
 
 describe('formatBinding', () => {
   it('spells the chord for the platform', () => {
-    expect(formatBinding('Mod+K', 'mac')).toEqual(['⌘', 'k'])
-    expect(formatBinding('Mod+K', 'other')).toEqual(['ctrl', 'k'])
-    expect(formatBinding('Mod+Shift+P', 'mac')).toEqual(['⌘', '⇧', 'p'])
+    expect(formatBinding('Mod+K', 'mac')).toEqual(['⌘', 'K'])
+    expect(formatBinding('Mod+K', 'other')).toEqual(['ctrl', 'K'])
+    expect(formatBinding('Mod+Shift+P', 'mac')).toEqual(['⌘', '⇧', 'P'])
+  })
+
+  it('prints a sequence chord by chord with "then" between', () => {
+    expect(formatBinding('G C', 'mac')).toEqual(['G', 'then', 'C'])
+    expect(formatBinding('G Shift+C', 'other')).toEqual([
+      'G',
+      'then',
+      'shift',
+      'C',
+    ])
   })
 
   it('labels named keys', () => {
@@ -209,5 +221,28 @@ describe('isBrowserReserved', () => {
     expect(isBrowserReserved('Mod+K', 'mac')).toBe(false)
     expect(isBrowserReserved('?', 'mac')).toBe(false)
     expect(isBrowserReserved('Mod+Shift+K', 'other')).toBe(false)
+  })
+})
+
+describe('sequences', () => {
+  it('splits and parses every chord', () => {
+    expect(isSequence('G C')).toBe(true)
+    expect(isSequence('Mod+K')).toBe(false)
+    expect(parseSequence('G C')?.map((chord) => chord.key)).toEqual(['G', 'C'])
+    expect(parseSequence('G Hyper+C')).toBeNull()
+    expect(parseBinding('G C')).toBeNull()
+  })
+
+  it('never matches a whole sequence against one keystroke', () => {
+    expect(bindingMatchesEvent('G C', press('c'), 'mac')).toBe(false)
+  })
+
+  it('is reserved when any chord of it is', () => {
+    expect(isBrowserReserved('G Mod+W', 'mac')).toBe(true)
+    expect(isBrowserReserved('G C', 'mac')).toBe(false)
+  })
+
+  it('has an identity per chord', () => {
+    expect(conflictIdentity('G C', 'mac')).toBe('++++G ++++C')
   })
 })
