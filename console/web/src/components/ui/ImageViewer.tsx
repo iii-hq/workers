@@ -1,5 +1,5 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { ImageOff, Maximize, Scan, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { ImageOff, Maximize, X, ZoomIn, ZoomOut } from 'lucide-react'
 import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
@@ -157,6 +157,7 @@ function Stage({
     height: 0,
   })
   const [percent, setPercent] = React.useState('')
+  const [scale, setScale] = React.useState(1)
   const [animated, setAnimated] = React.useState(false)
   const [dragging, setDragging] = React.useState(false)
 
@@ -186,6 +187,7 @@ function Stage({
     const view = viewRef.current
     el.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
     setPercent(zoomPercent(view.scale))
+    setScale(view.scale)
   }, [])
 
   const schedulePaint = React.useCallback(() => {
@@ -434,6 +436,8 @@ function Stage({
   }
 
   const zoomable = image !== null
+  const atFit = Math.abs(scale - fit) < 1e-3
+  const atActual = Math.abs(scale - 1) < 1e-3
   const pannable =
     zoomable &&
     (image.width * viewRef.current.scale > stageSize.width ||
@@ -490,8 +494,12 @@ function Stage({
             label="Fit to screen"
             tooltip="Fit to screen (0)"
             disabled={!zoomable}
+            aria-pressed={zoomable && atFit}
             onClick={() => zoomTo(fit, { x: 0, y: 0 }, true)}
-            className="size-11 sm:size-[30px]"
+            className={cn(
+              'size-11 sm:size-[30px]',
+              zoomable && atFit && 'bg-surface-selected text-ink',
+            )}
           >
             <Maximize aria-hidden />
           </IconButton>
@@ -499,10 +507,14 @@ function Stage({
             label="Actual size"
             tooltip="Actual size (1)"
             disabled={!zoomable}
+            aria-pressed={zoomable && atActual}
             onClick={() => zoomTo(1, { x: 0, y: 0 }, true)}
-            className="size-11 sm:size-[30px]"
+            className={cn(
+              'size-11 sm:size-[30px] font-mono text-[11px] font-semibold tracking-tight',
+              zoomable && atActual && 'bg-surface-selected text-ink',
+            )}
           >
-            <Scan aria-hidden />
+            <span aria-hidden>1:1</span>
           </IconButton>
           {actions}
           <IconButton
