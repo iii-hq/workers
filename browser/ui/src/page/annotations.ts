@@ -109,7 +109,7 @@ export async function renderAnnotatedImage(
     const y = a.y * canvas.height
     context.beginPath()
     context.arc(x, y, radius, 0, Math.PI * 2)
-    context.fillStyle = options.color ?? '#b8420f'
+    context.fillStyle = options.color ?? accentColor()
     context.fill()
     context.lineWidth = Math.max(2, radius / 6)
     context.strokeStyle = '#ffffff'
@@ -123,6 +123,17 @@ export async function renderAnnotatedImage(
       else reject(new Error('canvas export failed'))
     }, 'image/png')
   })
+}
+
+/** The theme's accent, so the exported pins match the ones on screen. */
+function accentColor(): string {
+  const value =
+    typeof getComputedStyle === 'function'
+      ? getComputedStyle(document.documentElement)
+          .getPropertyValue('--color-accent')
+          .trim()
+      : ''
+  return value === '' ? '#b8420f' : value
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
