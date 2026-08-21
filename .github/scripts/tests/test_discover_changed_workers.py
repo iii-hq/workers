@@ -160,7 +160,12 @@ def make_repo_with_harness(tmp_path: Path) -> Path:
     (tmp_path / "console" / "package.json").write_text(
         '{"name":"console","version":"0.1.0"}'
     )
-    for worker in ("database", "provider-anthropic", "provider-openai-codex"):
+    for worker in (
+        "database",
+        "provider-anthropic",
+        "provider-command-code",
+        "provider-openai-codex",
+    ):
         (tmp_path / worker).mkdir()
         (tmp_path / worker / "iii.worker.yaml").write_text(
             f'iii: v1\nname: {worker}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
@@ -391,6 +396,7 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)["provider_contract"] == [
             "provider-anthropic",
+            "provider-command-code",
             "provider-openai-codex",
         ]
 

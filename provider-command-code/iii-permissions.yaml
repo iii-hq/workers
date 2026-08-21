@@ -1,0 +1,7 @@
+version: 1
+
+rules:
+  - '!provider::command-code::stream'
+  - '!provider::command-code::abort'
+  - '!provider::command-code::refresh_models'
+  - '!provider::command-code::on_router_ready'

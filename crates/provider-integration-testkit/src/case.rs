@@ -97,6 +97,43 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
             })
         },
     });
+    #[cfg(feature = "provider-command-code")]
+    {
+        cases.push(ProviderCase {
+            id: "command-code",
+            family: ProtocolFamily::OpenAiChatCompletions,
+            model: "command-code/gpt-5.4",
+            alternate_model: "command-code/gpt-5.6-luna",
+            upstream_model: "gpt-5.4",
+            alternate_upstream_model: "gpt-5.6-luna",
+            generation_path: "/chat/completions",
+            credential: CredentialMode::ApiKey,
+            register: |iii| {
+                Box::pin(async move {
+                    provider_command_code::register::register_provider(iii)
+                        .await
+                        .map_err(anyhow::Error::from)
+                })
+            },
+        });
+        cases.push(ProviderCase {
+            id: "command-code",
+            family: ProtocolFamily::AnthropicMessages,
+            model: "command-code/claude-sonnet-4-6",
+            alternate_model: "command-code/claude-opus-4-8",
+            upstream_model: "claude-sonnet-4-6",
+            alternate_upstream_model: "claude-opus-4-8",
+            generation_path: "/messages",
+            credential: CredentialMode::ApiKey,
+            register: |iii| {
+                Box::pin(async move {
+                    provider_command_code::register::register_provider(iii)
+                        .await
+                        .map_err(anyhow::Error::from)
+                })
+            },
+        });
+    }
     #[cfg(feature = "provider-deepseek")]
     cases.push(openai_chat_case(
         "deepseek",
@@ -221,6 +258,7 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
     cases
 }
 
+#[allow(dead_code)]
 fn openai_chat_case(
     id: &'static str,
     model: &'static str,

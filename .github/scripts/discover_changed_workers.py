@@ -81,6 +81,7 @@ LLM_ROUTER_INTEGRATION_INFRA_PATHS = {
 PROVIDER_CONTRACT_WORKERS = {
     "provider-anthropic",
     "provider-claude-code",
+    "provider-command-code",
     "provider-deepseek",
     "provider-kimi",
     "provider-openai",
