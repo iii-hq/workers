@@ -985,6 +985,28 @@ gutters between panels and against the viewport, so the canvas shows
 through as the seam. That gutter + edge frame is the entire column
 chrome; panels draw no other lines.
 
+Workspace tabs behave like this everywhere:
+
+- **Selection is per browser tab.** The server pointer
+  (`workspace.activeTabId` + `activatedAt`/`activatedBy`) is where a new
+  window lands; a live browser keeps its own choice and follows the server
+  only for a newer *function* activation (`console::workspace::open`), never
+  for another browser's click.
+- **Closing** the active tab lands on its right-hand neighbour, else the
+  left one; the last tab never closes. A tab or pane whose page reported
+  unsaved work (`PageRenderProps.setDirty`) asks first through the shared
+  `ConfirmDialog`; the native prompt remains only for a real reload or
+  browser-tab close.
+- **Overflow** scrolls the strip. Fades mark the hidden side, the active tab
+  is kept in view, and an "All workspaces" menu lists every tab with its
+  digit. The `+` and the menu stay visible outside the scrolled region.
+- **Keyboard:** `1`–`9` select by position, `[` / `]` step, `t` creates,
+  `Shift+W` closes, `\` splits. Inside the strip, arrow keys, Home and End
+  move between tabs and Delete closes the focused one. Nothing fires while
+  the caret is in a field (`useKeybindings`); `?` lists all of them.
+- **Phones** switch workspaces from the bottom sheet; each workspace
+  remembers which panel it was showing, per browser tab.
+
 ### Sheet pages
 
 The page is a vertical sheet, max 1200px, sitting on the canvas surface.

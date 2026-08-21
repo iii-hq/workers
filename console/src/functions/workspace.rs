@@ -233,7 +233,15 @@ pub fn resolve_active<'a>(tabs: &'a [Tab], pointer: Option<&str>) -> Option<&'a 
         .or_else(|| tabs.first())
 }
 
+/// Write the layout back. A pointer that moved is stamped as a function
+/// activation so live browsers follow it; an unchanged pointer keeps
+/// whatever provenance the last writer left, exactly like the SPA's writes.
 pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str) -> Value {
+    with_workspace_at(value, tabs, active_tab_id, now_ms())
+}
+
+pub fn with_workspace_at(value: Value, tabs: &[Value], active_tab_id: &str, now: i64) -> Value {
+    let previous = parse_active_tab_id(&value);
     let mut root = match value {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -243,9 +251,20 @@ pub fn with_workspace(value: Value, tabs: &[Value], active_tab_id: &str) -> Valu
         _ => Map::new(),
     };
     workspace.insert("tabs".to_string(), json!(tabs));
-    workspace.insert("activeTabId".to_string(), json!(active_tab_id));
+    if previous.as_deref() != Some(active_tab_id) {
+        workspace.insert("activeTabId".to_string(), json!(active_tab_id));
+        workspace.insert("activatedAt".to_string(), json!(now));
+        workspace.insert("activatedBy".to_string(), json!("function"));
+    }
     root.insert("workspace".to_string(), Value::Object(workspace));
     Value::Object(root)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq)]
@@ -880,5 +899,31 @@ mod tests {
             next.pointer("/workspace/tabs/0/screens"),
             Some(&json!(["chat", "traces"]))
         );
+    }
+
+    #[test]
+    fn a_moved_pointer_is_stamped_as_a_function_activation() {
+        let value = json!({ "workspace": { "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" } });
+        let next = with_workspace_at(value, &[], "tab-b", 99);
+        assert_eq!(next["workspace"]["activeTabId"], "tab-b");
+        assert_eq!(next["workspace"]["activatedAt"], 99);
+        assert_eq!(next["workspace"]["activatedBy"], "function");
+    }
+
+    #[test]
+    fn an_unchanged_pointer_keeps_the_previous_activation() {
+        let value = json!({ "workspace": { "activeTabId": "tab-a", "activatedAt": 5, "activatedBy": "browser" } });
+        let next = with_workspace_at(value, &[], "tab-a", 99);
+        assert_eq!(next["workspace"]["activeTabId"], "tab-a");
+        assert_eq!(next["workspace"]["activatedAt"], 5);
+        assert_eq!(next["workspace"]["activatedBy"], "browser");
+    }
+
+    #[test]
+    fn a_first_pointer_is_stamped() {
+        let next = with_workspace_at(json!({}), &[], "tab-home", 7);
+        assert_eq!(next["workspace"]["activeTabId"], "tab-home");
+        assert_eq!(next["workspace"]["activatedBy"], "function");
+        assert_eq!(next["workspace"]["activatedAt"], 7);
     }
 }

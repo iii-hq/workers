@@ -22,6 +22,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -109,6 +110,7 @@ export const components: ConsoleApi['components'] = {
   CardHighlight,
   CardHeader,
   Chip,
+  ConfirmDialog,
   Dialog,
   CollapsibleCard,
   CollapsibleCardContent,

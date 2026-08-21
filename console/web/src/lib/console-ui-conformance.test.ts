@@ -32,6 +32,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -121,6 +122,7 @@ const conformance: {
   CollapsibleCard: typeof ConsoleUi.CollapsibleCard
   CollapsibleCardContent: typeof ConsoleUi.CollapsibleCardContent
   CollapsibleCardTrigger: typeof ConsoleUi.CollapsibleCardTrigger
+  ConfirmDialog: typeof ConsoleUi.ConfirmDialog
   Dialog: typeof ConsoleUi.Dialog
   DialogClose: typeof ConsoleUi.DialogClose
   DialogContent: typeof ConsoleUi.DialogContent
@@ -193,6 +195,7 @@ const conformance: {
   CollapsibleCard,
   CollapsibleCardContent,
   CollapsibleCardTrigger,
+  ConfirmDialog,
   Dialog,
   DialogClose,
   DialogContent,

@@ -422,11 +422,95 @@ export function withWorkspaceTabs(
   return withWorkspace(configValue, { tabs })
 }
 
+/** Who last moved the server pointer, and when. */
+export type ActivationSource = 'browser' | 'function'
+
+export interface Activation {
+  tabId: string
+  /** Epoch milliseconds; 0 for pointers written before the field existed. */
+  at: number
+  by: ActivationSource
+}
+
+/** Stamp the server pointer with who moved it and when. */
 export function withActiveTabId(
   configValue: Record<string, unknown>,
   id: string,
+  by: ActivationSource = 'browser',
+  at: number = Date.now(),
 ): Record<string, unknown> {
-  return withWorkspace(configValue, { activeTabId: id })
+  return withWorkspace(configValue, {
+    activeTabId: id,
+    activatedAt: at,
+    activatedBy: by,
+  })
+}
+
+/** Parse the server pointer with its provenance; `undefined` = no pointer. */
+export function parseActivation(
+  configValue: Record<string, unknown>,
+): Activation | undefined {
+  const tabId = parseActiveTabId(configValue)
+  if (!tabId) return undefined
+  const workspace = configValue.workspace as Record<string, unknown>
+  const at = workspace.activatedAt
+  const by = workspace.activatedBy
+  return {
+    tabId,
+    at: typeof at === 'number' && Number.isFinite(at) ? at : 0,
+    by: by === 'function' ? 'function' : 'browser',
+  }
+}
+
+/** This browser's own last activation, kept per browser tab. */
+export interface LocalActivation {
+  tabId: string
+  at: number
+}
+
+/**
+ * A function activation newer than the local choice wins; otherwise the local
+ * choice, else the server pointer. Another browser's click never switches this one.
+ */
+export function resolvePointer(
+  local: LocalActivation | null,
+  server: Activation | undefined,
+): string | undefined {
+  if (server && server.by === 'function' && server.at > (local?.at ?? -1)) {
+    return server.tabId
+  }
+  return local?.tabId ?? server?.tabId
+}
+
+export interface WorkspaceState {
+  tabs: WorkspaceTab[]
+  activeTabId: string
+}
+
+/** Closing the active tab lands on its right neighbour, else the left; the last tab never closes. */
+export function withTabClosed(
+  state: WorkspaceState,
+  id: string,
+): WorkspaceState {
+  const index = state.tabs.findIndex((tab) => tab.id === id)
+  if (index < 0 || state.tabs.length <= 1) return state
+  const remaining = state.tabs.filter((tab) => tab.id !== id)
+  if (state.activeTabId !== id)
+    return { tabs: remaining, activeTabId: state.activeTabId }
+  const neighbour = state.tabs[index + 1] ?? state.tabs[index - 1]
+  return { tabs: remaining, activeTabId: neighbour.id }
+}
+
+/** The tab `steps` positions away from the active one, wrapping around. */
+export function adjacentTabId(
+  tabs: WorkspaceTab[],
+  activeTabId: string,
+  steps: 1 | -1,
+): string | undefined {
+  if (tabs.length < 2) return undefined
+  const index = tabs.findIndex((tab) => tab.id === activeTabId)
+  if (index < 0) return tabs[0]?.id
+  return tabs[(index + steps + tabs.length) % tabs.length]?.id
 }
 
 /** Where the tabs in hand come from: `pending` until the first server

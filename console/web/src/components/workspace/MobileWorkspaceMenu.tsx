@@ -25,6 +25,7 @@ interface MobileWorkspaceMenuProps {
   extPageTitles: ReadonlyMap<string, string>
   settingsOpen: boolean
   onActivate: (tabId: string) => void
+  onCloseTab: (tabId: string) => void
   onToggleSettings: () => void
   onOpenShortcuts: () => void
   onOpenPalette: () => void
@@ -37,6 +38,7 @@ export function MobileWorkspaceMenu({
   extPageTitles,
   settingsOpen,
   onActivate,
+  onCloseTab,
   onToggleSettings,
   onOpenShortcuts,
   onOpenPalette,
@@ -64,7 +66,7 @@ export function MobileWorkspaceMenu({
               Search the console
             </button>
 
-            <ul className="space-y-1" aria-label="workspaces">
+            <ul className="space-y-1" aria-label="Workspaces">
               {workspace.tabs.map((tab) => {
                 const active = tab.id === workspace.activeTabId
                 const panels = Array.from(
@@ -122,8 +124,8 @@ export function MobileWorkspaceMenu({
                     {workspace.tabs.length > 1 ? (
                       <button
                         type="button"
-                        onClick={() => workspace.closeTab(tab.id)}
-                        aria-label={`close ${tabLabel(tab, extPageTitles)}`}
+                        onClick={() => onCloseTab(tab.id)}
+                        aria-label={`Close ${tabLabel(tab, extPageTitles)}`}
                         className="flex w-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-active hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
                       >
                         <X className="size-4" aria-hidden />

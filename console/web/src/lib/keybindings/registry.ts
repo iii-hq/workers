@@ -32,6 +32,9 @@ export type KeybindingActionId =
   | 'app.settings'
   | 'workspace.selectByIndex'
   | 'workspace.create'
+  | 'workspace.next'
+  | 'workspace.previous'
+  | 'workspace.close'
   | 'panel.split'
   | 'palette.next'
   | 'palette.previous'
@@ -118,6 +121,30 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     scope: 'global',
     bindings: ['t'],
     keywords: ['tab', 'new', 'create'],
+  },
+  {
+    id: 'workspace.next',
+    title: 'Next workspace',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: [']'],
+    keywords: ['tab', 'switch', 'cycle'],
+  },
+  {
+    id: 'workspace.previous',
+    title: 'Previous workspace',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['['],
+    keywords: ['tab', 'switch', 'cycle'],
+  },
+  {
+    id: 'workspace.close',
+    title: 'Close the workspace',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: ['Shift+W'],
+    keywords: ['tab', 'close', 'remove'],
   },
   {
     id: 'panel.split',

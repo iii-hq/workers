@@ -24,6 +24,7 @@ export const componentNames = [
   'CollapsibleCard',
   'CollapsibleCardContent',
   'CollapsibleCardTrigger',
+  'ConfirmDialog',
   'Dialog',
   'DialogClose',
   'DialogContent',

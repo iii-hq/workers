@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ConsoleConfigValue } from '@/lib/console-config'
 import {
+  parseActivation,
   parseActiveTabId,
   parseWorkspaceTabs,
   tabPaneIds,
+  withTabClosed,
 } from '@/lib/workspace-tabs'
 import { SerializedConfigWriter } from './lib/serialized-config-writer'
 import {
@@ -94,5 +96,74 @@ describe('pending-layout replay vs a deep-linked screen', () => {
     const ids = parseWorkspaceTabs(stack.remote()).map((tab) => tab.id)
     expect(ids).toContain('tab-second')
     expect(ids).toContain('tab-shell')
+  })
+})
+
+describe('pointer provenance on the server', () => {
+  const functionActivated: ConsoleConfigValue = {
+    workspace: {
+      tabs: [
+        { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
+        { id: 'tab-shell', columns: 1, screens: ['ext:shell'] },
+      ],
+      activeTabId: 'tab-shell',
+      activatedAt: 500,
+      activatedBy: 'function',
+    },
+  }
+
+  it('a write that leaves the pointer alone keeps the function activation', async () => {
+    const stack = harness(functionActivated)
+    const rename: WorkspaceTransform = (state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) =>
+        tab.id === 'tab-shell' ? { ...tab, name: 'IDE' } : tab,
+      ),
+    })
+    stack.writer.enqueue(workspaceConfigTransform(rename, () => 900))
+    await stack.flush()
+    expect(parseActivation(stack.remote())).toEqual({
+      tabId: 'tab-shell',
+      at: 500,
+      by: 'function',
+    })
+    expect(parseWorkspaceTabs(stack.remote())[1].name).toBe('IDE')
+  })
+
+  it('a write that moves the pointer stamps a browser activation', async () => {
+    const stack = harness(functionActivated)
+    const activateHome: WorkspaceTransform = (state) => ({
+      ...state,
+      activeTabId: 'tab-home',
+    })
+    stack.writer.enqueue(workspaceConfigTransform(activateHome, () => 900))
+    await stack.flush()
+    expect(parseActivation(stack.remote())).toEqual({
+      tabId: 'tab-home',
+      at: 900,
+      by: 'browser',
+    })
+  })
+
+  it('closing the active tab on the server follows the neighbour rule', async () => {
+    const stack = harness({
+      workspace: {
+        tabs: [
+          { id: 'a', screens: ['chat'] },
+          { id: 'b', screens: ['traces'] },
+          { id: 'c', screens: ['workers'] },
+        ],
+        activeTabId: 'b',
+      },
+    })
+    stack.writer.enqueue(
+      workspaceConfigTransform((state) => withTabClosed(state, 'b')),
+    )
+    await stack.flush()
+    expect(parseWorkspaceTabs(stack.remote()).map((t) => t.id)).toEqual([
+      'a',
+      'c',
+    ])
+    expect(parseActiveTabId(stack.remote())).toBe('c')
   })
 })

@@ -20,6 +20,7 @@ import {
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { PaletteHost } from '@/components/PaletteHost'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogContent,
@@ -67,6 +68,17 @@ import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
+  clearTabDirty,
+  dirtyReasonsForPane,
+  dirtyReasonsForTab,
+  setPaneDirty,
+  useDirtyEntries,
+} from '@/lib/workspace-guards'
+import {
+  loadMobilePanelIndexes,
+  persistMobilePanelIndexes,
+} from '@/lib/workspace-mobile'
+import {
   CHAT_SCREEN,
   extPageIdForScreen,
   MAX_COLUMNS,
@@ -108,14 +120,81 @@ export function App({
   const [paletteOpen, setPaletteOpen] = useState(false)
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
-  const [mobilePanelIndex, setMobilePanelIndex] = useState(0)
-
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+  // Per-workspace phone panel, so switching back lands where the user left off.
+  const mobilePanelIndexesRef = useRef(loadMobilePanelIndexes())
+  const [mobilePanelIndex, setMobilePanelIndexState] = useState(
+    () => mobilePanelIndexesRef.current[activeTabId] ?? 0,
+  )
+  const setMobilePanelIndex = useCallback((index: number) => {
+    mobilePanelIndexesRef.current = {
+      ...mobilePanelIndexesRef.current,
+      [workspaceRef.current.activeTabId]: index,
+    }
+    persistMobilePanelIndexes(mobilePanelIndexesRef.current)
+    setMobilePanelIndexState(index)
+  }, [])
   const mobileActiveTabRef = useRef(activeTabId)
   useEffect(() => {
     if (mobileActiveTabRef.current === activeTabId) return
     mobileActiveTabRef.current = activeTabId
-    setMobilePanelIndex(0)
+    setMobilePanelIndexState(mobilePanelIndexesRef.current[activeTabId] ?? 0)
   }, [activeTabId])
+
+  // Unsaved work: the console's own dialog on close; the native prompt only for reload.
+  const dirtyEntries = useDirtyEntries()
+  const [discardPrompt, setDiscardPrompt] = useState<{
+    title: string
+    details: string[]
+    proceed: () => void
+  } | null>(null)
+  useEffect(() => {
+    if (dirtyEntries.length === 0) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+      return ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirtyEntries.length])
+  const requestCloseTab = useCallback((id: string) => {
+    const ws = workspaceRef.current
+    const reasons = dirtyReasonsForTab(id)
+    const proceed = () => {
+      clearTabDirty(id)
+      ws.closeTab(id)
+    }
+    if (reasons.length === 0) {
+      proceed()
+      return
+    }
+    setDiscardPrompt({
+      title: 'Close this workspace?',
+      details: reasons,
+      proceed,
+    })
+  }, [])
+  const requestClosePane = useCallback(
+    (tabId: string, paneId: string, close: () => void) => {
+      const reasons = dirtyReasonsForPane(tabId, paneId)
+      const proceed = () => {
+        setPaneDirty(tabId, paneId, false)
+        close()
+      }
+      if (reasons.length === 0) {
+        proceed()
+        return
+      }
+      setDiscardPrompt({
+        title: 'Close this panel?',
+        details: reasons,
+        proceed,
+      })
+    },
+    [],
+  )
 
   // An active extension page that disappears (hot-reload failure, worker
   // disconnect, unregister) falls back to the default view.
@@ -140,8 +219,6 @@ export function App({
   const lastHashScreenRef = useRef<TabScreen | null>(
     hasExplicitHash() ? null : hashScreen,
   )
-  const workspaceRef = useRef(workspace)
-  workspaceRef.current = workspace
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
   const openWorkspaceScreen = useCallback((screen: TabScreen) => {
     const commands = panelCommandsRef.current
@@ -249,6 +326,9 @@ export function App({
     'shortcuts.open': () => setShortcutsOpen(true),
     'app.settings': toggleSettings,
     'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    'workspace.next': () => workspaceRef.current.activateAdjacent(1),
+    'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
+    'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),
     'panel.split': splitWorkspacePanel,
     // Out of range is a no-op rather than a wrap: pressing 7 with four
     // workspaces open should do nothing, not land somewhere surprising.
@@ -269,7 +349,7 @@ export function App({
         <Header
           workspace={workspace}
           mobilePanelIndex={mobilePanelIndex}
-          onMobilePanelIndexChange={setMobilePanelIndex}
+          onCloseTab={requestCloseTab}
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
@@ -280,7 +360,20 @@ export function App({
           commandsRef={panelCommandsRef}
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
+          onRequestClosePane={requestClosePane}
           onExtMissing={onExtMissing}
+        />
+        <ConfirmDialog
+          open={discardPrompt !== null}
+          onOpenChange={(open) => {
+            if (!open) setDiscardPrompt(null)
+          }}
+          title={discardPrompt?.title ?? ''}
+          description="Unsaved work in it will be lost."
+          details={discardPrompt?.details}
+          confirmLabel="Close and discard"
+          cancelLabel="Keep working"
+          onConfirm={() => discardPrompt?.proceed()}
         />
         {view === 'configuration' ? (
           <ConfigurationOverlay
@@ -309,6 +402,8 @@ interface WorkspacePanesProps {
   commandsRef: MutableRefObject<WorkspacePanelCommands | null>
   mobilePanelIndex: number
   onMobilePanelIndexChange: (index: number) => void
+  /** Close a pane after the dirty-work guard has had its say. */
+  onRequestClosePane: (tabId: string, paneId: string, close: () => void) => void
   onExtMissing: () => void
 }
 
@@ -350,6 +445,7 @@ function WorkspacePanes({
   commandsRef,
   mobilePanelIndex,
   onMobilePanelIndexChange,
+  onRequestClosePane,
   onExtMissing,
 }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
@@ -521,16 +617,19 @@ function WorkspacePanes({
     addEdgeColumn('right', columns)
   }, [activeTab.id, addEdgeColumn, columns, enteringPanel])
 
-  // A tab switch always lands on its first panel. Inside a tab, native
-  // horizontal scrolling does the gesture work and this index only mirrors
-  // the snapped position for the header indicator.
+  // A tab switch lands on the panel that tab was last showing; native
+  // horizontal scrolling does the gesture work inside a tab.
   useEffect(() => {
     const container = containerRef.current
     if (!container || container.dataset.activeTab === activeTab.id) return
     pendingMobileColumnRef.current = null
     container.dataset.activeTab = activeTab.id
-    container.scrollTo({ left: 0, behavior: 'auto' })
-  }, [activeTab.id])
+    const index = Math.max(0, Math.min(columns - 1, mobilePanelIndex))
+    container.scrollTo({
+      left: container.clientWidth * index,
+      behavior: 'auto',
+    })
+  }, [activeTab.id, columns, mobilePanelIndex])
 
   useEffect(() => {
     const pending = pendingMobileColumnRef.current
@@ -1000,9 +1099,11 @@ function WorkspacePanes({
         // last column detaches its screen instead (back to the attach
         // affordance) — a tab never loses its final pane.
         const closePane = () =>
-          columns > 1
-            ? requestPanelRemoval(column)
-            : workspace.detachScreen(activeTab.id, column)
+          onRequestClosePane(activeTab.id, paneId, () =>
+            columns > 1
+              ? requestPanelRemoval(column)
+              : workspace.detachScreen(activeTab.id, column),
+          )
         const pane = (
           <section
             key="panel"
@@ -1068,7 +1169,12 @@ function WorkspacePanes({
                     workspace.attachScreen(activeTab.id, column, next)
                   }
                   onRemove={
-                    columns > 1 ? () => requestPanelRemoval(column) : undefined
+                    columns > 1
+                      ? () =>
+                          onRequestClosePane(activeTab.id, paneId, () =>
+                            requestPanelRemoval(column),
+                          )
+                      : undefined
                   }
                 />
               ) : (
@@ -1077,6 +1183,7 @@ function WorkspacePanes({
                   screen={screen}
                   panelSide={panelSide}
                   tabId={activeTab.id}
+                  paneId={paneId}
                   onClose={closePane}
                   onExtMissing={onExtMissing}
                 />
@@ -1172,6 +1279,8 @@ interface ScreenBodyProps {
   panelSide: PanelSide
   /** Hosting workspace tab id (forwarded to ext pages for per-tab state). */
   tabId: string
+  /** Hosting pane id; the key under which the page reports unsaved work. */
+  paneId: string
   /** Close this pane — the standard PageHeader ✕ on screens that carry it. */
   onClose: () => void
   onExtMissing: () => void
@@ -1183,12 +1292,23 @@ function ScreenBody({
   screen,
   panelSide,
   tabId,
+  paneId,
   onClose,
   onExtMissing,
 }: ScreenBodyProps) {
   // The active conversation's working dir, forwarded live so ext pages
   // (e.g. the shell explorer) can follow the chat's folder in a split.
   const { active } = useConversationsCtx()
+  const setDirty = useCallback(
+    (dirty: boolean | string) =>
+      setPaneDirty(
+        tabId,
+        paneId,
+        dirty === false ? false : dirty === true ? 'Unsaved changes' : dirty,
+      ),
+    [tabId, paneId],
+  )
+  useEffect(() => () => setPaneDirty(tabId, paneId, false), [tabId, paneId])
   const extId = extPageIdForScreen(screen)
   if (extId !== null) {
     return (
@@ -1197,6 +1317,7 @@ function ScreenBody({
         panelSide={panelSide}
         tabId={tabId}
         onRequestClose={onClose}
+        setDirty={setDirty}
         onMissing={onExtMissing}
         workingDir={active?.workingDir ?? null}
         conversationId={active?.id ?? null}
@@ -1223,8 +1344,9 @@ function ScreenBody({
 
 interface HeaderProps {
   workspace: UseWorkspaceTabsReturn
+  /** Close a workspace after the dirty-work guard has had its say. */
+  onCloseTab: (id: string) => void
   mobilePanelIndex: number
-  onMobilePanelIndexChange: (index: number) => void
   settingsOpen: boolean
   onToggleSettings: () => void
   onOpenShortcuts: () => void
@@ -1233,8 +1355,8 @@ interface HeaderProps {
 
 function Header({
   workspace,
+  onCloseTab,
   mobilePanelIndex,
-  onMobilePanelIndexChange,
   settingsOpen,
   onToggleSettings,
   onOpenShortcuts,
@@ -1324,10 +1446,8 @@ function Header({
         workspace={workspace}
         extPageTitles={extPageTitles}
         settingsOpen={settingsOpen}
-        onActivate={(tabId) => {
-          onMobilePanelIndexChange(0)
-          workspace.activateTab(tabId)
-        }}
+        onActivate={workspace.activateTab}
+        onCloseTab={onCloseTab}
         onToggleSettings={onToggleSettings}
         onOpenShortcuts={onOpenShortcuts}
         onOpenPalette={onOpenPalette}
@@ -1341,7 +1461,7 @@ function Header({
             activeTabId={workspace.activeTabId}
             extPageTitles={extPageTitles}
             onActivate={workspace.activateTab}
-            onClose={workspace.closeTab}
+            onClose={onCloseTab}
             onCreate={() => workspace.createTab({ columns: 1 })}
             onRename={workspace.renameTab}
             onReorder={workspace.reorderTab}
