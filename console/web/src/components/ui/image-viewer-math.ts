@@ -39,9 +39,13 @@ export function clampOffset(
   const maxY = Math.max(0, (height - stage.height) / 2)
   return {
     scale: view.scale,
-    x: Math.min(maxX, Math.max(-maxX, view.x)) + 0,
-    y: Math.min(maxY, Math.max(-maxY, view.y)) + 0,
+    x: withoutNegativeZero(Math.min(maxX, Math.max(-maxX, view.x))),
+    y: withoutNegativeZero(Math.min(maxY, Math.max(-maxY, view.y))),
   }
+}
+
+function withoutNegativeZero(value: number): number {
+  return Object.is(value, -0) ? 0 : value
 }
 
 /** Zoom so the image point under `focus` (stage-centre coordinates) stays put. */
@@ -85,19 +89,37 @@ export function zoomPercent(scale: number): string {
   return `${Math.round(scale * 100)}%`
 }
 
-/** Zoom steps snap to a readable ladder around 100% instead of drifting. */
+const ZOOM_LADDER = [
+  0.05, 0.1, 0.15, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 12,
+  16, 24, 32,
+] as const
+
+/**
+ * Zoom steps snap to a readable ladder around 100%. Past either end the step
+ * is geometric and unclamped: the caller clamps against the fit, which may sit
+ * below the ladder for very tall or wide images.
+ */
 export function steppedScale(scale: number, direction: 1 | -1): number {
-  const ladder = [
-    0.05, 0.1, 0.15, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8,
-    12, 16, 24, 32,
-  ]
   const epsilon = 1e-6
   if (direction === 1) {
-    const next = ladder.find((step) => step > scale + epsilon)
-    return next ?? Math.min(MAX_SCALE, scale * ZOOM_STEP)
+    const next = ZOOM_LADDER.find((step) => step > scale + epsilon)
+    return next ?? scale * ZOOM_STEP
   }
-  const previous = [...ladder].reverse().find((step) => step < scale - epsilon)
-  return previous ?? Math.max(MIN_SCALE, scale / ZOOM_STEP)
+  for (let i = ZOOM_LADDER.length - 1; i >= 0; i -= 1) {
+    if (ZOOM_LADDER[i] < scale - epsilon) return ZOOM_LADDER[i]
+  }
+  return scale / ZOOM_STEP
+}
+
+/** Wheel deltas in pixels whatever deltaMode the browser reports. */
+export function wheelDeltaPixels(
+  delta: number,
+  deltaMode: number,
+  pageHeight: number,
+): number {
+  if (deltaMode === 1) return delta * 16
+  if (deltaMode === 2) return delta * Math.max(pageHeight, 1)
+  return delta
 }
 
 export interface PointerPoint {

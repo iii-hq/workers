@@ -1,5 +1,6 @@
 import { Markdown } from '@iii-dev/console-ui'
 import type React from 'react'
+import { ImagePreview } from './image-preview'
 
 export function isRichPreviewPath(path: string): boolean {
   const lower = path.toLowerCase()
@@ -19,7 +20,7 @@ export function richPreviewNode(path: string, contents: string): React.ReactNode
   }
   if (lower.endsWith('.svg')) {
     const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(contents)}`
-    return <img className="shui-rich-preview-image" src={src} alt={`preview ${path}`} />
+    return <ImagePreview src={src} name={path} inline />
   }
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
     return (

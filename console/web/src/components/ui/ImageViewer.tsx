@@ -17,6 +17,7 @@ import {
   type Size,
   steppedScale,
   type ViewTransform,
+  wheelDeltaPixels,
   zoomAbout,
   zoomPercent,
 } from './image-viewer-math'
@@ -44,12 +45,48 @@ type Phase =
   | { kind: 'error'; message: string }
   | { kind: 'unavailable'; message: string }
 
+type Gesture =
+  | {
+      kind: 'pan'
+      press: { x: number; y: number }
+      last: { x: number; y: number }
+      moved: boolean
+    }
+  | {
+      kind: 'pinch'
+      startView: ViewTransform
+      startDistance: number
+      startMid: { x: number; y: number }
+    }
+
 const KEY_PAN_PX = 48
+const DRAG_SLOP_PX = 3
+const ANNOUNCE_DELAY_MS = 250
+const FALLBACK_INTRINSIC: Size = { width: 300, height: 150 }
 
 function prefersReducedMotion(): boolean {
   return (
     typeof window !== 'undefined' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
+function releasePointer(el: HTMLElement, pointerId: number): void {
+  try {
+    el.releasePointerCapture(pointerId)
+  } catch {
+    return
+  }
+}
+
+function isEditable(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    target.isContentEditable
   )
 }
 
@@ -64,7 +101,6 @@ export function ImageViewer({
   unavailableReason,
   actions,
 }: ImageViewerProps) {
-  // Radix returns focus to a DialogTrigger; a controlled viewer has none.
   const openerRef = React.useRef<HTMLElement | null>(null)
   React.useLayoutEffect(() => {
     if (open) {
@@ -78,7 +114,6 @@ export function ImageViewer({
         <PortalScope>
           <DialogPrimitive.Overlay className="iii-ui-motion-overlay fixed inset-0 z-50 bg-black/85" />
           <DialogPrimitive.Content
-            aria-label={title ? `Image: ${title}` : 'Image viewer'}
             className="iii-ui-motion-panel fixed inset-0 z-50 flex flex-col font-sans text-ink focus-visible:outline-none"
             onOpenAutoFocus={(event) => {
               event.preventDefault()
@@ -94,22 +129,20 @@ export function ImageViewer({
             }}
           >
             <DialogPrimitive.Title className="sr-only">
-              {title ?? 'Image'}
+              {title ? `Image viewer: ${title}` : 'Image viewer'}
             </DialogPrimitive.Title>
             <DialogPrimitive.Description className="sr-only">
               {alt}
             </DialogPrimitive.Description>
-            {open ? (
-              <Stage
-                src={src ?? null}
-                alt={alt}
-                title={title}
-                description={description}
-                unavailableReason={unavailableReason}
-                actions={actions}
-                onClose={() => onOpenChange(false)}
-              />
-            ) : null}
+            <Stage
+              src={src ?? null}
+              alt={alt}
+              title={title}
+              description={description}
+              unavailableReason={unavailableReason}
+              actions={actions}
+              onClose={() => onOpenChange(false)}
+            />
           </DialogPrimitive.Content>
         </PortalScope>
       </DialogPrimitive.Portal>
@@ -141,14 +174,8 @@ function Stage({
   const viewRef = React.useRef<ViewTransform>(centred(1))
   const frameRef = React.useRef<number | null>(null)
   const pointersRef = React.useRef<Map<number, PointerPoint>>(new Map())
-  const gestureRef = React.useRef<{
-    kind: 'pan' | 'pinch'
-    startView: ViewTransform
-    startDistance: number
-    startMid: { x: number; y: number }
-    last: { x: number; y: number }
-    moved: boolean
-  } | null>(null)
+  const gestureRef = React.useRef<Gesture | null>(null)
+  const loadGenerationRef = React.useRef(0)
   const [phase, setPhase] = React.useState<Phase>(() =>
     initialPhase(src, unavailableReason),
   )
@@ -156,26 +183,39 @@ function Stage({
     width: 0,
     height: 0,
   })
-  const [percent, setPercent] = React.useState('')
   const [scale, setScale] = React.useState(1)
+  const [announced, setAnnounced] = React.useState('')
   const [animated, setAnimated] = React.useState(false)
   const [dragging, setDragging] = React.useState(false)
 
   const image = phase.kind === 'ready' ? phase.image : null
   const fit = image ? fitScale(image, stageSize) : 1
 
+  const firstPhaseRef = React.useRef(true)
   React.useEffect(() => {
+    if (firstPhaseRef.current) {
+      firstPhaseRef.current = false
+      return
+    }
+    loadGenerationRef.current += 1
     setPhase(initialPhase(src, unavailableReason))
   }, [src, unavailableReason])
 
   React.useLayoutEffect(() => {
     const stage = stageRef.current
     if (!stage) return
-    const measure = () =>
-      setStageSize({ width: stage.clientWidth, height: stage.clientHeight })
-    measure()
+    const commit = (width: number, height: number) =>
+      setStageSize((current) =>
+        current.width === width && current.height === height
+          ? current
+          : { width, height },
+      )
+    commit(stage.clientWidth, stage.clientHeight)
     if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect
+      if (rect) commit(Math.round(rect.width), Math.round(rect.height))
+    })
     observer.observe(stage)
     return () => observer.disconnect()
   }, [])
@@ -186,7 +226,6 @@ function Stage({
     if (!el) return
     const view = viewRef.current
     el.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`
-    setPercent(zoomPercent(view.scale))
     setScale(view.scale)
   }, [])
 
@@ -202,6 +241,15 @@ function Stage({
     [],
   )
 
+  React.useEffect(() => {
+    if (!image) return
+    const timer = window.setTimeout(
+      () => setAnnounced(zoomPercent(scale)),
+      ANNOUNCE_DELAY_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [scale, image])
+
   const apply = React.useCallback(
     (view: ViewTransform, animate = false) => {
       viewRef.current = view
@@ -211,12 +259,14 @@ function Stage({
     [schedulePaint],
   )
 
-  // A loaded image, or a resized stage, starts from fit.
   const fitKey = image ? `${image.width}x${image.height}` : ''
   const lastFitKeyRef = React.useRef('')
+  const lastFitRef = React.useRef(1)
   React.useLayoutEffect(() => {
     if (!image || stageSize.width === 0) return
-    if (lastFitKeyRef.current === fitKey) {
+    const wasAtFit = Math.abs(viewRef.current.scale - lastFitRef.current) < 1e-3
+    lastFitRef.current = fit
+    if (lastFitKeyRef.current === fitKey && !wasAtFit) {
       apply(clampOffset(viewRef.current, image, stageSize))
       return
     }
@@ -259,14 +309,18 @@ function Stage({
     [fit, zoomTo],
   )
 
-  // Native non-passive listener: React's synthetic wheel cannot preventDefault.
   React.useEffect(() => {
     const stage = stageRef.current
     if (!stage) return
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
       if (!image) return
-      const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.002))
+      const delta = wheelDeltaPixels(
+        event.deltaY,
+        event.deltaMode,
+        stage.clientHeight,
+      )
+      const factor = Math.exp(-delta * (event.ctrlKey ? 0.01 : 0.002))
       zoomTo(
         viewRef.current.scale * factor,
         stagePoint(event.clientX, event.clientY),
@@ -284,25 +338,21 @@ function Stage({
       x: event.clientX,
       y: event.clientY,
     })
-    const points = [...pointersRef.current.values()]
-    const pinch = pinchGeometry(points)
+    const pinch = pinchGeometry([...pointersRef.current.values()])
     if (pinch) {
       gestureRef.current = {
         kind: 'pinch',
         startView: viewRef.current,
         startDistance: pinch.distance,
         startMid: stagePoint(pinch.midpoint.x, pinch.midpoint.y),
-        last: pinch.midpoint,
-        moved: true,
       }
       return
     }
+    const point = { x: event.clientX, y: event.clientY }
     gestureRef.current = {
       kind: 'pan',
-      startView: viewRef.current,
-      startDistance: 0,
-      startMid: { x: 0, y: 0 },
-      last: { x: event.clientX, y: event.clientY },
+      press: point,
+      last: point,
       moved: false,
     }
   }
@@ -341,24 +391,24 @@ function Stage({
       )
       return
     }
-    const dx = event.clientX - gesture.last.x
-    const dy = event.clientY - gesture.last.y
-    gesture.last = { x: event.clientX, y: event.clientY }
-    if (!gesture.moved && Math.hypot(dx, dy) < 3) return
     if (!gesture.moved) {
+      const travelled = Math.hypot(
+        event.clientX - gesture.press.x,
+        event.clientY - gesture.press.y,
+      )
+      if (travelled < DRAG_SLOP_PX) return
       gesture.moved = true
       setDragging(true)
     }
+    const dx = event.clientX - gesture.last.x
+    const dy = event.clientY - gesture.last.y
+    gesture.last = { x: event.clientX, y: event.clientY }
     apply(panBy(viewRef.current, dx, dy, image, stageSize))
   }
 
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    pointersRef.current.delete(event.pointerId)
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    } catch {
-      // Already released.
-    }
+    if (!pointersRef.current.delete(event.pointerId)) return
+    releasePointer(event.currentTarget, event.pointerId)
     const gesture = gestureRef.current
     if (pointersRef.current.size === 0) {
       gestureRef.current = null
@@ -367,12 +417,11 @@ function Stage({
     }
     if (gesture?.kind === 'pinch' && pointersRef.current.size === 1) {
       const [remaining] = pointersRef.current.values()
+      const point = { x: remaining.x, y: remaining.y }
       gestureRef.current = {
         kind: 'pan',
-        startView: viewRef.current,
-        startDistance: 0,
-        startMid: { x: 0, y: 0 },
-        last: { x: remaining.x, y: remaining.y },
+        press: point,
+        last: point,
         moved: true,
       }
     }
@@ -380,13 +429,8 @@ function Stage({
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!image) return
-    const target = event.target as HTMLElement
-    if (
-      target.tagName === 'BUTTON' &&
-      (event.key === ' ' || event.key === 'Enter')
-    ) {
-      return
-    }
+    if (event.metaKey || event.ctrlKey || event.altKey) return
+    if (isEditable(event.target)) return
     switch (event.key) {
       case '+':
       case '=':
@@ -397,10 +441,10 @@ function Stage({
         zoomStep(-1)
         break
       case '0':
-        zoomTo(fit)
+        zoomTo(fit, { x: 0, y: 0 }, true)
         break
       case '1':
-        zoomTo(1)
+        zoomTo(1, { x: 0, y: 0 }, true)
         break
       case 'ArrowLeft':
         apply(panBy(viewRef.current, KEY_PAN_PX, 0, image, stageSize))
@@ -422,17 +466,23 @@ function Stage({
 
   const onLoad = (event: React.SyntheticEvent<HTMLImageElement>) => {
     const el = event.currentTarget
-    const size = { width: el.naturalWidth, height: el.naturalHeight }
-    if (size.width === 0 || size.height === 0) {
-      setPhase({ kind: 'error', message: 'The image could not be decoded.' })
-      return
-    }
+    const generation = loadGenerationRef.current
+    const intrinsic =
+      el.naturalWidth > 0 && el.naturalHeight > 0
+        ? { width: el.naturalWidth, height: el.naturalHeight }
+        : el.width > 0 && el.height > 0
+          ? { width: el.width, height: el.height }
+          : FALLBACK_INTRINSIC
     const decode = el.decode ? el.decode() : Promise.resolve()
     decode
-      .then(() => setPhase({ kind: 'ready', image: size }))
-      .catch(() =>
-        setPhase({ kind: 'error', message: 'The image could not be decoded.' }),
-      )
+      .then(() => {
+        if (generation !== loadGenerationRef.current) return
+        setPhase({ kind: 'ready', image: intrinsic })
+      })
+      .catch(() => {
+        if (generation !== loadGenerationRef.current) return
+        setPhase({ kind: 'error', message: 'The image could not be decoded.' })
+      })
   }
 
   const zoomable = image !== null
@@ -440,8 +490,8 @@ function Stage({
   const atActual = Math.abs(scale - 1) < 1e-3
   const pannable =
     zoomable &&
-    (image.width * viewRef.current.scale > stageSize.width ||
-      image.height * viewRef.current.scale > stageSize.height)
+    (image.width * scale > stageSize.width ||
+      image.height * scale > stageSize.height)
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: focusable root (tabIndex -1) that owns the viewer keys.
@@ -475,12 +525,15 @@ function Stage({
             <ZoomOut aria-hidden />
           </IconButton>
           <output
-            aria-live="polite"
+            aria-live="off"
             aria-label="Zoom"
             className="min-w-[3.5rem] text-center font-mono text-[12px] text-ink tabular-nums"
           >
-            {zoomable ? percent : '–'}
+            {zoomable ? zoomPercent(scale) : '–'}
           </output>
+          <span role="status" aria-live="polite" className="sr-only">
+            {zoomable ? `Zoom ${announced}` : ''}
+          </span>
           <IconButton
             label="Zoom in"
             tooltip="Zoom in (+)"
@@ -528,7 +581,7 @@ function Stage({
         </div>
       </div>
 
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer surface; the keyboard lives on the dialog content above. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer surface; the keyboard lives on the root above. */}
       <div
         ref={stageRef}
         data-image-viewer-stage
@@ -635,9 +688,8 @@ export const ImageThumbnailButton = React.forwardRef<
     ref={ref}
     type="button"
     aria-label={`View ${title}`}
-    title={`View ${title}`}
     className={cn(
-      'inline-flex cursor-zoom-in items-center justify-center rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+      'iii-ui-motion-control inline-flex cursor-zoom-in items-center justify-center rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
       className,
     )}
     {...props}

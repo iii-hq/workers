@@ -12,8 +12,6 @@ import {
   type CodeEditorHandle,
   type Host,
   IconButton,
-  ImageThumbnailButton,
-  ImageViewer,
 } from '@iii-dev/console-ui'
 import { Code, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -24,6 +22,7 @@ import {
   coderWriteFile,
   joinPath,
 } from './coder'
+import { ImagePreview } from './image-preview'
 import { isRichPreviewPath, richPreviewNode } from './rich-preview'
 
 /** File-extension → Monaco language id (unknown ids render plain). */
@@ -373,34 +372,6 @@ export function EditorPane({
           />
         )}
       </div>
-    </div>
-  )
-}
-
-/** A raster file in the editor body; the picture opens the shared viewer. */
-export function ImagePreview({
-  src,
-  name,
-  description,
-}: {
-  src: string
-  name: string
-  description?: string
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="shui-image-wrap">
-      <ImageThumbnailButton title={name} onClick={() => setOpen(true)}>
-        <img src={src} alt={name} />
-      </ImageThumbnailButton>
-      <ImageViewer
-        open={open}
-        onOpenChange={setOpen}
-        src={src}
-        alt={name}
-        title={name}
-        description={description}
-      />
     </div>
   )
 }

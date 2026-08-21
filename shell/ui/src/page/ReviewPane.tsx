@@ -19,7 +19,8 @@ import {
   joinPath,
   type ReadFileResponse,
 } from './coder'
-import { ImagePreview, imageMimeFromPath } from './EditorPane'
+import { imageMimeFromPath } from './EditorPane'
+import { ImagePreview } from './image-preview'
 import { FileTypeIcon } from './file-type-icon'
 import {
   firstChangedLine,
@@ -1290,7 +1291,7 @@ function richPreviewFor(
 ): React.ReactNode | null {
   if (state.image !== undefined) {
     return state.image === null ? null : (
-      <ImagePreview src={state.image} name={path} />
+      <ImagePreview src={state.image} name={path} inline />
     )
   }
   return richPreviewNode(path, state.newContents)

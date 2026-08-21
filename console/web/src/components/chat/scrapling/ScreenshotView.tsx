@@ -86,8 +86,8 @@ export function ScreenshotView({
             alt={caption || `screenshot of ${url || 'page'}`}
             title={
               images.length > 1
-                ? `Screenshot ${i + 1} of ${images.length}`
-                : 'Screenshot'
+                ? `screenshot ${i + 1} of ${images.length} of ${url || 'page'}`
+                : caption || `screenshot of ${url || 'page'}`
             }
             description={url}
           />

@@ -1,4 +1,5 @@
 import { Blocks, File, Image as ImageIcon, SquareSlash, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import {
   ImageThumbnailButton,
   ImageViewer,
@@ -32,9 +33,12 @@ export function AttachmentChip({
   onRemove,
   className,
 }: AttachmentChipProps) {
-  const isImage = attachment.type.startsWith('image/')
+  const viewable =
+    attachment.type.startsWith('image/') &&
+    (attachment.dataUrl !== undefined || attachment.file !== undefined)
   const Icon = chipIcon(attachment.type)
   const viewer = useImageViewer()
+  const src = useImageSource(attachment, viewer.open)
   return (
     <div
       className={cn(
@@ -42,7 +46,7 @@ export function AttachmentChip({
         className,
       )}
     >
-      {isImage ? (
+      {viewable ? (
         <>
           <ImageThumbnailButton
             title={attachment.name}
@@ -62,7 +66,7 @@ export function AttachmentChip({
           <ImageViewer
             open={viewer.open}
             onOpenChange={viewer.setOpen}
-            src={attachment.dataUrl}
+            src={src}
             alt={attachment.name}
             title={attachment.name}
             description={`${attachment.type.replace('image/', '')} · ${formatSize(attachment.size)}`}
@@ -87,4 +91,23 @@ export function AttachmentChip({
       ) : null}
     </div>
   )
+}
+
+/** The preview data URL when one was kept, else an object URL over the File while the viewer is open. */
+function useImageSource(
+  attachment: Attachment,
+  open: boolean,
+): string | undefined {
+  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined)
+  const file = attachment.dataUrl ? undefined : attachment.file
+  useEffect(() => {
+    if (!open || !file) return
+    const url = URL.createObjectURL(file)
+    setObjectUrl(url)
+    return () => {
+      URL.revokeObjectURL(url)
+      setObjectUrl(undefined)
+    }
+  }, [open, file])
+  return attachment.dataUrl ?? objectUrl
 }

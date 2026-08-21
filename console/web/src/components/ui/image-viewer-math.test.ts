@@ -11,6 +11,7 @@ import {
   panBy,
   pinchGeometry,
   steppedScale,
+  wheelDeltaPixels,
   zoomAbout,
   zoomPercent,
 } from './image-viewer-math'
@@ -68,8 +69,6 @@ describe('zoomAbout', () => {
     const before = centred(0.3)
     const focus = { x: 100, y: -50 }
     const after = zoomAbout(before, 0.6, focus, image, stage, 0.3)
-    // The point under focus maps to image-space (focus - x) / scale; it must
-    // be the same image point before and after the zoom.
     const imageBefore = {
       x: (focus.x - before.x) / before.scale,
       y: (focus.y - before.y) / before.scale,
@@ -114,9 +113,10 @@ describe('steppedScale', () => {
     expect(steppedScale(0.3, -1)).toBe(0.25)
   })
 
-  it('keeps going past the ladder ends without leaving the bounds', () => {
-    expect(steppedScale(32, 1)).toBe(MAX_SCALE)
-    expect(steppedScale(0.05, -1)).toBe(MIN_SCALE)
+  it('keeps stepping past the ladder ends so a tiny fit stays reachable', () => {
+    expect(steppedScale(32, 1)).toBeCloseTo(40)
+    expect(steppedScale(0.05, -1)).toBeCloseTo(0.04)
+    expect(clampScale(steppedScale(0.045, -1), 0.045)).toBe(0.045)
   })
 })
 
@@ -139,6 +139,14 @@ describe('dataUrlBytes', () => {
     expect(dataUrlBytes('data:text/plain,hello')).toBe(5)
     expect(dataUrlBytes('blob:http://x/y')).toBeNull()
     expect(MAX_PREVIEW_BYTES).toBeGreaterThan(32 * 1024 * 1024)
+  })
+})
+
+describe('wheelDeltaPixels', () => {
+  it('scales line and page deltas into pixels', () => {
+    expect(wheelDeltaPixels(100, 0, 800)).toBe(100)
+    expect(wheelDeltaPixels(3, 1, 800)).toBe(48)
+    expect(wheelDeltaPixels(1, 2, 800)).toBe(800)
   })
 })
 
