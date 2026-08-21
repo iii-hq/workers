@@ -609,29 +609,43 @@ fn rank_registry_contracts(
         .collect()
 }
 
-/// Registry list searches use explicit/derived capabilities when available;
-/// a single unsplit query also gets per-term fallbacks because pg_trgm can
-/// miss long natural-language queries that a single term lands.
+/// Registry list searches try every explicit/derived capability first, then
+/// spend the remaining bounded slots on per-term fallbacks round-robin because
+/// pg_trgm can miss long natural-language queries that a single term lands.
 fn registry_queries(query: &str, search_queries: &[String]) -> Vec<String> {
-    if search_queries.len() > 1
-        || search_queries
-            .first()
-            .is_some_and(|search_query| search_query != query)
-    {
-        return search_queries
-            .iter()
-            .take(MAX_REGISTRY_QUERIES)
-            .cloned()
-            .collect();
-    }
-    let mut queries = vec![query.to_string()];
-    for term in crate::functions::search_index::bm25_terms(query) {
-        if queries.len() >= MAX_REGISTRY_QUERIES {
+    let search_queries: Vec<&str> = if search_queries.is_empty() {
+        vec![query]
+    } else {
+        search_queries.iter().map(String::as_str).collect()
+    };
+    let mut queries: Vec<String> = search_queries
+        .iter()
+        .take(MAX_REGISTRY_QUERIES)
+        .map(|query| (*query).to_string())
+        .collect();
+    let terms: Vec<Vec<String>> = search_queries
+        .iter()
+        .map(|query| crate::functions::search_index::bm25_terms(query).collect())
+        .collect();
+    let mut round = 0;
+    while queries.len() < MAX_REGISTRY_QUERIES {
+        let mut any = false;
+        for terms in &terms {
+            let Some(term) = terms.get(round) else {
+                continue;
+            };
+            any = true;
+            if !queries.contains(term) {
+                queries.push(term.clone());
+                if queries.len() == MAX_REGISTRY_QUERIES {
+                    break;
+                }
+            }
+        }
+        if !any {
             break;
         }
-        if !queries.contains(&term) {
-            queries.push(term);
-        }
+        round += 1;
     }
     queries
 }
@@ -1740,6 +1754,26 @@ mod tests {
         assert_eq!(
             registry_queries("alpha beta gamma delta epsilon", &[]).len(),
             MAX_REGISTRY_QUERIES
+        );
+    }
+
+    #[test]
+    fn registry_queries_expand_explicit_capabilities_round_robin() {
+        let capabilities = [
+            "local CSV document bytes to Markdown conversion".to_string(),
+            "detect and render CSV document content as Markdown".to_string(),
+        ];
+
+        assert_eq!(
+            registry_queries("convert CSV bytes to Markdown", &capabilities),
+            [
+                "local CSV document bytes to Markdown conversion",
+                "detect and render CSV document content as Markdown",
+                "local",
+                "detect",
+                "csv",
+                "render",
+            ]
         );
     }
 
