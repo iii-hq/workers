@@ -258,7 +258,10 @@ fi
 if [[ "$contract_schema" != 2 ]]; then
   while IFS=$'\t' read -r worker version; do
     log "Installing exact target stack: $worker@$version"
-    add_with_retry "stack-$worker" "$worker@$version" --force
+    # A shadow job always starts with a fresh project directory. Forcing an
+    # already-targeted worker can make the engine watcher restart the old
+    # executable while its artifact is being replaced.
+    add_with_retry "stack-$worker" "$worker@$version"
   done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
 fi
 
@@ -273,7 +276,7 @@ if [[ "$contract_schema" == 2 ]]; then
   install_exact_stack stack-repin "$exact_stack_versions" false
 else
   while IFS=$'\t' read -r worker version; do
-    add_with_retry "repin-$worker" "$worker@$version" --force
+    add_with_retry "repin-$worker" "$worker@$version"
   done < <(jq -r 'to_entries | sort_by(.key)[] | [.key,.value] | @tsv' <<<"$stack_versions")
 fi
 

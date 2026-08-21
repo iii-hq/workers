@@ -189,6 +189,14 @@ pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
     }
 }
 
+/// Salvaged (`_partial`/`_raw`) or non-object arguments must never reach dispatch.
+pub fn arguments_degraded(arguments: &Value) -> bool {
+    match arguments {
+        Value::Object(map) => map.contains_key("_partial") || map.contains_key("_raw"),
+        _ => true,
+    }
+}
+
 /// Provider-degraded arguments (a stream that died or hit max_tokens
 /// mid-args, salvaged to a `"_partial": true` prefix or a raw `{"_raw": …}`
 /// evidence object) must never execute: the salvage preserves evidence for
@@ -322,6 +330,19 @@ mod tests {
         assert!(truncated_arguments_result("state::set", &args).is_error);
         // Short args pass through whole.
         assert_eq!(arguments_preview(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn degraded_arguments_cover_markers_and_non_objects() {
+        assert!(arguments_degraded(
+            &json!({ "_partial": true, "path": "/tmp" })
+        ));
+        assert!(arguments_degraded(&json!({ "_raw": "{\"path\":\"/tm" })));
+        assert!(arguments_degraded(&Value::Null));
+        assert!(arguments_degraded(&json!("{}")));
+        assert!(arguments_degraded(&json!([1, 2])));
+        assert!(!arguments_degraded(&json!({})));
+        assert!(!arguments_degraded(&json!({ "path": "/tmp" })));
     }
 
     #[test]

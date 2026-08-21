@@ -3,9 +3,11 @@
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::errors::classify;
 use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
+use crate::PROVIDER_ID;
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, drain_sse_blocks, error_chain,
+    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
+    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -149,26 +151,23 @@ async fn run_upstream(
             return; // terminal forwarded, or receiver dropped → abort upstream
         }
     }
-    // Stream ended without [DONE]. With output accumulated this is
-    // legitimate connection-close framing: still terminal. With NOTHING
-    // accumulated the stream was truncated (or spoke only unrecognized
-    // events) — an empty `done` would end the run with an empty "successful"
-    // response, so surface a retryable error instead (MOT-3855).
-    if state.has_content() {
-        let _ = tx
-            .send(AssistantMessageEvent::Done {
-                message: build_final(&state, &args.model),
-            })
-            .await;
-    } else {
-        let _ = tx
-            .send(synthetic_error_event(
-                "codex stream ended without output or a completion event",
-                &args.model,
-                ErrorKind::Transient,
-            ))
-            .await;
+    // Body closed: one terminal frame, decided by the shared end-of-stream policy.
+    let tail = flush_tail(&mut buf, &tx, &mut |block: &str| {
+        decode(block, &mut state, &args.model)
+    })
+    .await;
+    if tail == TailFlush::Terminal {
+        return;
     }
+    let event = match classify_stream_end(&state, tail, CloseFraming::Accepted) {
+        StreamEnd::Complete => AssistantMessageEvent::Done {
+            message: build_final(&state, &args.model),
+        },
+        StreamEnd::Truncated(truncation) => {
+            truncated_stream_error(build_final(&state, &args.model), PROVIDER_ID, truncation)
+        }
+    };
+    let _ = tx.send(event).await;
 }
 
 #[cfg(test)]
@@ -330,6 +329,90 @@ mod tests {
             other => panic!("want error, got {other:?}"),
         }
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    const TRUNCATED_MID_ARGUMENTS: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Listing\"}\n\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"shell__fs__ls\",\"arguments\":\"\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"path\\\":\\\"/tm\"}\n\n";
+
+    const TRUNCATED_MID_FRAME: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\" wor";
+
+    const FINAL_BLOCK_WITHOUT_BLANK_LINE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}";
+
+    fn single_terminal_error(
+        events: &[AssistantMessageEvent],
+    ) -> &llm_router::types::messages::AssistantMessage {
+        assert_eq!(
+            events.iter().filter(|e| e.is_terminal()).count(),
+            1,
+            "{events:?}"
+        );
+        match events.last() {
+            Some(AssistantMessageEvent::Error { error }) => error,
+            other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_cut_inside_function_call_arguments_ends_as_one_error() {
+        let url = stub(TRUNCATED_MID_ARGUMENTS).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("stream truncated"), "{message}");
+        assert!(message.contains("reason=open_function_call"), "{message}");
+        assert!(error.content.iter().any(
+            |b| matches!(b, llm_router::types::content::ContentBlock::Text { text } if text == "Listing")
+        ));
+        let call = error.content.iter().find_map(|b| match b {
+            llm_router::types::content::ContentBlock::FunctionCall { arguments, .. } => {
+                Some(arguments)
+            }
+            _ => None,
+        });
+        let arguments = call.expect("function call block kept as evidence");
+        assert!(
+            arguments.get("_partial").is_some() || arguments.get("_raw").is_some(),
+            "arguments must be marked degraded: {arguments}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_cut_inside_an_event_frame_ends_as_one_error() {
+        let url = stub(TRUNCATED_MID_FRAME).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("reason=partial_frame"), "{message}");
+        assert!(error.content.iter().any(
+            |b| matches!(b, llm_router::types::content::ContentBlock::Text { text } if text == "Hello")
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_stream_ends_as_one_error_not_an_empty_done() {
+        let url =
+            stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
+                .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("reason=empty"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_block_without_blank_line_still_completes() {
+        let url = stub(FINAL_BLOCK_WITHOUT_BLANK_LINE).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                assert!(
+                    matches!(&message.content[0], llm_router::types::content::ContentBlock::Text { text } if text == "Hello")
+                );
+            }
+            other => panic!("want done, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

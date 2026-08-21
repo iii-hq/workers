@@ -33,6 +33,37 @@ pub(crate) fn happy_sse(family: ProtocolFamily) -> &'static str {
     }
 }
 
+/// A body that closes inside a function call's arguments after text streamed.
+pub(crate) fn truncated_sse(family: ProtocolFamily) -> &'static str {
+    match family {
+        ProtocolFamily::AnthropicMessages => concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial contract\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_cut\",\"name\":\"contract__probe\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"ex\"}}\n\n"
+        ),
+        ProtocolFamily::OpenAiChatCompletions => concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial contract\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"contract__probe\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"value\\\":\\\"ex\"}}]}}]}\n\n"
+        ),
+        ProtocolFamily::OpenAiResponses => concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial contract\"}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_cut\",\"name\":\"contract__probe\",\"arguments\":\"\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"value\\\":\\\"ex\"}\n\n"
+        ),
+    }
+}
+
 pub(crate) fn models_body(family: ProtocolFamily) -> &'static str {
     match family {
         ProtocolFamily::AnthropicMessages => {

@@ -6,6 +6,7 @@ import {
 import {
   ChevronRight,
   FileSymlink,
+  FileX,
   Pencil,
   Save,
   X,
@@ -20,12 +21,18 @@ import {
   type ReadFileResponse,
 } from './coder'
 import { imageMimeFromPath } from './EditorPane'
+import { ImagePreview } from './image-preview'
 import { FileTypeIcon } from './file-type-icon'
 import {
   firstChangedLine,
   gutterLineFromPath,
   resolveEditorLine,
 } from './open-line'
+import {
+  type WholeFileChange,
+  wholeFileChange,
+  wholeFileLabel,
+} from './review-split'
 import { richPreviewNode } from './rich-preview'
 import { diffLines, diffTotals } from './diff'
 import { gitHeadBaseline, gitReadSource, gitShowHead } from './git'
@@ -994,6 +1001,10 @@ function ReviewFile({
       entry.path,
     )
   }, [totals, entry.path, onStats])
+  const wholeFile =
+    state.phase === 'ready' && state.image === undefined
+      ? wholeFileChange(state.oldContents, state.newContents)
+      : null
 
   const editable =
     reviewEntryWorktreePath(entry) !== null &&
@@ -1259,6 +1270,26 @@ function ReviewFile({
         </div>
       ) : !editing && totals?.add === 0 && totals.del === 0 ? (
         <div className="shui-review-message">no line changes</div>
+      ) : !editing &&
+        options.diffStyle === 'split' &&
+        wholeFile !== null ? (
+        <WholeFileSplit
+          change={wholeFile}
+          lines={wholeFile === 'deleted' ? (totals?.del ?? 0) : (totals?.add ?? 0)}
+        >
+          <FileDiff
+            key="whole-file"
+            oldFile={{ name: entry.change.from ?? entry.path, contents: state.oldContents }}
+            newFile={{ name: entry.path, contents: state.newContents }}
+            diffStyle="unified"
+            overflow={options.wordWrap ? 'wrap' : 'scroll'}
+            lineDiffType="none"
+            ignoreWhitespace={options.hideWhitespace}
+            expandUnchanged={options.expandUnchanged}
+            disableFileHeader
+            className="shui-review-diff"
+          />
+        </WholeFileSplit>
       ) : (
         <FileDiff
           key={options.diffStyle}
@@ -1284,13 +1315,42 @@ function ReviewFile({
   )
 }
 
+/** Split layout for a file that exists on one side only: the diff in that
+    column, a placeholder in the other, so split never collapses to unified. */
+function WholeFileSplit({
+  change,
+  lines,
+  children,
+}: {
+  change: WholeFileChange
+  lines: number
+  children: React.ReactNode
+}) {
+  const label = wholeFileLabel(change, lines)
+  const placeholder = (
+    <div className="shui-whole-file-side">
+      <div className="shui-whole-file-placeholder" role="status">
+        <FileX aria-hidden />
+        <span className="shui-whole-file-title">{label.title}</span>
+        <span className="shui-whole-file-detail">{label.detail}</span>
+      </div>
+    </div>
+  )
+  return (
+    <div className="shui-whole-file-split" data-change={change}>
+      {change === 'deleted' ? children : placeholder}
+      {change === 'deleted' ? placeholder : children}
+    </div>
+  )
+}
+
 function richPreviewFor(
   path: string,
   state: Extract<FileState, { phase: 'ready' }>,
 ): React.ReactNode | null {
   if (state.image !== undefined) {
     return state.image === null ? null : (
-      <img className="shui-rich-preview-image" src={state.image} alt={`preview ${path}`} />
+      <ImagePreview src={state.image} name={path} inline />
     )
   }
   return richPreviewNode(path, state.newContents)

@@ -1,4 +1,10 @@
-import { Blocks, File, SquareSlash, X } from 'lucide-react'
+import { Blocks, File, Image as ImageIcon, SquareSlash, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import {
+  ImageThumbnailButton,
+  ImageViewer,
+  useImageViewer,
+} from '@/components/ui/ImageViewer'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
@@ -27,8 +33,12 @@ export function AttachmentChip({
   onRemove,
   className,
 }: AttachmentChipProps) {
-  const isImage = attachment.type.startsWith('image/') && attachment.dataUrl
+  const viewable =
+    attachment.type.startsWith('image/') &&
+    (attachment.dataUrl !== undefined || attachment.file !== undefined)
   const Icon = chipIcon(attachment.type)
+  const viewer = useImageViewer()
+  const src = useImageSource(attachment, viewer.open)
   return (
     <div
       className={cn(
@@ -36,12 +46,32 @@ export function AttachmentChip({
         className,
       )}
     >
-      {isImage ? (
-        <img
-          src={attachment.dataUrl}
-          alt=""
-          className="size-6 object-cover border border-rule-2"
-        />
+      {viewable ? (
+        <>
+          <ImageThumbnailButton
+            title={attachment.name}
+            onClick={viewer.show}
+            className="shrink-0"
+          >
+            {attachment.dataUrl ? (
+              <img
+                src={attachment.dataUrl}
+                alt=""
+                className="size-6 border border-rule-2 object-cover"
+              />
+            ) : (
+              <ImageIcon size={16} aria-hidden className="text-ink-faint" />
+            )}
+          </ImageThumbnailButton>
+          <ImageViewer
+            open={viewer.open}
+            onOpenChange={viewer.setOpen}
+            src={src}
+            alt={attachment.name}
+            title={attachment.name}
+            description={`${attachment.type.replace('image/', '')} · ${formatSize(attachment.size)}`}
+          />
+        </>
       ) : (
         <Icon size={16} aria-hidden className="text-ink-faint shrink-0" />
       )}
@@ -61,4 +91,23 @@ export function AttachmentChip({
       ) : null}
     </div>
   )
+}
+
+/** The preview data URL when one was kept, else an object URL over the File while the viewer is open. */
+function useImageSource(
+  attachment: Attachment,
+  open: boolean,
+): string | undefined {
+  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined)
+  const file = attachment.dataUrl ? undefined : attachment.file
+  useEffect(() => {
+    if (!open || !file) return
+    const url = URL.createObjectURL(file)
+    setObjectUrl(url)
+    return () => {
+      URL.revokeObjectURL(url)
+      setObjectUrl(undefined)
+    }
+  }, [open, file])
+  return attachment.dataUrl ?? objectUrl
 }

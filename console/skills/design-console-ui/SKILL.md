@@ -199,6 +199,9 @@ available width changes.
   non-searchable list.
 - Use shared `Tooltip` parts or `IconButton`; do not create local hover timers,
   collision logic, or tooltip portals.
+- Open pictures in the shared `ImageViewer` from an `ImageThumbnailButton`;
+  never build a local lightbox, zoom or pan, and never caption with a host
+  path.
 - Keep a local selector only when its interaction is materially different,
   such as hierarchical drill-in, multi-select, or a persistent command
   palette. Document the exception in the Console UI conformance inventory.

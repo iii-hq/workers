@@ -5,6 +5,11 @@ import {
   StatusPill,
 } from '@/components/chat/sandbox/shared'
 import {
+  ImageThumbnailButton,
+  ImageViewer,
+  useImageViewer,
+} from '@/components/ui/ImageViewer'
+import {
   safeParseRequest,
   safeParseResponse,
   screenshotRequestSchema,
@@ -74,12 +79,17 @@ export function ScreenshotView({
       </ActionLine>
       <div className="px-3 py-3 space-y-2">
         {images.map((b, i) => (
-          <img
+          <ScreenshotImage
+            // biome-ignore lint/suspicious/noArrayIndexKey: tiles are positional
             key={i}
             src={`data:${b.mime || mime};base64,${b.data}`}
             alt={caption || `screenshot of ${url || 'page'}`}
-            loading="lazy"
-            className="max-w-full max-h-[420px] border border-rule-2 bg-paper-2"
+            title={
+              images.length > 1
+                ? `screenshot ${i + 1} of ${images.length} of ${url || 'page'}`
+                : caption || `screenshot of ${url || 'page'}`
+            }
+            description={url}
           />
         ))}
         {caption ? (
@@ -89,6 +99,44 @@ export function ScreenshotView({
         ) : null}
       </div>
     </div>
+  )
+}
+
+function ScreenshotImage({
+  src,
+  alt,
+  title,
+  description,
+}: {
+  src: string
+  alt: string
+  title: string
+  description?: string
+}) {
+  const viewer = useImageViewer()
+  return (
+    <>
+      <ImageThumbnailButton
+        title={title}
+        onClick={viewer.show}
+        className="block max-w-full"
+      >
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          className="max-h-[420px] max-w-full border border-rule-2 bg-paper-2"
+        />
+      </ImageThumbnailButton>
+      <ImageViewer
+        open={viewer.open}
+        onOpenChange={viewer.setOpen}
+        src={src}
+        alt={alt}
+        title={title}
+        description={description}
+      />
+    </>
   )
 }
 

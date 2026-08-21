@@ -465,6 +465,26 @@
   justify-content: center;
   padding: 16px;
 }
+[data-iii-ui="shell"] .shui-image-thumb {
+  display: flex;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline {
+  flex: none;
+  display: block;
+  padding: 20px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline .shui-image-thumb {
+  display: inline-flex;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline img {
+  max-height: 70vh;
+  border: none;
+  background: transparent;
+}
 [data-iii-ui="shell"] .shui-image-wrap img {
   max-width: 100%;
   max-height: 100%;
@@ -1559,6 +1579,52 @@
 [data-iii-ui="shell"] .shui-review-file-action svg {
   width: 16px;
   height: 16px;
+}
+[data-iii-ui="shell"] .shui-whole-file-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 1px;
+  background: var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-whole-file-split > * {
+  min-width: 0;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-whole-file-side {
+  position: relative;
+  min-height: 100%;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-whole-file-placeholder {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 16px auto;
+  padding: 20px 24px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-whole-file-placeholder svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-whole-file-title {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui="shell"] .shui-whole-file-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="shell"] .shui-review-message {
   display: flex;

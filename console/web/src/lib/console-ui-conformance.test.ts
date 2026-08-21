@@ -53,6 +53,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { IconButton } from '@/components/ui/IconButton'
+import { ImageThumbnailButton, ImageViewer } from '@/components/ui/ImageViewer'
 import { Input } from '@/components/ui/Input'
 import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
@@ -139,6 +140,8 @@ const conformance: {
   ErrorBoundary: typeof ConsoleUi.ErrorBoundary
   FileDiff: typeof ConsoleUi.FileDiff
   IconButton: typeof ConsoleUi.IconButton
+  ImageThumbnailButton: typeof ConsoleUi.ImageThumbnailButton
+  ImageViewer: typeof ConsoleUi.ImageViewer
   Input: typeof ConsoleUi.Input
   JsonHighlight: typeof ConsoleUi.JsonHighlight
   List: typeof ConsoleUi.List
@@ -212,6 +215,8 @@ const conformance: {
   ErrorBoundary,
   FileDiff,
   IconButton,
+  ImageThumbnailButton,
+  ImageViewer,
   Input,
   JsonHighlight,
   List,

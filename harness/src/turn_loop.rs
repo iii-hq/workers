@@ -1059,11 +1059,12 @@ pub async fn run_step(
 
             // Provider-degraded arguments: a stream that died or was cut by
             // max_tokens mid-args arrives as a salvaged `"_partial": true`
-            // prefix or a raw `{"_raw": …}` evidence object (the router's
-            // degraded_arguments). Executing partial intent is worse than
-            // failing — the complete-looking leading fields may be missing
-            // the constraints the model was still writing.
-            if call.arguments.get("_partial").is_some() || call.arguments.get("_raw").is_some() {
+            // prefix, a raw `{"_raw": …}` evidence object (the router's
+            // degraded_arguments), or no object at all. Executing partial
+            // intent is worse than failing — the complete-looking leading
+            // fields may be missing the constraints the model was still
+            // writing.
+            if trigger::arguments_degraded(&call.arguments) {
                 let data = trigger::truncated_arguments_result(&call.function_id, &call.arguments);
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(

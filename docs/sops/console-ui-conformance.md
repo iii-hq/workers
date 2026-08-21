@@ -18,6 +18,10 @@ or the selection/motion rules change.
   `Select`, `Selector`, and `BottomSheet` preserve injected worker scope
   through their portals. Confirmation is `ConfirmDialog`, never
   `window.confirm`; the native prompt is only for browser reload or close.
+- Images: a picture the user may want to inspect opens the shared
+  `ImageViewer` through an `ImageThumbnailButton`; no worker ships its own
+  lightbox, zoom or pan. Captions carry the attachment name or a relative
+  path, never a host path.
 - Selection: neutral `surface-selected` + `ink`, with an optional neutral
   `edge`. Accent is reserved for primary actions, form focus, live activity,
   and semantic domain data.
