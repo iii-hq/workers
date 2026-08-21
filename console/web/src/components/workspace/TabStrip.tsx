@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
 import { IconButton } from '@/components/ui/IconButton'
+import { hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 import { tabLabel, type WorkspaceTab } from '@/lib/workspace-tabs'
 
@@ -540,6 +541,11 @@ export function TabStrip({
                   type="button"
                   tabIndex={-1}
                   aria-label={`Close ${label}`}
+                  title={
+                    tab.id === activeTabId
+                      ? hoverTitle(`Close ${label}`, 'workspace.close')
+                      : `Close ${label}`
+                  }
                   onClick={(e) => {
                     e.stopPropagation()
                     closeTab(tab.id)
@@ -565,7 +571,7 @@ export function TabStrip({
       <button
         type="button"
         aria-label="New workspace"
-        title="New workspace (t)"
+        title={hoverTitle('New workspace', 'workspace.create')}
         onClick={onCreate}
         className="relative flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-9"
       >

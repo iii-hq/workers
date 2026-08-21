@@ -1,12 +1,4 @@
-import {
-  CircleQuestionMark,
-  Menu,
-  Plus,
-  Search,
-  SettingsIcon,
-  SquarePen,
-  X,
-} from 'lucide-react'
+import { Menu, Plus, Search, SettingsIcon, SquarePen, X } from 'lucide-react'
 import {
   type CSSProperties,
   Fragment,
@@ -19,7 +11,7 @@ import {
   useState,
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
-import { PaletteHost } from '@/components/PaletteHost'
+import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
@@ -63,7 +55,12 @@ import {
   useConversationsCtx,
 } from '@/lib/conversations-context'
 import { shortcutPlatform } from '@/lib/keybindings/bindings'
-import { keybindingGroups, resolveBindings } from '@/lib/keybindings/registry'
+import {
+  bindingsFor,
+  hoverTitle,
+  keybindingGroups,
+  resolveBindings,
+} from '@/lib/keybindings/registry'
 import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
@@ -340,12 +337,29 @@ export function App({
     else setView(primary as View)
   }, [activeTabId, activeTab, hashScreen, setView, layoutSource])
 
+  const paletteWorkspace = useMemo(
+    (): PaletteWorkspace => ({
+      tabs: workspace.tabs,
+      activeTabId: workspace.activeTabId,
+      activate: (id) => workspaceRef.current.activateTab(id),
+      create: () => workspaceRef.current.createTab({ columns: 1 }),
+      close: requestCloseTab,
+      step: (delta) => workspaceRef.current.activateAdjacent(delta),
+      split: splitWorkspacePanel,
+    }),
+    [
+      workspace.tabs,
+      workspace.activeTabId,
+      requestCloseTab,
+      splitWorkspacePanel,
+    ],
+  )
+
   /* Every global shortcut the console has, dispatched from the registry.
      Which keys reach here while the caret is in a field, and which stand
      down, is the registry's call — not this component's. */
   useKeybindings({
     'palette.toggle': () => setPaletteOpen((current) => !current),
-    'shortcuts.open': () => setShortcutsOpen(true),
     'app.settings': toggleSettings,
     'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
     'workspace.next': () => workspaceRef.current.activateAdjacent(1),
@@ -374,7 +388,6 @@ export function App({
           onCloseTab={requestCloseTab}
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
-          onOpenShortcuts={() => setShortcutsOpen(true)}
           onOpenPalette={() => setPaletteOpen(true)}
         />
         <WorkspacePanes
@@ -409,6 +422,7 @@ export function App({
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           openScreen={openWorkspaceScreen}
+          workspace={paletteWorkspace}
           onOpenSettings={() => setView('configuration')}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
@@ -1370,7 +1384,6 @@ interface HeaderProps {
   mobilePanelIndex: number
   settingsOpen: boolean
   onToggleSettings: () => void
-  onOpenShortcuts: () => void
   onOpenPalette: () => void
 }
 
@@ -1380,7 +1393,6 @@ function Header({
   mobilePanelIndex,
   settingsOpen,
   onToggleSettings,
-  onOpenShortcuts,
   onOpenPalette,
 }: HeaderProps) {
   const { extPageTitles } = useScreenOptions()
@@ -1470,7 +1482,6 @@ function Header({
         onActivate={workspace.activateTab}
         onCloseTab={onCloseTab}
         onToggleSettings={onToggleSettings}
-        onOpenShortcuts={onOpenShortcuts}
         onOpenPalette={onOpenPalette}
       />
 
@@ -1492,22 +1503,11 @@ function Header({
           <button
             type="button"
             onClick={onOpenPalette}
-            aria-label="search the console (⌘K)"
-            title="search the console (⌘K)"
+            aria-label={hoverTitle('Search and commands', 'palette.toggle')}
+            title={hoverTitle('Search and commands', 'palette.toggle')}
             className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
           >
             <Search className="size-4 shrink-0" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={onOpenShortcuts}
-            aria-label="keyboard shortcuts (?)"
-            title="keyboard shortcuts (?)"
-            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
-          >
-            <span aria-hidden>
-              <CircleQuestionMark className="size-4 shrink-0" />
-            </span>
           </button>
           <button
             type="button"
@@ -1592,8 +1592,9 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           Keyboard shortcuts
         </DialogTitle>
         <DialogDescription className="mt-1">
-          Press <kbd className="font-mono text-ink">?</kbd> any time to reopen
-          this list.
+          Every row in{' '}
+          <KeyCombo binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'} />{' '}
+          shows its key, so this list is a reference, not homework.
         </DialogDescription>
         {keybindingGroups().map(([group, entries]) => (
           <section key={group} className="mt-4">

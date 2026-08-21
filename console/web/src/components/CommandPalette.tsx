@@ -19,6 +19,7 @@
 import {
   Boxes,
   FunctionSquare,
+  LayoutGrid,
   MessageSquareText,
   Search,
   Settings,
@@ -57,6 +58,7 @@ const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
   { id: 'function', label: 'Functions' },
   { id: 'page', label: 'Pages' },
   { id: 'chat', label: 'Chats' },
+  { id: 'workspace', label: 'Workspaces' },
   { id: 'action', label: 'Actions' },
 ]
 
@@ -77,6 +79,7 @@ const KIND_STYLE = {
   function: { Icon: FunctionSquare, chip: 'bg-ok-muted text-ok' },
   page: { Icon: Zap, chip: 'bg-warn-muted text-warn' },
   chat: { Icon: MessageSquareText, chip: 'bg-surface-active text-ink-faint' },
+  workspace: { Icon: LayoutGrid, chip: 'bg-surface-active text-ink-faint' },
   action: { Icon: Settings, chip: 'bg-accent-muted text-accent' },
 } as const
 

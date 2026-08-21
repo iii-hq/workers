@@ -16,6 +16,7 @@ import {
   bindingMatchesEvent,
   conflictIdentity,
   digitFromEvent,
+  formatBinding,
   type KeyEventLike,
   type Platform,
   parseBinding,
@@ -28,7 +29,6 @@ export type KeybindingScope = 'global' | 'palette'
 
 export type KeybindingActionId =
   | 'palette.toggle'
-  | 'shortcuts.open'
   | 'app.settings'
   | 'workspace.selectByIndex'
   | 'workspace.create'
@@ -87,14 +87,6 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     bindings: ['Mod+K'],
     firesWhileTyping: true,
     keywords: ['palette', 'command', 'find', 'jump'],
-  },
-  {
-    id: 'shortcuts.open',
-    title: 'Show keyboard shortcuts',
-    group: 'Console',
-    scope: 'global',
-    bindings: ['?'],
-    keywords: ['keys', 'help', 'shortcut'],
   },
   // The emacs pair is Mac-only on purpose: ctrl+N opens a browser window on
   // Windows and Linux, where the same menu item is ⌘N on a Mac and ctrl is
@@ -226,6 +218,18 @@ export function bindingsFor(
   platform: Platform = shortcutPlatform(),
 ): readonly string[] {
   return resolveBindings(keybinding(id).bindings, platform)
+}
+
+/** A hover title that teaches the key: `New workspace (t)`, `Close (⇧ W)`. */
+export function hoverTitle(
+  text: string,
+  id: KeybindingActionId,
+  platform: Platform = shortcutPlatform(),
+): string {
+  const binding = bindingsFor(id, platform)[0]
+  return binding
+    ? `${text} (${formatBinding(binding, platform).join(' ')})`
+    : text
 }
 
 export function matchesKeybinding(

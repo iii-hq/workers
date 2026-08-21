@@ -1003,7 +1003,11 @@ Workspace tabs behave like this everywhere:
 - **Keyboard:** `1`–`9` select by position, `[` / `]` step, `t` creates,
   `Shift+W` closes, `\` splits. Inside the strip, arrow keys, Home and End
   move between tabs and Delete closes the focused one. Nothing fires while
-  the caret is in a field (`useKeybindings`); `?` lists all of them.
+  the caret is in a field (`useKeybindings`). There is no key to memorise
+  first: every action and every open workspace is a row in `⌘K`, each
+  showing its key, and hovering a control spells the same key
+  (`hoverTitle`), so the keys are learned in passing. The full list is a
+  `⌘K` row, not a key of its own.
 - **Phones** switch workspaces from the bottom sheet; each workspace
   remembers which panel it was showing, per browser tab.
 

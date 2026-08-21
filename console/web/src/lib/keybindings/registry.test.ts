@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { isBrowserReserved, type Platform, parseBinding } from './bindings'
 import {
   bindingsFor,
+  hoverTitle,
   KEYBINDINGS,
   keybinding,
   keybindingConflicts,
@@ -66,7 +67,7 @@ describe('the registry itself', () => {
 describe('lookup', () => {
   it('finds a definition by id', () => {
     expect(keybinding('palette.toggle').bindings).toEqual(['Mod+K'])
-    expect(bindingsFor('shortcuts.open', 'mac')).toEqual(['?'])
+    expect(bindingsFor('workspace.close', 'mac')).toEqual(['Shift+W'])
   })
 
   it('resolves a per-platform binding list', () => {
@@ -74,9 +75,19 @@ describe('lookup', () => {
     expect(bindingsFor('palette.next', 'other')).toEqual(['ArrowDown'])
   })
 
-  it('lets the palette be reached from a field, and the overlay not', () => {
+  it('lets the palette be reached from a field, and a workspace key not', () => {
     expect(keybinding('palette.toggle').firesWhileTyping).toBe(true)
-    expect(keybinding('shortcuts.open').firesWhileTyping).toBeUndefined()
+    expect(keybinding('workspace.create').firesWhileTyping).toBeUndefined()
+  })
+
+  it('spells a hover title with the key for the platform', () => {
+    expect(hoverTitle('New workspace', 'workspace.create', 'mac')).toBe(
+      'New workspace (t)',
+    )
+    expect(hoverTitle('Close', 'workspace.close', 'mac')).toBe('Close (⇧ w)')
+    expect(hoverTitle('Search', 'palette.toggle', 'other')).toBe(
+      'Search (ctrl k)',
+    )
   })
 })
 
