@@ -108,7 +108,7 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | iii-directory | new entry, filter, save; setup: open | `N`, `/`, `Mod+S` | entries (`directory::skills::list`, `prompts::list`, `system-prompts::list`) |
 | canvas | new, save, delete; setup: open | `N`, `Mod+S`, `X` | canvases (`canvas::list`) |
 | a2ui | new from template, undo, pin, export React; setup: open | `N`, `Z`, `P`, `E` | surfaces (`a2ui::surface::list`, per conversation) |
-| browser | new session, stop, address bar, annotate (pins carry the element under them), send / download / clear annotations; setup: open | `N`, `X`, `L`, `C`, `Mod+Enter` | sessions (`browser::sessions::list`) |
+| browser | new session, stop, address bar, ⋮ menu (find in page, zoom, screenshot, print to PDF), annotate (pins carry the element under them), send / download / clear annotations; setup: open | `N`, `X`, `L`, `Mod+F`, `Mod+=`/`Mod+-`/`Mod+0`, `C`, `Mod+Enter` | sessions (`browser::sessions::list`) |
 | sandbox-code-runner | new, run code, refresh; setup: open | `N`, `C`, `R` | sandboxes (`sandbox::list`) |
 | computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
 | worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
