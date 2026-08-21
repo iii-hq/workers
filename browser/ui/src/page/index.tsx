@@ -154,7 +154,7 @@ export function BrowserPage({
     setDrilled(true)
   }, [])
 
-  // Per-session verbs (stop / inspect / focus url) live inside SessionView;
+  // Per-session verbs (stop / annotate / focus url) live inside SessionView;
   // this ref lets page-level commands reach the mounted session's handlers
   // without lifting their state up.
   const sessionActionsRef = useRef<SessionActions | null>(null)
@@ -194,19 +194,19 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.stop(),
         },
         {
-          id: 'toggle-inspect',
-          title: 'Toggle inspect',
-          detail: 'Pick an element to copy it to the clipboard',
-          keywords: ['pick', 'inspect', 'element'],
-          shortcut: 'I',
-          enabled: () => selected !== null,
-          run: () => sessionActionsRef.current?.toggleInspect(),
-        },
-        {
           id: 'annotate',
           title: 'Annotate the view',
-          detail: 'Freeze the live view and drop numbered pins with notes',
-          keywords: ['pin', 'comment', 'markup', 'feedback', 'screenshot'],
+          detail: 'Freeze the live view and pin elements with notes',
+          keywords: [
+            'pin',
+            'inspect',
+            'pick',
+            'element',
+            'comment',
+            'markup',
+            'feedback',
+            'screenshot',
+          ],
           shortcut: 'C',
           enabled: () => selected !== null,
           run: () => sessionActionsRef.current?.toggleAnnotate(),
@@ -214,8 +214,7 @@ export function BrowserPage({
         {
           id: 'send-annotations',
           title: 'Send annotations to the chat',
-          detail:
-            'Attach the annotated picture and the notes to the conversation',
+          detail: 'Attach each pin to the conversation, plus the whole view',
           keywords: ['annotations', 'chat', 'share', 'send'],
           shortcut: 'Mod+Enter',
           firesWhileTyping: true,

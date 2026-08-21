@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addAnnotation,
   annotationFileName,
+  annotationPinFileName,
   annotationsMarkdown,
   containedImageBox,
   moveAnnotation,
@@ -51,20 +52,35 @@ describe('annotations', () => {
       width: 1280,
       height: 720,
       annotations: [
-        { id: 'a', x: 0.1, y: 0.1, note: 'logo is blurry' },
+        {
+          id: 'a',
+          x: 0.1,
+          y: 0.1,
+          note: 'logo is blurry',
+          label: 'img.logo (ref e3)',
+        },
         { id: 'b', x: 0.5, y: 0.5, note: '' },
+        { id: 'c', x: 0.7, y: 0.7, note: '', label: 'a.cta "Learn more"' },
       ],
       capturedAt: Date.UTC(2026, 7, 21, 18, 0, 0),
     }
     expect(annotationsMarkdown(set)).toBe(
       [
-        'Annotations on https://example.com/pricing?plan=team (2 pins)',
-        '1. logo is blurry',
+        'Annotations on https://example.com/pricing?plan=team (3 pins)',
+        '1. logo is blurry (img.logo (ref e3))',
         '2. (no note)',
+        '3. a.cta "Learn more"',
       ].join('\n'),
     )
     expect(annotationFileName(set, 'png')).toBe(
       'annotations-example.com-pricing-plan-team-2026-08-21T18-00-00-000Z.png',
     )
+    expect(
+      set.annotations.map((a, i) => annotationPinFileName(a, i, 'png')),
+    ).toEqual([
+      'pin-1-logo-is-blurry.png',
+      'pin-2.png',
+      'pin-3-a-cta-Learn-more.png',
+    ])
   })
 })

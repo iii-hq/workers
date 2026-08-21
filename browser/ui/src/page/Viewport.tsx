@@ -18,6 +18,7 @@ export interface ViewportAnnotation {
   onSelect: (id: string | null) => void
   onMove: (id: string, x: number, y: number) => void
   onRemove: (id: string) => void
+  onNote: (id: string, note: string) => void
 }
 
 /**
@@ -101,9 +102,7 @@ interface ViewportProps {
   frame: LiveFrame | null
   loading: boolean
   error: string | null
-  picking: boolean
   onClickAt: (x: number, y: number, options?: BrowserClickOptions) => void
-  onPickAt: (x: number, y: number) => void
   onScrollAt: (x: number, y: number, deltaY: number) => void
   onTextInput: (text: string) => void
   onPressKey: (key: string) => void
@@ -116,9 +115,7 @@ export function Viewport({
   frame,
   loading,
   error,
-  picking,
   onClickAt,
-  onPickAt,
   onScrollAt,
   onTextInput,
   onPressKey,
@@ -131,8 +128,6 @@ export function Viewport({
 
   const frameRef = useRef(frame)
   frameRef.current = frame
-  const pickingRef = useRef(picking)
-  pickingRef.current = picking
   const annotatingRef = useRef(annotating)
   annotatingRef.current = annotating
   const onScrollAtRef = useRef(onScrollAt)
@@ -160,8 +155,7 @@ export function Viewport({
   )
 
   // Single vs double click: a first click waits out the double-click window
-  // so a dblclick can replace it with one click_count:2 act. Pick mode skips
-  // the wait (the click resolves the pick).
+  // so a dblclick can replace it with one click_count:2 act.
   const pendingClickRef = useRef<number | undefined>(undefined)
   const clearPendingClick = useCallback(() => {
     window.clearTimeout(pendingClickRef.current)
@@ -169,17 +163,13 @@ export function Viewport({
   }, [])
   useEffect(() => clearPendingClick, [clearPendingClick])
   useEffect(() => {
-    if (picking) clearPendingClick()
-  }, [picking, clearPendingClick])
+    if (annotating) clearPendingClick()
+  }, [annotating, clearPendingClick])
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (annotating) return
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
-    if (picking) {
-      onPickAt(pt.x, pt.y)
-      return
-    }
     if (e.detail >= 2) {
       clearPendingClick()
       return
@@ -192,7 +182,7 @@ export function Viewport({
   }
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (picking || annotating) return
+    if (annotating) return
     clearPendingClick()
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
@@ -203,7 +193,7 @@ export function Viewport({
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
     e.preventDefault()
-    if (picking || annotating) return
+    if (annotating) return
     onClickAt(pt.x, pt.y, { button: 'right' })
   }
 
@@ -223,7 +213,7 @@ export function Viewport({
       const pt = mapToPage(e.clientX, e.clientY)
       if (!pt) return
       e.preventDefault()
-      if (pickingRef.current || annotatingRef.current) return
+      if (annotatingRef.current) return
       const scale = e.deltaMode === 1 ? 16 : 1
       accum.delta += e.deltaY * scale
       accum.pt = pt
@@ -249,9 +239,9 @@ export function Viewport({
   }, [mapToPage])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    // Pick and annotate modes own the keyboard: Escape bubbles to the
-    // page-level listener that exits the mode; nothing forwards to the page.
-    if (picking || annotating) return
+    // Annotate mode owns the keyboard: Escape bubbles to the page-level
+    // listener that exits the mode; nothing forwards to the page.
+    if (annotating) return
     // The page wants Tab and Escape, which is exactly what a keyboard user
     // needs to leave with. Shift+Escape is reserved as the way out and
     // never reaches the page.
@@ -275,15 +265,15 @@ export function Viewport({
     }
   }
 
-  // Pick hover hint: while picking, sample the latest cursor position on an
-  // interval and ask the worker what a click would hit; the highlight box
-  // is drawn client-side over the image, never waiting for a screenshot
-  // frame.
+  // Hover hint: while annotating, sample the latest cursor position on an
+  // interval and ask the worker what a pin dropped there would point at; the
+  // highlight box is drawn client-side over the frozen frame (the page under
+  // it is still live, so the hit-test matches what the frame shows).
   const cursorRef = useRef<{ x: number; y: number } | null>(null)
   const [hint, setHint] = useState<HintDisplay | null>(null)
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!picking) return
+    if (!annotating) return
     const pt = mapToPage(e.clientX, e.clientY)
     cursorRef.current = pt
     if (!pt) setHint(null)
@@ -295,7 +285,7 @@ export function Viewport({
   }
 
   useEffect(() => {
-    if (!picking) {
+    if (!annotating) {
       cursorRef.current = null
       setHint(null)
       return
@@ -350,7 +340,7 @@ export function Viewport({
       window.clearInterval(id)
       setHint(null)
     }
-  }, [picking, requestHint])
+  }, [annotating, requestHint])
 
   return (
     <div
@@ -360,23 +350,25 @@ export function Viewport({
       tabIndex={0}
       aria-label={
         annotating
-          ? 'browser viewport, annotate mode: click to drop a numbered pin on the frozen view'
-          : picking
-            ? 'browser viewport, pick mode: click an element to copy it to the clipboard'
-            : 'browser viewport: clicks, scrolling, and typing forward to the page'
+          ? 'browser viewport, annotate mode: click an element to drop a numbered pin on the frozen view'
+          : 'browser viewport: clicks, scrolling, and typing forward to the page'
       }
-      onPointerDown={() => surfaceRef.current?.focus()}
+      onPointerDown={(e) => {
+        if (
+          (e.target as HTMLElement).closest(
+            '[data-annotation-pin], [data-annotation-callout]',
+          )
+        )
+          return
+        surfaceRef.current?.focus()
+      }}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onKeyDown={handleKeyDown}
-      className={cn(
-        'br-ui-vp',
-        picking && 'is-picking',
-        annotating && 'is-annotating',
-      )}
+      className={cn('br-ui-vp', annotating && 'is-annotating')}
     >
       {frame && annotation && ConsoleUi.AnnotationLayer ? (
         <ConsoleUi.AnnotationLayer
@@ -388,6 +380,7 @@ export function Viewport({
           onSelect={annotation.onSelect}
           onMove={annotation.onMove}
           onRemove={annotation.onRemove}
+          onNote={annotation.onNote}
           className="br-ui-vp-annot"
         >
           <img
@@ -404,7 +397,7 @@ export function Viewport({
           src={frame.dataUrl}
           alt="live view of the current page"
           draggable={false}
-          className={cn('br-ui-vp-img', picking && 'is-picking')}
+          className="br-ui-vp-img"
         />
       ) : (
         <p className="br-ui-vp-empty">

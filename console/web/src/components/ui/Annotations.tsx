@@ -1,11 +1,12 @@
 /**
- * Numbered pins over a picture, and the list that gives them notes.
+ * Numbered pins over a picture, each with a note written beside it.
  *
  * `AnnotationLayer` wraps the picture element and paints the pins on the
  * painted part of an `object-fit: contain` image; clicks in the layer add a
- * pin while `active`, a pin is a real button (focus, Delete, arrows nudge).
- * `AnnotationList` edits the notes, one row per pin, Enter moving on to the
- * next. State stays with the caller; both are pure views of one list.
+ * pin while `active`, a pin is a real button (focus, Delete, arrows nudge),
+ * and with `onNote` the selected pin opens a callout that edits its note in
+ * place. `AnnotationList` is the same notes as rows, for pages that want a
+ * list. State stays with the caller; both are pure views of one list.
  */
 
 import { Trash2 } from 'lucide-react'
@@ -35,12 +36,16 @@ export interface AnnotationLayerProps {
   onSelect?: (id: string | null) => void
   onMove?: (id: string, x: number, y: number) => void
   onRemove?: (id: string) => void
+  /** With it, the selected pin opens a callout that edits its note in place. */
+  onNote?: (id: string, note: string) => void
   className?: string
   /** The picture element, rendered by the caller. */
   children: ReactNode
 }
 
 const NUDGE = 0.005
+const CALLOUT_WIDTH = 264
+const CALLOUT_GAP = 22
 
 export function AnnotationLayer({
   annotations,
@@ -51,14 +56,17 @@ export function AnnotationLayer({
   onSelect,
   onMove,
   onRemove,
+  onNote,
   className,
   children,
 }: AnnotationLayerProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ left: 0, top: 0, width: 0, height: 0 })
+  const [rootWidth, setRootWidth] = useState(0)
   const measure = useCallback(() => {
     const root = rootRef.current
     if (!root) return
+    setRootWidth(root.clientWidth)
     setBox(
       containedImageBox(
         { width: root.clientWidth, height: root.clientHeight },
@@ -86,6 +94,21 @@ export function AnnotationLayer({
 
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
 
+  // The selected pin's note takes the caret: writing it is the point of
+  // selecting a pin. Runs after the pointer handlers, so it wins focus.
+  const noteRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (selectedId && onNote) noteRef.current?.focus()
+  }, [selectedId, onNote])
+
+  const selectedIndex = annotations.findIndex((a) => a.id === selectedId)
+  const selected = selectedIndex >= 0 ? annotations[selectedIndex] : null
+  const calloutLeft =
+    selected && box.width > 0
+      ? box.left + selected.x * box.width + CALLOUT_GAP
+      : 0
+  const calloutFlips = calloutLeft + CALLOUT_WIDTH > rootWidth
+
   return (
     <div
       ref={rootRef}
@@ -93,7 +116,11 @@ export function AnnotationLayer({
       className={cn('relative', active && 'cursor-crosshair', className)}
       onPointerDown={(event) => {
         if (!active || event.button !== 0) return
-        if ((event.target as HTMLElement).closest('[data-annotation-pin]'))
+        if (
+          (event.target as HTMLElement).closest(
+            '[data-annotation-pin], [data-annotation-callout]',
+          )
+        )
           return
         const at = fractionAt(event)
         if (!at || at.x < 0 || at.x > 1 || at.y < 0 || at.y > 1) return
@@ -111,6 +138,7 @@ export function AnnotationLayer({
             data-annotation-pin={annotation.id}
             aria-label={`annotation ${index + 1}${annotation.note ? `: ${annotation.note}` : ''}`}
             aria-pressed={selected}
+            title={annotation.note || annotation.label}
             style={{
               left: box.left + annotation.x * box.width,
               top: box.top + annotation.y * box.height,
@@ -169,6 +197,55 @@ export function AnnotationLayer({
           </button>
         )
       })}
+      {selected && onNote ? (
+        <div
+          data-annotation-callout={selected.id}
+          role="group"
+          aria-label={`note for annotation ${selectedIndex + 1}`}
+          style={{
+            width: CALLOUT_WIDTH,
+            left: calloutFlips
+              ? Math.max(0, calloutLeft - CALLOUT_GAP * 2 - CALLOUT_WIDTH)
+              : calloutLeft,
+            top: box.top + selected.y * box.height,
+          }}
+          className="absolute z-20 flex -translate-y-1/2 flex-col gap-1 rounded-sm border border-edge bg-panel p-2 shadow-md"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center gap-1.5">
+            <Input
+              ref={noteRef}
+              value={selected.note}
+              onChange={(next) => onNote(selected.id, next)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === 'Escape') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onSelect?.(null)
+                }
+              }}
+              placeholder="What about this?"
+              aria-label={`note for annotation ${selectedIndex + 1}`}
+              preserveCase
+              className="h-8 normal-case"
+            />
+            <IconButton
+              label={`remove annotation ${selectedIndex + 1}`}
+              onClick={() => onRemove?.(selected.id)}
+            >
+              <Trash2 aria-hidden className="size-4" />
+            </IconButton>
+          </div>
+          {selected.label ? (
+            <span
+              className="truncate px-1 font-mono text-[11px] text-ink-faint"
+              title={selected.label}
+            >
+              {selected.label}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -246,20 +323,30 @@ export function AnnotationList({
           >
             {index + 1}
           </span>
-          <Input
-            ref={(node) => {
-              if (node) inputs.current.set(annotation.id, node)
-              else inputs.current.delete(annotation.id)
-            }}
-            value={annotation.note}
-            onChange={(next) => onNote(annotation.id, next)}
-            onFocus={() => onSelect?.(annotation.id)}
-            onKeyDown={onKeyDown(index)}
-            placeholder="Add a note…"
-            aria-label={`note for annotation ${index + 1}`}
-            preserveCase
-            className="h-8 flex-1 normal-case"
-          />
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <Input
+              ref={(node) => {
+                if (node) inputs.current.set(annotation.id, node)
+                else inputs.current.delete(annotation.id)
+              }}
+              value={annotation.note}
+              onChange={(next) => onNote(annotation.id, next)}
+              onFocus={() => onSelect?.(annotation.id)}
+              onKeyDown={onKeyDown(index)}
+              placeholder="Add a note…"
+              aria-label={`note for annotation ${index + 1}`}
+              preserveCase
+              className="h-8 normal-case"
+            />
+            {annotation.label ? (
+              <span
+                className="truncate px-1 font-mono text-[11px] text-ink-faint"
+                title={annotation.label}
+              >
+                {annotation.label}
+              </span>
+            ) : null}
+          </div>
           <IconButton
             label={`remove annotation ${index + 1}`}
             onClick={() => onRemove(annotation.id)}

@@ -13,6 +13,8 @@ export interface Annotation {
   x: number
   y: number
   note: string
+  /** What the pin points at, when the page knows: an element, a window, a page. */
+  label?: string
 }
 
 export interface AnnotationSet {
@@ -37,11 +39,24 @@ export function addAnnotation(
   list: readonly Annotation[],
   x: number,
   y: number,
+  label?: string,
 ): Annotation[] {
-  return [
-    ...list,
-    { id: newAnnotationId(), x: clamp(x), y: clamp(y), note: '' },
-  ]
+  const pin: Annotation = {
+    id: newAnnotationId(),
+    x: clamp(x),
+    y: clamp(y),
+    note: '',
+  }
+  if (label) pin.label = label
+  return [...list, pin]
+}
+
+export function labelAnnotation(
+  list: readonly Annotation[],
+  id: string,
+  label: string,
+): Annotation[] {
+  return list.map((a) => (a.id === id ? { ...a, label } : a))
 }
 
 export function moveAnnotation(
@@ -94,7 +109,9 @@ export function containedImageBox(
 export function annotationsMarkdown(set: AnnotationSet): string {
   const lines = set.annotations.map((a, index) => {
     const note = a.note.trim()
-    return `${index + 1}. ${note === '' ? '(no note)' : note}`
+    const label = a.label?.trim() ?? ''
+    if (note && label) return `${index + 1}. ${note} (${label})`
+    return `${index + 1}. ${note || label || '(no note)'}`
   })
   const count = set.annotations.length
   return [
@@ -109,6 +126,9 @@ export interface AnnotationExportOptions {
   /** CSS colour for the numbers. */
   numberColor?: string
 }
+
+/** Longest side of a per-pin crop, in picture pixels. */
+const CROP_SIZE = 640
 
 /**
  * The picture with the pins painted on, as a PNG. Pin size follows the image
@@ -129,22 +149,88 @@ export async function renderAnnotatedImage(
     12,
     Math.round(Math.min(canvas.width, canvas.height) / 48),
   )
+  set.annotations.forEach((a, index) => {
+    paintPin(
+      context,
+      a.x * canvas.width,
+      a.y * canvas.height,
+      index + 1,
+      radius,
+      options,
+    )
+  })
+  return toPng(canvas)
+}
+
+/**
+ * One pin's surroundings as a PNG: a window of the picture centred on the
+ * pin (clamped to the edges) with that pin painted on, so each note can
+ * travel as its own attachment and still show what it points at.
+ */
+export async function renderAnnotationCrop(
+  set: AnnotationSet,
+  id: string,
+  options: AnnotationExportOptions = {},
+): Promise<Blob> {
+  const index = set.annotations.findIndex((a) => a.id === id)
+  const pin = set.annotations[index]
+  if (!pin) throw new Error('annotation not in set')
+  const image = await loadImage(set.imageUrl)
+  const width = Math.min(image.naturalWidth, CROP_SIZE)
+  const height = Math.min(image.naturalHeight, Math.round((CROP_SIZE * 2) / 3))
+  const left = clampInt(
+    pin.x * image.naturalWidth - width / 2,
+    0,
+    image.naturalWidth - width,
+  )
+  const top = clampInt(
+    pin.y * image.naturalHeight - height / 2,
+    0,
+    image.naturalHeight - height,
+  )
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('canvas 2d context unavailable')
+  context.drawImage(image, left, top, width, height, 0, 0, width, height)
+  paintPin(
+    context,
+    pin.x * image.naturalWidth - left,
+    pin.y * image.naturalHeight - top,
+    index + 1,
+    Math.max(12, Math.round(Math.min(width, height) / 24)),
+    options,
+  )
+  return toPng(canvas)
+}
+
+function paintPin(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  number: number,
+  radius: number,
+  options: AnnotationExportOptions,
+) {
   context.font = `bold ${Math.round(radius * 1.15)}px system-ui, sans-serif`
   context.textAlign = 'center'
   context.textBaseline = 'middle'
-  set.annotations.forEach((a, index) => {
-    const x = a.x * canvas.width
-    const y = a.y * canvas.height
-    context.beginPath()
-    context.arc(x, y, radius, 0, Math.PI * 2)
-    context.fillStyle = options.color ?? accentColor()
-    context.fill()
-    context.lineWidth = Math.max(2, radius / 6)
-    context.strokeStyle = '#ffffff'
-    context.stroke()
-    context.fillStyle = options.numberColor ?? '#ffffff'
-    context.fillText(String(index + 1), x, y + radius * 0.05)
-  })
+  context.beginPath()
+  context.arc(x, y, radius, 0, Math.PI * 2)
+  context.fillStyle = options.color ?? accentColor()
+  context.fill()
+  context.lineWidth = Math.max(2, radius / 6)
+  context.strokeStyle = '#ffffff'
+  context.stroke()
+  context.fillStyle = options.numberColor ?? '#ffffff'
+  context.fillText(String(number), x, y + radius * 0.05)
+}
+
+const clampInt = (value: number, min: number, max: number) =>
+  Math.round(Math.min(Math.max(value, min), Math.max(min, max)))
+
+function toPng(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob)
@@ -185,4 +271,17 @@ export function annotationFileName(
     .slice(0, 48)
   const stamp = new Date(set.capturedAt).toISOString().replace(/[:.]/g, '-')
   return `annotations-${subject || 'capture'}-${stamp}.${extension}`
+}
+
+/** A file name for one pin: its number, then the note (or the label). */
+export function annotationPinFileName(
+  annotation: Annotation,
+  index: number,
+  extension: string,
+): string {
+  const text = (annotation.note.trim() || annotation.label?.trim() || '')
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+  return `pin-${index + 1}${text ? `-${text}` : ''}.${extension}`
 }

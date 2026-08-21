@@ -803,28 +803,36 @@ specific method before use.
 
 ### Annotations: pins with notes over a picture
 
-`AnnotationLayer` and `AnnotationList` are the shared primitives for
-marking up a captured picture — a browser frame, a desktop frame, a
-screenshot in a transcript. The page owns the list; both components are
-pure views of it. A pin sits at fractions of the picture so the same set
-renders over the live view, the exported PNG and a later reload. Pins are
-buttons: Delete removes, arrows nudge, Shift+arrows nudge more. Notes are
-one `Input` per pin; Enter moves to the next.
+`AnnotationLayer` is the shared primitive for marking up a captured
+picture — a browser frame, a desktop frame, a screenshot in a transcript.
+The page owns the list; the layer is a pure view of it. A pin sits at
+fractions of the picture so the same set renders over the live view, the
+exported PNG and a later reload. Pins are buttons: Delete removes, arrows
+nudge, Shift+arrows nudge more. With `onNote` the selected pin opens a
+callout beside it that edits the note in place (a new pin takes the caret;
+Enter or Escape closes it), so the note is written where the pin is, not
+in a list elsewhere. A pin may carry a `label`, what it points at when the
+page can tell (the browser page resolves the element under a dropped pin
+through `browser::pick::resolve`); the callout shows it under the note and
+the chat text appends it in parentheses. `AnnotationList` renders the same
+notes as rows for a page that wants a list too.
 
 ```tsx
 <AnnotationLayer annotations={pins} image={{ width, height }} active={annotating}
-  selectedId={selectedId} onAdd={add} onSelect={select} onMove={move} onRemove={remove}>
+  selectedId={selectedId} onAdd={add} onSelect={select} onMove={move}
+  onRemove={remove} onNote={note}>
   <img src={frame.dataUrl} alt="frozen view" className="h-full w-full object-contain" />
 </AnnotationLayer>
-<AnnotationList annotations={pins} selectedId={selectedId}
-  onSelect={select} onNote={note} onRemove={remove} />
 ```
 
 Rules a page follows: freeze the picture while annotating (pins drift over
-a live frame); keep pins until they are sent or cleared; export with the
-pins painted on (the browser page's `renderAnnotatedImage` is the reference)
-and send the picture plus the numbered notes through `host.chat.compose`;
-register `annotate`, `send-annotations`, `download-annotations` and
+a live frame); keep pins until they are sent or cleared; the actions (send,
+download, clear) sit in the page header next to the mode toggle, not in a
+separate pane; send through `host.chat.compose` as a stack of attachments
+the reader can flip through — the whole view with the pins painted on
+(`renderAnnotatedImage`) plus one crop per pin (`renderAnnotationCrop`,
+named by number and note) — with the numbered notes as the text; register
+`annotate`, `send-annotations`, `download-annotations` and
 `clear-annotations` as commands (`C`, `Mod+Enter`); Escape ends the mode.
 
 ### The rest of `host`
