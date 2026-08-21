@@ -1570,10 +1570,14 @@
   min-width: 0;
   background: var(--color-panel);
 }
+[data-iii-ui="shell"] .shui-whole-file-side {
+  position: relative;
+  min-height: 100%;
+  background: var(--color-panel);
+}
 [data-iii-ui="shell"] .shui-whole-file-placeholder {
   position: sticky;
   top: 16px;
-  align-self: start;
   display: flex;
   flex-direction: column;
   align-items: center;

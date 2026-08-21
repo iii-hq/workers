@@ -1327,10 +1327,12 @@ function WholeFileSplit({
 }) {
   const label = wholeFileLabel(change, lines)
   const placeholder = (
-    <div className="shui-whole-file-placeholder" role="status">
-      <FileX aria-hidden />
-      <span className="shui-whole-file-title">{label.title}</span>
-      <span className="shui-whole-file-detail">{label.detail}</span>
+    <div className="shui-whole-file-side">
+      <div className="shui-whole-file-placeholder" role="status">
+        <FileX aria-hidden />
+        <span className="shui-whole-file-title">{label.title}</span>
+        <span className="shui-whole-file-detail">{label.detail}</span>
+      </div>
     </div>
   )
   return (
