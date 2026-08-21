@@ -229,7 +229,13 @@ export function SessionView({
   // The screencast subscription is gated on the viewport actually being
   // visible: wide mode always shows it, narrow only on its segment.
   const viewportShown = !narrow || narrowPane === 'viewport'
-  const live = useLiveFrames(host, sessionId, enabled && viewportShown)
+  const [reseedToken, setReseedToken] = useState(0)
+  const live = useLiveFrames(
+    host,
+    sessionId,
+    enabled && viewportShown,
+    reseedToken,
+  )
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -529,13 +535,18 @@ export function SessionView({
       window.clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = window.setTimeout(() => {
         lastSentSizeRef.current = { w: width, h: height }
-        void resizeBrowser(host.iii, sessionId, width, height).catch(() => {})
+        void resizeBrowser(host.iii, sessionId, width, height)
+          .then((applied) => {
+            if (applied) setReseedToken((t) => t + 1)
+          })
+          .catch(() => {})
       }, 180)
     },
     [host, sessionId],
   )
   useEffect(() => {
     lastSentSizeRef.current = null
+    setReseedToken(0)
     return () => window.clearTimeout(resizeTimerRef.current)
   }, [sessionId])
 
