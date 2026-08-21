@@ -102,9 +102,12 @@ async fn main() -> anyhow::Result<()> {
 The rest of the surface: `browser::act` (click/hover/type/press/scroll by
 ref or coordinates, left/right/middle and double-click), `browser::evaluate`
 (JS expression), `browser::screenshot` (viewable JPEG), `browser::history`
-(back/forward/reload), `browser::find-in-page` (find bar: highlight matches,
-step next/previous), `browser::zoom` (page zoom 50-200 %), `browser::pdf`
-(print the page to a PDF), `browser::network::read` (requests + failures),
+(back/forward/reload), `browser::history::list` (visited pages for a history
+panel), `browser::find-in-page` (find bar: highlight matches, step
+next/previous), `browser::zoom` (page zoom 50-200 %), `browser::pdf` (print
+the page to a PDF), `browser::downloads::list` / `browser::download` /
+`browser::download::remove` (files the session downloaded), `browser::clear-data`
+(cookies, cache, storage), `browser::network::read` (requests + failures),
 `browser::dom::read` (DOM tree with refs), `browser::styles::read` /
 `browser::styles::write` (computed styles + live inline edits, the design
 panel backing), and `browser::sessions::list` / `browser::sessions::stop`.
