@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
+use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
+use iii_sdk::errors::Error as IiiError;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{IIIClient, RegisterFunction};
@@ -9,10 +12,14 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::session::{
-    self, AGENT_EVENTS_STREAM, SessionRecord, append_history, append_history_once,
-    append_session_to_index, durable_publish, now_ms, read_history, read_session_index,
-    remove_session_from_index, scope, session_history_key, session_key, set_history_owner,
-    state_delete, state_get, state_set,
+    self, AGENT_EVENTS_STREAM, ActivePromptClaim, CloseHistoryResult, HistoryOwnerResult,
+    PromptClaimResult, PromptDispatchIdentity, PromptRecoveryFinishResult, PromptRecoveryResult,
+    SessionRecord, append_history_once, append_session_to_index, begin_prompt_recovery,
+    claim_prompt, close_history_owned_by, durable_publish, finish_prompt_recovery,
+    history_owned_by, now_ms, read_active_prompt_claim, read_history, read_session_index,
+    release_prompt_claim, remove_session_from_index, restore_history_owner, scope,
+    session_history_key, session_key, set_history_owner, state_compare_and_set, state_delete,
+    state_get, state_set,
 };
 use crate::transport::Outbound;
 use crate::types::{
@@ -26,6 +33,8 @@ use crate::types::{
 // drive iii-acp without an adapter.
 pub const DEFAULT_BRAIN_FN: &str = "run::start_and_wait";
 const BRAIN_TIMEOUT_MS: u64 = 600_000;
+const BRAIN_CANCEL_GRACE_MS: u64 = 60_000;
+const PROMPT_RECOVERY_AFTER_MS: i64 = (BRAIN_TIMEOUT_MS + BRAIN_CANCEL_GRACE_MS) as i64;
 
 #[derive(Clone)]
 struct CancelHandle {
@@ -43,7 +52,11 @@ impl CancelHandle {
 
     fn cancel(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        self.notify.notify_waiters();
+        self.notify.notify_one();
+    }
+
+    fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.flag, &other.flag)
     }
 
     async fn wait(&self) {
@@ -52,6 +65,18 @@ impl CancelHandle {
         }
         self.notify.notified().await;
     }
+}
+
+struct BrainOutcome {
+    stop_reason: String,
+    terminal_confirmed: bool,
+    pending: Option<tokio::task::JoinHandle<Result<Value, IiiError>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptClaimFinish {
+    Definitive,
+    Ambiguous,
 }
 
 pub struct AcpHandler {
@@ -251,9 +276,18 @@ impl AcpHandler {
         append_session_to_index(&self.iii, &session_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        set_history_owner(&self.iii, &session_id, &self.conn_id)
+        match set_history_owner(&self.iii, &session_id, &self.conn_id)
             .await
-            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
+        {
+            HistoryOwnerResult::AlreadyOwned | HistoryOwnerResult::Transferred { .. } => {}
+            HistoryOwnerResult::ActivePrompt(_) | HistoryOwnerResult::Closed => {
+                return Err((
+                    INTERNAL_ERROR,
+                    "new session history could not be claimed".to_string(),
+                ));
+            }
+        }
         self.owned_sessions.insert(session_id.clone());
         Ok(json!({ "sessionId": session_id }))
     }
@@ -262,7 +296,7 @@ impl AcpHandler {
         self.require_initialized()?;
         let p: SessionLoadParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
         let key = session_key(&p.session_id);
-        let _record = state_get(&self.iii, &scope(), &key)
+        let record_value = state_get(&self.iii, &scope(), &key)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
             .ok_or_else(|| {
@@ -271,13 +305,9 @@ impl AcpHandler {
                     format!("session not found: {}", p.session_id),
                 )
             })?;
-        let lock = self.history_lock(&p.session_id);
-        let _g = lock.lock().await;
+        self.transfer_session_ownership(&p.session_id, record_value, |_| {})
+            .await?;
         self.owned_sessions.insert(p.session_id.clone());
-        if let Err(error) = set_history_owner(&self.iii, &p.session_id, &self.conn_id).await {
-            self.owned_sessions.remove(&p.session_id);
-            return Err((INTERNAL_ERROR, error.to_string()));
-        }
         let history = read_history(&self.iii, &p.session_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
@@ -312,9 +342,61 @@ impl AcpHandler {
         Ok(json!({ "sessions": sessions }))
     }
 
-    async fn session_prompt(&self, params: Option<Value>) -> Result<Value, (i32, String)> {
+    async fn session_prompt(
+        self: &Arc<Self>,
+        params: Option<Value>,
+    ) -> Result<Value, (i32, String)> {
         self.require_initialized()?;
         let p: SessionPromptParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
+        let cancel = CancelHandle::new();
+        match self.cancels.entry(p.session_id.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(cancel.clone());
+            }
+            Entry::Occupied(_) => {
+                return Err((
+                    INVALID_PARAMS,
+                    "a prompt is already active for this session".to_string(),
+                ));
+            }
+        }
+        let result = self.session_prompt_inner(&p, &cancel).await;
+        let (claim_id, outcome) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                remove_local_cancel(&self.cancels, &p.session_id, &cancel);
+                return Err(error);
+            }
+        };
+        let BrainOutcome {
+            stop_reason,
+            terminal_confirmed,
+            pending,
+        } = outcome;
+        if terminal_confirmed {
+            if self.finish_prompt_claim(&p.session_id, &claim_id).await
+                == PromptClaimFinish::Definitive
+            {
+                remove_local_cancel(&self.cancels, &p.session_id, &cancel);
+            }
+        } else {
+            if let Some(brain) = pending {
+                self.monitor_pending_brain(p.session_id.clone(), claim_id, cancel, brain);
+            } else {
+                tracing::error!(
+                    session_id = p.session_id,
+                    "external brain completion is unknown; prompt claim remains recovery-required"
+                );
+            }
+        }
+        Ok(json!({ "stopReason": stop_reason }))
+    }
+
+    async fn session_prompt_inner(
+        &self,
+        p: &SessionPromptParams,
+        cancel: &CancelHandle,
+    ) -> Result<(String, BrainOutcome), (i32, String)> {
         let key = session_key(&p.session_id);
         let record_value = state_get(&self.iii, &scope(), &key)
             .await
@@ -327,12 +409,13 @@ impl AcpHandler {
             })?;
         let record: SessionRecord = serde_json::from_value(record_value)
             .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
-        // Defensive: if this is the first time we see the session in this
-        // subprocess (e.g., an external brain prompted it via run::start
-        // without going through ACP session/new), claim it now so
-        // agent::events for it forward to our stdout.
-        self.owned_sessions.insert(p.session_id.clone());
-
+        if !record_owner_matches(&record, &self.conn_id) {
+            return Err((
+                INVALID_PARAMS,
+                "session is owned by another connection; load or resume it before prompting"
+                    .to_string(),
+            ));
+        }
         if self.brain_fn.is_some() && !self.event_subscriber_healthy {
             return Err((
                 INTERNAL_ERROR,
@@ -343,50 +426,59 @@ impl AcpHandler {
             ));
         }
 
-        let cancel = CancelHandle::new();
-        self.cancels.insert(p.session_id.clone(), cancel.clone());
-
-        {
+        let claim_id = Uuid::new_v4().to_string();
+        let claim_result = {
             let lock = self.history_lock(&p.session_id);
             let _g = lock.lock().await;
-            append_history(
+            claim_prompt(
                 &self.iii,
                 &p.session_id,
+                &self.conn_id,
+                &claim_id,
+                now_ms(),
+                self.prompt_dispatch_identity(),
                 json!({
                     "sessionUpdate": "user_message_chunk",
                     "content": { "type": "text", "text": prompt_to_text(&p.prompt) }
                 }),
             )
             .await
-            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        }
-
-        let stop_reason = self
-            .run_brain(&p.session_id, &record.cwd, &p.prompt, &cancel)
-            .await;
-
-        self.cancels.remove(&p.session_id);
-
-        let mut record_payload = json!({});
-        if let Some(rec) = state_get(&self.iii, &scope(), &key)
-            .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
-        {
-            if let Ok(mut r) = serde_json::from_value::<SessionRecord>(rec) {
-                r.last_activity_ms = now_ms();
-                record_payload = serde_json::to_value(&r).unwrap_or(Value::Null);
-                let _ = state_set(&self.iii, &scope(), &key, record_payload.clone()).await;
+        };
+        match claim_result {
+            PromptClaimResult::Claimed => {}
+            PromptClaimResult::AlreadyActive => {
+                return Err((
+                    INVALID_PARAMS,
+                    "an active or recovery-required prompt already exists for this session"
+                        .to_string(),
+                ));
+            }
+            PromptClaimResult::NotOwner => {
+                return Err((
+                    INVALID_PARAMS,
+                    "session is owned by another connection; load or resume it before prompting"
+                        .to_string(),
+                ));
+            }
+            PromptClaimResult::Closed => {
+                return Err((INVALID_PARAMS, "session is closed".to_string()));
             }
         }
+        self.owned_sessions.insert(p.session_id.clone());
 
-        Ok(json!({ "stopReason": stop_reason }))
+        let outcome = self
+            .run_brain(&p.session_id, &record.cwd, &p.prompt, cancel)
+            .await;
+        Ok((claim_id, outcome))
     }
 
     async fn session_cancel(&self, params: Option<Value>) -> Result<(), (i32, String)> {
+        self.require_initialized()?;
         let p: SessionCancelParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
-        if let Some(handle) = self.cancels.get(&p.session_id) {
-            handle.cancel();
-        }
+        self.require_session_owner(&p.session_id).await?;
+        let local_cancel = self.cancels.get(&p.session_id).map(|handle| handle.clone());
+        signal_local_cancel(local_cancel.as_ref());
         let _ = durable_publish(
             &self.iii,
             &session::cancel_topic(&self.conn_id, &p.session_id),
@@ -397,24 +489,53 @@ impl AcpHandler {
     }
 
     async fn session_close(&self, params: Option<Value>) -> Result<(), (i32, String)> {
+        self.require_initialized()?;
         let p: SessionLoadParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
+        let lock = self.history_lock(&p.session_id);
+        let _g = lock.lock().await;
+        let closed = close_history_owned_by(&self.iii, &p.session_id, &self.conn_id)
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        match closed {
+            // Only the current owner can create the tombstone. Once it exists,
+            // any reconnect may safely retry the remaining idempotent cleanup.
+            CloseHistoryResult::Closed | CloseHistoryResult::AlreadyClosed => {}
+            CloseHistoryResult::ActivePrompt => {
+                return Err((
+                    INVALID_PARAMS,
+                    "session has an active or recovery-required prompt; cancel it and wait for terminal completion before closing"
+                        .to_string(),
+                ));
+            }
+            CloseHistoryResult::NotOwner => {
+                return Err((
+                    INVALID_PARAMS,
+                    "session is owned by another connection".to_string(),
+                ));
+            }
+        }
         let scope = scope();
         let mut errs: Vec<String> = Vec::new();
 
         if let Err(e) = state_delete(&self.iii, &scope, &session_key(&p.session_id)).await {
             errs.push(format!("session record: {}", e));
         }
-        if let Err(e) = state_delete(&self.iii, &scope, &session_history_key(&p.session_id)).await {
-            errs.push(format!("history: {}", e));
-        }
         if let Err(e) = remove_session_from_index(&self.iii, &p.session_id).await {
             errs.push(format!("index: {}", e));
         }
+        if errs.is_empty()
+            && let Err(error) =
+                state_delete(&self.iii, &scope, &session_history_key(&p.session_id)).await
+        {
+            match state_get(&self.iii, &scope, &session_history_key(&p.session_id)).await {
+                Ok(None) => {}
+                _ => errs.push(format!("history tombstone: {}", error)),
+            }
+        }
 
-        // In-flight cancel slot for this session is a process-local concern,
-        // unrelated to engine state. Drop it. Same for session ownership —
-        // any further agent::events for this session are foreign now.
-        self.cancels.remove(&p.session_id);
+        if let Some((_, handle)) = self.cancels.remove(&p.session_id) {
+            handle.cancel();
+        }
         self.owned_sessions.remove(&p.session_id);
 
         if errs.is_empty() {
@@ -435,8 +556,6 @@ impl AcpHandler {
     async fn session_resume(&self, params: Option<Value>) -> Result<Value, (i32, String)> {
         self.require_initialized()?;
         let p: SessionResumeParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
-        let lock = self.history_lock(&p.session_id);
-        let _g = lock.lock().await;
         let key = session_key(&p.session_id);
         let scope = scope();
         let rec_value = state_get(&self.iii, &scope, &key)
@@ -448,22 +567,296 @@ impl AcpHandler {
                     format!("session not found: {}", p.session_id),
                 )
             })?;
-        let mut record: SessionRecord = serde_json::from_value(rec_value)
+        self.transfer_session_ownership(&p.session_id, rec_value, |record| {
+            record.cwd = p.cwd;
+            record.mcp_servers = p.mcp_servers;
+            record.last_activity_ms = now_ms();
+        })
+        .await?;
+        self.owned_sessions.insert(p.session_id.clone());
+        Ok(json!({}))
+    }
+
+    async fn transfer_session_ownership<F>(
+        &self,
+        session_id: &str,
+        record_value: Value,
+        mutate: F,
+    ) -> Result<SessionRecord, (i32, String)>
+    where
+        F: FnOnce(&mut SessionRecord),
+    {
+        let lock = self.history_lock(session_id);
+        let _g = lock.lock().await;
+        let mut record: SessionRecord = serde_json::from_value(record_value.clone())
             .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
-        record.cwd = p.cwd;
-        record.mcp_servers = p.mcp_servers;
-        record.last_activity_ms = now_ms();
-        let new_value =
+        let owner_result = self.acquire_history_owner(session_id).await?;
+        match &owner_result {
+            HistoryOwnerResult::ActivePrompt(_) => unreachable!("active prompt handled above"),
+            HistoryOwnerResult::Closed => {
+                return Err((INVALID_PARAMS, "session is closed".to_string()));
+            }
+            HistoryOwnerResult::AlreadyOwned | HistoryOwnerResult::Transferred { .. } => {}
+        }
+
+        record.conn_id = self.conn_id.clone();
+        mutate(&mut record);
+        let mut new_value =
             serde_json::to_value(&record).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        state_set(&self.iii, &scope, &key, new_value)
+        if new_value == record_value {
+            return Ok(record);
+        }
+        let scope = scope();
+        let key = session_key(session_id);
+        let swapped = match state_compare_and_set(
+            &self.iii,
+            &scope,
+            &key,
+            Some(&record_value),
+            new_value.clone(),
+        )
+        .await
+        {
+            Ok(swapped) => swapped,
+            Err(error) => {
+                let observed = state_get(&self.iii, &scope, &key).await;
+                match observed {
+                    Ok(Some(value)) if value == new_value => true,
+                    Ok(Some(value)) => {
+                        let observed_record =
+                            serde_json::from_value::<SessionRecord>(value.clone()).map_err(
+                                |decode| (INTERNAL_ERROR, format!("session decode: {}", decode)),
+                            )?;
+                        if record_owner_matches(&observed_record, &self.conn_id) {
+                            record = observed_record;
+                            new_value = value;
+                            true
+                        } else {
+                            self.rollback_history_transfer(session_id, &owner_result)
+                                .await;
+                            return Err((INTERNAL_ERROR, error.to_string()));
+                        }
+                    }
+                    _ => {
+                        self.rollback_history_transfer(session_id, &owner_result)
+                            .await;
+                        return Err((INTERNAL_ERROR, error.to_string()));
+                    }
+                }
+            }
+        };
+        if !swapped {
+            self.rollback_history_transfer(session_id, &owner_result)
+                .await;
+            return Err((
+                INVALID_PARAMS,
+                "session ownership changed concurrently; retry load or resume".to_string(),
+            ));
+        }
+        match history_owned_by(&self.iii, session_id, &self.conn_id).await {
+            Ok(true) => {}
+            ownership => {
+                return match ownership {
+                    Ok(false) => {
+                        if matches!(
+                            state_compare_and_set(
+                                &self.iii,
+                                &scope,
+                                &key,
+                                Some(&new_value),
+                                record_value,
+                            )
+                            .await,
+                            Ok(true)
+                        ) {
+                            self.rollback_history_transfer(session_id, &owner_result)
+                                .await;
+                        }
+                        Err((
+                            INVALID_PARAMS,
+                            "session ownership changed concurrently; retry load or resume"
+                                .to_string(),
+                        ))
+                    }
+                    Err(error) => Err((INTERNAL_ERROR, error.to_string())),
+                    Ok(true) => unreachable!(),
+                };
+            }
+        }
+        Ok(record)
+    }
+
+    async fn acquire_history_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<HistoryOwnerResult, (i32, String)> {
+        let owner_result = set_history_owner(&self.iii, session_id, &self.conn_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        self.owned_sessions.insert(p.session_id.clone());
-        if let Err(error) = set_history_owner(&self.iii, &p.session_id, &self.conn_id).await {
-            self.owned_sessions.remove(&p.session_id);
-            return Err((INTERNAL_ERROR, error.to_string()));
+        let HistoryOwnerResult::ActivePrompt(claim) = owner_result else {
+            return Ok(owner_result);
+        };
+        let age_ms = now_ms().saturating_sub(claim.started_at_ms);
+        if age_ms < PROMPT_RECOVERY_AFTER_MS {
+            return Err((
+                INVALID_PARAMS,
+                format!(
+                    "session has an active prompt; retry recovery in {} seconds",
+                    (PROMPT_RECOVERY_AFTER_MS - age_ms + 999) / 1_000
+                ),
+            ));
         }
-        Ok(json!({}))
+        self.recover_stale_prompt(session_id, claim).await
+    }
+
+    async fn recover_stale_prompt(
+        &self,
+        session_id: &str,
+        claim: ActivePromptClaim,
+    ) -> Result<HistoryOwnerResult, (i32, String)> {
+        let current_dispatch = self.prompt_dispatch_identity();
+        let Some(claim_dispatch) = claim.dispatch.as_ref() else {
+            return Err((
+                INVALID_PARAMS,
+                "session has a legacy recovery-required prompt without dispatch identity; manual recovery is required"
+                    .to_string(),
+            ));
+        };
+        if !prompt_dispatch_matches(&claim, &current_dispatch) {
+            return Err((
+                INVALID_PARAMS,
+                "session prompt was dispatched by a different brain or namespace; recovery with the original ACP configuration is required"
+                    .to_string(),
+            ));
+        }
+        let Some(stop_fn) = claim_dispatch.stop_function_id.as_deref() else {
+            return Err((
+                INVALID_PARAMS,
+                "session has a stale recovery-required prompt without a matching stop function; manual recovery is required"
+                    .to_string(),
+            ));
+        };
+        let stop_fn = stop_fn.to_string();
+        let local_cancel = self.cancels.get(session_id).map(|handle| handle.clone());
+        let recovery_claim_id = Uuid::new_v4().to_string();
+        let recovery_claim = match begin_prompt_recovery(
+            &self.iii,
+            session_id,
+            &claim,
+            &self.conn_id,
+            &recovery_claim_id,
+            now_ms(),
+        )
+        .await
+        .map_err(|error| (INTERNAL_ERROR, error.to_string()))?
+        {
+            PromptRecoveryResult::Claimed(recovery_claim) => recovery_claim,
+            PromptRecoveryResult::Changed => {
+                return Err((
+                    INVALID_PARAMS,
+                    "the stale prompt claim changed before recovery could isolate it; retry load or resume"
+                        .to_string(),
+                ));
+            }
+            PromptRecoveryResult::Closed => {
+                return Err((INVALID_PARAMS, "session is closed".to_string()));
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(BRAIN_CANCEL_GRACE_MS);
+        loop {
+            let current_claim = read_active_prompt_claim(&self.iii, session_id)
+                .await
+                .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+            if current_claim.as_ref() != Some(&recovery_claim) {
+                return Err((
+                    INVALID_PARAMS,
+                    "the prompt recovery claim changed; refusing to stop an unpinned turn"
+                        .to_string(),
+                ));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err((
+                    INVALID_PARAMS,
+                    "the external brain accepted cancellation but did not confirm terminal completion; the recovery claim remains active"
+                        .to_string(),
+                ));
+            }
+            let stop = self
+                .iii
+                .trigger(external_brain_stop_request(&stop_fn, session_id))
+                .await
+                .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+            if stop_reports_terminal(&stop) {
+                let owner_result = match finish_prompt_recovery(
+                    &self.iii,
+                    session_id,
+                    &recovery_claim,
+                    &self.conn_id,
+                )
+                .await
+                .map_err(|error| (INTERNAL_ERROR, error.to_string()))?
+                {
+                    PromptRecoveryFinishResult::AlreadyOwned => HistoryOwnerResult::AlreadyOwned,
+                    PromptRecoveryFinishResult::Transferred { previous_owner } => {
+                        HistoryOwnerResult::Transferred { previous_owner }
+                    }
+                    PromptRecoveryFinishResult::Changed => {
+                        return Err((
+                            INVALID_PARAMS,
+                            "the prompt recovery claim changed before ownership transfer; retry load or resume"
+                                .to_string(),
+                        ));
+                    }
+                    PromptRecoveryFinishResult::Closed => {
+                        return Err((INVALID_PARAMS, "session is closed".to_string()));
+                    }
+                };
+                if let Some(local_cancel) = local_cancel.as_ref() {
+                    remove_local_cancel(&self.cancels, session_id, local_cancel);
+                }
+                return Ok(owner_result);
+            }
+            if !stop_was_accepted(&stop) {
+                return Err((
+                    INVALID_PARAMS,
+                    "the external brain could not confirm stale prompt cancellation".to_string(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    fn prompt_dispatch_identity(&self) -> PromptDispatchIdentity {
+        PromptDispatchIdentity {
+            namespace: self.iii.namespace(),
+            brain_function_id: self.brain_fn.clone(),
+            stop_function_id: self.brain_stop_fn.clone(),
+        }
+    }
+
+    async fn rollback_history_transfer(&self, session_id: &str, owner_result: &HistoryOwnerResult) {
+        let HistoryOwnerResult::Transferred { previous_owner } = owner_result else {
+            return;
+        };
+        match restore_history_owner(
+            &self.iii,
+            session_id,
+            &self.conn_id,
+            previous_owner.as_deref(),
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => tracing::error!(
+                session_id,
+                "session history ownership changed before transfer rollback"
+            ),
+            Err(error) => tracing::error!(
+                %error,
+                session_id,
+                "failed to roll back session history ownership"
+            ),
+        }
     }
 
     // session/set_mode — store the mode id on the session record so the
@@ -513,20 +906,60 @@ impl AcpHandler {
         let key = session_key(session_id);
         let lock = self.history_lock(session_id);
         let _g = lock.lock().await;
+        self.require_session_owner(session_id).await?;
         let rec_value = state_get(&self.iii, &scope, &key)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
             .ok_or_else(|| (INVALID_PARAMS, format!("session not found: {}", session_id)))?;
-        let mut record: SessionRecord = serde_json::from_value(rec_value)
+        let mut record: SessionRecord = serde_json::from_value(rec_value.clone())
             .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
+        if !record_owner_matches(&record, &self.conn_id) {
+            return Err((
+                INVALID_PARAMS,
+                "session ownership changed concurrently; load or resume it first".to_string(),
+            ));
+        }
         mutate(&mut record);
         record.last_activity_ms = now_ms();
         let new_value =
             serde_json::to_value(&record).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        state_set(&self.iii, &scope, &key, new_value)
+        if state_compare_and_set(&self.iii, &scope, &key, Some(&rec_value), new_value)
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
+        {
+            Ok(())
+        } else {
+            Err((
+                INVALID_PARAMS,
+                "session ownership or configuration changed concurrently; retry".to_string(),
+            ))
+        }
+    }
+
+    async fn require_session_owner(&self, session_id: &str) -> Result<(), (i32, String)> {
+        let record = state_get(&self.iii, &scope(), &session_key(session_id))
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
+            .ok_or_else(|| (INVALID_PARAMS, format!("session not found: {}", session_id)))?;
+        let record: SessionRecord = serde_json::from_value(record)
+            .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
+        if !record_owner_matches(&record, &self.conn_id) {
+            return Err((
+                INVALID_PARAMS,
+                "session is owned by another connection; load or resume it first".to_string(),
+            ));
+        }
+        let owned = history_owned_by(&self.iii, session_id, &self.conn_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        Ok(())
+        if owned {
+            Ok(())
+        } else {
+            Err((
+                INVALID_PARAMS,
+                "session is owned by another connection; load or resume it first".to_string(),
+            ))
+        }
     }
 
     async fn run_brain(
@@ -535,7 +968,7 @@ impl AcpHandler {
         cwd: &str,
         prompt: &[Value],
         cancel: &CancelHandle,
-    ) -> String {
+    ) -> BrainOutcome {
         if let Some(fn_id) = self.brain_fn.as_deref() {
             return self
                 .run_external_brain(fn_id, session_id, cwd, prompt, cancel)
@@ -549,12 +982,16 @@ impl AcpHandler {
         session_id: &str,
         prompt: &[Value],
         cancel: &CancelHandle,
-    ) -> String {
+    ) -> BrainOutcome {
         let text = prompt_to_text(prompt);
         let chunks: Vec<&str> = text.split_inclusive(' ').collect();
         for chunk in chunks {
             if cancel.flag.load(Ordering::SeqCst) {
-                return "cancelled".to_string();
+                return BrainOutcome {
+                    stop_reason: "cancelled".to_string(),
+                    terminal_confirmed: true,
+                    pending: None,
+                };
             }
             self.emit_update(
                 session_id,
@@ -565,7 +1002,11 @@ impl AcpHandler {
             )
             .await;
         }
-        "end_turn".to_string()
+        BrainOutcome {
+            stop_reason: "end_turn".to_string(),
+            terminal_confirmed: true,
+            pending: None,
+        }
     }
 
     async fn run_external_brain(
@@ -575,7 +1016,7 @@ impl AcpHandler {
         cwd: &str,
         prompt: &[Value],
         cancel: &CancelHandle,
-    ) -> String {
+    ) -> BrainOutcome {
         // Canonical iii brain shape: feed run::start_and_wait (or any
         // function with the same input contract) a User message built
         // from ACP prompt content blocks. The brain emits AgentEvent
@@ -598,33 +1039,159 @@ impl AcpHandler {
             action: None,
             timeout_ms: Some(BRAIN_TIMEOUT_MS + 5_000),
         };
-        let res = tokio::select! {
-            r = self.iii.trigger(req) => r,
+        let iii = self.iii.clone();
+        let mut brain = tokio::spawn(async move { iii.trigger(req).await });
+        let ((res, error_terminal), cancellation_accepted) = tokio::select! {
+            r = &mut brain => (flatten_brain_result(r), None),
             _ = cancel.wait() => {
+                let mut stop_accepted = false;
                 if let Some(stop_fn) = self.brain_stop_fn.as_deref() {
                     let stop = external_brain_stop_request(stop_fn, session_id);
-                    if let Err(error) = self.iii.trigger(stop).await {
-                        tracing::error!(%error, stop_fn, session_id, "external brain stop failed");
+                    match self.iii.trigger(stop).await {
+                        Ok(result) => {
+                            stop_accepted = stop_was_accepted(&result);
+                            if !stop_accepted {
+                                tracing::warn!(stop_fn, session_id, "external brain rejected stop request");
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, stop_fn, session_id, "external brain stop failed");
+                        }
                     }
                 }
-                return "cancelled".to_string();
+                match tokio::time::timeout(
+                    Duration::from_millis(BRAIN_CANCEL_GRACE_MS),
+                    &mut brain,
+                )
+                .await
+                {
+                    Ok(result) => (flatten_brain_result(result), Some(stop_accepted)),
+                    Err(_) => {
+                        tracing::error!(
+                            session_id,
+                            stop_accepted,
+                            "external brain did not settle after cancellation"
+                        );
+                        return BrainOutcome {
+                            stop_reason: "refusal".to_string(),
+                            terminal_confirmed: false,
+                            pending: Some(brain),
+                        };
+                    }
+                }
             },
         };
         match res {
-            Ok(v) => derive_stop_reason(&v).unwrap_or("end_turn").to_string(),
+            Ok(v) => BrainOutcome {
+                stop_reason: external_brain_stop_reason(&v, cancellation_accepted).to_string(),
+                terminal_confirmed: true,
+                pending: None,
+            },
             Err(e) => {
                 tracing::error!(error = %e, fn_id, "external brain failed");
-                "refusal".to_string()
+                BrainOutcome {
+                    stop_reason: "refusal".to_string(),
+                    terminal_confirmed: error_terminal,
+                    pending: None,
+                }
             }
         }
     }
 
+    async fn finish_prompt_claim(&self, session_id: &str, claim_id: &str) -> PromptClaimFinish {
+        let _ = self.update_session_record(session_id, |_| {}).await;
+        let lock = self.history_lock(session_id);
+        let _g = lock.lock().await;
+        for attempt in 0..3 {
+            match release_prompt_claim(&self.iii, session_id, &self.conn_id, claim_id).await {
+                Ok(true) => return PromptClaimFinish::Definitive,
+                Ok(false) => {
+                    tracing::info!(
+                        session_id,
+                        claim_id,
+                        "prompt claim was replaced or cleared; releasing its exact local guard"
+                    );
+                    return PromptClaimFinish::Definitive;
+                }
+                Err(error) if attempt < 2 => {
+                    tracing::warn!(
+                        %error,
+                        session_id,
+                        claim_id,
+                        attempt,
+                        "prompt claim release failed; retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        session_id,
+                        claim_id,
+                        "failed to release prompt claim; session remains recovery-required"
+                    );
+                    return PromptClaimFinish::Ambiguous;
+                }
+            }
+        }
+        PromptClaimFinish::Ambiguous
+    }
+
+    fn monitor_pending_brain(
+        self: &Arc<Self>,
+        session_id: String,
+        claim_id: String,
+        cancel: CancelHandle,
+        brain: tokio::task::JoinHandle<Result<Value, IiiError>>,
+    ) {
+        let handler = Arc::clone(self);
+        tokio::spawn(async move {
+            match brain.await {
+                Ok(Ok(_)) => {
+                    if handler.finish_prompt_claim(&session_id, &claim_id).await
+                        == PromptClaimFinish::Definitive
+                    {
+                        remove_local_cancel(&handler.cancels, &session_id, &cancel);
+                    }
+                }
+                Ok(Err(error)) if brain_error_is_terminal(&error) => {
+                    if handler.finish_prompt_claim(&session_id, &claim_id).await
+                        == PromptClaimFinish::Definitive
+                    {
+                        remove_local_cancel(&handler.cancels, &session_id, &cancel);
+                    }
+                }
+                Ok(Err(error)) => tracing::error!(
+                    %error,
+                    session_id,
+                    "detached external brain ended ambiguously; prompt claim remains recovery-required"
+                ),
+                Err(error) => tracing::error!(
+                    %error,
+                    session_id,
+                    "detached external brain task failed; prompt claim remains recovery-required"
+                ),
+            }
+        });
+    }
+
     async fn emit_update(&self, session_id: &str, update: Value) {
         let payload = json!({ "sessionId": session_id, "update": update });
-        {
+        let appended = {
             let lock = self.history_lock(session_id);
             let _g = lock.lock().await;
-            let _ = append_history(&self.iii, session_id, update.clone()).await;
+            append_history_once(
+                &self.iii,
+                session_id,
+                Some(&self.conn_id),
+                None,
+                vec![update.clone()],
+            )
+            .await
+            .unwrap_or(false)
+        };
+        if !appended {
+            return;
         }
         self.send_notification("session/update", payload).await;
     }
@@ -640,6 +1207,57 @@ impl AcpHandler {
             Err((INTERNAL_ERROR, "not initialized".to_string()))
         }
     }
+}
+
+fn flatten_brain_result(
+    result: Result<Result<Value, IiiError>, tokio::task::JoinError>,
+) -> (Result<Value, String>, bool) {
+    match result {
+        Ok(Ok(value)) => (Ok(value), false),
+        Ok(Err(error)) => {
+            let terminal = brain_error_is_terminal(&error);
+            (Err(error.to_string()), terminal)
+        }
+        Err(error) => (Err(format!("external brain task failed: {error}")), false),
+    }
+}
+
+fn brain_error_is_terminal(error: &IiiError) -> bool {
+    matches!(
+        error,
+        IiiError::Remote { .. }
+            | IiiError::Handler(_)
+            | IiiError::Serde(_)
+            | IiiError::RegistrationRejected { .. }
+    )
+}
+
+fn signal_local_cancel(handle: Option<&CancelHandle>) {
+    if let Some(handle) = handle {
+        handle.cancel();
+    }
+}
+
+fn remove_local_cancel(
+    cancels: &DashMap<String, CancelHandle>,
+    session_id: &str,
+    expected: &CancelHandle,
+) -> bool {
+    match cancels.entry(session_id.to_string()) {
+        Entry::Occupied(entry) if entry.get().same_instance(expected) => {
+            entry.remove();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn record_owner_matches(record: &SessionRecord, conn_id: &str) -> bool {
+    record.conn_id == conn_id
+}
+
+fn prompt_dispatch_matches(claim: &ActivePromptClaim, current: &PromptDispatchIdentity) -> bool {
+    claim.dispatch.as_ref() == Some(current)
 }
 
 fn prompt_to_text(prompt: &[Value]) -> String {
@@ -1016,11 +1634,54 @@ fn external_brain_stop_request(function_id: &str, session_id: &str) -> TriggerRe
     }
 }
 
+fn stop_was_accepted(result: &Value) -> bool {
+    result
+        .get("stopped")
+        .or_else(|| result.get("value").and_then(|value| value.get("stopped")))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn stop_reports_terminal(result: &Value) -> bool {
+    let result = result.get("value").unwrap_or(result);
+    if result
+        .get("terminal")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(status) = result.get("status").and_then(Value::as_str) {
+        let status = status
+            .strip_prefix("RUN_LIFECYCLE_STATUS_")
+            .unwrap_or(status);
+        if matches!(status, "FINISHED" | "CANCELLED" | "ERROR" | "EXPIRED") {
+            return true;
+        }
+    }
+    !result
+        .get("stopped")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && result.get("reason").and_then(Value::as_str) == Some("no cancellable run id")
+}
+
 // Read run::start_and_wait return shape and pick a stop reason for ACP.
 // Result envelope: { session_id, messages, turn_count }. The final
 // assistant message in `messages` carries iii's `stop_reason`; map to
 // ACP's vocabulary.
 fn derive_stop_reason(result: &Value) -> Option<&'static str> {
+    if let Some(status) = result.get("status").and_then(Value::as_str) {
+        let status = status
+            .strip_prefix("RUN_LIFECYCLE_STATUS_")
+            .unwrap_or(status);
+        match status {
+            "MAX_TURN_REQUESTS" => return Some("max_turn_requests"),
+            "MAX_TOKENS" => return Some("max_tokens"),
+            "CANCELLED" => return Some("cancelled"),
+            _ => {}
+        }
+    }
     let iii_reason = result
         .get("stop_reason")
         .and_then(|v| v.as_str())
@@ -1044,9 +1705,54 @@ fn derive_stop_reason(result: &Value) -> Option<&'static str> {
     })
 }
 
+fn external_brain_stop_reason(result: &Value, cancellation_accepted: Option<bool>) -> &'static str {
+    let reason = derive_stop_reason(result).unwrap_or("end_turn");
+    if cancellation_accepted == Some(false) && reason == "cancelled" {
+        "refusal"
+    } else {
+        reason
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancel_before_wait_keeps_a_stored_wakeup() {
+        let cancel = CancelHandle::new();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_millis(50), cancel.wait())
+            .await
+            .expect("pre-wait cancellation must not be lost");
+    }
+
+    #[test]
+    fn idle_or_transferred_session_has_no_external_cancel_target() {
+        signal_local_cancel(None);
+
+        let local = CancelHandle::new();
+        signal_local_cancel(Some(&local));
+        assert!(local.flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stale_monitor_only_removes_its_exact_local_cancel_guard() {
+        let cancels = DashMap::new();
+        let stale = CancelHandle::new();
+        let successor = CancelHandle::new();
+
+        cancels.insert("session-one".to_string(), stale.clone());
+        assert!(remove_local_cancel(&cancels, "session-one", &stale));
+
+        cancels.insert("session-one".to_string(), successor.clone());
+        assert!(!remove_local_cancel(&cancels, "session-one", &stale));
+        assert!(
+            cancels
+                .get("session-one")
+                .is_some_and(|current| current.same_instance(&successor))
+        );
+    }
 
     #[test]
     fn prompt_to_text_joins_text_blocks() {
@@ -1243,6 +1949,127 @@ mod tests {
         assert_eq!(
             derive_stop_reason(&json!({ "stop_reason": "error" })),
             Some("refusal")
+        );
+
+        assert_eq!(
+            derive_stop_reason(&json!({
+                "status": "RUN_LIFECYCLE_STATUS_MAX_TURN_REQUESTS",
+                "stop_reason": "length"
+            })),
+            Some("max_turn_requests")
+        );
+    }
+
+    #[test]
+    fn stop_acknowledgement_requires_an_explicit_true_value() {
+        assert!(stop_was_accepted(&json!({ "stopped": true })));
+        assert!(stop_was_accepted(&json!({ "value": { "stopped": true } })));
+        assert!(!stop_was_accepted(&json!({ "stopped": false })));
+        assert!(!stop_was_accepted(&json!({ "reason": "not running" })));
+    }
+
+    #[test]
+    fn stale_prompt_recovery_requires_terminal_or_no_active_confirmation() {
+        assert!(stop_reports_terminal(&json!({ "terminal": true })));
+        assert!(stop_reports_terminal(
+            &json!({ "status": "RUN_LIFECYCLE_STATUS_CANCELLED" })
+        ));
+        assert!(stop_reports_terminal(
+            &json!({ "stopped": false, "reason": "no cancellable run id" })
+        ));
+        assert!(!stop_reports_terminal(&json!({ "stopped": true })));
+        assert!(!stop_reports_terminal(
+            &json!({ "stopped": false, "reason": "active run changed" })
+        ));
+    }
+
+    #[test]
+    fn only_definitive_sdk_failures_are_terminal() {
+        assert!(brain_error_is_terminal(&IiiError::Remote {
+            code: "INVALID_PARAMS".to_string(),
+            message: "bad model".to_string(),
+            stacktrace: None,
+        }));
+        assert!(brain_error_is_terminal(&IiiError::Handler(
+            "pre-dispatch validation".to_string()
+        )));
+        assert!(!brain_error_is_terminal(&IiiError::Timeout));
+        assert!(!brain_error_is_terminal(&IiiError::NotConnected));
+        assert!(!brain_error_is_terminal(&IiiError::WebSocket(
+            "connection lost".to_string()
+        )));
+    }
+
+    #[test]
+    fn stale_owner_cannot_mutate_the_new_owners_expected_record() {
+        let record = SessionRecord {
+            session_id: "session-one".to_string(),
+            conn_id: "new-owner".to_string(),
+            cwd: "/workspace".to_string(),
+            mcp_servers: Vec::new(),
+            created_at_ms: 1,
+            last_activity_ms: 1,
+            mode: None,
+            config_options: serde_json::Map::new(),
+        };
+        assert!(!record_owner_matches(&record, "old-owner"));
+        assert!(record_owner_matches(&record, "new-owner"));
+    }
+
+    #[test]
+    fn stale_recovery_requires_the_original_dispatch_identity() {
+        let original = PromptDispatchIdentity {
+            namespace: Some("team-a".to_string()),
+            brain_function_id: Some("brain::run".to_string()),
+            stop_function_id: Some("brain::stop".to_string()),
+        };
+        let claim = ActivePromptClaim {
+            claim_id: "claim-one".to_string(),
+            owner_conn_id: "owner".to_string(),
+            started_at_ms: 1,
+            dispatch: Some(original.clone()),
+        };
+        assert!(prompt_dispatch_matches(&claim, &original));
+        assert!(!prompt_dispatch_matches(
+            &claim,
+            &PromptDispatchIdentity {
+                brain_function_id: Some("other::run".to_string()),
+                ..original.clone()
+            }
+        ));
+        assert!(!prompt_dispatch_matches(
+            &claim,
+            &PromptDispatchIdentity {
+                stop_function_id: Some("cursor::stop".to_string()),
+                ..original.clone()
+            }
+        ));
+        assert!(!prompt_dispatch_matches(
+            &claim,
+            &PromptDispatchIdentity {
+                namespace: Some("team-b".to_string()),
+                ..original.clone()
+            }
+        ));
+        assert!(!prompt_dispatch_matches(
+            &ActivePromptClaim {
+                dispatch: None,
+                ..claim
+            },
+            &original
+        ));
+    }
+
+    #[test]
+    fn rejected_stop_cannot_report_cancelled() {
+        let cancelled = json!({ "stop_reason": "aborted" });
+        assert_eq!(
+            external_brain_stop_reason(&cancelled, Some(false)),
+            "refusal"
+        );
+        assert_eq!(
+            external_brain_stop_reason(&cancelled, Some(true)),
+            "cancelled"
         );
     }
 

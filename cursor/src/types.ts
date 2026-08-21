@@ -30,6 +30,7 @@ export const SessionRecordSchema = z.object({
   session_id: z.string(),
   agent_id: z.string(),
   runtime: RuntimeSchema,
+  backend: z.enum(['cli-acp', 'sdk-bridge']).optional(),
   workspace: z.string(),
   name: z.string().nullable(),
   model: z.string(),
@@ -104,7 +105,7 @@ export const RunSnapshotSchema = z.object({
   status: z.string(),
   result: z.string(),
   model: z.string(),
-  duration_ms: z.number().int().nonnegative(),
+  duration_ms: z.number().int().nonnegative().nullable(),
   created_at: z.string().nullable(),
   usage: TokenUsageSchema.nullable(),
 });
@@ -146,7 +147,7 @@ export type ContentBlock =
 export type AssistantMessage = {
   role: 'assistant';
   content: ContentBlock[];
-  stop_reason: 'end' | 'aborted' | 'error';
+  stop_reason: 'end' | 'length' | 'aborted' | 'error';
   error_message?: string | null;
   usage?: TokenUsage | null;
   model: string;

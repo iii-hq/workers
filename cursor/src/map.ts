@@ -82,7 +82,8 @@ export class RunAccumulator {
         this.status = normalizeEnum(result.status ?? frame.result.status);
         this.resultText = result.result ?? '';
         if (result.model?.id) this.model = result.model.id;
-        this.usage = mapTokenUsage(result.usage);
+        const terminalUsage = mapTokenUsage(result.usage);
+        if (terminalUsage) this.usage = terminalUsage;
       }
     }
   }
@@ -192,7 +193,8 @@ export class RunAccumulator {
       return;
     }
     if (sdkMessage.type === 'usage') {
-      this.usage = mapStructTokenUsage(objectValue(message.usage));
+      const usage = mapStructTokenUsage(objectValue(message.usage));
+      if (usage) this.usage = usage;
       return;
     }
     if (sdkMessage.type !== 'tool_call') return;
@@ -378,7 +380,16 @@ export function extractRunId(frame: RunStreamMessageWire): string | null {
 }
 
 export function mapTokenUsage(raw: WireTokenUsage | undefined): TokenUsage | null {
-  if (!raw) return null;
+  if (
+    !raw ||
+    raw.inputTokens === undefined ||
+    raw.outputTokens === undefined ||
+    raw.cacheReadTokens === undefined ||
+    raw.cacheWriteTokens === undefined ||
+    raw.totalTokens === undefined
+  ) {
+    return null;
+  }
   const usage: TokenUsage = {
     input_tokens: safeInt(raw.inputTokens),
     output_tokens: safeInt(raw.outputTokens),
@@ -405,10 +416,10 @@ export function mapStructTokenUsage(raw: Record<string, unknown> | undefined): T
 export function mapCost(
   raw: { rawCostCents?: number; chargedCents?: number } | undefined,
 ): UsageCost | null {
-  if (!raw) return null;
+  if (raw?.rawCostCents === undefined || raw.chargedCents === undefined) return null;
   return {
-    raw_cost_cents: raw.rawCostCents ?? 0,
-    charged_cents: raw.chargedCents ?? 0,
+    raw_cost_cents: raw.rawCostCents,
+    charged_cents: raw.chargedCents,
   };
 }
 
@@ -449,7 +460,7 @@ export function mapRunSnapshot(raw: {
     status: normalizeEnum(raw.status),
     result: raw.result ?? '',
     model: raw.model?.id ?? '',
-    duration_ms: safeInt(raw.durationMs),
+    duration_ms: raw.durationMs === undefined ? null : safeInt(raw.durationMs),
     created_at: raw.createdAt ?? null,
     usage: mapTokenUsage(raw.usage),
   };
@@ -520,9 +531,10 @@ export function mapModels(raw: {
   }));
 }
 
-export function stopReason(status: string): 'end' | 'aborted' | 'error' {
+export function stopReason(status: string): 'end' | 'length' | 'aborted' | 'error' {
   const normalized = normalizeEnum(status);
   if (normalized === 'FINISHED') return 'end';
+  if (normalized === 'MAX_TOKENS' || normalized === 'MAX_TURN_REQUESTS') return 'length';
   if (normalized === 'CANCELLED') return 'aborted';
   return 'error';
 }

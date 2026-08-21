@@ -165,6 +165,7 @@ export class FakeBridgeFactory implements BridgeClientFactory {
 export function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     ...defaultConfig(),
+    local_backend: 'sdk-bridge',
     api_key: 'key_test_secret',
     bridge_binary: '/fake/bridge',
     ...overrides,

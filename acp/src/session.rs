@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 const STATE_TIMEOUT_MS: u64 = 5_000;
 
 pub fn scope() -> String {
-    "acp".to_string()
+    "acp-v0.3".to_string()
 }
 
 // Persisted keys are NOT scoped by conn_id. session_id is a globally
@@ -86,6 +86,30 @@ pub async fn state_set(iii: &IIIClient, scope: &str, key: &str, value: Value) ->
     })
     .await?;
     Ok(())
+}
+
+pub async fn state_compare_and_set(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    expected: Option<&Value>,
+    value: Value,
+) -> Result<bool, Error> {
+    let mut payload = json!({ "scope": scope, "key": key, "value": value });
+    if let Some(expected) = expected {
+        payload["expected"] = expected.clone();
+    }
+    let response = iii
+        .trigger(TriggerRequest {
+            function_id: "state::compare-and-set".to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(STATE_TIMEOUT_MS),
+        })
+        .await?;
+    Ok(unwrap_value(response)
+        .and_then(|result| result.get("swapped").and_then(Value::as_bool))
+        .unwrap_or(false))
 }
 
 pub async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), Error> {
@@ -181,20 +205,33 @@ pub async fn append_history_once(
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryOwnerResult {
+    AlreadyOwned,
+    Transferred { previous_owner: Option<String> },
+    ActivePrompt(ActivePromptClaim),
+    Closed,
+}
+
 pub async fn set_history_owner(
     iii: &IIIClient,
     session_id: &str,
     owner_conn_id: &str,
-) -> Result<(), Error> {
+) -> Result<HistoryOwnerResult, Error> {
     let scope = scope();
     let key = session_history_key(session_id);
     let mut current = state_get(iii, &scope, &key).await?;
     for _ in 0..16 {
         let mut history = decode_history(current.as_ref())?;
-        if history.owner_conn_id.as_deref() == Some(owner_conn_id) {
-            return Ok(());
+        let owner_result = apply_owner_transfer(&mut history, owner_conn_id);
+        match &owner_result {
+            HistoryOwnerResult::Closed => return Ok(HistoryOwnerResult::Closed),
+            HistoryOwnerResult::ActivePrompt(claim) => {
+                return Ok(HistoryOwnerResult::ActivePrompt(claim.clone()));
+            }
+            HistoryOwnerResult::AlreadyOwned => return Ok(HistoryOwnerResult::AlreadyOwned),
+            HistoryOwnerResult::Transferred { .. } => {}
         }
-        history.owner_conn_id = Some(owner_conn_id.to_string());
         let next = serde_json::to_value(history)
             .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
         let mut payload = json!({ "scope": scope, "key": key, "value": next });
@@ -215,7 +252,7 @@ pub async fn set_history_owner(
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            return Ok(());
+            return Ok(owner_result);
         }
         current = result
             .get("current")
@@ -227,10 +264,369 @@ pub async fn set_history_owner(
     ))
 }
 
+pub async fn restore_history_owner(
+    iii: &IIIClient,
+    session_id: &str,
+    current_owner_conn_id: &str,
+    previous_owner_conn_id: Option<&str>,
+) -> Result<bool, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        if history.closed
+            || history.active_prompt.is_some()
+            || history.owner_conn_id.as_deref() != Some(current_owner_conn_id)
+        {
+            return Ok(false);
+        }
+        history.owner_conn_id = previous_owner_conn_id.map(str::to_string);
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let result = unwrap_value(response).unwrap_or(Value::Null);
+        if result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+        current = result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to restore ownership safely".to_string(),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptClaimResult {
+    Claimed,
+    AlreadyActive,
+    NotOwner,
+    Closed,
+}
+
+pub async fn claim_prompt(
+    iii: &IIIClient,
+    session_id: &str,
+    owner_conn_id: &str,
+    claim_id: &str,
+    started_at_ms: i64,
+    dispatch: PromptDispatchIdentity,
+    user_entry: Value,
+) -> Result<PromptClaimResult, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        let result = apply_prompt_claim(
+            &mut history,
+            owner_conn_id,
+            claim_id,
+            started_at_ms,
+            dispatch.clone(),
+            user_entry.clone(),
+        );
+        if result != PromptClaimResult::Claimed {
+            return Ok(result);
+        }
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let result = unwrap_value(response).unwrap_or(Value::Null);
+        if result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(PromptClaimResult::Claimed);
+        }
+        current = result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to claim a prompt safely".to_string(),
+    ))
+}
+
+pub async fn release_prompt_claim(
+    iii: &IIIClient,
+    session_id: &str,
+    owner_conn_id: &str,
+    claim_id: &str,
+) -> Result<bool, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        if !apply_prompt_release(&mut history, owner_conn_id, claim_id) {
+            return Ok(false);
+        }
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let result = unwrap_value(response).unwrap_or(Value::Null);
+        if result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+        current = result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to release a prompt safely".to_string(),
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptRecoveryResult {
+    Claimed(ActivePromptClaim),
+    Changed,
+    Closed,
+}
+
+pub async fn begin_prompt_recovery(
+    iii: &IIIClient,
+    session_id: &str,
+    expected_claim: &ActivePromptClaim,
+    recovery_owner_conn_id: &str,
+    recovery_claim_id: &str,
+    recovery_started_at_ms: i64,
+) -> Result<PromptRecoveryResult, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        let result = apply_prompt_recovery(
+            &mut history,
+            expected_claim,
+            recovery_owner_conn_id,
+            recovery_claim_id,
+            recovery_started_at_ms,
+        );
+        let PromptRecoveryResult::Claimed(_) = &result else {
+            return Ok(result);
+        };
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let cas_result = unwrap_value(response).unwrap_or(Value::Null);
+        if cas_result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(result);
+        }
+        current = cas_result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to begin prompt recovery safely".to_string(),
+    ))
+}
+
+pub async fn read_active_prompt_claim(
+    iii: &IIIClient,
+    session_id: &str,
+) -> Result<Option<ActivePromptClaim>, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    Ok(decode_history(state_get(iii, &scope, &key).await?.as_ref())?.active_prompt)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptRecoveryFinishResult {
+    AlreadyOwned,
+    Transferred { previous_owner: Option<String> },
+    Changed,
+    Closed,
+}
+
+pub async fn finish_prompt_recovery(
+    iii: &IIIClient,
+    session_id: &str,
+    recovery_claim: &ActivePromptClaim,
+    new_owner_conn_id: &str,
+) -> Result<PromptRecoveryFinishResult, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        let result = apply_prompt_recovery_finish(&mut history, recovery_claim, new_owner_conn_id);
+        if matches!(
+            result,
+            PromptRecoveryFinishResult::Changed | PromptRecoveryFinishResult::Closed
+        ) {
+            return Ok(result);
+        }
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let cas_result = unwrap_value(response).unwrap_or(Value::Null);
+        if cas_result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(result);
+        }
+        current = cas_result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to finish prompt recovery safely".to_string(),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseHistoryResult {
+    Closed,
+    AlreadyClosed,
+    ActivePrompt,
+    NotOwner,
+}
+
+pub async fn close_history_owned_by(
+    iii: &IIIClient,
+    session_id: &str,
+    owner_conn_id: &str,
+) -> Result<CloseHistoryResult, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..16 {
+        let mut history = decode_history(current.as_ref())?;
+        let close_result = apply_history_close(&mut history, owner_conn_id);
+        if close_result != CloseHistoryResult::Closed {
+            return Ok(close_result);
+        }
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let mut payload = json!({ "scope": scope, "key": key, "value": next });
+        if let Some(expected) = current.as_ref() {
+            payload["expected"] = expected.clone();
+        }
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "state::compare-and-set".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(STATE_TIMEOUT_MS),
+            })
+            .await?;
+        let result = unwrap_value(response).unwrap_or(Value::Null);
+        if result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(CloseHistoryResult::Closed);
+        }
+        current = result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null());
+    }
+    Err(Error::Handler(
+        "history changed too frequently to close safely".to_string(),
+    ))
+}
+
 pub async fn read_history(iii: &IIIClient, session_id: &str) -> Result<Vec<Value>, Error> {
     let scope = scope();
     let key = session_history_key(session_id);
     Ok(decode_history(state_get(iii, &scope, &key).await?.as_ref())?.entries)
+}
+
+pub async fn history_owned_by(
+    iii: &IIIClient,
+    session_id: &str,
+    owner_conn_id: &str,
+) -> Result<bool, Error> {
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let history = decode_history(state_get(iii, &scope, &key).await?.as_ref())?;
+    Ok(history_owner_matches(&history, owner_conn_id))
+}
+
+fn history_owner_matches(history: &HistoryState, owner_conn_id: &str) -> bool {
+    !history.closed && history.owner_conn_id.as_deref() == Some(owner_conn_id)
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -240,6 +636,28 @@ struct HistoryState {
     cursor_item_ids: Vec<String>,
     #[serde(default)]
     owner_conn_id: Option<String>,
+    #[serde(default)]
+    active_prompt: Option<ActivePromptClaim>,
+    #[serde(default)]
+    closed: bool,
+    #[serde(default)]
+    closed_by_conn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivePromptClaim {
+    pub claim_id: String,
+    pub owner_conn_id: String,
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub dispatch: Option<PromptDispatchIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptDispatchIdentity {
+    pub namespace: Option<String>,
+    pub brain_function_id: Option<String>,
+    pub stop_function_id: Option<String>,
 }
 
 fn decode_history(value: Option<&Value>) -> Result<HistoryState, Error> {
@@ -249,10 +667,131 @@ fn decode_history(value: Option<&Value>) -> Result<HistoryState, Error> {
             entries: entries.clone(),
             cursor_item_ids: Vec::new(),
             owner_conn_id: None,
+            active_prompt: None,
+            closed: false,
+            closed_by_conn_id: None,
         }),
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|error| Error::Handler(format!("history decode failed: {error}"))),
     }
+}
+
+fn apply_owner_transfer(history: &mut HistoryState, owner_conn_id: &str) -> HistoryOwnerResult {
+    if history.closed {
+        return HistoryOwnerResult::Closed;
+    }
+    if history.active_prompt.is_some() {
+        return HistoryOwnerResult::ActivePrompt(
+            history
+                .active_prompt
+                .clone()
+                .expect("active prompt was checked"),
+        );
+    }
+    if history.owner_conn_id.as_deref() == Some(owner_conn_id) {
+        return HistoryOwnerResult::AlreadyOwned;
+    }
+    let previous_owner = history.owner_conn_id.replace(owner_conn_id.to_string());
+    HistoryOwnerResult::Transferred { previous_owner }
+}
+
+fn apply_prompt_claim(
+    history: &mut HistoryState,
+    owner_conn_id: &str,
+    claim_id: &str,
+    started_at_ms: i64,
+    dispatch: PromptDispatchIdentity,
+    user_entry: Value,
+) -> PromptClaimResult {
+    if history.closed {
+        return PromptClaimResult::Closed;
+    }
+    if history.owner_conn_id.as_deref() != Some(owner_conn_id) {
+        return PromptClaimResult::NotOwner;
+    }
+    if history.active_prompt.is_some() {
+        return PromptClaimResult::AlreadyActive;
+    }
+    history.active_prompt = Some(ActivePromptClaim {
+        claim_id: claim_id.to_string(),
+        owner_conn_id: owner_conn_id.to_string(),
+        started_at_ms,
+        dispatch: Some(dispatch),
+    });
+    history.entries.push(user_entry);
+    PromptClaimResult::Claimed
+}
+
+fn apply_prompt_release(history: &mut HistoryState, owner_conn_id: &str, claim_id: &str) -> bool {
+    let matches = history
+        .active_prompt
+        .as_ref()
+        .is_some_and(|claim| claim.owner_conn_id == owner_conn_id && claim.claim_id == claim_id);
+    if matches {
+        history.active_prompt = None;
+    }
+    matches
+}
+
+fn apply_prompt_recovery(
+    history: &mut HistoryState,
+    expected_claim: &ActivePromptClaim,
+    recovery_owner_conn_id: &str,
+    recovery_claim_id: &str,
+    recovery_started_at_ms: i64,
+) -> PromptRecoveryResult {
+    if history.closed {
+        return PromptRecoveryResult::Closed;
+    }
+    if history.active_prompt.as_ref() != Some(expected_claim) {
+        return PromptRecoveryResult::Changed;
+    }
+    let recovery_claim = ActivePromptClaim {
+        claim_id: recovery_claim_id.to_string(),
+        owner_conn_id: recovery_owner_conn_id.to_string(),
+        started_at_ms: recovery_started_at_ms,
+        dispatch: expected_claim.dispatch.clone(),
+    };
+    history.active_prompt = Some(recovery_claim.clone());
+    PromptRecoveryResult::Claimed(recovery_claim)
+}
+
+fn apply_prompt_recovery_finish(
+    history: &mut HistoryState,
+    recovery_claim: &ActivePromptClaim,
+    new_owner_conn_id: &str,
+) -> PromptRecoveryFinishResult {
+    if history.closed {
+        return PromptRecoveryFinishResult::Closed;
+    }
+    if history.active_prompt.as_ref() != Some(recovery_claim) {
+        return PromptRecoveryFinishResult::Changed;
+    }
+    history.active_prompt = None;
+    if history.owner_conn_id.as_deref() == Some(new_owner_conn_id) {
+        PromptRecoveryFinishResult::AlreadyOwned
+    } else {
+        let previous_owner = history.owner_conn_id.replace(new_owner_conn_id.to_string());
+        PromptRecoveryFinishResult::Transferred { previous_owner }
+    }
+}
+
+fn apply_history_close(history: &mut HistoryState, owner_conn_id: &str) -> CloseHistoryResult {
+    if history.closed {
+        return CloseHistoryResult::AlreadyClosed;
+    }
+    if history.owner_conn_id.as_deref() != Some(owner_conn_id) {
+        return CloseHistoryResult::NotOwner;
+    }
+    if history.active_prompt.is_some() {
+        return CloseHistoryResult::ActivePrompt;
+    }
+    history.entries.clear();
+    history.cursor_item_ids.clear();
+    history.owner_conn_id = None;
+    history.closed = true;
+    history.closed_by_conn_id = Some(owner_conn_id.to_string());
+    CloseHistoryResult::Closed
 }
 
 fn apply_history_update(
@@ -261,6 +800,9 @@ fn apply_history_update(
     cursor_item_id: Option<&str>,
     entries: Vec<Value>,
 ) -> bool {
+    if history.closed {
+        return false;
+    }
     if let Some(owner_conn_id) = owner_conn_id
         && history.owner_conn_id.as_deref() != Some(owner_conn_id)
     {
@@ -345,6 +887,7 @@ mod tests {
 
     #[test]
     fn keys_are_session_id_only() {
+        assert_eq!(scope(), "acp-v0.3");
         assert_eq!(session_key("s1"), "sessions:s1");
         assert_eq!(session_index_key(), "sessions:_index");
         assert_eq!(session_history_key("s1"), "sessions:s1:history");
@@ -408,5 +951,185 @@ mod tests {
             vec![json!({ "sessionUpdate": "agent_message_chunk" })],
         ));
         assert_eq!(history.entries.len(), 1);
+    }
+
+    #[test]
+    fn history_owner_comparison_rejects_the_previous_connection() {
+        let history = HistoryState {
+            owner_conn_id: Some("new".to_string()),
+            ..HistoryState::default()
+        };
+
+        assert!(!history_owner_matches(&history, "old"));
+        assert!(history_owner_matches(&history, "new"));
+    }
+
+    #[test]
+    fn closed_history_rejects_ownership_and_new_entries() {
+        let mut history = HistoryState {
+            owner_conn_id: Some("owner".to_string()),
+            closed: true,
+            ..HistoryState::default()
+        };
+
+        assert!(!history_owner_matches(&history, "owner"));
+        assert!(!apply_history_update(
+            &mut history,
+            Some("owner"),
+            None,
+            vec![json!({ "sessionUpdate": "agent_message_chunk" })],
+        ));
+        assert!(history.entries.is_empty());
+    }
+
+    #[test]
+    fn active_prompt_blocks_takeover_and_close_until_exact_release() {
+        let mut history = HistoryState {
+            owner_conn_id: Some("owner".to_string()),
+            ..HistoryState::default()
+        };
+        assert_eq!(
+            apply_prompt_claim(
+                &mut history,
+                "owner",
+                "claim-one",
+                42,
+                PromptDispatchIdentity {
+                    namespace: Some("test".to_string()),
+                    brain_function_id: Some("brain::run".to_string()),
+                    stop_function_id: Some("brain::stop".to_string()),
+                },
+                json!({ "sessionUpdate": "user_message_chunk" }),
+            ),
+            PromptClaimResult::Claimed
+        );
+        assert_eq!(
+            apply_owner_transfer(&mut history, "owner"),
+            HistoryOwnerResult::ActivePrompt(ActivePromptClaim {
+                claim_id: "claim-one".to_string(),
+                owner_conn_id: "owner".to_string(),
+                started_at_ms: 42,
+                dispatch: Some(PromptDispatchIdentity {
+                    namespace: Some("test".to_string()),
+                    brain_function_id: Some("brain::run".to_string()),
+                    stop_function_id: Some("brain::stop".to_string()),
+                }),
+            })
+        );
+        assert_eq!(
+            apply_owner_transfer(&mut history, "other"),
+            HistoryOwnerResult::ActivePrompt(ActivePromptClaim {
+                claim_id: "claim-one".to_string(),
+                owner_conn_id: "owner".to_string(),
+                started_at_ms: 42,
+                dispatch: Some(PromptDispatchIdentity {
+                    namespace: Some("test".to_string()),
+                    brain_function_id: Some("brain::run".to_string()),
+                    stop_function_id: Some("brain::stop".to_string()),
+                }),
+            })
+        );
+        assert_eq!(
+            apply_history_close(&mut history, "owner"),
+            CloseHistoryResult::ActivePrompt
+        );
+        assert!(!apply_prompt_release(&mut history, "owner", "wrong"));
+        assert!(!apply_prompt_release(&mut history, "other", "claim-one"));
+        assert!(apply_prompt_release(&mut history, "owner", "claim-one"));
+        assert_eq!(
+            apply_owner_transfer(&mut history, "other"),
+            HistoryOwnerResult::Transferred {
+                previous_owner: Some("owner".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn recovery_claim_pins_the_observed_prompt_before_stopping_it() {
+        let dispatch = PromptDispatchIdentity {
+            namespace: Some("test".to_string()),
+            brain_function_id: Some("brain::run".to_string()),
+            stop_function_id: Some("brain::stop".to_string()),
+        };
+        let original_claim = ActivePromptClaim {
+            claim_id: "prompt-a".to_string(),
+            owner_conn_id: "process-a".to_string(),
+            started_at_ms: 1,
+            dispatch: Some(dispatch.clone()),
+        };
+        let mut history = HistoryState {
+            owner_conn_id: Some("process-a".to_string()),
+            active_prompt: Some(original_claim.clone()),
+            ..HistoryState::default()
+        };
+
+        let recovery_claim = match apply_prompt_recovery(
+            &mut history,
+            &original_claim,
+            "process-b",
+            "recovery-b",
+            2,
+        ) {
+            PromptRecoveryResult::Claimed(claim) => claim,
+            result => panic!("unexpected recovery result: {result:?}"),
+        };
+
+        assert!(!apply_prompt_release(&mut history, "process-a", "prompt-a"));
+        assert_eq!(
+            apply_prompt_claim(
+                &mut history,
+                "process-a",
+                "prompt-b",
+                3,
+                dispatch,
+                json!({ "sessionUpdate": "user_message_chunk" }),
+            ),
+            PromptClaimResult::AlreadyActive
+        );
+        assert_eq!(
+            apply_prompt_recovery(&mut history, &original_claim, "process-c", "recovery-c", 3,),
+            PromptRecoveryResult::Changed
+        );
+        assert_eq!(
+            apply_prompt_recovery_finish(&mut history, &recovery_claim, "process-b"),
+            PromptRecoveryFinishResult::Transferred {
+                previous_owner: Some("process-a".to_string())
+            }
+        );
+        assert_eq!(
+            apply_prompt_claim(
+                &mut history,
+                "process-a",
+                "prompt-b",
+                3,
+                PromptDispatchIdentity {
+                    namespace: Some("test".to_string()),
+                    brain_function_id: Some("brain::run".to_string()),
+                    stop_function_id: Some("brain::stop".to_string()),
+                },
+                json!({ "sessionUpdate": "user_message_chunk" }),
+            ),
+            PromptClaimResult::NotOwner
+        );
+    }
+
+    #[test]
+    fn close_tombstone_allows_reconnect_cleanup_but_not_a_new_close() {
+        let mut history = HistoryState {
+            owner_conn_id: Some("owner".to_string()),
+            ..HistoryState::default()
+        };
+        assert_eq!(
+            apply_history_close(&mut history, "owner"),
+            CloseHistoryResult::Closed
+        );
+        assert_eq!(
+            apply_history_close(&mut history, "owner"),
+            CloseHistoryResult::AlreadyClosed
+        );
+        assert_eq!(
+            apply_history_close(&mut history, "other"),
+            CloseHistoryResult::AlreadyClosed
+        );
     }
 }

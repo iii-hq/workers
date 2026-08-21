@@ -4,8 +4,8 @@ language: javascript
 deploy: bundle
 manifest: package.json
 license: Apache-2.0
-tags: [coding-agent, cursor, bridge, local-agent, cloud-agent]
-description: Cursor agents as an iii worker through the open sdk.v1 Bridge protocol, with durable sessions, raw Cursor events, and normalized AgentEvent streaming.
+tags: [llm, provider, coding-agent, cursor, acp, bridge, local-agent, cloud-agent]
+description: Cursor as a login-backed, text-only LLM Router provider and coding-agent worker through official CLI ACP, with optional sdk.v1 Bridge sessions.
 
 runtime:
   kind: javascript
@@ -17,3 +17,4 @@ dependencies:
   state: "^0.22.2"
   iii-stream: "^0.21.6"
   configuration: "0.x"
+  llm-router: "^1.4.12"

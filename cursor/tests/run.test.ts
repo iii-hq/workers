@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { BridgeRpcError, BridgeTransportError } from '../src/bridge.js';
 import { makeEmitter } from '../src/events.js';
-import { CursorWorker, extractPrompt, RunPayloadSchema } from '../src/run.js';
+import {
+  CursorRunRequestSchema,
+  CursorWorker,
+  extractPrompt,
+  RunPayloadSchema,
+} from '../src/run.js';
 import type { RunStreamMessageWire, SessionRecord } from '../src/types.js';
 import {
   clone,
@@ -14,6 +19,18 @@ import {
 } from './helpers.js';
 
 describe('CursorWorker run lifecycle', () => {
+  it('routes stream writes to the engine default namespace', async () => {
+    const iii = new MockIII();
+    const emit = makeEmitter(iii.asClient(), () => 'agent::events');
+
+    await emit('session-one', { type: 'message_update' });
+
+    expect(iii.triggerCalls.at(-1)).toMatchObject({
+      function_id: 'stream::set',
+      namespace: 'default',
+    });
+  });
+
   it('runs a sandboxed local agent with a durable mapping and normalized events', async () => {
     const iii = new MockIII();
     const client = successfulClient();
@@ -216,6 +233,83 @@ describe('CursorWorker run lifecycle', () => {
     expect((iii.state.get('contended-local') as SessionRecord).turns).toBe(1);
   });
 
+  it('acknowledges only the background start that wins the durable session reservation', async () => {
+    const iii = new MockIII();
+    const originalTrigger = iii.trigger.bind(iii);
+    let reads = 0;
+    let releasePreflight: () => void = () => undefined;
+    const preflightLoaded = new Promise<void>((resolvePromise) => {
+      releasePreflight = resolvePromise;
+    });
+    let releaseReservation: () => void = () => undefined;
+    const reservationLoaded = new Promise<void>((resolvePromise) => {
+      releaseReservation = resolvePromise;
+    });
+    iii.trigger = async (request: Record<string, unknown>) => {
+      const payload = request.payload as { key?: string };
+      if (request.function_id === 'state::get' && payload.key === 'contended-background') {
+        reads += 1;
+        if (reads <= 2) {
+          if (reads === 2) releasePreflight();
+          await preflightLoaded;
+          return null;
+        }
+        if (reads <= 4) {
+          if (reads === 4) releaseReservation();
+          await reservationLoaded;
+          return null;
+        }
+      }
+      return originalTrigger(request);
+    };
+    const firstClient = successfulClient('run-background-first');
+    const secondClient = successfulClient('run-background-second');
+    const firstEvents: unknown[] = [];
+    const secondEvents: unknown[] = [];
+    const firstWorker = makeWorker(iii, new FakeBridgeFactory(firstClient), firstEvents);
+    firstWorker.register();
+    const firstStart = iii.functions.get('cursor::start')?.handler;
+    const secondWorker = makeWorker(iii, new FakeBridgeFactory(secondClient), secondEvents);
+    secondWorker.register();
+    const secondStart = iii.functions.get('cursor::start')?.handler;
+    if (!firstStart || !secondStart) throw new Error('cursor::start was not registered');
+
+    const responses = await Promise.all([
+      firstStart({
+        runtime: 'local',
+        cwd: '/repo',
+        model: 'composer-2',
+        prompt: 'first prompt',
+        session_id: 'contended-background',
+      }),
+      secondStart({
+        runtime: 'local',
+        cwd: '/repo',
+        model: 'composer-2',
+        prompt: 'second prompt',
+        session_id: 'contended-background',
+      }),
+    ]);
+
+    expect(
+      responses.filter((response) => (response as { started?: boolean }).started),
+    ).toHaveLength(1);
+    expect(
+      responses.filter((response) => !(response as { started?: boolean }).started),
+    ).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect((iii.state.get('contended-background') as SessionRecord).status).toBe('done');
+    });
+    expect(
+      [...firstClient.calls, ...secondClient.calls].filter((call) => call.method === 'Send'),
+    ).toHaveLength(1);
+    expect(
+      [...firstEvents, ...secondEvents].filter(
+        (event) => (event as { type?: string }).type === 'agent_end',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('recovers an initial durable claim after a crash before agent creation', async () => {
     const iii = new MockIII();
     const originalTrigger = iii.trigger.bind(iii);
@@ -395,11 +489,28 @@ describe('CursorWorker run lifecycle', () => {
 
     const first = await worker.executeRun(request);
     const second = await worker.executeRun(request);
+    const stopClient = successfulClient();
+    const stopFactory = new FakeBridgeFactory(stopClient);
+    const stopper = makeWorker(iii, stopFactory);
+    stopper.register();
+    const stopped = await iii.functions.get('cursor::stop')?.handler({
+      session_id: 'local-ambiguous',
+    });
 
     expect(first.recovery_required).toBe(true);
     expect(second.recovery_required).toBe(true);
+    expect(stopped).toMatchObject({
+      session_id: 'local-ambiguous',
+      stopped: false,
+      reason: expect.stringContaining('start a new session to avoid duplicating work'),
+    });
     expect(client.calls.filter((call) => call.method === 'Send')).toHaveLength(1);
-    expect((iii.state.get('local-ambiguous') as SessionRecord).status).toBe('recovery-required');
+    expect(iii.state.get('local-ambiguous')).toMatchObject({
+      status: 'recovery-required',
+      cancel_requested: false,
+    });
+    expect(stopFactory.options).toHaveLength(0);
+    expect(stopClient.calls).toHaveLength(0);
     expect(
       events.filter((event) => (event as { type?: string }).type === 'message_complete'),
     ).toHaveLength(1);
@@ -1013,6 +1124,73 @@ describe('CursorWorker run lifecycle', () => {
     }
   });
 
+  it('emits terminal cancellation without SDK Bridge Send when start is stopped during creation', async () => {
+    const iii = new MockIII();
+    const events: unknown[] = [];
+    let markCreateStarted: () => void = () => undefined;
+    const createStarted = new Promise<void>((resolvePromise) => {
+      markCreateStarted = resolvePromise;
+    });
+    let releaseCreate: () => void = () => undefined;
+    const createReleased = new Promise<void>((resolvePromise) => {
+      releaseCreate = resolvePromise;
+    });
+    const client = new FakeBridgeClient(
+      async (call) => {
+        if (call.method === 'CreateAgent') {
+          markCreateStarted();
+          await createReleased;
+          return {
+            agentId: (call.request.options as { agentId: string }).agentId,
+          };
+        }
+        return unaryResponse(call);
+      },
+      (call) => {
+        if (call.method === 'Send') throw new Error('Send must not be called after cancellation');
+        return frames();
+      },
+    );
+    const worker = makeWorker(iii, new FakeBridgeFactory(client), events);
+    worker.register();
+
+    const start = await iii.functions.get('cursor::start')?.handler({
+      runtime: 'local',
+      cwd: '/repo',
+      model: 'composer-2',
+      prompt: 'do not dispatch',
+      session_id: 'cancel-before-send',
+    });
+    await createStarted;
+    const stopped = await iii.functions.get('cursor::stop')?.handler({
+      session_id: 'cancel-before-send',
+    });
+    releaseCreate();
+    await vi.waitFor(() => {
+      expect((iii.state.get('cancel-before-send') as SessionRecord).status).toBe('cancelled');
+      expect(
+        events.filter((event) => (event as { type?: string }).type === 'agent_end'),
+      ).toHaveLength(1);
+    });
+
+    expect(start).toEqual({ session_id: 'cancel-before-send', started: true });
+    expect(stopped).toEqual({ session_id: 'cancel-before-send', stopped: true, reason: null });
+    expect(client.calls.some((call) => call.method === 'Send')).toBe(false);
+    expect(events.map((event) => (event as { type?: string }).type).slice(-3)).toEqual([
+      'message_complete',
+      'turn_end',
+      'agent_end',
+    ]);
+    expect(iii.state.get('cancel-before-send')).toMatchObject({
+      status: 'cancelled',
+      active_run_id: null,
+      send_idempotency_key: null,
+      send_started: false,
+      cancel_requested: false,
+      claim_id: null,
+    });
+  });
+
   it('persists a detached stop request before Send reports a run id', async () => {
     const iii = new MockIII();
     let markSendStarted: () => void = () => undefined;
@@ -1155,7 +1333,7 @@ describe('CursorWorker run lifecycle', () => {
     expect(client.calls.some((call) => call.method === 'WaitLiveRun')).toBe(false);
   });
 
-  it('emits one terminal event when detached stop takes ownership from an observer', async () => {
+  it('does not duplicate streamed text when detached stop cancels an owned run', async () => {
     const iii = new MockIII();
     iii.state.set('stop-race', activeRecord('stop-race', 'wait', 'run-race'));
     let markObserveStarted: () => void = () => undefined;
@@ -1179,15 +1357,8 @@ describe('CursorWorker run lifecycle', () => {
     const stopClient = new FakeBridgeClient(
       (call) => {
         if (call.method === 'CancelRun') return {};
-        if (call.method === 'WaitLiveRun') {
-          return {
-            result: {
-              agentId: 'agent-existing',
-              runId: 'run-race',
-              status: 'RUN_LIFECYCLE_STATUS_CANCELLED',
-              result: '',
-            },
-          };
+        if (call.method === 'GetRun' || call.method === 'WaitLiveRun') {
+          throw new Error(`${call.method} must not be called while the observer owns the run`);
         }
         return unaryResponse(call);
       },
@@ -1203,15 +1374,36 @@ describe('CursorWorker run lifecycle', () => {
     const observerResponse = await observerRun;
 
     expect(stopped).toEqual({ session_id: 'stop-race', stopped: true, reason: null });
-    expect(observerResponse.status).toBe('CANCELLED');
+    expect(observerResponse).toMatchObject({ status: 'FINISHED', result: 'answer' });
     expect(
-      events.filter((event) => (event as { type?: string }).type === 'message_complete'),
+      events.filter(
+        (event) =>
+          (event as { type?: string; llm_event?: { delta?: string } }).type === 'message_update' &&
+          (event as { llm_event?: { delta?: string } }).llm_event?.delta === 'answer',
+      ),
     ).toHaveLength(1);
+    const complete = events.filter(
+      (event) => (event as { type?: string }).type === 'message_complete',
+    );
+    expect(complete).toHaveLength(1);
+    expect(complete[0]).toMatchObject({ body_streamed: true });
+    expect(
+      events.filter((event) => (event as { type?: string }).type === 'agent_end'),
+    ).toHaveLength(1);
+    expect(stopClient.calls.filter((call) => call.method === 'CancelRun')).toHaveLength(1);
+    expect(stopClient.calls.some((call) => call.method === 'GetRun')).toBe(false);
+    expect(stopClient.calls.some((call) => call.method === 'WaitLiveRun')).toBe(false);
+    expect(iii.state.get('stop-race')).toMatchObject({
+      status: 'done',
+      active_run_id: null,
+      claim_id: null,
+    });
 
     async function* delayedObserve() {
+      yield { interactionUpdate: { type: 'text-delta', update: { delta: 'answer' } } };
       markObserveStarted();
       await observeReleased;
-      yield* terminalFrames('run-race', '', 'RUN_LIFECYCLE_STATUS_CANCELLED');
+      yield* terminalFrames('run-race', 'answer').slice(1);
     }
   });
 
@@ -1230,6 +1422,14 @@ describe('CursorWorker run lifecycle', () => {
     record.claim_id = null;
     record.claim_started_at_ms = null;
     record.pending_prompt_sha256 = null;
+    record.usage = {
+      input_tokens: 4,
+      output_tokens: 5,
+      cache_read_tokens: 1,
+      cache_write_tokens: 0,
+      total_tokens: 10,
+    };
+    record.cost = { raw_cost_cents: 7, charged_cents: 6 };
     iii.state.set(record.session_id, record);
     let resumed = false;
     const client = new FakeBridgeClient(
@@ -1246,9 +1446,22 @@ describe('CursorWorker run lifecycle', () => {
     const worker = makeWorker(iii, new FakeBridgeFactory(client));
     worker.register();
 
-    await iii.functions.get('cursor::usage')?.handler({ session_id: 'usage-fresh' });
+    const response = await iii.functions
+      .get('cursor::usage')
+      ?.handler({ session_id: 'usage-fresh' });
 
     expect(resumed).toBe(true);
+    expect(response).toMatchObject({
+      usage: {
+        usage: record.usage,
+        cost: record.cost,
+        runs: [],
+      },
+    });
+    expect(iii.state.get(record.session_id)).toMatchObject({
+      usage: record.usage,
+      cost: record.cost,
+    });
   });
 
   it('falls back to a complete body when a streamed delta cannot be persisted', async () => {
@@ -1296,6 +1509,93 @@ describe('CursorWorker run lifecycle', () => {
 });
 
 describe('Cursor worker interface', () => {
+  it('rejects an invalid runtime instead of treating it as an ACP local request', () => {
+    expect(
+      CursorRunRequestSchema.safeParse({
+        runtime: 'cluod',
+        cwd: '/tmp',
+        model: 'auto',
+        prompt: 'do not run locally',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects timeout_ms for SDK Bridge local sessions before starting the Bridge', async () => {
+    const iii = new MockIII();
+    const client = successfulClient();
+    const factory = new FakeBridgeFactory(client);
+    const worker = makeWorker(iii, factory);
+
+    const response = await worker.executeRun({
+      runtime: 'local',
+      cwd: '/repo',
+      model: 'composer-2',
+      prompt: 'do not start',
+      timeout_ms: 1_000,
+      session_id: 'bridge-timeout-rejected',
+    });
+
+    expect(response.error).toContain('timeout_ms is supported only by the login-backed cli-acp');
+    expect(factory.options).toHaveLength(0);
+    expect(client.calls).toHaveLength(0);
+    expect(iii.state.has('bridge-timeout-rejected')).toBe(false);
+  });
+
+  it('rejects invalid background requests before reporting started', async () => {
+    const cases: Array<{
+      payload: Record<string, unknown>;
+      config: Parameters<typeof testConfig>[0];
+      error: string;
+    }> = [
+      {
+        payload: {
+          runtime: 'local',
+          cwd: '/repo',
+          model: 'composer-2',
+          prompt: 'invalid timeout',
+          timeout_ms: 1_000,
+        },
+        config: {},
+        error: 'timeout_ms is supported only by the login-backed cli-acp',
+      },
+      {
+        payload: {
+          runtime: 'local',
+          cwd: '/repo',
+          model: 'auto',
+          prompt: 'invalid tools',
+          tools: [],
+        },
+        config: { local_backend: 'cli-acp', agent_binary: '/fake/cursor-agent' },
+        error: 'does not support explicit tool lists',
+      },
+      {
+        payload: {
+          runtime: 'cloud',
+          model: 'composer-2',
+          prompt: 'missing repository',
+        },
+        config: {},
+        error: 'requires at least one repository',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const iii = new MockIII();
+      const client = successfulClient();
+      const factory = new FakeBridgeFactory(client);
+      const worker = makeWorker(iii, factory, [], [], testCase.config);
+      worker.register();
+
+      await expect(iii.functions.get('cursor::start')?.handler(testCase.payload)).rejects.toThrow(
+        testCase.error,
+      );
+      expect(iii.state.size).toBe(0);
+      expect(factory.options).toHaveLength(0);
+      expect(client.calls).toHaveLength(0);
+    }
+  });
+
   it('registers the standard alias and concrete request and response schemas', () => {
     const iii = new MockIII();
     const worker = makeWorker(iii, new FakeBridgeFactory(successfulClient()));
@@ -1309,6 +1609,7 @@ describe('Cursor worker interface', () => {
       'cursor::status',
       'cursor::sessions::list',
       'cursor::models::list',
+      'cursor::auth::status',
       'cursor::usage',
     ]);
     for (const registration of iii.functions.values()) {
@@ -1331,7 +1632,6 @@ describe('Cursor worker interface', () => {
       session_id: 'acp-session',
       cwd: '/editor/workspace',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'from editor' }] }],
-      timeout_ms: 600_000,
       model: 'composer-2',
       provider: 'cursor',
       system_prompt: 'Use the repository context.',
@@ -1387,6 +1687,19 @@ describe('Cursor worker interface', () => {
     if (parsed.runtime !== 'local') throw new Error('expected local payload');
     expect(parsed.tools).toEqual([]);
     expect(extractPrompt(parsed)).toBe('last');
+  });
+
+  it('rejects an explicitly empty prompt without changing non-empty text', () => {
+    expect(() => extractPrompt({ prompt: '   ' })).toThrow('requires a non-empty prompt');
+    expect(extractPrompt({ prompt: '  keep spacing  ' })).toBe('  keep spacing  ');
+  });
+
+  it('rejects a last user message with no text content', () => {
+    expect(() =>
+      extractPrompt({
+        messages: [{ role: 'user', content: [{ type: 'text', text: '  ' }] }],
+      }),
+    ).toThrow('requires a non-empty prompt');
   });
 });
 

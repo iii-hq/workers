@@ -1,7 +1,9 @@
 import {
   API_KEY_ENV_REFERENCE,
   BRIDGE_BIN_ENV_REFERENCE,
+  CURSOR_AGENT_BIN_ENV_REFERENCE,
   configId,
+  cursorCliLaunchOptions,
   defaultConfig,
   requireApiKey,
 } from '../src/config.js';
@@ -20,12 +22,21 @@ describe('Cursor configuration', () => {
 
   it('uses built-in environment references and a configurable id', () => {
     expect(defaultConfig()).toMatchObject({
+      local_backend: 'cli-acp',
+      agent_binary: CURSOR_AGENT_BIN_ENV_REFERENCE,
       api_key: API_KEY_ENV_REFERENCE,
       bridge_binary: BRIDGE_BIN_ENV_REFERENCE,
       events_stream: 'agent::events',
       raw_events_stream: 'cursor::events',
     });
     expect(() => requireApiKey(defaultConfig())).toThrow('Cursor API key is not configured');
+    expect(cursorCliLaunchOptions(defaultConfig(), '/repo')).toMatchObject({
+      workspace: '/repo',
+      startupTimeoutMs: 30_000,
+      shutdownTimeoutMs: 5_000,
+      rpcTimeoutMs: 60_000,
+      maxFrameBytes: 16 * 1024 * 1024,
+    });
     process.env.III_CONFIG_NAME = 'cursor-team';
     expect(configId()).toBe('cursor-team');
   });

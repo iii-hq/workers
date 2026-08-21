@@ -8,7 +8,16 @@ import {
   type BridgeClient,
   type BridgeClientFactory,
 } from './bridge.js';
-import { bridgeLaunchOptions, type Config } from './config.js';
+import {
+  type CursorAcpSession,
+  type CursorAcpSessionUpdate,
+  type CursorCliClient,
+  CursorCliError,
+  type CursorCliFactory,
+  ProductionCursorCliFactory,
+  resolveCursorAcpModelId,
+} from './cli.js';
+import { bridgeLaunchOptions, type Config, cursorCliLaunchOptions } from './config.js';
 import type { Emit } from './events.js';
 import {
   extractRunId,
@@ -66,6 +75,7 @@ const LocalRunPayloadSchema = z.object({
   cwd: z.string().min(1),
   model: z.string().min(1),
   tools: z.array(z.string()).optional(),
+  timeout_ms: z.number().int().positive().optional(),
 });
 
 const CloudRunPayloadSchema = z.object({
@@ -84,6 +94,7 @@ export const RunPayloadSchema = z.discriminatedUnion('runtime', [
 export type RunPayload = z.infer<typeof RunPayloadSchema>;
 
 const AcpRunPayloadSchema = z.object({
+  runtime: z.never().optional(),
   session_id: z.string().min(1).optional(),
   prompt: z.string().optional(),
   messages: z.array(InputMessageSchema).optional(),
@@ -102,7 +113,7 @@ export const RunResponseSchema = z.object({
   run_id: z.string().nullable(),
   result: z.string(),
   status: z.string(),
-  stop_reason: z.enum(['end', 'aborted', 'error']).nullable(),
+  stop_reason: z.enum(['end', 'length', 'aborted', 'error']).nullable(),
   is_error: z.boolean(),
   usage: TokenUsageSchema.nullable(),
   cost: UsageCostSchema.nullable(),
@@ -143,6 +154,9 @@ const StatusResponseSchema = z.object({
   remote_error: z.string().nullable(),
 });
 const SessionsResponseSchema = z.object({ sessions: z.array(SessionRecordSchema) });
+const ModelsRequestSchema = z.object({
+  backend: z.enum(['cli-acp', 'sdk-bridge']).optional(),
+});
 const ModelsResponseSchema = z.object({ models: z.array(CursorModelSchema) });
 const UsageRequestSchema = z.object({
   session_id: z.string().min(1),
@@ -153,12 +167,25 @@ const UsageResponseSchema = z.object({
   agent_id: z.string(),
   usage: AgentUsageSchema,
 });
+const AuthStatusResponseSchema = z.object({
+  available: z.boolean(),
+  authenticated: z.boolean(),
+  status: z.enum(['authenticated', 'partial', 'unauthenticated', 'unavailable']),
+  version: z.string().nullable(),
+  login_command: z.literal('cursor-agent login'),
+  error: z.string().nullable(),
+});
+
+type SessionBackend = 'cli-acp' | 'sdk-bridge';
+type ReservationSettler = (accepted: boolean) => void;
 
 type LiveRun = {
   client: BridgeClient | null;
+  cli: CursorCliClient | null;
   agentId: string | null;
   runId: string | null;
   cancelRequested: boolean;
+  cancelSent: boolean;
   claimId: string;
   sendStarted: boolean;
   leaseRefreshedAtMs: number;
@@ -173,12 +200,20 @@ export class CursorWorker {
     private readonly emit: Emit,
     private readonly emitRaw: Emit,
     private readonly factory: BridgeClientFactory,
+    private readonly cliFactory: CursorCliFactory = new ProductionCursorCliFactory(),
   ) {}
 
-  async executeRun(payload: RunPayload): Promise<RunResponse> {
+  async executeRun(payload: RunPayload, onReservation?: ReservationSettler): Promise<RunResponse> {
+    let reservationSettled = false;
+    const settleReservation = (accepted: boolean): void => {
+      if (reservationSettled) return;
+      reservationSettled = true;
+      onReservation?.(accepted);
+    };
     const sessionId = payload.session_id ?? randomUUID();
     const existingLive = this.live.get(sessionId);
     if (existingLive) {
+      settleReservation(false);
       return this.response(sessionId, null, {
         status: 'working',
         busy: true,
@@ -188,9 +223,11 @@ export class CursorWorker {
 
     const handle: LiveRun = {
       client: null,
+      cli: null,
       agentId: null,
       runId: null,
       cancelRequested: false,
+      cancelSent: false,
       claimId: randomUUID(),
       sendStarted: false,
       leaseRefreshedAtMs: 0,
@@ -198,12 +235,22 @@ export class CursorWorker {
     this.live.set(sessionId, handle);
     try {
       const config = this.getConfig();
-      bridgeLaunchOptions(config, payload.runtime === 'local' ? payload.cwd : undefined);
       const prompt = extractPrompt(payload);
-      return await this.runReserved(config, payload, sessionId, prompt, handle);
+      const response = await this.runReserved(
+        config,
+        payload,
+        sessionId,
+        prompt,
+        handle,
+        settleReservation,
+      );
+      settleReservation(false);
+      return response;
     } catch (error) {
+      settleReservation(false);
       return await this.failRun(sessionId, error, handle);
     } finally {
+      if (handle.cli) await handle.cli.close().catch(() => undefined);
       if (handle.client) await handle.client.close().catch(() => undefined);
       if (this.live.get(sessionId) === handle) this.live.delete(sessionId);
     }
@@ -213,7 +260,7 @@ export class CursorWorker {
     const runHandler = async (payload: unknown) => this.executeRun(parseRunRequest(payload));
     const runRegistration = {
       description:
-        'Run one Cursor agent turn through the separately installed sdk.v1 Bridge and wait for its terminal result. The ACP-compatible shape defaults to a sandboxed local run and requires cwd and model.',
+        'Run one Cursor coding-agent turn and wait for its terminal result. Local runs default to the login-backed Cursor CLI ACP; cloud runs use the separately installed sdk.v1 Bridge. The ACP-compatible shape requires cwd and model.',
       request_format: jsonSchema(CursorRunRequestSchema),
       response_format: jsonSchema(RunResponseSchema),
     };
@@ -249,7 +296,7 @@ export class CursorWorker {
       'cursor::status',
       async (payload: unknown) => this.status(SessionIdSchema.parse(payload ?? {}).session_id),
       {
-        description: 'Read local and Bridge-reported status for a Cursor session.',
+        description: 'Read durable local ACP or Bridge-reported status for a Cursor session.',
         request_format: jsonSchema(SessionIdSchema),
         response_format: jsonSchema(StatusResponseSchema),
       },
@@ -265,10 +312,22 @@ export class CursorWorker {
       },
     );
 
-    this.iii.registerFunction('cursor::models::list', async () => this.listModels(), {
-      description: 'List the current Cursor model catalog reported by the sdk.v1 Bridge.',
+    this.iii.registerFunction(
+      'cursor::models::list',
+      async (payload: unknown) => this.listModels(ModelsRequestSchema.parse(payload ?? {})),
+      {
+        description:
+          'List the current account-scoped Cursor model catalog. Select sdk-bridge for the cloud/API-key catalog.',
+        request_format: jsonSchema(ModelsRequestSchema),
+        response_format: jsonSchema(ModelsResponseSchema),
+      },
+    );
+
+    this.iii.registerFunction('cursor::auth::status', async () => this.authStatus(), {
+      description:
+        'Check whether the official Cursor Agent CLI can reuse an existing cursor-agent login. Account details and credentials are never returned.',
       request_format: { type: 'object', properties: {}, additionalProperties: false },
-      response_format: jsonSchema(ModelsResponseSchema),
+      response_format: jsonSchema(AuthStatusResponseSchema),
     });
 
     this.iii.registerFunction(
@@ -284,17 +343,79 @@ export class CursorWorker {
   }
 
   async close(): Promise<void> {
-    await this.factory.closeAll();
+    const timeoutMs = Math.max(1_000, this.getConfig().shutdown_timeout_ms * 2);
+    const shutdown = (async () => {
+      await this.markLiveCliSessionsForShutdown();
+      await Promise.allSettled([this.factory.closeAll(), this.cliFactory.closeAll()]);
+    })();
+    if (!(await completesWithin(shutdown, timeoutMs))) this.forceClose();
+  }
+
+  forceClose(): void {
+    this.factory.forceCloseAll();
+    this.cliFactory.forceCloseAll();
+  }
+
+  private async markLiveCliSessionsForShutdown(): Promise<void> {
+    await Promise.all(
+      [...this.live.entries()].map(async ([sessionId, handle]) => {
+        await updateSession(this.iii, sessionId, (current) => {
+          if (
+            sessionBackend(current) !== 'cli-acp' ||
+            current.status !== 'working' ||
+            current.claim_id !== handle.claimId
+          ) {
+            return null;
+          }
+          const now = Date.now();
+          if (current.active_run_id || current.send_started) {
+            return {
+              ...current,
+              status: 'recovery-required',
+              cancel_requested: false,
+              claim_id: null,
+              claim_started_at_ms: null,
+              updated_at_ms: now,
+            };
+          }
+          return {
+            ...current,
+            status: 'error',
+            agent_created:
+              current.turns === 0 && !current.last_run_id ? false : current.agent_created,
+            active_turn: null,
+            send_idempotency_key: null,
+            send_started: false,
+            cancel_requested: false,
+            claim_id: null,
+            claim_started_at_ms: null,
+            pending_prompt_sha256: null,
+            updated_at_ms: now,
+          };
+        }).catch(() => null);
+      }),
+    );
   }
 
   private async start(payload: RunPayload): Promise<z.infer<typeof StartResponseSchema>> {
     const sessionId = payload.session_id ?? randomUUID();
     const request = { ...payload, session_id: sessionId };
     const config = this.getConfig();
-    bridgeLaunchOptions(config, request.runtime === 'local' ? request.cwd : undefined);
-    const promptHash = hash(extractPrompt(request));
     const prior = await loadSession(this.iii, sessionId);
-    if (prior) validateExistingPayload(prior, request);
+    const backend = backendForRun(request, config, prior);
+    validateCliTools(request, backend);
+    validateBackendTimeout(request, backend);
+    if (!prior) validateNewSessionPayload(request);
+    if (backend === 'sdk-bridge') {
+      bridgeLaunchOptions(config, request.runtime === 'local' ? request.cwd : undefined);
+    } else {
+      cursorCliLaunchOptions(config, request.runtime === 'local' ? request.cwd : undefined);
+    }
+    const promptHash = hash(extractPrompt(request));
+    if (prior) {
+      validateSessionBackend(prior, backend);
+      validateExistingPayload(prior, request);
+    }
     if (
       this.live.has(sessionId) ||
       prior?.status === 'recovery-required' ||
@@ -311,10 +432,14 @@ export class CursorWorker {
     ) {
       return { session_id: sessionId, started: false };
     }
-    void this.executeRun(request).catch((error) => {
+    let resolveReservation: ReservationSettler = () => undefined;
+    const reservation = new Promise<boolean>((resolvePromise) => {
+      resolveReservation = resolvePromise;
+    });
+    void this.executeRun(request, resolveReservation).catch((error) => {
       console.error(`cursor background run failed for ${sessionId}: ${safeError(error)}`);
     });
-    return { session_id: sessionId, started: true };
+    return { session_id: sessionId, started: await reservation };
   }
 
   private async runReserved(
@@ -323,16 +448,28 @@ export class CursorWorker {
     sessionId: string,
     prompt: string,
     handle: LiveRun,
+    settleReservation: ReservationSettler,
   ): Promise<RunResponse> {
     const promptHash = hash(prompt);
     const prior = await loadSession(this.iii, sessionId);
-    if (prior) validateExistingPayload(prior, payload);
+    const requestedBackend = backendForRun(payload, config, prior);
+    validateCliTools(payload, requestedBackend);
+    validateBackendTimeout(payload, requestedBackend);
+    if (!prior) validateNewSessionPayload(payload);
+    if (requestedBackend === 'sdk-bridge') {
+      bridgeLaunchOptions(config, payload.runtime === 'local' ? payload.cwd : undefined);
+    } else {
+      cursorCliLaunchOptions(config, payload.runtime === 'local' ? payload.cwd : undefined);
+    }
+    if (prior) {
+      validateSessionBackend(prior, requestedBackend);
+      validateExistingPayload(prior, payload);
+    }
     if (prior?.status === 'recovery-required') {
       return this.response(sessionId, prior, {
         status: prior.status,
         recoveryRequired: true,
-        error:
-          'this local session lost its Send stream before receiving a run id; start a new session to avoid duplicating work',
+        error: recoveryGuidance(prior),
       });
     }
     if (prior?.status === 'working' && prior.pending_prompt_sha256 !== promptHash) {
@@ -352,7 +489,7 @@ export class CursorWorker {
 
     let record = prior
       ? { ...prior }
-      : newSessionRecord(sessionId, payload, promptHash, handle.claimId);
+      : newSessionRecord(sessionId, payload, promptHash, handle.claimId, requestedBackend);
     if (!prior) {
       const created = await compareAndSetSession(this.iii, null, record);
       if (!created.swapped) {
@@ -369,6 +506,17 @@ export class CursorWorker {
     if ('busy' in claimed) return claimed;
     record = claimed;
     handle.leaseRefreshedAtMs = record.claim_started_at_ms ?? Date.now();
+    settleReservation(true);
+
+    if (sessionBackend(record) === 'cli-acp') {
+      return this.runLocalAcp(
+        config,
+        record,
+        handle,
+        prompt,
+        payload.runtime === 'local' ? payload.timeout_ms : undefined,
+      );
+    }
 
     handle.agentId = record.agent_id;
     const workspace = record.runtime === 'local' ? record.workspace : config.workspace;
@@ -397,7 +545,10 @@ export class CursorWorker {
       }
       await this.observeExisting(client, record, handle, accumulator);
     } else {
-      await this.sendAndRecover(client, record, handle, accumulator, prompt);
+      const dispatched = await this.sendAndRecover(client, record, handle, accumulator, prompt);
+      if (!dispatched) {
+        return this.finalizeUnpromptedCancellation(record, handle, record.agent_created);
+      }
     }
 
     if (!accumulator.runId) {
@@ -502,6 +653,28 @@ export class CursorWorker {
           error: 'another Cursor worker owns this active run',
         });
       }
+      if (sessionBackend(record) === 'cli-acp') {
+        const recovery = {
+          ...record,
+          status: 'recovery-required' as const,
+          claim_id: null,
+          claim_started_at_ms: null,
+          updated_at_ms: Date.now(),
+        };
+        const swapped = await compareAndSetSession(this.iii, record, recovery);
+        if (!swapped.swapped) {
+          if (!swapped.current)
+            throw new SessionConflictError('Cursor session mapping disappeared');
+          return this.response(record.session_id, swapped.current, {
+            status: swapped.current.status,
+            busy: true,
+            error: 'Cursor session changed while resolving a stale CLI run',
+          });
+        }
+        throw new LocalRecoveryRequiredError(
+          'the Cursor CLI process ended while a local ACP prompt may still have been active',
+        );
+      }
       const takeover = {
         ...record,
         claim_id: handle.claimId,
@@ -521,8 +694,7 @@ export class CursorWorker {
       return this.response(record.session_id, record, {
         status: record.status,
         recoveryRequired: true,
-        error:
-          'this local session lost its Send stream before receiving a run id; start a new session to avoid duplicating work',
+        error: recoveryGuidance(record),
       });
     }
     if (record.send_idempotency_key) {
@@ -630,13 +802,218 @@ export class CursorWorker {
     }
   }
 
+  private async runLocalAcp(
+    config: Config,
+    initial: SessionRecord,
+    handle: LiveRun,
+    prompt: string,
+    timeoutMs: number | undefined,
+  ): Promise<RunResponse> {
+    if (initial.runtime !== 'local' || sessionBackend(initial) !== 'cli-acp') {
+      throw new SessionConflictError('Cursor CLI ACP can only run CLI-backed local sessions');
+    }
+    let record = initial;
+    const client = await this.cliFactory.create(cursorCliLaunchOptions(config, record.workspace));
+    handle.cli = client;
+    let acpModelId: string;
+    let acpSessionId: string;
+    if (!record.agent_created) {
+      const session = await client.newSession(record.workspace);
+      acpModelId = requireCursorAcpModelId(record.model, session.models);
+      acpSessionId = session.sessionId;
+    } else {
+      const session = await client.loadSession(record.agent_id, record.workspace);
+      acpModelId = requireCursorAcpModelId(record.model, session.models);
+      acpSessionId = record.agent_id;
+    }
+    handle.agentId = acpSessionId;
+    await client.setModel(acpSessionId, acpModelId);
+    await client.setMode(acpSessionId, 'ask');
+
+    const runId = `acp-${randomUUID()}`;
+    const started = await updateSession(this.iii, record.session_id, (current) => {
+      if (
+        current.claim_id !== handle.claimId ||
+        current.send_idempotency_key !== record.send_idempotency_key ||
+        current.active_run_id
+      ) {
+        throw new SessionConflictError('Cursor ACP prompt claim is no longer owned');
+      }
+      if (record.agent_created && current.agent_id !== record.agent_id) {
+        throw new SessionConflictError('Cursor ACP session identity changed before prompting');
+      }
+      if (!record.agent_created && current.agent_created) {
+        throw new SessionConflictError('Cursor ACP session was created by another worker');
+      }
+      if (handle.cancelRequested || current.cancel_requested) {
+        return cancelUnpromptedRecord(current, record.agent_created);
+      }
+      return {
+        ...current,
+        agent_id: acpSessionId,
+        agent_created: true,
+        backend: 'cli-acp',
+        active_run_id: runId,
+        send_started: true,
+        updated_at_ms: Date.now(),
+      };
+    });
+    if (!started) throw new SessionConflictError('Cursor session mapping disappeared');
+    record = started;
+    if (record.active_run_id !== runId) {
+      return this.finalizeUnpromptedCancellation(record, handle, initial.agent_created);
+    }
+    handle.runId = runId;
+    handle.sendStarted = true;
+
+    if (handle.cancelRequested) {
+      const cancelled = await updateSession(this.iii, record.session_id, (current) => {
+        if (current.active_run_id !== runId || current.claim_id !== handle.claimId) {
+          throw new SessionConflictError('Cursor ACP prompt claim is no longer owned');
+        }
+        return cancelUnpromptedRecord(current, initial.agent_created);
+      });
+      if (!cancelled) throw new SessionConflictError('Cursor session mapping disappeared');
+      return this.finalizeUnpromptedCancellation(cancelled, handle, initial.agent_created);
+    }
+
+    const accumulator = new RunAccumulator(record.session_id, record.model, this.emit);
+    let resultText = '';
+    const occurrences = new Map<string, number>();
+    const onUpdate = async (notification: CursorAcpSessionUpdate): Promise<void> => {
+      if (notification.sessionId !== record.agent_id) {
+        throw new SessionConflictError('Cursor ACP update belongs to an unexpected session');
+      }
+      await this.refreshClaim(record, handle);
+      const deliveryKey = stableAcpItemId(record, notification, occurrences);
+      await this.emitRaw(
+        record.session_id,
+        { method: 'session/update', params: notification },
+        `${deliveryKey}-raw`,
+      );
+      const frame = acpUpdateFrame(notification.update);
+      if (!frame) return;
+      const delta = frame.interactionUpdate?.update.delta;
+      if (frame.interactionUpdate?.type === 'text-delta' && typeof delta === 'string') {
+        resultText += delta;
+      }
+      await accumulator.ingest(frame, true, deliveryKey);
+    };
+
+    let stop: Awaited<ReturnType<CursorCliClient['prompt']>>;
+    const promptOperation = client.prompt(record.agent_id, prompt, onUpdate);
+    try {
+      stop = await this.waitWithClaimHeartbeat(record, handle, promptOperation, timeoutMs);
+    } catch (error) {
+      if (!(error instanceof CursorTurnTimeoutError)) throw error;
+      handle.cancelRequested = true;
+      await this.cancelLocalPromptIfRequested(true, handle);
+      try {
+        stop = await this.waitWithClaimHeartbeat(
+          record,
+          handle,
+          promptOperation,
+          config.shutdown_timeout_ms,
+        );
+      } catch (settleError) {
+        if (!(settleError instanceof CursorTurnTimeoutError)) throw settleError;
+        throw new LocalRecoveryRequiredError(
+          'Cursor ACP prompt timed out and did not confirm cancellation before shutdown',
+        );
+      }
+    }
+    const status = acpLifecycleStatus(stop);
+    if (stop === 'max_tokens') {
+      accumulator.errorMessage = 'Cursor stopped after reaching the model output limit';
+    } else if (stop === 'max_turn_requests') {
+      accumulator.errorMessage = 'Cursor stopped after reaching the ACP turn-request limit';
+    } else if (stop === 'refusal') {
+      accumulator.errorMessage = 'Cursor refused the prompt';
+    }
+    const terminalFrame: RunStreamMessageWire = {
+      result: {
+        agentId: record.agent_id,
+        runId,
+        status,
+        result: {
+          agentId: record.agent_id,
+          runId,
+          status,
+          result: resultText,
+          model: { id: record.model },
+        },
+      },
+      done: { agentId: record.agent_id, runId },
+    };
+    const terminalKey = stableAcpItemId(
+      record,
+      { sessionId: record.agent_id, update: { sessionUpdate: 'terminal', stopReason: stop } },
+      occurrences,
+    );
+    await this.emitRaw(record.session_id, terminalFrame, `${terminalKey}-raw`);
+    await accumulator.ingest(terminalFrame, false, terminalKey);
+
+    const terminalRecord = await updateSession(this.iii, record.session_id, (current) => {
+      if (current.active_run_id !== runId || current.claim_id !== handle.claimId) {
+        throw new SessionConflictError('Cursor ACP terminal state no longer owns the prompt');
+      }
+      return {
+        ...current,
+        status: terminalRecordStatus(status),
+        turns: Math.max(current.turns, current.active_turn ?? current.turns + 1),
+        active_turn: null,
+        active_run_id: null,
+        last_run_id: runId,
+        send_idempotency_key: null,
+        send_started: false,
+        cancel_requested: false,
+        claim_id: null,
+        claim_started_at_ms: null,
+        pending_prompt_sha256: null,
+        backend: 'cli-acp',
+        usage: null,
+        cost: null,
+        updated_at_ms: Date.now(),
+      };
+    });
+    if (!terminalRecord) throw new SessionConflictError('Cursor session mapping disappeared');
+    const terminal = await accumulator.finalize();
+    return {
+      session_id: terminalRecord.session_id,
+      agent_id: terminalRecord.agent_id,
+      run_id: runId,
+      result: resultText,
+      status: normalizeEnum(status),
+      stop_reason: terminal.message.stop_reason,
+      is_error: terminal.message.stop_reason !== 'end',
+      usage: null,
+      cost: null,
+      busy: false,
+      recovery_required: false,
+      error: terminal.message.error_message ?? null,
+      error_details: null,
+    };
+  }
+
+  private async finalizeUnpromptedCancellation(
+    record: SessionRecord,
+    handle: LiveRun,
+    preserveAgent: boolean,
+  ): Promise<RunResponse> {
+    const accumulator = new RunAccumulator(record.session_id, record.model, this.emit);
+    accumulator.status = 'RUN_LIFECYCLE_STATUS_CANCELLED';
+    accumulator.runId = `cancelled-${hash(`${record.session_id}:${handle.claimId}`).slice(0, 32)}`;
+    await accumulator.finalize();
+    return unpromptedCancellationResponse(record, preserveAgent);
+  }
+
   private async sendAndRecover(
     client: BridgeClient,
     record: SessionRecord,
     handle: LiveRun,
     accumulator: RunAccumulator,
     prompt: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const started = await updateSession(this.iii, record.session_id, (current) => {
       if (
         current.claim_id !== handle.claimId ||
@@ -645,10 +1022,14 @@ export class CursorWorker {
         throw new SessionConflictError('Cursor Send claim is no longer owned by this worker');
       }
       if (current.send_started) return null;
+      if (handle.cancelRequested || current.cancel_requested) {
+        return cancelUnpromptedRecord(current, current.agent_created);
+      }
       return { ...current, send_started: true, updated_at_ms: Date.now() };
     });
     if (!started) throw new SessionConflictError('Cursor session mapping disappeared');
     Object.assign(record, started);
+    if (!record.send_started) return false;
     handle.sendStarted = true;
     const request = {
       agentId: record.agent_id,
@@ -672,7 +1053,7 @@ export class CursorWorker {
       } catch (error) {
         if (record.active_run_id) {
           await this.observeExisting(client, record, handle, accumulator);
-          return;
+          return true;
         }
         if (record.runtime === 'local') {
           const recovery = await updateSession(this.iii, record.session_id, (current) => {
@@ -698,8 +1079,9 @@ export class CursorWorker {
         continue;
       }
       await this.observeExisting(client, record, handle, accumulator);
-      return;
+      return true;
     }
+    return true;
   }
 
   private async observeExisting(
@@ -820,6 +1202,23 @@ export class CursorWorker {
     if (!updated) throw new SessionConflictError('Cursor session mapping disappeared');
     Object.assign(record, updated);
     handle.leaseRefreshedAtMs = now;
+    await this.cancelLocalPromptIfRequested(updated.cancel_requested, handle);
+  }
+
+  private async cancelLocalPromptIfRequested(
+    durableCancellationRequested: boolean,
+    handle: LiveRun,
+  ): Promise<void> {
+    if (
+      !handle.cli ||
+      !handle.agentId ||
+      handle.cancelSent ||
+      (!handle.cancelRequested && !durableCancellationRequested)
+    ) {
+      return;
+    }
+    handle.cancelSent = true;
+    await handle.cli.cancel(handle.agentId);
   }
 
   private async waitLiveRun(
@@ -828,18 +1227,32 @@ export class CursorWorker {
     handle: LiveRun,
     runId: string,
   ): Promise<z.infer<typeof WaitLiveRunResponseWireSchema>> {
-    const completion = client
-      .unary('SdkAgentService', 'WaitLiveRun', { runId }, WaitLiveRunResponseWireSchema, {
+    return this.waitWithClaimHeartbeat(
+      record,
+      handle,
+      client.unary('SdkAgentService', 'WaitLiveRun', { runId }, WaitLiveRunResponseWireSchema, {
         timeoutMs: 24 * 60 * 60 * 1_000,
-      })
-      .then(
-        (value) => ({ kind: 'value' as const, value }),
-        (error: unknown) => ({ kind: 'error' as const, error }),
-      );
+      }),
+    );
+  }
+
+  private async waitWithClaimHeartbeat<T>(
+    record: SessionRecord,
+    handle: LiveRun,
+    operation: Promise<T>,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const deadlineMs = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+    const completion = operation.then(
+      (value) => ({ kind: 'value' as const, value }),
+      (error: unknown) => ({ kind: 'error' as const, error }),
+    );
     while (true) {
+      const remainingMs = deadlineMs === null ? 30_000 : deadlineMs - Date.now();
+      if (remainingMs <= 0) throw new CursorTurnTimeoutError();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const tick = new Promise<{ kind: 'tick' }>((resolvePromise) => {
-        timer = setTimeout(() => resolvePromise({ kind: 'tick' }), 30_000);
+        timer = setTimeout(() => resolvePromise({ kind: 'tick' }), Math.min(30_000, remainingMs));
       });
       const outcome = await Promise.race([completion, tick]);
       if (timer) clearTimeout(timer);
@@ -852,22 +1265,153 @@ export class CursorWorker {
   private async stop(sessionId: string): Promise<z.infer<typeof StopResponseSchema>> {
     const live = this.live.get(sessionId);
     if (live) {
-      live.cancelRequested = true;
+      let recordFound = false;
+      let locallyOwned = false;
       await updateSession(this.iii, sessionId, (current) => {
+        recordFound = true;
+        locallyOwned = false;
+        if (current.claim_id !== live.claimId) return null;
+        if (live.runId && current.active_run_id !== live.runId) return null;
+        locallyOwned = true;
         if (!current.active_run_id && !current.send_idempotency_key && !current.send_started) {
           return null;
         }
         if (current.cancel_requested) return null;
         return { ...current, cancel_requested: true, updated_at_ms: Date.now() };
       });
-      if (live.client && live.agentId && live.runId) {
-        await requestCancellation(live.client, live.agentId, live.runId);
+      if (!recordFound || locallyOwned) {
+        live.cancelRequested = true;
+        if (live.cli && live.agentId) {
+          await this.cancelLocalPromptIfRequested(true, live);
+        } else if (live.client && live.agentId && live.runId) {
+          await requestCancellation(live.client, live.agentId, live.runId);
+        }
+        return { session_id: sessionId, stopped: true, reason: null };
       }
-      return { session_id: sessionId, stopped: true, reason: null };
     }
     let record = await loadSession(this.iii, sessionId);
     if (!record) {
       return { session_id: sessionId, stopped: false, reason: 'no cancellable run id' };
+    }
+    if (sessionBackend(record) === 'cli-acp') {
+      if (!record.active_run_id && !record.send_started && !record.send_idempotency_key) {
+        return { session_id: sessionId, stopped: false, reason: 'no cancellable run id' };
+      }
+      const config = this.getConfig();
+      if (record.claim_id && !claimIsStale(record, config)) {
+        const expectedClaimId = record.claim_id;
+        const expectedSendId = record.send_idempotency_key;
+        const expectedRunId = record.active_run_id;
+        const expectedPromptHash = record.pending_prompt_sha256;
+        let cancellationRequested = false;
+        await updateSession(this.iii, sessionId, (current) => {
+          cancellationRequested = false;
+          if (
+            sessionBackend(current) !== 'cli-acp' ||
+            current.status !== 'working' ||
+            current.claim_id !== expectedClaimId ||
+            current.send_idempotency_key !== expectedSendId ||
+            current.active_run_id !== expectedRunId ||
+            current.pending_prompt_sha256 !== expectedPromptHash
+          ) {
+            return null;
+          }
+          cancellationRequested = true;
+          if (current.cancel_requested) return null;
+          return { ...current, cancel_requested: true, updated_at_ms: Date.now() };
+        });
+        return {
+          session_id: sessionId,
+          stopped: cancellationRequested,
+          reason: cancellationRequested
+            ? null
+            : 'Cursor session changed before its active prompt was asked to stop',
+        };
+      }
+      if (!record.active_run_id && !record.send_started) {
+        const pendingSendId = record.send_idempotency_key;
+        let clearedPending = false;
+        const cleared = await updateSession(this.iii, sessionId, (current) => {
+          clearedPending = false;
+          if (
+            sessionBackend(current) !== 'cli-acp' ||
+            current.status !== 'working' ||
+            current.active_run_id ||
+            current.send_started ||
+            !current.send_idempotency_key ||
+            current.send_idempotency_key !== pendingSendId ||
+            (current.claim_id && !claimIsStale(current, config))
+          ) {
+            return null;
+          }
+          clearedPending = true;
+          return {
+            ...current,
+            status: 'cancelled',
+            active_turn: null,
+            send_idempotency_key: null,
+            send_started: false,
+            cancel_requested: false,
+            claim_id: null,
+            claim_started_at_ms: null,
+            pending_prompt_sha256: null,
+            updated_at_ms: Date.now(),
+          };
+        });
+        const stopped = Boolean(
+          clearedPending &&
+            cleared &&
+            cleared.status === 'cancelled' &&
+            !cleared.active_run_id &&
+            !cleared.send_idempotency_key,
+        );
+        return {
+          session_id: sessionId,
+          stopped,
+          reason: stopped ? null : 'Cursor session changed before its pending prompt was stopped',
+        };
+      }
+      let markedRecovery = false;
+      const recovery = await updateSession(this.iii, sessionId, (current) => {
+        markedRecovery = false;
+        if (
+          sessionBackend(current) !== 'cli-acp' ||
+          current.status !== 'working' ||
+          (!current.active_run_id && !current.send_started) ||
+          (current.claim_id && !claimIsStale(current, config))
+        ) {
+          return null;
+        }
+        markedRecovery = true;
+        return {
+          ...current,
+          status: 'recovery-required',
+          cancel_requested: false,
+          claim_id: null,
+          claim_started_at_ms: null,
+          updated_at_ms: Date.now(),
+        };
+      });
+      return {
+        session_id: sessionId,
+        stopped: false,
+        reason:
+          markedRecovery && recovery
+            ? 'the Cursor ACP process is unavailable; start a new session to avoid replaying work'
+            : 'Cursor session changed before its active prompt was marked for recovery',
+      };
+    }
+    if (
+      record.runtime === 'local' &&
+      sessionBackend(record) === 'sdk-bridge' &&
+      record.status === 'recovery-required' &&
+      !record.active_run_id
+    ) {
+      return {
+        session_id: sessionId,
+        stopped: false,
+        reason: recoveryGuidance(record),
+      };
     }
     if (!record.active_run_id) {
       if (!record.send_idempotency_key && !record.send_started) {
@@ -887,9 +1431,34 @@ export class CursorWorker {
     if (!runId) {
       return { session_id: sessionId, stopped: true, reason: null };
     }
+    const config = this.getConfig();
+    if (record.claim_id && !claimIsStale(record, config)) {
+      const expectedClaimId = record.claim_id;
+      let sameRun = false;
+      const marked = await updateSession(this.iii, sessionId, (current) => {
+        sameRun = false;
+        if (current.active_run_id !== runId || current.claim_id !== expectedClaimId) return null;
+        sameRun = true;
+        if (current.cancel_requested) return null;
+        return { ...current, cancel_requested: true, updated_at_ms: Date.now() };
+      });
+      if (!sameRun || !marked || marked.active_run_id !== runId) {
+        return { session_id: sessionId, stopped: false, reason: 'active run changed' };
+      }
+      const client = this.factory.create(
+        bridgeLaunchOptions(config, marked.runtime === 'local' ? marked.workspace : undefined),
+      );
+      try {
+        await requestCancellation(client, marked.agent_id, runId);
+        return { session_id: sessionId, stopped: true, reason: null };
+      } finally {
+        await client.close();
+      }
+    }
     const claimId = randomUUID();
     const claimed = await updateSession(this.iii, sessionId, (current) => {
       if (current.active_run_id !== runId) return null;
+      if (current.claim_id && !claimIsStale(current, config)) return null;
       const now = Date.now();
       return {
         ...current,
@@ -910,9 +1479,11 @@ export class CursorWorker {
     );
     const handle: LiveRun = {
       client,
+      cli: null,
       agentId: claimed.agent_id,
       runId,
       cancelRequested: true,
+      cancelSent: false,
       claimId,
       sendStarted: claimed.send_started,
       leaseRefreshedAtMs: claimed.claim_started_at_ms ?? Date.now(),
@@ -1004,6 +1575,28 @@ export class CursorWorker {
         remote_error: null,
       };
     }
+    if (sessionBackend(record) === 'cli-acp') {
+      return {
+        session_id: sessionId,
+        live: this.live.has(sessionId),
+        record,
+        agent: {
+          agent_id: record.agent_id,
+          name: record.name ?? '',
+          summary: '',
+          status: record.status,
+          archived: false,
+          created_at: null,
+          last_modified: null,
+          runtime: 'local',
+          cwd: record.workspace,
+          repositories: [],
+          metadata: { backend: 'cli-acp' },
+        },
+        run: null,
+        remote_error: null,
+      };
+    }
     const client = this.factory.create(
       bridgeLaunchOptions(
         this.getConfig(),
@@ -1051,8 +1644,14 @@ export class CursorWorker {
     }
   }
 
-  private async listModels(): Promise<z.infer<typeof ModelsResponseSchema>> {
+  private async listModels(
+    request: z.infer<typeof ModelsRequestSchema>,
+  ): Promise<z.infer<typeof ModelsResponseSchema>> {
     const config = this.getConfig();
+    const backend = request.backend ?? config.local_backend;
+    if (backend === 'cli-acp') {
+      return { models: await this.cliFactory.listModels(cursorCliLaunchOptions(config)) };
+    }
     const options = bridgeLaunchOptions(config);
     const client = this.factory.create(options);
     try {
@@ -1065,6 +1664,22 @@ export class CursorWorker {
       return { models: mapModels(response) };
     } finally {
       await client.close();
+    }
+  }
+
+  private async authStatus(): Promise<z.infer<typeof AuthStatusResponseSchema>> {
+    try {
+      const status = await this.cliFactory.authStatus(cursorCliLaunchOptions(this.getConfig()));
+      return { available: true, ...status, error: null };
+    } catch (error) {
+      return {
+        available: false,
+        authenticated: false,
+        status: 'unavailable',
+        version: null,
+        login_command: 'cursor-agent login',
+        error: safeError(error),
+      };
     }
   }
 
@@ -1081,12 +1696,16 @@ export class CursorWorker {
       const usage = await this.fetchUsage(client, record, request.run_id);
       const updated = await updateSession(this.iii, record.session_id, (current) => ({
         ...current,
-        usage: usage.usage,
-        cost: usage.cost,
+        usage: usage.usage ?? current.usage,
+        cost: usage.cost ?? current.cost,
         updated_at_ms: Date.now(),
       }));
       if (!updated) throw new SessionConflictError('Cursor session mapping disappeared');
-      return { session_id: updated.session_id, agent_id: updated.agent_id, usage };
+      return {
+        session_id: updated.session_id,
+        agent_id: updated.agent_id,
+        usage: { ...usage, usage: updated.usage, cost: updated.cost },
+      };
     } finally {
       await client.close();
     }
@@ -1106,10 +1725,29 @@ export class CursorWorker {
     let record = await loadSession(this.iii, sessionId).catch(() => null);
     const localAmbiguous = Boolean(
       record?.runtime === 'local' &&
-        !record.active_run_id &&
+        (sessionBackend(record) === 'cli-acp' || !record.active_run_id) &&
         (record.send_started || error instanceof LocalRecoveryRequiredError),
     );
     const recoveryRequired = error instanceof LocalRecoveryRequiredError || localAmbiguous;
+    if (recoveryRequired && record?.runtime === 'local' && sessionBackend(record) === 'cli-acp') {
+      const updated = await updateSession(this.iii, sessionId, (current) => {
+        if (handle && current.claim_id && current.claim_id !== handle.claimId) return null;
+        return {
+          ...current,
+          status: 'recovery-required',
+          cancel_requested: false,
+          claim_id: null,
+          claim_started_at_ms: null,
+          updated_at_ms: Date.now(),
+        };
+      }).catch(() => record);
+      if (updated) record = updated;
+      return this.response(sessionId, record, {
+        status: 'recovery-required',
+        recoveryRequired: true,
+        error,
+      });
+    }
     if (
       record?.active_run_id &&
       handle &&
@@ -1146,9 +1784,12 @@ export class CursorWorker {
         if (current.active_run_id) return null;
         if (handle && current.claim_id && current.claim_id !== handle.claimId) return null;
         if (!current.send_started) {
+          const resetUnpromptedCliSession =
+            sessionBackend(current) === 'cli-acp' && current.turns === 0 && !current.last_run_id;
           return {
             ...current,
             status: 'error',
+            agent_created: resetUnpromptedCliSession ? false : current.agent_created,
             active_turn: null,
             send_idempotency_key: null,
             send_started: false,
@@ -1217,20 +1858,30 @@ export class CursorWorker {
 }
 
 export function extractPrompt(payload: { prompt?: string; messages?: InputMessage[] }): string {
-  if (typeof payload.prompt === 'string') return payload.prompt;
-  const users = (payload.messages ?? []).filter((message) => message.role === 'user');
-  const last = users.at(-1);
-  if (!last) throw new Error('cursor::run requires prompt or a user message in messages');
-  if (typeof last.content === 'string') return last.content;
-  return last.content
-    .map((block) => (typeof block.text === 'string' ? block.text : ''))
-    .filter(Boolean)
-    .join('\n');
+  let resolved: string;
+  if (typeof payload.prompt === 'string') {
+    resolved = payload.prompt;
+  } else {
+    const users = (payload.messages ?? []).filter((message) => message.role === 'user');
+    const last = users.at(-1);
+    if (!last) throw new CursorPayloadError('cursor::run requires prompt or a user message');
+    resolved =
+      typeof last.content === 'string'
+        ? last.content
+        : last.content
+            .map((block) => (typeof block.text === 'string' ? block.text : ''))
+            .filter(Boolean)
+            .join('\n');
+  }
+  if (!resolved.trim()) {
+    throw new CursorPayloadError('cursor::run requires a non-empty prompt or user message');
+  }
+  return resolved;
 }
 
 function parseRunRequest(payload: unknown): RunPayload {
   const parsed = CursorRunRequestSchema.parse(payload ?? {});
-  if ('runtime' in parsed) return parsed;
+  if (parsed.runtime === 'local' || parsed.runtime === 'cloud') return parsed;
   const prompt = extractPrompt(parsed);
   return {
     runtime: 'local',
@@ -1238,6 +1889,7 @@ function parseRunRequest(payload: unknown): RunPayload {
     cwd: parsed.cwd,
     model: parsed.model,
     prompt: parsed.system_prompt ? `${parsed.system_prompt}\n\n${prompt}` : prompt,
+    timeout_ms: parsed.timeout_ms,
   };
 }
 
@@ -1246,14 +1898,13 @@ function newSessionRecord(
   payload: RunPayload,
   promptHash: string,
   claimId: string,
+  backend: SessionBackend,
 ): SessionRecord {
-  if (payload.runtime === 'cloud' && (!payload.repositories || payload.repositories.length === 0)) {
-    throw new CursorPayloadError('a new cloud Cursor session requires at least one repository');
-  }
   return {
     session_id: sessionId,
     agent_id: `${payload.runtime === 'local' ? 'agent' : 'bc'}-${randomUUID()}`,
     runtime: payload.runtime,
+    backend,
     workspace: payload.runtime === 'local' ? resolve(payload.cwd) : '',
     name: payload.name ?? null,
     model: payload.model ?? '',
@@ -1279,6 +1930,112 @@ function newSessionRecord(
     cost: null,
     updated_at_ms: Date.now(),
   };
+}
+
+function backendForPayload(payload: RunPayload, config: Config): SessionBackend {
+  if (payload.runtime === 'cloud') return 'sdk-bridge';
+  return config.local_backend;
+}
+
+function backendForRun(
+  payload: RunPayload,
+  config: Config,
+  prior: SessionRecord | null,
+): SessionBackend {
+  return prior ? sessionBackend(prior) : backendForPayload(payload, config);
+}
+
+function cancelUnpromptedRecord(record: SessionRecord, preserveAgent: boolean): SessionRecord {
+  return {
+    ...record,
+    status: 'cancelled',
+    agent_created: preserveAgent && record.agent_created,
+    active_turn: null,
+    active_run_id: null,
+    send_idempotency_key: null,
+    send_started: false,
+    cancel_requested: false,
+    claim_id: null,
+    claim_started_at_ms: null,
+    pending_prompt_sha256: null,
+    updated_at_ms: Date.now(),
+  };
+}
+
+function unpromptedCancellationResponse(
+  record: SessionRecord,
+  preserveAgent: boolean,
+): RunResponse {
+  return {
+    session_id: record.session_id,
+    agent_id: preserveAgent ? record.agent_id : null,
+    run_id: null,
+    result: '',
+    status: 'CANCELLED',
+    stop_reason: 'aborted',
+    is_error: true,
+    usage: record.usage,
+    cost: record.cost,
+    busy: false,
+    recovery_required: false,
+    error: null,
+    error_details: null,
+  };
+}
+
+function sessionBackend(record: SessionRecord): SessionBackend {
+  return record.backend ?? 'sdk-bridge';
+}
+
+function validateSessionBackend(record: SessionRecord, requested: SessionBackend): void {
+  const existing = sessionBackend(record);
+  if (existing === requested) return;
+  if (record.runtime === 'local' && existing === 'sdk-bridge' && requested === 'cli-acp') {
+    throw new CursorPayloadError(
+      'this session was created by the legacy SDK Bridge local backend; start a new session for Cursor CLI login mode',
+    );
+  }
+  throw new CursorPayloadError(`Cursor session backend is ${existing}, not ${requested}`);
+}
+
+function validateCliTools(payload: RunPayload, backend: SessionBackend): void {
+  if (backend !== 'cli-acp' || payload.runtime !== 'local' || payload.tools === undefined) return;
+  throw new CursorPayloadError(
+    'Cursor CLI ACP does not support explicit tool lists; omit tools to use ask mode with permission requests denied',
+  );
+}
+
+function validateBackendTimeout(payload: RunPayload, backend: SessionBackend): void {
+  if (backend !== 'sdk-bridge' || payload.runtime !== 'local' || payload.timeout_ms === undefined) {
+    return;
+  }
+  throw new CursorPayloadError(
+    'timeout_ms is supported only by the login-backed cli-acp backend; omit it for sdk-bridge sessions',
+  );
+}
+
+function validateNewSessionPayload(payload: RunPayload): void {
+  if (payload.runtime === 'cloud' && (!payload.repositories || payload.repositories.length === 0)) {
+    throw new CursorPayloadError('a new cloud Cursor session requires at least one repository');
+  }
+}
+
+function requireCursorAcpModelId(
+  requestedModel: string,
+  availableModels: CursorAcpSession['models'],
+): string {
+  const modelId = resolveCursorAcpModelId(requestedModel, availableModels);
+  if (modelId) return modelId;
+  throw new CursorCliError(
+    `Cursor model "${requestedModel}" is not available through login-backed ACP. Call cursor::models::list with {"backend":"cli-acp"} and use one of those IDs; cursor-agent --list-models can include CLI-only parameterized IDs that ACP rejects.`,
+  );
+}
+
+function recoveryGuidance(record: SessionRecord): string {
+  if (sessionBackend(record) === 'cli-acp') {
+    return 'this local Cursor ACP session lost its process after prompt dispatch; start a new session to avoid duplicating work';
+  }
+  return 'this local session lost its Send stream before receiving a run id; start a new session to avoid duplicating work';
 }
 
 function validateExistingPayload(record: SessionRecord, payload: RunPayload): void {
@@ -1441,6 +2198,16 @@ function terminalRecordStatus(status: string): SessionRecord['status'] {
   return 'error';
 }
 
+function acpLifecycleStatus(
+  stop: 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'cancelled',
+): string {
+  if (stop === 'end_turn') return 'RUN_LIFECYCLE_STATUS_FINISHED';
+  if (stop === 'cancelled') return 'RUN_LIFECYCLE_STATUS_CANCELLED';
+  if (stop === 'max_tokens') return 'RUN_LIFECYCLE_STATUS_MAX_TOKENS';
+  if (stop === 'max_turn_requests') return 'RUN_LIFECYCLE_STATUS_MAX_TURN_REQUESTS';
+  return 'RUN_LIFECYCLE_STATUS_REFUSAL';
+}
+
 function sameRepositories(left: Repository[], right: Repository[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -1502,6 +2269,77 @@ function stableFrameItemId(
   return `cursor-${hash(`${record.agent_id}:${turn}:${fingerprint}:${occurrence}`).slice(0, 40)}`;
 }
 
+function stableAcpItemId(
+  record: SessionRecord,
+  notification: CursorAcpSessionUpdate,
+  occurrences: Map<string, number>,
+): string {
+  const turn = record.active_run_id ?? record.send_idempotency_key ?? 'pending';
+  const fingerprint = hash(JSON.stringify(canonicalValue(notification)));
+  const occurrence = occurrences.get(fingerprint) ?? 0;
+  occurrences.set(fingerprint, occurrence + 1);
+  return `cursor-${hash(`${record.agent_id}:${turn}:acp:${fingerprint}:${occurrence}`).slice(0, 40)}`;
+}
+
+function acpUpdateFrame(update: Record<string, unknown>): RunStreamMessageWire | null {
+  const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : '';
+  const content = objectValue(update.content);
+  const text = typeof content?.text === 'string' ? content.text : '';
+  if (type === 'agent_message_chunk' && text) {
+    return { interactionUpdate: { type: 'text-delta', update: { delta: text } } };
+  }
+  if (type === 'agent_thought_chunk' && text) {
+    return { interactionUpdate: { type: 'thinking-delta', update: { delta: text } } };
+  }
+  const callId = typeof update.toolCallId === 'string' ? update.toolCallId : '';
+  if (type === 'tool_call' && callId) {
+    return {
+      interactionUpdate: {
+        type: 'tool-call-started',
+        update: {
+          callId,
+          toolCall: {
+            type:
+              typeof update.kind === 'string'
+                ? update.kind
+                : typeof update.title === 'string'
+                  ? update.title
+                  : 'tool',
+            args: update.rawInput ?? {},
+          },
+        },
+      },
+    };
+  }
+  if (type === 'tool_call_update' && callId) {
+    const status = typeof update.status === 'string' ? update.status : '';
+    if (!['completed', 'failed', 'cancelled'].includes(status)) return null;
+    return {
+      interactionUpdate: {
+        type: 'tool-call-completed',
+        update: {
+          callId,
+          toolCall: {
+            type: typeof update.kind === 'string' ? update.kind : 'tool',
+            args: {},
+            result: {
+              status: status === 'completed' ? 'success' : 'error',
+              content: update.content ?? update.rawOutput ?? null,
+            },
+          },
+        },
+      },
+    };
+  }
+  return null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (!value || typeof value !== 'object') return value;
@@ -1543,6 +2381,18 @@ async function retryDelay(error: unknown, heartbeat: () => Promise<void>): Promi
   }
 }
 
+async function completesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    operation.then(() => true),
+    new Promise<false>((resolvePromise) => {
+      timer = setTimeout(() => resolvePromise(false), timeoutMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return result;
+}
+
 function errorDetails(error: unknown): z.infer<typeof RunResponseSchema>['error_details'] {
   if (!(error instanceof BridgeRpcError)) return null;
   const rate = error.detail?.rate_limit;
@@ -1569,5 +2419,6 @@ function safeError(error: unknown): string {
 }
 
 class LocalRecoveryRequiredError extends Error {}
+class CursorTurnTimeoutError extends Error {}
 class CursorPayloadError extends Error {}
 class SessionConflictError extends Error {}

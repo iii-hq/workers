@@ -25,7 +25,7 @@ export async function registerCursorConfig(
     id: configId(),
     name: 'Cursor',
     description:
-      'Cursor agent worker using a separately installed v1.0.28 sdk.v1 Bridge binary, with API credentials, bridge lifecycle limits, workspace defaults, and event stream names.',
+      'Cursor provider and agent worker using normal Cursor CLI login for LLM Router and local ACP sessions, plus the optional sdk.v1 Bridge for explicit API-key or cloud sessions.',
     schema: runtimeJsonSchema(),
     initial_value: initialValue,
   });

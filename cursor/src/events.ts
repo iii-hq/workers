@@ -17,6 +17,7 @@ export function makeEmitter(iii: IIIClient, streamName: () => string) {
     try {
       await iii.trigger({
         function_id: 'stream::set',
+        namespace: 'default',
         payload: {
           stream_name: streamName(),
           group_id: sessionId,

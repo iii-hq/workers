@@ -1,5 +1,6 @@
 import {
   mapModels,
+  mapRunSnapshot,
   mapStructTokenUsage,
   mapTokenUsage,
   mapUsageResponse,
@@ -154,6 +155,47 @@ describe('RunAccumulator', () => {
     expect(terminal.message.model).toBe('cursor-selected-model');
   });
 
+  it('preserves streamed usage when the terminal result omits usage', async () => {
+    const accumulator = new RunAccumulator('session', 'model', async () => undefined);
+    await accumulator.ingest({
+      sdkMessage: {
+        type: 'usage',
+        message: {
+          usage: {
+            input_tokens: 2,
+            output_tokens: 3,
+            cache_read_tokens: 1,
+            cache_write_tokens: 0,
+            total_tokens: 6,
+          },
+        },
+      },
+    });
+    await accumulator.ingest({
+      sdkMessage: {
+        type: 'usage',
+        message: { usage: { input_tokens: 99 } },
+      },
+    });
+    await accumulator.ingest({
+      result: {
+        runId: 'run',
+        status: 'RUN_LIFECYCLE_STATUS_FINISHED',
+        result: { runId: 'run', status: 'RUN_LIFECYCLE_STATUS_FINISHED', result: 'done' },
+      },
+    });
+
+    const terminal = await accumulator.finalize();
+
+    expect(terminal.message.usage).toEqual({
+      input_tokens: 2,
+      output_tokens: 3,
+      cache_read_tokens: 1,
+      cache_write_tokens: 0,
+      total_tokens: 6,
+    });
+  });
+
   it('normalizes tool progress and terminal cancellation', async () => {
     const events: unknown[] = [];
     const accumulator = new RunAccumulator('session', 'model', async (_group, event) => {
@@ -232,6 +274,15 @@ describe('wire mappings', () => {
 
   it('preserves absent usage and cost', () => {
     expect(mapUsageResponse({})).toEqual({ usage: null, cost: null, runs: [] });
+    expect(mapTokenUsage({ inputTokens: '1' })).toBeNull();
+    expect(
+      mapUsageResponse({
+        usage: {
+          usage: { inputTokens: '1' },
+          cost: { rawCostCents: 2 },
+        },
+      }),
+    ).toEqual({ usage: null, cost: null, runs: [] });
     expect(
       mapUsageResponse({
         usage: {
@@ -263,6 +314,11 @@ describe('wire mappings', () => {
         cost: null,
       },
     ]);
+  });
+
+  it('does not invent a duration for a Bridge run snapshot', () => {
+    expect(mapRunSnapshot({}).duration_ms).toBeNull();
+    expect(mapRunSnapshot({ durationMs: '12' }).duration_ms).toBe(12);
   });
 
   it('maps only model fields returned by Cursor', () => {
