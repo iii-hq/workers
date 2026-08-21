@@ -1500,14 +1500,19 @@ function Header({
           />
         </div>
         <div className="flex items-center gap-2">
+          {/* The key itself is the button: the console is reached through
+              the palette, and the cap teaches the chord on sight. */}
           <button
             type="button"
             onClick={onOpenPalette}
             aria-label={hoverTitle('Search and commands', 'palette.toggle')}
             title={hoverTitle('Search and commands', 'palette.toggle')}
-            className="relative flex size-10 items-center justify-center rounded-md border border-transparent bg-transparent font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none"
+            className="relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
           >
-            <Search className="size-4 shrink-0" aria-hidden />
+            <KeyCombo
+              binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
+              capClassName="min-w-6 px-1.5 py-0.5 text-[0.72rem] text-current"
+            />
           </button>
           <button
             type="button"
