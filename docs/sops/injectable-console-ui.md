@@ -346,7 +346,7 @@ valid and simply ignores them:
   while the page holds something the user would lose and `setDirty(false)`
   once it is saved or discarded; closing the pane, its workspace, or the
   browser tab then asks first. Absent on older consoles, so call it as
-  `setDirty?.(…)`. Clean up on unmount is automatic.
+  `setDirty?.(…)`. The host clears the entry when its pane or workspace tab is removed; unmounting a background tab does not clear it.
 
 #### The page chrome — MANDATORY layout for pages
 

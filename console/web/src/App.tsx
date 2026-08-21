@@ -142,9 +142,12 @@ export function App({
       return next
     })
   }, [])
-  const tabIds = workspace.tabs.map((tab) => tab.id).join(' ')
+  const layoutSignature = JSON.stringify(
+    workspace.tabs.map((tab) => [tab.id, tabPaneIds(tab)]),
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the layout signature is the trigger, not a value read here.
   useEffect(() => {
-    const live = new Set(tabIds.split(' '))
+    const live = new Set(workspaceRef.current.tabs.map((tab) => tab.id))
     setMobilePanelIndexes((current) => {
       const kept = Object.fromEntries(
         Object.entries(current).filter(([id]) => live.has(id)),
@@ -155,7 +158,7 @@ export function App({
       return kept
     })
     pruneDirty(live, paneIdsByTab(workspaceRef.current.tabs))
-  }, [tabIds])
+  }, [layoutSignature])
 
   // Unsaved work: the console's own dialog on close; the native prompt only for reload.
   const dirtyEntries = useDirtyEntries()

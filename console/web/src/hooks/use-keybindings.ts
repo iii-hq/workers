@@ -75,7 +75,7 @@ export function useKeybindings(handlers: KeybindingHandlers): void {
       const inDialog = insideDialog(event.target)
       for (const definition of KEYBINDINGS) {
         if (definition.scope !== 'global') continue
-        if (event.repeat && !definition.firesWhileTyping) continue
+        if (event.repeat) continue
         if (inDialog && !definition.firesWhileTyping) continue
         if (
           typing &&

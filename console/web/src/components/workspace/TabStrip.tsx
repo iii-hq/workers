@@ -187,6 +187,7 @@ export function TabStrip({
   // The active tab stays in view whatever selected it; labels remeasure
   // overflow when a rename or a page title changes a tab's width.
   const labels = tabs.map((tab) => tabLabel(tab, extPageTitles)).join('\n')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the labels are the trigger, not a value read here.
   useLayoutEffect(() => {
     const pending = pendingCloseRef.current
     if (pending !== null) {
