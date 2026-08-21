@@ -438,10 +438,15 @@ fn assert_truncated_partial(frames: &[Value]) -> anyhow::Result<()> {
             .any(|block| block["type"] == "text" && block["text"] == "partial contract"),
         "truncated error must keep the streamed text: {last}"
     );
-    for block in content
+    let function_calls: Vec<_> = content
         .iter()
         .filter(|block| block["type"] == "function_call")
-    {
+        .collect();
+    anyhow::ensure!(
+        !function_calls.is_empty(),
+        "truncated error must keep the unfinished function call: {last}"
+    );
+    for block in function_calls {
         let arguments = &block["arguments"];
         anyhow::ensure!(
             arguments.get("_partial").is_some() || arguments.get("_raw").is_some(),

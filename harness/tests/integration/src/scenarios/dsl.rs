@@ -728,6 +728,17 @@ pub(super) struct Response {
     usage: Usage,
 }
 
+/// The call a cut stream leaves behind: what streamed, and what the provider
+/// salvaged from it.
+pub(super) struct TruncatedCall<'a> {
+    pub(super) call_id: &'a str,
+    pub(super) function: &'a ControlledFunction,
+    /// The argument bytes delivered before the cut, as the delta frame.
+    pub(super) argument_delta: &'a str,
+    /// The provider's degraded arguments (`_partial` or `_raw`).
+    pub(super) degraded_arguments: Value,
+}
+
 enum ResponseKind {
     StreamedText {
         text: String,
@@ -810,29 +821,23 @@ impl Response {
         }
     }
 
-    /// A body cut mid-arguments: text, an open call, part of its arguments,
-    /// then one transient error whose partial carries the call degraded.
+    /// A body cut mid-arguments: text, an open call, the argument bytes the
+    /// stream delivered, then one transient error whose partial carries the
+    /// call with the provider's degraded arguments.
     pub(super) fn truncated_function_call(
         text: &str,
-        call_id: &str,
-        function: &ControlledFunction,
-        degraded_arguments: Value,
+        cut: TruncatedCall<'_>,
         message: &str,
         input_tokens: u64,
         output_tokens: u64,
     ) -> Self {
-        let argument_delta = degraded_arguments
-            .get("_raw")
-            .and_then(Value::as_str)
-            .unwrap_or("{")
-            .to_string();
         Self {
             kind: ResponseKind::TruncatedFunctionCall {
                 text: text.to_string(),
-                call_id: call_id.to_string(),
-                function_id: function.id().to_string(),
-                argument_delta,
-                degraded_arguments,
+                call_id: cut.call_id.to_string(),
+                function_id: cut.function.id().to_string(),
+                argument_delta: cut.argument_delta.to_string(),
+                degraded_arguments: cut.degraded_arguments,
                 message: message.to_string(),
             },
             usage: usage(input_tokens, output_tokens),
