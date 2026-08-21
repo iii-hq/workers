@@ -63,7 +63,9 @@ def build_attempt(worker: str, out: Path) -> list[Path]:
         run(*test_command)
         run(*build_command)
         binary = manifest.bin or manifest.name
-        binary_path = Path("target/release") / binary
+        # Workers are standalone crates (no root workspace): cargo places the
+        # artifacts under the worker's own target directory.
+        binary_path = root / "target" / "release" / binary
         if not binary_path.exists():
             raise SystemExit(f"{worker}: built binary not found at {binary_path}")
         archive = out / f"{binary}-x86_64-unknown-linux-gnu.tar.gz"
