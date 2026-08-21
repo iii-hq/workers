@@ -1,0 +1,237 @@
+{
+  "description": "Export one A2UI surface as a portable, replayable JSON package without Harness session metadata.",
+  "function_id": "a2ui::surface::export",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "surface_id": {
+        "description": "Stable id of the surface to export.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "surface_id"
+    ],
+    "title": "ExportRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Component": {
+        "additionalProperties": true,
+        "properties": {
+          "component": {
+            "description": "Component name from the negotiated catalog.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique component id within the surface. `root` is the render root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "component",
+          "id"
+        ],
+        "type": "object"
+      },
+      "CreateSurface": {
+        "additionalProperties": false,
+        "properties": {
+          "catalogId": {
+            "type": "string"
+          },
+          "sendDataModel": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "surfaceId": {
+            "type": "string"
+          },
+          "theme": true
+        },
+        "required": [
+          "catalogId",
+          "surfaceId"
+        ],
+        "type": "object"
+      },
+      "CreateSurfaceMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "createSurface": {
+            "$ref": "#/definitions/CreateSurface"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "createSurface",
+          "version"
+        ],
+        "type": "object"
+      },
+      "DeleteSurface": {
+        "additionalProperties": false,
+        "properties": {
+          "surfaceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "surfaceId"
+        ],
+        "type": "object"
+      },
+      "DeleteSurfaceMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "deleteSurface": {
+            "$ref": "#/definitions/DeleteSurface"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleteSurface",
+          "version"
+        ],
+        "type": "object"
+      },
+      "ServerMessage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CreateSurfaceMessage"
+          },
+          {
+            "$ref": "#/definitions/UpdateComponentsMessage"
+          },
+          {
+            "$ref": "#/definitions/UpdateDataModelMessage"
+          },
+          {
+            "$ref": "#/definitions/DeleteSurfaceMessage"
+          }
+        ],
+        "description": "Exactly one of the four A2UI v0.9.1 server-to-client envelope messages."
+      },
+      "UpdateComponents": {
+        "additionalProperties": false,
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/definitions/Component"
+            },
+            "type": "array"
+          },
+          "surfaceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "components",
+          "surfaceId"
+        ],
+        "type": "object"
+      },
+      "UpdateComponentsMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "updateComponents": {
+            "$ref": "#/definitions/UpdateComponents"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "updateComponents",
+          "version"
+        ],
+        "type": "object"
+      },
+      "UpdateDataModel": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "surfaceId": {
+            "type": "string"
+          },
+          "value": {
+            "description": "Omit or set null to remove the path. At `/` this replaces the whole data model, matching A2UI v0.9.1 root-update semantics."
+          }
+        },
+        "required": [
+          "surfaceId"
+        ],
+        "type": "object"
+      },
+      "UpdateDataModelMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "updateDataModel": {
+            "$ref": "#/definitions/UpdateDataModel"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "updateDataModel",
+          "version"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "catalog_id": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string"
+      },
+      "format_version": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "messages": {
+        "items": {
+          "$ref": "#/definitions/ServerMessage"
+        },
+        "type": "array"
+      },
+      "protocol_version": {
+        "type": "string"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "catalog_id",
+      "format",
+      "format_version",
+      "messages",
+      "protocol_version",
+      "surface_id",
+      "title"
+    ],
+    "title": "SurfaceExport",
+    "type": "object"
+  }
+}

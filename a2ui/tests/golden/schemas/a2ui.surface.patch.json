@@ -1,0 +1,104 @@
+{
+  "description": "Update an existing A2UI surface from a plain-language instruction while preserving unspecified content and rejecting stale revisions.",
+  "function_id": "a2ui::surface::patch",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "default": null,
+        "description": "Optional data to merge or use while composing the replacement."
+      },
+      "expected_revision": {
+        "default": null,
+        "description": "Reject the update unless the surface is still at this revision.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "instruction": {
+        "description": "Plain-language change to make while preserving unspecified content.",
+        "type": "string"
+      },
+      "surface_id": {
+        "description": "Stable id of the surface to update.",
+        "type": "string"
+      },
+      "title": {
+        "default": null,
+        "description": "Optional replacement title.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "instruction",
+      "surface_id"
+    ],
+    "title": "PatchRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SurfaceStatus": {
+        "enum": [
+          "active",
+          "deleted"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "catalog_id": {
+        "type": "string"
+      },
+      "component_count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page": {
+        "type": "string"
+      },
+      "protocol_version": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SurfaceStatus"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "catalog_id",
+      "component_count",
+      "page",
+      "protocol_version",
+      "revision",
+      "session_id",
+      "status",
+      "surface_id",
+      "title"
+    ],
+    "title": "SurfaceReceipt",
+    "type": "object"
+  }
+}

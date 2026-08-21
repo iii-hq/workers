@@ -1,0 +1,32 @@
+[workspace]
+
+[package]
+name = "a2ui"
+version = "0.1.0-experimental"
+edition = "2021"
+description = "A2UI v0.9.1 generative UI worker for iii Harness sessions and the injectable Console"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "a2ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "a2ui"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.23.0-rc.2"
+iii-console-ui = { path = "../crates/console-ui" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+uuid = { version = "1", features = ["v4"] }

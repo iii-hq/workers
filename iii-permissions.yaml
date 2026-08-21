@@ -208,6 +208,13 @@ rules:
   # canvas: internal target. The hot-reload hook follows the same pattern as
   # the other on-config-change denies.
   - '!canvas::on-config-change'
+  # a2ui: Console action ingress and lifecycle hooks are trusted plumbing.
+  # Agents compose/apply surfaces through the public functions below; only the
+  # Console may inject a user gesture into an existing Harness session.
+  - '!a2ui::action'
+  - '!a2ui::binding::apply'
+  - '!a2ui::stamp-session'
+  - '!a2ui::on-config-change'
   # code-runner: internal hot-reload hook, same pattern as the other
   # on-config-change denies.
   - '!code-runner::on-config-change'
@@ -404,3 +411,29 @@ rules:
   - canvas::element::update
   - canvas::element::delete
   - canvas::element::list
+
+  # a2ui: generated content is declarative data rendered through the fixed
+  # Console catalog, never executable code. Size/component caps and the bounded
+  # router correction budget are enforced by the worker. Surface reads and
+  # writes stay agent-callable so requesting a UI does not create an approval
+  # prompt in the middle of an ordinary Harness turn.
+  - a2ui::generate
+  - a2ui::surface::apply
+  - a2ui::surface::get
+  - a2ui::surface::list
+  - a2ui::surface::delete
+  - a2ui::surface::patch
+  - a2ui::surface::export
+  - a2ui::surface::history
+  - a2ui::surface::undo
+  - a2ui::surface::duplicate
+  - a2ui::surface::pin
+  - a2ui::surface::import
+  - a2ui::surface::export-code
+  - a2ui::binding::set
+  - a2ui::binding::delete
+  - a2ui::template::save
+  - a2ui::template::list
+  - a2ui::template::get
+  - a2ui::template::apply
+  - a2ui::template::delete
