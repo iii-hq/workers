@@ -30,8 +30,8 @@ const CATALOG_TIMEOUT_MS: u64 = 5_000;
 /// Function ids per `functions::info` batch — the engine's documented max.
 const CATALOG_INFO_BATCH: usize = 32;
 /// Workers returned by one `directory::search_functions` call.
-const MAX_SEARCH_WORKERS: usize = 3;
-/// Contracts returned by one call — the ranked guards usually select a
+const MAX_SEARCH_WORKERS: usize = 6;
+/// Candidates returned by one call — the ranked guards usually select a
 /// handful; this is the backstop.
 const MAX_SEARCH_FUNCTIONS: usize = 12;
 /// Namespace-level relative floor: a worker only stays when its BEST match
@@ -47,20 +47,18 @@ const SEARCH_FN_FLOOR: f64 = 0.5;
 /// Above this fraction of the leader a function stays even with lower term
 /// coverage — the high-score keep that protects co-relevant companions.
 const SEARCH_FN_KEEP: f64 = 0.85;
-/// Secondary clauses of a multi-intent query ranked after the whole query.
-const MAX_SEARCH_CLAUSES: usize = 4;
-/// Consecutive empty answers before the next would-be-empty one widens to
-/// single-term matches (weak anchors beat a third empty result).
-const DESPERATION_STREAK: u32 = 2;
-/// Registry list queries per search: the full query, then informative
+/// Capability-sized searches accepted by one request.
+const MAX_SEARCH_QUERIES: usize = 6;
+/// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
 /// variants run concurrently, so the cap bounds registry load, not
-/// latency; it must cover the informative terms of a multi-intent query
+/// latency; it must cover the informative terms of a complex capability
 /// ("fetch a web page and send an email report" carries five).
 const MAX_REGISTRY_QUERIES: usize = 6;
-/// Registry candidates whose API reference is fetched (info round trips).
-const MAX_REGISTRY_CANDIDATES: usize = 4;
+/// Registry candidates whose API reference is fetched (info round trips):
+/// enough for every capability to contribute one worker.
+const MAX_REGISTRY_CANDIDATES: usize = MAX_SEARCH_QUERIES;
 /// Registry workers returned per search.
 const MAX_INSTALLABLE_WORKERS: usize = 2;
 /// Contracts returned across the whole `installable` section.
@@ -87,12 +85,11 @@ pub struct Deps {
 
 const SESSIONS_CAP: usize = 1024;
 
-/// Per-session memory: which contracts search already delivered (repeat
-/// queries omit them), the empty-answer streak behind the desperation
-/// widen, and whether the hint fired (once per session). Session identity
-/// comes from caller-supplied OTel baggage or the hook payload — a cache
-/// key, never a security boundary; a missing or wrong id only costs a full
-/// resend or an extra hint.
+/// Per-session memory: which candidates search already delivered (repeat
+/// queries omit them) and whether the hint fired in the current turn.
+/// Session identity comes from caller-supplied OTel baggage or the hook
+/// payload — a cache key, never a security boundary; a missing or wrong id
+/// only costs a full resend or an extra hint.
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     sessions: HashMap<String, SessionRecord>,
@@ -105,7 +102,6 @@ pub struct SessionRegistry {
 struct SessionRecord {
     fingerprint: String,
     delivered: HashSet<String>,
-    empty_streak: u32,
     hint: Option<HintRecord>,
 }
 
@@ -121,7 +117,7 @@ impl SessionRegistry {
     /// Split `selected` into (new, repeated) against what this session
     /// already received, then record the new ids. When *nothing* is new the
     /// whole selection is treated as new and re-recorded — an all-repeat
-    /// query re-sends full contracts, which is the recovery path after
+    /// query re-sends all candidates, which is the recovery path after
     /// compaction dropped the earlier result from the window.
     fn split(
         &mut self,
@@ -141,22 +137,9 @@ impl SessionRegistry {
         (new, repeated)
     }
 
-    /// True once the session's last DESPERATION_STREAK answers all ranked
-    /// empty — the widen signal for the next would-be-empty answer.
-    fn desperate(&mut self, session_id: &str, fingerprint: &str) -> bool {
-        self.session_record(session_id, fingerprint).empty_streak >= DESPERATION_STREAK
-    }
-
-    /// Record whether this answer ranked empty; any non-empty answer resets
-    /// the streak.
-    fn note_outcome(&mut self, session_id: &str, fingerprint: &str, empty: bool) {
-        let record = self.session_record(session_id, fingerprint);
-        record.empty_streak = if empty { record.empty_streak + 1 } else { 0 };
-    }
-
-    /// One hint per session: `true` means send it now. A same-step replay
-    /// re-sends; a functions-generation or expose change re-anchors a fresh
-    /// hint; anything else is a repeat and stays silent.
+    /// One hint per turn: `true` means send it now. A same-step replay
+    /// re-sends; a new turn re-anchors a fresh hint; anything else stays
+    /// silent.
     pub fn hint_decision(&mut self, session_id: &str, current: HintRecord) -> bool {
         // The hint decision must not depend on the catalog fingerprint, so
         // reuse whatever fingerprint the record already carries.
@@ -167,14 +150,11 @@ impl SessionRegistry {
             .unwrap_or_default();
         let record = self.session_record(session_id, &fingerprint);
         match &record.hint {
-            Some(sent) if sent.turn_id == current.turn_id && current.step <= sent.step => true,
-            Some(sent)
-                if sent.functions_generation != current.functions_generation
-                    || sent.expose != current.expose =>
-            {
+            Some(sent) if sent.turn_id != current.turn_id => {
                 record.hint = Some(current);
                 true
             }
+            Some(sent) if sent.turn_id == current.turn_id && current.step <= sent.step => true,
             Some(_) => false,
             None => {
                 record.hint = Some(current);
@@ -196,7 +176,6 @@ impl SessionRegistry {
         if !fingerprint.is_empty() && record.fingerprint != fingerprint {
             record.fingerprint = fingerprint.to_string();
             record.delivered.clear();
-            record.empty_streak = 0;
         }
         record
     }
@@ -217,74 +196,107 @@ fn function_namespace(function_id: &str) -> Option<&str> {
     (!namespace.is_empty()).then_some(namespace)
 }
 
-const SEARCH_GUIDANCE: &str = "Only the functions relevant to the query are listed. This \
-reference OVERRIDES discovery for them — do not call engine::functions::list or \
-engine::functions::info for these. Call them with their listed request fields, directly when \
-the function is a tool in your surface, otherwise via agent_trigger with { \"function\": \
-\"<function_id>\", \"payload\": { ... } }. For anything missing, call \
-directory::search_functions again with a more specific query; if a listed call is rejected, \
-fall back to normal discovery.";
+fn intrinsic_capability(capability: &str) -> bool {
+    let mut summary = false;
+    let mut existing_content = false;
+    for term in crate::functions::search_index::bm25_terms(capability) {
+        summary |= matches!(
+            term.as_str(),
+            "summarize" | "summarise" | "summary" | "summarization"
+        );
+        existing_content |= matches!(term.as_str(), "provided" | "text" | "content");
+    }
+    summary && existing_content
+}
 
-const SEARCH_REFINE_GUIDANCE: &str = "No functions matched this query. Refine the query \
-with the concrete capabilities the task needs and call directory::search_functions once more.";
+const SEARCH_GUIDANCE: &str = "Only candidates relevant to the requested `capabilities` \
+are listed. This result replaces engine::functions::list for these ids. The `workers` entries \
+are INSTALLED candidates. Choose the smallest candidate set the task needs from `workers`, then \
+BEFORE their first use fetch those contracts in ONE engine::functions::info call with \
+{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }. Call them with the \
+returned request schemas, directly when the function is a tool in your surface, otherwise via \
+agent_trigger. For capabilities absent from both `workers` and `installable`, call \
+directory::search_functions again once at the next decision point with all unmet external \
+capabilities in `capabilities`. \
+Always write every `capabilities` entry in English, even when the user writes in \
+another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic \
+reasoning, summarization, planning, or formatting, and do not repeat \
+satisfied or already represented needs. If a selected id is rejected, fall back to \
+normal discovery.";
 
-const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched this query. The \
+const SEARCH_REFINE_GUIDANCE: &str =
+    "No functions matched these capabilities. At the next decision \
+point, call directory::search_functions once with all unmet \
+external capabilities in `capabilities`. Do not search for intrinsic reasoning, summarization, \
+planning, or formatting, and do not repeat needs already represented in the conversation or \
+already satisfied. Always write every `capabilities` entry in English, even when the \
+user writes in another language; preserve proper names, URLs, and function IDs.";
+
+const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched these capabilities. The \
 `installable` entries are registry workers (verified authors) whose functions WOULD match, \
 but they are NOT installed: calling their functions now FAILS with function_not_found. To \
 use one, run its `install` call exactly as given (worker::add), poll worker::status with \
 the worker's name until it reports running, then call directory::search_functions again \
-for the newly registered contracts. If none fit, refine the query and search once more.";
+for the newly registered candidates and fetch selected contracts with one batched \
+engine::functions::info call. If none fit, search once more with concrete unmet \
+`capabilities`. Do not search for intrinsic reasoning, summarization, planning, or \
+formatting. Always write every `capabilities` entry in English, even when the user \
+writes in another language; preserve proper names, URLs, and function IDs.";
 
-const SEARCH_INSTALL_NOTE: &str = "The `installable` entries are registry workers that are \
-NOT installed: calling their functions now FAILS with function_not_found. Prefer the \
-installed functions above. If the task truly needs an installable worker, FIRST run its \
-`install` call exactly as given (worker::add), poll worker::status with the worker's name \
-until running, then search again for its contracts — never call an installable function \
-before installing.";
+const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable`. The \
+`installable` entries are registry workers that are NOT installed: calling their functions now \
+FAILS with function_not_found. Do not pass an `installable` function ID to \
+engine::functions::info. Only when no `workers` entry fits, FIRST call the provided install \
+function with its payload (worker::add), poll worker::status with the worker's name until \
+running, then search again and fetch selected contracts with one batched \
+engine::functions::info call — never call an installable function before installing.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
-    /// One natural-language query naming every capability the task needs.
-    pub query: String,
+    /// One to six non-empty capability searches derived from the goal and
+    /// current execution state. For one search at each decision point, include all unmet
+    /// external capabilities once. Exclude intrinsic reasoning, summarization, planning, or
+    /// formatting, and do not repeat needs already represented or satisfied. Requests to
+    /// summarize provided text or content are ignored. Write every entry in English,
+    /// translating non-English user requests while preserving proper names, URLs, and function
+    /// IDs.
+    #[schemars(
+        with = "HashSet<String>",
+        length(min = 1, max = 6),
+        inner(length(min = 1))
+    )]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
-pub struct SearchContract {
+pub struct FunctionCandidate {
     pub function_id: String,
+    /// First description sentence, capped at 160 bytes.
     pub description: String,
-    pub request_schema: Value,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchWorker {
     pub namespace: String,
-    pub functions: Vec<SearchContract>,
+    pub functions: Vec<FunctionCandidate>,
 }
 
 /// A registry worker that is NOT installed but carries functions matching
-/// the query. `name` is the registry slug `worker::add` installs.
+/// the requested capabilities. `name` is the registry slug `worker::add` installs.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct InstallableWorker {
     pub name: String,
     pub version: String,
     pub description: String,
-    /// Names + descriptions only — deliberately NO request schema: an
-    /// uninstalled function must not look callable, so there is nothing
-    /// here for a model to pattern-match into a direct call. Contracts
-    /// arrive through a fresh search after the install registers them.
-    pub functions: Vec<InstallableFunction>,
-    /// The exact call that installs this worker, ready to execute.
+    /// Compact candidates only. After installation, search again and fetch
+    /// selected contracts through `engine::functions::info`.
+    pub functions: Vec<FunctionCandidate>,
+    /// The `worker::add` target and payload; agent-trigger callers add `description`.
     pub install: InstallCall,
 }
 
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
-pub struct InstallableFunction {
-    pub function_id: String,
-    pub description: String,
-}
-
-/// A ready-made `worker::add` invocation: `{ function, payload }` matches
-/// the agent_trigger call envelope so the model can execute it verbatim.
+/// A ready-made `worker::add` target and payload. Under agent-trigger exposure,
+/// the caller still supplies the wrapper's user-facing `description`.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct InstallCall {
     pub function: String,
@@ -305,49 +317,13 @@ fn install_call(worker_name: &str) -> InstallCall {
 pub struct SearchFunctionsResponse {
     pub guidance: String,
     pub workers: Vec<SearchWorker>,
-    /// Registry workers (verified authors) with matching functions, present
-    /// only when nothing installed matched. Their functions are NOT
-    /// callable until the worker is installed.
+    /// Matching registry workers from verified authors. Their functions are
+    /// NOT callable until the worker is installed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
     pub latency_ms: f64,
 }
 
-/// Clause boundaries of a multi-intent discover query: list punctuation
-/// always splits; the word "and" splits only when every fragment around it
-/// keeps at least two informative terms, so "read and write state" stays
-/// whole while "register functions, and store state" separates. Returns
-/// nothing for single-clause queries (the whole-query ranking already
-/// covers them) and at most MAX_SEARCH_CLAUSES clauses.
-fn query_clauses(query: &str) -> Vec<String> {
-    let informative = |text: &str| crate::functions::search_index::bm25_terms(text).count();
-    let mut clauses: Vec<String> = Vec::new();
-    for piece in query.split([',', ';']) {
-        let piece = piece.trim();
-        if piece.is_empty() {
-            continue;
-        }
-        let fragments: Vec<&str> = piece.split(" and ").map(str::trim).collect();
-        if fragments.len() > 1 && fragments.iter().all(|fragment| informative(fragment) >= 2) {
-            clauses.extend(fragments.into_iter().map(str::to_string));
-        } else {
-            clauses.push(piece.to_string());
-        }
-    }
-    if clauses.len() <= 1 {
-        return Vec::new();
-    }
-    clauses.truncate(MAX_SEARCH_CLAUSES);
-    clauses
-}
-
-/// Coverage-aware function pruning against the rank leader: a function
-/// stays only when it scores at least SEARCH_FN_FLOOR of the leader AND
-/// either matches at least as many distinct query terms as the leader or
-/// scores SEARCH_FN_KEEP of it. Family members share the namespace token
-/// plus one generic word (fewer matched terms, mid scores) and are dropped;
-/// genuinely co-relevant functions either cover the query as fully as the
-/// leader or score close to it. The consult pick is inserted afterwards and
 /// Drop every worker whose best-ranked function scores below
 /// `relative_floor` of the leader. `ranked` is sorted best-first, so the
 /// first occurrence of a namespace carries its best score; functions of a
@@ -383,19 +359,13 @@ fn drop_trailing_namespaces(ranked: Vec<(String, f64)>, relative_floor: f64) -> 
         .collect()
 }
 
-/// Clause boundaries of a multi-intent discover query: list punctuation
-/// always splits; the word "and" splits only when every fragment around it
-/// keeps at least two informative terms, so "read and write state" stays
-/// whole while "register functions, and store state" separates. Returns
-/// nothing for single-clause queries (the whole-query ranking already
 /// Coverage-aware function pruning against the rank leader: a function
 /// stays only when it scores at least SEARCH_FN_FLOOR of the leader AND
 /// either matches at least as many distinct query terms as the leader or
 /// scores SEARCH_FN_KEEP of it. Family members share the namespace token
 /// plus one generic word (fewer matched terms, mid scores) and are dropped;
 /// genuinely co-relevant functions either cover the query as fully as the
-/// leader or score close to it. The consult pick is inserted afterwards and
-/// bypasses every floor by design.
+/// leader or score close to it.
 fn drop_low_coverage(ranked: Vec<(String, f64, u32)>) -> Vec<(String, f64)> {
     let Some((_, leader_score, leader_matched)) = ranked.first().cloned() else {
         return Vec::new();
@@ -410,8 +380,47 @@ fn drop_low_coverage(ranked: Vec<(String, f64, u32)>) -> Vec<(String, f64)> {
         .collect()
 }
 
-/// The caller's harness session id from OTel baggage, when the dispatch
-/// carried one. Caller-supplied and unauthenticated — a cache key for
+/// Rank each capability against its own leader, taking results round-robin so
+/// every capability gets a candidate before any gets a rider. Scores from
+/// separate rankings are not comparable.
+fn rank_queries(
+    index: &Bm25Index,
+    queries: &[String],
+    budget: usize,
+    namespace_floor: Option<f64>,
+) -> Vec<String> {
+    let rank = |text: &str| {
+        let ranked = drop_low_coverage(index.rank_with_matches(text));
+        match namespace_floor {
+            Some(floor) => drop_trailing_namespaces(ranked, floor),
+            None => ranked,
+        }
+    };
+    let per_query: Vec<Vec<(String, f64)>> = queries.iter().map(|query| rank(query)).collect();
+    let mut selected: Vec<String> = Vec::new();
+    let mut round = 0;
+    while selected.len() < budget {
+        let mut any = false;
+        for ranking in &per_query {
+            let Some((function_id, _)) = ranking.get(round) else {
+                continue;
+            };
+            any = true;
+            if !selected.contains(function_id) {
+                selected.push(function_id.clone());
+                if selected.len() == budget {
+                    break;
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+        round += 1;
+    }
+    selected
+}
+
 /// The caller's harness session id from OTel baggage, when the dispatch
 /// carried one. Caller-supplied and unauthenticated — a cache key for
 /// resend avoidance, never a security boundary.
@@ -422,12 +431,29 @@ fn baggage_session_id() -> Option<String> {
     (!session_id.is_empty()).then_some(session_id)
 }
 
-/// Group the selected function ids by worker in first-appearance order and
-/// render their un-slimmed contracts, keeping at most
-/// `MAX_SEARCH_WORKERS` workers. Ids missing from the catalog are skipped;
-/// render their un-slimmed contracts, keeping at most
-/// `MAX_SEARCH_WORKERS` workers. Ids missing from the catalog are skipped;
-/// within a worker the rank order is preserved — best match first.
+fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
+    let mut namespaces: Vec<String> = Vec::new();
+    selected
+        .into_iter()
+        .filter(|function_id| {
+            let Some(namespace) = function_namespace(function_id) else {
+                return false;
+            };
+            if namespaces.iter().any(|seen| seen == namespace) {
+                return true;
+            }
+            if namespaces.len() == MAX_SEARCH_WORKERS {
+                return false;
+            }
+            namespaces.push(namespace.to_string());
+            true
+        })
+        .collect()
+}
+
+/// Group the selected function ids into compact candidates by worker,
+/// keeping at most `MAX_SEARCH_WORKERS` workers. Ids missing from the catalog
+/// are skipped; within a worker the rank order is preserved — best first.
 fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWorker> {
     let mut workers: Vec<SearchWorker> = Vec::new();
     for function_id in selected {
@@ -437,19 +463,18 @@ fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWork
         let Some(tool) = tools.iter().find(|tool| &tool.name == function_id) else {
             continue;
         };
-        let contract = SearchContract {
+        let candidate = FunctionCandidate {
             function_id: tool.name.clone(),
-            description: tool.description.clone(),
-            request_schema: tool.parameters.clone(),
+            description: crate::functions::search_index::slim_description(&tool.description),
         };
         match workers
             .iter()
             .position(|worker| worker.namespace == namespace)
         {
-            Some(index) => workers[index].functions.push(contract),
+            Some(index) => workers[index].functions.push(candidate),
             None if workers.len() < MAX_SEARCH_WORKERS => workers.push(SearchWorker {
                 namespace: namespace.to_string(),
-                functions: vec![contract],
+                functions: vec![candidate],
             }),
             None => {}
         }
@@ -515,44 +540,85 @@ fn registry_contracts(info: &WorkerInfoOutput, installed: &HashSet<&str>) -> Vec
         .collect()
 }
 
-/// Rank the pooled candidate contracts against the FULL query and keep the
-/// survivors, bounded by `budget`. Same BM25 + coverage pruning as the
-/// installed catalog, and one shared ranking across every candidate — so a
-/// contract that merely grazes the query ("send a message") cannot outrank
-/// the real match ("send an email") by hiding in its own worker's pool.
+/// Rank pooled registry contracts per capability. The same BM25 and coverage
+/// pruning as the installed catalog keeps weak matches from hiding in a
+/// worker-local ranking.
 fn rank_registry_contracts(
-    query: &str,
+    search_queries: &[String],
     contracts: Vec<ToolSchema>,
     budget: usize,
 ) -> Vec<ToolSchema> {
     let corpus = canonical_tools(&contracts);
     let index = Bm25Index::build(&corpus);
-    let selected: Vec<String> = drop_low_coverage(index.rank_with_matches(query))
-        .into_iter()
-        .map(|(function_id, _)| function_id)
-        .take(budget)
-        .collect();
+    let selected = rank_queries(&index, search_queries, budget, None);
     selected
         .into_iter()
         .filter_map(|id| contracts.iter().find(|tool| tool.name == id).cloned())
         .collect()
 }
 
-/// The registry list queries one fallback issues: the full query first
-/// (best server-side ranking when it hits), then informative terms one by
-/// one — pg_trgm similarity misses long natural-language queries that a
-/// single term lands.
-fn registry_queries(query: &str) -> Vec<String> {
-    let mut queries = vec![query.to_string()];
-    for term in crate::functions::search_index::bm25_terms(query) {
-        if queries.len() >= MAX_REGISTRY_QUERIES {
+/// Registry list searches try every explicit/derived capability first, then
+/// spend the remaining bounded slots on per-term fallbacks round-robin because
+/// pg_trgm can miss long natural-language queries that a single term lands.
+fn registry_queries(search_queries: &[String]) -> Vec<String> {
+    let mut queries: Vec<String> = search_queries
+        .iter()
+        .take(MAX_REGISTRY_QUERIES)
+        .cloned()
+        .collect();
+    let terms: Vec<Vec<String>> = search_queries
+        .iter()
+        .map(|query| crate::functions::search_index::bm25_terms(query).collect())
+        .collect();
+    let mut round = 0;
+    while queries.len() < MAX_REGISTRY_QUERIES {
+        let mut any = false;
+        for terms in &terms {
+            let Some(term) = terms.get(round) else {
+                continue;
+            };
+            any = true;
+            if !queries.contains(term) {
+                queries.push(term.clone());
+                if queries.len() == MAX_REGISTRY_QUERIES {
+                    break;
+                }
+            }
+        }
+        if !any {
             break;
         }
-        if !queries.contains(&term) {
-            queries.push(term);
-        }
+        round += 1;
     }
     queries
+}
+
+fn round_robin_registry_candidates(
+    lists: &[Vec<RegistryCandidate>],
+    budget: usize,
+) -> Vec<RegistryCandidate> {
+    let mut candidates: Vec<RegistryCandidate> = Vec::new();
+    let mut round = 0;
+    while candidates.len() < budget {
+        let mut any = false;
+        for list in lists {
+            let Some(candidate) = list.get(round) else {
+                continue;
+            };
+            any = true;
+            if candidates.len() == budget {
+                break;
+            }
+            if !candidates.iter().any(|seen| seen.name == candidate.name) {
+                candidates.push(candidate.clone());
+            }
+        }
+        if !any {
+            break;
+        }
+        round += 1;
+    }
+    candidates
 }
 
 /// Group ranked contracts back under their owning candidates, in ranked
@@ -566,7 +632,7 @@ fn assemble_installable(
         let Some(candidate) = owners.get(&tool.name) else {
             continue;
         };
-        let function = InstallableFunction {
+        let function = FunctionCandidate {
             function_id: tool.name.clone(),
             // First sentence only — enough to decide whether the worker
             // fits; the full contract arrives after installing.
@@ -590,27 +656,28 @@ fn assemble_installable(
     section
 }
 
-/// The installable side of a search: ask the public registry (full query,
-/// then per-term retries until anything hits), pull the top verified
-/// candidates' API references, and keep the functions that rank against the
-/// full query in one shared ranking. Runs on every search; candidates whose
-/// name is already an installed namespace are skipped — installing them
-/// adds nothing the installed results don't already cover. Every failure —
+/// The installable side of a search: ask the public registry with each
+/// capability, pull the top verified candidates' API references, and rank
+/// their functions per capability. Candidates whose name is already installed
+/// are skipped. Every failure —
 /// registry down, malformed payload, no matches — returns an empty section:
 /// the search itself must never error over this.
 async fn registry_installable(
     cfg: &SkillsConfig,
     cache: &RegistryCache,
     installed: &[ToolSchema],
-    query: &str,
+    search_queries: &[String],
 ) -> Vec<InstallableWorker> {
+    if search_queries.is_empty() {
+        return Vec::new();
+    }
     // All list variants concurrently: a cold registry costs one timeout,
     // not one per variant, and no variant's hits starve another's — the
-    // global ranking dedupes. Variant order still decides candidate
-    // priority (full query first). In-process calls: same client, cache,
+    // global ranking dedupes. Query order still decides candidate priority.
+    // In-process calls: same client, cache,
     // and error hygiene as `directory::registry::workers::list`.
     let mut lists = tokio::task::JoinSet::new();
-    for (priority, list_query) in registry_queries(query).into_iter().enumerate() {
+    for (priority, list_query) in registry_queries(search_queries).into_iter().enumerate() {
         let cfg = cfg.clone();
         let cache = cache.clone();
         lists.spawn(async move {
@@ -654,27 +721,7 @@ async fn registry_installable(
                 .collect()
         })
         .collect();
-    let mut candidates: Vec<RegistryCandidate> = Vec::new();
-    let mut round = 0;
-    while candidates.len() < MAX_REGISTRY_CANDIDATES {
-        let mut any = false;
-        for list in &variant_lists {
-            let Some(candidate) = list.get(round) else {
-                continue;
-            };
-            any = true;
-            if candidates.len() >= MAX_REGISTRY_CANDIDATES {
-                break;
-            }
-            if !candidates.iter().any(|seen| seen.name == candidate.name) {
-                candidates.push(candidate.clone());
-            }
-        }
-        if !any {
-            break;
-        }
-        round += 1;
-    }
+    let candidates = round_robin_registry_candidates(&variant_lists, MAX_REGISTRY_CANDIDATES);
     // Info round trips concurrently too; pooling stays in candidate order
     // so first-seen contract dedupe is deterministic.
     let mut infos = tokio::task::JoinSet::new();
@@ -718,106 +765,57 @@ async fn registry_installable(
             }
         }
     }
-    let ranked = rank_registry_contracts(query, pooled, MAX_INSTALLABLE_FUNCTIONS);
+    let ranked = rank_registry_contracts(search_queries, pooled, MAX_INSTALLABLE_FUNCTIONS);
     assemble_installable(ranked, &owners)
 }
 
-/// Up to `cap` tools sampled breadth-first across namespaces in the corpus's
-/// canonical order: every worker gets its first function before any worker
-/// One-shot lexical search: rank the catalog with BM25 and return the API
-/// reference of ONLY the ranked functions — never a whole worker.
+/// One-shot lexical search: rank the catalog with BM25 and return compact
+/// candidates for only the ranked functions — never a whole worker.
 pub async fn search_functions(
     deps: &Deps,
     request: SearchFunctionsRequest,
 ) -> Result<SearchFunctionsResponse, Error> {
-    if request.query.trim().is_empty() {
-        return Err(Error::Handler("query must not be empty".into()));
+    if request.capabilities.is_empty() {
+        return Err(Error::Handler("provide at least one capability".into()));
+    }
+    if request.capabilities.len() > MAX_SEARCH_QUERIES {
+        return Err(Error::Handler(format!(
+            "provide at most {MAX_SEARCH_QUERIES} capabilities"
+        )));
+    }
+    if request
+        .capabilities
+        .iter()
+        .any(|capability| capability.trim().is_empty())
+    {
+        return Err(Error::Handler("capabilities must not be blank".into()));
     }
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
-    let query = compact_query(&request.query);
+    let search_queries: Vec<String> = request
+        .capabilities
+        .iter()
+        .map(|capability| compact_query(capability.trim()))
+        .filter(|capability| !intrinsic_capability(capability))
+        .collect();
     // ponytail: index rebuilt per call (~250 slim docs, sub-ms); cache by
     // tool_fingerprint if search latency ever matters.
     let corpus = canonical_tools(&tools);
-    let ranked = {
-        // Coverage pruning judges every function against the global
-        // leader, so in a multi-intent query ("register functions …,
-        // read and write state, and take a screenshot") every
-        // secondary intent would drop and the model re-queries once
-        // per capability (measured live). Rank the whole query first
-        // — single-intent results stay byte-identical — then each
-        // clause on its own leader, appending survivors the whole
-        // query missed. Clause scores are not comparable across
-        // rankings, so order is whole-query first, then clause order.
+    let mut selected = {
+        // Each capability gets its own leader and one round-robin slot before
+        // riders.
         let index = Bm25Index::build(&corpus);
-        let whole = drop_trailing_namespaces(
-            drop_low_coverage(index.rank_with_matches(&query)),
-            SEARCH_RANK_FLOOR,
-        );
-        let clauses = query_clauses(&query);
-        if clauses.is_empty() {
-            whole
-        } else {
-            // Clause survivors first, in clause order: each intent's own
-            // leader claims a worker slot before the whole-query rank —
-            // which a multi-intent query pollutes with cross-clause
-            // matches — appends what the clauses missed.
-            // Fair split of the function cap across clauses, so an
-            // early clause with a wide surviving set cannot starve the
-            // later clauses out of the selection.
-            let budget = (MAX_SEARCH_FUNCTIONS / clauses.len()).max(3);
-            let mut merged: Vec<(String, f64)> = Vec::new();
-            for clause in &clauses {
-                for entry in drop_trailing_namespaces(
-                    drop_low_coverage(index.rank_with_matches(clause)),
-                    SEARCH_RANK_FLOOR,
-                )
-                .into_iter()
-                .take(budget)
-                {
-                    if !merged.iter().any(|(id, _)| id == &entry.0) {
-                        merged.push(entry);
-                    }
-                }
-            }
-            for entry in whole {
-                if !merged.iter().any(|(id, _)| id == &entry.0) {
-                    merged.push(entry);
-                }
-            }
-            merged
-        }
+        rank_queries(
+            &index,
+            &search_queries,
+            MAX_SEARCH_FUNCTIONS,
+            Some(SEARCH_RANK_FLOOR),
+        )
     };
-    let mut selected: Vec<String> = ranked
-        .iter()
-        .map(|(function_id, _)| function_id.clone())
-        .collect();
-    selected.truncate(MAX_SEARCH_FUNCTIONS);
     let session_id = baggage_session_id();
     let fingerprint = tool_fingerprint(&tools);
-    // Desperation widen: once the session's recent discover answers all
-    // ranked empty, a further empty answer teaches the model nothing — it
-    // measurably abandons discovery for the (usually denied) engine
-    // catalog. Weak single-term anchors restore navigation; the strict
-    // guards stay untouched for every session that is not starving.
-    if selected.is_empty() {
-        if let Some(session_id) = session_id.as_deref() {
-            let starving = deps
-                .sessions
-                .lock()
-                .expect("delivered registry")
-                .desperate(session_id, &fingerprint);
-            if starving {
-                selected = Bm25Index::build(&corpus)
-                    .rank_desperate(&query)
-                    .into_iter()
-                    .map(|(function_id, _, _)| function_id)
-                    .take(MAX_SEARCH_FUNCTIONS)
-                    .collect();
-            }
-        }
-    }
-    // Repeat queries in one session skip contracts the session already
+    selected = limit_search_workers(selected);
+    // Repeat queries in one session skip candidates the session already
     // received (session identity from caller baggage; absent → full
     // response, fail-open).
     let mut repeated: Vec<String> = Vec::new();
@@ -838,7 +836,8 @@ pub async fn search_functions(
     let mut installable: Vec<InstallableWorker> = Vec::new();
     let cfg = deps.config.load_full();
     if cfg.registry_search {
-        installable = registry_installable(&cfg, &deps.registry_cache, &tools, &query).await;
+        installable =
+            registry_installable(&cfg, &deps.registry_cache, &tools, &search_queries).await;
     }
     let guidance = if workers.is_empty() && repeated.is_empty() {
         if installable.is_empty() {
@@ -850,8 +849,8 @@ pub async fn search_functions(
         let mut guidance = SEARCH_GUIDANCE.to_string();
         if !repeated.is_empty() {
             guidance = format!(
-                "{guidance} Already provided earlier in this session (contracts \
-unchanged — reuse the earlier reference): {}.",
+                "{guidance} Already provided earlier in this session (candidates \
+unchanged — reuse the earlier result): {}.",
                 repeated.join(", ")
             );
         }
@@ -860,16 +859,6 @@ unchanged — reuse the earlier reference): {}.",
         }
         guidance
     };
-    if let Some(session_id) = session_id.as_deref() {
-        deps.sessions
-            .lock()
-            .expect("delivered registry")
-            .note_outcome(
-                session_id,
-                &fingerprint,
-                workers.is_empty() && installable.is_empty(),
-            );
-    }
     Ok(SearchFunctionsResponse {
         guidance,
         workers,
@@ -1140,6 +1129,519 @@ mod tests {
     use super::*;
     use crate::hook::ExposeKind;
 
+    fn search_deps(tools: Vec<ToolSchema>) -> Deps {
+        let config = SkillsConfig {
+            registry_search: false,
+            ..SkillsConfig::default()
+        };
+        Deps {
+            config: config.into_shared(),
+            catalog: Arc::new(RwLock::new(Arc::new(tools))),
+            sessions: Arc::default(),
+            registry_cache: RegistryCache::new(std::time::Duration::ZERO),
+        }
+    }
+
+    #[test]
+    fn assembled_search_results_are_slim_candidates() {
+        let tools = vec![ToolSchema {
+            name: "github::pr::create".into(),
+            description: "Create a pull request? This sentence is contract detail.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "draft": { "type": "boolean" } }
+            }),
+        }];
+
+        let workers = assemble_workers(&["github::pr::create".into()], &tools);
+        let candidate = serde_json::to_value(&workers[0].functions[0]).unwrap();
+
+        assert_eq!(
+            candidate,
+            json!({
+                "function_id": "github::pr::create",
+                "description": "Create a pull request?"
+            })
+        );
+    }
+
+    #[test]
+    fn capability_rankings_merge_round_robin_before_riders() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let tools = vec![
+            tool("alpha::one", "Handle alpha capability."),
+            tool("alpha::two", "Handle alpha capability."),
+            tool("beta::one", "Handle beta capability."),
+        ];
+        let index = Bm25Index::build(&canonical_tools(&tools));
+        let queries = ["alpha capability".into(), "beta capability".into()];
+
+        let selected = rank_queries(&index, &queries, 2, None);
+        let namespaces: Vec<&str> = selected
+            .iter()
+            .filter_map(|function_id| function_namespace(function_id))
+            .collect();
+
+        assert_eq!(namespaces, ["alpha", "beta"]);
+    }
+
+    #[tokio::test]
+    async fn explicit_capabilities_drive_independent_searches() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let tools = vec![
+            tool("git::clone", "Access and clone a git repository."),
+            tool("git::status", "Show git repository status."),
+            tool(
+                "security::scan",
+                "Analyze source code for security vulnerabilities.",
+            ),
+            tool(
+                "progress::save",
+                "Persist task progress and status updates.",
+            ),
+            tool("coder::edit", "Modify source files in a repository."),
+            tool("github::pr::create", "Create a draft pull request."),
+        ];
+        let deps = search_deps(tools);
+        let request: SearchFunctionsRequest = serde_json::from_value(json!({
+            "capabilities": [
+                "access clone git repository",
+                "security vulnerability analysis source code",
+                "persist task progress status updates",
+                "modify files repository",
+                "create draft pull request"
+            ]
+        }))
+        .unwrap();
+
+        let response = search_functions(&deps, request).await.unwrap();
+        let ids: Vec<&str> = response
+            .workers
+            .iter()
+            .flat_map(|worker| {
+                worker
+                    .functions
+                    .iter()
+                    .map(|function| function.function_id.as_str())
+            })
+            .collect();
+
+        for expected in [
+            "git::clone",
+            "security::scan",
+            "progress::save",
+            "coder::edit",
+            "github::pr::create",
+        ] {
+            assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn capabilities_do_not_add_unrequested_matches() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let deps = search_deps(vec![
+            tool("browser::fetch", "Fetch a browser page."),
+            tool("browser::parser", "Parse a browser DOM."),
+        ]);
+        let response = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec!["fetch a browser page".into()],
+            },
+        )
+        .await
+        .unwrap();
+        let ids: Vec<&str> = response
+            .workers
+            .iter()
+            .flat_map(|worker| {
+                worker
+                    .functions
+                    .iter()
+                    .map(|function| function.function_id.as_str())
+            })
+            .collect();
+
+        assert_eq!(ids, ["browser::fetch"]);
+    }
+
+    #[tokio::test]
+    async fn g1_fetch_capability_selects_only_browser_fetch() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let fetch_tier = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "main_content_only": { "type": "boolean" } }
+            }),
+        };
+        let deps = search_deps(vec![
+            tool(
+                "web::fetch",
+                "Fetch a URL over HTTP(S) and return the response as a structured envelope.",
+            ),
+            fetch_tier(
+                "browser::fetch",
+                "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
+            ),
+            fetch_tier(
+                "browser::dynamic-fetch",
+                "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
+            ),
+            fetch_tier(
+                "browser::stealthy-fetch",
+                "Camoufox stealth browser: solves Cloudflare, hardens WebRTC/canvas; extraction + bulk.",
+            ),
+            fetch_tier(
+                "browser::session-fetch",
+                "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
+            ),
+            tool(
+                "browser::extract",
+                "Parse HTML with a selector list (css/xpath/regex, text/attr/html, all-or-first).",
+            ),
+            tool(
+                "browser::css",
+                "One CSS query over HTML; first-or-all; `attr` pulls an attribute else text.",
+            ),
+            tool(
+                "browser::xpath",
+                "One XPath query over HTML; first-or-all; `attr` pulls an attribute else text.",
+            ),
+            tool(
+                "browser::regex",
+                "Run a regex over the visible text of provided HTML; `first` returns the first match, else all.",
+            ),
+            tool(
+                "browser::find-similar",
+                "Structural auto-match: given one example element, return it plus similar elements.",
+            ),
+            tool(
+                "browser::find",
+                "Find elements by tag/attribute filters (+ optional text regex); BeautifulSoup-style.",
+            ),
+            tool(
+                "browser::find-by-text",
+                "Find elements whose visible text matches a string (exact or `partial`).",
+            ),
+            tool(
+                "browser::find-by-regex",
+                "Find elements whose visible text matches a regex pattern.",
+            ),
+            tool(
+                "browser::describe",
+                "Describe the first css/xpath match: attrs, generated selectors, class list, DOM context.",
+            ),
+            tool(
+                "browser::to-markdown",
+                "Convert HTML to compact Markdown (or text/html); optional CSS scope + main-content clean.",
+            ),
+            tool(
+                "shell::fs::read",
+                "Stream a file from a path — returns a ContentRef HANDLE (channel_id/access_key), NOT the file text.",
+            ),
+            tool(
+                "coder::read-file",
+                "Read a file window-first: probe with stat: true (size/mtime/mode plus total_lines, no content), then fetch just the lines you need with line_from/line_to (1-based, inclusive) — windows keep files larger than max_read_bytes readable window by window, with more_lines/total_lines reporting what remains.",
+            ),
+        ]);
+        let response = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec![
+                    "fetch webpage content".into(),
+                    "web scraping".into(),
+                    "news extraction".into(),
+                    "summarize text".into(),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        let ids: Vec<&str> = response
+            .workers
+            .iter()
+            .flat_map(|worker| worker.functions.iter())
+            .map(|function| function.function_id.as_str())
+            .collect();
+
+        assert_eq!(ids, ["browser::fetch"]);
+    }
+
+    #[tokio::test]
+    async fn all_intrinsic_capabilities_stay_empty() {
+        let server = wiremock::MockServer::start().await;
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let tools = vec![
+            tool(
+                "browser::fetch",
+                "Fetch web page content over HTTP from a URL.",
+            ),
+            tool(
+                "browser::to-markdown",
+                "Convert HTML to compact Markdown text and clean main content.",
+            ),
+            tool("shell::fs::read", "Read text content from a file path."),
+        ];
+        let config = SkillsConfig {
+            registry_url: server.uri(),
+            registry_search: true,
+            ..SkillsConfig::default()
+        };
+        let deps = Deps {
+            config: config.into_shared(),
+            catalog: Arc::new(RwLock::new(Arc::new(tools))),
+            sessions: Arc::default(),
+            registry_cache: RegistryCache::new(std::time::Duration::ZERO),
+        };
+        let response = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec![
+                    "summarize text content".into(),
+                    "summarise provided text".into(),
+                    "summary of provided content".into(),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(response.workers.is_empty(), "{:?}", response.workers);
+        assert!(
+            response.installable.is_empty(),
+            "{:?}",
+            response.installable
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(response
+            .guidance
+            .contains("Always write every `capabilities` entry in English"));
+    }
+
+    #[tokio::test]
+    async fn successful_guidance_excludes_intrinsic_work_from_follow_up_searches() {
+        let deps = search_deps(vec![ToolSchema {
+            name: "browser::fetch".into(),
+            description: "Fetch a browser page.".into(),
+            parameters: json!({ "type": "object" }),
+        }]);
+        let response = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec!["fetch a browser page".into()],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            response.guidance.contains(
+                "Do not search for intrinsic reasoning, summarization, planning, or formatting"
+            ),
+            "{}",
+            response.guidance
+        );
+        assert!(response
+            .guidance
+            .contains("Always write every `capabilities` entry in English"));
+    }
+
+    #[tokio::test]
+    async fn mixed_results_route_installed_candidates_before_installable_candidates() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .and(query_param("search", "send an email message"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "workers": [{
+                    "name": "mailer",
+                    "description": "Email worker",
+                    "version": "1.0.0",
+                    "author": { "verified": true }
+                }],
+                "pagination": {}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/w/mailer"))
+            .and(query_param("version", "latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "worker": {
+                    "name": "mailer",
+                    "functions": [{
+                        "name": "mailer::send",
+                        "description": "Send an email message.",
+                        "request_schema": { "type": "object" }
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/w/mailer/skills"))
+            .and(query_param("version", "latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "skills": [],
+                "prompts": []
+            })))
+            .mount(&server)
+            .await;
+        let config = SkillsConfig {
+            registry_url: server.uri(),
+            registry_search: true,
+            ..SkillsConfig::default()
+        };
+        let deps = Deps {
+            config: config.into_shared(),
+            catalog: Arc::new(RwLock::new(Arc::new(vec![ToolSchema {
+                name: "mail::send".into(),
+                description: "Send an email message.".into(),
+                parameters: json!({ "type": "object" }),
+            }]))),
+            sessions: Arc::default(),
+            registry_cache: RegistryCache::new(std::time::Duration::ZERO),
+        };
+        let response = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec!["send an email message".into()],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.workers[0].functions[0].function_id, "mail::send");
+        assert_eq!(response.installable[0].name, "mailer");
+        let installed_route = response
+            .guidance
+            .find("Select from `workers` before considering `installable`")
+            .expect("mixed guidance prioritizes installed candidates");
+        let install_route = response
+            .guidance
+            .find("Only when no `workers` entry fits")
+            .expect("mixed guidance gates the installation route");
+        assert!(installed_route < install_route);
+        assert!(response
+            .guidance
+            .contains("absent from both `workers` and `installable`"));
+        assert!(response
+            .guidance
+            .contains("Do not pass an `installable` function ID to engine::functions::info"));
+        let install_call = response
+            .guidance
+            .find("FIRST call the provided install function")
+            .expect("mixed guidance installs before lookup");
+        let status_poll = response
+            .guidance
+            .find("poll worker::status")
+            .expect("mixed guidance polls installation status");
+        let search_again = response
+            .guidance
+            .find("then search again")
+            .expect("mixed guidance searches after installation");
+        let installed_info = response
+            .guidance
+            .rfind("one batched engine::functions::info call")
+            .expect("mixed guidance fetches the installed contract last");
+        assert!(install_call < status_poll);
+        assert!(status_poll < search_again);
+        assert!(search_again < installed_info);
+        assert_eq!(response.installable[0].install.function, "worker::add");
+        assert_eq!(
+            response.installable[0].install.payload,
+            json!({
+                "source": { "kind": "registry", "name": "mailer" },
+                "wait": false,
+            })
+        );
+        assert!(
+            response.guidance.contains(
+                "Do not search for intrinsic reasoning, summarization, planning, or formatting"
+            ),
+            "{}",
+            response.guidance
+        );
+        assert!(response
+            .guidance
+            .contains("Always write every `capabilities` entry in English"));
+    }
+
+    #[tokio::test]
+    async fn search_rejects_more_than_six_capabilities() {
+        let request: SearchFunctionsRequest = serde_json::from_value(json!({
+            "capabilities": ["one", "two", "three", "four", "five", "six", "seven"]
+        }))
+        .unwrap();
+
+        let error = search_functions(&search_deps(Vec::new()), request)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("at most 6 capabilities"));
+    }
+
+    #[tokio::test]
+    async fn search_requires_at_least_one_capability() {
+        let error = search_functions(
+            &search_deps(Vec::new()),
+            SearchFunctionsRequest {
+                capabilities: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("at least one capability"));
+    }
+
+    #[test]
+    fn request_requires_capabilities_on_the_wire() {
+        for payload in [json!({}), json!({ "query": "legacy search" })] {
+            assert!(serde_json::from_value::<SearchFunctionsRequest>(payload).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn search_rejects_blank_capabilities() {
+        let request: SearchFunctionsRequest = serde_json::from_value(json!({
+            "capabilities": ["inspect repository", "   "]
+        }))
+        .unwrap();
+
+        let error = search_functions(&search_deps(Vec::new()), request)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("capabilities must not be blank"));
+    }
+
     #[test]
     fn coverage_prune_keeps_full_coverage_and_high_scores_only() {
         let ranked = vec![
@@ -1181,18 +1683,70 @@ mod tests {
     }
 
     #[test]
-    fn registry_queries_try_the_full_query_then_informative_terms() {
+    fn registry_queries_try_each_capability_then_informative_terms() {
         assert_eq!(
-            registry_queries("send an email message"),
+            registry_queries(&["send an email message".into()]),
             ["send an email message", "send", "email", "message"]
         );
-        // Stopword-only queries fall back to just the full query.
-        assert_eq!(registry_queries("the and of"), ["the and of"]);
+        // Stopword-only capabilities still use their full text.
+        assert_eq!(registry_queries(&["the and of".into()]), ["the and of"]);
         // The cap bounds the list calls.
         assert_eq!(
-            registry_queries("alpha beta gamma delta epsilon").len(),
+            registry_queries(&["alpha beta gamma delta epsilon".into()]).len(),
             MAX_REGISTRY_QUERIES
         );
+    }
+
+    #[test]
+    fn registry_queries_expand_explicit_capabilities_round_robin() {
+        let capabilities = [
+            "local CSV document bytes to Markdown conversion".to_string(),
+            "detect and render CSV document content as Markdown".to_string(),
+        ];
+
+        assert_eq!(
+            registry_queries(&capabilities),
+            [
+                "local CSV document bytes to Markdown conversion",
+                "detect and render CSV document content as Markdown",
+                "local",
+                "detect",
+                "csv",
+                "render",
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_queries_use_each_explicit_capability() {
+        let capabilities = [
+            "access git repository".to_string(),
+            "analyze source security".to_string(),
+            "persist progress updates".to_string(),
+            "modify repository files".to_string(),
+            "create draft pull request".to_string(),
+            "send completion notification".to_string(),
+        ];
+
+        assert_eq!(registry_queries(&capabilities), capabilities);
+    }
+
+    #[test]
+    fn registry_acquisition_gives_all_six_capabilities_a_candidate() {
+        let variants: Vec<Vec<RegistryCandidate>> = (1..=6)
+            .map(|number| {
+                vec![RegistryCandidate {
+                    name: format!("worker-{number}"),
+                    version: "1.0.0".into(),
+                    description: String::new(),
+                }]
+            })
+            .collect();
+
+        let candidates = round_robin_registry_candidates(&variants, MAX_REGISTRY_CANDIDATES);
+
+        assert_eq!(candidates.len(), 6);
+        assert_eq!(candidates[5].name, "worker-6");
     }
 
     #[test]
@@ -1305,13 +1859,92 @@ mod tests {
                 parameters: json!({ "type": "object" }),
             },
         ];
-        let ranked = rank_registry_contracts("send an email", contracts.clone(), 6);
+        let queries = ["send an email".to_string()];
+        let ranked = rank_registry_contracts(&queries, contracts.clone(), 6);
         assert_eq!(
             ranked.first().map(|tool| tool.name.as_str()),
             Some("email::send")
         );
-        assert!(rank_registry_contracts("send an email", contracts, 0).is_empty());
-        assert!(rank_registry_contracts("send an email", Vec::new(), 6).is_empty());
+        assert!(rank_registry_contracts(&queries, contracts, 0).is_empty());
+        assert!(rank_registry_contracts(&queries, Vec::new(), 6).is_empty());
+    }
+
+    #[test]
+    fn registry_contract_ranking_covers_explicit_capabilities() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let contracts = vec![
+            tool("git::clone", "Access and clone a git repository."),
+            tool(
+                "security::scan",
+                "Analyze source code for security vulnerabilities.",
+            ),
+            tool(
+                "progress::save",
+                "Persist task progress and status updates.",
+            ),
+            tool("coder::edit", "Modify source files in a repository."),
+            tool("github::pr::create", "Create a draft pull request."),
+        ];
+        let capabilities = [
+            "access clone git repository".to_string(),
+            "security vulnerability analysis source code".to_string(),
+            "persist task progress status updates".to_string(),
+            "modify files repository".to_string(),
+            "create draft pull request".to_string(),
+        ];
+
+        let ranked = rank_registry_contracts(&capabilities, contracts, 6);
+        let ids: Vec<&str> = ranked.iter().map(|tool| tool.name.as_str()).collect();
+
+        for expected in [
+            "git::clone",
+            "security::scan",
+            "progress::save",
+            "coder::edit",
+            "github::pr::create",
+        ] {
+            assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+        }
+    }
+
+    #[test]
+    fn registry_capabilities_do_not_add_unrequested_matches() {
+        let tool = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let ranked = rank_registry_contracts(
+            &["fetch a browser page".into()],
+            vec![
+                tool("browser::fetch", "Fetch a browser page."),
+                tool("browser::parser", "Parse a browser DOM."),
+            ],
+            6,
+        );
+        let ids: Vec<&str> = ranked.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert_eq!(ids, ["browser::fetch"]);
+    }
+
+    #[test]
+    fn worker_cap_drops_candidates_before_session_delivery() {
+        let ranked: Vec<String> = (b'a'..=b'g')
+            .map(|letter| format!("{}::run", char::from(letter)))
+            .collect();
+        let emitted = limit_search_workers(ranked);
+        let mut registry = SessionRegistry::default();
+
+        registry.split("session", "catalog", &emitted);
+        let later = vec!["g::run".to_string(), "h::run".to_string()];
+        let (new, repeated) = registry.split("session", "catalog", &later);
+
+        assert_eq!(new, later);
+        assert!(repeated.is_empty());
     }
 
     #[test]
@@ -1327,7 +1960,7 @@ mod tests {
             registry.split("s", "f1", &second),
             (vec!["c::z".to_string()], vec!["a::x".to_string()])
         );
-        // An all-repeat query re-sends full contracts (compaction recovery).
+        // An all-repeat query re-sends all candidates (compaction recovery).
         let repeat = vec!["a::x".to_string()];
         assert_eq!(
             registry.split("s", "f1", &repeat),
@@ -1343,24 +1976,27 @@ mod tests {
     }
 
     #[test]
-    fn hint_fires_once_per_session_with_replay_and_reanchor() {
+    fn hint_fires_once_per_turn_with_replay_and_reanchor() {
         let mut registry = SessionRegistry::default();
-        let record = |step: u64, generation: u64| HintRecord {
-            turn_id: "t1".into(),
+        let record = |turn_id: &str, step: u64, generation: u64, expose| HintRecord {
+            turn_id: turn_id.into(),
             step,
             functions_generation: generation,
-            expose: ExposeKind::AgentTrigger,
+            expose,
         };
-        assert!(registry.hint_decision("s", record(7, 3)));
+        assert!(registry.hint_decision("s", record("t1", 7, 3, ExposeKind::AgentTrigger)));
         // Same-step replay re-sends.
-        assert!(registry.hint_decision("s", record(7, 3)));
+        assert!(registry.hint_decision("s", record("t1", 7, 3, ExposeKind::AgentTrigger)));
         // A later step stays silent.
-        assert!(!registry.hint_decision("s", record(8, 3)));
-        // A functions-generation change re-anchors a fresh hint.
-        assert!(registry.hint_decision("s", record(9, 4)));
+        assert!(!registry.hint_decision("s", record("t1", 8, 3, ExposeKind::AgentTrigger)));
+        // Generation and exposure changes within the turn do not re-arm.
+        assert!(!registry.hint_decision("s", record("t1", 9, 4, ExposeKind::AgentTrigger)));
+        assert!(!registry.hint_decision("s", record("t1", 10, 4, ExposeKind::Native)));
         // The hint record survives a catalog fingerprint change (dedupe
         // state resets, hint-once does not).
         registry.split("s", "fresh-fingerprint", &["a::x".to_string()]);
-        assert!(!registry.hint_decision("s", record(10, 4)));
+        assert!(!registry.hint_decision("s", record("t1", 11, 4, ExposeKind::Native)));
+        // Only a new user turn re-arms after injection.
+        assert!(registry.hint_decision("s", record("t2", 12, 4, ExposeKind::Native)));
     }
 }

@@ -9,41 +9,49 @@ type: how-to
 
 # Function search
 
-One natural-language query returns the API reference of only the relevant
-functions, grouped by worker — so the next step is calling them directly,
-without `engine::functions::list`/`info` round-trips.
+A required list of one to six unmet external capabilities returns only compact
+`function_id` + description candidates, grouped by worker. Choose the needed
+ids, then fetch their contracts in one batched `engine::functions::info` call.
 
 ## When to Use
 
-- `directory::search_functions`: pass a `query` naming everything the task
-  needs (multi-intent queries are ranked per clause — commas and "and"
-  separate capabilities). Returns at most three workers and twelve contracts,
-  never a whole worker's surface. Repeat queries in one session omit
-  contracts already delivered; after two empty answers the next one widens to
-  single-term matches. The result's guidance OVERRIDES the general discovery
-  requirement for the listed functions and points at a more specific re-query
-  for anything unlisted.
+- `directory::search_functions`: call once with
+  `{ "capabilities": ["<unmet external capability>", "<another>"] }`. Provide
+  one to six short, non-overlapping capabilities derived from the goal and
+  current execution state, omitting work already satisfied. Include every
+  unmet external capability once in the same call. Write every capability in
+  English, translating non-English requests while preserving proper names,
+  URLs, and function IDs. Exclude intrinsic reasoning,
+  summarization, planning, and formatting; requests to summarize provided
+  text or content are ignored. Each capability ranks independently and
+  candidates merge round-robin. The result contains at most six workers and
+  twelve compact candidates, never request schemas or a whole worker surface.
+  Choose the smallest needed id set and call `engine::functions::info` once with
+  `{ "function_ids": [...] }` before using them. Repeat queries in one
+  session omit candidates already delivered.
 - The response may also carry an `installable` section: workers from the
   public registry (verified authors only) whose functions match but are NOT
   installed. Those functions are not callable yet — confirm with the user,
   install with `worker::add` (`{ "source": { "kind": "registry", "name":
   "<worker>" }, "wait": false }`, then poll `worker::status`), and only then
-  call them. The `registry_search` configuration knob turns the section off.
+  search again, batch the selected ids through `engine::functions::info`, and
+  then call them. The `registry_search` configuration knob turns the section
+  off.
 - The pre-generate hint is automatic (configurable: `inject_hint` in the
   `iii-directory` configuration entry binds/unbinds the hook hot): at most
-  once per session, and only when discovery is plausibly needed — it skips
-  when `search_functions` is not in the surface, a search result is already
-  in the window, the surface spans fewer than `hint_min_workers` workers, the
-  current task is already calling real functions, or it already names a
-  callable function id.
+  once per turn, and only when discovery is plausibly needed — it skips when
+  `search_functions` is not in the surface, a search result is already in the
+  current task window, the surface spans fewer than `hint_min_workers`
+  workers, the current task is already calling real functions, or it already
+  names a callable function id.
 
 `directory::pre-generate`, `directory::on-functions-change`, and
 `directory::hint-preview` are internal handlers, not direct tools.
 
 ## Safety and privacy
 
-A search result adds documentation only; it neither executes a function nor
-grants new authority — normal policy and approval still apply. Suggested
+A search result adds candidate metadata only; it neither executes a function
+nor grants new authority — normal policy and approval still apply. Suggested
 installable workers are vetted only by registry author verification;
 installing remains a stack mutation that deserves explicit confirmation. The
 hook's transcript rows carry only coarse outcome/reason and counts: no

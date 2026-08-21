@@ -189,6 +189,11 @@ impl Bm25Index {
             // relative function floor prune same-worker family members
             // that match only the namespace token plus a generic word.
             let mut text = format!("{0} {0} {0} {1}", tool.name, tool.description);
+            if tool.name == "browser::fetch" {
+                text.push_str(
+                    " default static web page webpage website RSS Atom API content scrape scraping",
+                );
+            }
             if let Some(properties) = tool
                 .parameters
                 .get("properties")
@@ -277,13 +282,6 @@ impl Bm25Index {
         self.ranked_with_minimum(query, Self::MINIMUM_MATCHED_TERMS)
     }
 
-    /// Desperation rank: single-term matches allowed. Only for a discover
-    /// session whose recent queries all ranked empty — weak anchors beat
-    /// another empty answer once the model is clearly out of vocabulary.
-    pub(crate) fn rank_desperate(&self, query: &str) -> Vec<(String, f64, u32)> {
-        self.ranked_with_minimum(query, 1)
-    }
-
     fn ranked_with_minimum(&self, query: &str, minimum: u32) -> Vec<(String, f64, u32)> {
         let (scores, matched) = self.scored(query, false);
         let mut ranked: Vec<(String, f64, u32)> = self
@@ -335,16 +333,20 @@ fn canonical_value(value: &serde_json::Value) -> serde_json::Value {
 
 // Needle completion latency scales with the size of the indexed tool corpus
 // (measured: ~0.9 s at 40 full contracts, past the 4.5 s hook budget at ~120).
-// The index only drives call/respond selection — the injected API reference is
-// built from the full request contracts elsewhere — so it keeps just the
-// matching signal: the name, the description's first sentence, and argument
-// names. Proposed payloads stay coarse as a consequence.
+// Search needs only the matching signal: name, first description sentence,
+// and argument names. Full request contracts are fetched later through
+// `engine::functions::info` for the selected candidates.
 pub(crate) fn slim_description(description: &str) -> String {
     let line = description.lines().next().unwrap_or_default();
-    let sentence = match line.find(". ") {
-        Some(position) => &line[..=position],
-        None => line,
-    };
+    let sentence = line
+        .char_indices()
+        .find_map(|(position, punctuation)| {
+            let end = position + punctuation.len_utf8();
+            (matches!(punctuation, '.' | '?' | '!')
+                && line[end..].chars().next().is_none_or(char::is_whitespace))
+            .then_some(&line[..end])
+        })
+        .unwrap_or(line);
     truncate(sentence.trim_end().to_string(), INDEX_DESCRIPTION_BYTES)
 }
 

@@ -19,7 +19,7 @@ pub fn paragraph(mode: Mode) -> &'static str {
             "You are operating in ask mode: answer the user directly and be concise (one or two paragraphs). Only call `agent_trigger` when strictly necessary to ground your answer."
         }
         Mode::Agent => {
-            "You are operating in agent mode: use `agent_trigger` autonomously to satisfy the request. Stop when you have a final answer or hit an irrecoverable error."
+            "You are operating in agent mode: use `agent_trigger` autonomously to satisfy the request. Match the user's requested scope and level of detail; do not expand the task. Stop when you have a final answer or hit an irrecoverable error."
         }
     }
 }

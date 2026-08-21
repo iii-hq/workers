@@ -1,16 +1,23 @@
 {
-  "description": "Search every available function with one natural-language query describing everything the task needs; returns the full API reference for each relevant function, grouped by worker.",
+  "description": "Search available functions for one to six external capabilities; returns compact function-id candidates grouped by worker.",
   "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
-      "query": {
-        "description": "One natural-language query naming every capability the task needs.",
-        "type": "string"
+      "capabilities": {
+        "description": "One to six non-empty capability searches derived from the goal and current execution state. For one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented or satisfied. Requests to summarize provided text or content are ignored. Write every entry in English, translating non-English user requests while preserving proper names, URLs, and function IDs.",
+        "items": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxItems": 6,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": true
       }
     },
     "required": [
-      "query"
+      "capabilities"
     ],
     "title": "SearchFunctionsRequest",
     "type": "object"
@@ -18,23 +25,10 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
-      "InstallCall": {
-        "description": "A ready-made `worker::add` invocation: `{ function, payload }` matches the agent_trigger call envelope so the model can execute it verbatim.",
-        "properties": {
-          "function": {
-            "type": "string"
-          },
-          "payload": true
-        },
-        "required": [
-          "function",
-          "payload"
-        ],
-        "type": "object"
-      },
-      "InstallableFunction": {
+      "FunctionCandidate": {
         "properties": {
           "description": {
+            "description": "First description sentence, capped at 160 bytes.",
             "type": "string"
           },
           "function_id": {
@@ -47,16 +41,30 @@
         ],
         "type": "object"
       },
+      "InstallCall": {
+        "description": "A ready-made `worker::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "payload": true
+        },
+        "required": [
+          "function",
+          "payload"
+        ],
+        "type": "object"
+      },
       "InstallableWorker": {
-        "description": "A registry worker that is NOT installed but carries functions matching the query. `name` is the registry slug `worker::add` installs.",
+        "description": "A registry worker that is NOT installed but carries functions matching the requested capabilities. `name` is the registry slug `worker::add` installs.",
         "properties": {
           "description": {
             "type": "string"
           },
           "functions": {
-            "description": "Names + descriptions only — deliberately NO request schema: an uninstalled function must not look callable, so there is nothing here for a model to pattern-match into a direct call. Contracts arrive through a fresh search after the install registers them.",
+            "description": "Compact candidates only. After installation, search again and fetch selected contracts through `engine::functions::info`.",
             "items": {
-              "$ref": "#/definitions/InstallableFunction"
+              "$ref": "#/definitions/FunctionCandidate"
             },
             "type": "array"
           },
@@ -66,7 +74,7 @@
                 "$ref": "#/definitions/InstallCall"
               }
             ],
-            "description": "The exact call that installs this worker, ready to execute."
+            "description": "The `worker::add` target and payload; agent-trigger callers add `description`."
           },
           "name": {
             "type": "string"
@@ -84,28 +92,11 @@
         ],
         "type": "object"
       },
-      "SearchContract": {
-        "properties": {
-          "description": {
-            "type": "string"
-          },
-          "function_id": {
-            "type": "string"
-          },
-          "request_schema": true
-        },
-        "required": [
-          "description",
-          "function_id",
-          "request_schema"
-        ],
-        "type": "object"
-      },
       "SearchWorker": {
         "properties": {
           "functions": {
             "items": {
-              "$ref": "#/definitions/SearchContract"
+              "$ref": "#/definitions/FunctionCandidate"
             },
             "type": "array"
           },
@@ -125,7 +116,7 @@
         "type": "string"
       },
       "installable": {
-        "description": "Registry workers (verified authors) with matching functions, present only when nothing installed matched. Their functions are NOT callable until the worker is installed.",
+        "description": "Matching registry workers from verified authors. Their functions are NOT callable until the worker is installed.",
         "items": {
           "$ref": "#/definitions/InstallableWorker"
         },

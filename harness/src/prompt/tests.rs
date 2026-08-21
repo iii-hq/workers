@@ -106,6 +106,42 @@ fn identity_line_and_agent_trigger_preserved() {
 }
 
 #[test]
+fn default_discovery_fallback_yields_to_injected_assist() {
+    let out = default_prompt().replace('\n', " ");
+    let step_one = out
+        .find("Step 1. Find the function id through exactly one task-capability discovery path")
+        .expect("prompt makes discovery paths mutually exclusive at Step 1");
+    let assist = out[step_one..]
+        .find("If `<discovery_assist>` is present, follow it and do not use `engine::functions::list` to discover task-capability IDs")
+        .expect("prompt gives injected discovery guidance precedence at Step 1");
+    let inventory = out[step_one..]
+        .find("Fixed-prefix inventory checks for a documented surface or after an install still apply")
+        .expect("prompt keeps inventory verification distinct from capability discovery");
+    let fallback = out[step_one..]
+        .find("Only when `<discovery_assist>` is absent, call `engine::functions::list`")
+        .expect("prompt keeps engine discovery as the explicit fallback");
+    assert!(assist < fallback);
+    assert!(inventory < fallback);
+    assert!(out.contains("First check what already exists through the active discovery path"));
+    assert!(out.contains(
+        "When `<discovery_assist>` is absent and no registered function fits, search the public registry"
+    ));
+    assert!(out.contains("uses the active discovery path from Step 1 and finds `shell::fs::ls`"));
+    assert!(out.contains("Find the replacement through the active discovery path from Step 1"));
+    assert!(out.contains("This fallback example applies only when `<discovery_assist>` is absent"));
+    assert!(!out.contains("calls engine::functions::list { search: \"ls\" }"));
+
+    let checklist = out
+        .split_once("# Final checklist")
+        .expect("prompt has a final checklist")
+        .1;
+    assert!(checklist.contains("the active discovery path"));
+    assert!(checklist.contains("`<discovery_assist>` when present"));
+    assert!(checklist.contains("otherwise `engine::functions::list`"));
+    assert!(!checklist.contains("Did I find the id with `engine::functions::list`?"));
+}
+
+#[test]
 fn fn_pill_syntax() {
     let out = default_prompt();
     assert!(out.contains("@fn(<function_id>)"));
@@ -291,6 +327,13 @@ fn mode_agent_prepends_before_identity() {
     });
     assert!(out.contains("operating in agent mode"));
     assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
+}
+
+#[test]
+fn mode_agent_matches_the_requested_scope_and_detail() {
+    let out = super::paragraph(Mode::Agent);
+    assert!(out.contains("Match the user's requested scope and level of detail"));
+    assert!(out.contains("do not expand the task"));
 }
 
 #[test]

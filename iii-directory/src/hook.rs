@@ -1,6 +1,6 @@
 //! `directory::pre-generate` — the conditional search hint. One short
 //! standing instruction pointing the model at `directory::search_functions`,
-//! injected at most once per session and only when discovery is plausibly
+//! injected at most once per turn and only when discovery is plausibly
 //! needed. Moved from the reflex spike's `search` selector branch; measured
 //! there: an unconditional per-generation hint *induces* redundant discovery
 //! on guided tasks (double discovery, up to +110% tokens), so every gate
@@ -271,15 +271,15 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
 fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     let call_instruction = match expose {
         ExposeKind::AgentTrigger => {
-            "Invoke it through agent_trigger with exactly this call envelope: { \"function\": \"directory::search_functions\", \"payload\": { \"query\": \"<every needed capability>\" } }\n"
+            "Invoke it through agent_trigger with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the user's language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
         }
         ExposeKind::Native | ExposeKind::Other => {
-            "Call directory::search_functions directly with its `query` request field.\n"
+            "Call directory::search_functions directly with its required `capabilities` request field.\n"
         }
     };
     format!(
         "<discovery_assist functions_generation={functions_generation}>\n\
-If this task needs functions you do not already know how to call, call directory::search_functions ONCE with one natural-language query naming every needed capability, instead of any other function discovery. Its result returns the full API reference for every relevant function and OVERRIDES the general discovery requirement for the functions it lists; do not call engine::functions::list or engine::functions::info for them. If the task's needs are already clear from the conversation, call no discovery at all. {call_instruction}\
+Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include one to six short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. {call_instruction}\
 </discovery_assist>"
     )
 }
@@ -315,7 +315,7 @@ pub fn hint_preview() -> HintPreviewResponse {
 
 /// One hook pass: inject the hint when every gate clears, otherwise skip
 /// with a stable reason. Pure over the payload's own messages and tools
-/// (except the once-per-session record), so replays and compaction
+/// (except the once-per-turn record), so replays and compaction
 /// re-derive the right outcome on their own.
 pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGenerateHookResponse {
     let config = deps.config.load_full();
@@ -338,7 +338,8 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
             functions_generation,
         );
     }
-    let searched = messages.iter().any(|message| {
+    let task_start = latest_user_index(&messages).map_or(0, |index| index + 1);
+    let searched = messages[task_start..].iter().any(|message| {
         message.get("role").and_then(Value::as_str) == Some("function_result")
             && message.get("function_id").and_then(Value::as_str)
                 == Some("directory::search_functions")
@@ -371,9 +372,10 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
             functions_generation,
         );
     }
-    // One hint per session: a same-step replay re-sends, a
-    // functions-generation or expose change re-anchors a fresh hint. If
-    // compaction later drops the hinted step, the model simply proceeds
+    // One hint per turn: a same-step replay re-sends, while only a new turn
+    // re-anchors a fresh hint. If generation or exposure changes mid-turn,
+    // the existing anchor still holds. If compaction later drops the hinted
+    // step, the model simply proceeds
     // without a hint — fail-open by design.
     let send = deps
         .sessions
@@ -484,8 +486,31 @@ mod tests {
         let prompt = &response.mutations.as_ref().unwrap().system_prompt;
         assert!(prompt.starts_with("base discovery prompt\n\n<discovery_assist"));
         assert!(prompt.contains("call directory::search_functions ONCE"));
-        assert!(prompt.contains("call no discovery at all"));
+        assert!(prompt
+            .contains("Before calling any task function whose ID has not already been verified"));
+        assert!(prompt.contains("Never invent or call an unverified function ID"));
+        assert!(prompt.contains("A clear capability need is not a verified function ID"));
+        assert!(prompt.contains("do not look up its contract first"));
+        assert!(prompt.contains("\"description\""));
+        assert!(!prompt.contains("functions you do not already know"));
+        assert!(!prompt.contains("call no discovery at all"));
         assert!(prompt.contains("agent_trigger"));
+        assert!(prompt.contains("\"capabilities\""));
+        assert!(!prompt.contains("\"query\""));
+        assert!(prompt.contains("current execution state"));
+        assert!(prompt.contains("all unmet external capabilities"));
+        assert!(prompt.contains("one to six short, non-overlapping `capabilities`"));
+        assert!(!prompt.contains("For one capability, omit the field"));
+        assert!(prompt.contains(
+            "Do not search for intrinsic reasoning, summarization, planning, or formatting"
+        ));
+        assert!(prompt.contains("Requests to summarize provided text or content are ignored"));
+        assert!(prompt.contains("Always write every `capabilities` entry in English"));
+        assert!(prompt.contains("even when the user writes in another language"));
+        assert!(prompt.contains("preserve proper names, URLs, and function IDs"));
+        assert!(prompt.contains("do not repeat needs already represented"));
+        assert!(prompt.contains("engine::functions::info"));
+        assert!(prompt.contains("function_ids"));
         // The annotation carries counts only.
         assert_eq!(response.annotations.directory.data.allowed_functions, 3);
         assert_eq!(response.annotations.directory.data.functions_generation, 3);
@@ -502,7 +527,7 @@ mod tests {
         request.generate.expose = ExposeKind::Native;
         let response = pre_generate(&deps, request).await;
         let prompt = &response.mutations.as_ref().unwrap().system_prompt;
-        assert!(prompt.contains("Call directory::search_functions directly"));
+        assert!(prompt.contains("required `capabilities` request field"));
         assert!(!prompt.contains("agent_trigger"));
     }
 
@@ -528,6 +553,33 @@ mod tests {
         }));
         let response = pre_generate(&deps, request).await;
         assert_skip(&response, DiscoveryReason::AlreadySearched);
+    }
+
+    #[tokio::test]
+    async fn a_previous_tasks_search_does_not_suppress_the_new_task_hint() {
+        let deps = deps();
+        let mut request = request_for("summarize the news", wide_tools());
+        request.generate.messages = vec![
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "find repository functions" }]
+            }),
+            json!({
+                "role": "function_result",
+                "function_id": "directory::search_functions",
+                "content": [{ "type": "text", "text": "{\"workers\":[]}" }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "summarize the news" }]
+            }),
+        ];
+
+        let response = pre_generate(&deps, request).await;
+        assert_eq!(
+            response.annotations.directory.data.outcome,
+            DiscoveryOutcome::HintInjected
+        );
     }
 
     #[tokio::test]
@@ -658,7 +710,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hint_fires_once_per_session_but_repeats_on_same_step_replays() {
+    async fn hint_fires_once_per_turn_but_repeats_on_same_step_replays() {
         let deps = deps();
         let first = pre_generate(&deps, request_for("find", wide_tools())).await;
         assert_eq!(
@@ -674,5 +726,38 @@ mod tests {
         later.step += 1;
         let response = pre_generate(&deps, later).await;
         assert_skip(&response, DiscoveryReason::HintAlreadySent);
+    }
+
+    #[tokio::test]
+    async fn a_new_turn_rearms_a_hint_ignored_on_a_greeting() {
+        let deps = deps();
+        let greeting = pre_generate(&deps, request_for("hey there", wide_tools())).await;
+        assert_eq!(
+            greeting.annotations.directory.data.outcome,
+            DiscoveryOutcome::HintInjected
+        );
+
+        let mut task = request_for("summarize the latest news", wide_tools());
+        task.turn_id = "next-turn".into();
+        task.generate.messages = vec![
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "hey there" }]
+            }),
+            json!({
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "Hello!" }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "summarize the latest news" }]
+            }),
+        ];
+
+        let response = pre_generate(&deps, task).await;
+        assert_eq!(
+            response.annotations.directory.data.outcome,
+            DiscoveryOutcome::HintInjected
+        );
     }
 }

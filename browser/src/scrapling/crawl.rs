@@ -350,6 +350,7 @@ pub struct CrawlOutcome {
 pub async fn run<F, Fut, E>(
     opts: &CrawlOpts,
     payload: &Value,
+    body_budget: Option<usize>,
     fetch: F,
     mut emit: E,
 ) -> CrawlOutcome
@@ -392,7 +393,7 @@ where
         }
         for (url, depth, result) in done {
             let item = match result {
-                Ok(page) => match serialize_page(&page, payload, include_html) {
+                Ok(page) => match serialize_page(&page, payload, include_html, body_budget) {
                     Ok(serialized) => {
                         if depth < opts.max_depth {
                             for link in extract_links(&page.html, &page.url) {
@@ -426,6 +427,15 @@ where
         }
         if !opts.download_delay.is_zero() {
             tokio::time::sleep(opts.download_delay).await;
+        }
+    }
+
+    if let Some(body_budget) = body_budget {
+        let per_sample = body_budget / items.len().max(1);
+        for item in &mut items {
+            if let Some(item) = item.as_object_mut() {
+                crate::scrapling::page::budget_page_derived_fields(item, per_sample);
+            }
         }
     }
 
@@ -498,6 +508,7 @@ mod tests {
         let out = run(
             o,
             payload,
+            None,
             |url| {
                 order.borrow_mut().push(url.clone());
                 let found = site
@@ -642,6 +653,7 @@ mod tests {
         let out = run(
             &o,
             &json!({}),
+            None,
             |url| {
                 let found = refs
                     .iter()
@@ -732,6 +744,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn safe_crawl_divides_body_budget_across_returned_samples_with_errors_in_place() {
+        let o = opts(json!({
+            "start_urls": ["https://e.com/a", "https://e.com/b", "https://e.com/c"],
+            "concurrency": 1,
+            "max_depth": 0,
+        }));
+        let payload = json!({"format": "text"});
+        let out = run(
+            &o,
+            &payload,
+            Some(crate::scrapling::page::SAFE_BODY_BUDGET),
+            |url| async move {
+                if url.ends_with("/b") {
+                    Err("boom".to_string())
+                } else {
+                    Ok(page(&url, &format!("<p>{}</p>", "x".repeat(30_000))))
+                }
+            },
+            |_| Box::pin(async {}),
+        )
+        .await;
+        let per_sample = crate::scrapling::page::SAFE_BODY_BUDGET / 3;
+
+        assert_eq!(out.items[0]["url"], "https://e.com/a");
+        assert_eq!(out.items[0]["content"].as_str().unwrap().len(), per_sample);
+        assert_eq!(
+            out.items[1],
+            json!({"url": "https://e.com/b", "error": "boom"})
+        );
+        assert_eq!(out.items[2]["url"], "https://e.com/c");
+        assert_eq!(out.items[2]["content"].as_str().unwrap().len(), per_sample);
+    }
+
+    #[tokio::test]
     async fn a_completion_batch_is_recorded_before_refilling_the_pool() {
         let o = opts(json!({
             "start_urls": ["https://e.com/1", "https://e.com/2", "https://e.com/3"],
@@ -742,6 +788,7 @@ mod tests {
         let out = run(
             &o,
             &json!({}),
+            None,
             |url| {
                 events.borrow_mut().push(format!("start:{url}"));
                 async move { Ok(page(&url, "")) }
