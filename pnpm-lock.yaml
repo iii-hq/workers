@@ -426,6 +426,9 @@ importers:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
       typescript:
         specifier: ^5.9.2
         version: 5.9.3

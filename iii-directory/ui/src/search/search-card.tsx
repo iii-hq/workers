@@ -15,6 +15,7 @@ import {
   type DiscoverCandidateView,
   type DiscoverInstallableView,
   type DiscoverView,
+  discoverCapabilities,
   discoverQuery,
   functionCount,
   isErrorOutput,
@@ -126,9 +127,11 @@ function GuidanceDetails({ guidance }: { guidance: string }) {
 
 export function DiscoverCard({
   query,
+  capabilities,
   view,
 }: {
   query: string | null
+  capabilities: string[]
   view: DiscoverView
 }) {
   const empty = view.workers.length === 0 && view.installable.length === 0
@@ -149,6 +152,19 @@ export function DiscoverCard({
         <ActionLine symbol="»" tone="ink">
           {query}
         </ActionLine>
+      ) : null}
+      {capabilities.length > 0 ? (
+        <section aria-label="capabilities">
+          <div className="discovery-search-section-head">
+            <span>capabilities</span>
+            <span className="count">{capabilities.length}</span>
+          </div>
+          {capabilities.map((capability, index) => (
+            <ActionLine key={`${index}:${capability}`} symbol="·" tone="ink">
+              {capability}
+            </ActionLine>
+          ))}
+        </section>
       ) : null}
       {empty ? (
         <div className="discovery-search-empty">
@@ -187,12 +203,13 @@ export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
       if (isErrorOutput(message.output)) return null
       const view = parseDiscoverResponse(message.output)
       if (!view) return null
-      return <DiscoverCard query={discoverQuery(message.input)} view={view} />
+      return (
+        <DiscoverCard
+          capabilities={discoverCapabilities(message.input)}
+          query={discoverQuery(message.input)}
+          view={view}
+        />
+      )
     },
-    /* The found functions ARE the answer — promote a successful card into
-       the chat flow instead of hiding it behind "show raw request and
-       response". Every non-display path above returns null, so a pending,
-       failed, or unparseable call still falls through to the compact card. */
-    metadata: { display: true },
   }
 }

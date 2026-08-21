@@ -52,9 +52,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-/** The request's `query`, tolerating agents that double-encode the payload
- * as a JSON string. Null when no readable query exists. */
-export function discoverQuery(input: unknown): string | null {
+/** Search request input, tolerating agents that double-encode the payload. */
+function discoverInput(input: unknown): Record<string, unknown> | null {
   let value = input
   if (typeof value === 'string') {
     try {
@@ -63,9 +62,26 @@ export function discoverQuery(input: unknown): string | null {
       return null
     }
   }
-  if (!isRecord(value) || typeof value.query !== 'string') return null
+  return isRecord(value) ? value : null
+}
+
+/** The request's `query`. Null when no readable query exists. */
+export function discoverQuery(input: unknown): string | null {
+  const value = discoverInput(input)
+  if (!value || typeof value.query !== 'string') return null
   const query = value.query.trim()
   return query.length > 0 ? query : null
+}
+
+/** Valid, non-empty capability searches submitted with the request. */
+export function discoverCapabilities(input: unknown): string[] {
+  const value = discoverInput(input)
+  if (!value || !Array.isArray(value.capabilities)) return []
+  return value.capabilities.flatMap((capability) => {
+    if (typeof capability !== 'string') return []
+    const trimmed = capability.trim()
+    return trimmed.length > 0 ? [trimmed] : []
+  })
 }
 
 /** Strict parse of compact function candidates. Extra legacy contract fields
