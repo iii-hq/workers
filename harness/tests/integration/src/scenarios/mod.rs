@@ -23,6 +23,7 @@ mod state_worker_sidecar;
 mod stop_cancel_cascade;
 mod streamed_text;
 mod timer_wake;
+mod truncated_function_call_stream;
 mod wake_expiry_notice;
 
 use crate::evidence_data::RunEvidence;
@@ -60,6 +61,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         stop_cancel_cascade::scenario(),
         queued_message_edit_unqueue::scenario(),
         streamed_text::scenario(),
+        truncated_function_call_stream::scenario(),
         wake_expiry_notice::scenario(),
         timer_wake::scenario(),
     ];
@@ -74,7 +76,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 25);
+        assert_eq!(fixtures.len(), 26);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

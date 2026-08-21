@@ -5,6 +5,7 @@
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -143,6 +144,29 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
         push_block_content(&mut out, state, kind, idx);
     }
     out
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.saw_message_stop
+    }
+
+    fn has_content(&self) -> bool {
+        !self.text_blocks.is_empty()
+            || !self.thinking_blocks.is_empty()
+            || !self.redacted_blocks.is_empty()
+            || !self.function_calls.is_empty()
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        self.block_slots
+            .iter()
+            .any(|slot| matches!(slot, Some(BlockSlot::ToolUse(_))))
+            || self
+                .function_calls
+                .iter()
+                .any(|tc| arguments_incomplete(&tc.args_json))
+    }
 }
 
 pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
