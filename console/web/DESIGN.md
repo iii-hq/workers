@@ -1032,6 +1032,13 @@ Workspace tabs behave like this everywhere:
   recent choices (`lib/palette/recents.ts`); several words match in any
   order. `host.palette.open({ query })` lets a row hand over to a mode, the
   way the shell's "Open file…" lands on `#`.
+- **Annotations:** `AnnotationLayer` / `AnnotationList` (`components/ui/Annotations.tsx`,
+  helpers in `lib/annotations.ts`) put numbered accent pins with notes on a
+  picture; positions are fractions of the picture; pins are buttons (Delete,
+  arrows). A page freezes its frame while annotating and ships the set as one
+  PNG with the pins painted on plus the numbered notes through
+  `host.chat.compose`, the composer bus that also takes files
+  (`lib/composer-insert.ts`). The browser page is the first consumer.
 - **Shared primitives carry the keyboard:** an interactive `TableRow` joins
   the tab order and answers Enter, Space and the arrows; a `List` walks its
   items with the arrows. A page built from them is keyboard-reachable
