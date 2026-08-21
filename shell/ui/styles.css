@@ -1560,6 +1560,42 @@
   width: 16px;
   height: 16px;
 }
+[data-iii-ui="shell"] .shui-whole-file-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 1px;
+  background: var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-whole-file-split > * {
+  min-width: 0;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-whole-file-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 32px 16px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-whole-file-placeholder svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-whole-file-title {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui="shell"] .shui-whole-file-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 [data-iii-ui="shell"] .shui-review-message {
   display: flex;
   align-items: center;
