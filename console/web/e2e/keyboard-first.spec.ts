@@ -44,7 +44,7 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   await expect(page.locator('[data-message-row]').first()).toBeFocused()
 
   // The palette lists the chat's commands under its name, with their keys.
-  await page.keyboard.press('Meta+k')
+  await page.keyboard.press('ControlOrMeta+k')
   const palette = page.getByRole('dialog')
   await palette.getByRole('textbox').fill('focus the composer')
   const row = palette.getByRole('button', { name: /Chat: Focus the composer/ })
@@ -56,7 +56,7 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   // A prefix narrows the palette to a mode, and the last choice leads the
   // next empty query.
   await settle(page)
-  await page.keyboard.press('Meta+k')
+  await page.keyboard.press('ControlOrMeta+k')
   await palette.getByRole('textbox').fill('>stop')
   await expect(
     palette.getByRole('button', { name: /Chat: Stop the turn/ }),
@@ -87,7 +87,7 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   await page.keyboard.press('{')
   await expect(focusedPane).toHaveAttribute('data-workspace-panel', '0')
 
-  await page.keyboard.press('Meta+k')
+  await page.keyboard.press('ControlOrMeta+k')
   await palette.getByRole('textbox').fill('go to workers')
   await palette.getByRole('button', { name: /^workers/ }).click()
   await expect(
