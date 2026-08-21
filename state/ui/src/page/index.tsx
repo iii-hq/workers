@@ -21,6 +21,8 @@ export function StateManagerPage({
   host,
   panelSide = 'left',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const subscribe = useStateEventHub(host)
 
@@ -33,7 +35,13 @@ export function StateManagerPage({
         actions={<LiveDot />}
         onClose={onRequestClose}
       />
-      <StateBrowser host={host} subscribe={subscribe} panelSide={panelSide} />
+      <StateBrowser
+        host={host}
+        subscribe={subscribe}
+        panelSide={panelSide}
+        panelContext={panelContext}
+        commands={commands}
+      />
     </PageShell>
   )
 }

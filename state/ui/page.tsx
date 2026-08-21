@@ -22,8 +22,10 @@ import type { Host } from '@iii-dev/console-ui'
 import { StateConfigForm } from './src/configuration'
 import { createStateTriggerRenderer } from './src/function-trigger-message'
 import { StateManagerPage } from './src/page'
+import { registerStatePalette } from './src/palette'
 
 export default function setup(host: Host) {
+  registerStatePalette(host)
   host.pages.register({
     id: 'state-manager',
     title: 'state',

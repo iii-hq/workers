@@ -1,8 +1,10 @@
 import type { Host } from '@iii-dev/console-ui'
 import { StorageConfigForm } from './src/configuration'
 import { StoragePage } from './src/page'
+import { registerStoragePalette } from './src/palette'
 
 export default function setup(host: Host) {
+  registerStoragePalette(host)
   host.pages.register({
     id: 'storage-manager',
     title: 'storage',

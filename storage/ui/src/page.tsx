@@ -2,14 +2,17 @@ import {
   Button,
   EmptyState,
   type Host,
+  type PageCommandsApi,
   PageHeader,
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  type PanelContextEvent,
   StatusPanel,
 } from '@iii-dev/console-ui'
 import type { ComponentType } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { parseStoragePanelContext } from './panel-context'
 import {
   BackIcon,
   BucketIcon,
@@ -81,10 +84,14 @@ function StorageExplorer({
   host,
   panelSide,
   tabId,
+  panelContext,
+  commands,
 }: {
   host: Host
   panelSide: 'left' | 'right'
   tabId: string
+  panelContext?: PanelContextEvent
+  commands?: PageCommandsApi
 }) {
   const persisted = useMemo(() => readPersisted(tabId), [tabId])
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
@@ -238,6 +245,29 @@ function StorageExplorer({
       })
   }, [host, bucketName, objectKey])
 
+  // A context from the palette source (or another worker's "inspect this
+  // object" affordance) selects a bucket/prefix/object once the bucket list
+  // has loaded — the page can mount before the first fetch resolves.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseStoragePanelContext(panelContext.context)
+    if (!context) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    if (buckets === null) return
+    if (!buckets.some((b) => b.name === context.bucket)) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    appliedContextRef.current = panelContext.id
+    setBucketName(context.bucket)
+    setPrefix(context.prefix ?? '')
+    setObjectKey(context.objectKey ?? null)
+    setActionError(null)
+  }, [panelContext, buckets])
+
   const openBucket = (name: string) => {
     setBucketName(name)
     setPrefix('')
@@ -370,6 +400,35 @@ function StorageExplorer({
     }
   }
 
+  // The page's verbs, for the palette and for the keyboard while this pane
+  // has the focus. The keys stay clear of the console's own.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'upload',
+          title: 'Upload a file',
+          detail: 'Choose a file to upload into the current folder',
+          keywords: ['file', 'add'],
+          shortcut: 'U',
+          enabled: () => bucketName !== null && transfer === null,
+          run: () => fileInputRef.current?.click(),
+        },
+        {
+          id: 'refresh',
+          title: 'Refresh',
+          detail: 'Reload buckets and the current folder',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: () => {
+            loadBuckets()
+            if (bucketName) loadListing()
+          },
+        },
+      ]),
+    [commands, bucketName, transfer, loadBuckets, loadListing],
+  )
+
   const showBuckets = !narrow || bucketName === null
   const showContents = !narrow || (bucketName !== null && objectKey === null)
   const showDetail = !narrow || objectKey !== null
@@ -390,6 +449,8 @@ function StorageExplorer({
           defaultWidth={204}
           narrow={narrow}
           className="storage-ui-buckets"
+          data-autofocus=""
+          tabIndex={-1}
           header={
             <div className="storage-ui-column-head storage-ui-primary-head">
               <span className="storage-ui-column-label">buckets</span>
@@ -806,6 +867,8 @@ export function StoragePage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [configOpen, setConfigOpen] = useState(false)
   const ConfigurationDialog = host.components.WorkerConfigurationDialog as
@@ -831,7 +894,13 @@ export function StoragePage({
         }
         onClose={onRequestClose}
       />
-      <StorageExplorer host={host} panelSide={panelSide} tabId={tabId} />
+      <StorageExplorer
+        host={host}
+        panelSide={panelSide}
+        tabId={tabId}
+        panelContext={panelContext}
+        commands={commands}
+      />
       {ConfigurationDialog ? (
         <ConfigurationDialog
           configurationId={configOpen ? 'storage' : null}

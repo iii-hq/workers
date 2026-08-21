@@ -44,11 +44,29 @@ import {
   sendToSession,
 } from '../lib/api'
 import { nextCronRun } from '../lib/cron'
-import { createSchedulePrompt, manualSchedulePrompt, replaceSchedulePrompt } from '../lib/prompts'
+import {
+  createSchedulePrompt,
+  manualSchedulePrompt,
+  replaceSchedulePrompt,
+} from '../lib/prompts'
 import { BindingDetail, TaskDetail } from './detail'
 import { ManualTaskForm, type ManualTaskSpec } from './manual-form'
-import { BindingListRow, BindingRow, cadenceLabel, TaskListRow, TaskRow } from './rows'
-import { byNextRun, countByStatus, type Filter, matchesBindingQuery, matchesFilter, matchesQuery } from './status'
+import { parseCronPanelContext } from './panel-context'
+import {
+  BindingListRow,
+  BindingRow,
+  cadenceLabel,
+  TaskListRow,
+  TaskRow,
+} from './rows'
+import {
+  byNextRun,
+  countByStatus,
+  type Filter,
+  matchesBindingQuery,
+  matchesFilter,
+  matchesQuery,
+} from './status'
 
 type View = 'tasks' | 'bindings'
 type Feedback = { tone: 'success' | 'warn' | 'alert'; message: string }
@@ -87,16 +105,32 @@ function subscribe<T>(
 
 function ClockIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
       <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7" />
-      <path d="M12 7.5v5l3.3 2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M12 7.5v5l3.3 2"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }
 
 function RefreshIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
       <path
         d="M19 8a7.5 7.5 0 1 0 .2 7.7M19 4v4h-4"
         stroke="currentColor"
@@ -110,32 +144,74 @@ function RefreshIcon({ className }: { className?: string }) {
 
 function SearchIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="10.8" cy="10.8" r="6.3" stroke="currentColor" strokeWidth="1.7" />
-      <path d="m16 16 4 4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle
+        cx="10.8"
+        cy="10.8"
+        r="6.3"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      />
+      <path
+        d="m16 16 4 4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
     </svg>
   )
 }
 
 function PlusIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M12 5v14M5 12h14"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
     </svg>
   )
 }
 
 function ChevronIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="m9 6 6 6-6 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="m9 6 6 6-6 6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }
 
 function SparkIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 16 16" className={className} aria-hidden="true" fill="currentColor">
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      aria-hidden="true"
+      fill="currentColor"
+    >
       <path d="M8 1.5l1.2 3.4 3.3 1.2-3.3 1.2L8 10.7 6.8 7.3 3.5 6.1l3.3-1.2L8 1.5zM12.5 10l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6.6-1.6z" />
     </svg>
   )
@@ -143,8 +219,18 @@ function SparkIcon({ className }: { className?: string }) {
 
 function CloseIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="m7 7 10 10M17 7 7 17"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
     </svg>
   )
 }
@@ -154,6 +240,8 @@ export function CronSchedulesPage({
   panelSide = 'left',
   onRequestClose,
   conversationId,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [view, setView] = useState<View>('tasks')
   const [tasks, setTasks] = useState<SessionCronTask[]>([])
@@ -168,7 +256,8 @@ export function CronSchedulesPage({
   const [sending, setSending] = useState(false)
   const [feedback, setFeedback] = useState<Feedback | null>(null)
   const [inspector, setInspector] = useState<Inspector>(null)
-  const [replacementTask, setReplacementTask] = useState<SessionCronTask | null>(null)
+  const [replacementTask, setReplacementTask] =
+    useState<SessionCronTask | null>(null)
   const [statusFilter, setStatusFilter] = useState<Filter>('all')
   const [narrow, setNarrow] = useState(false)
   const [now, setNow] = useState(() => new Date())
@@ -188,6 +277,7 @@ export function CronSchedulesPage({
   const inspectorRef = useRef<HTMLElement | null>(null)
   const lastFocus = useRef<HTMLElement | null>(null)
   const composerRef = useRef<HTMLInputElement | null>(null)
+  const searchRef = useRef<HTMLInputElement | null>(null)
   const openConversationRef = useRef<(sessionId: string) => void>(() => {})
 
   /** A schedule runs in a session of its own, and a session that has never
@@ -201,7 +291,8 @@ export function CronSchedulesPage({
     if (!model) {
       setFeedback({
         tone: 'alert',
-        message: 'No model chosen yet. Pick one in a chat composer, then schedule.',
+        message:
+          'No model chosen yet. Pick one in a chat composer, then schedule.',
       })
       setSending(false)
     }
@@ -209,7 +300,10 @@ export function CronSchedulesPage({
   }
 
   const openInspector = useCallback((next: Exclude<Inspector, null>) => {
-    lastFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    lastFocus.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
     setInspector(next)
   }, [])
 
@@ -252,7 +346,8 @@ export function CronSchedulesPage({
     } else {
       setBindingsError(errorMessage(bindingsResult.reason))
     }
-    if (functionsResult.status === 'fulfilled') setFunctions(functionsResult.value)
+    if (functionsResult.status === 'fulfilled')
+      setFunctions(functionsResult.value)
     setBindingsLoading(false)
   }, [host])
 
@@ -305,7 +400,9 @@ export function CronSchedulesPage({
     if (!narrow || !inspectorIdentity) return
     const frame = window.requestAnimationFrame(() => {
       inspectorRef.current
-        ?.querySelector<HTMLElement>('button, input, textarea, [tabindex]:not([tabindex="-1"])')
+        ?.querySelector<HTMLElement>(
+          'button, input, textarea, [tabindex]:not([tabindex="-1"])',
+        )
         ?.focus()
     })
     return () => window.cancelAnimationFrame(frame)
@@ -314,13 +411,21 @@ export function CronSchedulesPage({
   useEffect(() => {
     setInspector((current) => {
       if (current?.kind === 'task') {
-        const next = tasks.find((task) => task.subscriptionId === current.task.subscriptionId)
-        if (next) return next === current.task ? current : { kind: 'task', task: next }
+        const next = tasks.find(
+          (task) => task.subscriptionId === current.task.subscriptionId,
+        )
+        if (next)
+          return next === current.task ? current : { kind: 'task', task: next }
         return tasksLoading ? current : null
       }
       if (current?.kind === 'binding') {
-        const next = bindings.find((binding) => binding.id === current.binding.id)
-        if (next) return next === current.binding ? current : { kind: 'binding', binding: next }
+        const next = bindings.find(
+          (binding) => binding.id === current.binding.id,
+        )
+        if (next)
+          return next === current.binding
+            ? current
+            : { kind: 'binding', binding: next }
         return bindingsLoading ? current : null
       }
       return current
@@ -387,7 +492,11 @@ export function CronSchedulesPage({
       } else {
         const title = taskRequest.slice(0, 72)
         awaitedSession.current = { title, since: Date.now() }
-        const sessionId = await createSchedule(host, { title, instruction, model })
+        const sessionId = await createSchedule(host, {
+          title,
+          instruction,
+          model,
+        })
         // Usually the subscription got there first; this covers a console too
         // old to deliver session::created.
         awaitedSession.current = null
@@ -443,7 +552,8 @@ export function CronSchedulesPage({
       closeInspector()
       setFeedback({
         tone: 'success',
-        message: 'Registration request sent. Harness will add the task after the active turn completes the call.',
+        message:
+          'Registration request sent. Harness will add the task after the active turn completes the call.',
       })
     } catch (error) {
       if (request !== sendRequest.current) return
@@ -476,10 +586,16 @@ export function CronSchedulesPage({
 
   const removeTask = async (task: SessionCronTask) => {
     try {
-      const removed = await removeSessionCronTask(host, task.sessionId, task.subscriptionId)
+      const removed = await removeSessionCronTask(
+        host,
+        task.sessionId,
+        task.subscriptionId,
+      )
       setFeedback({
         tone: removed ? 'success' : 'warn',
-        message: removed ? 'Scheduled task removed.' : 'The task was already retired.',
+        message: removed
+          ? 'Scheduled task removed.'
+          : 'The task was already retired.',
       })
       closeInspector()
       await refreshTasks()
@@ -516,7 +632,10 @@ export function CronSchedulesPage({
       ...inspectorRef.current.querySelectorAll<HTMLElement>(
         'button, input, textarea, select, [href], [tabindex]:not([tabindex="-1"])',
       ),
-    ].filter((element) => !element.matches(':disabled') && element.getClientRects().length > 0)
+    ].filter(
+      (element) =>
+        !element.matches(':disabled') && element.getClientRects().length > 0,
+    )
     if (focusable.length === 0) {
       event.preventDefault()
       return
@@ -532,18 +651,51 @@ export function CronSchedulesPage({
     }
   }
 
+  // A context from the palette source (a schedule by subscription id) or the
+  // setup-time "New schedule…" command (`{ action: 'new' }`). A schedule is
+  // left unapplied until it shows up in `tasks` — the page can mount before
+  // the first fetch resolves.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseCronPanelContext(panelContext.context)
+    if (!context) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    if (context.action === 'new') {
+      appliedContextRef.current = panelContext.id
+      setView('tasks')
+      setReplacementTask(null)
+      openInspector({ kind: 'new' })
+      return
+    }
+    const task = tasks.find((t) => t.subscriptionId === context.subscriptionId)
+    if (!task) return // wait for the list to load
+    appliedContextRef.current = panelContext.id
+    setView('tasks')
+    openInspector({ kind: 'task', task })
+  }, [panelContext, tasks, openInspector])
+
   const counts = countByStatus(tasks, now.getTime())
   const orderedTasks = useMemo(() => {
     const runs = new Map(
       tasks.map((task) => [
         task.subscriptionId,
-        nextCronRun(task.expression, now)?.getTime() ?? Number.POSITIVE_INFINITY,
+        nextCronRun(task.expression, now)?.getTime() ??
+          Number.POSITIVE_INFINITY,
       ]),
     )
     return [...tasks]
       .filter((task) => matchesFilter(task, statusFilter, now.getTime()))
-      .filter((task) => matchesQuery(task, cadenceLabel(task.expression), query))
-      .sort(byNextRun((task) => runs.get(task.subscriptionId) ?? Number.POSITIVE_INFINITY))
+      .filter((task) =>
+        matchesQuery(task, cadenceLabel(task.expression), query),
+      )
+      .sort(
+        byNextRun(
+          (task) => runs.get(task.subscriptionId) ?? Number.POSITIVE_INFINITY,
+        ),
+      )
   }, [tasks, statusFilter, query, now])
 
   const orderedBindings = useMemo(
@@ -555,6 +707,51 @@ export function CronSchedulesPage({
   const error = view === 'tasks' ? tasksError : bindingsError
   const showDetail = inspector !== null
   const detailOnly = narrow && showDetail
+
+  // The page's verbs, for the palette and for the keyboard while this pane
+  // has the focus. The keys stay clear of the console's own.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'focus-composer',
+          title: 'Focus the schedule composer',
+          detail: 'Describe a routine to schedule in plain language',
+          keywords: ['compose', 'describe'],
+          enabled: () => !detailOnly,
+          run: () => composerRef.current?.focus(),
+        },
+        {
+          id: 'new-schedule',
+          title: 'New schedule',
+          detail: 'Open the manual schedule form',
+          keywords: ['create', 'cron', 'add'],
+          shortcut: 'N',
+          run: () => {
+            setView('tasks')
+            setReplacementTask(null)
+            openInspector({ kind: 'new' })
+          },
+        },
+        {
+          id: 'search',
+          title: 'Search schedules',
+          detail: 'Filter schedules and system bindings by name',
+          keywords: ['filter', 'find'],
+          shortcut: '/',
+          run: () => searchRef.current?.focus(),
+        },
+        {
+          id: 'refresh',
+          title: 'Refresh',
+          detail: 'Reload schedules and system bindings',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: () => void refreshAll(),
+        },
+      ]),
+    [commands, detailOnly, openInspector, refreshAll],
+  )
 
   const detailBody =
     inspector === null ? null : inspector.kind === 'new' ? (
@@ -601,6 +798,7 @@ export function CronSchedulesPage({
             <div className="cron-ui-search">
               <SearchIcon className={uiClasses.icon} />
               <Input
+                ref={searchRef}
                 type="search"
                 value={query}
                 onChange={setQuery}
@@ -615,7 +813,11 @@ export function CronSchedulesPage({
               onClick={() => void refreshAll()}
               disabled={tasksLoading || bindingsLoading}
             >
-              <RefreshIcon className={loading ? `${uiClasses.icon} cron-ui-spin` : uiClasses.icon} />
+              <RefreshIcon
+                className={
+                  loading ? `${uiClasses.icon} cron-ui-spin` : uiClasses.icon
+                }
+              />
             </IconButton>
             <Button
               variant="primary"
@@ -636,7 +838,10 @@ export function CronSchedulesPage({
       <PageBody side={panelSide}>
         <PageMain className="cron-ui-main">
           {detailOnly ? (
-            <section className="cron-ui-detail-page" aria-label="Schedule details">
+            <section
+              className="cron-ui-detail-page"
+              aria-label="Schedule details"
+            >
               <div className="cron-ui-detail-bar">
                 <Button variant="ghost" size="sm" onClick={closeInspector}>
                   <ChevronIcon className={`${uiClasses.icon} cron-ui-back`} />
@@ -654,9 +859,12 @@ export function CronSchedulesPage({
                   void submitNaturalTask()
                 }}
               >
-                <SparkIcon className={`${uiClasses.icon} cron-ui-composer-icon`} />
+                <SparkIcon
+                  className={`${uiClasses.icon} cron-ui-composer-icon`}
+                />
                 <Input
                   ref={composerRef}
+                  data-autofocus=""
                   value={composer}
                   onChange={setComposer}
                   placeholder={
@@ -677,7 +885,12 @@ export function CronSchedulesPage({
                 </Button>
               </form>
 
-              {feedback ? <StatusPanel variant={feedback.tone} headline={feedback.message} /> : null}
+              {feedback ? (
+                <StatusPanel
+                  variant={feedback.tone}
+                  headline={feedback.message}
+                />
+              ) : null}
 
               {model ? null : (
                 <StatusPanel
@@ -687,7 +900,10 @@ export function CronSchedulesPage({
                 />
               )}
 
-              <Tabs value={view} onValueChange={(value) => setView(value as View)}>
+              <Tabs
+                value={view}
+                onValueChange={(value) => setView(value as View)}
+              >
                 <div className="cron-ui-toolbar">
                   <TabsList>
                     <TabsTrigger value="tasks">
@@ -705,17 +921,39 @@ export function CronSchedulesPage({
                       value={statusFilter}
                       onChange={setStatusFilter}
                       options={[
-                        { value: 'all', label: `All ${counts.all}`, icon: false },
-                        { value: 'active', label: `Active ${counts.active}`, icon: false },
-                        { value: 'ending', label: `Ending soon ${counts.ending}`, icon: false },
-                        { value: 'finished', label: `Finished ${counts.finished}`, icon: false },
+                        {
+                          value: 'all',
+                          label: `All ${counts.all}`,
+                          icon: false,
+                        },
+                        {
+                          value: 'active',
+                          label: `Active ${counts.active}`,
+                          icon: false,
+                        },
+                        {
+                          value: 'ending',
+                          label: `Ending soon ${counts.ending}`,
+                          icon: false,
+                        },
+                        {
+                          value: 'finished',
+                          label: `Finished ${counts.finished}`,
+                          icon: false,
+                        },
                       ]}
                     />
                   ) : null}
                 </div>
 
                 <TabsContent value="tasks" className="cron-ui-tab-content">
-                  {error ? <StatusPanel variant="alert" headline="Could not read schedules" detail={error} /> : null}
+                  {error ? (
+                    <StatusPanel
+                      variant="alert"
+                      headline="Could not read schedules"
+                      detail={error}
+                    />
+                  ) : null}
                   {loading && orderedTasks.length === 0 ? (
                     <div className="cron-ui-skeletons">
                       <Skeleton className="cron-ui-skeleton" />
@@ -725,7 +963,11 @@ export function CronSchedulesPage({
                   ) : orderedTasks.length === 0 ? (
                     <EmptyState
                       icon={ClockIcon}
-                      title={tasks.length === 0 ? 'No schedules yet' : 'Nothing matches'}
+                      title={
+                        tasks.length === 0
+                          ? 'No schedules yet'
+                          : 'Nothing matches'
+                      }
                       description={
                         tasks.length === 0
                           ? 'Describe a routine above, or write the cron expression yourself.'
@@ -750,7 +992,11 @@ export function CronSchedulesPage({
                           key={task.subscriptionId}
                           task={task}
                           now={now}
-                          selected={inspector?.kind === 'task' && inspector.task.subscriptionId === task.subscriptionId}
+                          selected={
+                            inspector?.kind === 'task' &&
+                            inspector.task.subscriptionId ===
+                              task.subscriptionId
+                          }
                           onOpen={() => openInspector({ kind: 'task', task })}
                         />
                       ))}
@@ -766,7 +1012,9 @@ export function CronSchedulesPage({
                               <TableHead>Target</TableHead>
                               <TableHead>Cadence</TableHead>
                               <TableHead>Next run</TableHead>
-                              <TableHead className="cron-ui-cell-numeric">Runs</TableHead>
+                              <TableHead className="cron-ui-cell-numeric">
+                                Runs
+                              </TableHead>
                               <TableHead className="cron-ui-cell-actions">
                                 <span className="cron-ui-sr">Actions</span>
                               </TableHead>
@@ -779,13 +1027,21 @@ export function CronSchedulesPage({
                                 task={task}
                                 now={now}
                                 selected={
-                                  inspector?.kind === 'task' && inspector.task.subscriptionId === task.subscriptionId
+                                  inspector?.kind === 'task' &&
+                                  inspector.task.subscriptionId ===
+                                    task.subscriptionId
                                 }
-                                onOpen={() => openInspector({ kind: 'task', task })}
+                                onOpen={() =>
+                                  openInspector({ kind: 'task', task })
+                                }
                                 onReplace={() => requestTaskChange(task)}
                                 onRemove={() => void removeTask(task)}
-                                onCopyId={() => void copyId(task.subscriptionId)}
-                                onOpenConversation={() => openConversation(task.sessionId)}
+                                onCopyId={() =>
+                                  void copyId(task.subscriptionId)
+                                }
+                                onOpenConversation={() =>
+                                  openConversation(task.sessionId)
+                                }
                               />
                             ))}
                           </TableBody>
@@ -797,7 +1053,11 @@ export function CronSchedulesPage({
 
                 <TabsContent value="bindings" className="cron-ui-tab-content">
                   {bindingsError ? (
-                    <StatusPanel variant="alert" headline="Could not read system bindings" detail={bindingsError} />
+                    <StatusPanel
+                      variant="alert"
+                      headline="Could not read system bindings"
+                      detail={bindingsError}
+                    />
                   ) : null}
                   {orderedBindings.length === 0 ? (
                     <EmptyState
@@ -812,8 +1072,13 @@ export function CronSchedulesPage({
                           key={binding.id}
                           binding={binding}
                           now={now}
-                          selected={inspector?.kind === 'binding' && inspector.binding.id === binding.id}
-                          onOpen={() => openInspector({ kind: 'binding', binding })}
+                          selected={
+                            inspector?.kind === 'binding' &&
+                            inspector.binding.id === binding.id
+                          }
+                          onOpen={() =>
+                            openInspector({ kind: 'binding', binding })
+                          }
                         />
                       ))}
                     </List>
@@ -828,7 +1093,9 @@ export function CronSchedulesPage({
                               <TableHead>Function</TableHead>
                               <TableHead>Cadence</TableHead>
                               <TableHead>Next run</TableHead>
-                              <TableHead className="cron-ui-cell-numeric">Runs</TableHead>
+                              <TableHead className="cron-ui-cell-numeric">
+                                Runs
+                              </TableHead>
                               <TableHead className="cron-ui-cell-actions">
                                 <span className="cron-ui-sr">Actions</span>
                               </TableHead>
@@ -840,8 +1107,13 @@ export function CronSchedulesPage({
                                 key={binding.id}
                                 binding={binding}
                                 now={now}
-                                selected={inspector?.kind === 'binding' && inspector.binding.id === binding.id}
-                                onOpen={() => openInspector({ kind: 'binding', binding })}
+                                selected={
+                                  inspector?.kind === 'binding' &&
+                                  inspector.binding.id === binding.id
+                                }
+                                onOpen={() =>
+                                  openInspector({ kind: 'binding', binding })
+                                }
                               />
                             ))}
                           </TableBody>

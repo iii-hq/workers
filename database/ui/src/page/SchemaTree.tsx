@@ -40,6 +40,24 @@ interface TableSchema {
   indexes: IndexInfo[]
 }
 
+/** Arrow-key roving across a group's table/view name buttons — the tree has
+    no built-in keyboard nav otherwise, only Tab-per-row. */
+function roveTreeRow(e: React.KeyboardEvent<HTMLUListElement>) {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  const target = e.target
+  if (!(target instanceof HTMLElement) || !target.matches('.db-tree-name'))
+    return
+  const rows = Array.from(
+    e.currentTarget.querySelectorAll<HTMLButtonElement>('.db-tree-name'),
+  )
+  const i = rows.indexOf(target as HTMLButtonElement)
+  if (i === -1) return
+  e.preventDefault()
+  rows[
+    (i + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length
+  ]?.focus()
+}
+
 export function SchemaTree({
   host,
   db,
@@ -121,6 +139,8 @@ export function SchemaTree({
           onChange={setQuery}
           placeholder="Filter tables"
           aria-label="filter tables"
+          data-autofocus=""
+          data-db-tables-filter=""
           onKeyDown={(e) => {
             if (e.key === 'Escape') setQuery('')
           }}
@@ -139,7 +159,7 @@ export function SchemaTree({
             {group.kind === 'view' ? (
               <div className="db-tree-grouphead">Views · {entries.length}</div>
             ) : null}
-            <ul>
+            <ul onKeyDown={roveTreeRow}>
               {entries.map((table) => {
                 const isOpen = expanded.has(table.name)
                 const isSelected = selectedTable === table.name

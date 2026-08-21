@@ -24,9 +24,11 @@ import type { Host } from '@iii-dev/console-ui'
 import { DatabaseConfigForm } from './src/configuration'
 import { createDatabaseTriggerRenderer } from './src/function-trigger-message'
 import { DatabasePage } from './src/page'
+import { registerDatabasePalette } from './src/palette'
 
 export default function setup(host: Host) {
   host.functionTriggers.register(createDatabaseTriggerRenderer(host))
+  registerDatabasePalette(host)
 
   host.pages.register({
     id: 'database',
