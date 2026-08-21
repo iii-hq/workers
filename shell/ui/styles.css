@@ -1571,12 +1571,18 @@
   background: var(--color-panel);
 }
 [data-iii-ui="shell"] .shui-whole-file-placeholder {
+  position: sticky;
+  top: 16px;
+  align-self: start;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 6px;
-  padding: 32px 16px;
+  margin: 16px auto;
+  padding: 20px 24px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  border-radius: 6px;
   background: var(--color-surface);
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
