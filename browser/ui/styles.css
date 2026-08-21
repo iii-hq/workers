@@ -2468,3 +2468,84 @@
 [data-iii-ui="browser"] .br-ui-code {
   color: var(--color-ink);
 }
+
+/* find in page, under the address bar */
+[data-iii-ui="browser"] .br-ui-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+}
+[data-iii-ui="browser"] .br-ui-findbar-icon {
+  flex-shrink: 0;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-findbar-input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+}
+[data-iii-ui="browser"] .br-ui-findbar-count {
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: right;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="browser"] .br-ui-findbar-count[data-none] {
+  color: var(--color-alert);
+}
+
+/* page menu */
+[data-iii-ui="browser"] .br-ui-menu {
+  min-width: 232px;
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 4px 8px;
+  border: 0;
+  min-width: 0;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 13px;
+  color: var(--color-ink);
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom-legend {
+  float: left;
+  padding: 0;
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  padding: 1px;
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom-controls .br-ui-chrome-btn {
+  width: 26px;
+  height: 26px;
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom-controls .br-ui-chrome-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom-level {
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="browser"] .br-ui-menu-zoom-level.is-set {
+  color: var(--color-ink);
+}

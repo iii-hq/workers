@@ -699,3 +699,111 @@ export async function stopBrowserPick(
     session_id: sessionId,
   })
 }
+
+export const BROWSER_FIND_IN_PAGE_FUNCTION_ID = 'browser::find-in-page'
+export const BROWSER_ZOOM_FUNCTION_ID = 'browser::zoom'
+export const BROWSER_PDF_FUNCTION_ID = 'browser::pdf'
+
+const findSchema = z.object({
+  ok: z.boolean(),
+  count: z.number(),
+  index: z.number(),
+  query: z.string(),
+})
+export type BrowserFindResult = z.infer<typeof findSchema>
+export type BrowserFindAction = 'search' | 'next' | 'previous' | 'close'
+
+export async function findInBrowserPage(
+  iii: ExtensionIii,
+  sessionId: string,
+  query: string,
+  action: BrowserFindAction = 'search',
+  caseSensitive = false,
+): Promise<BrowserFindResult> {
+  const res = await iii.trigger<unknown>(BROWSER_FIND_IN_PAGE_FUNCTION_ID, {
+    session_id: sessionId,
+    query,
+    action,
+    case_sensitive: caseSensitive,
+  })
+  const parsed = findSchema.safeParse(res)
+  if (!parsed.success) throw new Error('find returned an unexpected shape')
+  return parsed.data
+}
+
+export const ZOOM_LEVELS = [
+  50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200,
+] as const
+export type BrowserZoomAction = 'in' | 'out' | 'reset' | 'set'
+
+const zoomSchema = z.object({ ok: z.boolean(), level: z.number() })
+
+export async function zoomBrowserPage(
+  iii: ExtensionIii,
+  sessionId: string,
+  action: BrowserZoomAction,
+  level?: number,
+): Promise<number> {
+  const res = await iii.trigger<unknown>(BROWSER_ZOOM_FUNCTION_ID, {
+    session_id: sessionId,
+    action,
+    ...(level !== undefined ? { level } : {}),
+  })
+  const parsed = zoomSchema.safeParse(res)
+  if (!parsed.success) throw new Error('zoom returned an unexpected shape')
+  return parsed.data.level
+}
+
+const pdfSchema = z.object({
+  ok: z.boolean(),
+  data: z.string(),
+  size_bytes: z.number(),
+  file_name: z.string(),
+  url: z.string(),
+})
+export type BrowserPdf = z.infer<typeof pdfSchema>
+
+export async function printBrowserPageToPdf(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<BrowserPdf> {
+  const res = await iii.trigger<unknown>(BROWSER_PDF_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  const parsed = pdfSchema.safeParse(res)
+  if (!parsed.success) throw new Error('pdf returned an unexpected shape')
+  return parsed.data
+}
+
+/** A `File` from base64 bytes, for attachments and downloads. */
+export function fileFromBase64(
+  base64: string,
+  name: string,
+  type: string,
+): File {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return new File([bytes], name, { type })
+}
+
+/** Hands a file to the browser's own download flow. */
+export function downloadFile(file: File): void {
+  const url = URL.createObjectURL(file)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/** `screenshot-<host>-<stamp>.jpg`, safe for a file system. */
+export function screenshotFileName(url: string, at = new Date()): string {
+  const host = url
+    .replace(/^https?:\/\//, '')
+    .split(/[/?#]/)[0]
+    .replace(/[^a-z0-9.-]+/gi, '-')
+    .slice(0, 48)
+  const stamp = at.toISOString().replace(/[:.]/g, '-')
+  return `screenshot-${host || 'page'}-${stamp}.jpg`
+}
