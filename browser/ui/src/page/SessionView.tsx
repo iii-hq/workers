@@ -45,17 +45,36 @@ import {
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
 import { formatMtime } from '../lib/format'
-import { Crosshair, ExternalLink, Globe, RefreshCw, X } from '../lib/icons'
+import {
+  Crosshair,
+  ExternalLink,
+  Globe,
+  MessageSquarePlus,
+  RefreshCw,
+  X,
+} from '../lib/icons'
 import { BackButton, ChevronLeftIcon } from '../lib/widgets'
+import { AnnotationsPanel } from './AnnotationsPanel'
+import {
+  type Annotation,
+  type AnnotationSet,
+  addAnnotation,
+  annotationFileName,
+  annotationsMarkdown,
+  moveAnnotation,
+  noteAnnotation,
+  removeAnnotation,
+  renderAnnotatedImage,
+} from './annotations'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
-import { useLiveFrames } from './useLiveFrames'
+import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
 const TYPE_FLUSH_MS = 200
 
-type FeedPane = 'console' | 'network'
+type FeedPane = 'console' | 'network' | 'annotations'
 type NarrowPane = 'viewport' | FeedPane
 
 /** Verbs the page's commands reach through a ref, since they close over
@@ -64,10 +83,26 @@ export interface SessionActions {
   stop: () => void
   toggleInspect: () => void
   focusUrl: () => void
+  toggleAnnotate: () => void
+  annotating: () => boolean
+  annotationCount: () => number
+  sendAnnotations: () => void
+  downloadAnnotations: () => void
+  clearAnnotations: () => void
 }
 
-const FEED_PANES: readonly FeedPane[] = ['console', 'network']
-const NARROW_PANES: readonly NarrowPane[] = ['viewport', 'console', 'network']
+const FEED_PANES: readonly FeedPane[] = ['console', 'network', 'annotations']
+const NARROW_PANES: readonly NarrowPane[] = [
+  'viewport',
+  'console',
+  'network',
+  'annotations',
+]
+const FEED_LABELS: Record<FeedPane, string> = {
+  console: 'Console',
+  network: 'Network',
+  annotations: 'Annotations',
+}
 
 function readStored(key: string): string | null {
   try {
@@ -131,9 +166,10 @@ export function SessionView({
   const [narrowPane, setNarrowPane] = useState<NarrowPane>('viewport')
   // Wide-mode feeds dock (console | network), persisted per workspace tab.
   const dockStoreKey = `browser-ui:${tabId || 'page'}:dock`
-  const [dockPane, setDockPaneState] = useState<FeedPane>(() =>
-    readStored(dockStoreKey) === 'network' ? 'network' : 'console',
-  )
+  const [dockPane, setDockPaneState] = useState<FeedPane>(() => {
+    const stored = readStored(dockStoreKey)
+    return stored === 'network' || stored === 'annotations' ? stored : 'console'
+  })
   const dockCollapsedStoreKey = `browser-ui:${tabId || 'page'}:dock-collapsed`
   const [dockCollapsed, setDockCollapsedState] = useState(
     () => readStored(dockCollapsedStoreKey) === 'true',
@@ -232,6 +268,100 @@ export function SessionView({
     }
   }, [host, sessionId])
 
+  // Annotate mode freezes the frame the pins sit on; the live view resumes
+  // when the mode ends. The pins outlive the mode until sent or cleared.
+  const [annotating, setAnnotating] = useState(false)
+  const [frozen, setFrozen] = useState<LiveFrame | null>(null)
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(
+    null,
+  )
+  const [sending, setSending] = useState(false)
+  useEffect(() => {
+    setAnnotating(false)
+    setFrozen(null)
+    setAnnotations([])
+    setSelectedAnnotation(null)
+  }, [sessionId])
+  const liveFrameRef = useRef(live.frame)
+  liveFrameRef.current = live.frame
+  const toggleAnnotate = useCallback(() => {
+    setAnnotating((current) => {
+      if (current) return false
+      const frame = liveFrameRef.current
+      if (!frame) {
+        setActionError('no frame to annotate yet')
+        return false
+      }
+      setFrozen(frame)
+      setAnnotations([])
+      setSelectedAnnotation(null)
+      setDockPaneState('annotations')
+      setDockCollapsedState(false)
+      return true
+    })
+  }, [])
+  const annotationSet = useCallback((): AnnotationSet | null => {
+    if (!frozen) return null
+    return {
+      subject: session.url,
+      imageUrl: frozen.dataUrl,
+      width: frozen.width,
+      height: frozen.height,
+      annotations,
+      capturedAt: Date.now(),
+    }
+  }, [frozen, session.url, annotations])
+  const sendAnnotations = useCallback(() => {
+    const set = annotationSet()
+    if (!set || set.annotations.length === 0 || !host.chat?.compose) return
+    setSending(true)
+    void runAction(async () => {
+      const blob = await renderAnnotatedImage(set)
+      const file = new File([blob], annotationFileName(set, 'png'), {
+        type: 'image/png',
+      })
+      host.chat?.compose?.({ text: annotationsMarkdown(set), files: [file] })
+      setAnnotating(false)
+      setAnnotations([])
+    }).finally(() => setSending(false))
+  }, [annotationSet, host, runAction])
+  const downloadAnnotations = useCallback(() => {
+    const set = annotationSet()
+    if (!set || set.annotations.length === 0) return
+    void runAction(async () => {
+      const blob = await renderAnnotatedImage(set)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = annotationFileName(set, 'png')
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    })
+  }, [annotationSet, runAction])
+  const clearAnnotations = useCallback(() => {
+    setAnnotations([])
+    setSelectedAnnotation(null)
+  }, [])
+  const viewportAnnotation = annotating
+    ? {
+        annotations,
+        selectedId: selectedAnnotation,
+        onAdd: (x: number, y: number) => {
+          setAnnotations((list) => {
+            const next = addAnnotation(list, x, y)
+            setSelectedAnnotation(next[next.length - 1]?.id ?? null)
+            return next
+          })
+        },
+        onSelect: setSelectedAnnotation,
+        onMove: (id: string, x: number, y: number) =>
+          setAnnotations((list) => moveAnnotation(list, id, x, y)),
+        onRemove: (id: string) =>
+          setAnnotations((list) => removeAnnotation(list, id)),
+      }
+    : null
+
   const togglePick = useCallback(() => {
     if (picking) {
       setPicking(false)
@@ -245,16 +375,23 @@ export function SessionView({
   }, [host, picking, sessionId, runAction])
 
   useEffect(() => {
-    if (!picking) return
+    if (!picking && !annotating) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      const target = e.target as HTMLElement | null
+      // A note field keeps its own Escape; the mode ends from the viewport.
+      if (target?.tagName === 'INPUT') return
       e.preventDefault()
+      if (annotating) {
+        setAnnotating(false)
+        return
+      }
       setPicking(false)
       void stopBrowserPick(host.iii, sessionId).catch(() => {})
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [host, picking, sessionId])
+  }, [host, picking, annotating, sessionId])
 
   useBrowserSessionEvent({
     host,
@@ -367,11 +504,29 @@ export function SessionView({
       stop: handleStop,
       toggleInspect: togglePick,
       focusUrl: () => urlInputRef.current?.focus(),
+      toggleAnnotate,
+      annotating: () => annotatingRef.current,
+      annotationCount: () => annotationsRef.current.length,
+      sendAnnotations,
+      downloadAnnotations,
+      clearAnnotations,
     }
     return () => {
       actionsRef.current = null
     }
-  }, [actionsRef, handleStop, togglePick])
+  }, [
+    actionsRef,
+    handleStop,
+    togglePick,
+    toggleAnnotate,
+    sendAnnotations,
+    downloadAnnotations,
+    clearAnnotations,
+  ])
+  const annotatingRef = useRef(annotating)
+  annotatingRef.current = annotating
+  const annotationsRef = useRef(annotations)
+  annotationsRef.current = annotations
 
   const displayName =
     session.title?.trim() || hostOf(session.url) || 'about:blank'
@@ -382,6 +537,25 @@ export function SessionView({
     : dockPane
   const browserMajor = chromiumVersion?.match(/\d+/)?.[0]
   const browserLabel = browserMajor ? `Chromium ${browserMajor}` : null
+
+  const annotationsPanel = (
+    <AnnotationsPanel
+      annotations={annotations}
+      selectedId={selectedAnnotation}
+      annotating={annotating}
+      sending={sending}
+      canSend={typeof host.chat?.compose === 'function'}
+      onSelect={setSelectedAnnotation}
+      onNote={(id, note) =>
+        setAnnotations((list) => noteAnnotation(list, id, note))
+      }
+      onRemove={(id) => setAnnotations((list) => removeAnnotation(list, id))}
+      onSend={sendAnnotations}
+      onDownload={downloadAnnotations}
+      onClear={clearAnnotations}
+      onStart={toggleAnnotate}
+    />
+  )
 
   return (
     <section
@@ -438,6 +612,20 @@ export function SessionView({
           >
             <Crosshair size={16} aria-hidden />
             {picking ? 'Inspecting...' : 'Inspect'}
+          </button>
+          <button
+            type="button"
+            onClick={toggleAnnotate}
+            aria-pressed={annotating}
+            title={
+              annotating
+                ? 'annotating: click the frozen view to drop pins, esc ends'
+                : 'freeze the view and drop numbered pins with notes'
+            }
+            className={cn('br-ui-pick-btn', annotating && 'is-on')}
+          >
+            <MessageSquarePlus size={16} aria-hidden />
+            {annotating ? 'Annotating' : 'Annotate'}
           </button>
           <Button
             variant="ghost"
@@ -586,10 +774,11 @@ export function SessionView({
               </button>
             </form>
             <Viewport
-              frame={live.frame}
+              frame={annotating && frozen ? frozen : live.frame}
               loading={live.loading}
               error={live.error}
               picking={picking}
+              annotation={viewportAnnotation}
               onClickAt={handleClickAt}
               onPickAt={handlePickAt}
               onScrollAt={handleScrollAt}
@@ -603,8 +792,10 @@ export function SessionView({
         <div className="br-ui-pane-fill">
           {feedPane === 'console' ? (
             <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
-          ) : (
+          ) : feedPane === 'network' ? (
             <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
+          ) : (
+            annotationsPanel
           )}
         </div>
       )}
@@ -617,7 +808,10 @@ export function SessionView({
               onChange={setDockPane}
               options={FEED_PANES.map((pane) => ({
                 value: pane,
-                label: pane === 'console' ? 'Console' : 'Network',
+                label:
+                  pane === 'annotations' && annotations.length > 0
+                    ? `Annotations ${annotations.length}`
+                    : FEED_LABELS[pane],
               }))}
               className="br-ui-tabs"
               aria-label="Session feeds"
@@ -652,12 +846,14 @@ export function SessionView({
                   sessionId={sessionId}
                   enabled={enabled}
                 />
-              ) : (
+              ) : dockPane === 'network' ? (
                 <NetworkPanel
                   host={host}
                   sessionId={sessionId}
                   enabled={enabled}
                 />
+              ) : (
+                annotationsPanel
               )}
             </div>
           ) : null}

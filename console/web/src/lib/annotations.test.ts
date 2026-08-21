@@ -1,0 +1,70 @@
+import { describe, expect, it } from 'vitest'
+import {
+  addAnnotation,
+  annotationFileName,
+  annotationsMarkdown,
+  containedImageBox,
+  moveAnnotation,
+  noteAnnotation,
+  removeAnnotation,
+} from './annotations'
+
+describe('annotations', () => {
+  it('keeps pins as clamped fractions and numbers them by order', () => {
+    let list = addAnnotation([], 0.25, 0.5)
+    list = addAnnotation(list, 1.4, -0.2)
+    expect(list.map((a) => [a.x, a.y])).toEqual([
+      [0.25, 0.5],
+      [1, 0],
+    ])
+    list = moveAnnotation(list, list[0].id, 0.3, 0.6)
+    list = noteAnnotation(list, list[1].id, 'the button is cut off')
+    expect(list[0]).toMatchObject({ x: 0.3, y: 0.6, note: '' })
+    expect(list[1].note).toBe('the button is cut off')
+    const removed = removeAnnotation(list, list[0].id)
+    expect(removed).toHaveLength(1)
+    expect(removed[0].note).toBe('the button is cut off')
+  })
+
+  it('finds the painted box of a contained image', () => {
+    expect(
+      containedImageBox(
+        { width: 400, height: 400 },
+        { width: 200, height: 100 },
+      ),
+    ).toEqual({ left: 0, top: 100, width: 400, height: 200 })
+    expect(
+      containedImageBox(
+        { width: 100, height: 400 },
+        { width: 200, height: 100 },
+      ),
+    ).toEqual({ left: 0, top: 175, width: 100, height: 50 })
+    expect(
+      containedImageBox({ width: 300, height: 200 }, { width: 0, height: 0 }),
+    ).toEqual({ left: 0, top: 0, width: 300, height: 200 })
+  })
+
+  it('describes a set for the chat and names its file', () => {
+    const set = {
+      subject: 'https://example.com/pricing?plan=team',
+      imageUrl: 'data:image/png;base64,',
+      width: 1280,
+      height: 720,
+      annotations: [
+        { id: 'a', x: 0.1, y: 0.1, note: 'logo is blurry' },
+        { id: 'b', x: 0.5, y: 0.5, note: '' },
+      ],
+      capturedAt: Date.UTC(2026, 7, 21, 18, 0, 0),
+    }
+    expect(annotationsMarkdown(set)).toBe(
+      [
+        'Annotations on https://example.com/pricing?plan=team (2 pins)',
+        '1. logo is blurry',
+        '2. (no note)',
+      ].join('\n'),
+    )
+    expect(annotationFileName(set, 'png')).toBe(
+      'annotations-example.com-pricing-plan-team-2026-08-21T18-00-00-000Z.png',
+    )
+  })
+})
