@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { isBrowserReserved, type Platform, parseBinding } from './bindings'
+import { isBrowserReserved, type Platform, parseSequence } from './bindings'
 import {
   bindingsFor,
+  hoverTitle,
   KEYBINDINGS,
   keybinding,
   keybindingConflicts,
@@ -9,6 +10,7 @@ import {
   matchDigitIndex,
   matchesKeybinding,
   resolveBindings,
+  sequencesFor,
 } from './registry'
 
 const PLATFORMS: Platform[] = ['mac', 'other']
@@ -41,7 +43,7 @@ describe('the registry itself', () => {
         const bindings = resolveBindings(definition.bindings, platform)
         expect(bindings.length).toBeGreaterThan(0)
         for (const binding of bindings) {
-          expect({ binding, parsed: parseBinding(binding) !== null }).toEqual({
+          expect({ binding, parsed: parseSequence(binding) !== null }).toEqual({
             binding,
             parsed: true,
           })
@@ -66,7 +68,7 @@ describe('the registry itself', () => {
 describe('lookup', () => {
   it('finds a definition by id', () => {
     expect(keybinding('palette.toggle').bindings).toEqual(['Mod+K'])
-    expect(bindingsFor('shortcuts.open', 'mac')).toEqual(['?'])
+    expect(bindingsFor('workspace.close', 'mac')).toEqual(['Shift+W'])
   })
 
   it('resolves a per-platform binding list', () => {
@@ -74,9 +76,25 @@ describe('lookup', () => {
     expect(bindingsFor('palette.next', 'other')).toEqual(['ArrowDown'])
   })
 
-  it('lets the palette be reached from a field, and the overlay not', () => {
+  it('lets the palette be reached from a field, and a workspace key not', () => {
     expect(keybinding('palette.toggle').firesWhileTyping).toBe(true)
-    expect(keybinding('shortcuts.open').firesWhileTyping).toBeUndefined()
+    expect(keybinding('workspace.create').firesWhileTyping).toBeUndefined()
+  })
+
+  it('spells a hover title with the key for the platform', () => {
+    expect(hoverTitle('New workspace', 'workspace.create', 'mac')).toBe(
+      'New workspace (T)',
+    )
+    expect(hoverTitle('Close', 'workspace.close', 'mac')).toBe('Close (⇧ W)')
+    expect(hoverTitle('Search', 'palette.toggle', 'other')).toBe(
+      'Search (ctrl K)',
+    )
+    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (G then C)')
+  })
+
+  it('lists the chords of a go-to sequence', () => {
+    expect(sequencesFor('page.workers', 'mac')).toEqual([['G', 'W']])
+    expect(sequencesFor('workspace.create', 'mac')).toEqual([])
   })
 })
 

@@ -342,6 +342,11 @@ valid and simply ignores them:
 - `panelContext`: the latest ephemeral event sent to this page through
   `host.panels.open()`. Its monotonic `id` changes for every click, including
   repeated identical payloads; `context` is worker-defined JSON.
+- `setDirty`: report unsaved work. Call `setDirty('main.rs')` (or `true`)
+  while the page holds something the user would lose and `setDirty(false)`
+  once it is saved or discarded; closing the pane, its workspace, or the
+  browser tab then asks first. Absent on older consoles, so call it as
+  `setDirty?.(…)`. The host clears the entry when its pane or workspace tab is removed; unmounting a background tab does not clear it.
 
 #### The page chrome — MANDATORY layout for pages
 

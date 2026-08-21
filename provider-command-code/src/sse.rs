@@ -2,6 +2,7 @@ use crate::errors::classify;
 use crate::request::WireDialect;
 use crate::{now_ms, PROVIDER_ID};
 use llm_router::provider_scaffold::names::decode_tool_name;
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -726,17 +727,39 @@ impl DecoderState {
         error.error_kind = Some(kind);
         AssistantMessageEvent::Error { error }
     }
+}
 
-    pub fn eof_event(&self, model: &str) -> AssistantMessageEvent {
+impl StreamEndView for DecoderState {
+    fn saw_terminator(&self) -> bool {
+        matches!(self, Self::Chat(state) if state.saw_finish_reason)
+    }
+
+    fn has_content(&self) -> bool {
         match self {
-            Self::Chat(state) if state.saw_finish_reason => AssistantMessageEvent::Done {
-                message: state.partial(model),
-            },
-            _ => self.error_event(
-                model,
-                "Command Code stream ended before its terminal event",
-                ErrorKind::Transient,
-            ),
+            Self::Chat(state) => {
+                !state.thinking.is_empty()
+                    || !state.text.is_empty()
+                    || state.calls.iter().any(|call| !call.function_id.is_empty())
+            }
+            Self::Anthropic(state) => !state.content().is_empty(),
+        }
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        match self {
+            Self::Chat(state) => {
+                matches!(state.open, Some(ChatOpen::Call(_)))
+                    || state
+                        .calls
+                        .iter()
+                        .any(|call| arguments_incomplete(&call.arguments))
+            }
+            Self::Anthropic(state) => state.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    AnthropicBlock::Tool { arguments, .. } if arguments_incomplete(arguments)
+                )
+            }),
         }
     }
 }

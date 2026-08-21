@@ -6,6 +6,8 @@ use llm_router::types::model::AgentFunction;
 use llm_router::types::router::ResponseFormat;
 use serde_json::{json, Value};
 
+pub const EMPTY_MESSAGES_ERROR: &str = "refusing to call Command Code with an empty messages array";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireDialect {
     ChatCompletions,
@@ -78,21 +80,28 @@ pub fn build_request(
     config: &CommandCodeConfig,
     args: &RequestArgs,
     warnings: &mut Vec<String>,
-) -> BuiltRequest {
+) -> Result<BuiltRequest, &'static str> {
     let upstream_model = upstream_id(&config.model);
     let dialect = dialect_for_model(upstream_model);
+    let messages = match dialect {
+        WireDialect::ChatCompletions => chat_messages(&args.messages, &args.system_prompt),
+        WireDialect::AnthropicMessages => anthropic_messages(&args.messages, warnings),
+    };
+    if messages.is_empty() {
+        return Err(EMPTY_MESSAGES_ERROR);
+    }
     let mut body = match dialect {
         WireDialect::ChatCompletions => json!({
             "model": upstream_model,
             "max_tokens": config.max_tokens,
-            "messages": chat_messages(&args.messages, &args.system_prompt),
+            "messages": messages,
             "stream": true,
             "stream_options": { "include_usage": true },
         }),
         WireDialect::AnthropicMessages => json!({
             "model": upstream_model,
             "max_tokens": config.max_tokens,
-            "messages": anthropic_messages(&args.messages, warnings),
+            "messages": messages,
             "stream": true,
         }),
     };
@@ -138,18 +147,20 @@ pub fn build_request(
         WireDialect::ChatCompletions => "chat/completions",
         WireDialect::AnthropicMessages => "messages",
     };
-    BuiltRequest {
+    Ok(BuiltRequest {
         dialect,
         url: endpoint(&config.base_url, path),
         body,
         headers,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::DEFAULT_API_URL;
+    use llm_router::types::content::ContentBlock;
+    use llm_router::types::messages::{CustomMessage, CustomRoleTag, UserMessage, UserRoleTag};
 
     fn config(model: &str, zdr: bool) -> CommandCodeConfig {
         CommandCodeConfig {
@@ -164,7 +175,13 @@ mod tests {
     fn args() -> RequestArgs {
         RequestArgs {
             system_prompt: "be precise".into(),
-            messages: vec![],
+            messages: vec![AgentMessage::User(UserMessage {
+                role: UserRoleTag::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
+                timestamp: 1,
+            })],
             tools: vec![],
             response_format: None,
         }
@@ -193,7 +210,8 @@ mod tests {
             &config("command-code/gpt-5.4", false),
             &args(),
             &mut warnings,
-        );
+        )
+        .expect("chat request");
         assert!(chat.url.ends_with("/chat/completions"));
         assert_eq!(chat.body["messages"][0]["role"], "system");
         assert!(chat.body.get("system").is_none());
@@ -203,12 +221,36 @@ mod tests {
             &config("command-code/claude-sonnet-4-6", true),
             &args(),
             &mut warnings,
-        );
+        )
+        .expect("messages request");
         assert!(messages.url.ends_with("/messages"));
         assert_eq!(messages.body["system"], "be precise");
         assert!(messages.headers.contains(&("x-cmd-zdr", "1".to_string())));
         assert!(messages
             .headers
             .contains(&("authorization", "Bearer cmd-secret".to_string())));
+    }
+
+    #[test]
+    fn converted_empty_transcripts_are_rejected_for_both_dialects() {
+        let args = RequestArgs {
+            system_prompt: String::new(),
+            messages: vec![AgentMessage::Custom(CustomMessage {
+                role: CustomRoleTag::Custom,
+                custom_type: "ignored".into(),
+                content: vec![],
+                display: None,
+                details: None,
+                timestamp: 1,
+            })],
+            tools: vec![],
+            response_format: None,
+        };
+        for model in ["command-code/gpt-5.4", "command-code/claude-sonnet-4-6"] {
+            assert!(matches!(
+                build_request(&config(model, false), &args, &mut Vec::new()),
+                Err(EMPTY_MESSAGES_ERROR)
+            ));
+        }
     }
 }

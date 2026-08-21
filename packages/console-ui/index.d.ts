@@ -94,6 +94,13 @@ export interface PageRenderProps {
   /** Active chat session id. Reactive pages use it to subscribe to exact
       Harness turn boundaries without receiving another chat's events. */
   conversationId?: string | null
+  /**
+   * Report unsaved work: `true` or a short label (e.g. the file name) while
+   * the page holds something the user would lose, `false` once it is saved
+   * or discarded. Closing the pane, its workspace, or the browser tab then
+   * asks first. Absent on older consoles; feature-detect before calling.
+   */
+  setDirty?: (dirty: boolean | string) => void
 }
 
 export interface PageRegistration {
@@ -554,6 +561,39 @@ export declare const TableCaption: React.ComponentType<
   React.HTMLAttributes<HTMLTableCaptionElement> & React.RefAttributes<HTMLTableCaptionElement>
 >
 
+export interface ImageViewerProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** Image source; `null`/`undefined` renders the unavailable state. */
+  src?: string | null
+  /** Accessible description of the picture. */
+  alt: string
+  /** Caption: the attachment name or the file's relative path, never a host path. */
+  title?: string
+  /** Secondary caption, e.g. a byte size or MIME type. */
+  description?: string
+  /** Why the source is unavailable, when it is. */
+  unavailableReason?: string
+  /** Extra controls rendered in the toolbar before Close. */
+  actions?: React.ReactNode
+}
+/**
+ * Full-screen image viewer: wheel/pinch zoom about the pointer, drag pans,
+ * double-click toggles fit and actual size, `+`/`-`/`0`/`1` and arrows on the
+ * keyboard, Escape closes and focus returns to the opener. Handles loading,
+ * decode failure, missing source and oversized data URLs without freezing.
+ */
+export declare const ImageViewer: React.ComponentType<ImageViewerProps>
+export interface ImageThumbnailButtonProps
+  extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'title'> {
+  /** What opens: the viewer's caption. */
+  title: string
+}
+/** The opener around a thumbnail: zoom cursor, accessible "View <title>" name. */
+export declare const ImageThumbnailButton: React.ComponentType<
+  ImageThumbnailButtonProps & React.RefAttributes<HTMLButtonElement>
+>
+
 export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
   /** Required accessible name; also the default tooltip content. */
   label: string
@@ -561,6 +601,24 @@ export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
   tooltipSide?: 'top' | 'right' | 'bottom' | 'left'
 }
 export declare const IconButton: React.ComponentType<IconButtonProps & React.RefAttributes<HTMLButtonElement>>
+
+export interface ConfirmDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description?: React.ReactNode
+  /** Lines listed under the description, e.g. the unsaved items at stake. */
+  details?: readonly string[]
+  confirmLabel?: string
+  cancelLabel?: string
+  onConfirm: () => void
+  onCancel?: () => void
+}
+/**
+ * The console's confirmation in place of `window.confirm`: cancel owns
+ * initial focus, Escape and the close control cancel.
+ */
+export declare const ConfirmDialog: React.ComponentType<ConfirmDialogProps>
 
 /** Root is state-only; compose with `DialogTrigger`/`DialogContent`. */
 export interface DialogProps {

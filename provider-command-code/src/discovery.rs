@@ -92,7 +92,7 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
     };
     let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL))
         .map_err(|error| upstream_unavailable(error.to_string()))?;
-    match fetch_models(http, &url, credential_value(&credential)).await {
+    match fetch_models(http, &url, credential_value(&credential).trim()).await {
         FetchOutcome::Ok(models) => {
             let count = models.len();
             router_client::reconcile(iii, PROVIDER_ID, models, token.as_deref()).await?;

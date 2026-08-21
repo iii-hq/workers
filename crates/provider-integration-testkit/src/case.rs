@@ -36,6 +36,12 @@ pub(crate) enum CredentialMode {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum ModelCatalogFixture {
+    FamilyDefault,
+    CommandCode,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct ProviderCase {
     pub(crate) id: &'static str,
     pub(crate) family: ProtocolFamily,
@@ -45,6 +51,8 @@ pub(crate) struct ProviderCase {
     pub(crate) alternate_upstream_model: &'static str,
     pub(crate) generation_path: &'static str,
     pub(crate) credential: CredentialMode,
+    pub(crate) requires_model_discovery: bool,
+    pub(crate) model_catalog_fixture: ModelCatalogFixture,
     pub(crate) register: RegisterProvider,
 }
 
@@ -71,6 +79,8 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
         alternate_upstream_model: "claude-opus-4-8",
         generation_path: "/v1/messages",
         credential: CredentialMode::ApiKey,
+        requires_model_discovery: false,
+        model_catalog_fixture: ModelCatalogFixture::FamilyDefault,
         register: |iii| {
             Box::pin(async move {
                 provider_anthropic::register::register_provider(iii)
@@ -89,6 +99,8 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
         alternate_upstream_model: "claude-opus-4-8",
         generation_path: "/v1/messages",
         credential: CredentialMode::ClaudeOauth,
+        requires_model_discovery: false,
+        model_catalog_fixture: ModelCatalogFixture::FamilyDefault,
         register: |iii| {
             Box::pin(async move {
                 provider_claude_code::register::register_provider(iii)
@@ -108,6 +120,8 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
             alternate_upstream_model: "gpt-5.6-luna",
             generation_path: "/chat/completions",
             credential: CredentialMode::ApiKey,
+            requires_model_discovery: true,
+            model_catalog_fixture: ModelCatalogFixture::CommandCode,
             register: |iii| {
                 Box::pin(async move {
                     provider_command_code::register::register_provider(iii)
@@ -125,6 +139,8 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
             alternate_upstream_model: "claude-opus-4-8",
             generation_path: "/messages",
             credential: CredentialMode::ApiKey,
+            requires_model_discovery: true,
+            model_catalog_fixture: ModelCatalogFixture::CommandCode,
             register: |iii| {
                 Box::pin(async move {
                     provider_command_code::register::register_provider(iii)
@@ -173,6 +189,8 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
             alternate_upstream_model: "gpt-5.6-luna",
             generation_path: "/v1/responses",
             credential: CredentialMode::ApiKey,
+            requires_model_discovery: false,
+            model_catalog_fixture: ModelCatalogFixture::FamilyDefault,
             register: |iii| {
                 Box::pin(async move {
                     provider_openai::register::register_provider(iii)
@@ -205,6 +223,8 @@ pub(crate) fn enabled_cases() -> Vec<ProviderCase> {
         alternate_upstream_model: "gpt-5.6-luna",
         generation_path: "/backend-api/codex/responses",
         credential: CredentialMode::CodexOauth,
+        requires_model_discovery: false,
+        model_catalog_fixture: ModelCatalogFixture::FamilyDefault,
         register: |iii| {
             Box::pin(async move {
                 provider_openai_codex::register::register_provider(iii)
@@ -279,6 +299,8 @@ fn openai_chat_case(
         alternate_upstream_model,
         generation_path,
         credential: CredentialMode::ApiKey,
+        requires_model_discovery: false,
+        model_catalog_fixture: ModelCatalogFixture::FamilyDefault,
         register,
     }
 }

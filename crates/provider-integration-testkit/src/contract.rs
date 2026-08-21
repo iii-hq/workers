@@ -11,7 +11,7 @@ use llm_router::register::register_router;
 use serde_json::{json, Value};
 
 use crate::case::{CredentialMode, ProtocolFamily, ProviderCase};
-use crate::protocol::{auth_response, happy_sse, quota_response};
+use crate::protocol::{auth_response, happy_sse, quota_response, truncated_sse};
 use crate::runtime::{call, test_init_options, Engine};
 use crate::stub::{CapturedRequest, StubResponse, StubUpstream};
 
@@ -113,7 +113,7 @@ async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result
 }
 
 async fn wait_for_discovered_models(router: &IIIClient, case: ProviderCase) -> anyhow::Result<()> {
-    if case.id != "command-code" {
+    if !case.requires_model_discovery {
         return Ok(());
     }
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -138,7 +138,8 @@ async fn wait_for_discovered_models(router: &IIIClient, case: ProviderCase) -> a
         }
         if Instant::now() >= deadline {
             bail!(
-                "Command Code discovery did not reconcile {} and {}; have {ids:?}",
+                "{} discovery did not reconcile {} and {}; have {ids:?}",
+                case.id,
                 case.model,
                 case.alternate_model
             );
@@ -326,6 +327,41 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
         "transient retry count mismatch"
     );
 
+    // A cut inside function-call arguments: one transient error, no retry
+    // after forwarded content, and the next call succeeds without a restart.
+    stub.clear_requests();
+    stub.respond([StubResponse::sse(truncated_sse(case.family))]);
+    let truncated = chat(&engine.url, case, case.model, "contract-truncated").await?;
+    anyhow::ensure!(
+        truncated.response["ok"] == false,
+        "truncated response: {}",
+        truncated.response
+    );
+    assert_error_kind(&truncated.frames, "transient")?;
+    assert_truncated_partial(&truncated.frames)?;
+    anyhow::ensure!(
+        truncated
+            .frames
+            .iter()
+            .filter(|frame| is_terminal(frame))
+            .count()
+            == 1,
+        "truncated stream must end in exactly one terminal frame"
+    );
+    anyhow::ensure!(
+        stub.post_requests().len() == 1,
+        "truncated stream was retried after content reached the caller"
+    );
+    stub.clear_requests();
+    stub.respond([StubResponse::sse(happy_sse(case.family))]);
+    let recovered = chat(&engine.url, case, case.model, "contract-after-truncation").await?;
+    anyhow::ensure!(
+        recovered.response["ok"] == true,
+        "call after truncation: {}",
+        recovered.response
+    );
+    assert_terminal(&recovered.frames, "done")?;
+
     // Router abort reaches the provider and cancels the in-flight HTTP body.
     stub.clear_requests();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -401,6 +437,7 @@ fn write_contract_result(case: ProviderCase) -> anyhow::Result<()> {
             "model-change",
             "quota-no-retry",
             "transient-retry",
+            "truncated-stream-no-retry",
             "abort",
             "auth-no-retry"
         ]
@@ -416,6 +453,46 @@ fn write_contract_result(case: ProviderCase) -> anyhow::Result<()> {
 fn assert_terminal(frames: &[Value], expected: &str) -> anyhow::Result<()> {
     let last = frames.last().context("stream emitted no frames")?;
     anyhow::ensure!(last["type"] == expected, "terminal frame: {last}");
+    Ok(())
+}
+
+fn is_terminal(frame: &Value) -> bool {
+    matches!(frame["type"].as_str(), Some("done") | Some("error"))
+}
+
+fn assert_truncated_partial(frames: &[Value]) -> anyhow::Result<()> {
+    let last = frames
+        .last()
+        .context("truncated stream emitted no frames")?;
+    let message = last["error"]["error_message"].as_str().unwrap_or_default();
+    anyhow::ensure!(
+        message.contains("stream truncated") && message.contains("phase=sse-decode"),
+        "truncation error must name the decode phase: {last}"
+    );
+    let content = last["error"]["content"]
+        .as_array()
+        .context("truncated error carries no content")?;
+    anyhow::ensure!(
+        content
+            .iter()
+            .any(|block| block["type"] == "text" && block["text"] == "partial contract"),
+        "truncated error must keep the streamed text: {last}"
+    );
+    let function_calls: Vec<_> = content
+        .iter()
+        .filter(|block| block["type"] == "function_call")
+        .collect();
+    anyhow::ensure!(
+        !function_calls.is_empty(),
+        "truncated error must keep the unfinished function call: {last}"
+    );
+    for block in function_calls {
+        let arguments = &block["arguments"];
+        anyhow::ensure!(
+            arguments.get("_partial").is_some() || arguments.get("_raw").is_some(),
+            "a cut function call must carry degraded arguments: {block}"
+        );
+    }
     Ok(())
 }
 
@@ -440,22 +517,18 @@ fn assert_request(
         serde_json::to_string(&request.redacted())?
     );
     match case.credential {
-        CredentialMode::ApiKey if case.id == "command-code" => {
+        CredentialMode::ApiKey
+            if case.id == "command-code" || case.family != ProtocolFamily::AnthropicMessages =>
+        {
             anyhow::ensure!(
                 request.header("authorization") == Some(&format!("Bearer {API_KEY}")),
-                "Command Code bearer key missing"
-            );
-        }
-        CredentialMode::ApiKey if case.family == ProtocolFamily::AnthropicMessages => {
-            anyhow::ensure!(
-                request.header("x-api-key") == Some(API_KEY),
-                "x-api-key missing"
+                "bearer key missing"
             );
         }
         CredentialMode::ApiKey => {
             anyhow::ensure!(
-                request.header("authorization") == Some(&format!("Bearer {API_KEY}")),
-                "bearer key missing"
+                request.header("x-api-key") == Some(API_KEY),
+                "x-api-key missing"
             );
         }
         CredentialMode::ClaudeOauth => {

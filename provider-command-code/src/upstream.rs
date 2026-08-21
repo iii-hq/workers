@@ -3,11 +3,14 @@ use crate::request::WireDialect;
 use crate::sse::{synthetic_error, DecoderState};
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, drain_sse_blocks, error_chain,
+    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
+    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
+
+use crate::PROVIDER_ID;
 
 pub struct UpstreamArgs {
     pub url: String,
@@ -112,17 +115,26 @@ async fn run_upstream(
     if !byte_buffer.is_empty() {
         text.push_str(&String::from_utf8_lossy(&byte_buffer));
     }
-    if !text.trim().is_empty() {
-        text.push_str("\n\n");
-        if drain_sse_blocks(&mut text, &tx, &mut |block| {
-            state.handle_block(block, &args.model)
-        })
-        .await
-        {
-            return;
-        }
+    let tail = flush_tail(&mut text, &tx, &mut |block| {
+        state.handle_block(block, &args.model)
+    })
+    .await;
+    if tail == TailFlush::Terminal {
+        return;
     }
-    let _ = tx.send(state.eof_event(&args.model)).await;
+    let framing = match args.dialect {
+        WireDialect::ChatCompletions => CloseFraming::Accepted,
+        WireDialect::AnthropicMessages => CloseFraming::Rejected,
+    };
+    let event = match classify_stream_end(&state, tail, framing) {
+        StreamEnd::Complete => AssistantMessageEvent::Done {
+            message: state.partial(&args.model),
+        },
+        StreamEnd::Truncated(truncation) => {
+            truncated_stream_error(state.partial(&args.model), PROVIDER_ID, truncation)
+        }
+    };
+    let _ = tx.send(event).await;
 }
 
 #[cfg(test)]

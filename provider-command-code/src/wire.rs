@@ -36,6 +36,20 @@ fn result_images(message: &FunctionResultMessage) -> Vec<(String, String)> {
         .collect()
 }
 
+fn chat_image_part(mime: &str, data: &str) -> Value {
+    json!({
+        "type": "image_url",
+        "image_url": { "url": format!("data:{mime};base64,{data}") }
+    })
+}
+
+fn anthropic_image_block(mime: &str, data: &str) -> Value {
+    json!({
+        "type": "image",
+        "source": { "type": "base64", "media_type": mime, "data": data }
+    })
+}
+
 fn flush_result_images(out: &mut Vec<Value>, images: Vec<(String, Vec<(String, String)>)>) {
     if images.is_empty() {
         return;
@@ -47,10 +61,7 @@ fn flush_result_images(out: &mut Vec<Value>, images: Vec<(String, Vec<(String, S
             "text": format!("[image result of tool call {call_id}]")
         }));
         for (mime, data) in call_images {
-            parts.push(json!({
-                "type": "image_url",
-                "image_url": { "url": format!("data:{mime};base64,{data}") }
-            }));
+            parts.push(chat_image_part(&mime, &data));
         }
     }
     out.push(json!({ "role": "user", "content": parts }));
@@ -77,10 +88,7 @@ fn chat_user_content(content: &[ContentBlock]) -> Value {
     }
     for block in content {
         if let ContentBlock::Image { mime, data } = block {
-            parts.push(json!({
-                "type": "image_url",
-                "image_url": { "url": format!("data:{mime};base64,{data}") }
-            }));
+            parts.push(chat_image_part(mime, data));
         }
     }
     Value::Array(parts)
@@ -205,10 +213,7 @@ pub fn chat_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<Valu
 fn anthropic_content(block: &ContentBlock) -> Option<Value> {
     match block {
         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-        ContentBlock::Image { mime, data } => Some(json!({
-            "type": "image",
-            "source": { "type": "base64", "media_type": mime, "data": data }
-        })),
+        ContentBlock::Image { mime, data } => Some(anthropic_image_block(mime, data)),
         ContentBlock::FunctionCall {
             id,
             function_id,
@@ -241,10 +246,7 @@ fn anthropic_result(message: &FunctionResultMessage) -> Value {
             blocks.push(json!({ "type": "text", "text": text }));
         }
         blocks.extend(message.content.iter().filter_map(|block| match block {
-            ContentBlock::Image { mime, data } => Some(json!({
-                "type": "image",
-                "source": { "type": "base64", "media_type": mime, "data": data }
-            })),
+            ContentBlock::Image { mime, data } => Some(anthropic_image_block(mime, data)),
             _ => None,
         }));
         Value::Array(blocks)

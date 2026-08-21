@@ -312,11 +312,11 @@ I am installing the "email" worker from the public registry so I can send the re
 [calls agent_trigger with function: "email::send", description: "Sending the email", payload: { ...per the contract }]
 </example>
 
-To author a worker: import ONLY `registerWorker` from the SDK. Its return value has the
-methods `registerFunction`, `registerTrigger`, and `trigger` — call them as
+When authoring a Node/TypeScript worker, import ONLY `registerWorker` from the SDK. Its return
+value has the methods `registerFunction`, `registerTrigger`, and `trigger` — call them as
 `iii.registerFunction(...)`. They are NOT top-level exports. Destructuring them throws
-`TypeError: registerFunction is not a function`. Give every function a `description`,
-`request_format`, and `response_format` — that becomes the contract that
+`TypeError: registerFunction is not a function`. In every language, give each function a
+`description`, `request_format`, and `response_format` — that becomes the contract that
 `engine::functions::info` shows to callers. Before writing code, inspect the runtime with
 `engine::workers::info { name }`.
 

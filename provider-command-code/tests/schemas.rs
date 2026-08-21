@@ -69,13 +69,25 @@ fn no_orphan_schema_goldens() {
     let directory = support::golden_root().join("schemas");
     let expected: Vec<String> = catalog()
         .iter()
-        .map(|spec| format!("{}.json", spec.function_id.replace("::", ".")))
+        .map(|spec| {
+            std::path::Path::new(&golden_file_name(spec.function_id))
+                .file_name()
+                .expect("golden file name")
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
-    let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.filter_map(Result::ok) {
+    let entries = std::fs::read_dir(&directory).expect("read schema golden directory");
+    for entry in entries {
+        let entry = entry.expect("read schema golden entry");
+        if !entry
+            .file_type()
+            .expect("read schema golden type")
+            .is_file()
+            || entry.path().extension() != Some(std::ffi::OsStr::new("json"))
+        {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         assert!(
             expected.iter().any(|expected| expected == &name),

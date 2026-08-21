@@ -5,6 +5,7 @@
 //! Unknown event types are ignored (forward-compat: the backend adds events).
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -34,6 +35,7 @@ pub struct PartialState {
     stop_reason: StopReason,
     error_message: Option<String>,
     warnings: Vec<String>,
+    terminated: bool,
 }
 
 impl PartialState {
@@ -48,6 +50,7 @@ impl PartialState {
             stop_reason: StopReason::End,
             error_message: None,
             warnings,
+            terminated: false,
         }
     }
 
@@ -59,6 +62,24 @@ impl PartialState {
     /// distinguishes legitimate close-framing from a truncated/empty stream.
     pub fn has_content(&self) -> bool {
         !self.text.is_empty() || !self.thinking.is_empty() || !self.tool_calls.is_empty()
+    }
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.terminated
+    }
+
+    fn has_content(&self) -> bool {
+        PartialState::has_content(self)
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        self.open_block == Some(OpenBlock::Call)
+            || self
+                .tool_calls
+                .iter()
+                .any(|tc| arguments_incomplete(&tc.args_json))
     }
 }
 
@@ -342,6 +363,7 @@ pub fn handle_chunk(
             });
         }
         n if n.contains("completed") => {
+            state.terminated = true;
             merge_usage(chunk, &mut state.usage);
             state.usage_seen = state.usage != Usage::default();
             state.stop_reason = if state.tool_calls.is_empty() {

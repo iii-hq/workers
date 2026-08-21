@@ -1,6 +1,6 @@
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::request::{build_request, RequestArgs};
+use crate::request::{build_request, RequestArgs, EMPTY_MESSAGES_ERROR};
 use crate::sse::synthetic_error;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::{PROVIDER_ID, STATE_SCOPE};
@@ -51,11 +51,7 @@ async fn run_stream(
     if input.messages.is_empty() {
         let _ = send_event(
             sink,
-            &synthetic_error(
-                &model,
-                "refusing to call Command Code with an empty messages array",
-                ErrorKind::Permanent,
-            ),
+            &synthetic_error(&model, EMPTY_MESSAGES_ERROR, ErrorKind::Permanent),
         );
         return;
     }
@@ -102,7 +98,7 @@ async fn run_stream(
                 .to_string(),
         );
     }
-    let request = build_request(
+    let request = match build_request(
         &config,
         &RequestArgs {
             system_prompt: input.system_prompt.unwrap_or_default(),
@@ -111,7 +107,16 @@ async fn run_stream(
             response_format: input.response_format,
         },
         &mut warnings,
-    );
+    ) {
+        Ok(request) => request,
+        Err(message) => {
+            let _ = send_event(
+                sink,
+                &synthetic_error(&model, message, ErrorKind::Permanent),
+            );
+            return;
+        }
+    };
     if abort.is_some_and(AbortGuard::is_fired) {
         return;
     }

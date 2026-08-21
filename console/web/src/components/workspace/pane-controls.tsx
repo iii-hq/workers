@@ -11,6 +11,7 @@
 
 import { Plus } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 
 /** Mouse dwell on an edge before the add-column affordance reveals. */
@@ -252,7 +253,11 @@ export function EdgeAddZone({
           type="button"
           disabled={disabled}
           aria-label={`add panel on the ${side}`}
-          title={`add panel on the ${side}`}
+          title={
+            side === 'right'
+              ? hoverTitle(`add panel on the ${side}`, 'panel.split')
+              : `add panel on the ${side}`
+          }
           onClick={() => {
             clearTimers()
             setRevealed(false)

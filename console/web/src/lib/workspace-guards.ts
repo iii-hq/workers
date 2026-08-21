@@ -1,0 +1,114 @@
+/** Unsaved-work registry per tab and pane; closing either asks first. */
+
+import { useEffect, useSyncExternalStore } from 'react'
+
+export interface DirtyEntry {
+  tabId: string
+  paneId: string
+  reason: string
+}
+
+const entries = new Map<string, DirtyEntry>()
+const listeners = new Set<() => void>()
+let snapshot: DirtyEntry[] = []
+
+function key(tabId: string, paneId: string): string {
+  return JSON.stringify([tabId, paneId])
+}
+
+function emit(): void {
+  snapshot = [...entries.values()]
+  for (const listener of listeners) listener()
+}
+
+/** Mark a pane dirty (`reason` names the work) or clean (`false`). */
+export function setPaneDirty(
+  tabId: string,
+  paneId: string,
+  reason: string | false,
+): void {
+  const k = key(tabId, paneId)
+  if (reason === false) {
+    if (!entries.delete(k)) return
+  } else {
+    const current = entries.get(k)
+    if (current?.reason === reason) return
+    entries.set(k, { tabId, paneId, reason })
+  }
+  emit()
+}
+
+/** Drop every reason a tab's panes registered (the tab is gone). */
+export function clearTabDirty(tabId: string): void {
+  let changed = false
+  for (const [k, entry] of entries) {
+    if (entry.tabId === tabId) {
+      entries.delete(k)
+      changed = true
+    }
+  }
+  if (changed) emit()
+}
+
+/** Drop entries whose tab or pane no longer exists in the layout. */
+export function pruneDirty(
+  tabIds: Set<string>,
+  paneIdsByTab: Map<string, Set<string>>,
+): void {
+  let changed = false
+  for (const [k, entry] of entries) {
+    const panes = paneIdsByTab.get(entry.tabId)
+    if (!tabIds.has(entry.tabId) || (panes && !panes.has(entry.paneId))) {
+      entries.delete(k)
+      changed = true
+    }
+  }
+  if (changed) emit()
+}
+
+export function dirtyReasonsForTab(tabId: string): string[] {
+  return snapshot.filter((e) => e.tabId === tabId).map((e) => e.reason)
+}
+
+export function dirtyReasonsForPane(tabId: string, paneId: string): string[] {
+  return snapshot
+    .filter((e) => e.tabId === tabId && e.paneId === paneId)
+    .map((e) => e.reason)
+}
+
+export function anyDirty(): boolean {
+  return snapshot.length > 0
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+export function useDirtyEntries(): DirtyEntry[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => snapshot,
+    () => snapshot,
+  )
+}
+
+/** Guard a pane for as long as `reason` is set; cleared on unmount. */
+export function usePaneDirty(
+  tabId: string,
+  paneId: string,
+  reason: string | false,
+): void {
+  useEffect(() => {
+    setPaneDirty(tabId, paneId, reason)
+    return () => setPaneDirty(tabId, paneId, false)
+  }, [tabId, paneId, reason])
+}
+
+/** Test seam. */
+export function resetDirtyRegistry(): void {
+  entries.clear()
+  emit()
+}

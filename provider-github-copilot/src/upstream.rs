@@ -3,7 +3,12 @@
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::errors::classify;
 use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
+use crate::PROVIDER_ID;
 use futures::StreamExt;
+use llm_router::provider_scaffold::sse_transport::{
+    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
+    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -58,23 +63,6 @@ fn data_line(block: &str) -> Option<&str> {
         .next_back()
 }
 
-/// Earliest complete-SSE-block boundary in the byte buffer: `(end_index,
-/// separator_len)` for `\n\n` or `\r\n\r\n`, whichever comes first. Byte-level
-/// so a multibyte UTF-8 character split across network chunks is never
-/// decoded early (several vendors stream CJK-heavy content).
-fn find_block_end(buf: &[u8]) -> Option<(usize, usize)> {
-    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
-    let crlf = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| (i, 4));
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-        (a, None) => a,
-        (None, b) => b,
-    }
-}
-
 async fn run_upstream(
     client: reqwest::Client,
     args: UpstreamArgs,
@@ -89,7 +77,7 @@ async fn run_upstream(
         Err(e) => {
             let _ = tx
                 .send(synthetic_error_event(
-                    &format!("copilot fetch failed: {e}"),
+                    &format!("copilot fetch failed: {}", error_chain(&e)),
                     &args.model,
                     ErrorKind::Transient,
                 ))
@@ -127,9 +115,34 @@ async fn run_upstream(
     }
 
     let mut stream = resp.bytes_stream();
-    // Byte buffer, decoded only per complete block: a multibyte character or
-    // block separator split across chunks stays buffered until whole.
-    let mut buf: Vec<u8> = Vec::new();
+    let mut buf = String::new();
+    // Cross-chunk UTF-8 buffering: network chunks split multibyte
+    // codepoints, and a per-chunk lossy conversion corrupts them to U+FFFD.
+    let mut byte_buf = Vec::new();
+    // Block decoder: [DONE] closes the stream (Stop + Done, Done terminal);
+    // anything else parses and runs the chunk state machine.
+    let decode =
+        |data_block: &str, state: &mut PartialState, model: &str| -> Vec<AssistantMessageEvent> {
+            let Some(data) = data_line(data_block) else {
+                return vec![];
+            };
+            if data == "[DONE]" {
+                return vec![
+                    AssistantMessageEvent::Stop {
+                        stop_reason: state.stop_reason(),
+                        error_message: None,
+                        error_kind: None,
+                    },
+                    AssistantMessageEvent::Done {
+                        message: build_final(state, model),
+                    },
+                ];
+            }
+            let Ok(parsed) = serde_json::from_str::<Value>(data) else {
+                return vec![];
+            };
+            handle_chunk(&parsed, state, model)
+        };
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
@@ -144,7 +157,7 @@ async fn run_upstream(
                 return;
             }
         };
-        buf.extend_from_slice(&chunk);
+        append_utf8_chunk(&mut byte_buf, &mut buf, &chunk);
         if buf.len() > MAX_SSE_BUFFER {
             let _ = tx
                 .send(synthetic_error_event(
@@ -155,55 +168,31 @@ async fn run_upstream(
                 .await;
             return;
         }
-        while let Some((end, sep_len)) = find_block_end(&buf) {
-            let raw: Vec<u8> = buf.drain(..end + sep_len).collect();
-            let block = String::from_utf8_lossy(&raw);
-            let Some(data) = data_line(&block) else {
-                continue;
-            };
-            if data == "[DONE]" {
-                let _ = tx
-                    .send(AssistantMessageEvent::Stop {
-                        stop_reason: state.stop_reason(),
-                        error_message: None,
-                        error_kind: None,
-                    })
-                    .await;
-                let _ = tx
-                    .send(AssistantMessageEvent::Done {
-                        message: build_final(&state, &args.model),
-                    })
-                    .await;
-                return;
-            }
-            let Ok(parsed) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            for ev in handle_chunk(&parsed, &mut state, &args.model) {
-                let terminal = ev.is_terminal();
-                if tx.send(ev).await.is_err() {
-                    return; // receiver dropped → abort upstream
-                }
-                if terminal {
-                    return; // exactly one terminal event
-                }
-            }
+        if drain_sse_blocks(&mut buf, &tx, &mut |block: &str| {
+            decode(block, &mut state, &args.model)
+        })
+        .await
+        {
+            return; // terminal forwarded, or receiver dropped → abort upstream
         }
     }
-    // Stream ended without [DONE] (connection close framing): still terminal,
-    // and still preceded by Stop so both endings look the same downstream.
-    let _ = tx
-        .send(AssistantMessageEvent::Stop {
-            stop_reason: state.stop_reason(),
-            error_message: None,
-            error_kind: None,
-        })
-        .await;
-    let _ = tx
-        .send(AssistantMessageEvent::Done {
+    // Body closed: one terminal frame, decided by the shared end-of-stream policy.
+    let tail = flush_tail(&mut buf, &tx, &mut |block: &str| {
+        decode(block, &mut state, &args.model)
+    })
+    .await;
+    if tail == TailFlush::Terminal {
+        return;
+    }
+    let event = match classify_stream_end(&state, tail, CloseFraming::Accepted) {
+        StreamEnd::Complete => AssistantMessageEvent::Done {
             message: build_final(&state, &args.model),
-        })
-        .await;
+        },
+        StreamEnd::Truncated(truncation) => {
+            truncated_stream_error(build_final(&state, &args.model), PROVIDER_ID, truncation)
+        }
+    };
+    let _ = tx.send(event).await;
 }
 
 #[cfg(test)]
@@ -350,18 +339,6 @@ mod tests {
     }
 
     #[test]
-    fn block_end_handles_lf_and_crlf_separators() {
-        assert_eq!(find_block_end(b"data: x\n\nrest"), Some((7, 2)));
-        assert_eq!(find_block_end(b"data: x\r\n\r\nrest"), Some((7, 4)));
-        // earliest boundary wins when both framings appear
-        assert_eq!(find_block_end(b"a\n\nb\r\n\r\nc"), Some((1, 2)));
-        assert_eq!(find_block_end(b"a\r\n\r\nb\n\nc"), Some((1, 4)));
-        // incomplete block: no boundary yet
-        assert_eq!(find_block_end(b"data: partial\n"), None);
-        assert_eq!(find_block_end(b"data: partial\r\n"), None);
-    }
-
-    #[test]
     fn data_line_accepts_bare_and_spaced_prefixes_and_crlf() {
         assert_eq!(data_line("data: hello\n"), Some("hello"));
         assert_eq!(data_line("data:hello\n"), Some("hello"));
@@ -382,6 +359,88 @@ mod tests {
                 assert!(
                     matches!(&message.content[0], llm_router::types::content::ContentBlock::Text { text } if text == "你好，世界")
                 );
+                assert_eq!(message.native_stop_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    const TRUNCATED_MID_ARGUMENTS: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Listing\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"shell__fs__ls\",\"arguments\":\"\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"/tm\"}}]}}]}\n\n";
+
+    const TRUNCATED_MID_FRAME: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" wor";
+
+    const FINAL_BLOCK_WITHOUT_BLANK_LINE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
+
+    fn single_terminal_error(
+        events: &[AssistantMessageEvent],
+    ) -> &llm_router::types::messages::AssistantMessage {
+        assert_eq!(
+            events.iter().filter(|e| e.is_terminal()).count(),
+            1,
+            "{events:?}"
+        );
+        match events.last() {
+            Some(AssistantMessageEvent::Error { error }) => error,
+            other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_cut_inside_function_call_arguments_ends_as_one_error() {
+        let url = stub(TRUNCATED_MID_ARGUMENTS).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("stream truncated"), "{message}");
+        assert!(message.contains("reason=open_function_call"), "{message}");
+        assert!(error.content.iter().any(
+            |b| matches!(b, llm_router::types::content::ContentBlock::Text { text } if text == "Listing")
+        ));
+        let call = error.content.iter().find_map(|b| match b {
+            llm_router::types::content::ContentBlock::FunctionCall { arguments, .. } => {
+                Some(arguments)
+            }
+            _ => None,
+        });
+        let arguments = call.expect("function call block kept as evidence");
+        assert!(
+            arguments.get("_partial").is_some() || arguments.get("_raw").is_some(),
+            "arguments must be marked degraded: {arguments}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_cut_inside_an_event_frame_ends_as_one_error() {
+        let url = stub(TRUNCATED_MID_FRAME).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("reason=partial_frame"), "{message}");
+        assert!(error.content.iter().any(
+            |b| matches!(b, llm_router::types::content::ContentBlock::Text { text } if text == "Hello")
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_stream_ends_as_one_error_not_an_empty_done() {
+        let url =
+            stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
+                .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("reason=empty"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_block_without_blank_line_still_completes() {
+        let url = stub(FINAL_BLOCK_WITHOUT_BLANK_LINE).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
                 assert_eq!(message.native_stop_reason.as_deref(), Some("stop"));
             }
             other => panic!("want done, got {other:?}"),

@@ -35,7 +35,13 @@ fn classify_envelope(value: &Value) -> Option<ErrorKind> {
         Some(ErrorKind::RateLimited)
     } else if has(&["server_error", "api_error", "overloaded_error"]) {
         Some(ErrorKind::Transient)
-    } else if has(&["context_length_exceeded"]) {
+    } else if has(&["context_length_exceeded"])
+        || (has(&["invalid_request_error"])
+            && error
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(is_context_overflow))
+    {
         Some(ErrorKind::ContextOverflow)
     } else if has(&[
         "cmd_zdr_no_providers",
@@ -104,6 +110,20 @@ mod tests {
                 r#"{"error":{"type":"invalid_request_error","code":"context_length_exceeded"}}"#
             ),
             ErrorKind::ContextOverflow
+        );
+        assert_eq!(
+            classify(
+                Some(400),
+                r#"{"error":{"type":"invalid_request_error","message":"maximum context window exceeded"}}"#
+            ),
+            ErrorKind::ContextOverflow
+        );
+        assert_eq!(
+            classify(
+                Some(401),
+                r#"{"error":{"type":"authentication_error","message":"maximum context window exceeded"}}"#
+            ),
+            ErrorKind::AuthExpired
         );
     }
 }

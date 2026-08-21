@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 
-use crate::case::{ProtocolFamily, ProviderCase};
+use crate::case::{ModelCatalogFixture, ProtocolFamily, ProviderCase};
 use crate::stub::StubResponse;
 
 pub(crate) fn happy_sse(family: ProtocolFamily) -> &'static str {
@@ -33,8 +33,39 @@ pub(crate) fn happy_sse(family: ProtocolFamily) -> &'static str {
     }
 }
 
+/// A body that closes inside a function call's arguments after text streamed.
+pub(crate) fn truncated_sse(family: ProtocolFamily) -> &'static str {
+    match family {
+        ProtocolFamily::AnthropicMessages => concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial contract\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_cut\",\"name\":\"contract__probe\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"ex\"}}\n\n"
+        ),
+        ProtocolFamily::OpenAiChatCompletions => concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial contract\"}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"contract__probe\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"value\\\":\\\"ex\"}}]}}]}\n\n"
+        ),
+        ProtocolFamily::OpenAiResponses => concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial contract\"}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_cut\",\"name\":\"contract__probe\",\"arguments\":\"\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"value\\\":\\\"ex\"}\n\n"
+        ),
+    }
+}
+
 pub(crate) fn models_body(case: ProviderCase) -> &'static str {
-    if case.id == "command-code" {
+    if matches!(case.model_catalog_fixture, ModelCatalogFixture::CommandCode) {
         return r#"{"object":"list","data":[{"id":"gpt-5.4","object":"model","owned_by":"openai","name":"GPT-5.4","context_length":400000},{"id":"gpt-5.6-luna","object":"model","owned_by":"openai","name":"GPT-5.6 Luna","context_length":400000},{"id":"claude-sonnet-4-6","object":"model","owned_by":"anthropic","name":"Claude Sonnet 4.6","context_length":1000000},{"id":"claude-opus-4-8","object":"model","owned_by":"anthropic","name":"Claude Opus 4.8","context_length":1000000}]}"#;
     }
     match case.family {
