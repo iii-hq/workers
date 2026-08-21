@@ -483,9 +483,46 @@ element inside it, else the pane root — so the next keystroke is already
 the page's. Mark the element a page wants focused on arrival with
 `data-autofocus`. `{` / `}` step focus across panes.
 
+**`host.palette.registerSource(source)`** — a live source: rows computed per
+query by the worker, the way an editor's quick open lists files as you type.
+Registered at setup, so it exists only while the worker is connected.
+
+```ts
+host.palette?.registerSource({
+  id: 'tables',
+  title: 'Tables',            // the group label
+  kind: 'item',               // 'file' for real files (answers `#`), 'item' otherwise
+  prefix: '#',                // optional: a one-character mode that selects this source alone
+  minQuery: 2,                // asked without its prefix from this many characters
+  async search(query, { workingDir, signal }) {
+    const tables = await host.iii.trigger('database::listTables', { query })
+    if (signal.aborted) return []
+    return tables.slice(0, 30).map((table) => ({
+      id: table.name,
+      title: table.name,
+      detail: table.database,
+      run: () => host.panels.open({ pageId: 'database', context: { table: table.name } }),
+    }))
+  },
+})
+```
+
+The palette asks every source that fits the mode, debounced, and drops an
+answer to a query it has moved past (`signal`). A source that throws
+contributes nothing; the others still answer. Rows open the page with a
+context the page already understands through `panelContext`.
+
+**`host.palette.open({ query })`** opens the palette on a query. A prefix
+lands it in that mode: `>` or `/` commands, `#` files, `@` chats. The shell's
+"Open file…" row calls `host.palette.open({ query: '#' })` and hands over.
+
+An empty query opens on the ten rows used most recently in this browser;
+several words match in any order.
+
 Definition of done for a page: its primary verbs are commands, each with a
-key where one is natural, and nothing in the page listens for a key the
-console owns.
+key where one is natural; the data a user jumps to by name is a source; the
+element the page wants focused on arrival carries `data-autofocus`; and
+nothing in the page listens for a key the console owns.
 
 ### `host.panels.open({ pageId, context })`
 
@@ -923,7 +960,8 @@ them):
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |
 | Scope-preserving shared portals | shipped for `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and `BottomSheet`; stamp only custom domain portals |
-| Page commands and pane-scoped keys | shipped **beyond spec** as `host.commands` + `PageRenderProps.commands`; chat is the first consumer, shell next |
+| Page commands and pane-scoped keys | shipped **beyond spec** as `host.commands` + `PageRenderProps.commands`; chat and shell are the first consumers |
+| Live palette sources | shipped **beyond spec** as `host.palette.registerSource` + `host.palette.open`; the shell's Files source is the reference |
 
 Naming note: function messages use `host.functionTriggers` and the
 `function-trigger` role. Normalized trigger lifecycle activities use the
