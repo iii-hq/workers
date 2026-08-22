@@ -366,7 +366,11 @@ export interface Conversation {
    * arrives later can be finalized immediately.
    */
   legacySkillMigration?:
-    | { state: 'empty'; edits?: ConversationMetadataEdits }
+    | {
+        state: 'empty'
+        metadata?: Record<string, unknown>
+        edits?: ConversationMetadataEdits
+      }
     | {
         state: 'candidate' | 'ready'
         metadata: Record<string, unknown>

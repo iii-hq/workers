@@ -104,9 +104,11 @@ export function toggleSkillSelection(
 
 export function skillSelectionForSend(
   current: SkillSelection,
-  turnEstablished: boolean,
+  state: { turnEstablished: boolean; willQueue: boolean },
 ): SkillSelection {
-  return turnEstablished || !current?.length ? undefined : current
+  return state.turnEstablished || state.willQueue || !current?.length
+    ? undefined
+    : current
 }
 
 /** Radix Select needs string values; `named:` prefixes fs prompt names

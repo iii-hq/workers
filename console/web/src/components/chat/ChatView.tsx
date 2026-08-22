@@ -1121,10 +1121,10 @@ export function ChatView({
         effectiveSystemPrompt,
         turnEstablished,
       )
-      const skills = skillSelectionForSend(
-        conversation.skills,
-        conversation.started === true || willQueue,
-      )
+      const skills = skillSelectionForSend(conversation.skills, {
+        turnEstablished,
+        willQueue,
+      })
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1659,7 +1659,6 @@ export function ChatView({
       conversation.mode,
       conversation.model,
       conversation.skills,
-      conversation.started,
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,

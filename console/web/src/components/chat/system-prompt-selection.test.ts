@@ -147,9 +147,36 @@ describe('skill selection', () => {
   })
 
   it('sends a non-empty subset only before the session is established', () => {
-    expect(skillSelectionForSend(undefined, false)).toBeUndefined()
-    expect(skillSelectionForSend([], false)).toBeUndefined()
-    expect(skillSelectionForSend(['review'], false)).toEqual(['review'])
-    expect(skillSelectionForSend(['review'], true)).toBeUndefined()
+    const firstTurn = { turnEstablished: false, willQueue: false }
+    expect(skillSelectionForSend(undefined, firstTurn)).toBeUndefined()
+    expect(skillSelectionForSend([], firstTurn)).toBeUndefined()
+    expect(skillSelectionForSend(['review'], firstTurn)).toEqual(['review'])
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: true,
+        willQueue: false,
+      }),
+    ).toBeUndefined()
+  })
+
+  it('resends the subset after a user-only failed turn, then omits it for established or queued turns', () => {
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: false,
+        willQueue: false,
+      }),
+    ).toEqual(['review'])
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: true,
+        willQueue: false,
+      }),
+    ).toBeUndefined()
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: false,
+        willQueue: true,
+      }),
+    ).toBeUndefined()
   })
 })

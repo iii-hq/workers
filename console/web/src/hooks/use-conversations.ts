@@ -227,7 +227,7 @@ function finalizeLegacySkillMigration(c: Conversation): Conversation {
   const skills = Object.hasOwn(migration.edits ?? {}, 'skills')
     ? migration.edits?.skills
     : Array.isArray(migration.metadata.skills)
-      ? c.skills
+      ? decodeSkills(migration.metadata.skills)
       : legacySkills.length
         ? [...new Set(legacySkills)]
         : undefined
@@ -255,7 +255,7 @@ function reconcileLegacySkillMigration(
   next: Conversation,
 ): Conversation {
   const migration = previous?.legacySkillMigration
-  if (!migration || next.started === true) return next
+  if (!migration) return next
   const edits = migration.edits
   const current = edits ? { ...next, ...edits } : next
 
@@ -289,13 +289,12 @@ function reconcileLegacySkillMigration(
       ...current,
       legacySkillMigration: {
         ...next.legacySkillMigration,
-        metadata:
-          migration.state === 'ready'
-            ? {
-                ...migration.metadata,
-                ...next.legacySkillMigration.metadata,
-              }
-            : next.legacySkillMigration.metadata,
+        metadata: migration.metadata
+          ? {
+              ...migration.metadata,
+              ...next.legacySkillMigration.metadata,
+            }
+          : next.legacySkillMigration.metadata,
         ...(edits ? { edits } : {}),
       },
     })
@@ -310,6 +309,7 @@ function reconcileLegacySkillMigration(
     ...current,
     legacySkillMigration: {
       state: 'empty',
+      ...(migration.metadata ? { metadata: migration.metadata } : {}),
       ...(edits ? { edits } : {}),
     },
   }
@@ -383,9 +383,9 @@ export function applyConversationMetadataPatch(
   }
 }
 
-function metadataForWrite(c: Conversation): Record<string, unknown> {
+export function metadataForWrite(c: Conversation): Record<string, unknown> {
   const migration = c.legacySkillMigration
-  return migration?.state === 'candidate' || migration?.state === 'ready'
+  return migration?.metadata
     ? migrationMetadataFor(c, migration.metadata)
     : metadataFor(c)
 }
@@ -403,13 +403,30 @@ export function preSendMetaUpdate(c: Conversation): {
     : null
 }
 
+export function completePreSendMetaUpdate(
+  c: Conversation,
+  pendingEdits: ConversationMetadataEdits | undefined,
+): Conversation {
+  const migration = c.legacySkillMigration
+  if (migration?.state !== 'ready' || migration.edits !== pendingEdits) return c
+  return {
+    ...c,
+    legacySkillMigration: {
+      state: 'empty',
+      metadata: migration.metadata,
+      ...(migration.edits ? { edits: migration.edits } : {}),
+    },
+  }
+}
+
 function conversationFromMeta(
   meta: SessionMeta,
   started = meta.message_count > 0,
+  migrationPending = false,
 ): Conversation {
   const md = meta.metadata ?? {}
   const { systemPrompt, skills, legacySkillMigration } =
-    decodeSessionSelections(md, started)
+    decodeSessionSelections(md, started && !migrationPending)
   return {
     id: meta.session_id,
     title: meta.title || meta.session_id,
@@ -525,7 +542,11 @@ export function mergeConversationMeta(
   meta: SessionMeta,
 ): Conversation {
   const started = existing?.started === true || meta.message_count > 0
-  const mapped = conversationFromMeta(meta, started)
+  const mapped = conversationFromMeta(
+    meta,
+    started,
+    existing?.legacySkillMigration !== undefined,
+  )
   const merged =
     !existing || existing.draft
       ? mapped
@@ -688,6 +709,17 @@ export function mergeHydratedTranscript(
   return messages
 }
 
+export function markDurableStarted(
+  c: Conversation,
+  turnEstablished: boolean,
+): Conversation {
+  return {
+    ...c,
+    started: true,
+    legacySkillMigration: turnEstablished ? undefined : c.legacySkillMigration,
+  }
+}
+
 export function mergeHydratedConversation(
   conversation: Conversation,
   items: TranscriptItem[],
@@ -707,7 +739,11 @@ export function mergeHydratedConversation(
     started,
     hydrated: true,
   }
-  if (started) return { ...hydrated, legacySkillMigration: undefined }
+  const turnEstablished =
+    items.some((item) => item.message?.role === 'assistant') ||
+    upserts.some(({ item }) => item.message?.role === 'assistant') ||
+    hydrated.messages.some((message) => message.role === 'assistant')
+  if (started) return markDurableStarted(hydrated, turnEstablished)
   if (hydrated.legacySkillMigration?.state === 'candidate') {
     return finalizeLegacySkillMigration(hydrated)
   }
@@ -847,7 +883,10 @@ export function useConversations(
           patchConversation(event.session_id, (c) => {
             const md = event.metadata ?? {}
             const { systemPrompt, skills, legacySkillMigration } =
-              decodeSessionSelections(md, c.started === true)
+              decodeSessionSelections(
+                md,
+                c.started === true && !c.legacySkillMigration,
+              )
             const next = {
               ...c,
               title: event.title || c.title,
@@ -948,15 +987,19 @@ export function useConversations(
           if (buf && buf.sessionId === sessionId) {
             buf.upserts.push({ item, updated: false })
           }
-          patchConversation(sessionId, (c) => ({
-            ...c,
-            messages: applyEntryUpsert(c.messages, item, {
-              sessionId,
-              working: c.status === 'working',
-            }),
-            started: true,
-            updatedAt: event.timestamp,
-          }))
+          patchConversation(sessionId, (c) =>
+            markDurableStarted(
+              {
+                ...c,
+                messages: applyEntryUpsert(c.messages, item, {
+                  sessionId,
+                  working: c.status === 'working',
+                }),
+                updatedAt: event.timestamp,
+              },
+              item.message?.role === 'assistant',
+            ),
+          )
         },
         onMessageUpdated: (event) => {
           const revs = revisionsFor(sessionId)
@@ -972,16 +1015,20 @@ export function useConversations(
           if (buf && buf.sessionId === sessionId) {
             buf.upserts.push({ item, updated: true })
           }
-          patchConversation(sessionId, (c) => ({
-            ...c,
-            messages: applyEntryUpsert(c.messages, item, {
-              sessionId,
-              streaming: c.status === 'working',
-              working: c.status === 'working',
-            }),
-            started: true,
-            updatedAt: event.timestamp,
-          }))
+          patchConversation(sessionId, (c) =>
+            markDurableStarted(
+              {
+                ...c,
+                messages: applyEntryUpsert(c.messages, item, {
+                  sessionId,
+                  streaming: c.status === 'working',
+                  working: c.status === 'working',
+                }),
+                updatedAt: event.timestamp,
+              },
+              item.message?.role === 'assistant',
+            ),
+          )
         },
       })
     })
@@ -1301,14 +1348,7 @@ export function useConversations(
         try {
           await setSessionMeta(metaUpdate)
           patchConversation(id, (current) =>
-            current.legacySkillMigration?.state === 'ready' &&
-            current.legacySkillMigration.edits === pendingEdits
-              ? {
-                  ...current,
-                  legacySkillMigration:
-                    current.started === true ? undefined : { state: 'empty' },
-                }
-              : current,
+            completePreSendMetaUpdate(current, pendingEdits),
           )
         } catch (err) {
           if (import.meta.env.DEV) {
