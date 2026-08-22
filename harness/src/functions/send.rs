@@ -948,6 +948,7 @@ async fn seed_or_merge(
                 }
                 recheck => {
                     let previous = latest_seed_record(&rec, recheck.as_ref());
+                    rebase_terminal_skill_options(&mut options, Some(previous), skills_explicit);
                     seed_new(
                         deps,
                         cfg,
@@ -962,6 +963,7 @@ async fn seed_or_merge(
             }
         }
         previous => {
+            rebase_terminal_skill_options(&mut options, previous.as_ref(), skills_explicit);
             seed_new(
                 deps,
                 cfg,
@@ -974,6 +976,21 @@ async fn seed_or_merge(
             .await
         }
     }
+}
+
+fn rebase_terminal_skill_options(
+    options: &mut TurnOptions,
+    previous: Option<&TurnRecord>,
+    skills_explicit: bool,
+) {
+    if skills_explicit {
+        return;
+    }
+    let Some(previous) = previous else {
+        return;
+    };
+    options.skill_context = previous.options.skill_context.clone();
+    options.skills_prompt = previous.options.skills_prompt.clone();
 }
 
 /// Seed a fresh turn record and enqueue its first step. Exposed to the turn
@@ -1413,6 +1430,72 @@ mod tests {
         assert_eq!(selected.skill_ack.as_ref().unwrap().generation, 2);
         assert!(selected.skills_started);
         assert!(std::ptr::eq(selected, &final_record));
+    }
+
+    #[test]
+    fn omitted_skills_rebase_from_terminal_recheck_before_seeding() {
+        let mut initial = terminal_record_with_skill_state(1, false);
+        initial.status = TurnStatus::Running;
+        initial.options.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["old".into()]),
+            baseline: Some("old baseline".into()),
+        });
+        let mut terminal = terminal_record_with_skill_state(2, true);
+        terminal.options.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["new".into()]),
+            baseline: Some("new baseline".into()),
+        });
+        let mut prepared = initial.options.clone();
+
+        let authoritative = latest_seed_record(&initial, Some(&terminal));
+        rebase_terminal_skill_options(&mut prepared, Some(authoritative), false);
+
+        assert_eq!(prepared.skill_context, terminal.options.skill_context);
+        assert_eq!(prepared.skills_prompt, terminal.options.skills_prompt);
+    }
+
+    #[test]
+    fn omitted_skills_rebase_from_initial_terminal_record_before_seeding() {
+        let mut terminal = terminal_record_with_skill_state(2, true);
+        terminal.options.skill_context = None;
+        terminal.options.skills_prompt = Some("authoritative legacy body".into());
+        let mut prepared = options_with(None, None);
+        prepared.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["stale".into()]),
+            baseline: Some("stale baseline".into()),
+        });
+        prepared.skills_prompt = Some("stale legacy body".into());
+
+        rebase_terminal_skill_options(&mut prepared, Some(&terminal), false);
+
+        assert_eq!(prepared.skill_context, None);
+        assert_eq!(
+            prepared.skills_prompt.as_deref(),
+            Some("authoritative legacy body")
+        );
+    }
+
+    #[test]
+    fn explicit_and_fresh_skill_options_keep_the_prepared_context() {
+        let mut terminal = terminal_record_with_skill_state(2, true);
+        terminal.options.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["prior".into()]),
+            baseline: Some("prior baseline".into()),
+        });
+        let mut prepared = options_with(None, None);
+        prepared.skill_context = Some(crate::types::turn::SkillContext {
+            filter: None,
+            baseline: Some("prepared reset baseline".into()),
+        });
+        let expected = prepared.clone();
+
+        rebase_terminal_skill_options(&mut prepared, Some(&terminal), true);
+        assert_eq!(prepared.skill_context, expected.skill_context);
+        assert_eq!(prepared.skills_prompt, expected.skills_prompt);
+
+        rebase_terminal_skill_options(&mut prepared, None, false);
+        assert_eq!(prepared.skill_context, expected.skill_context);
+        assert_eq!(prepared.skills_prompt, expected.skills_prompt);
     }
 
     #[test]

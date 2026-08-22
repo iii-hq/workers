@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::clients::FunctionDescriptor;
 use crate::policy::CompiledPolicy;
@@ -39,7 +40,23 @@ impl SkillsSnapshot {
     }
 }
 
-pub type SkillsCell = Arc<RwLock<Arc<SkillsSnapshot>>>;
+struct SkillsState {
+    snapshot: RwLock<Arc<SkillsSnapshot>>,
+    reload: Mutex<()>,
+}
+
+#[derive(Clone)]
+pub struct SkillsCell(Arc<SkillsState>);
+
+impl SkillsCell {
+    pub async fn read(&self) -> RwLockReadGuard<'_, Arc<SkillsSnapshot>> {
+        self.0.snapshot.read().await
+    }
+
+    async fn write(&self) -> RwLockWriteGuard<'_, Arc<SkillsSnapshot>> {
+        self.0.snapshot.write().await
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderedView {
@@ -159,11 +176,14 @@ struct ListRow {
 }
 
 pub fn new_cell() -> SkillsCell {
-    Arc::new(RwLock::new(Arc::new(SkillsSnapshot {
-        skills: Vec::new(),
-        generation: 0,
-        fingerprint: None,
-    })))
+    SkillsCell(Arc::new(SkillsState {
+        snapshot: RwLock::new(Arc::new(SkillsSnapshot {
+            skills: Vec::new(),
+            generation: 0,
+            fingerprint: None,
+        })),
+        reload: Mutex::new(()),
+    }))
 }
 
 fn normalize(value: &str) -> String {
@@ -363,7 +383,16 @@ async fn reload(iii: &Arc<IIIClient>, cell: &SkillsCell, timeout_ms: u64) -> Opt
         iii: iii.clone(),
         timeout_ms,
     };
-    let result = match client.skills_list().await {
+    reload_with(cell, || client.skills_list()).await
+}
+
+async fn reload_with<F, Fut>(cell: &SkillsCell, read: F) -> Option<usize>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    let _reload = cell.0.reload.lock().await;
+    let result = match read().await {
         Ok(value) => admit(cell, value).await,
         Err(error) => Err(error),
     };
@@ -456,6 +485,87 @@ mod tests {
                 parameters: None,
             })
             .collect()
+    }
+
+    fn catalog(id: &str, description: &str) -> Value {
+        json!({"skills": [{
+            "id": id,
+            "title": id,
+            "description": description,
+            "disable_model_invocation": false
+        }]})
+    }
+
+    #[tokio::test]
+    async fn concurrent_reloads_observe_and_admit_in_request_order() {
+        let cell = new_cell();
+        let (first_started_tx, first_started_rx) = tokio::sync::oneshot::channel();
+        let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel();
+        let first_cell = cell.clone();
+        let first = tokio::spawn(async move {
+            reload_with(&first_cell, || async move {
+                first_started_tx.send(()).unwrap();
+                release_first_rx.await.unwrap();
+                Ok(catalog("older", "Older observation"))
+            })
+            .await
+        });
+        first_started_rx.await.unwrap();
+
+        let (second_ready_tx, second_ready_rx) = tokio::sync::oneshot::channel();
+        let (second_started_tx, mut second_started_rx) = tokio::sync::oneshot::channel();
+        let second_cell = cell.clone();
+        let second = tokio::spawn(async move {
+            second_ready_tx.send(()).unwrap();
+            reload_with(&second_cell, || async move {
+                second_started_tx.send(()).unwrap();
+                Ok(catalog("newer", "Newer observation"))
+            })
+            .await
+        });
+        second_ready_rx.await.unwrap();
+        let blocked = tokio::time::timeout(Duration::from_millis(50), &mut second_started_rx)
+            .await
+            .is_err();
+        assert!(
+            blocked,
+            "the second remote read must wait for the first admission"
+        );
+
+        release_first_tx.send(()).unwrap();
+        assert_eq!(first.await.unwrap(), Some(1));
+        second_started_rx.await.unwrap();
+        assert_eq!(second.await.unwrap(), Some(1));
+
+        let snapshot = cell.read().await.clone();
+        assert_eq!(snapshot.generation, 2);
+        assert_eq!(snapshot.skills[0].id, "newer");
+    }
+
+    #[tokio::test]
+    async fn failed_reload_preserves_the_last_good_snapshot() {
+        let cell = new_cell();
+        assert_eq!(
+            reload_with(&cell, || async { Ok(catalog("good", "Last good")) }).await,
+            Some(1)
+        );
+        let admitted = cell.read().await.clone();
+
+        assert_eq!(
+            reload_with(&cell, || async { Err("read failed".to_string()) }).await,
+            None
+        );
+        assert_eq!(
+            reload_with(&cell, || async {
+                Ok(json!({"skills": [{"id": "broken"}]}))
+            })
+            .await,
+            None
+        );
+
+        let preserved = cell.read().await.clone();
+        assert!(Arc::ptr_eq(&admitted, &preserved));
+        assert_eq!(preserved.skills[0].id, "good");
     }
 
     #[test]
