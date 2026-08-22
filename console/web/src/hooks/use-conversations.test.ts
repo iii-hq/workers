@@ -320,7 +320,7 @@ describe('mergeHydratedTranscript', () => {
     expect(merged.map((m) => m.id)).toEqual(['e1:0', 'local-1:0'])
   })
 
-  it('marks hydration started from fetched or buffered durable entries even when they render no row', () => {
+  it('keeps a legacy migration unmodified when hidden durable hydration proves the session started', () => {
     const hidden: TranscriptItem = {
       entry_id: 'e_t1_transient_resume_1',
       message: {
@@ -329,28 +329,38 @@ describe('mergeHydratedTranscript', () => {
         timestamp: 2,
       },
     }
-
-    const fetched = mergeHydratedConversation(
-      conversation({ started: false }),
-      [hidden],
-      [],
+    const candidate = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          system_prompt: {
+            choice: 'default',
+            strategy: 'enrich',
+            addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+          },
+        },
+      }),
     )
+
+    const fetched = mergeHydratedConversation(candidate, [hidden], [])
     const buffered = mergeHydratedConversation(
-      conversation({ started: false }),
+      candidate,
       [],
       [{ item: hidden, updated: false }],
     )
 
-    expect(fetched).toMatchObject({
-      started: true,
-      hydrated: true,
-      messages: [],
-    })
-    expect(buffered).toMatchObject({
-      started: true,
-      hydrated: true,
-      messages: [],
-    })
+    for (const hydrated of [fetched, buffered]) {
+      expect(hydrated).toMatchObject({
+        started: true,
+        hydrated: true,
+        messages: [],
+      })
+      expect(hydrated.skills).toBeUndefined()
+      expect(hydrated.systemPrompt?.addons).toEqual([
+        { kind: 'skill', name: 'review', body: 'legacy body' },
+      ])
+      expect(preSendMetaUpdate(hydrated)).toBeNull()
+    }
   })
 })
 
@@ -541,7 +551,7 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(next.systemPrompt).toEqual(DEFAULT_SYSTEM_PROMPT_STATE)
   })
 
-  it('migrates skill addon names from an unstarted legacy draft and drops their bodies', () => {
+  it('keeps a zero-count legacy selection intact until hydration proves it empty', () => {
     const next = mergeConversationMeta(
       undefined,
       sessionMeta({
@@ -559,11 +569,22 @@ describe('mergeConversationMeta / system_prompt', () => {
       }),
     )
 
-    expect(next.skills).toEqual(['review'])
+    expect(next.skills).toBeUndefined()
     expect(next.started).toBe(false)
     expect(next.systemPrompt?.addons).toEqual([
+      { kind: 'skill', name: 'review', body: 'legacy body' },
       { kind: 'prompt', name: 'tone', body: 'Be concise.' },
     ])
+    expect(preSendMetaUpdate(next)).toBeNull()
+  })
+
+  it('does not write metadata for an ordinary materialized zero-message session', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({ metadata: { model: 'provider::model', mode: 'agent' } }),
+    )
+
+    expect(preSendMetaUpdate(next)).toBeNull()
   })
 
   it('leaves established legacy skill bodies alone', () => {
@@ -607,13 +628,63 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(JSON.stringify(metadata)).not.toContain('body')
   })
 
-  it('rewrites a materialized unstarted legacy draft with IDs only before send', () => {
-    const migrated = mergeConversationMeta(
+  it('migrates only after empty hydration and preserves the complete metadata object', () => {
+    const candidate = mergeConversationMeta(
       undefined,
       sessionMeta({
         metadata: {
+          surface: 'console',
           model: 'provider::model',
           mode: 'agent',
+          parent_session_id: 'console-parent',
+          function_call_id: 'call-1',
+          depth: 2,
+          spawned_by: 'agent',
+          foreign: { keep: true },
+          system_prompt: {
+            choice: 'default',
+            strategy: 'enrich',
+            addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+          },
+        },
+      }),
+    )
+    expect(preSendMetaUpdate(candidate)).toBeNull()
+
+    const migrated = mergeHydratedConversation(candidate, [], [])
+
+    const update = preSendMetaUpdate(migrated)
+    expect(update).toEqual({
+      session_id: 'console-1',
+      metadata: {
+        surface: 'console',
+        model: 'provider::model',
+        mode: 'agent',
+        parent_session_id: 'console-parent',
+        function_call_id: 'call-1',
+        depth: 2,
+        spawned_by: 'agent',
+        foreign: { keep: true },
+        skills: ['review'],
+      },
+    })
+    expect(JSON.stringify(update)).not.toContain('legacy body')
+    expect(JSON.stringify(migrated)).not.toContain('legacy body')
+    expect(preSendMetaUpdate({ ...migrated, draft: true })).toBeNull()
+    expect(preSendMetaUpdate({ ...migrated, started: true })).toBeNull()
+  })
+
+  it('finalizes delayed legacy metadata after empty hydration already completed', () => {
+    const hydratedEmpty = mergeHydratedConversation(
+      conversation({ started: false }),
+      [],
+      [],
+    )
+    const migrated = mergeConversationMeta(
+      hydratedEmpty,
+      sessionMeta({
+        metadata: {
+          foreign: 'preserved',
           system_prompt: {
             choice: 'default',
             strategy: 'enrich',
@@ -623,19 +694,49 @@ describe('mergeConversationMeta / system_prompt', () => {
       }),
     )
 
-    const update = preSendMetaUpdate(migrated)
-    expect(update).toEqual({
+    expect(migrated.skills).toEqual(['review'])
+    expect(migrated.systemPrompt?.addons).toEqual([])
+    expect(preSendMetaUpdate(migrated)).toEqual({
       session_id: 'console-1',
-      metadata: {
-        surface: 'console',
-        model: 'provider::model',
-        mode: 'agent',
-        skills: ['review'],
-      },
+      metadata: { foreign: 'preserved', skills: ['review'] },
     })
-    expect(JSON.stringify(update)).not.toContain('legacy body')
-    expect(preSendMetaUpdate({ ...migrated, draft: true })).toBeNull()
-    expect(preSendMetaUpdate({ ...migrated, started: true })).toBeNull()
+  })
+
+  it('retains confirmed-empty state when the bodyless set-meta event arrives before write cleanup', () => {
+    const legacyMetadata = {
+      foreign: 'preserved',
+      system_prompt: {
+        choice: 'default',
+        strategy: 'enrich',
+        addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+      },
+    }
+    const ready = mergeHydratedConversation(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: legacyMetadata }),
+      ),
+      [],
+      [],
+    )
+
+    const bodylessEvent = mergeConversationMeta(
+      ready,
+      sessionMeta({
+        metadata: { foreign: 'preserved', skills: ['review'] },
+      }),
+    )
+    expect(preSendMetaUpdate(bodylessEvent)).toBeNull()
+
+    const staleSnapshot = mergeConversationMeta(
+      bodylessEvent,
+      sessionMeta({ metadata: legacyMetadata }),
+    )
+    expect(staleSnapshot.systemPrompt?.addons).toEqual([])
+    expect(preSendMetaUpdate(staleSnapshot)).toEqual({
+      session_id: 'console-1',
+      metadata: { foreign: 'preserved', skills: ['review'] },
+    })
   })
 })
 

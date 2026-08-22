@@ -200,24 +200,65 @@ function decodeSkills(v: unknown): string[] | undefined {
 function decodeSessionSelections(
   md: Record<string, unknown>,
   started: boolean,
-): { systemPrompt: SystemPromptState; skills: string[] | undefined } {
-  let systemPrompt = decodeSystemPrompt(md.system_prompt)
-  let skills = decodeSkills(md.skills)
-  if (!started) {
-    const legacySkills = systemPrompt.addons
-      .filter((addon) => addon.kind === 'skill')
-      .map((addon) => addon.name)
-    if (!Array.isArray(md.skills) && legacySkills.length > 0) {
-      skills = [...new Set(legacySkills)]
-    }
-    if (legacySkills.length > 0) {
-      systemPrompt = {
-        ...systemPrompt,
-        addons: systemPrompt.addons.filter((addon) => addon.kind !== 'skill'),
-      }
-    }
+): Pick<Conversation, 'systemPrompt' | 'skills' | 'legacySkillMigration'> {
+  const systemPrompt = decodeSystemPrompt(md.system_prompt)
+  const skills = decodeSkills(md.skills)
+  const hasLegacySkills = systemPrompt.addons.some(
+    (addon) => addon.kind === 'skill',
+  )
+  return {
+    systemPrompt,
+    skills,
+    legacySkillMigration:
+      !started && hasLegacySkills
+        ? { state: 'candidate', metadata: md }
+        : undefined,
   }
-  return { systemPrompt, skills }
+}
+
+function finalizeLegacySkillMigration(c: Conversation): Conversation {
+  const migration = c.legacySkillMigration
+  if (migration?.state !== 'candidate') return c
+
+  const legacySkills = c.systemPrompt?.addons
+    .filter((addon) => addon.kind === 'skill')
+    .map((addon) => addon.name)
+  const skills = Array.isArray(migration.metadata.skills)
+    ? c.skills
+    : legacySkills?.length
+      ? [...new Set(legacySkills)]
+      : undefined
+  const systemPrompt = c.systemPrompt
+    ? {
+        ...c.systemPrompt,
+        addons: c.systemPrompt.addons.filter((addon) => addon.kind !== 'skill'),
+      }
+    : undefined
+  const metadata = { ...migration.metadata }
+  const encodedSystemPrompt = encodeSystemPrompt(systemPrompt)
+  if (encodedSystemPrompt) metadata.system_prompt = encodedSystemPrompt
+  else delete metadata.system_prompt
+  if (skills?.length) metadata.skills = skills
+  else delete metadata.skills
+
+  return {
+    ...c,
+    systemPrompt,
+    skills,
+    legacySkillMigration: { state: 'ready', metadata },
+  }
+}
+
+function reconcileLegacySkillMigration(
+  previous: Conversation['legacySkillMigration'],
+  next: Conversation,
+): Conversation {
+  const confirmedEmpty =
+    previous?.state === 'empty' || previous?.state === 'ready'
+  if (!confirmedEmpty || next.started === true) return next
+  return next.legacySkillMigration?.state === 'candidate'
+    ? finalizeLegacySkillMigration(next)
+    : { ...next, legacySkillMigration: { state: 'empty' } }
 }
 
 /** The console's session metadata convention (replaces wholesale on writes). */
@@ -250,8 +291,9 @@ export function preSendMetaUpdate(c: Conversation): {
   session_id: string
   metadata: Record<string, unknown>
 } | null {
-  return !c.draft && c.started !== true
-    ? { session_id: c.id, metadata: metadataFor(c) }
+  const migration = c.legacySkillMigration
+  return !c.draft && c.started !== true && migration?.state === 'ready'
+    ? { session_id: c.id, metadata: migration.metadata }
     : null
 }
 
@@ -260,7 +302,8 @@ function conversationFromMeta(
   started = meta.message_count > 0,
 ): Conversation {
   const md = meta.metadata ?? {}
-  const { systemPrompt, skills } = decodeSessionSelections(md, started)
+  const { systemPrompt, skills, legacySkillMigration } =
+    decodeSessionSelections(md, started)
   return {
     id: meta.session_id,
     title: meta.title || meta.session_id,
@@ -281,6 +324,7 @@ function conversationFromMeta(
         : null,
     systemPrompt,
     skills,
+    legacySkillMigration,
     started,
     parentId:
       typeof md.parent_session_id === 'string'
@@ -376,12 +420,15 @@ export function mergeConversationMeta(
 ): Conversation {
   const started = existing?.started === true || meta.message_count > 0
   const mapped = conversationFromMeta(meta, started)
-  if (!existing || existing.draft) return mapped
-  return {
-    ...mapped,
-    messages: existing.messages,
-    hydrated: existing.hydrated,
-  }
+  const merged =
+    !existing || existing.draft
+      ? mapped
+      : {
+          ...mapped,
+          messages: existing.messages,
+          hydrated: existing.hydrated,
+        }
+  return reconcileLegacySkillMigration(existing?.legacySkillMigration, merged)
 }
 
 /** Merge the boot-time session list without dropping sessions discovered by
@@ -541,7 +588,9 @@ export function mergeHydratedConversation(
   upserts: HydrationUpsert[],
 ): Conversation {
   const working = conversation.status === 'working'
-  return {
+  const started =
+    conversation.started === true || items.length > 0 || upserts.length > 0
+  const hydrated: Conversation = {
     ...conversation,
     messages: mergeHydratedTranscript(
       transcriptToMessages(items, conversation.id, { working }),
@@ -549,10 +598,16 @@ export function mergeHydratedConversation(
       upserts,
       { sessionId: conversation.id, working },
     ),
-    started:
-      conversation.started === true || items.length > 0 || upserts.length > 0,
+    started,
     hydrated: true,
   }
+  if (started) return { ...hydrated, legacySkillMigration: undefined }
+  if (hydrated.legacySkillMigration?.state === 'candidate') {
+    return finalizeLegacySkillMigration(hydrated)
+  }
+  return hydrated.legacySkillMigration?.state === 'ready'
+    ? hydrated
+    : { ...hydrated, legacySkillMigration: { state: 'empty' } }
 }
 
 /** A failed transcript read is still a terminal hydration outcome. Keep the
@@ -685,11 +740,9 @@ export function useConversations(
         onMetaUpdated: (event) => {
           patchConversation(event.session_id, (c) => {
             const md = event.metadata ?? {}
-            const { systemPrompt, skills } = decodeSessionSelections(
-              md,
-              c.started === true,
-            )
-            return {
+            const { systemPrompt, skills, legacySkillMigration } =
+              decodeSessionSelections(md, c.started === true)
+            const next = {
               ...c,
               title: event.title || c.title,
               titleManual: md.title_manual === true || c.titleManual,
@@ -704,6 +757,7 @@ export function useConversations(
                   : null,
               systemPrompt,
               skills,
+              legacySkillMigration,
               parentId:
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id
@@ -719,6 +773,7 @@ export function useConversations(
                   : c.spawnedBy,
               updatedAt: event.timestamp,
             }
+            return reconcileLegacySkillMigration(c.legacySkillMigration, next)
           })
         },
         onStatusChanged: (event) => {
@@ -1139,6 +1194,16 @@ export function useConversations(
       if (metaUpdate) {
         try {
           await setSessionMeta(metaUpdate)
+          patchConversation(id, (current) =>
+            current.legacySkillMigration?.state === 'ready' &&
+            current.legacySkillMigration.metadata === metaUpdate.metadata
+              ? {
+                  ...current,
+                  legacySkillMigration:
+                    current.started === true ? undefined : { state: 'empty' },
+                }
+              : current,
+          )
         } catch (err) {
           if (import.meta.env.DEV) {
             console.warn('[conversations] session::set-meta failed', err)

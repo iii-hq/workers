@@ -346,6 +346,19 @@ export interface Conversation {
   systemPrompt?: SystemPromptState
   /** Undefined/empty means all model-invocable skills; otherwise exact IDs. */
   skills?: string[]
+  /**
+   * One-time conversion of legacy skill addons after an authoritative empty
+   * transcript read. `candidate` retains the legacy body while hydration is
+   * pending; `ready` carries the complete body-free metadata replacement.
+   * `empty` remembers a successful empty transcript read so metadata that
+   * arrives later can be finalized immediately.
+   */
+  legacySkillMigration?:
+    | { state: 'empty' }
+    | {
+        state: 'candidate' | 'ready'
+        metadata: Record<string, unknown>
+      }
   /** Whether durable transcript entries already exist for this session. */
   started?: boolean
   messages: Message[]
