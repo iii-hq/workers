@@ -948,7 +948,7 @@ async fn seed_or_merge(
                 }
                 recheck => {
                     let previous = latest_seed_record(&rec, recheck.as_ref());
-                    rebase_terminal_skill_options(&mut options, Some(previous), skills_explicit);
+                    rebase_terminal_skill_options(&mut options, Some(previous), skills_explicit)?;
                     seed_new(
                         deps,
                         cfg,
@@ -963,7 +963,7 @@ async fn seed_or_merge(
             }
         }
         previous => {
-            rebase_terminal_skill_options(&mut options, previous.as_ref(), skills_explicit);
+            rebase_terminal_skill_options(&mut options, previous.as_ref(), skills_explicit)?;
             seed_new(
                 deps,
                 cfg,
@@ -982,15 +982,36 @@ fn rebase_terminal_skill_options(
     options: &mut TurnOptions,
     previous: Option<&TurnRecord>,
     skills_explicit: bool,
-) {
-    if skills_explicit {
-        return;
-    }
+) -> Result<(), HarnessError> {
     let Some(previous) = previous else {
-        return;
+        return Ok(());
     };
+    if skills_explicit {
+        let invalid_legacy_change = || {
+            HarnessError::InvalidRequest(
+                "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
+                    .into(),
+            )
+        };
+        let filter = options
+            .skill_context
+            .as_ref()
+            .ok_or_else(&invalid_legacy_change)?
+            .filter
+            .clone();
+        let mut context = previous
+            .options
+            .skill_context
+            .clone()
+            .ok_or_else(&invalid_legacy_change)?;
+        context.filter = filter;
+        options.skill_context = Some(context);
+        options.skills_prompt = previous.options.skills_prompt.clone();
+        return Ok(());
+    }
     options.skill_context = previous.options.skill_context.clone();
     options.skills_prompt = previous.options.skills_prompt.clone();
+    Ok(())
 }
 
 /// Seed a fresh turn record and enqueue its first step. Exposed to the turn
@@ -1448,7 +1469,7 @@ mod tests {
         let mut prepared = initial.options.clone();
 
         let authoritative = latest_seed_record(&initial, Some(&terminal));
-        rebase_terminal_skill_options(&mut prepared, Some(authoritative), false);
+        rebase_terminal_skill_options(&mut prepared, Some(authoritative), false).unwrap();
 
         assert_eq!(prepared.skill_context, terminal.options.skill_context);
         assert_eq!(prepared.skills_prompt, terminal.options.skills_prompt);
@@ -1466,7 +1487,7 @@ mod tests {
         });
         prepared.skills_prompt = Some("stale legacy body".into());
 
-        rebase_terminal_skill_options(&mut prepared, Some(&terminal), false);
+        rebase_terminal_skill_options(&mut prepared, Some(&terminal), false).unwrap();
 
         assert_eq!(prepared.skill_context, None);
         assert_eq!(
@@ -1476,26 +1497,66 @@ mod tests {
     }
 
     #[test]
-    fn explicit_and_fresh_skill_options_keep_the_prepared_context() {
+    fn explicit_reset_rebases_the_authoritative_baseline_without_losing_its_filter() {
+        let mut initial = terminal_record_with_skill_state(1, false);
+        initial.status = TurnStatus::Running;
+        initial.options.skill_context = Some(crate::types::turn::SkillContext {
+            filter: Some(vec!["prior".into()]),
+            baseline: None,
+        });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
-            baseline: Some("prior baseline".into()),
+            baseline: Some("baseline frozen by the completed turn".into()),
         });
+        let mut prepared = initial.options.clone();
+        prepared.skill_context.as_mut().unwrap().filter = None;
+
+        let authoritative = latest_seed_record(&initial, Some(&terminal));
+        rebase_terminal_skill_options(&mut prepared, Some(authoritative), true).unwrap();
+
+        assert_eq!(
+            prepared.skill_context,
+            Some(crate::types::turn::SkillContext {
+                filter: None,
+                baseline: Some("baseline frozen by the completed turn".into()),
+            })
+        );
+        assert_eq!(prepared.skills_prompt, terminal.options.skills_prompt);
+        assert_eq!(authoritative.skill_ack, terminal.skill_ack);
+        assert!(authoritative.skills_started);
+    }
+
+    #[test]
+    fn fresh_skill_options_keep_the_prepared_context() {
         let mut prepared = options_with(None, None);
         prepared.skill_context = Some(crate::types::turn::SkillContext {
-            filter: None,
-            baseline: Some("prepared reset baseline".into()),
+            filter: Some(vec!["fresh".into()]),
+            baseline: Some("fresh baseline".into()),
         });
         let expected = prepared.clone();
 
-        rebase_terminal_skill_options(&mut prepared, Some(&terminal), true);
+        rebase_terminal_skill_options(&mut prepared, None, true).unwrap();
         assert_eq!(prepared.skill_context, expected.skill_context);
         assert_eq!(prepared.skills_prompt, expected.skills_prompt);
+    }
 
-        rebase_terminal_skill_options(&mut prepared, None, false);
-        assert_eq!(prepared.skill_context, expected.skill_context);
-        assert_eq!(prepared.skills_prompt, expected.skills_prompt);
+    #[test]
+    fn terminal_rebase_rejects_an_explicit_change_to_authoritative_legacy_context() {
+        let mut terminal = terminal_record_with_skill_state(2, true);
+        terminal.options.skill_context = None;
+        terminal.options.skills_prompt = Some("legacy body".into());
+        let mut prepared = options_with(None, None);
+        prepared.skill_context = Some(crate::types::turn::SkillContext {
+            filter: None,
+            baseline: None,
+        });
+
+        let error = rebase_terminal_skill_options(&mut prepared, Some(&terminal), true)
+            .expect_err("the latest terminal format controls legacy rejection");
+
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(error.to_string().contains("legacy session"));
     }
 
     #[test]
