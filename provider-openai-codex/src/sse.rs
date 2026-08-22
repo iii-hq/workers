@@ -178,15 +178,25 @@ pub fn merge_usage(data: &Value, into: &mut Usage) {
     // `input_tokens` is a TOTAL that includes the cached slice, so the miss
     // slice is derived — mapping the total verbatim would bill the cached
     // prefix twice.
-    let cached = u
+    let cache_read = u
         .pointer("/input_tokens_details/cached_tokens")
         .or_else(|| u.get("cached_tokens"))
         .and_then(Value::as_u64);
-    if let Some(v) = cached {
+    let cache_write = u
+        .pointer("/input_tokens_details/cache_write_tokens")
+        .or_else(|| u.pointer("/prompt_tokens_details/cache_write_tokens"))
+        .and_then(Value::as_u64);
+    if let Some(v) = cache_read {
         into.cache_read = Some(v);
     }
+    if let Some(v) = cache_write {
+        into.cache_write = Some(v);
+    }
     if let Some(v) = num("input_tokens").or_else(|| num("prompt_tokens")) {
-        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
+        into.input = Some(
+            v.saturating_sub(cache_read.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0)),
+        );
     }
     if let Some(v) = num("output_tokens").or_else(|| num("completion_tokens")) {
         into.output = Some(v);
@@ -420,6 +430,18 @@ mod tests {
             out.extend(handle_chunk(c, &mut state, "codex/gpt-5.5"));
         }
         (state, out)
+    }
+
+    #[test]
+    fn usage_keeps_cache_reads_and_writes_disjoint_from_input() {
+        let (state, _) = run(&[json!({"type":"response.completed","response":{"usage":{
+            "input_tokens":12,
+            "input_tokens_details":{"cached_tokens":6,"cache_write_tokens":2}
+        }}})]);
+        let usage = build_final(&state, "codex/gpt-test").usage.unwrap();
+        assert_eq!(usage.input, Some(4));
+        assert_eq!(usage.cache_read, Some(6));
+        assert_eq!(usage.cache_write, Some(2));
     }
 
     /// Contract pin (llm-router types::events): delta frames are slim —

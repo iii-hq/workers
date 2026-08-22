@@ -48,12 +48,30 @@ pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool) {
     }
 }
 
-/// Anchor on the last stable assistant turn, on its last block that accepts
-/// cache_control — Anthropic rejects it on thinking/redacted_thinking blocks,
-/// which can trail a turn under interleaved thinking.
+/// Anchor on the newest user turn's last tool_result when present; otherwise
+/// fall back to the last stable assistant turn. Anthropic rejects cache_control
+/// on thinking/redacted_thinking blocks, which can trail a turn under
+/// interleaved thinking.
 pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool) {
     if !enabled || wire.is_empty() {
         return;
+    }
+    if let Some(block) = wire
+        .iter_mut()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|message| message.get_mut("content").and_then(Value::as_array_mut))
+        .and_then(|content| {
+            content
+                .iter_mut()
+                .rev()
+                .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        })
+    {
+        if let Some(obj) = block.as_object_mut() {
+            obj.insert("cache_control".into(), ephemeral());
+            return;
+        }
     }
     let Some(last_stable) = (0..wire.len())
         .rev()
@@ -168,6 +186,57 @@ mod tests {
     }
 
     #[test]
+    fn newest_user_tool_result_wins_over_stable_assistant() {
+        let mut wire = vec![
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "old stable" }] }),
+            json!({ "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "old result" }] }),
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "latest stable" }] }),
+            json!({ "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t2", "content": "fresh" }] }),
+        ];
+        apply_messages_cache_anchor(&mut wire, true);
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
+        assert!(wire[1]["content"][0].get("cache_control").is_none());
+        assert!(wire[2]["content"][0].get("cache_control").is_none());
+        assert_eq!(wire[3]["content"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn last_tool_result_wins_over_other_blocks_in_the_newest_user_message() {
+        let mut wire = vec![
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "stable" }] }),
+            json!({ "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1", "content": "first" },
+                { "type": "tool_result", "tool_use_id": "t2", "content": "last" },
+                { "type": "text", "text": "trailing" },
+            ] }),
+        ];
+        apply_messages_cache_anchor(&mut wire, true);
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
+        assert!(wire[1]["content"][0].get("cache_control").is_none());
+        assert_eq!(wire[1]["content"][1]["cache_control"]["type"], "ephemeral");
+        assert!(wire[1]["content"][2].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn stable_assistant_remains_the_fallback_without_a_newest_user_tool_result() {
+        let mut wire = vec![
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "stable" }] }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": "next" }] }),
+        ];
+        apply_messages_cache_anchor(&mut wire, true);
+        assert_eq!(wire[0]["content"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn disabled_cache_leaves_the_newest_user_tool_result_unmarked() {
+        let mut wire = vec![json!({ "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "t1", "content": "fresh" },
+        ] })];
+        apply_messages_cache_anchor(&mut wire, false);
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
+    }
+
+    #[test]
     fn unstable_assistant_with_orphan_tool_use_not_anchored() {
         let mut wire = vec![
             json!({ "role": "assistant", "content": [{ "type": "text", "text": "old" }] }),
@@ -182,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_tool_use_is_stable() {
+    fn tool_result_is_preferred_over_a_resolved_tool_use() {
         let mut wire = vec![
             json!({ "role": "assistant", "content": [
                 { "type": "tool_use", "id": "t1", "name": "f", "input": {} },
@@ -192,7 +261,8 @@ mod tests {
             ] }),
         ];
         apply_messages_cache_anchor(&mut wire, true);
-        assert_eq!(wire[0]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
+        assert_eq!(wire[1]["content"][0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
@@ -204,8 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn partially_resolved_assistant_is_unstable() {
-        // two tool_uses, only one resolved downstream → not a stable anchor
+    fn tool_result_is_preferred_even_when_the_assistant_is_unstable() {
         let mut wire = vec![
             json!({ "role": "assistant", "content": [{ "type": "text", "text": "old" }] }),
             json!({ "role": "assistant", "content": [
@@ -217,10 +286,10 @@ mod tests {
             ] }),
         ];
         apply_messages_cache_anchor(&mut wire, true);
-        // falls back to the earlier fully-stable assistant
-        assert_eq!(wire[0]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[1]["content"][0].get("cache_control").is_none());
         assert!(wire[1]["content"][1].get("cache_control").is_none());
+        assert_eq!(wire[2]["content"][0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]

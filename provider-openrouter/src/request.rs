@@ -33,6 +33,7 @@ pub struct BodyArgs {
     /// Whether the model declares strict `json_schema` support; without it a
     /// requested schema degrades to `json_object` (with a warning upstream).
     pub allow_json_schema: bool,
+    pub session_id: Option<String>,
 }
 
 /// A requested schema maps to OpenRouter's strict `json_schema` mode when the
@@ -75,6 +76,9 @@ pub fn build_body(args: &BodyArgs) -> Value {
     if let Some(effort) = &args.reasoning_effort {
         body["reasoning"] = json!({ "effort": effort });
     }
+    if let Some(session_id) = &args.session_id {
+        body["session_id"] = json!(session_id);
+    }
     body
 }
 
@@ -107,6 +111,7 @@ mod tests {
             response_format: None,
             reasoning_effort: None,
             allow_json_schema: true,
+            session_id: None,
         }
     }
 
@@ -150,6 +155,13 @@ mod tests {
         a.reasoning_effort = Some("high".into());
         let body = build_body(&a);
         assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn body_carries_a_session_id_when_supplied() {
+        let mut a = args();
+        a.session_id = Some("stable-session-key".into());
+        assert_eq!(build_body(&a)["session_id"], "stable-session-key");
     }
 
     #[test]

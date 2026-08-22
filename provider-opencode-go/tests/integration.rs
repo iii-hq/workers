@@ -407,7 +407,10 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
         .await
         .expect("chat resolves even on upstream failure");
     assert_eq!(res["ok"], false, "chat response: {res}");
-    assert_eq!(res["error"]["code"], "auth_expired", "chat response: {res}");
+    assert_eq!(
+        res["error"]["code"], "router/provider_auth_expired",
+        "chat response: {res}"
+    );
     let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
     let frames = frames.lock();
     let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();

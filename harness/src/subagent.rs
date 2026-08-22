@@ -503,6 +503,7 @@ mod tests {
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
+            function_contract_ledger: Default::default(),
             context_snapshot: None,
             result: None,
             result_error: None,

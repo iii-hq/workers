@@ -192,6 +192,9 @@ pub struct ModelsReconcileResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderStreamInput {
     pub writer_ref: StreamChannelRef, // direction "write" (router-owned in relay mode)
+    /// Stable conversation identity for provider cache affinity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     pub model: String,

@@ -1434,6 +1434,8 @@ fn system_prompt(allowed_functions: &[String]) -> String {
     let policy = if allowed_functions.is_empty() {
         "Function dispatch is entirely disabled this turn — do not call any function.".to_string()
     } else {
+        let mut allowed_functions = allowed_functions.to_vec();
+        allowed_functions.sort();
         format!(
             "Your dispatch policy allows ONLY these functions: {}. This narrowed-policy \
              instruction OVERRIDES the general discovery requirement for this turn: call the \

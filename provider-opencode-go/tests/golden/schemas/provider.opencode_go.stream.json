@@ -716,6 +716,13 @@
           }
         ]
       },
+      "session_id": {
+        "description": "Stable conversation identity for provider cache affinity.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "system_prompt": {
         "type": [
           "string",

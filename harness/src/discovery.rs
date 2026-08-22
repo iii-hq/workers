@@ -88,9 +88,24 @@ fn fingerprint_of(functions: &[FunctionDescriptor]) -> u64 {
 /// Swap the snapshot under the write lock, bumping the generation only when the
 /// incoming set's fingerprint differs from the current one.
 pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
+    apply_inner(cell, functions, false).await;
+}
+
+/// Explicit availability events advance the generation even when list-visible
+/// fields stayed equal: the event may represent a response-schema-only change
+/// that native invocation descriptors do not carry.
+async fn apply_on_availability_event(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
+    apply_inner(cell, functions, true).await;
+}
+
+async fn apply_inner(
+    cell: &FunctionsCell,
+    functions: Vec<FunctionDescriptor>,
+    force_generation: bool,
+) {
     let fingerprint = fingerprint_of(&functions);
     let mut guard = cell.write().await;
-    if fingerprint == guard.fingerprint {
+    if !force_generation && fingerprint == guard.fingerprint {
         return;
     }
     let generation = guard.generation + 1;
@@ -189,12 +204,21 @@ async fn hydrate(
 
 /// Fetch the authoritative registry, hydrate schemas, and swap the snapshot;
 /// returns the count.
-async fn reload(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
+async fn reload(
+    iii: &Arc<IIIClient>,
+    cell: &FunctionsCell,
+    timeout_ms: u64,
+    availability_event: bool,
+) -> usize {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
     let functions = engine.functions_list().await;
     let functions = hydrate(&engine, cell, functions).await;
     let count = functions.len();
-    apply(cell, functions).await;
+    if availability_event {
+        apply_on_availability_event(cell, functions).await;
+    } else {
+        apply(cell, functions).await;
+    }
     count
 }
 
@@ -241,7 +265,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         ticker.tick().await; // consume the immediate first tick
         loop {
             ticker.tick().await;
-            let count = reload(&reload_iii, &reload_cell, timeout_ms).await;
+            let count = reload(&reload_iii, &reload_cell, timeout_ms, false).await;
             tracing::debug!(count, "function-registry cache safety-reloaded");
         }
     });
@@ -253,7 +277,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
             let engine = engine.clone();
             let cell = cell.clone();
             async move {
-                let count = reload(&engine, &cell, timeout_ms).await;
+                let count = reload(&engine, &cell, timeout_ms, true).await;
                 tracing::debug!(count, "function-registry cache refreshed");
                 Ok::<OnFunctionsChangeResponse, Error>(OnFunctionsChangeResponse { ok: true })
             }
@@ -333,6 +357,17 @@ mod tests {
             ],
         )
         .await;
+        assert_eq!(cell.read().await.generation, 2);
+    }
+
+    #[tokio::test]
+    async fn explicit_availability_event_bumps_generation_for_unchanged_list_shape() {
+        let cell = new_cell();
+        let fns = vec![desc("a::b", Some(json!({ "type": "object" })))];
+        apply(&cell, fns.clone()).await;
+
+        apply_on_availability_event(&cell, fns).await;
+
         assert_eq!(cell.read().await.generation, 2);
     }
 

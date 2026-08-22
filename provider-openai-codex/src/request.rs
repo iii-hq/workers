@@ -3,10 +3,10 @@
 use crate::config::{CodexBackendConfig, CodexConfig};
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
+use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 /// Codex client version whose Responses contract this worker mirrors.
 ///
@@ -61,23 +61,6 @@ pub fn build_body(args: &BodyArgs) -> Value {
         body["prompt_cache_key"] = json!(key);
     }
     body
-}
-
-/// Header-safe UUID derived from a stable conversation identity.
-pub fn derive_affinity_id(conversation_id: &str) -> Option<String> {
-    if conversation_id.trim().is_empty() {
-        return None;
-    }
-    let digest = Sha256::digest(conversation_id.as_bytes());
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&digest[..16]);
-    b[6] = (b[6] & 0x0F) | 0x40;
-    b[8] = (b[8] & 0x3F) | 0x80;
-    Some(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
-        b[14], b[15]
-    ))
 }
 
 /// Resolve header affinity and body cache keys independently. The durable

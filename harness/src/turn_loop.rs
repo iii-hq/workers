@@ -661,6 +661,11 @@ pub async fn run_step(
         }
     };
 
+    // A contract may be compacted only while its exact earlier full result is
+    // still present in the final request after assembly, hooks, and orphan
+    // repair. Persisted pruning happens with the normal pre-generation write.
+    trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
+
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
     // Generate: append an empty assistant under a deterministic id, stream
@@ -1032,7 +1037,7 @@ pub async fn run_step(
             match record.calls.get(&call.id).map(|c| c.state) {
                 Some(CallState::Done) | Some(CallState::Pending) => continue,
                 Some(CallState::Triggered) => {
-                    append_interrupted(&session, &record, call).await?;
+                    append_interrupted(&session, &mut record, call).await?;
                     let eid = record_entry_id(&record, &call.id);
                     mark_done(&mut record, &call.id, &eid);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -1058,6 +1063,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 mark_done(&mut record, &call.id, &entry_id);
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
@@ -1082,6 +1092,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 mark_done(&mut record, &call.id, &entry_id);
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
@@ -1101,6 +1116,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 mark_done(&mut record, &call.id, &entry_id);
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
@@ -1158,6 +1178,11 @@ pub async fn run_step(
                         &origin(&record.turn_id),
                     )
                     .await?;
+                    trigger::apply_contract_updates_after_append(
+                        &mut record.function_contract_ledger,
+                        &call.id,
+                        Vec::new(),
+                    );
                     mark_done(&mut record, &call.id, &entry_id);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
@@ -1201,6 +1226,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 // Done immediately, but the child ids stay on the checkpoint:
                 // they feed the fan-out guard, `harness::status` children, and
                 // the stop cascade.
@@ -1254,6 +1284,7 @@ pub async fn run_step(
                 )),
             )
             .await;
+            let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
                 .run_post_trigger(
@@ -1292,10 +1323,25 @@ pub async fn run_step(
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
+            let (data, contract_updates) = match info_raw {
+                Some(raw) => trigger::prepare_info_result(
+                    &call.id,
+                    &eff_args,
+                    &data,
+                    &record.function_contract_ledger,
+                    raw == data,
+                ),
+                None => (data, Vec::new()),
+            };
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
                 .await?;
+            trigger::apply_contract_updates_after_append(
+                &mut record.function_contract_ledger,
+                &call.id,
+                contract_updates,
+            );
             mark_done(&mut record, &call.id, &entry_id);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
         }
@@ -1443,7 +1489,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
         &cfg,
         &record.session_id,
         record.options.clone(),
-        record.functions_generation,
+        Some(record),
         None,
         &lineage,
     )
@@ -1493,6 +1539,11 @@ async fn handle_submit(
         &origin(&record.turn_id),
     )
     .await?;
+    trigger::apply_contract_updates_after_append(
+        &mut record.function_contract_ledger,
+        &submit.id,
+        Vec::new(),
+    );
     match validation {
         Ok(()) => complete_validated(deps, session, record, value).await,
         Err(msg) => retry_or_giveup(deps, session, record, &msg, value).await,
@@ -2276,7 +2327,7 @@ fn retryable_function_result_append_error(error: &HarnessError) -> bool {
 
 async fn append_interrupted(
     session: &SessionClient,
-    record: &TurnRecord,
+    record: &mut TurnRecord,
     call: &policy::PlannedCall,
 ) -> Result<(), HarnessError> {
     let data = trigger::ResultData {
@@ -2296,7 +2347,13 @@ async fn append_interrupted(
         &entry_id,
         &origin(&record.turn_id),
     )
-    .await
+    .await?;
+    trigger::apply_contract_updates_after_append(
+        &mut record.function_contract_ledger,
+        &call.id,
+        Vec::new(),
+    );
+    Ok(())
 }
 
 /// Steering: are there user-role entries after the assemble-time watermark?
@@ -2833,6 +2890,7 @@ fn concrete_allowed_tools(
             execution_mode: Some("sequential".to_string()),
         });
     }
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
     tools
 }
 
@@ -2893,14 +2951,134 @@ impl Clone for SessionStreamSink {
 #[cfg(test)]
 mod tests {
     use super::{
-        cancel_requested, count_model_visible, retryable_function_result_append_error,
-        transient_resume_allowed, turn_step_matches,
+        cancel_requested, concrete_allowed_tools, count_model_visible,
+        retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
     use crate::clients::router::ChatError;
     use crate::error::HarnessError;
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+
+    #[test]
+    fn normal_sibling_info_results_wait_for_context_validation_before_reuse() {
+        let details = serde_json::json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = crate::trigger::ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details,
+        };
+        let arguments = serde_json::json!({ "function_id": "worker::function" });
+        let mut ledger = std::collections::BTreeMap::new();
+
+        let (first, updates) =
+            crate::trigger::prepare_info_result("call-1", &arguments, &data, &ledger, true);
+        crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-1", updates);
+
+        let (second, updates) =
+            crate::trigger::prepare_info_result("call-2", &arguments, &data, &ledger, true);
+        assert_eq!(second.content, data.content, "a sibling result stays full");
+        crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-2", updates);
+
+        crate::trigger::retain_visible_contract_sources(
+            &mut ledger,
+            &[serde_json::json!({
+                "role": "function_result",
+                "function_call_id": "call-2",
+                "function_id": "engine::functions::info",
+                "content": serde_json::to_value(&second.content).unwrap()
+            })],
+        );
+        let (third, updates) =
+            crate::trigger::prepare_info_result("call-3", &arguments, &data, &ledger, true);
+
+        assert_eq!(
+            third.content,
+            vec![ContentBlock::text(
+                serde_json::json!({
+                    "function_id": "worker::function",
+                    "contract_status": "unchanged_in_context",
+                    "source_function_call_id": "call-2"
+                })
+                .to_string()
+            )]
+        );
+        assert!(updates.is_empty());
+        assert_eq!(first.content, data.content);
+    }
+
+    #[test]
+    fn normal_result_append_invalidates_a_reused_source_id_without_replacing_it() {
+        use crate::types::turn::FunctionContractLedgerEntry;
+
+        let old_source = FunctionContractLedgerEntry {
+            contract_digest: "old".into(),
+            source_function_call_id: "reused-call".into(),
+            source_content_digest: "old-content".into(),
+            eligible: true,
+        };
+        let unrelated_source = FunctionContractLedgerEntry {
+            contract_digest: "other".into(),
+            source_function_call_id: "other-call".into(),
+            source_content_digest: "other-content".into(),
+            eligible: true,
+        };
+        let replacement = FunctionContractLedgerEntry {
+            contract_digest: "new".into(),
+            source_function_call_id: "reused-call".into(),
+            source_content_digest: "new-content".into(),
+            eligible: false,
+        };
+        let mut ledger = std::collections::BTreeMap::from([
+            ("worker::function".into(), old_source),
+            ("worker::other".into(), unrelated_source.clone()),
+        ]);
+
+        crate::trigger::apply_contract_updates_after_append(
+            &mut ledger,
+            "reused-call",
+            vec![("worker::function".into(), replacement)],
+        );
+
+        assert_eq!(
+            ledger,
+            std::collections::BTreeMap::from([("worker::other".into(), unrelated_source)])
+        );
+    }
+
+    #[test]
+    fn concrete_native_tools_are_sorted_by_function_id() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec![],
+                expose: crate::types::turn::ExposeMode::Native,
+            }));
+        let descriptors = vec![
+            crate::clients::FunctionDescriptor {
+                function_id: "z::last".into(),
+                description: None,
+                parameters: None,
+            },
+            crate::clients::FunctionDescriptor {
+                function_id: "a::first".into(),
+                description: None,
+                parameters: None,
+            },
+        ];
+
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
 
     #[test]
     fn estimated_prompt_categories_split_and_clamp_named_skills() {

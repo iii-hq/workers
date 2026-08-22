@@ -16,12 +16,30 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use sha2::{Digest, Sha256};
 
 use crate::types::router::ProviderResolveResponse;
 
 /// Staleness bound after an unobservable operator edit to the router's
 /// provider slice (credential/api_url/max_tokens).
 pub const RESOLVE_TTL: Duration = Duration::from_secs(30);
+
+/// Header-safe UUID derived from a stable conversation identity.
+pub fn derive_affinity_id(session_id: &str) -> Option<String> {
+    if session_id.trim().is_empty() {
+        return None;
+    }
+    let digest = Sha256::digest(session_id.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    Some(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    ))
+}
 
 /// The per-provider scaffold state a stream/register/ready handler clones.
 #[derive(Clone, Default)]
@@ -101,6 +119,15 @@ impl ScaffoldCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_a_stable_uuid_v4_from_a_nonblank_session() {
+        assert_eq!(
+            derive_affinity_id("s_conversation").as_deref(),
+            Some("3e66265f-70e5-4dda-a97f-4fabfc61b5ed")
+        );
+        assert_eq!(derive_affinity_id("  "), None);
+    }
 
     fn resolved(url: &str) -> ProviderResolveResponse {
         serde_json::from_value(serde_json::json!({

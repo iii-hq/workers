@@ -100,7 +100,7 @@ pub async fn handle(
         req.tools.as_deref().unwrap_or(&[]),
         &req.messages,
     );
-    let headers = build_headers(&cfg)
+    let headers = build_headers(&cfg, None)
         .into_iter()
         .map(|(name, value)| (name.to_string(), value))
         .collect();

@@ -717,8 +717,7 @@
         ]
       },
       "session_id": {
-        "default": null,
-        "description": "Durable conversation identity used only to derive header affinity.",
+        "description": "Stable conversation identity for provider cache affinity.",
         "type": [
           "string",
           "null"
