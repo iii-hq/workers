@@ -4,6 +4,8 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
   selectionForSend,
+  skillSelectionForSend,
+  toggleSkillSelection,
   toSelection,
   valueToChoice,
 } from './system-prompt-selection'
@@ -131,5 +133,23 @@ describe('choice codec', () => {
       expect(valueToChoice(choiceToValue(choice))).toEqual(choice)
     }
     expect(choiceToValue({ named: 'pirate' })).toBe('named:pirate')
+  })
+})
+
+describe('skill selection', () => {
+  it('treats undefined as all, creates subsets, and resets after clearing the last id', () => {
+    expect(toggleSkillSelection(undefined, 'review')).toEqual(['review'])
+    expect(toggleSkillSelection(['review'], 'release')).toEqual([
+      'review',
+      'release',
+    ])
+    expect(toggleSkillSelection(['review'], 'review')).toBeUndefined()
+  })
+
+  it('sends a non-empty subset only before the session is established', () => {
+    expect(skillSelectionForSend(undefined, false)).toBeUndefined()
+    expect(skillSelectionForSend([], false)).toBeUndefined()
+    expect(skillSelectionForSend(['review'], false)).toEqual(['review'])
+    expect(skillSelectionForSend(['review'], true)).toBeUndefined()
   })
 })

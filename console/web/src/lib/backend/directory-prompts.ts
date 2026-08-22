@@ -4,11 +4,10 @@
  *  - `directory::system-prompts::*` — the new-session identity picker.
  *  - `directory::prompts::*` — command templates, offered as session addons
  *    on the welcome screen and as `/name` slash commands in the composer.
- *  - `directory::skills::*` — skills, offered as session addons and as
- *    `/skill:<id>` slash commands.
+ *  - `directory::skills::*` — listed by the session ID filter and offered as
+ *    `/skill:<id>` slash commands (only the manual command resolves a body).
  *
- * The pattern everywhere: list the names, resolve one body at selection
- * time. Authoring is deliberately absent — the iii-directory UI's page owns
+ * Authoring is deliberately absent — the iii-directory UI's page owns
  * `create` / `update` / `delete`.
  */
 
@@ -34,12 +33,14 @@ export interface SkillEntry {
   title: string
   description: string
   modified_at: string
+  disable_model_invocation: boolean
 }
 
 export interface SkillBody {
   id: string
   title: string
   body: string
+  disable_model_invocation: boolean
   /** Absolute on-disk path of the skill file; its parent directory is the
    * skill's base directory (where `scripts/`, `reference/` payload lives).
    * Absent on directory workers that predate the field. */

@@ -89,6 +89,7 @@ import { SessionTriggers } from './SessionTriggers'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
+  skillSelectionForSend,
 } from './system-prompt-selection'
 import { WorktreeBadge } from './WorktreeBadge'
 
@@ -1120,6 +1121,10 @@ export function ChatView({
         effectiveSystemPrompt,
         turnEstablished,
       )
+      const skills = skillSelectionForSend(
+        conversation.skills,
+        conversation.started === true || willQueue,
+      )
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1319,6 +1324,7 @@ export function ChatView({
               messageId,
               thinkingLevel,
               systemPrompt,
+              skills,
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1368,6 +1374,7 @@ export function ChatView({
             messageId,
             thinkingLevel,
             systemPrompt,
+            skills,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
@@ -1651,6 +1658,8 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      conversation.skills,
+      conversation.started,
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,

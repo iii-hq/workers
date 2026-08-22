@@ -50,6 +50,7 @@ import {
 import { Message } from './Message'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
+  type SkillSelection,
   type SystemPromptState,
 } from './system-prompt-selection'
 import {
@@ -856,6 +857,10 @@ function resolveEmptyState(
     systemPrompt: active?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: active
       ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
+      : undefined,
+    skills: active?.skills,
+    onSkillsChange: active
+      ? (next: SkillSelection) => ctx.setSkills(active.id, next)
       : undefined,
   }
 

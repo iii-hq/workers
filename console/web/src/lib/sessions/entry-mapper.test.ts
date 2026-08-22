@@ -317,6 +317,24 @@ describe('entrySegments', () => {
     ).not.toHaveProperty('validation')
   })
 
+  it('renders durable skill catalog updates as informational notices', () => {
+    const content =
+      'The available skills have changed. This list supersedes the previous available skills list.'
+
+    for (const item of [
+      userItem('opaque-id', content, { skill_update: true }),
+      userItem('e_t_123_skills_7', content),
+    ]) {
+      expect(entrySegments(item)[0]).toMatchObject({
+        role: 'system',
+        kind: 'notice',
+        tone: 'info',
+        content,
+      })
+    }
+    expect(entrySegments(userItem('ordinary-id', content))[0].role).toBe('user')
+  })
+
   it('hides the machine-authored transient recovery prompt', () => {
     expect(
       entrySegments(

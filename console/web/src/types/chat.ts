@@ -344,6 +344,10 @@ export interface Conversation {
    * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
    */
   systemPrompt?: SystemPromptState
+  /** Undefined/empty means all model-invocable skills; otherwise exact IDs. */
+  skills?: string[]
+  /** Whether durable transcript entries already exist for this session. */
+  started?: boolean
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's

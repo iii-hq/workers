@@ -12,7 +12,7 @@
  *   session is materialised by `ensureSession` on the first send so empty
  *   chats never litter the store.
  * - rename / model / mode changes write through `session::set-meta`. The
- *   console owns the metadata convention `{ surface, model, mode,
+ *   console owns the metadata convention `{ surface, model, mode, skills,
  *   title_manual }`; metadata replaces WHOLESALE, so the full object is
  *   always sent.
  * - delete writes through `session::delete`; the sidebar prunes on the
@@ -98,6 +98,7 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     // made a chat operate in the wrong directory without the user choosing it.
     workingDir: null,
     messages: [],
+    started: false,
     status: 'idle',
     draft: true,
     hydrated: true,
@@ -188,8 +189,39 @@ function decodeSystemPrompt(v: unknown): SystemPromptState {
   }
 }
 
+function decodeSkills(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const skills = [
+    ...new Set(v.filter((id): id is string => typeof id === 'string' && !!id)),
+  ]
+  return skills.length > 0 ? skills : undefined
+}
+
+function decodeSessionSelections(
+  md: Record<string, unknown>,
+  started: boolean,
+): { systemPrompt: SystemPromptState; skills: string[] | undefined } {
+  let systemPrompt = decodeSystemPrompt(md.system_prompt)
+  let skills = decodeSkills(md.skills)
+  if (!started) {
+    const legacySkills = systemPrompt.addons
+      .filter((addon) => addon.kind === 'skill')
+      .map((addon) => addon.name)
+    if (!Array.isArray(md.skills) && legacySkills.length > 0) {
+      skills = [...new Set(legacySkills)]
+    }
+    if (legacySkills.length > 0) {
+      systemPrompt = {
+        ...systemPrompt,
+        addons: systemPrompt.addons.filter((addon) => addon.kind !== 'skill'),
+      }
+    }
+  }
+  return { systemPrompt, skills }
+}
+
 /** The console's session metadata convention (replaces wholesale on writes). */
-function metadataFor(
+export function metadataFor(
   c: Pick<
     Conversation,
     | 'model'
@@ -198,6 +230,7 @@ function metadataFor(
     | 'workingDir'
     | 'memoryBank'
     | 'systemPrompt'
+    | 'skills'
   >,
 ): Record<string, unknown> {
   const systemPrompt = encodeSystemPrompt(c.systemPrompt)
@@ -209,11 +242,25 @@ function metadataFor(
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
     ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
     ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+    ...(c.skills?.length ? { skills: c.skills } : {}),
   }
 }
 
-function conversationFromMeta(meta: SessionMeta): Conversation {
+export function preSendMetaUpdate(c: Conversation): {
+  session_id: string
+  metadata: Record<string, unknown>
+} | null {
+  return !c.draft && c.started !== true
+    ? { session_id: c.id, metadata: metadataFor(c) }
+    : null
+}
+
+function conversationFromMeta(
+  meta: SessionMeta,
+  started = meta.message_count > 0,
+): Conversation {
   const md = meta.metadata ?? {}
+  const { systemPrompt, skills } = decodeSessionSelections(md, started)
   return {
     id: meta.session_id,
     title: meta.title || meta.session_id,
@@ -232,7 +279,9 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
         : null,
-    systemPrompt: decodeSystemPrompt(md.system_prompt),
+    systemPrompt,
+    skills,
+    started,
     parentId:
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
@@ -325,7 +374,8 @@ export function mergeConversationMeta(
   existing: Conversation | undefined,
   meta: SessionMeta,
 ): Conversation {
-  const mapped = conversationFromMeta(meta)
+  const started = existing?.started === true || meta.message_count > 0
+  const mapped = conversationFromMeta(meta, started)
   if (!existing || existing.draft) return mapped
   return {
     ...mapped,
@@ -415,6 +465,7 @@ export interface ConversationsApi {
    * the composer shows it read-only once the chat has messages.
    */
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
+  setSkills: (id: string, skills: string[] | undefined) => void
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; only meaningful while the chat is a draft. */
   setWorkingDir: (id: string, dir: string) => void
@@ -482,6 +533,26 @@ export function mergeHydratedTranscript(
     }
   }
   return messages
+}
+
+export function mergeHydratedConversation(
+  conversation: Conversation,
+  items: TranscriptItem[],
+  upserts: HydrationUpsert[],
+): Conversation {
+  const working = conversation.status === 'working'
+  return {
+    ...conversation,
+    messages: mergeHydratedTranscript(
+      transcriptToMessages(items, conversation.id, { working }),
+      conversation.messages,
+      upserts,
+      { sessionId: conversation.id, working },
+    ),
+    started:
+      conversation.started === true || items.length > 0 || upserts.length > 0,
+    hydrated: true,
+  }
 }
 
 /** A failed transcript read is still a terminal hydration outcome. Keep the
@@ -614,6 +685,10 @@ export function useConversations(
         onMetaUpdated: (event) => {
           patchConversation(event.session_id, (c) => {
             const md = event.metadata ?? {}
+            const { systemPrompt, skills } = decodeSessionSelections(
+              md,
+              c.started === true,
+            )
             return {
               ...c,
               title: event.title || c.title,
@@ -627,7 +702,8 @@ export function useConversations(
                 typeof md.memory_bank === 'string' && md.memory_bank.length > 0
                   ? md.memory_bank
                   : null,
-              systemPrompt: decodeSystemPrompt(md.system_prompt),
+              systemPrompt,
+              skills,
               parentId:
                 typeof md.parent_session_id === 'string'
                   ? md.parent_session_id
@@ -717,6 +793,7 @@ export function useConversations(
               sessionId,
               working: c.status === 'working',
             }),
+            started: true,
             updatedAt: event.timestamp,
           }))
         },
@@ -741,6 +818,7 @@ export function useConversations(
               streaming: c.status === 'working',
               working: c.status === 'working',
             }),
+            started: true,
             updatedAt: event.timestamp,
           }))
         },
@@ -785,19 +863,9 @@ export function useConversations(
     void fetchTranscript(sessionId)
       .then((items) => {
         if (cancelled) return
-        patchConversation(sessionId, (c) => {
-          const working = c.status === 'working'
-          return {
-            ...c,
-            messages: mergeHydratedTranscript(
-              transcriptToMessages(items, sessionId, { working }),
-              c.messages,
-              upserts,
-              { sessionId, working },
-            ),
-            hydrated: true,
-          }
-        })
+        patchConversation(sessionId, (c) =>
+          mergeHydratedConversation(c, items, upserts),
+        )
       })
       .catch((err) => {
         // A request from a conversation the user already left must stay stale
@@ -994,6 +1062,20 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setSkills = useCallback(
+    (id: string, skills: string[] | undefined) => {
+      const normalized = skills?.length ? skills : undefined
+      patchConversation(id, (c) => ({
+        ...c,
+        skills: normalized,
+        updatedAt: Date.now(),
+      }))
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta({ ...conv, skills: normalized })
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const setWorkingDir = useCallback(
     (id: string, dir: string) => {
       patchConversation(id, (c) => ({
@@ -1052,7 +1134,20 @@ export function useConversations(
   const ensureSession = useCallback(
     async (id: string, titleHint?: string) => {
       const conv = conversations.find((c) => c.id === id)
-      if (!serverEnabled || !conv?.draft) return
+      if (!serverEnabled || !conv) return
+      const metaUpdate = preSendMetaUpdate(conv)
+      if (metaUpdate) {
+        try {
+          await setSessionMeta(metaUpdate)
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn('[conversations] session::set-meta failed', err)
+          }
+          throw err
+        }
+        return
+      }
+      if (!conv.draft) return
       const title = conv.titleManual
         ? conv.title
         : titleHint
@@ -1171,6 +1266,7 @@ export function useConversations(
     setModel,
     setMemoryBank,
     setSystemPrompt,
+    setSkills,
     setMode,
     setWorkingDir,
     prefillWorkingDir,
