@@ -716,7 +716,10 @@ export function markDurableStarted(
   return {
     ...c,
     started: true,
-    legacySkillMigration: turnEstablished ? undefined : c.legacySkillMigration,
+    legacySkillMigration:
+      turnEstablished && c.legacySkillMigration?.state === 'candidate'
+        ? undefined
+        : c.legacySkillMigration,
   }
 }
 

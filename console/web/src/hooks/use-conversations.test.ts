@@ -1049,9 +1049,125 @@ describe('mergeConversationMeta / system_prompt', () => {
 
       const assistantStarted = markDurableStarted(delayed, true)
       expect(assistantStarted.started).toBe(true)
-      expect(assistantStarted.legacySkillMigration).toBeUndefined()
+      expect(assistantStarted.legacySkillMigration).toMatchObject({
+        state: 'ready',
+      })
     },
   )
+
+  it.each([
+    { label: 'explicit All', selection: undefined, selected: undefined },
+    {
+      label: 'latest subset',
+      selection: ['release'],
+      selected: ['release'],
+    },
+  ])(
+    'keeps acknowledged $label and metadata through assistant evidence and a delayed candidate event',
+    ({ selection, selected }) => {
+      const legacyMetadata = {
+        surface: 'console',
+        model: 'provider::old',
+        mode: 'agent',
+        parent_session_id: 'console-parent',
+        function_call_id: 'call-1',
+        depth: 2,
+        spawned_by: 'agent',
+        foreign: { keep: true },
+        system_prompt: {
+          choice: 'default',
+          strategy: 'enrich',
+          addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+        },
+      }
+      const ready = mergeHydratedConversation(
+        applyConversationMetadataPatch(
+          mergeConversationMeta(
+            undefined,
+            sessionMeta({ metadata: legacyMetadata }),
+          ),
+          { model: 'provider::new', mode: 'ask', skills: selection },
+          3_000,
+        ),
+        [],
+        [],
+      )
+      const acknowledged = completePreSendMetaUpdate(
+        ready,
+        ready.legacySkillMigration?.edits,
+      )
+
+      const assistantStarted = markDurableStarted(acknowledged, true)
+      expect(assistantStarted.legacySkillMigration).toMatchObject({
+        state: 'empty',
+      })
+
+      const delayed = mergeConversationMeta(
+        assistantStarted,
+        sessionMeta({
+          message_count: 1,
+          metadata: {
+            surface: 'console',
+            model: 'provider::old',
+            mode: 'agent',
+            system_prompt: legacyMetadata.system_prompt,
+          },
+        }),
+      )
+      const edited = applyConversationMetadataPatch(
+        delayed,
+        { memoryBank: 'current-bank' },
+        4_000,
+      )
+
+      expect(edited).toMatchObject({
+        started: true,
+        model: 'provider::new',
+        mode: 'ask',
+        memoryBank: 'current-bank',
+        skills: selected,
+      })
+      expect(edited.systemPrompt?.addons).toEqual([])
+      expect(metadataForWrite(edited)).toEqual({
+        surface: 'console',
+        model: 'provider::new',
+        mode: 'ask',
+        memory_bank: 'current-bank',
+        parent_session_id: 'console-parent',
+        function_call_id: 'call-1',
+        depth: 2,
+        spawned_by: 'agent',
+        foreign: { keep: true },
+        ...(selected ? { skills: selected } : {}),
+      })
+    },
+  )
+
+  it('clears an unconfirmed legacy candidate when assistant evidence arrives', () => {
+    const candidate = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          surface: 'console',
+          mode: 'agent',
+          system_prompt: {
+            choice: 'default',
+            strategy: 'enrich',
+            addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+          },
+        },
+      }),
+    )
+
+    const established = markDurableStarted(candidate, true)
+
+    expect(established.started).toBe(true)
+    expect(established.legacySkillMigration).toBeUndefined()
+    expect(established.skills).toBeUndefined()
+    expect(established.systemPrompt?.addons).toEqual([
+      { kind: 'skill', name: 'review', body: 'legacy body' },
+    ])
+  })
 
   it('uses the preserved metadata base for ordinary writes after migration acknowledgment', () => {
     const ready = mergeHydratedConversation(

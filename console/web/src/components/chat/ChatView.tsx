@@ -84,6 +84,7 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
+import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
 import {
@@ -217,8 +218,17 @@ export function ChatView({
   const harnessBlocked = conversationsCtx
     ? isChatBlockedByHarness(conversationsCtx.harnessStatus)
     : false
-  const harnessBlockedRef = useRef(harnessBlocked)
-  harnessBlockedRef.current = harnessBlocked
+  // The session list can render a server session before its transcript read
+  // finishes. Until then, an empty local message list says nothing about
+  // whether this is the first turn, so defer the whole request.
+  const sessionHydrating = isSessionSubmitBlockedByHydration({
+    realBackend: backend.id === 'real',
+    draft: conversation.draft,
+    hydrated: conversation.hydrated,
+  })
+  const composerBlocked = harnessBlocked || sessionHydrating
+  const composerBlockedRef = useRef(composerBlocked)
+  composerBlockedRef.current = composerBlocked
   // This view is keyed by conversation, so mounting IS opening a session:
   // the caret belongs in the composer, on the devices where that is free.
   const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
@@ -1053,7 +1063,7 @@ export function ChatView({
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
-      if (harnessBlockedRef.current) return
+      if (composerBlockedRef.current) return
       const conversationId = conversation.id
       // Steering a discovered/sub-agent session: inherit the model the
       // transcript shows when the conversation carries none of its own.
@@ -2281,12 +2291,14 @@ export function ChatView({
             onBrowseChange={setBrowsedQueuedId}
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
-            blocked={harnessBlocked}
-            autoFocus={focusComposerOnOpen && !harnessBlocked}
+            blocked={composerBlocked}
+            autoFocus={focusComposerOnOpen && !composerBlocked}
             blockedPlaceholder={
-              conversationsCtx
-                ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
-                : undefined
+              sessionHydrating
+                ? 'loading conversation…'
+                : conversationsCtx
+                  ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
+                  : undefined
             }
           />
         </div>
