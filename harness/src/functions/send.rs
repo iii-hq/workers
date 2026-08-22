@@ -653,6 +653,29 @@ pub(crate) async fn deliver(
     if let Some((outcome, row_entry)) = try_enqueue(deps, cfg, session_id, &options, &d).await? {
         return Ok((outcome, row_entry));
     }
+    let preview = message_preview(d.message);
+    if d.skills_explicit {
+        return with_delivery_guard(
+            &deps.locks,
+            session_id,
+            d.caller_holds_session_lock,
+            || async move {
+                let mut options = options;
+                let previous =
+                    crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+                let session = deps.session().await;
+                let appended =
+                    append_explicit_after_terminal_rebase(&mut options, previous.as_ref(), || {
+                        session.append(session_id, d.message, d.entry_id, None, d.origin)
+                    })
+                    .await?;
+                let outcome =
+                    seed_or_merge(deps, cfg, session_id, options, preview, d.lineage, true).await?;
+                Ok((outcome, appended))
+            },
+        )
+        .await;
+    }
     let appended = deps
         .session()
         .await
@@ -661,7 +684,6 @@ pub(crate) async fn deliver(
     // Every whole-record seed/merge writer uses the turn loop's session lock.
     // An in-turn spawn targeting its own session already holds that
     // non-reentrant lock; every other target acquires it here.
-    let preview = message_preview(d.message);
     let outcome = with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
         seed_or_merge(
             deps,
@@ -948,7 +970,9 @@ async fn seed_or_merge(
                 }
                 recheck => {
                     let previous = latest_seed_record(&rec, recheck.as_ref());
-                    rebase_terminal_skill_options(&mut options, Some(previous), skills_explicit)?;
+                    if !skills_explicit {
+                        rebase_terminal_skill_options(&mut options, Some(previous), false)?;
+                    }
                     seed_new(
                         deps,
                         cfg,
@@ -963,7 +987,9 @@ async fn seed_or_merge(
             }
         }
         previous => {
-            rebase_terminal_skill_options(&mut options, previous.as_ref(), skills_explicit)?;
+            if !skills_explicit {
+                rebase_terminal_skill_options(&mut options, previous.as_ref(), false)?;
+            }
             seed_new(
                 deps,
                 cfg,
@@ -1012,6 +1038,23 @@ fn rebase_terminal_skill_options(
     options.skill_context = previous.options.skill_context.clone();
     options.skills_prompt = previous.options.skills_prompt.clone();
     Ok(())
+}
+
+async fn append_explicit_after_terminal_rebase<F, Fut>(
+    options: &mut TurnOptions,
+    previous: Option<&TurnRecord>,
+    append: F,
+) -> Result<String, HarnessError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, HarnessError>>,
+{
+    validate_active_skill_request(
+        previous.is_some_and(|record| !record.status.is_terminal()),
+        true,
+    )?;
+    rebase_terminal_skill_options(options, previous, true)?;
+    append().await
 }
 
 /// Seed a fresh turn record and enqueue its first step. Exposed to the turn
@@ -1557,6 +1600,34 @@ mod tests {
 
         assert_eq!(error.code(), "harness/invalid_request");
         assert!(error.to_string().contains("legacy session"));
+    }
+
+    #[tokio::test]
+    async fn authoritative_legacy_rejection_does_not_append_input() {
+        let mut terminal = terminal_record_with_skill_state(2, true);
+        terminal.options.skill_context = None;
+        terminal.options.skills_prompt = Some("legacy body".into());
+        let mut prepared = options_with(None, None);
+        prepared.skill_context = Some(crate::types::turn::SkillContext {
+            filter: None,
+            baseline: None,
+        });
+        let appended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let append_observer = appended.clone();
+        let locks = crate::locks::SessionLocks::new();
+
+        let error = with_delivery_guard(&locks, "s_1", false, || async {
+            append_explicit_after_terminal_rebase(&mut prepared, Some(&terminal), || async move {
+                append_observer.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok("e_user".to_string())
+            })
+            .await
+        })
+        .await
+        .expect_err("legacy validation must reject before append");
+
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(!appended.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
