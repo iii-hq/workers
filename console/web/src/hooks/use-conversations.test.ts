@@ -6,6 +6,7 @@ import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  applyConversationMetadataPatch,
   completeFailedHydration,
   isUntouchedDraft,
   markBackgroundedStale,
@@ -698,7 +699,12 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(migrated.systemPrompt?.addons).toEqual([])
     expect(preSendMetaUpdate(migrated)).toEqual({
       session_id: 'console-1',
-      metadata: { foreign: 'preserved', skills: ['review'] },
+      metadata: {
+        foreign: 'preserved',
+        surface: 'console',
+        mode: 'agent',
+        skills: ['review'],
+      },
     })
   })
 
@@ -735,9 +741,215 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(staleSnapshot.systemPrompt?.addons).toEqual([])
     expect(preSendMetaUpdate(staleSnapshot)).toEqual({
       session_id: 'console-1',
-      metadata: { foreign: 'preserved', skills: ['review'] },
+      metadata: {
+        foreign: 'preserved',
+        surface: 'console',
+        mode: 'agent',
+        skills: ['review'],
+      },
     })
   })
+
+  it('rebuilds every Console-owned field from the current ready conversation', () => {
+    const ready = mergeHydratedConversation(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({
+          metadata: {
+            surface: 'legacy-surface',
+            model: 'provider::old',
+            mode: 'agent',
+            title_manual: true,
+            fs_scope: { root: '/old' },
+            memory_bank: 'old-bank',
+            parent_session_id: 'console-parent',
+            foreign: { keep: true },
+            system_prompt: {
+              choice: 'default',
+              strategy: 'enrich',
+              addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+            },
+          },
+        }),
+      ),
+      [],
+      [],
+    )
+    const current = applyConversationMetadataPatch(
+      ready,
+      {
+        title: 'renamed',
+        titleManual: false,
+        model: 'provider::new',
+        mode: 'ask',
+        workingDir: null,
+        memoryBank: null,
+        systemPrompt: {
+          choice: { named: 'pirate' },
+          strategy: 'override',
+          namedBody: 'Arr.',
+          customText: '',
+          addons: [{ kind: 'prompt', name: 'tone', body: 'Be brief.' }],
+        },
+        skills: ['release'],
+      },
+      3_000,
+    )
+    const afterEvent = mergeConversationMeta(
+      current,
+      sessionMeta({
+        title: 'stale title',
+        metadata: {
+          surface: 'console',
+          model: 'provider::old',
+          mode: 'agent',
+          title_manual: true,
+          fs_scope: { root: '/old' },
+          memory_bank: 'old-bank',
+          parent_session_id: 'console-parent',
+          foreign: { keep: true },
+          skills: ['review'],
+        },
+      }),
+    )
+
+    expect(afterEvent).toMatchObject({
+      title: 'renamed',
+      titleManual: false,
+      model: 'provider::new',
+      mode: 'ask',
+      workingDir: null,
+      memoryBank: null,
+      skills: ['release'],
+    })
+    expect(preSendMetaUpdate(afterEvent)).toEqual({
+      session_id: 'console-1',
+      metadata: {
+        surface: 'console',
+        model: 'provider::new',
+        mode: 'ask',
+        parent_session_id: 'console-parent',
+        foreign: { keep: true },
+        system_prompt: {
+          choice: { named: 'pirate' },
+          strategy: 'override',
+          named_body: 'Arr.',
+          addons: [{ kind: 'prompt', name: 'tone', body: 'Be brief.' }],
+        },
+        skills: ['release'],
+      },
+    })
+  })
+
+  it.each([
+    { label: 'latest subset', selection: ['release'], skills: ['release'] },
+    { label: 'explicit All', selection: undefined, skills: undefined },
+  ])(
+    'keeps $label through candidate picker, meta event, and empty hydration',
+    ({ selection, skills }) => {
+      const legacyMetadata = {
+        surface: 'console',
+        mode: 'agent',
+        parent_session_id: 'console-parent',
+        foreign: { keep: true },
+        system_prompt: {
+          choice: 'default',
+          strategy: 'enrich',
+          addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+        },
+      }
+      const candidate = mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: legacyMetadata }),
+      )
+      const picked = applyConversationMetadataPatch(
+        candidate,
+        { skills: selection },
+        3_000,
+      )
+      const afterEvent = mergeConversationMeta(
+        picked,
+        sessionMeta({
+          metadata: {
+            surface: 'console',
+            mode: 'agent',
+            skills: ['stale'],
+          },
+        }),
+      )
+      expect(afterEvent.systemPrompt?.addons).toEqual([
+        { kind: 'skill', name: 'review', body: 'legacy body' },
+      ])
+      const migrated = mergeHydratedConversation(afterEvent, [], [])
+
+      expect(preSendMetaUpdate(migrated)).toEqual({
+        session_id: 'console-1',
+        metadata: {
+          surface: 'console',
+          mode: 'agent',
+          parent_session_id: 'console-parent',
+          foreign: { keep: true },
+          ...(skills ? { skills } : {}),
+        },
+      })
+    },
+  )
+
+  it.each([
+    { label: 'latest subset', selection: ['release'], skills: ['release'] },
+    { label: 'explicit All', selection: undefined, skills: undefined },
+  ])(
+    'keeps $label through ready picker, meta event, and immediate pre-send',
+    ({ selection, skills }) => {
+      const legacyMetadata = {
+        surface: 'console',
+        mode: 'agent',
+        parent_session_id: 'console-parent',
+        foreign: { keep: true },
+        system_prompt: {
+          choice: 'default',
+          strategy: 'enrich',
+          addons: [{ kind: 'skill', name: 'review', body: 'legacy body' }],
+        },
+      }
+      const ready = mergeHydratedConversation(
+        mergeConversationMeta(
+          undefined,
+          sessionMeta({ metadata: legacyMetadata }),
+        ),
+        [],
+        [],
+      )
+      const picked = applyConversationMetadataPatch(
+        ready,
+        { skills: selection },
+        3_000,
+      )
+      expect(preSendMetaUpdate(picked)?.metadata.skills).toEqual(skills)
+
+      const afterEvent = mergeConversationMeta(
+        picked,
+        sessionMeta({
+          metadata: {
+            surface: 'console',
+            mode: 'agent',
+            skills: ['stale'],
+          },
+        }),
+      )
+
+      expect(preSendMetaUpdate(afterEvent)).toEqual({
+        session_id: 'console-1',
+        metadata: {
+          surface: 'console',
+          mode: 'agent',
+          parent_session_id: 'console-parent',
+          foreign: { keep: true },
+          ...(skills ? { skills } : {}),
+        },
+      })
+    },
+  )
 })
 
 describe('resolveActiveConversationId', () => {

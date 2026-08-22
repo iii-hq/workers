@@ -310,6 +310,18 @@ export interface MessagePatch {
 /** Mirrors session-manager's SessionStatus. */
 export type ConversationStatus = 'idle' | 'working' | 'done' | 'error'
 
+export interface ConversationMetadataEdits {
+  title?: string
+  titleManual?: boolean
+  model?: ModelId | null
+  mode?: Mode
+  workingDir?: string | null
+  memoryBank?: string | null
+  systemPrompt?: SystemPromptState
+  /** An own `undefined` value records an explicit All-skills selection. */
+  skills?: string[] | undefined
+}
+
 export interface Conversation {
   /**
    * The engine session_id (`console-<uuid>` for console-created chats).
@@ -354,10 +366,11 @@ export interface Conversation {
    * arrives later can be finalized immediately.
    */
   legacySkillMigration?:
-    | { state: 'empty' }
+    | { state: 'empty'; edits?: ConversationMetadataEdits }
     | {
         state: 'candidate' | 'ready'
         metadata: Record<string, unknown>
+        edits?: ConversationMetadataEdits
       }
   /** Whether durable transcript entries already exist for this session. */
   started?: boolean
