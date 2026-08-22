@@ -8,18 +8,34 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SHARED_DEPENDENCY_RANGES = {
+EXPERIMENTAL_WORKERS = {
+    "a2ui",
+    "canvas",
+    "document",
+    "eval",
+    "pdf",
+    "provider-opencode-go",
+    "provider-openrouter",
+}
+DEPENDENCY_RANGES = {
     "configuration": "0.x",
-    "cron": "0.x",
+    "console": "^1.9.12",
+    "context-manager": "^1.1.3",
+    "cron": "^0.21.9",
+    "harness": "^1.8.5",
+    "iii-directory": "^1.2.3",
     "iii-observability": "0.x",
     "iii-stream": "0.x",
     "llm-router": "^1.4.12",
-    "memory": "0.x",
-    "provider-openai-codex": "0.x",
-    "queue": "0.x",
-    "shell": "0.x",
+    "memory": "^0.2.2",
+    "provider-anthropic": "^1.2.8",
+    "provider-openai": "^1.2.7",
+    "provider-openai-codex": "^0.4.4",
+    "queue": "^0.21.5",
+    "session-manager": "^1.0.13",
+    "shell": "^0.11.10",
     "skills": "0.x",
-    "state": "0.x",
+    "state": "^0.22.2",
 }
 
 
@@ -59,21 +75,24 @@ def test_worker_dependency_graph_is_acyclic() -> None:
         visit(worker)
 
 
-def test_shared_dependencies_use_compatible_ranges() -> None:
+def test_non_experimental_workers_use_validated_dependency_ranges() -> None:
     consumers: dict[str, list[str]] = {
-        dependency: [] for dependency in SHARED_DEPENDENCY_RANGES
+        dependency: [] for dependency in DEPENDENCY_RANGES
     }
 
     for manifest in sorted(REPO_ROOT.glob("*/iii.worker.yaml")):
-        worker_dependencies = dependencies(manifest.parent.name)
-        for dependency, expected_range in SHARED_DEPENDENCY_RANGES.items():
+        worker = manifest.parent.name
+        if worker in EXPERIMENTAL_WORKERS:
+            continue
+        worker_dependencies = dependencies(worker)
+        for dependency, expected_range in DEPENDENCY_RANGES.items():
             if dependency in worker_dependencies:
-                consumers[dependency].append(manifest.parent.name)
+                consumers[dependency].append(worker)
                 dependency_range = worker_dependencies[dependency]
                 assert dependency_range == expected_range, (
                     f"{manifest.relative_to(REPO_ROOT)} pins shared dependency "
                     f"{dependency} to {dependency_range!r}; use {expected_range!r} so "
-                    "all consumers resolve the same compatible worker version"
+                    "non-experimental consumers resolve the validated worker release"
                 )
 
     for dependency, workers in consumers.items():
@@ -97,6 +116,7 @@ def test_harness_llm_stack_uses_shared_state_range() -> None:
     providers = sorted(
         manifest.parent.name
         for manifest in REPO_ROOT.glob("provider-*/iii.worker.yaml")
+        if manifest.parent.name not in EXPERIMENTAL_WORKERS
     )
 
     for worker in ("llm-router", *providers):

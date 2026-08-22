@@ -54,7 +54,7 @@ fn worker_manifest_uses_the_standalone_queue_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("queue".into())),
-        Some(&serde_yaml::Value::String("0.x".into()))
+        Some(&serde_yaml::Value::String("^0.21.5".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-queue".into())));
 }
@@ -70,7 +70,7 @@ fn worker_manifest_uses_the_standalone_state_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("state".into())),
-        Some(&serde_yaml::Value::String("0.x".into()))
+        Some(&serde_yaml::Value::String("^0.22.2".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-state".into())));
 }
@@ -86,7 +86,7 @@ fn worker_manifest_uses_the_standalone_cron_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("cron".into())),
-        Some(&serde_yaml::Value::String("0.x".into()))
+        Some(&serde_yaml::Value::String("^0.21.9".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-cron".into())));
 }
@@ -103,13 +103,13 @@ fn worker_manifest_uses_the_tested_harness_stack() {
     for (worker, version) in [
         ("session-manager", "^1.0.13"),
         ("llm-router", "^1.4.12"),
-        ("provider-openai-codex", "0.x"),
+        ("provider-openai-codex", "^0.4.4"),
         ("context-manager", "^1.1.3"),
         ("iii-directory", "^1.2.3"),
         ("provider-anthropic", "^1.2.8"),
-        ("provider-openai", "^1.0.0"),
-        ("shell", "0.x"),
-        ("console", "^1.9.11"),
+        ("provider-openai", "^1.2.7"),
+        ("shell", "^0.11.10"),
+        ("console", "^1.9.12"),
     ] {
         assert_eq!(
             dependencies.get(serde_yaml::Value::String(worker.into())),
