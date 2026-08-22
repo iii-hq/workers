@@ -2012,6 +2012,10 @@ First paragraph.
             serde_json::to_value(&enabled).unwrap()["disable_model_invocation"],
             false
         );
+        assert!(serde_json::to_value(&enabled)
+            .unwrap()
+            .get("body")
+            .is_none());
         assert!(disabled.disable_model_invocation);
         assert_eq!(
             serde_json::to_value(&disabled).unwrap()["disable_model_invocation"],

@@ -529,26 +529,35 @@ mod tests {
         let cell = new_cell();
         assert!(!cell.read().await.available());
 
-        admit(
-            &cell,
-            json!({"skills": [{
+        let first = json!({"skills": [
+            {
                 "id": "one", "title": "One", "description": "First skill",
                 "disable_model_invocation": false, "bytes": 1, "modified_at": "a"
-            }]}),
-        )
-        .await
-        .unwrap();
+            },
+            {
+                "id": "two", "title": "Two", "description": "Second skill",
+                "disable_model_invocation": false, "bytes": 2, "modified_at": "b"
+            }
+        ]});
+        let first_body = render(&parse_observation(&first).unwrap(), None).body;
+        admit(&cell, first).await.unwrap();
         assert_eq!(cell.read().await.generation, 1);
 
-        admit(
-            &cell,
-            json!({"skills": [{
+        let noisy_reversed = json!({"skills": [
+            {
+                "id": "two", "title": "Two", "description": " Second  skill ",
+                "disable_model_invocation": false, "bytes": 999, "modified_at": "later"
+            },
+            {
                 "id": "one", "title": "One", "description": " First  skill ",
-                "disable_model_invocation": false, "bytes": 999, "modified_at": "b"
-            }]}),
-        )
-        .await
-        .unwrap();
+                "disable_model_invocation": false, "bytes": 998, "modified_at": "earlier"
+            }
+        ]});
+        assert_eq!(
+            render(&parse_observation(&noisy_reversed).unwrap(), None).body,
+            first_body
+        );
+        admit(&cell, noisy_reversed).await.unwrap();
         assert_eq!(cell.read().await.generation, 1);
 
         assert!(admit(&cell, json!({"skills": [{"id": "broken"}]}))
