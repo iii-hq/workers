@@ -83,6 +83,11 @@ contract in
 [`architecture/integration.md`](architecture/integration.md): the functions to
 trigger, the triggers to bind, and the canonical consumer patterns.
 
+## Local development
+
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) to run the Harness and its required
+workers from the local source tree with `iii compose`.
+
 ## Working with iii
 
 iii is a WebSocket-routed worker mesh. One engine holds a live registry of every
