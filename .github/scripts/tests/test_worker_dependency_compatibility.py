@@ -129,7 +129,11 @@ def test_provider_related_lockfiles_track_llm_router_version() -> None:
     )
     expected = router_manifest["package"]["version"]
 
-    lockfiles = sorted(REPO_ROOT.glob("provider-*/Cargo.lock"))
+    lockfiles = sorted(
+        lockfile
+        for lockfile in REPO_ROOT.glob("provider-*/Cargo.lock")
+        if lockfile.parent.name not in EXPERIMENTAL_WORKERS
+    )
     lockfiles.append(REPO_ROOT / "crates" / "provider-integration-testkit" / "Cargo.lock")
 
     for lockfile in lockfiles:
