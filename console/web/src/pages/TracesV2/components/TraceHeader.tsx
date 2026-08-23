@@ -1,7 +1,16 @@
-import { AlertCircle, ChevronRight, Clock, Copy, Layers, X } from 'lucide-react'
+import {
+  AlertCircle,
+  ChevronRight,
+  Clock,
+  Copy,
+  Layers,
+  LocateFixed,
+  X,
+} from 'lucide-react'
 import { Fragment, useMemo } from 'react'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
+import type { TraceChatLink } from '../lib/traceChatLink'
 import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
@@ -15,6 +24,10 @@ interface TraceHeaderProps {
   traceId: string
   onClose: () => void
   onSpanClick?: (span: VisualizationSpan) => void
+  /** The chat session/turn behind this trace, when its spans carry it. */
+  chatLink?: TraceChatLink | null
+  /** Open the linked conversation AND land on this trace's turn. */
+  onOpenMessage?: (link: TraceChatLink) => void
 }
 
 export function TraceHeader({
@@ -22,6 +35,8 @@ export function TraceHeader({
   traceId,
   onClose,
   onSpanClick,
+  chatLink,
+  onOpenMessage,
 }: TraceHeaderProps) {
   const { copiedKey, copy } = useCopyToClipboard()
   const copied = copiedKey === 'traceId'
@@ -146,6 +161,21 @@ export function TraceHeader({
             </span>
           </span>
         )}
+
+        {chatLink?.turnId && onOpenMessage ? (
+          <>
+            <span aria-hidden className="w-px h-3 bg-edge" />
+            <button
+              type="button"
+              onClick={() => onOpenMessage(chatLink)}
+              aria-label="go to message"
+              title="open the chat at this trace's message"
+              className="flex items-center px-1.5 py-0.5 rounded-xs bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+            >
+              <LocateFixed className="size-4" />
+            </button>
+          </>
+        ) : null}
       </div>
 
       {workerList.length > 1 && (

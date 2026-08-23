@@ -7,6 +7,7 @@
 
 import type { TracesFilterParams } from '../api/traces'
 import type { TraceFilterState } from '../hooks/useTraceFilters'
+import { SESSION_ID_ATTR } from './followTurn'
 
 export interface FilterValidationWarnings {
   durationSwapped?: boolean
@@ -85,6 +86,32 @@ export function buildFilterParams(
   if (filters.sortOrder) params.sort_order = filters.sortOrder
 
   return { params, warnings }
+}
+
+/**
+ * Layer the automatic active-session scope onto built filter params.
+ *
+ * The session identity attributes (`iii.session.id`) live on WORKER child
+ * spans, never on a trace's root — a roots-only attribute filter matches
+ * nothing (verified against a live engine: 0 rows without
+ * `search_all_spans`, the session's real traces with it). So the scope
+ * rides the same wire shape as text search: match across all spans, and
+ * let the list's `dedupeToTraceRoots` collapse the response back to one
+ * row per trace. Appended after any user attribute filters, so both apply.
+ */
+export function withSessionScope(
+  params: TracesFilterParams,
+  sessionId: string | null,
+): TracesFilterParams {
+  if (!sessionId) return params
+  return {
+    ...params,
+    attributes: [
+      ...(params.attributes ?? []),
+      [SESSION_ID_ATTR, sessionId] as [string, string],
+    ],
+    search_all_spans: true,
+  }
 }
 
 /**

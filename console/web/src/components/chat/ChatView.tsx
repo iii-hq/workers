@@ -52,6 +52,8 @@ import {
   loadedSkillIds,
   slashChip,
 } from '@/lib/slash-commands'
+import { clearChatMessageFocus, useChatMessageFocus } from '@/lib/trace-links'
+import { turnAnchorMessageId } from '@/lib/turn-anchor'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import {
   activateWorkingDir,
@@ -1811,6 +1813,37 @@ export function ChatView({
     }
   })()
 
+  /* Trace → message landing: a pending turn-focus for THIS session resolves
+     to the transcript row to center (see lib/turn-anchor), recomputed as the
+     transcript hydrates. Consumed when MessageList lands on it; dropped once
+     a hydrated transcript provably lacks the turn, so a stale request can't
+     fire on a later visit. */
+  const chatFocusEvent = useChatMessageFocus()
+  const chatFocus =
+    chatFocusEvent && chatFocusEvent.sessionId === conversation.id
+      ? chatFocusEvent
+      : undefined
+  const focusMessageId = useMemo(
+    () =>
+      chatFocus
+        ? turnAnchorMessageId(conversation.messages, chatFocus.turnId)
+        : null,
+    [chatFocus, conversation.messages],
+  )
+  useEffect(() => {
+    if (!chatFocus) return
+    if (conversation.hydrated !== false && focusMessageId === null) {
+      clearChatMessageFocus(chatFocus.id)
+    }
+  }, [chatFocus, conversation.hydrated, focusMessageId])
+  const chatFocusIdRef = useRef<number | null>(null)
+  chatFocusIdRef.current = chatFocus?.id ?? null
+  const handleFocusMessageHandled = useCallback(() => {
+    if (chatFocusIdRef.current !== null) {
+      clearChatMessageFocus(chatFocusIdRef.current)
+    }
+  }, [])
+
   const isDock = density === 'dock'
   const compact = isDock || onBack !== undefined
   const headerPad = compact ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
@@ -2225,6 +2258,8 @@ export function ChatView({
             : undefined
         }
         triggersById={triggersById}
+        focusMessageId={focusMessageId}
+        onFocusMessageHandled={handleFocusMessageHandled}
       />
       <LiveRegion announcement={announcer.announcement} />
 

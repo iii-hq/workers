@@ -118,6 +118,13 @@ interface MessageListProps {
   defaultOpenCalls?: boolean
   /** Registration rows by subscription id, for trigger-fired card detail. */
   triggersById?: ReadonlyMap<string, SessionTriggerInfo>
+  /**
+   * External landing request (trace → "go to message"): once this row's node
+   * exists, the list centers it, flashes it, and calls
+   * `onFocusMessageHandled` so the owner can consume the request.
+   */
+  focusMessageId?: string | null
+  onFocusMessageHandled?: () => void
 }
 
 /**
@@ -299,6 +306,8 @@ export function MessageList({
   worktreePicker,
   defaultOpenCalls,
   triggersById,
+  focusMessageId,
+  onFocusMessageHandled,
 }: MessageListProps) {
   const containerRef = useRef<HTMLElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -595,6 +604,70 @@ export function MessageList({
     writeScrollTop,
   ])
 
+  /* External landing (trace → "go to message"): center the requested row
+     once it exists, then hand the request back to the owner. Tail following
+     is paused first so a live tail can't yank the view back down; the flash
+     gives the jump a visible landmark. Gated on hydration so it never
+     centers against a partial history. */
+  const focusAppliedRef = useRef<string | null>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: message arrival is the retry trigger while the target row hasn't rendered yet.
+  useEffect(() => {
+    if (!focusMessageId) {
+      focusAppliedRef.current = null
+      return
+    }
+    if (!transcriptHydrated || focusAppliedRef.current === focusMessageId) {
+      return
+    }
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || !content) return
+    // `data-message-row` is the transcript-row identity (top-level rows,
+    // group items, group summaries) — not `data-message-id`, which is the
+    // card-level attribute the approval jump uses.
+    const node = Array.from(
+      content.querySelectorAll<HTMLElement>('[data-message-row]'),
+    ).find((el) => el.dataset.messageRow === focusMessageId)
+    if (!node) return
+    focusAppliedRef.current = focusMessageId
+    cancelTailAnimation()
+    didInitialScrollRef.current = true
+    transitionTailState('paused')
+    const containerRect = container.getBoundingClientRect()
+    const nodeRect = node.getBoundingClientRect()
+    const centeredTop =
+      container.scrollTop +
+      nodeRect.top -
+      containerRect.top -
+      (container.clientHeight - nodeRect.height) / 2
+    const target = Math.max(
+      0,
+      Math.min(tailScrollTarget(container), centeredTop),
+    )
+    if (reducedMotionRef.current) writeScrollTop(container, target)
+    else container.scrollTo({ top: target, behavior: 'smooth' })
+    if (typeof node.animate === 'function') {
+      node.animate(
+        [
+          {
+            backgroundColor: 'color-mix(in srgb, currentColor 5%, transparent)',
+          },
+          { backgroundColor: 'transparent' },
+        ],
+        { duration: 900, easing: 'ease-out' },
+      )
+    }
+    onFocusMessageHandled?.()
+  }, [
+    focusMessageId,
+    transcriptHydrated,
+    messages,
+    onFocusMessageHandled,
+    cancelTailAnimation,
+    transitionTailState,
+    writeScrollTop,
+  ])
+
   if (messages.length === 0 && !header) {
     return (
       <EmptyState
@@ -830,7 +903,11 @@ function FunctionTriggerGroup({
             const notification =
               item.kind === 'trigger-activity' ? item.notification : undefined
             return (
-              <div key={item.id} className={cn(index > 0 && '-mt-6.5')}>
+              <div
+                key={item.id}
+                data-message-row={message.id}
+                className={cn(index > 0 && '-mt-6.5')}
+              >
                 <Message
                   message={message}
                   triggerNotification={notification}
@@ -853,7 +930,9 @@ function FunctionTriggerGroup({
         </div>
       </div>
       {row.summary ? (
-        <Message message={row.summary} copyText={summaryCopyText} />
+        <div data-message-row={row.summary.id}>
+          <Message message={row.summary} copyText={summaryCopyText} />
+        </div>
       ) : null}
     </section>
   )
