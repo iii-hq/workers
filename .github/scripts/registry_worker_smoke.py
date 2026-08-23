@@ -164,10 +164,14 @@ def test_worker(daemon_namespace: str, worker_spec: str) -> dict[str, Any]:
         )
         payload = {"file": str(compose_file)}
 
-        initial, error = trigger(daemon_namespace, "compose::up", payload)
-        if error:
-            return {"worker": worker_spec, "status": "fail", "errors": [error]}
         try:
+            initial, error = trigger(daemon_namespace, "compose::up", payload)
+            if error:
+                return {
+                    "worker": worker_spec,
+                    "status": "fail",
+                    "errors": [error],
+                }
             if worker == "state":
                 initial = initial or {}
                 result = {"status": initial.get("status"), "up": initial}

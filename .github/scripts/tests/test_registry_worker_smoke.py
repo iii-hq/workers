@@ -38,6 +38,34 @@ def test_ordered_workers_replaces_harness_selector_and_moves_it_last() -> None:
     ) == ["browser", "state", "harness@next"]
 
 
+def test_worker_stops_isolated_project_when_initial_up_errors(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_trigger(
+        _namespace: str,
+        function_id: str,
+        _payload: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        calls.append(function_id)
+        if function_id == "compose::up":
+            return None, {"code": "CLI_TIMEOUT", "message": "timed out"}
+        return {"status": "ok"}, None
+
+    monkeypatch.setattr(registry_worker_smoke, "trigger", fake_trigger)
+    monkeypatch.setattr(
+        registry_worker_smoke,
+        "compose_text",
+        lambda namespace: f"namespace: {namespace}\ncontainers: {{}}\n",
+    )
+
+    assert registry_worker_smoke.test_worker("a", "browser") == {
+        "worker": "browser",
+        "status": "fail",
+        "errors": [{"code": "CLI_TIMEOUT", "message": "timed out"}],
+    }
+    assert calls == ["compose::up", "compose::down"]
+
+
 def test_worker_uses_add_result_and_always_stops_isolated_project(
     monkeypatch,
 ) -> None:
