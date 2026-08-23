@@ -19,7 +19,7 @@ EXPERIMENTAL_WORKERS = {
 }
 DEPENDENCY_RANGES = {
     "configuration": "0.x",
-    "console": "^1.9.12",
+    "console": "^1.9.11",
     "context-manager": "^1.1.3",
     "cron": "^0.21.9",
     "harness": "^1.8.5",
@@ -38,11 +38,7 @@ DEPENDENCY_RANGES = {
     "state": "^0.22.2",
 }
 
-# Harness is installed from its candidate channel while its stable release is
-# pending. Stable workers must resolve only stable dependency releases.
-WORKER_DEPENDENCY_RANGE_OVERRIDES = {
-    "harness": {"shell": "^0.11.10"},
-}
+WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {}
 
 
 def dependencies(worker: str) -> dict[str, str]:
