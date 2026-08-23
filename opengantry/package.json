@@ -1,6 +1,6 @@
 {
   "name": "opengantry",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "OpenGantry governance worker for iii: kernel verify and middleware gate.",
   "license": "Apache-2.0",
