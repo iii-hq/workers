@@ -115,6 +115,11 @@ Node/Python workers follow the standard `npm install` / `pip install -e .`
 flow — see each module's README for specifics. `harness` is a pnpm
 monorepo (`pnpm install && pnpm build`).
 
+## Harness local development
+
+See [`harness/DEVELOPMENT.md`](harness/DEVELOPMENT.md) to start the iii engine
+and the local Harness stack with `worker-compose.yaml`.
+
 ## Binary releases
 
 Rust workers ship as standalone binaries — see the modules table above —
