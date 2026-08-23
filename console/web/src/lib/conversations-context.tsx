@@ -42,6 +42,13 @@ const backend = getDefaultBackend()
 
 interface ConversationsContextValue extends ConversationsApi {
   backend: ChatBackend
+  /**
+   * Select a conversation AND ask the host to place the chat pane — the
+   * programmatic "open this session" other screens use (e.g. a trace's
+   * open-session button). Same behavior as an injected page's
+   * `ConversationAdapter.selectConversation`.
+   */
+  openConversation: (sessionId: string) => void
   modelOptions: ModelOption[]
   catalogLoading: boolean
   /** Providers present as harness workers (configured or not). */
@@ -211,9 +218,14 @@ export function ConversationsProvider({
     }
   }, [injectableUiRuntime])
 
+  const openConversation = useCallback((sessionId: string) => {
+    conversationAdapterRef.current?.selectConversation(sessionId)
+  }, [])
+
   const value: ConversationsContextValue = {
     ...api,
     backend,
+    openConversation,
     modelOptions,
     catalogLoading,
     presentProviders,

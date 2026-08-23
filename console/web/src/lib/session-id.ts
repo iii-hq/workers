@@ -1,12 +1,15 @@
 /**
  * Message / session ID helpers.
  *
- * One fresh `msg-<uuid>` per send. It flows into the engine via baggage so
- * the traces UI can "Group by message", and rides `harness::send` as the
+ * One fresh `msg-<uuid>` per send. It rides `harness::send` as the
  * `idempotency_key`, from which the harness derives the user message's
  * session-manager entry id (`e_idem_<message_id>`) — which is also how the
  * console's optimistic user row reconciles in place (see
- * `predictedUserEntryId` in lib/backend/harness-send.ts).
+ * `predictedUserEntryId` in lib/backend/harness-send.ts) — and travels in
+ * `options.metadata.message_id`. It does NOT reach the trace baggage: the
+ * `iii.message.id` span attribute the traces UI groups by is the harness
+ * TURN id (`t_<uuid>`, see harness/src/functions/turn.rs), correlated back
+ * to transcript rows via the `e_<turn_id>_…` entry ids (lib/turn-anchor.ts).
  *
  * (Conversation ids are minted with the `console-` prefix via
  * [`newSessionId`] and double as the engine session_id, so there is no
@@ -33,9 +36,9 @@ function mintId(prefix: string): string {
 }
 
 /**
- * Mint a fresh message_id for a single turn. Called once per `send()`
- * so every user turn lands under its own `iii.message.id` bucket in
- * the traces UI's "Group by message" view.
+ * Mint a fresh message_id for a single turn. Called once per `send()` so
+ * every user turn gets its own idempotency key (and thus its own
+ * `e_idem_<message_id>` transcript entry).
  */
 export function newMessageId(): string {
   return mintId(MESSAGE_PREFIX)

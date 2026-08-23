@@ -109,6 +109,13 @@ interface MessageListProps {
   defaultOpenCalls?: boolean
   /** Registration rows by subscription id, for trigger-fired card detail. */
   triggersById?: ReadonlyMap<string, SessionTriggerInfo>
+  /**
+   * External landing request (trace → "go to message"): once this row's node
+   * exists, the list centers it, flashes it, and calls
+   * `onFocusMessageHandled` so the owner can consume the request.
+   */
+  focusMessageId?: string | null
+  onFocusMessageHandled?: () => void
 }
 
 /**
@@ -284,6 +291,8 @@ export function MessageList({
   workingDir,
   defaultOpenCalls,
   triggersById,
+  focusMessageId,
+  onFocusMessageHandled,
 }: MessageListProps) {
   const containerRef = useRef<HTMLElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -570,6 +579,67 @@ export function MessageList({
     writeScrollTop,
   ])
 
+  /* External landing (trace → "go to message"): center the requested row
+     once it exists, then hand the request back to the owner. Tail following
+     is paused first so a live tail can't yank the view back down; the flash
+     gives the jump a visible landmark. Gated on hydration so it never
+     centers against a partial history. */
+  const focusAppliedRef = useRef<string | null>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: message arrival is the retry trigger while the target row hasn't rendered yet.
+  useEffect(() => {
+    if (!focusMessageId) {
+      focusAppliedRef.current = null
+      return
+    }
+    if (!transcriptHydrated || focusAppliedRef.current === focusMessageId) {
+      return
+    }
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || !content) return
+    const node = Array.from(
+      content.querySelectorAll<HTMLElement>('[data-message-id]'),
+    ).find((el) => el.dataset.messageId === focusMessageId)
+    if (!node) return
+    focusAppliedRef.current = focusMessageId
+    cancelTailAnimation()
+    didInitialScrollRef.current = true
+    transitionTailState('paused')
+    const containerRect = container.getBoundingClientRect()
+    const nodeRect = node.getBoundingClientRect()
+    const centeredTop =
+      container.scrollTop +
+      nodeRect.top -
+      containerRect.top -
+      (container.clientHeight - nodeRect.height) / 2
+    const target = Math.max(
+      0,
+      Math.min(tailScrollTarget(container), centeredTop),
+    )
+    if (reducedMotionRef.current) writeScrollTop(container, target)
+    else container.scrollTo({ top: target, behavior: 'smooth' })
+    if (typeof node.animate === 'function') {
+      node.animate(
+        [
+          {
+            backgroundColor: 'color-mix(in srgb, currentColor 5%, transparent)',
+          },
+          { backgroundColor: 'transparent' },
+        ],
+        { duration: 900, easing: 'ease-out' },
+      )
+    }
+    onFocusMessageHandled?.()
+  }, [
+    focusMessageId,
+    transcriptHydrated,
+    messages,
+    onFocusMessageHandled,
+    cancelTailAnimation,
+    transitionTailState,
+    writeScrollTop,
+  ])
+
   if (messages.length === 0 && !header) {
     return (
       <EmptyState {...resolveEmptyState(ctx, density, onConfigureProvider)} />
@@ -659,7 +729,6 @@ export function MessageList({
               row.kind === 'trigger-activity' ? row.id : row.message.id
             const node = (
               <Message
-                key={rowKey}
                 message={m}
                 triggerNotification={
                   row.kind === 'trigger-activity' ? row.notification : undefined
@@ -679,12 +748,16 @@ export function MessageList({
                 }
               />
             )
-            return tight ? (
-              <div key={rowKey} className="-mt-6.5">
+            // Every row carries its message id so external landings
+            // (trace → "go to message") can find the DOM node to center.
+            return (
+              <div
+                key={rowKey}
+                data-message-id={m.id}
+                className={tight ? '-mt-6.5' : undefined}
+              >
                 {node}
               </div>
-            ) : (
-              node
             )
           })}
           {isThinking ? (
@@ -802,7 +875,11 @@ function FunctionTriggerGroup({
           data-function-trigger-group-calls=""
         >
           {visibleCalls.map((call, index) => (
-            <div key={call.id} className={cn(index > 0 && '-mt-6.5')}>
+            <div
+              key={call.id}
+              data-message-id={call.id}
+              className={cn(index > 0 && '-mt-6.5')}
+            >
               <Message
                 message={call}
                 defaultOpenCalls={defaultOpenCalls}
@@ -817,7 +894,9 @@ function FunctionTriggerGroup({
         </div>
       </div>
       {row.summary ? (
-        <Message message={row.summary} copyText={summaryCopyText} />
+        <div data-message-id={row.summary.id}>
+          <Message message={row.summary} copyText={summaryCopyText} />
+        </div>
       ) : null}
     </section>
   )
