@@ -33,9 +33,15 @@ DEPENDENCY_RANGES = {
     "provider-openai-codex": "^0.4.4",
     "queue": "^0.21.5",
     "session-manager": "^1.0.13",
-    "shell": "^0.11.10",
+    "shell": "^0.11.9",
     "skills": "0.x",
     "state": "^0.22.2",
+}
+
+# Harness is installed from its candidate channel while its stable release is
+# pending. Stable workers must resolve only stable dependency releases.
+WORKER_DEPENDENCY_RANGE_OVERRIDES = {
+    "harness": {"shell": "^0.11.10"},
 }
 
 
@@ -85,8 +91,10 @@ def test_non_experimental_workers_use_validated_dependency_ranges() -> None:
         if worker in EXPERIMENTAL_WORKERS:
             continue
         worker_dependencies = dependencies(worker)
+        worker_overrides = WORKER_DEPENDENCY_RANGE_OVERRIDES.get(worker, {})
         for dependency, expected_range in DEPENDENCY_RANGES.items():
             if dependency in worker_dependencies:
+                expected_range = worker_overrides.get(dependency, expected_range)
                 consumers[dependency].append(worker)
                 dependency_range = worker_dependencies[dependency]
                 assert dependency_range == expected_range, (
@@ -97,6 +105,13 @@ def test_non_experimental_workers_use_validated_dependency_ranges() -> None:
 
     for dependency, workers in consumers.items():
         assert workers, f"expected at least one consumer of {dependency}"
+
+
+def test_worker_dependency_range_overrides_are_active() -> None:
+    for worker, overrides in WORKER_DEPENDENCY_RANGE_OVERRIDES.items():
+        worker_dependencies = dependencies(worker)
+        for dependency, expected_range in overrides.items():
+            assert worker_dependencies.get(dependency) == expected_range
 
 
 def test_approval_gate_uses_shared_runtime_dependency_ranges() -> None:
