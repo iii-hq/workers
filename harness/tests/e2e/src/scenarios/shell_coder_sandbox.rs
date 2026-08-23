@@ -62,7 +62,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
     ScenarioSpec {
         id: ID,
-        version: 3,
+        version: 4,
         prompt: format!(
             "Perform this verification entirely in the current workspace and in the stated order.\n\n\
              1. Add the `shell` worker from the public registry and wait for that add operation to \
@@ -289,17 +289,8 @@ fn execution_quality_award(function_call_errors: u64) -> u8 {
 }
 
 fn is_registry_install(call: &common::ObservedFunctionCall, worker: &str) -> bool {
-    call.function_id == "worker::add"
-        && call
-            .arguments
-            .pointer("/source/kind")
-            .and_then(Value::as_str)
-            == Some("registry")
-        && call
-            .arguments
-            .pointer("/source/name")
-            .and_then(Value::as_str)
-            == Some(worker)
+    call.function_id == "compose::add"
+        && call.arguments.get("worker").and_then(Value::as_str) == Some(worker)
 }
 
 fn is_exact_create(call: &common::ObservedFunctionCall, root: &Path) -> bool {

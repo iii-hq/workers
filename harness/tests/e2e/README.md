@@ -267,9 +267,9 @@ The source launcher performs a clean first boot with isolated configuration,
 session, queue, state and log directories. The Registry launcher uses the same
 isolated layout, installs the exact dispatched versions and records the
 resolved `iii.lock`, worker list and bootstrap logs. The
-`shell_coder_sandbox` scenario tests engine-side Registry installation through
-`worker::add`; the `iii worker add` CLI path remains covered by the explicit
-[Harness quickstart validator](../quickstart/README.md).
+`shell_coder_sandbox` scenario tests Registry installation through
+`compose::add`; the explicit [Harness quickstart validator](../quickstart/README.md)
+covers the same Compose path from the CLI.
 
 ## Adding a scenario
 
