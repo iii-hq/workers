@@ -1010,15 +1010,23 @@ export async function clearBrowserCookies(
  * browser export extensions produce, camelCase or snake_case) or the
  * Netscape `cookies.txt` tab-separated format. Unknown lines are skipped.
  */
+function isCookie(c: BrowserCookie | null): c is BrowserCookie {
+  return c !== null
+}
+
 export function parseCookieFile(text: string): BrowserCookie[] {
   const trimmed = text.trim()
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     try {
       const parsed = JSON.parse(trimmed)
       const list = Array.isArray(parsed) ? parsed : (parsed.cookies ?? [])
-      return (list as Record<string, unknown>[])
-        .map(cookieFromJson)
-        .filter((c): c is BrowserCookie => c !== null)
+      return (list as unknown[])
+        .map((raw) =>
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? cookieFromJson(raw as Record<string, unknown>)
+            : null,
+        )
+        .filter(isCookie)
     } catch {
       return []
     }
@@ -1026,9 +1034,14 @@ export function parseCookieFile(text: string): BrowserCookie[] {
   return trimmed
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line !== '' && !line.startsWith('#'))
+    .filter(
+      (line) =>
+        line !== '' &&
+        // #HttpOnly_ marks an HttpOnly cookie, not a comment.
+        (!line.startsWith('#') || line.startsWith('#HttpOnly_')),
+    )
     .map(cookieFromNetscape)
-    .filter((c): c is BrowserCookie => c !== null)
+    .filter(isCookie)
 }
 
 function cookieFromJson(raw: Record<string, unknown>): BrowserCookie | null {
@@ -1041,7 +1054,9 @@ function cookieFromJson(raw: Record<string, unknown>): BrowserCookie | null {
   if (domain) cookie.domain = domain
   const path = str(raw.path)
   if (path) cookie.path = path
-  if (typeof expiryRaw === 'number') cookie.expires = expiryRaw
+  // CDP dumps use expires: -1 for a session cookie; only a real future
+  // stamp travels.
+  if (typeof expiryRaw === 'number' && expiryRaw > 0) cookie.expires = expiryRaw
   const secure = bool(raw.secure)
   if (secure !== undefined) cookie.secure = secure
   const httpOnly = bool(raw.httpOnly ?? raw.http_only)

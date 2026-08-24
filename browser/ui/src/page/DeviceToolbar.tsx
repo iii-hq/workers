@@ -84,6 +84,11 @@ interface DeviceToolbarProps {
   onReset: () => void
 }
 
+function parseDimension(value: string): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
 export function DeviceToolbar({
   device,
   onPreset,
@@ -111,8 +116,8 @@ export function DeviceToolbar({
         <Input
           value={String(device.width)}
           onChange={(next) => {
-            const w = Number(next)
-            if (Number.isFinite(w)) onDimensions(w, device.height)
+            const w = parseDimension(next)
+            if (w !== null) onDimensions(w, device.height)
           }}
           aria-label="viewport width"
           inputMode="numeric"
@@ -124,8 +129,8 @@ export function DeviceToolbar({
         <Input
           value={String(device.height)}
           onChange={(next) => {
-            const h = Number(next)
-            if (Number.isFinite(h)) onDimensions(device.width, h)
+            const h = parseDimension(next)
+            if (h !== null) onDimensions(device.width, h)
           }}
           aria-label="viewport height"
           inputMode="numeric"

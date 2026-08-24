@@ -679,23 +679,31 @@ export function SessionView({
   const onCookieFile = useCallback(
     (file: File | undefined) => {
       if (!file) return
-      void runAction(async () => {
-        const cookies = parseCookieFile(await file.text())
-        if (cookies.length === 0)
-          throw new Error('no cookies found in that file')
-        const count = await setBrowserCookies(host.iii, sessionId, cookies)
-        setActionError(`imported ${count} cookie${count === 1 ? '' : 's'}`)
-      })
+      void (async () => {
+        try {
+          const cookies = parseCookieFile(await file.text())
+          if (cookies.length === 0)
+            throw new Error('no cookies found in that file')
+          const count = await setBrowserCookies(host.iii, sessionId, cookies)
+          setActionError(`imported ${count} cookie${count === 1 ? '' : 's'}`)
+        } catch (err) {
+          setActionError(errorMessage(err))
+        }
+      })()
     },
-    [host, sessionId, runAction],
+    [host, sessionId],
   )
   const copyCookies = useCallback(() => {
-    void runAction(async () => {
-      const cookies = await listBrowserCookies(host.iii, sessionId)
-      await navigator.clipboard?.writeText(JSON.stringify(cookies, null, 2))
-      setActionError(`copied ${cookies.length} cookies to the clipboard`)
-    })
-  }, [host, sessionId, runAction])
+    void (async () => {
+      try {
+        const cookies = await listBrowserCookies(host.iii, sessionId)
+        await navigator.clipboard?.writeText(JSON.stringify(cookies, null, 2))
+        setActionError(`copied ${cookies.length} cookies to the clipboard`)
+      } catch (err) {
+        setActionError(errorMessage(err))
+      }
+    })()
+  }, [host, sessionId])
 
   // Find in page: the worker keeps the match list in the document; this
   // side keeps the query, the count and the current index for the bar.
