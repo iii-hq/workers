@@ -1741,25 +1741,30 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id)?;
                 ensure_writable(&session, "browser::resize")?;
                 session.touch();
-                // A pane auto-fit only applies while this is the one viewer;
-                // with several panes watching the same session, whoever
-                // resized explicitly (or first) keeps the viewport and the
-                // other panes letterbox-scale it instead of fighting.
+                let mut width = resize::clamp(req.width);
+                let mut height = resize::clamp(req.height);
+                // A pane auto-fit with several viewers grows the shared
+                // viewport but never shrinks it: the largest pane wins and the
+                // smaller ones letterbox-scale, so one small viewer can't
+                // shrink a session another viewer needs bigger. A lone viewer
+                // (or an explicit device resize) sizes it freely.
                 if req.fit.unwrap_or(false)
                     && session
                         .screencast_consumers
                         .load(std::sync::atomic::Ordering::Relaxed)
                         > 1
                 {
-                    let (width, height) = session.viewport();
-                    return Ok::<_, Error>(resize::ResizeOutput {
-                        ok: true,
-                        width,
-                        height,
-                    });
+                    let (cur_w, cur_h) = session.viewport();
+                    width = width.max(cur_w);
+                    height = height.max(cur_h);
+                    if width == cur_w && height == cur_h {
+                        return Ok::<_, Error>(resize::ResizeOutput {
+                            ok: true,
+                            width,
+                            height,
+                        });
+                    }
                 }
-                let width = resize::clamp(req.width);
-                let height = resize::clamp(req.height);
                 let dpr = req.device_scale_factor.unwrap_or(1.0).clamp(0.5, 3.0);
                 let params = cdp_emulation::SetDeviceMetricsOverrideParams::builder()
                     .width(i64::from(width))
