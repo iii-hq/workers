@@ -1,0 +1,84 @@
+{
+  "description": "Internal Harness completion doorbell that validates and checkpoints a structured report.",
+  "function_id": "security-scan::on-turn-completed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "reason": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "result": {
+        "default": null
+      },
+      "result_error": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "default": "",
+        "type": "string"
+      },
+      "status": {
+        "default": "",
+        "type": "string"
+      },
+      "terminal": {
+        "default": false,
+        "type": "boolean"
+      },
+      "turn_id": {
+        "default": "",
+        "type": "string"
+      }
+    },
+    "title": "TurnCompletedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RunStatusV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "woke": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "woke"
+    ],
+    "title": "TurnCompletedResponseV1",
+    "type": "object"
+  }
+}

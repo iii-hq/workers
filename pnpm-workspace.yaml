@@ -29,6 +29,7 @@ packages:
   - cron/ui
   - shell/ui
   - worktree/ui
+  - security-scan/ui
   - github/ui
   - llm-router/ui
   - provider-openai-codex/ui
