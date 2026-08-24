@@ -81,6 +81,33 @@ describe('Cursor CLI discovery and account output', () => {
     expect(commands.some((command) => command.startsWith('/untrusted/repository/'))).toBe(false);
   });
 
+  it('checks every PATH candidate for a configured bare binary name', async () => {
+    const run: CommandRunner = async (command, args) => {
+      if (command === '/good/cursor-agent' && args[0] === '--version') {
+        return { stdout: '2026.08.11-e8db854\n', stderr: '' };
+      }
+      if (command === '/good/cursor-agent' && args[0] === 'acp') {
+        return { stdout: 'Start the Cursor Agent as an ACP server', stderr: '' };
+      }
+      if (command === '/bad/cursor-agent') {
+        return { stdout: 'not cursor', stderr: '' };
+      }
+      throw new Error('not found');
+    };
+
+    await expect(
+      discoverCursorAgentBinary('cursor-agent', {
+        run,
+        cwd: '/worker',
+        home: '/home/test',
+        env: { PATH: '/bad:/good' },
+      }),
+    ).resolves.toEqual({
+      binary: '/good/cursor-agent',
+      version: '2026.08.11-e8db854',
+    });
+  });
+
   it('pins a configured relative binary before spawning from an untrusted workspace', async () => {
     const process = new FakeAcpProcess();
     serve(process, (message) => {

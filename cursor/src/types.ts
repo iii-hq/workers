@@ -22,7 +22,7 @@ export type UsageCost = z.infer<typeof UsageCostSchema>;
 export const RepositorySchema = z.object({
   url: z.string().min(1),
   starting_ref: z.string().optional(),
-  pr_url: z.string().url().optional(),
+  pr_url: z.url().optional(),
 });
 export type Repository = z.infer<typeof RepositorySchema>;
 
@@ -187,9 +187,10 @@ export type AgentEvent =
   | { type: 'turn_end'; message: AssistantMessage; function_results: FunctionResultMessage[] }
   | { type: 'agent_end'; messages: AgentMessage[] };
 
-export const Int64WireSchema = z.union([z.number(), z.string().regex(/^\d+$/)]);
+export const Int64WireSchema = z.union([z.number().int(), z.string().regex(/^\d+$/)]);
 export const StructWireSchema = z.record(z.string(), z.unknown());
-export const EnumWireSchema = z.union([z.string(), z.number().int()]);
+export const RunLifecycleStatusWireSchema = z.union([z.string(), z.number().int().min(0).max(6)]);
+export const AgentInfoStatusWireSchema = z.union([z.string(), z.number().int().min(0).max(3)]);
 
 export const ModelSelectionWireSchema = z
   .object({
@@ -219,7 +220,7 @@ export const RunResultWireSchema = z
   .object({
     runId: z.string().optional(),
     agentId: z.string().optional(),
-    status: EnumWireSchema.optional(),
+    status: RunLifecycleStatusWireSchema.optional(),
     result: z.string().optional(),
     model: ModelSelectionWireSchema.optional(),
     durationMs: Int64WireSchema.optional(),
@@ -238,7 +239,7 @@ export const RunStreamMessageWireSchema = z
       .object({
         agentId: z.string().optional(),
         runId: z.string().optional(),
-        status: EnumWireSchema.optional(),
+        status: RunLifecycleStatusWireSchema.optional(),
         errorCode: z.string().optional(),
         result: RunResultWireSchema.optional(),
       })
@@ -272,7 +273,7 @@ export const GetAgentResponseWireSchema = z
         agentId: z.string(),
         name: z.string().optional(),
         summary: z.string().optional(),
-        status: EnumWireSchema.optional(),
+        status: AgentInfoStatusWireSchema.optional(),
         createdAt: z.string().optional(),
         lastModified: z.string().optional(),
         archived: z.boolean().optional(),

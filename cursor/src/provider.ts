@@ -24,8 +24,6 @@ const FALLBACK_MAX_OUTPUT_TOKENS = 8_192;
 const REFRESH_INTERVAL_MS = 3 * 60_000;
 const PING_INTERVAL_MS = 25_000;
 const SHUTDOWN_SETTLE_MS = 5_000;
-const CURSOR_SYSTEM_PROMPT =
-  'You are Cursor in a text-only chat adapter. Answer the user directly in text. Do not call agent_trigger or claim to use tools, inspect files, run commands, or modify the workspace.';
 
 type JsonObject = Record<string, unknown>;
 
@@ -84,7 +82,7 @@ const StreamRegistrationSchema = z
     }),
     system_prompt: z.string().optional(),
     model: z.string().min(1),
-    messages: z.array(z.unknown()),
+    messages: z.array(z.record(z.string(), z.unknown())),
     tools: z.array(z.unknown()).optional(),
     response_format: z.record(z.string(), z.unknown()).optional(),
     thinking_level: z.string().optional(),
@@ -95,6 +93,10 @@ const StreamRegistrationSchema = z
     session_id: z.string().optional(),
   })
   .passthrough();
+
+const HydratedStreamSchema = StreamRegistrationSchema.omit({ writer_ref: true }).extend({
+  writer_ref: z.unknown(),
+});
 
 const StreamResponseSchema = z.object({ ok: z.boolean() });
 const AbortRequestSchema = z.object({ request_id: z.string() }).passthrough();
@@ -108,7 +110,6 @@ export function cursorProviderDeclaration(): JsonObject {
     display_name: 'Cursor',
     defaults: { max_tokens: FALLBACK_MAX_OUTPUT_TOKENS },
     supports_model_listing: true,
-    system_prompt: CURSOR_SYSTEM_PROMPT,
     worker_id: 'cursor',
   };
 }
@@ -158,6 +159,7 @@ export function cursorProviderPrompt(input: {
 
 export class CursorProvider {
   private readonly inflight = new Map<string, Inflight>();
+  private readonly inflightByResolution = new Map<string, Set<string>>();
   private readonly activeStreams = new Set<Promise<{ ok: true }>>();
   private readonly workspace: WorkspaceFactory;
   private persistedRegistrationToken: string | null = null;
@@ -320,9 +322,14 @@ export class CursorProvider {
 
   private async stream(payload: unknown): Promise<{ ok: true }> {
     const input = parseStreamInput(payload);
-    const key = input.resolutionKey ?? randomUUID();
+    const key = randomUUID();
     const entry: Inflight = { aborted: false, client: null, sessionId: null };
     this.inflight.set(key, entry);
+    if (input.resolutionKey !== undefined) {
+      const keys = this.inflightByResolution.get(input.resolutionKey) ?? new Set<string>();
+      keys.add(key);
+      this.inflightByResolution.set(input.resolutionKey, keys);
+    }
     const transport = { failed: false };
     let settled = false;
     const handleWriterError = () => {
@@ -394,18 +401,31 @@ export class CursorProvider {
       if (entry.client) await entry.client.close().catch(() => undefined);
       if (workspace) await this.workspace.remove(workspace).catch(() => undefined);
       if (this.inflight.get(key) === entry) this.inflight.delete(key);
+      if (input.resolutionKey !== undefined) {
+        const keys = this.inflightByResolution.get(input.resolutionKey);
+        keys?.delete(key);
+        if (keys?.size === 0) this.inflightByResolution.delete(input.resolutionKey);
+      }
       input.writer.close();
     }
   }
 
   private async abort(requestId: string): Promise<{ aborted: boolean }> {
-    const entry = this.inflight.get(requestId);
-    if (!entry || entry.aborted) return { aborted: false };
-    entry.aborted = true;
-    if (entry.client && entry.sessionId) {
-      await entry.client.cancel(entry.sessionId).catch(() => undefined);
-    }
-    return { aborted: true };
+    const keys = this.inflightByResolution.get(requestId);
+    if (!keys) return { aborted: false };
+    let aborted = false;
+    await Promise.all(
+      [...keys].map(async (key) => {
+        const entry = this.inflight.get(key);
+        if (!entry || entry.aborted) return;
+        entry.aborted = true;
+        aborted = true;
+        if (entry.client && entry.sessionId) {
+          await entry.client.cancel(entry.sessionId).catch(() => undefined);
+        }
+      }),
+    );
+    return { aborted };
   }
 
   private rebindAndRefresh(): Promise<void> {
@@ -602,24 +622,9 @@ class ProviderFrames {
 }
 
 function parseStreamInput(payload: unknown): ProviderStreamInput {
-  if (!payload || typeof payload !== 'object') throw new Error('invalid Cursor provider request');
-  const raw = payload as JsonObject;
-  const writer = providerWriter(raw.writer_ref);
-  const parsed = z
-    .object({
-      system_prompt: z.string().optional(),
-      model: z.string().min(1),
-      messages: z.array(z.record(z.string(), z.unknown())),
-      tools: z.array(z.unknown()).optional(),
-      response_format: z.record(z.string(), z.unknown()).optional(),
-      thinking_level: z.string().optional(),
-      max_output_tokens: z.number().int().positive().optional(),
-      resolution_key: z.string().optional(),
-    })
-    .passthrough()
-    .parse(raw);
+  const parsed = HydratedStreamSchema.parse(payload);
   return {
-    writer,
+    writer: providerWriter(parsed.writer_ref),
     systemPrompt: parsed.system_prompt,
     model: parsed.model,
     messages: parsed.messages,

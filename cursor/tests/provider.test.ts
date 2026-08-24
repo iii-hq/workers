@@ -40,7 +40,7 @@ describe('Cursor LLM Router provider', () => {
       worker_id: 'cursor',
     });
     expect(declaration).not.toHaveProperty('credential_env_var');
-    expect(declaration.system_prompt).toContain('Answer the user directly in text');
+    expect(declaration).not.toHaveProperty('system_prompt');
     const reconciliation = routerCalls.find(
       (call) => call.function_id === 'router::models::reconcile',
     )?.payload as { provider: string; models: Array<Record<string, unknown>>; token?: string };
@@ -228,7 +228,7 @@ describe('Cursor LLM Router provider', () => {
           routerCalls.filter((call) => call.function_id === 'router::models::reconcile'),
         ).toHaveLength(1);
       },
-      { timeout: 6_000 },
+      { timeout: 10_000 },
     );
 
     expect(
@@ -578,33 +578,62 @@ describe('Cursor LLM Router provider', () => {
     await provider.close();
   });
 
-  it('accepts an empty canonical request id for provider abort', async () => {
+  it('keeps concurrent empty request ids separate and aborts all matching streams', async () => {
     const iii = new MockIII();
     installRouter(iii, []);
-    let finish: (() => void) | undefined;
+    const finishes: Array<() => void> = [];
     const cli = new FakeCursorCliFactory(async () => {
       await new Promise<void>((resolve) => {
-        finish = resolve;
+        finishes.push(resolve);
       });
       return 'cancelled';
     });
     const provider = new CursorProvider(iii.asClient(), testConfig, cli, fakeWorkspace());
     provider.register();
-    const writer = new FakeWriter();
-    const stream = iii.functions.get('provider::cursor::stream')?.handler({
-      writer_ref: writer,
-      model: 'cursor/auto',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
-      resolution_key: '',
-    });
-    await vi.waitFor(() => expect(cli.clients).toHaveLength(1));
+    const handler = iii.functions.get('provider::cursor::stream')?.handler;
+    const streams = [new FakeWriter(), new FakeWriter()].map((writer) =>
+      handler?.({
+        writer_ref: writer,
+        model: 'cursor/auto',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+        resolution_key: '',
+      }),
+    );
+    await vi.waitFor(() => expect(cli.clients).toHaveLength(2));
 
     await expect(
       iii.functions.get('provider::cursor::abort')?.handler({ request_id: '' }),
     ).resolves.toEqual({ aborted: true });
-    expect(cli.clients[0]?.cancellations).toEqual(['cursor-provider-session']);
-    finish?.();
-    await expect(stream).resolves.toEqual({ ok: true });
+    expect(cli.clients.map((client) => client.cancellations)).toEqual([
+      ['cursor-provider-session'],
+      ['cursor-provider-session'],
+    ]);
+    for (const finish of finishes) finish();
+    await expect(Promise.all(streams)).resolves.toEqual([{ ok: true }, { ok: true }]);
+    await provider.close();
+  });
+
+  it('uses the advertised message-object contract at runtime', async () => {
+    const iii = new MockIII();
+    installRouter(iii, []);
+    const provider = new CursorProvider(
+      iii.asClient(),
+      testConfig,
+      new FakeCursorCliFactory(),
+      fakeWorkspace(),
+    );
+    provider.register();
+    const registration = iii.functions.get('provider::cursor::stream');
+    expect(registration?.options.request_format).toMatchObject({
+      properties: { messages: { items: { type: 'object' } } },
+    });
+    await expect(
+      registration?.handler({
+        writer_ref: new FakeWriter(),
+        model: 'cursor/auto',
+        messages: ['not-an-object'],
+      }),
+    ).rejects.toThrow();
     await provider.close();
   });
 

@@ -557,7 +557,11 @@ describe('CursorWorker CLI ACP backend', () => {
 
       await vi.advanceTimersByTimeAsync(1_000);
 
-      await expect(run).resolves.toMatchObject({ status: 'CANCELLED', stop_reason: 'aborted' });
+      await expect(run).resolves.toMatchObject({
+        status: 'CANCELLED',
+        stop_reason: 'aborted',
+        error: 'Cursor ACP turn timed out and cancellation was confirmed',
+      });
       expect(client.cancellations).toEqual(['cursor-acp-session']);
     } finally {
       vi.useRealTimers();

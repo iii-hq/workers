@@ -37,6 +37,8 @@ export class RunAccumulator {
   errorCode: string | null = null;
   errorMessage: string | null = null;
   private text = '';
+  private snapshotText = '';
+  private deltaText = '';
   private thinking = '';
   private emittedText = '';
   private emittedThinking = '';
@@ -154,17 +156,9 @@ export class RunAccumulator {
         .map((block) => String(block.text))
         .join('');
       if (text) {
-        this.text = text;
-        if (emitUpdates && text.startsWith(this.emittedText)) {
-          const delta = text.slice(this.emittedText.length);
-          if (delta) {
-            const delivered = await this.emitEvent(
-              { type: 'message_update', llm_event: { type: 'text_delta', delta } },
-              'text-delta',
-            );
-            if (delivered !== false) this.emittedText += delta;
-          }
-        }
+        this.snapshotText = text;
+        this.text = mergeTextStreams(this.snapshotText, this.deltaText);
+        await this.emitTextSuffix(emitUpdates);
       }
       return;
     }
@@ -226,17 +220,9 @@ export class RunAccumulator {
     if (type === 'text-delta') {
       const delta = stringValue(update.text) ?? stringValue(update.delta) ?? '';
       if (!delta) return;
-      this.text += delta;
-      if (emitUpdates) {
-        const delivered = await this.emitEvent(
-          {
-            type: 'message_update',
-            llm_event: { type: 'text_delta', delta },
-          },
-          'text-delta',
-        );
-        if (delivered !== false) this.emittedText += delta;
-      }
+      this.deltaText += delta;
+      this.text = mergeTextStreams(this.snapshotText, this.deltaText);
+      await this.emitTextSuffix(emitUpdates);
       return;
     }
     if (type === 'thinking-delta') {
@@ -287,6 +273,17 @@ export class RunAccumulator {
       },
       'function-start',
     );
+  }
+
+  private async emitTextSuffix(emitUpdates: boolean): Promise<void> {
+    if (!emitUpdates || !this.text.startsWith(this.emittedText)) return;
+    const delta = this.text.slice(this.emittedText.length);
+    if (!delta) return;
+    const delivered = await this.emitEvent(
+      { type: 'message_update', llm_event: { type: 'text_delta', delta } },
+      'text-delta',
+    );
+    if (delivered !== false) this.emittedText += delta;
   }
 
   private async endTool(
@@ -457,7 +454,7 @@ export function mapRunSnapshot(raw: {
   return {
     run_id: raw.runId ?? '',
     agent_id: raw.agentId ?? '',
-    status: normalizeEnum(raw.status),
+    status: normalizeRunEnum(raw.status),
     result: raw.result ?? '',
     model: raw.model?.id ?? '',
     duration_ms: raw.durationMs === undefined ? null : safeInt(raw.durationMs),
@@ -481,7 +478,7 @@ export function mapAgentInfo(raw: {
     agent_id: raw.agentId,
     name: raw.name ?? '',
     summary: raw.summary ?? '',
-    status: normalizeEnum(raw.status),
+    status: normalizeAgentEnum(raw.status),
     archived: raw.archived ?? false,
     created_at: raw.createdAt ?? null,
     last_modified: raw.lastModified ?? null,
@@ -540,18 +537,60 @@ export function stopReason(status: string): 'end' | 'length' | 'aborted' | 'erro
 }
 
 export function normalizeEnum(value: unknown): string {
-  if (typeof value === 'number') return String(value);
+  return normalizeRunEnum(value);
+}
+
+export function normalizeRunEnum(value: unknown): string {
+  if (typeof value === 'number') return RUN_LIFECYCLE_STATUS_NAMES[value] ?? String(value);
   if (typeof value !== 'string') return 'UNSPECIFIED';
-  return value.replace(/^RUN_LIFECYCLE_STATUS_/, '').replace(/^AGENT_INFO_STATUS_/, '');
+  return value.replace(/^RUN_LIFECYCLE_STATUS_/, '');
+}
+
+export function normalizeAgentEnum(value: unknown): string {
+  if (typeof value === 'number') return AGENT_INFO_STATUS_NAMES[value] ?? String(value);
+  if (typeof value !== 'string') return 'UNSPECIFIED';
+  return value.replace(/^AGENT_INFO_STATUS_/, '');
 }
 
 function safeInt(value: string | number | undefined): number {
   if (value === undefined) return 0;
-  const integer = typeof value === 'number' ? BigInt(value) : BigInt(value);
+  if (typeof value === 'number' && !Number.isInteger(value)) {
+    throw new Error(`Cursor sdk.v1 int64 is outside the safe JavaScript integer range: ${value}`);
+  }
+  const integer = BigInt(value);
   if (integer < 0n || integer > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error(`Cursor sdk.v1 int64 is outside the safe JavaScript integer range: ${value}`);
   }
   return Number(integer);
+}
+
+const RUN_LIFECYCLE_STATUS_NAMES = [
+  'UNSPECIFIED',
+  'CREATING',
+  'RUNNING',
+  'FINISHED',
+  'ERROR',
+  'CANCELLED',
+  'EXPIRED',
+] as const;
+
+const AGENT_INFO_STATUS_NAMES = ['UNSPECIFIED', 'RUNNING', 'FINISHED', 'ERROR'] as const;
+
+function mergeTextStreams(snapshot: string, deltas: string): string {
+  if (!snapshot) return deltas;
+  if (!deltas) return snapshot;
+  if (snapshot.startsWith(deltas)) return snapshot;
+  if (deltas.startsWith(snapshot)) return deltas;
+  const limit = Math.min(snapshot.length, deltas.length);
+  for (let length = limit; length > 0; length -= 1) {
+    if (snapshot.endsWith(deltas.slice(0, length))) {
+      return snapshot + deltas.slice(length);
+    }
+    if (deltas.endsWith(snapshot.slice(0, length))) {
+      return deltas + snapshot.slice(length);
+    }
+  }
+  return snapshot;
 }
 
 function intValue(value: unknown): string | number | undefined {

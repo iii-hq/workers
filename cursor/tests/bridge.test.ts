@@ -75,6 +75,57 @@ describe('ConnectJsonTransport', () => {
     });
   });
 
+  it('bounds unary requests and responses', async () => {
+    let calls = 0;
+    const requestLimited = new ConnectJsonTransport(
+      'http://localhost:1',
+      'token',
+      (async () => {
+        calls += 1;
+        return Response.json({});
+      }) as typeof fetch,
+      1_000,
+      8,
+    );
+    await expect(
+      requestLimited.unary('S', 'M', { value: 'too long' }, z.object({})),
+    ).rejects.toThrow('request exceeds 8 bytes');
+    expect(calls).toBe(0);
+
+    const declaredOversized = new ConnectJsonTransport(
+      'http://localhost:1',
+      'token',
+      (async () =>
+        new Response('{"value":1}', {
+          headers: { 'content-length': '100' },
+        })) as typeof fetch,
+      1_000,
+      32,
+    );
+    await expect(
+      declaredOversized.unary('S', 'M', {}, z.object({ value: z.number() })),
+    ).rejects.toThrow('response exceeds 32 bytes');
+
+    const chunkedOversized = new ConnectJsonTransport(
+      'http://localhost:1',
+      'token',
+      (async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"value":"too long"}'));
+              controller.close();
+            },
+          }),
+        )) as typeof fetch,
+      1_000,
+      12,
+    );
+    await expect(
+      chunkedOversized.unary('S', 'M', {}, z.object({ value: z.string() })),
+    ).rejects.toThrow('response exceeds 12 bytes');
+  });
+
   it('decodes fragmented stream frames and requires the end frame', async () => {
     const wire = Buffer.concat([
       frame(0, { value: 1 }),
@@ -166,6 +217,20 @@ describe('ConnectJsonTransport', () => {
       code: 'resource_exhausted',
       message: 'resource_exhausted: try later',
     });
+  });
+
+  it('times out each idle stream read without imposing an overall deadline', async () => {
+    const transport = new ConnectJsonTransport(
+      'http://localhost:1',
+      'token',
+      (async () => new Response(new ReadableStream())) as typeof fetch,
+      1_000,
+      1_024,
+    );
+
+    await expect(
+      collect(transport.stream('S', 'M', {}, z.object({}), { timeoutMs: 10 })),
+    ).rejects.toThrow('stream idle timeout after 10ms');
   });
 });
 
@@ -268,6 +333,75 @@ describe('ManagedBridgeClient', () => {
       expect(String(error)).not.toContain(secret);
       return true;
     });
+    expect(process.stderr.listenerCount('data')).toBe(0);
+  });
+
+  it.each([
+    ['a non-pong Ping', { message: 'not-pong' }, null],
+    [
+      'a different protocol',
+      { message: 'pong' },
+      { bridgeVersion: '1.0.0', protocolVersion: 'sdk.v2', capabilities: ALL_CAPABILITIES },
+    ],
+    [
+      'missing capabilities',
+      { message: 'pong' },
+      { bridgeVersion: '1.0.0', protocolVersion: 'sdk.v1', capabilities: ['agent.create'] },
+    ],
+  ])('rejects startup with %s', async (_name, ping, version) => {
+    const process = new FakeProcess();
+    const client = managedClient(process, (url) => {
+      if (url.endsWith('/Ping')) return Response.json(ping);
+      if (url.endsWith('/GetVersion')) return Response.json(version);
+      return Response.json({});
+    });
+
+    await expect(
+      client.unary('SdkCursorService', 'ListModels', {}, z.object({})),
+    ).rejects.toBeInstanceOf(BridgeProcessError);
+    expect(process.signals[0]).toBe('SIGTERM');
+  });
+
+  it('redacts discovery validation failures and can retry after startup rejection', async () => {
+    const processes = [new FakeProcess(), new FakeProcess()];
+    let spawns = 0;
+    const client = new ManagedBridgeClient(launchOptions(), {
+      spawn: () => {
+        const process = processes[spawns++];
+        if (!process) throw new Error('unexpected spawn');
+        queueMicrotask(() => {
+          process.stderr.write(
+            spawns === 1
+              ? 'cursor-sdk-bridge ready {"schemaVersion":"token_private_123","transport":"tcp","protocol":"connect","url":"http://127.0.0.1:7777","authToken":"bridge"}\n'
+              : readyLine(),
+          );
+        });
+        return process;
+      },
+      readFile: async () => 'bridge-token',
+      fetch: (async (url) => {
+        if (String(url).endsWith('/Ping')) return Response.json({ message: 'pong' });
+        if (String(url).endsWith('/GetVersion')) {
+          return Response.json({
+            bridgeVersion: '1.0.0',
+            protocolVersion: 'sdk.v1',
+            capabilities: ALL_CAPABILITIES,
+          });
+        }
+        return Response.json({});
+      }) as typeof fetch,
+    });
+
+    const error = await client
+      .unary('SdkCursorService', 'ListModels', {}, z.object({}))
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).not.toContain('token_private_123');
+    await expect(client.unary('SdkCursorService', 'ListModels', {}, z.object({}))).resolves.toEqual(
+      {},
+    );
+    expect(spawns).toBe(2);
+    await client.close();
   });
 });
 
@@ -289,12 +423,41 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
 
 class FakeProcess extends EventEmitter implements BridgeProcess {
   readonly stderr = new PassThrough();
+  readonly signals: Array<NodeJS.Signals | number> = [];
   exitCode: number | null = null;
   pid = 123;
 
-  kill(): boolean {
+  kill(signal: NodeJS.Signals | number = 'SIGTERM'): boolean {
+    this.signals.push(signal);
     this.exitCode = 0;
     this.emit('exit', 0, null);
     return true;
   }
+}
+
+function launchOptions() {
+  return {
+    binary: '/opt/cursor-sdk-bridge',
+    workspace: '/repo',
+    apiKey: 'key_secret',
+    startupTimeoutMs: 1_000,
+    shutdownTimeoutMs: 20,
+    rpcTimeoutMs: 1_000,
+    maxFrameBytes: 4_096,
+  };
+}
+
+function readyLine(): string {
+  return 'cursor-sdk-bridge ready {"schemaVersion":1,"transport":"tcp","protocol":"connect","url":"http://127.0.0.1:7777","authTokenFile":"/tmp/token"}\n';
+}
+
+function managedClient(process: FakeProcess, respond: (url: string) => Response) {
+  return new ManagedBridgeClient(launchOptions(), {
+    spawn: () => {
+      queueMicrotask(() => process.stderr.write(readyLine()));
+      return process;
+    },
+    readFile: async () => 'bridge-token',
+    fetch: ((url) => Promise.resolve(respond(String(url)))) as typeof fetch,
+  });
 }

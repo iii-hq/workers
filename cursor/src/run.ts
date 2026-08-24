@@ -18,7 +18,7 @@ import {
   resolveCursorAcpModelId,
 } from './cli.js';
 import { bridgeLaunchOptions, type Config, cursorCliLaunchOptions } from './config.js';
-import type { Emit } from './events.js';
+import { type Emit, releaseEmitterSequence } from './events.js';
 import {
   extractRunId,
   mapAgentInfo,
@@ -599,6 +599,7 @@ export class CursorWorker {
     if (!terminalRecord) throw new SessionConflictError('Cursor session mapping disappeared');
     record = terminalRecord;
     if (alreadyFinalized) {
+      releaseEmitterSequence(sessionId);
       const stopReason =
         record.status === 'done' ? 'end' : record.status === 'cancelled' ? 'aborted' : 'error';
       return {
@@ -617,7 +618,12 @@ export class CursorWorker {
         error_details: null,
       };
     }
-    const terminal = await accumulator.finalize();
+    let terminal: Awaited<ReturnType<RunAccumulator['finalize']>>;
+    try {
+      terminal = await accumulator.finalize();
+    } finally {
+      releaseEmitterSequence(sessionId);
+    }
     return {
       session_id: sessionId,
       agent_id: record.agent_id,
@@ -901,11 +907,13 @@ export class CursorWorker {
     };
 
     let stop: Awaited<ReturnType<CursorCliClient['prompt']>>;
+    let timedOut = false;
     const promptOperation = client.prompt(record.agent_id, prompt, onUpdate);
     try {
       stop = await this.waitWithClaimHeartbeat(record, handle, promptOperation, timeoutMs);
     } catch (error) {
       if (!(error instanceof CursorTurnTimeoutError)) throw error;
+      timedOut = true;
       handle.cancelRequested = true;
       await this.cancelLocalPromptIfRequested(true, handle);
       try {
@@ -923,7 +931,9 @@ export class CursorWorker {
       }
     }
     const status = acpLifecycleStatus(stop);
-    if (stop === 'max_tokens') {
+    if (timedOut) {
+      accumulator.errorMessage = 'Cursor ACP turn timed out and cancellation was confirmed';
+    } else if (stop === 'max_tokens') {
       accumulator.errorMessage = 'Cursor stopped after reaching the model output limit';
     } else if (stop === 'max_turn_requests') {
       accumulator.errorMessage = 'Cursor stopped after reaching the ACP turn-request limit';
@@ -977,7 +987,12 @@ export class CursorWorker {
       };
     });
     if (!terminalRecord) throw new SessionConflictError('Cursor session mapping disappeared');
-    const terminal = await accumulator.finalize();
+    let terminal: Awaited<ReturnType<RunAccumulator['finalize']>>;
+    try {
+      terminal = await accumulator.finalize();
+    } finally {
+      releaseEmitterSequence(record.session_id);
+    }
     return {
       session_id: terminalRecord.session_id,
       agent_id: terminalRecord.agent_id,
@@ -1003,7 +1018,11 @@ export class CursorWorker {
     const accumulator = new RunAccumulator(record.session_id, record.model, this.emit);
     accumulator.status = 'RUN_LIFECYCLE_STATUS_CANCELLED';
     accumulator.runId = `cancelled-${hash(`${record.session_id}:${handle.claimId}`).slice(0, 32)}`;
-    await accumulator.finalize();
+    try {
+      await accumulator.finalize();
+    } finally {
+      releaseEmitterSequence(record.session_id);
+    }
     return unpromptedCancellationResponse(record, preserveAgent);
   }
 
@@ -1545,7 +1564,15 @@ export class CursorWorker {
         };
       });
       if (!terminal) throw new SessionConflictError('Cursor session mapping disappeared');
-      if (!alreadyFinalized) await accumulator.finalize();
+      if (!alreadyFinalized) {
+        try {
+          await accumulator.finalize();
+        } finally {
+          releaseEmitterSequence(sessionId);
+        }
+      } else {
+        releaseEmitterSequence(sessionId);
+      }
       return { session_id: sessionId, stopped: true, reason: null };
     } catch (error) {
       await updateSession(this.iii, sessionId, (current) => {
@@ -1694,6 +1721,13 @@ export class CursorWorker {
     try {
       await this.resumeAgent(client, record);
       const usage = await this.fetchUsage(client, record, request.run_id);
+      if (request.run_id) {
+        return {
+          session_id: record.session_id,
+          agent_id: record.agent_id,
+          usage,
+        };
+      }
       const updated = await updateSession(this.iii, record.session_id, (current) => ({
         ...current,
         usage: usage.usage ?? current.usage,
@@ -1821,7 +1855,11 @@ export class CursorWorker {
     accumulator.status = 'RUN_LIFECYCLE_STATUS_ERROR';
     accumulator.errorMessage = safeError(error);
     accumulator.resultText = safeError(error);
-    await accumulator.finalize();
+    try {
+      await accumulator.finalize();
+    } finally {
+      releaseEmitterSequence(sessionId);
+    }
     return this.response(sessionId, record, {
       status: recoveryRequired ? 'recovery-required' : 'error',
       recoveryRequired,
@@ -2346,7 +2384,7 @@ function canonicalValue(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value)
       .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => [key, canonicalValue(entry)]),
   );
 }

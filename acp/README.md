@@ -17,7 +17,7 @@ bespoke per-client integration.
 > internal iii brains use iii primitives directly for filesystem and
 > terminal access. Full per-method status in the [Methods](#methods) table.
 
-### Upgrading from 0.2
+## Upgrading from 0.2
 
 Version 0.3 stores records, history, ownership, and prompt claims in the isolated `acp-v0.3` state scope. Existing 0.2 sessions remain untouched but are not listed or loadable through 0.3. This deliberate compatibility fence prevents mixed 0.2 and 0.3 processes from mutating the same history or dispatching overlapping prompts; finish or close important 0.2 sessions before upgrading.
 
@@ -297,16 +297,16 @@ already subscribe to. **No bespoke iii-acp publish protocol.**
 ## State layout
 
 All keys live in scope `acp-v0.3`. Session IDs are global UUIDs, while
-`connId` is stored as ownership metadata and regenerated per subprocess.
+`conn_id` is stored as ownership metadata and regenerated per subprocess.
 
-```
+```text
 sessions:_index            = ["sess_a", "sess_b", ...]
-sessions:<sessId>          = { sessionId, connId, cwd, mcpServers, created_at_ms, last_activity_ms }
-sessions:<sessId>:history  = { entries, cursor_item_ids, owner_conn_id, active_prompt, closed, closed_by_conn_id }
+sessions:<session_id>      = { session_id, conn_id, cwd, mcp_servers, created_at_ms, last_activity_ms, mode, config_options }
+sessions:<session_id>:history = { entries, cursor_item_ids, owner_conn_id, active_prompt, closed, closed_by_conn_id }
 ```
 
 Streaming wire: `agent::events` (per-session events), per-connection topic
-`acp:<connId>:session:<sessId>:cancel` (best-effort cancel signal).
+`acp:<conn_id>:session:<session_id>:cancel` (best-effort cancel signal).
 
 ## Wire example (raw stdio)
 

@@ -57,6 +57,11 @@ export async function updateSession(
     const result = await compareAndSetSession(iii, current, next);
     if (result.swapped) return next;
     current = result.current;
+    if (current) {
+      await new Promise((resolvePromise) =>
+        setTimeout(resolvePromise, 2 + Math.floor(Math.random() * 7)),
+      );
+    }
   }
   if (!current) return null;
   throw new Error(`Cursor session ${sessionId} changed too frequently to update safely`);
@@ -68,5 +73,8 @@ export async function listSessions(iii: IIIClient): Promise<SessionRecord[]> {
     payload: { scope: SCOPE },
   });
   if (!Array.isArray(value)) return [];
-  return value.map((entry) => SessionRecordSchema.parse(entry));
+  return value.flatMap((entry) => {
+    const parsed = SessionRecordSchema.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  });
 }

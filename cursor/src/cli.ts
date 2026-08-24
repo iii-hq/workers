@@ -174,11 +174,11 @@ export async function discoverCursorAgentBinary(
       timeoutMs,
     );
     if (executable) return executable;
-    if (configured) {
-      throw new CursorCliError(
-        'Configured Cursor Agent binary is unavailable or is not the official Cursor CLI',
-      );
-    }
+  }
+  if (configured) {
+    throw new CursorCliError(
+      'Configured Cursor Agent binary is unavailable or is not the official Cursor CLI',
+    );
   }
   throw new CursorCliError(
     'Cursor Agent CLI was not found; install it, run cursor-agent login, or set CURSOR_AGENT_BIN',

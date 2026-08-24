@@ -2,6 +2,7 @@ import {
   API_KEY_ENV_REFERENCE,
   BRIDGE_BIN_ENV_REFERENCE,
   CURSOR_AGENT_BIN_ENV_REFERENCE,
+  bridgeLaunchOptions,
   configId,
   cursorCliLaunchOptions,
   defaultConfig,
@@ -18,6 +19,18 @@ import { MockIII } from './helpers.js';
 describe('Cursor configuration', () => {
   afterEach(() => {
     delete process.env.III_CONFIG_NAME;
+    delete process.env.CURSOR_SDK_BRIDGE_BIN;
+  });
+
+  it('resolves the SDK Bridge placeholder through the operator environment', () => {
+    process.env.CURSOR_SDK_BRIDGE_BIN = '/opt/cursor-sdk-bridge';
+    expect(
+      bridgeLaunchOptions({ ...defaultConfig(), api_key: 'key_runtime' }, '/repo'),
+    ).toMatchObject({ binary: '/opt/cursor-sdk-bridge', workspace: '/repo' });
+    delete process.env.CURSOR_SDK_BRIDGE_BIN;
+    expect(
+      bridgeLaunchOptions({ ...defaultConfig(), api_key: 'key_runtime' }, '/repo'),
+    ).toMatchObject({ binary: '' });
   });
 
   it('uses built-in environment references and a configurable id', () => {

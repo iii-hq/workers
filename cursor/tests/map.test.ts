@@ -1,4 +1,5 @@
 import {
+  mapAgentInfo,
   mapModels,
   mapRunSnapshot,
   mapStructTokenUsage,
@@ -6,34 +7,51 @@ import {
   mapUsageResponse,
   RunAccumulator,
 } from '../src/map.js';
+import { Int64WireSchema } from '../src/types.js';
 
 describe('RunAccumulator', () => {
   it('streams deltas and emits one terminal message without duplicating its body', async () => {
     const events: unknown[] = [];
-    const accumulator = new RunAccumulator('session-one', 'composer-2', async (_group, event) => {
-      events.push(event);
-    });
+    const itemIds: Array<string | undefined> = [];
+    const accumulator = new RunAccumulator(
+      'session-one',
+      'composer-2',
+      async (_group, event, itemId) => {
+        events.push(event);
+        itemIds.push(itemId);
+      },
+    );
 
-    await accumulator.ingest({
-      interactionUpdate: { type: 'thinking-delta', update: { delta: 'wh' } },
-    });
-    await accumulator.ingest({
-      interactionUpdate: { type: 'text-delta', update: { delta: 'Hel' } },
-    });
-    await accumulator.ingest({
-      sdkMessage: { type: 'thinking', message: { text: 'why' } },
-    });
-    await accumulator.ingest({
-      result: {
-        runId: 'run-one',
-        status: 'RUN_LIFECYCLE_STATUS_FINISHED',
+    await accumulator.ingest(
+      { interactionUpdate: { type: 'thinking-delta', update: { delta: 'wh' } } },
+      true,
+      'frame-thinking',
+    );
+    await accumulator.ingest(
+      { interactionUpdate: { type: 'text-delta', update: { delta: 'Hel' } } },
+      true,
+      'frame-text',
+    );
+    await accumulator.ingest(
+      { sdkMessage: { type: 'thinking', message: { text: 'why' } } },
+      true,
+      'frame-thinking-snapshot',
+    );
+    await accumulator.ingest(
+      {
         result: {
           runId: 'run-one',
           status: 'RUN_LIFECYCLE_STATUS_FINISHED',
-          result: 'Hello',
+          result: {
+            runId: 'run-one',
+            status: 'RUN_LIFECYCLE_STATUS_FINISHED',
+            result: 'Hello',
+          },
         },
       },
-    });
+      true,
+      'frame-result',
+    );
 
     const terminal = await accumulator.finalize();
     const updates = events.filter(
@@ -63,6 +81,89 @@ describe('RunAccumulator', () => {
       'turn_end',
       'agent_end',
     ]);
+    expect(itemIds.slice(0, 3)).toEqual([
+      'frame-thinking-thinking-delta-0',
+      'frame-text-text-delta-0',
+      'frame-thinking-snapshot-thinking-delta-0',
+    ]);
+    expect(itemIds.slice(-4)).toEqual([
+      expect.stringMatching(/^cursor-[a-f0-9]{32}-text-final-0$/),
+      expect.stringMatching(/^cursor-[a-f0-9]{32}-message-complete-1$/),
+      expect.stringMatching(/^cursor-[a-f0-9]{32}-turn-end-2$/),
+      expect.stringMatching(/^cursor-[a-f0-9]{32}-agent-end-3$/),
+    ]);
+    expect(new Set(itemIds).size).toBe(itemIds.length);
+  });
+
+  it('reconciles interleaved assistant snapshots and text deltas', async () => {
+    const snapshotFirst: string[] = [];
+    const first = new RunAccumulator('snapshot-first', 'model', async (_group, event) => {
+      const delta = (event as { llm_event?: { delta?: string } }).llm_event?.delta;
+      if (delta) snapshotFirst.push(delta);
+    });
+    await first.ingest({
+      sdkMessage: {
+        type: 'assistant',
+        message: { message: { content: [{ type: 'text', text: 'Hello' }] } },
+      },
+    });
+    await first.ingest({ interactionUpdate: { type: 'text-delta', update: { delta: 'lo' } } });
+    await first.ingest({ interactionUpdate: { type: 'text-delta', update: { delta: '!' } } });
+    await first.ingest({
+      result: {
+        runId: 'run-one',
+        status: 3,
+        result: { runId: 'run-one', status: 3, result: 'Hello!' },
+      },
+    });
+    const firstTerminal = await first.finalize();
+
+    const deltaFirst: string[] = [];
+    const second = new RunAccumulator('delta-first', 'model', async (_group, event) => {
+      const delta = (event as { llm_event?: { delta?: string } }).llm_event?.delta;
+      if (delta) deltaFirst.push(delta);
+    });
+    await second.ingest({ interactionUpdate: { type: 'text-delta', update: { delta: 'Hel' } } });
+    await second.ingest({
+      sdkMessage: {
+        type: 'assistant',
+        message: { message: { content: [{ type: 'text', text: 'Hello' }] } },
+      },
+    });
+    await second.ingest({
+      sdkMessage: {
+        type: 'assistant',
+        message: { message: { content: [{ type: 'text', text: 'He' }] } },
+      },
+    });
+    await second.ingest({
+      result: {
+        runId: 'run-two',
+        status: 3,
+        result: { runId: 'run-two', status: 3, result: 'Hello' },
+      },
+    });
+    const secondTerminal = await second.finalize();
+
+    expect(snapshotFirst.join('')).toBe('Hello!');
+    expect(firstTerminal.message.stop_reason).toBe('end');
+    expect(deltaFirst.join('')).toBe('Hello');
+    expect(secondTerminal.message.stop_reason).toBe('end');
+
+    const repeated = new RunAccumulator('repeated', 'model', async () => undefined);
+    await repeated.ingest({ interactionUpdate: { type: 'text-delta', update: { delta: 'ha' } } });
+    await repeated.ingest({ interactionUpdate: { type: 'text-delta', update: { delta: 'ha' } } });
+    await repeated.ingest({
+      result: {
+        runId: 'run-three',
+        status: 3,
+        result: { runId: 'run-three', status: 3, result: 'haha' },
+      },
+    });
+    expect((await repeated.finalize()).message.content).toContainEqual({
+      type: 'text',
+      text: 'haha',
+    });
   });
 
   it('emits an unstreamed complete body for batch output', async () => {
@@ -270,6 +371,18 @@ describe('wire mappings', () => {
         totalTokens: '9007199254740992',
       }),
     ).toThrow('safe JavaScript integer');
+    expect(Int64WireSchema.safeParse(1.5).success).toBe(false);
+    expect(() => mapRunSnapshot({ durationMs: 1.5 })).toThrow('safe JavaScript integer');
+  });
+
+  it('maps numeric run and agent status enums in their own contexts', () => {
+    expect(mapRunSnapshot({ status: 3 }).status).toBe('FINISHED');
+    expect(
+      mapAgentInfo({
+        agentId: 'agent',
+        status: 3,
+      }).status,
+    ).toBe('ERROR');
   });
 
   it('preserves absent usage and cost', () => {

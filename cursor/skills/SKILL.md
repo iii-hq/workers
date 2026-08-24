@@ -11,7 +11,7 @@ Use this worker when a task should be handled by a Cursor coding agent. Local ex
 
 - Call `cursor::run` for a blocking turn. `run::start_and_wait` is its standard alias.
 - Call `cursor::start`, subscribe to `agent::events` with the returned session ID as `group_id`, and call `cursor::stop` when asynchronous lifecycle control is needed.
-- Reuse `session_id` for follow-up turns. Local sessions must keep their original `cwd` and tool list.
+- Reuse `session_id` for follow-up turns. Local sessions must keep their original `cwd`; sdk-bridge sessions must also keep their original tool list.
 - Call `cursor::status` or `cursor::sessions::list` for durable lifecycle discovery.
 - Call `cursor::auth::status` to check login availability without returning account details or credentials.
 - Call `cursor::models::list` instead of guessing account-scoped model IDs. Login-backed results contain only ACP-compatible IDs and expose ACP `default` as `auto`; `cursor-agent --list-models` also contains CLI-only IDs that ACP rejects. Pass `{ "backend": "sdk-bridge" }` for the cloud/API-key catalog.

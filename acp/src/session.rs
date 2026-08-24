@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const STATE_TIMEOUT_MS: u64 = 5_000;
+const HISTORY_UPDATE_ATTEMPTS: usize = 16;
+const CURSOR_ITEM_REPLAY_WINDOW: usize = 4_096;
 
 pub fn scope() -> String {
     "acp-v0.3".to_string()
@@ -95,6 +97,25 @@ pub async fn state_compare_and_set(
     expected: Option<&Value>,
     value: Value,
 ) -> Result<bool, Error> {
+    Ok(
+        state_compare_and_set_with_current(iii, scope, key, expected, value)
+            .await?
+            .swapped,
+    )
+}
+
+struct StateCompareAndSetResult {
+    swapped: bool,
+    current: Option<Value>,
+}
+
+async fn state_compare_and_set_with_current(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    expected: Option<&Value>,
+    value: Value,
+) -> Result<StateCompareAndSetResult, Error> {
     let mut payload = json!({ "scope": scope, "key": key, "value": value });
     if let Some(expected) = expected {
         payload["expected"] = expected.clone();
@@ -107,9 +128,17 @@ pub async fn state_compare_and_set(
             timeout_ms: Some(STATE_TIMEOUT_MS),
         })
         .await?;
-    Ok(unwrap_value(response)
-        .and_then(|result| result.get("swapped").and_then(Value::as_bool))
-        .unwrap_or(false))
+    let result = unwrap_value(response).unwrap_or(Value::Null);
+    Ok(StateCompareAndSetResult {
+        swapped: result
+            .get("swapped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        current: result
+            .get("current")
+            .cloned()
+            .filter(|value| !value.is_null()),
+    })
 }
 
 pub async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), Error> {
@@ -165,44 +194,19 @@ pub async fn append_history_once(
     cursor_item_id: Option<&str>,
     entries: Vec<Value>,
 ) -> Result<bool, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        if !apply_history_update(&mut history, owner_conn_id, cursor_item_id, entries.clone()) {
-            return Ok(false);
-        }
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let result = unwrap_value(response).unwrap_or(Value::Null);
-        if result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(true);
-        }
-        current = result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to append safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to append safely",
+        |history| {
+            if apply_history_update(history, owner_conn_id, cursor_item_id, entries.clone()) {
+                HistoryMutation::Commit(true)
+            } else {
+                HistoryMutation::Return(false)
+            }
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,50 +222,20 @@ pub async fn set_history_owner(
     session_id: &str,
     owner_conn_id: &str,
 ) -> Result<HistoryOwnerResult, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        let owner_result = apply_owner_transfer(&mut history, owner_conn_id);
-        match &owner_result {
-            HistoryOwnerResult::Closed => return Ok(HistoryOwnerResult::Closed),
-            HistoryOwnerResult::ActivePrompt(claim) => {
-                return Ok(HistoryOwnerResult::ActivePrompt(claim.clone()));
+    update_history(
+        iii,
+        session_id,
+        "history owner changed too frequently to update safely",
+        |history| {
+            let result = apply_owner_transfer(history, owner_conn_id);
+            if matches!(result, HistoryOwnerResult::Transferred { .. }) {
+                HistoryMutation::Commit(result)
+            } else {
+                HistoryMutation::Return(result)
             }
-            HistoryOwnerResult::AlreadyOwned => return Ok(HistoryOwnerResult::AlreadyOwned),
-            HistoryOwnerResult::Transferred { .. } => {}
-        }
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let result = unwrap_value(response).unwrap_or(Value::Null);
-        if result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(owner_result);
-        }
-        current = result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history owner changed too frequently to update safely".to_string(),
-    ))
+        },
+    )
+    .await
 }
 
 pub async fn restore_history_owner(
@@ -270,48 +244,22 @@ pub async fn restore_history_owner(
     current_owner_conn_id: &str,
     previous_owner_conn_id: Option<&str>,
 ) -> Result<bool, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        if history.closed
-            || history.active_prompt.is_some()
-            || history.owner_conn_id.as_deref() != Some(current_owner_conn_id)
-        {
-            return Ok(false);
-        }
-        history.owner_conn_id = previous_owner_conn_id.map(str::to_string);
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let result = unwrap_value(response).unwrap_or(Value::Null);
-        if result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(true);
-        }
-        current = result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to restore ownership safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to restore ownership safely",
+        |history| {
+            if history.closed
+                || history.active_prompt.is_some()
+                || history.owner_conn_id.as_deref() != Some(current_owner_conn_id)
+            {
+                return HistoryMutation::Return(false);
+            }
+            history.owner_conn_id = previous_owner_conn_id.map(str::to_string);
+            HistoryMutation::Commit(true)
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,52 +279,27 @@ pub async fn claim_prompt(
     dispatch: PromptDispatchIdentity,
     user_entry: Value,
 ) -> Result<PromptClaimResult, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        let result = apply_prompt_claim(
-            &mut history,
-            owner_conn_id,
-            claim_id,
-            started_at_ms,
-            dispatch.clone(),
-            user_entry.clone(),
-        );
-        if result != PromptClaimResult::Claimed {
-            return Ok(result);
-        }
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let result = unwrap_value(response).unwrap_or(Value::Null);
-        if result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(PromptClaimResult::Claimed);
-        }
-        current = result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to claim a prompt safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to claim a prompt safely",
+        |history| {
+            let result = apply_prompt_claim(
+                history,
+                owner_conn_id,
+                claim_id,
+                started_at_ms,
+                dispatch.clone(),
+                user_entry.clone(),
+            );
+            if result == PromptClaimResult::Claimed {
+                HistoryMutation::Commit(result)
+            } else {
+                HistoryMutation::Return(result)
+            }
+        },
+    )
+    .await
 }
 
 pub async fn release_prompt_claim(
@@ -385,44 +308,19 @@ pub async fn release_prompt_claim(
     owner_conn_id: &str,
     claim_id: &str,
 ) -> Result<bool, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        if !apply_prompt_release(&mut history, owner_conn_id, claim_id) {
-            return Ok(false);
-        }
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let result = unwrap_value(response).unwrap_or(Value::Null);
-        if result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(true);
-        }
-        current = result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to release a prompt safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to release a prompt safely",
+        |history| {
+            if apply_prompt_release(history, owner_conn_id, claim_id) {
+                HistoryMutation::Commit(true)
+            } else {
+                HistoryMutation::Return(false)
+            }
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,51 +338,26 @@ pub async fn begin_prompt_recovery(
     recovery_claim_id: &str,
     recovery_started_at_ms: i64,
 ) -> Result<PromptRecoveryResult, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        let result = apply_prompt_recovery(
-            &mut history,
-            expected_claim,
-            recovery_owner_conn_id,
-            recovery_claim_id,
-            recovery_started_at_ms,
-        );
-        let PromptRecoveryResult::Claimed(_) = &result else {
-            return Ok(result);
-        };
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let cas_result = unwrap_value(response).unwrap_or(Value::Null);
-        if cas_result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(result);
-        }
-        current = cas_result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to begin prompt recovery safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to begin prompt recovery safely",
+        |history| {
+            let result = apply_prompt_recovery(
+                history,
+                expected_claim,
+                recovery_owner_conn_id,
+                recovery_claim_id,
+                recovery_started_at_ms,
+            );
+            if matches!(result, PromptRecoveryResult::Claimed(_)) {
+                HistoryMutation::Commit(result)
+            } else {
+                HistoryMutation::Return(result)
+            }
+        },
+    )
+    .await
 }
 
 pub async fn read_active_prompt_claim(
@@ -510,48 +383,23 @@ pub async fn finish_prompt_recovery(
     recovery_claim: &ActivePromptClaim,
     new_owner_conn_id: &str,
 ) -> Result<PromptRecoveryFinishResult, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        let result = apply_prompt_recovery_finish(&mut history, recovery_claim, new_owner_conn_id);
-        if matches!(
-            result,
-            PromptRecoveryFinishResult::Changed | PromptRecoveryFinishResult::Closed
-        ) {
-            return Ok(result);
-        }
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let cas_result = unwrap_value(response).unwrap_or(Value::Null);
-        if cas_result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(result);
-        }
-        current = cas_result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to finish prompt recovery safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to finish prompt recovery safely",
+        |history| {
+            let result = apply_prompt_recovery_finish(history, recovery_claim, new_owner_conn_id);
+            if matches!(
+                result,
+                PromptRecoveryFinishResult::Changed | PromptRecoveryFinishResult::Closed
+            ) {
+                HistoryMutation::Return(result)
+            } else {
+                HistoryMutation::Commit(result)
+            }
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,45 +415,20 @@ pub async fn close_history_owned_by(
     session_id: &str,
     owner_conn_id: &str,
 ) -> Result<CloseHistoryResult, Error> {
-    let scope = scope();
-    let key = session_history_key(session_id);
-    let mut current = state_get(iii, &scope, &key).await?;
-    for _ in 0..16 {
-        let mut history = decode_history(current.as_ref())?;
-        let close_result = apply_history_close(&mut history, owner_conn_id);
-        if close_result != CloseHistoryResult::Closed {
-            return Ok(close_result);
-        }
-        let next = serde_json::to_value(history)
-            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
-        let mut payload = json!({ "scope": scope, "key": key, "value": next });
-        if let Some(expected) = current.as_ref() {
-            payload["expected"] = expected.clone();
-        }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "state::compare-and-set".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(STATE_TIMEOUT_MS),
-            })
-            .await?;
-        let result = unwrap_value(response).unwrap_or(Value::Null);
-        if result
-            .get("swapped")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(CloseHistoryResult::Closed);
-        }
-        current = result
-            .get("current")
-            .cloned()
-            .filter(|value| !value.is_null());
-    }
-    Err(Error::Handler(
-        "history changed too frequently to close safely".to_string(),
-    ))
+    update_history(
+        iii,
+        session_id,
+        "history changed too frequently to close safely",
+        |history| {
+            let result = apply_history_close(history, owner_conn_id);
+            if result == CloseHistoryResult::Closed {
+                HistoryMutation::Commit(result)
+            } else {
+                HistoryMutation::Return(result)
+            }
+        },
+    )
+    .await
 }
 
 pub async fn read_history(iii: &IIIClient, session_id: &str) -> Result<Vec<Value>, Error> {
@@ -674,6 +497,41 @@ fn decode_history(value: Option<&Value>) -> Result<HistoryState, Error> {
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|error| Error::Handler(format!("history decode failed: {error}"))),
     }
+}
+
+enum HistoryMutation<T> {
+    Return(T),
+    Commit(T),
+}
+
+async fn update_history<T, F>(
+    iii: &IIIClient,
+    session_id: &str,
+    exhaustion_error: &str,
+    mut transition: F,
+) -> Result<T, Error>
+where
+    F: FnMut(&mut HistoryState) -> HistoryMutation<T>,
+{
+    let scope = scope();
+    let key = session_history_key(session_id);
+    let mut current = state_get(iii, &scope, &key).await?;
+    for _ in 0..HISTORY_UPDATE_ATTEMPTS {
+        let mut history = decode_history(current.as_ref())?;
+        let result = match transition(&mut history) {
+            HistoryMutation::Return(result) => return Ok(result),
+            HistoryMutation::Commit(result) => result,
+        };
+        let next = serde_json::to_value(history)
+            .map_err(|error| Error::Handler(format!("history encode failed: {error}")))?;
+        let cas =
+            state_compare_and_set_with_current(iii, &scope, &key, current.as_ref(), next).await?;
+        if cas.swapped {
+            return Ok(result);
+        }
+        current = cas.current;
+    }
+    Err(Error::Handler(exhaustion_error.to_string()))
 }
 
 fn apply_owner_transfer(history: &mut HistoryState, owner_conn_id: &str) -> HistoryOwnerResult {
@@ -803,14 +661,18 @@ fn apply_history_update(
     if history.closed {
         return false;
     }
-    if let Some(owner_conn_id) = owner_conn_id
-        && history.owner_conn_id.as_deref() != Some(owner_conn_id)
-    {
-        return false;
+    if let Some(owner_conn_id) = owner_conn_id {
+        if history.owner_conn_id.as_deref() != Some(owner_conn_id) {
+            return false;
+        }
     }
     if let Some(item_id) = cursor_item_id {
         if history.cursor_item_ids.iter().any(|seen| seen == item_id) {
             return false;
+        }
+        if history.cursor_item_ids.len() >= CURSOR_ITEM_REPLAY_WINDOW {
+            let remove = history.cursor_item_ids.len() + 1 - CURSOR_ITEM_REPLAY_WINDOW;
+            history.cursor_item_ids.drain(..remove);
         }
         history.cursor_item_ids.push(item_id.to_string());
     }
@@ -927,6 +789,41 @@ mod tests {
         ));
         assert_eq!(history.entries.len(), 2);
         assert_eq!(history.cursor_item_ids, vec!["cursor-item"]);
+    }
+
+    #[test]
+    fn cursor_item_dedup_keeps_only_the_recent_replay_window() {
+        let mut history = HistoryState::default();
+        for index in 0..=CURSOR_ITEM_REPLAY_WINDOW {
+            assert!(apply_history_update(
+                &mut history,
+                None,
+                Some(&format!("cursor-{index}")),
+                Vec::new(),
+            ));
+        }
+        assert_eq!(history.cursor_item_ids.len(), CURSOR_ITEM_REPLAY_WINDOW);
+        assert!(
+            !history
+                .cursor_item_ids
+                .iter()
+                .any(|item| item == "cursor-0")
+        );
+        assert!(!apply_history_update(
+            &mut history,
+            None,
+            Some(&format!("cursor-{}", CURSOR_ITEM_REPLAY_WINDOW)),
+            Vec::new(),
+        ));
+        assert!(apply_history_update(
+            &mut history,
+            None,
+            Some("cursor-0"),
+            Vec::new(),
+        ));
+        let encoded = serde_json::to_value(&history).unwrap();
+        let restored = decode_history(Some(&encoded)).unwrap();
+        assert_eq!(restored.cursor_item_ids, history.cursor_item_ids);
     }
 
     #[test]

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const packageJsonRequirePattern =
+  /createRequire\(\s*import\.meta\.url\s*\)\s*\(\s*"\.\.\/package\.json"\s*\)/;
 
 const inlinePackageJson = {
   name: 'iii-inline-sdk-package-json',
@@ -16,9 +18,12 @@ const inlinePackageJson = {
         readFile(join(root, 'node_modules/iii-sdk/package.json'), 'utf8'),
       ]);
       const { version } = JSON.parse(pkg);
+      if (!packageJsonRequirePattern.test(source)) {
+        throw new Error('iii-sdk package.json lookup pattern was not found during bundling');
+      }
       return {
         contents: source.replace(
-          /createRequire\(\s*import\.meta\.url\s*\)\s*\(\s*"\.\.\/package\.json"\s*\)/g,
+          new RegExp(packageJsonRequirePattern.source, 'g'),
           JSON.stringify({ version }),
         ),
         loader: 'js',

@@ -66,8 +66,11 @@ export function requireApiKey(config: Config): string {
 }
 
 export function bridgeLaunchOptions(config: Config, workspace?: string): BridgeLaunchOptions {
+  const configured = config.bridge_binary.trim();
+  const fromEnvironment = process.env.CURSOR_SDK_BRIDGE_BIN?.trim();
   return {
-    binary: config.bridge_binary,
+    binary:
+      configured && configured !== BRIDGE_BIN_ENV_REFERENCE ? configured : fromEnvironment || '',
     workspace: resolve(workspace || config.workspace),
     apiKey: requireApiKey(config),
     startupTimeoutMs: config.startup_timeout_ms,

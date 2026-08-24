@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BridgeRpcError, BridgeTransportError } from '../src/bridge.js';
-import { makeEmitter } from '../src/events.js';
+import { makeEmitter, releaseEmitterSequence } from '../src/events.js';
 import {
   CursorRunRequestSchema,
   CursorWorker,
@@ -24,11 +24,34 @@ describe('CursorWorker run lifecycle', () => {
     const emit = makeEmitter(iii.asClient(), () => 'agent::events');
 
     await emit('session-one', { type: 'message_update' });
+    const firstItemId = (iii.streamItems[0] as { item_id: string }).item_id;
+    releaseEmitterSequence('session-one');
+    await emit('session-one', { type: 'message_update' });
+    const secondItemId = (iii.streamItems[1] as { item_id: string }).item_id;
 
     expect(iii.triggerCalls.at(-1)).toMatchObject({
       function_id: 'stream::set',
       namespace: 'default',
     });
+    expect(firstItemId).not.toBe(secondItemId);
+    expect(firstItemId.endsWith('00000000')).toBe(true);
+    expect(secondItemId.endsWith('00000000')).toBe(true);
+  });
+
+  it('redacts credentials from event-delivery warnings', async () => {
+    const iii = new MockIII();
+    iii.trigger = async () => {
+      throw new Error('delivery failed for token_private_123');
+    };
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(makeEmitter(iii.asClient(), () => 'agent::events')('session', {})).resolves.toBe(
+      false,
+    );
+
+    expect(warning).toHaveBeenCalledWith(expect.not.stringContaining('token_private_123'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('<redacted>'));
+    warning.mockRestore();
   });
 
   it('runs a sandboxed local agent with a durable mapping and normalized events', async () => {
@@ -421,12 +444,15 @@ describe('CursorWorker run lifecycle', () => {
         if (client.calls.some((call) => call.method === 'Send')) break;
         await Promise.resolve();
       }
+      expect(client.calls.some((call) => call.method === 'Send')).toBe(true);
       const claimedAt = (iii.state.get('long-retry') as SessionRecord).claim_started_at_ms;
+      expect(typeof claimedAt).toBe('number');
+      if (typeof claimedAt !== 'number') throw new Error('expected a durable Send claim');
 
       await vi.advanceTimersByTimeAsync(30_000);
 
       expect((iii.state.get('long-retry') as SessionRecord).claim_started_at_ms).toBeGreaterThan(
-        claimedAt ?? 0,
+        claimedAt,
       );
       await vi.advanceTimersByTimeAsync(271_000);
       expect((await run).status).toBe('FINISHED');
@@ -621,13 +647,16 @@ describe('CursorWorker run lifecycle', () => {
         if (client.calls.some((call) => call.method === 'WaitLiveRun')) break;
         await Promise.resolve();
       }
+      expect(client.calls.some((call) => call.method === 'WaitLiveRun')).toBe(true);
       const claimedAt = (iii.state.get('wait-heartbeat') as SessionRecord).claim_started_at_ms;
+      expect(typeof claimedAt).toBe('number');
+      if (typeof claimedAt !== 'number') throw new Error('expected a durable WaitLiveRun claim');
 
       await vi.advanceTimersByTimeAsync(30_000);
 
       expect(
         (iii.state.get('wait-heartbeat') as SessionRecord).claim_started_at_ms,
-      ).toBeGreaterThan(claimedAt ?? 0);
+      ).toBeGreaterThan(claimedAt);
       finishWait({
         result: {
           agentId: 'agent-existing',
@@ -1003,6 +1032,54 @@ describe('CursorWorker run lifecycle', () => {
     expect(final.active_run_id).toBe('run-newer');
     expect(final.send_idempotency_key).toBe('send-newer');
     expect(final.usage?.total_tokens).toBe(5);
+  });
+
+  it('does not overwrite aggregate usage for a run-scoped usage request', async () => {
+    const iii = new MockIII();
+    const record = activeRecord('usage-run', 'old prompt', 'run-old');
+    record.runtime = 'cloud';
+    record.workspace = '';
+    record.repositories = [{ url: 'https://github.com/acme/repo' }];
+    record.usage = {
+      input_tokens: 10,
+      output_tokens: 20,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      total_tokens: 30,
+    };
+    record.cost = { raw_cost_cents: 4, charged_cents: 3 };
+    iii.state.set(record.session_id, clone(record));
+    const client = new FakeBridgeClient(
+      (call) => {
+        if (call.method === 'GetUsage') {
+          return {
+            usage: {
+              usage: {
+                inputTokens: '1',
+                outputTokens: '2',
+                cacheReadTokens: '0',
+                cacheWriteTokens: '0',
+                totalTokens: '3',
+              },
+              cost: { rawCostCents: 1, chargedCents: 1 },
+              runs: [],
+            },
+          };
+        }
+        return unaryResponse(call);
+      },
+      () => frames(),
+    );
+    const worker = makeWorker(iii, new FakeBridgeFactory(client));
+    worker.register();
+
+    const response = await iii.functions.get('cursor::usage')?.handler({
+      session_id: record.session_id,
+      run_id: 'run-old',
+    });
+
+    expect(response).toMatchObject({ usage: { usage: { total_tokens: 3 } } });
+    expect(iii.state.get(record.session_id)).toEqual(record);
   });
 
   it('fails before creating a Bridge client when the API key is blank and emits a terminal error', async () => {
@@ -1620,6 +1697,18 @@ describe('Cursor worker interface', () => {
       expect(registration.options.response_format).toMatchObject({ type: 'object' });
       expect(registration.options.response_format).not.toEqual({});
     }
+  });
+
+  it('lists valid sessions while skipping malformed state records', async () => {
+    const iii = new MockIII();
+    iii.state.set('valid', activeRecord('valid', 'prompt', 'run'));
+    iii.state.set('malformed', { session_id: 'malformed' });
+    const worker = makeWorker(iii, new FakeBridgeFactory(successfulClient()));
+    worker.register();
+
+    await expect(iii.functions.get('cursor::sessions::list')?.handler({})).resolves.toMatchObject({
+      sessions: [{ session_id: 'valid' }],
+    });
   });
 
   it('accepts the exact ACP external-brain payload as a sandboxed local run', async () => {

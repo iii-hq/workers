@@ -523,13 +523,14 @@ impl AcpHandler {
         if let Err(e) = remove_session_from_index(&self.iii, &p.session_id).await {
             errs.push(format!("index: {}", e));
         }
-        if errs.is_empty()
-            && let Err(error) =
+        if errs.is_empty() {
+            if let Err(error) =
                 state_delete(&self.iii, &scope, &session_history_key(&p.session_id)).await
-        {
-            match state_get(&self.iii, &scope, &session_history_key(&p.session_id)).await {
-                Ok(None) => {}
-                _ => errs.push(format!("history tombstone: {}", error)),
+            {
+                match state_get(&self.iii, &scope, &session_history_key(&p.session_id)).await {
+                    Ok(None) => {}
+                    _ => errs.push(format!("history tombstone: {}", error)),
+                }
             }
         }
 
@@ -586,8 +587,6 @@ impl AcpHandler {
     where
         F: FnOnce(&mut SessionRecord),
     {
-        let lock = self.history_lock(session_id);
-        let _g = lock.lock().await;
         let mut record: SessionRecord = serde_json::from_value(record_value.clone())
             .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
         let owner_result = self.acquire_history_owner(session_id).await?;
@@ -598,6 +597,54 @@ impl AcpHandler {
             }
             HistoryOwnerResult::AlreadyOwned | HistoryOwnerResult::Transferred { .. } => {}
         }
+        let lock = self.history_lock(session_id);
+        let _g = lock.lock().await;
+        let scope = scope();
+        let key = session_key(session_id);
+        let current_value = state_get(&self.iii, &scope, &key)
+            .await
+            .map_err(|error| (INTERNAL_ERROR, error.to_string()))?
+            .ok_or_else(|| (INVALID_PARAMS, format!("session not found: {session_id}")))?;
+        if current_value != record_value {
+            self.rollback_history_transfer(session_id, &owner_result)
+                .await;
+            return Err((
+                INVALID_PARAMS,
+                "session ownership changed concurrently; retry load or resume".to_string(),
+            ));
+        }
+        let confirmed_owner = match set_history_owner(&self.iii, session_id, &self.conn_id).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.rollback_history_transfer(session_id, &owner_result)
+                    .await;
+                return Err((INTERNAL_ERROR, error.to_string()));
+            }
+        };
+        match confirmed_owner {
+            HistoryOwnerResult::AlreadyOwned => {}
+            HistoryOwnerResult::ActivePrompt(_) => {
+                self.rollback_history_transfer(session_id, &owner_result)
+                    .await;
+                return Err((
+                    INVALID_PARAMS,
+                    "session has an active prompt; retry load or resume after it finishes"
+                        .to_string(),
+                ));
+            }
+            HistoryOwnerResult::Closed => {
+                return Err((INVALID_PARAMS, "session is closed".to_string()));
+            }
+            changed @ HistoryOwnerResult::Transferred { .. } => {
+                self.rollback_history_transfer(session_id, &changed).await;
+                self.rollback_history_transfer(session_id, &owner_result)
+                    .await;
+                return Err((
+                    INVALID_PARAMS,
+                    "session ownership changed concurrently; retry load or resume".to_string(),
+                ));
+            }
+        }
 
         record.conn_id = self.conn_id.clone();
         mutate(&mut record);
@@ -606,8 +653,6 @@ impl AcpHandler {
         if new_value == record_value {
             return Ok(record);
         }
-        let scope = scope();
-        let key = session_key(session_id);
         let swapped = match state_compare_and_set(
             &self.iii,
             &scope,
@@ -1044,17 +1089,19 @@ impl AcpHandler {
         let ((res, error_terminal), cancellation_accepted) = tokio::select! {
             r = &mut brain => (flatten_brain_result(r), None),
             _ = cancel.wait() => {
-                let mut stop_accepted = false;
+                let mut stop_accepted = None;
                 if let Some(stop_fn) = self.brain_stop_fn.as_deref() {
                     let stop = external_brain_stop_request(stop_fn, session_id);
                     match self.iii.trigger(stop).await {
                         Ok(result) => {
-                            stop_accepted = stop_was_accepted(&result);
-                            if !stop_accepted {
+                            let accepted = stop_was_accepted(&result);
+                            stop_accepted = Some(accepted);
+                            if !accepted {
                                 tracing::warn!(stop_fn, session_id, "external brain rejected stop request");
                             }
                         }
                         Err(error) => {
+                            stop_accepted = Some(false);
                             tracing::error!(%error, stop_fn, session_id, "external brain stop failed");
                         }
                     }
@@ -1065,11 +1112,11 @@ impl AcpHandler {
                 )
                 .await
                 {
-                    Ok(result) => (flatten_brain_result(result), Some(stop_accepted)),
+                    Ok(result) => (flatten_brain_result(result), stop_accepted),
                     Err(_) => {
                         tracing::error!(
                             session_id,
-                            stop_accepted,
+                            ?stop_accepted,
                             "external brain did not settle after cancellation"
                         );
                         return BrainOutcome {
@@ -2071,6 +2118,7 @@ mod tests {
             external_brain_stop_reason(&cancelled, Some(true)),
             "cancelled"
         );
+        assert_eq!(external_brain_stop_reason(&cancelled, None), "cancelled");
     }
 
     #[test]

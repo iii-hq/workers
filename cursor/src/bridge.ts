@@ -162,15 +162,19 @@ export class ConnectJsonTransport {
     responseSchema: z.ZodType<T>,
     options: RpcOptions = {},
   ): Promise<T> {
+    const requestBody = Buffer.from(JSON.stringify(request));
+    if (requestBody.length > this.maxFrameBytes) {
+      throw new BridgeTransportError(`Connect request exceeds ${this.maxFrameBytes} bytes`);
+    }
     const response = await this.post(
       service,
       method,
       'application/json',
-      Buffer.from(JSON.stringify(request)),
+      requestBody,
       withTimeout(options.signal, options.timeoutMs ?? this.defaultTimeoutMs),
     );
-    if (!response.ok) throw await rpcErrorFromResponse(response);
-    const payload = await response.json();
+    if (!response.ok) throw await rpcErrorFromResponse(response, this.maxFrameBytes);
+    const payload = await readJsonResponse(response, this.maxFrameBytes);
     return responseSchema.parse(payload);
   }
 
@@ -196,7 +200,7 @@ export class ConnectJsonTransport {
       frame,
       options.signal,
     );
-    if (!response.ok) throw await rpcErrorFromResponse(response);
+    if (!response.ok) throw await rpcErrorFromResponse(response, this.maxFrameBytes);
     if (!response.body) throw new BridgeTransportError('Connect stream has no response body');
 
     const reader = response.body.getReader();
@@ -204,7 +208,7 @@ export class ConnectJsonTransport {
     let ended = false;
     try {
       while (!ended) {
-        const read = await reader.read();
+        const read = await readWithIdleTimeout(reader, options.timeoutMs ?? this.defaultTimeoutMs);
         if (read.done) break;
         buffered = Buffer.concat([buffered, Buffer.from(read.value)]);
         while (buffered.length >= 5) {
@@ -311,7 +315,13 @@ export class ManagedBridgeClient implements BridgeClient {
 
   private async ensureStarted(): Promise<ConnectJsonTransport> {
     if (this.closePromise) throw new BridgeProcessError('Cursor SDK Bridge client is closed');
-    if (!this.startPromise) this.startPromise = this.start();
+    if (!this.startPromise) {
+      const pending = this.start();
+      this.startPromise = pending;
+      void pending.catch(() => {
+        if (this.startPromise === pending) this.startPromise = null;
+      });
+    }
     return this.startPromise;
   }
 
@@ -384,16 +394,18 @@ export class ManagedBridgeClient implements BridgeClient {
       this.transport = transport;
       return transport;
     } catch (error) {
-      await stopProcess(child, this.options.shutdownTimeoutMs);
+      await stopProcess(child, this.options.shutdownTimeoutMs, false);
       this.process = null;
       throw error;
     }
   }
 
   private async closeInner(): Promise<void> {
+    let gracefulTerminationRequested = false;
     try {
       const transport = this.transport ?? (await this.startPromise?.catch(() => null));
       if (transport && this.process?.exitCode === null) {
+        gracefulTerminationRequested = true;
         await transport
           .unary(
             'SdkBridgeControlService',
@@ -404,7 +416,13 @@ export class ManagedBridgeClient implements BridgeClient {
           )
           .catch(() => undefined);
       }
-      if (this.process) await stopProcess(this.process, this.options.shutdownTimeoutMs);
+      if (this.process) {
+        await stopProcess(
+          this.process,
+          this.options.shutdownTimeoutMs,
+          gracefulTerminationRequested,
+        );
+      }
     } finally {
       this.process = null;
       this.transport = null;
@@ -508,6 +526,7 @@ async function awaitDiscovery(
       clearTimeout(timer);
       child.off('exit', onExit);
       child.off('error', onError);
+      lines.close();
       if (result.ok) resolvePromise(result.value);
       else rejectPromise(result.error);
     };
@@ -550,10 +569,7 @@ async function awaitDiscovery(
       } catch (error) {
         settle({
           ok: false,
-          error:
-            error instanceof Error
-              ? error
-              : new BridgeProcessError(`Cursor SDK Bridge discovery failed: ${String(error)}`),
+          error: redactedDiscoveryError(error, apiKey),
         });
       }
     });
@@ -599,9 +615,13 @@ async function readAuthToken(
   return token;
 }
 
-async function stopProcess(child: BridgeProcess, timeoutMs: number): Promise<void> {
+async function stopProcess(
+  child: BridgeProcess,
+  timeoutMs: number,
+  gracefulTerminationRequested: boolean,
+): Promise<void> {
   if (child.exitCode !== null) return;
-  if (await waitForExit(child, timeoutMs)) return;
+  if (gracefulTerminationRequested && (await waitForExit(child, timeoutMs))) return;
   child.kill('SIGTERM');
   if (await waitForExit(child, timeoutMs)) return;
   child.kill('SIGKILL');
@@ -628,10 +648,10 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortS
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-async function rpcErrorFromResponse(response: Response): Promise<BridgeRpcError> {
+async function rpcErrorFromResponse(response: Response, maxBytes: number): Promise<BridgeRpcError> {
   let body: unknown;
   try {
-    body = await response.json();
+    body = await readJsonResponse(response, maxBytes);
   } catch {
     body = { code: `http_${response.status}`, message: response.statusText };
   }
@@ -667,6 +687,55 @@ function parseJsonObject(bytes: Uint8Array): JsonObject {
     throw new BridgeTransportError('Connect frame JSON must be an object');
   }
   return value as JsonObject;
+}
+
+async function readJsonResponse(response: Response, maxBytes: number): Promise<JsonObject> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new BridgeTransportError(`Connect response exceeds ${maxBytes} bytes`);
+  }
+  if (!response.body) throw new BridgeTransportError('Connect response has no body');
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const read = await reader.read();
+      if (read.done) break;
+      const chunk = Buffer.from(read.value);
+      length += chunk.length;
+      if (length > maxBytes) {
+        throw new BridgeTransportError(`Connect response exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return parseJsonObject(Buffer.concat(chunks, length));
+}
+
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolvePromise, rejectPromise) => {
+        timer = setTimeout(
+          () =>
+            rejectPromise(
+              new BridgeTransportError(`Connect stream idle timeout after ${timeoutMs}ms`),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 type DecodedField = { wire: number; value: bigint | Buffer };
@@ -745,9 +814,20 @@ function bigintString(value: bigint | undefined): string | undefined {
 }
 
 function redact(value: string, apiKey: string): string {
-  let redacted = value.replace(/key_[A-Za-z0-9_-]+/g, '[redacted]');
+  let redacted = value.replace(/(?:key|token|secret)_[A-Za-z0-9._-]+/gi, '[redacted]');
   if (apiKey) redacted = redacted.replaceAll(apiKey, '[redacted]');
   return redacted.slice(0, 500);
+}
+
+function redactedDiscoveryError(error: unknown, apiKey: string): Error {
+  if (!(error instanceof Error)) {
+    return new BridgeProcessError(
+      `Cursor SDK Bridge discovery failed: ${redact(String(error), apiKey)}`,
+    );
+  }
+  error.message = redact(error.message, apiKey);
+  if (error.stack) error.stack = redact(error.stack, apiKey);
+  return error;
 }
 
 function errorText(error: unknown): string {

@@ -40,11 +40,14 @@ let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
+  const watchdog = setTimeout(() => process.exit(1), 15_000);
+  watchdog.unref();
   try {
     await provider.close();
     await worker.close();
     await iii.shutdown?.();
   } finally {
+    clearTimeout(watchdog);
     process.exit(0);
   }
 };
