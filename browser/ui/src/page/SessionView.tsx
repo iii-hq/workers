@@ -253,11 +253,13 @@ export function SessionView({
     null,
   )
   const [sending, setSending] = useState(false)
+  const unlabeledPinsRef = useRef<string[]>([])
   useEffect(() => {
     setAnnotating(false)
     setFrozen(null)
     setAnnotations([])
     setSelectedAnnotation(null)
+    unlabeledPinsRef.current = []
   }, [sessionId])
   const liveFrameRef = useRef(live.frame)
   liveFrameRef.current = live.frame
@@ -275,6 +277,7 @@ export function SessionView({
       setFrozen(frame)
       setAnnotations([])
       setSelectedAnnotation(null)
+      unlabeledPinsRef.current = []
       return true
     })
   }, [])
@@ -313,6 +316,7 @@ export function SessionView({
       })
       setAnnotating(false)
       setAnnotations([])
+      unlabeledPinsRef.current = []
     }).finally(() => setSending(false))
   }, [annotationSet, host, runAction])
   const downloadAnnotations = useCallback(() => {
@@ -331,6 +335,7 @@ export function SessionView({
   const clearAnnotations = useCallback(() => {
     setAnnotations([])
     setSelectedAnnotation(null)
+    unlabeledPinsRef.current = []
   }, [])
   const viewportAnnotation = annotating
     ? {
@@ -384,7 +389,6 @@ export function SessionView({
   // Picked events carry no correlation token, so pins waiting for their
   // element label queue up first-in first-out; two quick drops each get
   // their own answer instead of the second overwriting the first.
-  const unlabeledPinsRef = useRef<string[]>([])
   useBrowserSessionEvent({
     host,
     enabled: enabled && annotating,
