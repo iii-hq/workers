@@ -2994,3 +2994,13 @@
   font-size: 12px;
   color: var(--color-ink-faint);
 }
+
+@media (max-width: 520px) {
+  [data-iii-ui="browser"] .br-ui-sets-body {
+    flex-direction: column;
+  }
+  [data-iii-ui="browser"] .br-ui-sets-list {
+    width: 100%;
+    max-height: 160px;
+  }
+}

@@ -344,6 +344,17 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.copyCookies(),
         },
         {
+          id: 'save-annotations',
+          title: 'Save the annotations',
+          detail: 'Keep this set; reopen or send it later from Saved annotations',
+          keywords: ['annotations', 'save', 'keep'],
+          enabled: () =>
+            selected !== null &&
+            sessionActionsRef.current !== null &&
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.saveSet(),
+        },
+        {
           id: 'saved-annotations',
           title: 'Saved annotations',
           detail: 'Sets saved from any session; send or download them again',

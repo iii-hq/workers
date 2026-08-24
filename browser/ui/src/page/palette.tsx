@@ -54,7 +54,7 @@ export function registerBrowserPalette(host: Host): void {
     kind: 'item',
     minQuery: 2,
     async search(query, { signal }) {
-      const sets = await listAnnotationSets(host.iii)
+      const sets = await listAnnotationSets(host.iii, signal)
       if (signal.aborted) return []
       const needle = query.toLowerCase()
       return sets

@@ -7,6 +7,7 @@
 
 import {
   Button,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -48,6 +49,7 @@ export function SavedSetsDialog({
   const [selectedSet, setSelectedSet] = useState<AnnotationSet | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   const refresh = useCallback(() => {
     void listAnnotationSets(host.iii)
@@ -63,14 +65,20 @@ export function SavedSetsDialog({
   }, [open, initialKey, refresh])
 
   useEffect(() => {
-    if (!open || !selectedKey) {
-      setSelectedSet(null)
-      return
-    }
+    // Clear at once so a slow read never shows the previous set's picture
+    // under the new selection.
+    setSelectedSet(null)
+    if (!open || !selectedKey) return
     let cancelled = false
-    void readAnnotationSet(host.iii, selectedKey).then((set) => {
-      if (!cancelled) setSelectedSet(set)
-    })
+    void readAnnotationSet(host.iii, selectedKey)
+      .then((set) => {
+        if (cancelled) return
+        setSelectedSet(set)
+        if (!set) setStatus('that set could not be read')
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setStatus(errorMessage(e))
+      })
     return () => {
       cancelled = true
     }
@@ -128,6 +136,7 @@ export function SavedSetsDialog({
       refresh()
     })
   }, [selectedKey, host, refresh])
+  const askRemove = useCallback(() => setConfirmingDelete(true), [])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -182,7 +191,7 @@ export function SavedSetsDialog({
                     <Button variant="ghost" size="sm" onClick={download}>
                       Download
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={remove}>
+                    <Button variant="ghost" size="sm" onClick={askRemove}>
                       Delete
                     </Button>
                   </div>
@@ -196,6 +205,14 @@ export function SavedSetsDialog({
             </div>
           </div>
         )}
+        <ConfirmDialog
+          open={confirmingDelete}
+          onOpenChange={setConfirmingDelete}
+          title="Delete this saved set?"
+          description="It disappears for everyone on this engine."
+          confirmLabel="Delete"
+          onConfirm={remove}
+        />
       </DialogContent>
     </Dialog>
   )

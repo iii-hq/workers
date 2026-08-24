@@ -421,16 +421,24 @@ export function SessionView({
       unlabeledPinsRef.current = []
     }).finally(() => setSending(false))
   }, [annotationSet, host, runAction])
+  const [saving, setSaving] = useState(false)
   const saveSet = useCallback(() => {
     const set = annotationSet()
-    if (!set || set.annotations.length === 0) return
-    void runAction(async () => {
-      await saveAnnotationSet(host.iii, set)
-      setActionError(
-        `saved ${set.annotations.length} mark${set.annotations.length === 1 ? '' : 's'}`,
-      )
-    })
-  }, [annotationSet, host, runAction])
+    if (!set || set.annotations.length === 0 || saving) return
+    setSaving(true)
+    void (async () => {
+      try {
+        await saveAnnotationSet(host.iii, set)
+        setActionError(
+          `saved ${set.annotations.length} mark${set.annotations.length === 1 ? '' : 's'}`,
+        )
+      } catch (err) {
+        setActionError(errorMessage(err))
+      } finally {
+        setSaving(false)
+      }
+    })()
+  }, [annotationSet, host, saving])
 
   const downloadAnnotations = useCallback(() => {
     const set = annotationSet()
@@ -1151,9 +1159,10 @@ export function SessionView({
                 variant="ghost"
                 size="sm"
                 onClick={saveSet}
+                disabled={saving}
                 title="save this set for later; anyone on this engine can reopen it"
               >
-                Save
+                {saving ? 'Saving…' : 'Save'}
               </Button>
               <Button
                 variant="ghost"
