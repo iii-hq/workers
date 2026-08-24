@@ -41,7 +41,6 @@ use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
 use chromiumoxide::cdp::browser_protocol::css as cdp_css;
 use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
 use chromiumoxide::cdp::browser_protocol::emulation as cdp_emulation;
-use chromiumoxide::cdp::browser_protocol::fetch as cdp_fetch;
 use chromiumoxide::cdp::browser_protocol::input;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::browser_protocol::overlay;
@@ -50,7 +49,6 @@ use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::browser_protocol::storage as cdp_storage;
 use chromiumoxide::cdp::js_protocol::runtime as cdp_rt;
 use chromiumoxide::page::ScreenshotParams;
-use futures::StreamExt;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
@@ -724,15 +722,20 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.touch();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
                 let _navigation = session.navigation_lock.lock().await;
+                session.clear_navigation_error();
 
-                session
-                    .page
-                    .goto(req.url.as_str())
-                    .await
-                    .map_err(|e| handler_err(format!("navigation failed: {e}")))?;
+                if let Err(error) = session.page.goto(req.url.as_str()).await {
+                    if let Some(policy_error) = session.take_navigation_error() {
+                        return Err(handler_err(policy_error));
+                    }
+                    return Err(handler_err(format!("navigation failed: {error}")));
+                }
                 let timed_out = timeout(wait, session.page.wait_for_navigation())
                     .await
                     .is_err();
+                if let Some(policy_error) = session.take_navigation_error() {
+                    return Err(handler_err(policy_error));
+                }
 
                 let url = session.page.url().await.ok().flatten().unwrap_or(req.url);
                 let title = session.page.get_title().await.ok().flatten();
@@ -1229,10 +1232,11 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 ensure_writable(&session, "browser::execute")?;
                 session.touch();
                 let cfg = sx.config.load_full();
-                let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
-                ensure_origin_permission(&cfg, &page_url, OriginPermission::Scripting)?;
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
                 let _navigation = session.navigation_lock.lock().await;
+                let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
+                ensure_origin_permission(&cfg, &page_url, OriginPermission::Scripting)?;
+                session.clear_navigation_error();
 
                 let state_json = {
                     let state = session.exec_state.lock().unwrap_or_else(|p| p.into_inner());
@@ -1247,95 +1251,8 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .build()
                     .map_err(handler_err)?;
 
-                let main_frame = session.page.mainframe().await.ok().flatten();
-                let mut navigation_events = session
-                    .page
-                    .event_listener::<cdp_fetch::EventRequestPaused>()
-                    .await
-                    .map_err(|error| {
-                        handler_err(format!("script navigation gate failed: {error}"))
-                    })?;
-                let document_pattern = cdp_fetch::RequestPattern::builder()
-                    .resource_type(cdp_network::ResourceType::Document)
-                    .build();
-                session
-                    .page
-                    .execute(
-                        cdp_fetch::EnableParams::builder()
-                            .pattern(document_pattern)
-                            .build(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        handler_err(format!("script navigation gate failed: {error}"))
-                    })?;
-
-                let navigation_error = Arc::new(std::sync::Mutex::new(None::<String>));
-                let gate_error = navigation_error.clone();
-                let gate_page = session.page.clone();
-                let gate_config = cfg.clone();
-                let navigation_gate = tokio::spawn(async move {
-                    while let Some(event) = navigation_events.next().await {
-                        let is_top_document = main_frame
-                            .as_ref()
-                            .map(|frame_id| *frame_id == event.frame_id)
-                            .unwrap_or(true);
-                        let denial = if is_top_document {
-                            sessions::check_scheme(&gate_config, &event.request.url)
-                                .err()
-                                .or_else(|| {
-                                    check_origin_permission(
-                                        &gate_config,
-                                        &event.request.url,
-                                        OriginPermission::Access,
-                                    )
-                                    .err()
-                                })
-                        } else {
-                            None
-                        };
-
-                        if let Some(error) = denial {
-                            {
-                                let mut slot = gate_error
-                                    .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                                if slot.is_none() {
-                                    *slot = Some(error);
-                                }
-                            }
-                            let _ = gate_page
-                                .execute(cdp_fetch::FailRequestParams::new(
-                                    event.request_id.clone(),
-                                    cdp_network::ErrorReason::AccessDenied,
-                                ))
-                                .await;
-                        } else {
-                            let _ = gate_page
-                                .execute(cdp_fetch::ContinueRequestParams::new(
-                                    event.request_id.clone(),
-                                ))
-                                .await;
-                        }
-                    }
-                });
-
                 let evaluated = timeout(wait, session.page.execute(params)).await;
-                let disabled = session
-                    .page
-                    .execute(cdp_fetch::DisableParams::default())
-                    .await;
-                if let Err(error) = disabled {
-                    return Err(handler_err(format!(
-                        "script navigation gate cleanup failed: {error}"
-                    )));
-                }
-                navigation_gate.abort();
-                if let Some(error) = navigation_error
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-                {
+                if let Some(error) = session.take_navigation_error() {
                     return Err(handler_err(error));
                 }
                 session.touch();
@@ -2312,11 +2229,12 @@ fn register_upload(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 ensure_writable(&session, "browser::upload")?;
+                upload::validate_files(&req.files).map_err(handler_err)?;
+                session.touch();
+                let _navigation = session.navigation_lock.lock().await;
                 let config = sx.config.load_full();
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 ensure_origin_permission(&config, &url, OriginPermission::Uploads)?;
-                upload::validate_files(&req.files).map_err(handler_err)?;
-                session.touch();
 
                 session
                     .page

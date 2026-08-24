@@ -167,12 +167,24 @@ fn configured_origin_policy_for<'a>(
     let policies = config.origin_policies.as_ref()?;
     let parsed = url::Url::parse(raw_url).ok()?;
     let origin = parsed.origin().ascii_serialization();
-    if origin != "null" {
-        if let Some(policy) = policies.get(&origin) {
-            return Some(policy);
+    let host = parsed.host_str();
+    let mut host_match = None;
+
+    for (key, policy) in policies {
+        if let Ok(key_url) = url::Url::parse(key) {
+            if key_url.host_str().is_some() {
+                if origin != "null" && key_url.origin().ascii_serialization() == origin {
+                    return Some(policy);
+                }
+                continue;
+            }
+        }
+        if host.is_some_and(|request_host| key.eq_ignore_ascii_case(request_host)) {
+            host_match = Some(policy);
         }
     }
-    parsed.host_str().and_then(|host| policies.get(host))
+
+    host_match
 }
 
 pub fn origin_policy_for(config: &WorkerConfig, raw_url: &str) -> ResolvedOriginPolicy {
@@ -639,6 +651,32 @@ mod tests {
 
         assert!(!origin_policy_for(&config, "https://app.example.com/a").access);
         assert!(!origin_policy_for(&config, "http://app.example.com:8080/a").access);
+    }
+
+    #[test]
+    fn origin_policy_bare_host_is_case_insensitive() {
+        let config = WorkerConfig {
+            origin_policies: Some(BTreeMap::from([(
+                "App.Example.com".to_string(),
+                policy(OriginPolicyDecision::Deny),
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        assert!(!origin_policy_for(&config, "https://app.example.com/a").access);
+    }
+
+    #[test]
+    fn origin_policy_origin_drops_an_explicit_default_port() {
+        let config = WorkerConfig {
+            origin_policies: Some(BTreeMap::from([(
+                "https://app.example.com:443".to_string(),
+                policy(OriginPolicyDecision::Deny),
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        assert!(!origin_policy_for(&config, "https://app.example.com/a").access);
     }
 
     #[test]

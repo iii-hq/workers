@@ -397,8 +397,15 @@ Narrow the list on a shared machine.
 
 Origin policy keys do not accept wildcards. An exact origin, including its
 scheme and non-default port, wins over a bare host; a bare host matches any
-scheme or port. URLs with no matching key use `default_origin_policy`. Each
-policy field defaults to `allow` when omitted.
+scheme or port. Origin keys are URL-normalized before matching, including
+lowercased hosts and removal of explicit default ports; bare-host keys match
+case-insensitively. URLs with no matching key use `default_origin_policy`.
+Each policy field defaults to `allow` when omitted.
+
+Sessions started while any origin policy is configured reload the policy on
+every top-document request, so edits apply to their later navigations. A
+session started with no origin policy does not enable interception; adding the
+first policy later applies the navigation gate to new sessions.
 
 The compatibility fields are part of the stable configuration surface.
 Non-Tier-1 or artifact-free builds retain safe mode and reject compat
