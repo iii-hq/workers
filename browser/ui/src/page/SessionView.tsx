@@ -112,6 +112,12 @@ import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
+const TOOL_HINTS: Record<AnnotationTool, string> = {
+  pin: 'Click a spot to drop a numbered pin.',
+  select: 'Click an element to box it, labelled with its selector.',
+  rect: 'Drag a rectangle around a region.',
+  arrow: 'Drag from tail to head to point at something.',
+}
 const SHAPE_COLORS = [
   '#e5484d',
   '#f5a623',
@@ -1365,14 +1371,31 @@ export function SessionView({
                   value={tool}
                   onChange={setTool}
                   options={[
-                    { value: 'pin', label: 'Pin' },
-                    { value: 'select', label: 'Element' },
-                    { value: 'rect', label: 'Box' },
-                    { value: 'arrow', label: 'Arrow' },
+                    {
+                      value: 'pin',
+                      label: 'Pin',
+                      title: 'Drop a numbered pin on a spot',
+                    },
+                    {
+                      value: 'select',
+                      label: 'Element',
+                      title: 'Click an element to box it and label its selector',
+                    },
+                    {
+                      value: 'rect',
+                      label: 'Box',
+                      title: 'Drag a rectangle around a region',
+                    },
+                    {
+                      value: 'arrow',
+                      label: 'Arrow',
+                      title: 'Drag to point an arrow at something',
+                    },
                   ]}
                   className="br-ui-tabs"
                   aria-label="annotation tool"
                 />
+                <span className="br-ui-annot-hint">{TOOL_HINTS[tool]}</span>
                 <span className="br-ui-annot-swatches">
                   {SHAPE_COLORS.map((c) => (
                     <button
@@ -1492,9 +1515,7 @@ export function SessionView({
         <span className="spacer" />
         {viewportShown ? (
           annotating ? (
-            <span className="fact hint">
-              annotating: click an element to pin it, esc ends
-            </span>
+            <span className="fact hint">{TOOL_HINTS[tool]} Esc ends.</span>
           ) : (
             <>
               <span className="fact hint">Click to focus</span>
