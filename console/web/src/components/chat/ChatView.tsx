@@ -1876,8 +1876,12 @@ export function ChatView({
       )
       if (button && !button.disabled) button.click()
     }
-    const pendingApproval = () =>
-      viewRef.current?.querySelector('[data-approval-actions]') !== null
+    const pendingApproval = () => {
+      const view = viewRef.current
+      return (
+        view !== null && view.querySelector('[data-approval-actions]') !== null
+      )
+    }
     const answerApproval = (action: 'approve' | 'deny' | 'always-allow') => {
       const row = focusedRow()
       const waiting = Array.from(
@@ -2006,11 +2010,11 @@ export function ChatView({
         keywords: ['cancel', 'interrupt', 'abort'],
         shortcut: 'Escape',
         firesWhileTyping: true,
-        enabled: () => working,
+        enabled: () => working || streamingIndicator,
         run: handleStop,
       },
     ])
-  }, [commands, handleOpenModelPicker, handleStop, working])
+  }, [commands, handleOpenModelPicker, handleStop, working, streamingIndicator])
 
   return (
     <section

@@ -497,7 +497,10 @@ export function App({
           onCloseTab={requestCloseTab}
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
-          onOpenPalette={() => setPaletteOpen(true)}
+          onOpenPalette={() => {
+            setPaletteQuery('')
+            setPaletteOpen(true)
+          }}
         />
         <WorkspacePanes
           workspace={workspace}

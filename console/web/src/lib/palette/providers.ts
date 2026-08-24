@@ -94,17 +94,30 @@ export async function searchPaletteSources(
     if (input.prefix !== null && input.prefix === source.prefix) return true
     return input.text.length >= (source.minQuery ?? 1)
   })
-  const settled = await Promise.allSettled(
-    asked.map(async ({ key, source }) => {
-      const rows = await source.search(input.text, {
-        workingDir: input.workingDir,
-        conversationId: input.conversationId,
-        signal: input.signal,
+  // A source that ignores its abort signal must not hold the whole answer
+  // hostage: the race ends the aggregation the moment the query is stale.
+  const settled = await Promise.race([
+    Promise.allSettled(
+      asked.map(async ({ key, source }) => {
+        const rows = await source.search(input.text, {
+          workingDir: input.workingDir,
+          conversationId: input.conversationId,
+          signal: input.signal,
+        })
+        return rows.map((row) => toEntry(key, source, row))
+      }),
+    ),
+    new Promise<null>((resolve) => {
+      if (input.signal.aborted) {
+        resolve(null)
+        return
+      }
+      input.signal.addEventListener('abort', () => resolve(null), {
+        once: true,
       })
-      return rows.map((row) => toEntry(key, source, row))
     }),
-  )
-  if (input.signal.aborted) return []
+  ])
+  if (settled === null || input.signal.aborted) return []
   return settled.flatMap((result) =>
     result.status === 'fulfilled' ? result.value : [],
   )

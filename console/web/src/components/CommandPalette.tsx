@@ -271,6 +271,7 @@ export function CommandPalette({
     const timer = window.setTimeout(() => {
       if (sources.length === 0) {
         setSourceEntries([])
+        setSearching(false)
         return
       }
       // The indicator waits for a slow answer: a label that flashes for a
@@ -286,16 +287,22 @@ export function CommandPalette({
         workingDir,
         conversationId,
         signal: controller.signal,
-      }).then((entries) => {
-        window.clearTimeout(slow)
-        if (controller.signal.aborted) return
-        setSourceEntries(entries)
-        setSearching(false)
       })
+        .then((entries) => {
+          window.clearTimeout(slow)
+          if (controller.signal.aborted) return
+          setSourceEntries(entries)
+          setSearching(false)
+        })
+        .catch(() => {
+          window.clearTimeout(slow)
+          if (!controller.signal.aborted) setSearching(false)
+        })
     }, SOURCE_DEBOUNCE_MS)
     return () => {
       window.clearTimeout(timer)
       controller.abort()
+      setSearching(false)
     }
   }, [open, sources, parsed, workingDir, conversationId])
 

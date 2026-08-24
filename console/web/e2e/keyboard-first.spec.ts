@@ -8,7 +8,10 @@ const pane = (page: Page, index: number) =>
 const composer = (page: Page) => page.getByLabel('message composer')
 
 async function settle(page: Page): Promise<void> {
-  await page.locator('body').click({ position: { x: 4, y: 4 } })
+  await page.evaluate(() => {
+    const active = document.activeElement
+    if (active instanceof HTMLElement) active.blur()
+  })
 }
 
 test('the keyboard reaches the chat, the panes and every page command through ⌘K', async ({
