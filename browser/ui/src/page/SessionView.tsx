@@ -22,21 +22,30 @@ import { Button, type Host, Input, SegmentedControl } from '@iii-dev/console-ui'
 import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  BROWSER_NAVIGATED_TRIGGER,
   BROWSER_PICKED_TRIGGER,
   type BrowserClickOptions,
+  type BrowserFindAction,
   type BrowserSessionInfo,
   clickBrowserAt,
   controlBrowserHistory,
+  downloadFile,
   errorMessage,
+  fileFromBase64,
+  findInBrowserPage,
   hintBrowserPick,
   navigateBrowser,
   parsePickedEvent,
   pinLabel,
   pressBrowserKey,
+  printBrowserPageToPdf,
   resolveBrowserPick,
+  screenshotFileName,
   scrollBrowserAt,
   stopBrowserSession,
+  takeBrowserScreenshot,
   typeBrowserText,
+  zoomBrowserPage,
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
@@ -64,11 +73,15 @@ import {
   renderAnnotationCrop,
 } from './annotations'
 import { ConsolePanel } from './ConsolePanel'
+import { FindBar, type FindState } from './FindBar'
 import { NetworkPanel } from './NetworkPanel'
+import { PageMenu } from './PageMenu'
 import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
+const NAVIGATED_FN = 'iii::browser-ui::navigated'
+const FIND_DEBOUNCE_MS = 150
 const TYPE_FLUSH_MS = 200
 
 type FeedPane = 'console' | 'network'
@@ -85,6 +98,11 @@ export interface SessionActions {
   sendAnnotations: () => void
   downloadAnnotations: () => void
   clearAnnotations: () => void
+  findInPage: () => void
+  zoom: (action: 'in' | 'out' | 'reset') => void
+  takeScreenshot: () => void
+  screenshotToChat: () => void
+  printToPdf: () => void
 }
 
 const FEED_PANES: readonly FeedPane[] = ['console', 'network']
@@ -470,6 +488,144 @@ export function SessionView({
     [host, sessionId],
   )
 
+  // Find in page: the worker keeps the match list in the document; this
+  // side keeps the query, the count and the current index for the bar.
+  const [find, setFind] = useState<FindState | null>(null)
+  const findTimerRef = useRef<number | undefined>(undefined)
+  // Responses can land out of order while typing; only the newest request
+  // may touch the bar.
+  const findRevisionRef = useRef(0)
+  const runFind = useCallback(
+    (query: string, action: BrowserFindAction) => {
+      window.clearTimeout(findTimerRef.current)
+      const revision = ++findRevisionRef.current
+      void findInBrowserPage(host.iii, sessionId, query, action)
+        .then((result) => {
+          if (revision !== findRevisionRef.current) return
+          setFind((current) =>
+            current === null
+              ? current
+              : { ...current, count: result.count, index: result.index },
+          )
+        })
+        .catch((error: unknown) => {
+          if (revision !== findRevisionRef.current) return
+          setActionError(errorMessage(error))
+        })
+    },
+    [host, sessionId],
+  )
+  const openFind = useCallback(() => {
+    setFind((current) => current ?? { query: '', count: 0, index: 0 })
+  }, [])
+  const closeFind = useCallback(() => {
+    window.clearTimeout(findTimerRef.current)
+    findRevisionRef.current += 1
+    setFind(null)
+    void findInBrowserPage(host.iii, sessionId, '', 'close').catch(() => {})
+  }, [host, sessionId])
+  const setFindQuery = useCallback(
+    (query: string) => {
+      setFind((current) => (current ? { ...current, query } : current))
+      window.clearTimeout(findTimerRef.current)
+      findTimerRef.current = window.setTimeout(
+        () => runFind(query, 'search'),
+        FIND_DEBOUNCE_MS,
+      )
+    },
+    [runFind],
+  )
+  const findRef = useRef(find)
+  findRef.current = find
+  const stepFind = useCallback(
+    (direction: 'next' | 'previous') => {
+      const current = findRef.current
+      if (!current || current.query.trim() === '') return
+      runFind(current.query, direction)
+    },
+    [runFind],
+  )
+  useEffect(() => {
+    setFind(null)
+    return () => window.clearTimeout(findTimerRef.current)
+  }, [sessionId])
+
+  // Zoom belongs to the loaded document, so a navigation resets it in the
+  // page; the level the user chose is re-applied when the next page commits.
+  const [zoom, setZoom] = useState(100)
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  // The document keeps its zoom across a pane remount; read it back so the
+  // menu shows the real level.
+  useEffect(() => {
+    setZoom(100)
+    let cancelled = false
+    void zoomBrowserPage(host.iii, sessionId, 'read')
+      .then((level) => {
+        if (!cancelled) setZoom(level)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [host, sessionId])
+  const applyZoom = useCallback(
+    (action: 'in' | 'out' | 'reset' | 'set', level?: number) => {
+      void runAction(async () => {
+        setZoom(await zoomBrowserPage(host.iii, sessionId, action, level))
+      })
+    },
+    [host, sessionId, runAction],
+  )
+  useBrowserSessionEvent({
+    host,
+    enabled: enabled && zoom !== 100,
+    triggerType: BROWSER_NAVIGATED_TRIGGER,
+    sessionId,
+    fnId: NAVIGATED_FN,
+    onEvent: () => {
+      const level = zoomRef.current
+      if (level === 100) return
+      void zoomBrowserPage(host.iii, sessionId, 'set', level).catch(() => {})
+    },
+  })
+
+  const takeScreenshot = useCallback(() => {
+    void runAction(async () => {
+      const shot = await takeBrowserScreenshot(host.iii, sessionId)
+      if (!shot?.dataUrl) throw new Error('no image came back')
+      downloadFile(
+        fileFromBase64(
+          shot.dataUrl.split(',')[1] ?? '',
+          screenshotFileName(shot.url),
+          'image/jpeg',
+        ),
+      )
+    })
+  }, [host, sessionId, runAction])
+  const screenshotToChat = useCallback(() => {
+    if (!host.chat?.compose) return
+    void runAction(async () => {
+      const shot = await takeBrowserScreenshot(host.iii, sessionId)
+      if (!shot?.dataUrl) throw new Error('no image came back')
+      host.chat?.compose?.({
+        files: [
+          fileFromBase64(
+            shot.dataUrl.split(',')[1] ?? '',
+            screenshotFileName(shot.url),
+            'image/jpeg',
+          ),
+        ],
+      })
+    })
+  }, [host, sessionId, runAction])
+  const printToPdf = useCallback(() => {
+    void runAction(async () => {
+      const pdf = await printBrowserPageToPdf(host.iii, sessionId)
+      downloadFile(fileFromBase64(pdf.data, pdf.file_name, 'application/pdf'))
+    })
+  }, [host, sessionId, runAction])
+
   const handleStop = useCallback(() => {
     void runAction(async () => {
       await stopBrowserSession(host.iii, sessionId)
@@ -491,6 +647,11 @@ export function SessionView({
       sendAnnotations,
       downloadAnnotations,
       clearAnnotations,
+      findInPage: openFind,
+      zoom: applyZoom,
+      takeScreenshot,
+      screenshotToChat,
+      printToPdf,
     }
     return () => {
       actionsRef.current = null
@@ -502,6 +663,11 @@ export function SessionView({
     sendAnnotations,
     downloadAnnotations,
     clearAnnotations,
+    openFind,
+    applyZoom,
+    takeScreenshot,
+    screenshotToChat,
+    printToPdf,
   ])
   const annotatingRef = useRef(annotating)
   annotatingRef.current = annotating
@@ -714,6 +880,19 @@ export function SessionView({
               >
                 <ExternalLink size={17} aria-hidden />
               </button>
+              <PageMenu
+                zoom={zoom}
+                canSendToChat={typeof host.chat?.compose === 'function'}
+                actions={{
+                  findInPage: openFind,
+                  takeScreenshot,
+                  screenshotToChat,
+                  printToPdf,
+                  zoomIn: () => applyZoom('in'),
+                  zoomOut: () => applyZoom('out'),
+                  zoomReset: () => applyZoom('reset'),
+                }}
+              />
               <button
                 type="submit"
                 className="br-ui-address-submit"
@@ -722,6 +901,15 @@ export function SessionView({
                 navigate to address
               </button>
             </form>
+            {find ? (
+              <FindBar
+                state={find}
+                onQuery={setFindQuery}
+                onNext={() => stepFind('next')}
+                onPrevious={() => stepFind('previous')}
+                onClose={closeFind}
+              />
+            ) : null}
             <Viewport
               frame={annotating && frozen ? frozen : live.frame}
               loading={live.loading}

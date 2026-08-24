@@ -1,0 +1,55 @@
+{
+  "function_id": "browser::zoom",
+  "description": "Zoom the page in, out, to a level (50-200 %) or back to 100 %, the way the browser's zoom menu does. The viewport keeps its size; the page scales inside it. The level belongs to the loaded document and resets on navigation.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ZoomInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "action": {
+        "description": "`in`, `out`, `reset`, `set` (default when `level` is given), or `read` to report the current level without changing it.",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "level": {
+        "description": "Explicit level in percent (50–200); snapped to the ladder.",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ZoomOutput",
+    "type": "object",
+    "required": [
+      "level",
+      "ok"
+    ],
+    "properties": {
+      "level": {
+        "description": "Level in percent now applied to the document.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    }
+  }
+}

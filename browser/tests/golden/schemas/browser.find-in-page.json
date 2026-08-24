@@ -1,0 +1,70 @@
+{
+  "function_id": "browser::find-in-page",
+  "description": "Find text in the page like the browser's find bar: highlights every match in the live document, scrolls the current one into view, and steps with next / previous. close clears the highlights. Returns count and the 1-based index.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "FindInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "action": {
+        "description": "`search` (default: run the query from the top), `next`, `previous`, or `close`.",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "case_sensitive": {
+        "description": "Match case. Default false.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "query": {
+        "description": "Text to look for. Empty with `action: close` clears the search.",
+        "default": "",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "FindOutput",
+    "type": "object",
+    "required": [
+      "count",
+      "index",
+      "ok",
+      "query"
+    ],
+    "properties": {
+      "count": {
+        "description": "Number of matches in the visible text of the page.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "index": {
+        "description": "1-based index of the highlighted match; 0 when there is none.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "query": {
+        "description": "The query the counts refer to.",
+        "type": "string"
+      }
+    }
+  }
+}
