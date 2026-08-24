@@ -60,7 +60,14 @@ pub fn read_script() -> &'static str {
 
 pub fn apply_script(level: u32) -> String {
     format!(
-        r#"(() => {{ document.documentElement.style.zoom = {level} === 100 ? '' : String({level} / 100); return {level}; }})()"#
+        r#"(() => {{
+  const root = document.documentElement;
+  if (window.__iiiZoomOriginal === undefined) {{
+    window.__iiiZoomOriginal = root.style.zoom || '';
+  }}
+  root.style.zoom = {level} === 100 ? window.__iiiZoomOriginal : String({level} / 100);
+  return {level};
+}})()"#
     )
 }
 

@@ -1506,6 +1506,7 @@ fn register_find_in_page(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::find-in-page")?;
                 session.touch();
                 let action = req.action.as_deref().unwrap_or("search");
                 if !matches!(action, "search" | "next" | "previous" | "close") {
@@ -1521,6 +1522,11 @@ fn register_find_in_page(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let value = evaluate_json(&session, script, "find").await?;
                 let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
                 let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                let query = value
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or(req.query);
                 Ok::<_, Error>(find_in_page::FindOutput {
                     ok: true,
                     count,
@@ -1528,7 +1534,7 @@ fn register_find_in_page(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     query: if action == "close" {
                         String::new()
                     } else {
-                        req.query
+                        query
                     },
                 })
             }
@@ -1545,18 +1551,26 @@ fn register_zoom(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
-                ensure_writable(&session, "browser::zoom")?;
+                let action = req.action.as_deref().unwrap_or(if req.level.is_some() {
+                    "set"
+                } else {
+                    "reset"
+                });
+                if action != "read" {
+                    ensure_writable(&session, "browser::zoom")?;
+                }
                 session.touch();
                 let current = evaluate_json(&session, zoom::read_script().to_string(), "zoom")
                     .await?
                     .as_u64()
                     .map(|n| n as u32)
                     .unwrap_or(100);
-                let action = req.action.as_deref().unwrap_or(if req.level.is_some() {
-                    "set"
-                } else {
-                    "reset"
-                });
+                if action == "read" {
+                    return Ok::<_, Error>(zoom::ZoomOutput {
+                        ok: true,
+                        level: zoom::snap(current),
+                    });
+                }
                 let level = match action {
                     "in" => zoom::step(current, true),
                     "out" => zoom::step(current, false),
@@ -1567,7 +1581,7 @@ fn register_zoom(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     },
                     other => {
                         return Err(handler_err(format!(
-                            "unknown action '{other}' (in, out, reset, set)"
+                            "unknown action '{other}' (in, out, reset, set, read)"
                         )))
                     }
                 };
@@ -1599,6 +1613,13 @@ fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .pdf(params.build())
                     .await
                     .map_err(|e| handler_err(format!("print to pdf failed: {e}")))?;
+                if bytes.len() > pdf::MAX_PDF_BYTES {
+                    return Err(handler_err(format!(
+                        "pdf is {} bytes, over the {} byte cap; print a narrower page",
+                        bytes.len(),
+                        pdf::MAX_PDF_BYTES
+                    )));
+                }
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let title = session
                     .page

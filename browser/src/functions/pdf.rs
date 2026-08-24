@@ -5,6 +5,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Upper bound on a returned PDF: the bytes travel base64 over the bus and
+/// into the caller's context, so an unbounded print of a huge page is a
+/// refusal, not a surprise.
+pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PdfInput {
     pub session_id: String,
