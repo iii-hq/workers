@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ActInput {
     pub session_id: String,
-    /// `click`, `hover`, `type`, `press`, or `scroll`.
+    /// `click`, `hover`, `type`, `press`, `scroll`, or `drag`.
     pub action: String,
     /// Mouse button for `click`: `left` (default), `right`, or `middle`.
     #[serde(default)]
@@ -35,6 +35,13 @@ pub struct ActInput {
     /// Scroll distance in pixels; positive scrolls down (`scroll`).
     #[serde(default)]
     pub delta_y: Option<f64>,
+    /// Drag end x, in viewport pixels (`drag`). The start is `x`/`y` or a
+    /// `ref`; the end is `x2`/`y2`.
+    #[serde(default)]
+    pub x2: Option<f64>,
+    /// Drag end y, in viewport pixels (`drag`).
+    #[serde(default)]
+    pub y2: Option<f64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
