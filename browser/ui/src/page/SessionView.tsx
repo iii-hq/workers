@@ -264,6 +264,9 @@ export function SessionView({
   const toggleAnnotate = useCallback(() => {
     setAnnotating((current) => {
       if (current) return false
+      // Re-entering with unsent marks resumes them on their own frozen
+      // frame; only a fresh session starts from the live frame.
+      if (annotationsRef.current.length > 0 && frozenRef.current) return true
       const frame = liveFrameRef.current
       if (!frame) {
         setActionError('no frame to annotate yet')
@@ -339,14 +342,16 @@ export function SessionView({
           setAnnotations(next)
           setSelectedAnnotation(pin?.id ?? null)
           if (!pin || !frozen) return
-          unlabeledPinRef.current = pin.id
+          unlabeledPinsRef.current.push(pin.id)
           void resolveBrowserPick(
             host.iii,
             sessionId,
             Math.min(frozen.width - 1, Math.round(x * frozen.width)),
             Math.min(frozen.height - 1, Math.round(y * frozen.height)),
           ).catch(() => {
-            unlabeledPinRef.current = null
+            unlabeledPinsRef.current = unlabeledPinsRef.current.filter(
+              (queued) => queued !== pin.id,
+            )
           })
         },
         onSelect: setSelectedAnnotation,
@@ -376,7 +381,10 @@ export function SessionView({
   // A dropped pin asks the worker what sits under it (the page is still
   // live under the frozen frame); the answer labels the newest unlabeled
   // pin so the note carries the element it points at.
-  const unlabeledPinRef = useRef<string | null>(null)
+  // Picked events carry no correlation token, so pins waiting for their
+  // element label queue up first-in first-out; two quick drops each get
+  // their own answer instead of the second overwriting the first.
+  const unlabeledPinsRef = useRef<string[]>([])
   useBrowserSessionEvent({
     host,
     enabled: enabled && annotating,
@@ -386,9 +394,8 @@ export function SessionView({
     onEvent: (payload) => {
       const evt = parsePickedEvent(payload)
       if (!evt || evt.session_id !== sessionId) return
-      const id = unlabeledPinRef.current
+      const id = unlabeledPinsRef.current.shift()
       if (!id) return
-      unlabeledPinRef.current = null
       setAnnotations((list) => labelAnnotation(list, id, pinLabel(evt)))
     },
   })
@@ -496,6 +503,8 @@ export function SessionView({
   annotatingRef.current = annotating
   const annotationsRef = useRef(annotations)
   annotationsRef.current = annotations
+  const frozenRef = useRef(frozen)
+  frozenRef.current = frozen
 
   const displayName =
     session.title?.trim() || hostOf(session.url) || 'about:blank'
