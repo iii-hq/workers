@@ -802,17 +802,22 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
         .build()
         .map_err(handler_err)?;
     send(pressed).await?;
+    move_ghost_cursor(session, x1, y1, true).await;
     const STEPS: i64 = 8;
     for step in 1..=STEPS {
         let t = step as f64 / STEPS as f64;
+        let (xi, yi) = (x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
         let step_move = DispatchMouseEventParams::builder()
             .r#type(DispatchMouseEventType::MouseMoved)
-            .x(x1 + (x2 - x1) * t)
-            .y(y1 + (y2 - y1) * t)
+            .x(xi)
+            .y(yi)
             .button(MouseButton::Left)
             .build()
             .map_err(handler_err)?;
         send(step_move).await?;
+        // Glide the ghost cursor with the drag so a viewer watching the
+        // stream sees the gesture, not a jump to the end.
+        move_ghost_cursor(session, xi, yi, false).await;
     }
     let released = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MouseReleased)
@@ -951,7 +956,6 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             _ => return Err(handler_err("drag needs x2 and y2")),
                         };
                         dispatch_drag(&session, x1, y1, x2, y2).await?;
-                        move_ghost_cursor(&session, x2, y2, true).await;
                         format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
                     }
                     other => {
