@@ -89,7 +89,7 @@ describe('annotations', () => {
     }
     expect(annotationsMarkdown(set)).toBe(
       [
-        'Annotations on https://example.com/pricing?plan=team (3 pins)',
+        'Annotations on https://example.com/pricing?plan=team (3 marks)',
         '1. logo is blurry (img.logo (ref e3))',
         '2. (no note)',
         '3. a.cta "Learn more"',

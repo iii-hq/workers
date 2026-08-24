@@ -143,14 +143,16 @@ export const MIN_SHAPE_SIZE = 0.01
 /** Pin notes as the text that goes with the picture into a chat. */
 export function annotationsMarkdown(set: AnnotationSet): string {
   const lines = set.annotations.map((a, index) => {
+    const kind = a.kind ?? 'pin'
+    const prefix = kind === 'pin' ? '' : kind === 'rect' ? 'box: ' : 'arrow: '
     const note = a.note.trim()
     const label = a.label?.trim() ?? ''
-    if (note && label) return `${index + 1}. ${note} (${label})`
-    return `${index + 1}. ${note || label || '(no note)'}`
+    if (note && label) return `${index + 1}. ${prefix}${note} (${label})`
+    return `${index + 1}. ${prefix}${note || label || '(no note)'}`
   })
   const count = set.annotations.length
   return [
-    `Annotations on ${set.subject} (${count} ${count === 1 ? 'pin' : 'pins'})`,
+    `Annotations on ${set.subject} (${count} ${count === 1 ? 'mark' : 'marks'})`,
     ...lines,
   ].join('\n')
 }

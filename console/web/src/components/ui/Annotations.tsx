@@ -164,7 +164,12 @@ export function AnnotationLayer({
         }
         if (!onAddShape) return
         drawingRef.current = true
-        rootRef.current?.setPointerCapture(event.pointerId)
+        try {
+          rootRef.current?.setPointerCapture(event.pointerId)
+        } catch {
+          // a synthetic or already-released pointer cannot be captured;
+          // drawing still works, the capture is just a nicety for fast drags
+        }
         onAddShape(tool, at.x, at.y)
       }}
       onPointerMove={(event) => {
@@ -179,7 +184,11 @@ export function AnnotationLayer({
       onPointerUp={(event) => {
         if (!drawingRef.current) return
         drawingRef.current = false
-        rootRef.current?.releasePointerCapture(event.pointerId)
+        try {
+          rootRef.current?.releasePointerCapture(event.pointerId)
+        } catch {
+          // never captured; nothing to release
+        }
         onEndShape?.()
       }}
     >
