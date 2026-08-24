@@ -29,12 +29,19 @@ export function DoctorDialog({ host, open, onOpenChange }: DoctorDialogProps) {
     if (!open) return
     setError(null)
     setInfo(null)
+    let stale = false
     void readBrowserDoctor(host.iii)
       .then((res) => {
+        if (stale) return
         if (res) setInfo(res)
         else setError('diagnostics unavailable')
       })
-      .catch(() => setError('diagnostics unavailable'))
+      .catch(() => {
+        if (!stale) setError('diagnostics unavailable')
+      })
+    return () => {
+      stale = true
+    }
   }, [open, host])
 
   const fact = (label: string, value: string) => (

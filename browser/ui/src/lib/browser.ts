@@ -1111,6 +1111,7 @@ function bool(v: unknown): boolean | undefined {
 }
 
 export const BROWSER_HANDOFF_REQUESTED_TRIGGER = 'browser::handoff-requested'
+export const BROWSER_HANDOFF_RESOLVED_TRIGGER = 'browser::handoff-resolved'
 export const BROWSER_HANDOFF_CONFIRM_FUNCTION_ID = 'browser::handoff::confirm'
 
 const handoffEventSchema = z.object({
@@ -1125,6 +1126,21 @@ export function parseHandoffEvent(
   payload: unknown,
 ): BrowserHandoffEvent | null {
   const parsed = handoffEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+const handoffResolvedSchema = z.object({
+  session_id: z.string(),
+  handoff_id: z.string(),
+  via: z.string(),
+  timestamp: z.number(),
+})
+export type BrowserHandoffResolved = z.infer<typeof handoffResolvedSchema>
+
+export function parseHandoffResolved(
+  payload: unknown,
+): BrowserHandoffResolved | null {
+  const parsed = handoffResolvedSchema.safeParse(payload)
   return parsed.success ? parsed.data : null
 }
 

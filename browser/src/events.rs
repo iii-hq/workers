@@ -24,6 +24,7 @@ pub const CONSOLE_EVENT: &str = "browser::console-event";
 pub const NETWORK_EVENT: &str = "browser::network-event";
 pub const PICKED: &str = "browser::picked";
 pub const HANDOFF_REQUESTED: &str = "browser::handoff-requested";
+pub const HANDOFF_RESOLVED: &str = "browser::handoff-resolved";
 pub const DOWNLOAD_CHANGED: &str = "browser::download-changed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,6 +36,7 @@ pub enum EventKind {
     NetworkEvent,
     Picked,
     HandoffRequested,
+    HandoffResolved,
     DownloadChanged,
 }
 
@@ -48,11 +50,12 @@ impl EventKind {
             EventKind::NetworkEvent => NETWORK_EVENT,
             EventKind::Picked => PICKED,
             EventKind::HandoffRequested => HANDOFF_REQUESTED,
+            EventKind::HandoffResolved => HANDOFF_RESOLVED,
             EventKind::DownloadChanged => DOWNLOAD_CHANGED,
         }
     }
 
-    pub fn all() -> [EventKind; 8] {
+    pub fn all() -> [EventKind; 9] {
         [
             EventKind::SessionStarted,
             EventKind::SessionStopped,
@@ -61,6 +64,7 @@ impl EventKind {
             EventKind::NetworkEvent,
             EventKind::Picked,
             EventKind::HandoffRequested,
+            EventKind::HandoffResolved,
             EventKind::DownloadChanged,
         ]
     }
@@ -163,6 +167,17 @@ pub struct HandoffRequestedEvent {
     pub handoff_id: String,
     /// What the human must do before the paused call continues.
     pub instructions: String,
+    pub timestamp: i64,
+}
+
+/// `browser::handoff-resolved` — a paused handoff finished, however it
+/// finished. The console clears its banner on this; `via` is `in_page`,
+/// `confirm_call`, `timeout`, or `cancelled`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffResolvedEvent {
+    pub session_id: String,
+    pub handoff_id: String,
+    pub via: String,
     pub timestamp: i64,
 }
 
@@ -307,7 +322,7 @@ impl TriggerHandler for BrowserTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 8] = [
+    let descriptions: [(EventKind, &str); 9] = [
         (
             EventKind::SessionStarted,
             "A Chromium session is up and ready.",
@@ -333,12 +348,16 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
             "The human picked an element in inspect mode.",
         ),
         (
-            EventKind::DownloadChanged,
-            "A download started, progressed, or finished in a session.",
-        ),
-        (
             EventKind::HandoffRequested,
             "A session is paused waiting for a human to complete a step (CAPTCHA, 2FA, payment).",
+        ),
+        (
+            EventKind::HandoffResolved,
+            "A paused handoff finished (confirmed in page, by call, or timed out).",
+        ),
+        (
+            EventKind::DownloadChanged,
+            "A download started, progressed, or finished in a session.",
         ),
     ];
     for (kind, description) in descriptions {

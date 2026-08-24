@@ -29,6 +29,7 @@ import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_HANDOFF_REQUESTED_TRIGGER,
+  BROWSER_HANDOFF_RESOLVED_TRIGGER,
   BROWSER_NAVIGATED_TRIGGER,
   BROWSER_PICKED_TRIGGER,
   type BrowserClickOptions,
@@ -48,6 +49,7 @@ import {
   navigateBrowser,
   parseCookieFile,
   parseHandoffEvent,
+  parseHandoffResolved,
   parsePickedEvent,
   pinLabel,
   pressBrowserKey,
@@ -104,6 +106,7 @@ import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
 const HANDOFF_FN = 'iii::browser-ui::handoff'
+const HANDOFF_RESOLVED_FN = 'iii::browser-ui::handoff-resolved'
 const NAVIGATED_FN = 'iii::browser-ui::navigated'
 const FIND_DEBOUNCE_MS = 150
 const TYPE_FLUSH_MS = 200
@@ -584,6 +587,9 @@ export function SessionView({
   const onSurfaceResize = useCallback(
     (width: number, height: number) => {
       lastPaneSizeRef.current = { w: width, h: height }
+      // A read-only session's viewport is not ours to change; the frame
+      // letterbox-scales instead.
+      if (session.read_only === true) return
       if (deviceRef.current) return
       const last = lastSentSizeRef.current
       if (last && Math.abs(last.w - width) < 4 && Math.abs(last.h - height) < 4)
@@ -856,8 +862,11 @@ export function SessionView({
   const downloadCount = useDownloadCount(host, sessionId, enabled)
   const [confirmingClear, setConfirmingClear] = useState(false)
   const [showDoctor, setShowDoctor] = useState(false)
-  const [handoff, setHandoff] = useState<BrowserHandoffEvent | null>(null)
-  useEffect(() => setHandoff(null), [sessionId])
+  // Handoffs queue: several can be pending at once, and any of them may
+  // resolve out-of-band (in-page click, another caller, timeout) — the
+  // resolved event drops it from the queue so the banner never goes stale.
+  const [handoffs, setHandoffs] = useState<BrowserHandoffEvent[]>([])
+  useEffect(() => setHandoffs([]), [sessionId])
   useBrowserSessionEvent({
     host,
     enabled,
@@ -866,17 +875,39 @@ export function SessionView({
     fnId: HANDOFF_FN,
     onEvent: (payload) => {
       const evt = parseHandoffEvent(payload)
-      if (evt && evt.session_id === sessionId) setHandoff(evt)
+      if (!evt || evt.session_id !== sessionId) return
+      setHandoffs((queue) =>
+        queue.some((h) => h.handoff_id === evt.handoff_id)
+          ? queue
+          : [...queue, evt],
+      )
     },
   })
+  useBrowserSessionEvent({
+    host,
+    enabled,
+    triggerType: BROWSER_HANDOFF_RESOLVED_TRIGGER,
+    sessionId,
+    fnId: HANDOFF_RESOLVED_FN,
+    onEvent: (payload) => {
+      const evt = parseHandoffResolved(payload)
+      if (!evt || evt.session_id !== sessionId) return
+      setHandoffs((queue) =>
+        queue.filter((h) => h.handoff_id !== evt.handoff_id),
+      )
+    },
+  })
+  const handoff = handoffs[0] ?? null
   const confirmHandoff = useCallback(() => {
-    const current = handoff
+    const current = handoffs[0]
     if (!current) return
-    setHandoff(null)
+    setHandoffs((queue) =>
+      queue.filter((h) => h.handoff_id !== current.handoff_id),
+    )
     void confirmBrowserHandoff(host.iii, sessionId, current.handoff_id).catch(
       () => {},
     )
-  }, [host, sessionId, handoff])
+  }, [host, sessionId, handoffs])
   const clearData = useCallback(() => {
     void runAction(async () => {
       await clearBrowserData(host.iii, sessionId)
@@ -1233,6 +1264,9 @@ export function SessionView({
                   <span className="br-ui-handoff-title">Waiting for you</span>
                   <span className="br-ui-handoff-instructions">
                     {handoff.instructions}
+                    {handoffs.length > 1
+                      ? ` (${handoffs.length - 1} more waiting)`
+                      : ''}
                   </span>
                 </div>
                 <Button variant="primary" size="sm" onClick={confirmHandoff}>

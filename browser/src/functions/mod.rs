@@ -53,7 +53,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::events::{EventKind, HandoffRequestedEvent, SessionStartedEvent};
+use crate::events::{EventKind, HandoffRequestedEvent, HandoffResolvedEvent, SessionStartedEvent};
 use crate::session::{now_ms, Session, Sessions};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
@@ -1326,6 +1326,18 @@ fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let _ = session
                     .page
                     .evaluate(handoff::remove_script(&handoff_id))
+                    .await;
+                sx.emitter
+                    .emit(
+                        EventKind::HandoffResolved,
+                        &req.session_id,
+                        &HandoffResolvedEvent {
+                            session_id: req.session_id.clone(),
+                            handoff_id: handoff_id.clone(),
+                            via: via.to_string(),
+                            timestamp: now_ms(),
+                        },
+                    )
                     .await;
                 session.touch();
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
