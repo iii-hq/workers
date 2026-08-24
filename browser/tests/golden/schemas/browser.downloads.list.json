@@ -1,0 +1,78 @@
+{
+  "function_id": "browser::downloads::list",
+  "description": "The files this session downloaded (name, url, size, state), newest first. Downloads are allowed and named per session; read one with browser::download.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DownloadsListInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DownloadsListOutput",
+    "type": "object",
+    "required": [
+      "downloads"
+    ],
+    "properties": {
+      "downloads": {
+        "description": "Newest first.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/DownloadRecord"
+        }
+      }
+    },
+    "definitions": {
+      "DownloadRecord": {
+        "description": "A download Chromium started, tracked by its CDP guid.",
+        "type": "object",
+        "required": [
+          "file_name",
+          "guid",
+          "received_bytes",
+          "started_ms",
+          "state",
+          "total_bytes",
+          "url"
+        ],
+        "properties": {
+          "file_name": {
+            "type": "string"
+          },
+          "guid": {
+            "type": "string"
+          },
+          "received_bytes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "started_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "description": "`in_progress`, `completed`, or `canceled`.",
+            "type": "string"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

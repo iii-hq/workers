@@ -807,3 +807,117 @@ export function screenshotFileName(url: string, at = new Date()): string {
   const stamp = at.toISOString().replace(/[:.]/g, '-')
   return `screenshot-${host || 'page'}-${stamp}.jpg`
 }
+
+export const BROWSER_HISTORY_LIST_FUNCTION_ID = 'browser::history::list'
+export const BROWSER_CLEAR_DATA_FUNCTION_ID = 'browser::clear-data'
+export const BROWSER_DOWNLOADS_LIST_FUNCTION_ID = 'browser::downloads::list'
+export const BROWSER_DOWNLOAD_FUNCTION_ID = 'browser::download'
+export const BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID = 'browser::download::remove'
+export const BROWSER_DOWNLOAD_CHANGED_TRIGGER = 'browser::download-changed'
+
+const historyVisitSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  timestamp: z.number(),
+})
+export type BrowserHistoryVisit = z.infer<typeof historyVisitSchema>
+const historyListSchema = z.object({ visits: z.array(historyVisitSchema) })
+
+export async function listBrowserHistory(
+  iii: ExtensionIii,
+  sessionId: string,
+  query?: string,
+): Promise<BrowserHistoryVisit[]> {
+  const res = await iii.trigger<unknown>(BROWSER_HISTORY_LIST_FUNCTION_ID, {
+    session_id: sessionId,
+    ...(query ? { query } : {}),
+  })
+  return historyListSchema.safeParse(res).success
+    ? historyListSchema.parse(res).visits
+    : []
+}
+
+const clearDataSchema = z.object({
+  ok: z.boolean(),
+  cleared: z.array(z.string()),
+})
+
+export async function clearBrowserData(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<string[]> {
+  const res = await iii.trigger<unknown>(BROWSER_CLEAR_DATA_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  return clearDataSchema.safeParse(res).success
+    ? clearDataSchema.parse(res).cleared
+    : []
+}
+
+const downloadRecordSchema = z.object({
+  guid: z.string(),
+  file_name: z.string(),
+  url: z.string(),
+  state: z.enum(['in_progress', 'completed', 'canceled']),
+  received_bytes: z.number(),
+  total_bytes: z.number(),
+  started_ms: z.number(),
+})
+export type BrowserDownload = z.infer<typeof downloadRecordSchema>
+const downloadsListSchema = z.object({
+  downloads: z.array(downloadRecordSchema),
+})
+
+export async function listBrowserDownloads(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<BrowserDownload[]> {
+  const res = await iii.trigger<unknown>(BROWSER_DOWNLOADS_LIST_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  return downloadsListSchema.safeParse(res).success
+    ? downloadsListSchema.parse(res).downloads
+    : []
+}
+
+const downloadSchema = z.object({
+  ok: z.boolean(),
+  data: z.string(),
+  file_name: z.string(),
+  size_bytes: z.number(),
+})
+
+export async function readBrowserDownload(
+  iii: ExtensionIii,
+  sessionId: string,
+  guid: string,
+): Promise<{ file: File } | null> {
+  const res = await iii.trigger<unknown>(BROWSER_DOWNLOAD_FUNCTION_ID, {
+    session_id: sessionId,
+    guid,
+  })
+  const parsed = downloadSchema.safeParse(res)
+  if (!parsed.success) return null
+  try {
+    return {
+      file: fileFromBase64(
+        parsed.data.data,
+        parsed.data.file_name,
+        'application/octet-stream',
+      ),
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function removeBrowserDownload(
+  iii: ExtensionIii,
+  sessionId: string,
+  guid: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID, {
+    session_id: sessionId,
+    guid,
+  })
+}

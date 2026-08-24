@@ -293,6 +293,14 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.printToPdf(),
         },
         {
+          id: 'clear-browsing-data',
+          title: 'Clear browsing data',
+          detail: 'Cookies, cache and storage for this session',
+          keywords: ['clear', 'cookies', 'cache', 'storage', 'reset'],
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
+          run: () => sessionActionsRef.current?.clearData(),
+        },
+        {
           id: 'clear-annotations',
           title: 'Clear the annotations',
           keywords: ['annotations', 'remove', 'reset'],

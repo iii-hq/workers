@@ -22,6 +22,7 @@ export interface PageMenuActions {
   zoomIn: () => void
   zoomOut: () => void
   zoomReset: () => void
+  clearData: () => void
 }
 
 interface PageMenuProps {
@@ -106,6 +107,8 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
         {row('Screenshot to chat', 'screenshotToChat', {
           disabled: !canSendToChat,
         })}
+        <DropdownMenuSeparator />
+        {row('Clear browsing data', 'clearData')}
       </DropdownMenuContent>
     </DropdownMenu>
   )
