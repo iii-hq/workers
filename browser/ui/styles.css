@@ -1100,14 +1100,15 @@
   padding: 0;
   list-style: none;
   overflow-y: auto;
+  overflow-x: auto;
   display: flex;
   flex-direction: column-reverse;
 }
 [data-iii-ui="browser"] .br-ui-devtools-row {
   display: grid;
-  grid-template-columns: 8px 82px 74px minmax(220px, 1fr) minmax(90px, auto);
+  grid-template-columns: 8px 76px 64px minmax(0, 1fr) minmax(0, 140px);
   align-items: start;
-  min-width: 620px;
+  min-width: 480px;
   padding: 5px 10px;
   border-bottom: 1px solid var(--color-rule-2);
   color: var(--color-ink);
@@ -1196,8 +1197,8 @@
 [data-iii-ui="browser"] .br-ui-nhead,
 [data-iii-ui="browser"] .br-ui-nrow {
   display: grid;
-  grid-template-columns: 72px 52px 62px minmax(240px, 1fr) minmax(100px, auto);
-  min-width: 660px;
+  grid-template-columns: 72px 52px 62px minmax(0, 1fr) minmax(0, 150px);
+  min-width: 640px;
 }
 
 [data-iii-ui="browser"] .br-ui-nhead {
