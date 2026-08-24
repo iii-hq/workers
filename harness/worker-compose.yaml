@@ -28,7 +28,7 @@ containers:
 
   llm-router:
     worker: path://../llm-router
-    depends_on:
+    start_after:
       - state
     environment:
       RUST_LOG: info
@@ -39,7 +39,7 @@ containers:
 
   provider-openai-codex:
     worker: path://../provider-openai-codex
-    depends_on:
+    start_after:
       - llm-router
       - state
     environment:
@@ -49,7 +49,7 @@ containers:
 
   provider-openai:
     worker: path://../provider-openai
-    depends_on:
+    start_after:
       - llm-router
       - state
     environment:
@@ -59,7 +59,7 @@ containers:
 
   provider-anthropic:
     worker: path://../provider-anthropic
-    depends_on:
+    start_after:
       - llm-router
       - state
     environment:
@@ -69,7 +69,7 @@ containers:
 
   context-manager:
     worker: path://../context-manager
-    depends_on:
+    start_after:
       - llm-router
     environment:
       RUST_LOG: info
@@ -106,7 +106,7 @@ containers:
 
   harness:
     worker: path://.
-    depends_on:
+    start_after:
       - state
       - queue
       - session-manager
