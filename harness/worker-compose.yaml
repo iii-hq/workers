@@ -1,18 +1,8 @@
-namespace: my-harness-ns
 startup_timeout: 15m
 stop_timeout: 10s
 
 engine:
   url: ws://127.0.0.1:49134
-  workers:
-    configuration:
-      adapter:
-        name: fs
-        config:
-          directory: ./config
-    iii-worker-manager:
-      host: 127.0.0.1
-      port: 49134
 
 containers:
   queue:
