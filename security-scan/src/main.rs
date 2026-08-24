@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -61,18 +61,27 @@ async fn main() -> Result<()> {
         },
     ));
 
-    let config = configuration::register_and_fetch(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("loading security-scan configuration")?;
+    let config = configuration::register_and_fetch_until_ready(&iii).await;
     let runtime = Arc::new(IiiRuntime::new(iii.clone()));
+    runtime.set_archive(config.archive.clone());
     let executor = Arc::new(SecurityScanExecutor::new(runtime.clone(), config.clone()));
+    let action_executor = Arc::new(security_scan::SecurityActionExecutor::new(
+        runtime.clone(),
+        config.clone(),
+    ));
     let deps = Arc::new(functions::Deps {
+        runtime: runtime.clone(),
         service: Arc::new(SecurityScanService::new(runtime.clone(), config.clone())),
         executor: executor.clone(),
+        action_executor: action_executor.clone(),
     });
     functions::register_all(&iii, &deps);
     security_scan::ui::register(&iii);
+
+    let mut schedule_handles =
+        security_scan::schedule::register(&iii, deps.service.clone(), Arc::new(config.clone()))
+            .await;
+    let initial_schedule_count = schedule_handles.bound_schedule_count();
 
     let _completion_trigger = match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "harness::turn-completed".into(),
@@ -88,45 +97,30 @@ async fn main() -> Result<()> {
             None
         }
     };
-    let schedule_handles =
-        security_scan::schedule::register(&iii, deps.service.clone(), Arc::new(config.clone()))
-            .await;
-    let initial_schedule_count = schedule_handles.bound_schedule_count();
 
-    runtime
-        .claim_private_state()
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("claiming private security-scan state")?;
-    match runtime.backfill_run_index().await {
-        Ok(0) => {}
-        Ok(count) => tracing::info!(count, "backfilled security scan run history"),
-        Err(error) => {
-            tracing::warn!(%error, "security scan run history backfill deferred")
-        }
-    }
-    runtime
-        .ensure_queue()
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("defining security-scan FIFO queue")?;
-
-    reconcile_runs(&runtime, &executor).await;
-
-    // Harness completion events are an optimization, not the source of
-    // truth. Periodic State/Queue/Harness reconciliation covers sibling boot
-    // order, lost asynchronous trigger registration, and lost queue wakes.
     let recovery_runtime = runtime.clone();
     let recovery_executor = executor.clone();
-    let mut recovery_schedule_handles = schedule_handles;
+    let recovery_action_executor = action_executor.clone();
     let recovery = tokio::spawn(async move {
+        initialize_private_dependencies(&recovery_runtime).await;
+        reconcile_runs(
+            &recovery_runtime,
+            &recovery_executor,
+            &recovery_action_executor,
+        )
+        .await;
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
         loop {
             interval.tick().await;
-            recovery_schedule_handles.recover_bindings().await;
-            reconcile_runs(&recovery_runtime, &recovery_executor).await;
+            schedule_handles.recover_bindings().await;
+            reconcile_runs(
+                &recovery_runtime,
+                &recovery_executor,
+                &recovery_action_executor,
+            )
+            .await;
         }
     });
 
@@ -142,18 +136,73 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn initialize_private_dependencies(runtime: &Arc<IiiRuntime>) {
+    loop {
+        match runtime.claim_private_state().await {
+            Ok(()) => break,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "security-scan private state is not ready; public calls fail closed until it is claimed"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    loop {
+        match runtime.ensure_queue().await {
+            Ok(()) => break,
+            Err(error) => {
+                tracing::warn!(%error, "security-scan queue is not ready; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    match runtime.backfill_run_index().await {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "backfilled security scan run history"),
+        Err(error) => {
+            tracing::warn!(%error, "security scan run history backfill deferred")
+        }
+    }
+    match runtime.backfill_action_session_index().await {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "backfilled security action session index"),
+        Err(error) => tracing::warn!(%error, "security action session backfill deferred"),
+    }
+    match runtime.import_archived_runs().await {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "imported archived security scan runs"),
+        Err(error) => tracing::warn!(%error, "security scan archive import deferred"),
+    }
+}
+
 async fn reconcile_runs(
     runtime: &Arc<IiiRuntime>,
     executor: &Arc<SecurityScanExecutor<IiiRuntime>>,
+    action_executor: &Arc<security_scan::SecurityActionExecutor<IiiRuntime>>,
 ) {
+    if !runtime.private_state_is_ready() {
+        return;
+    }
     match runtime.retry_run_index_backfill().await {
         Ok(None | Some(0)) => {}
         Ok(Some(count)) => tracing::info!(count, "backfilled security scan run history"),
         Err(error) => tracing::warn!(%error, "security scan run history backfill deferred"),
     }
+    match runtime.retry_action_session_backfill().await {
+        Ok(None | Some(0)) => {}
+        Ok(Some(count)) => tracing::info!(count, "backfilled security action session index"),
+        Err(error) => tracing::warn!(%error, "security action session backfill deferred"),
+    }
     let repaired = runtime.repair_pending_run_index().await;
     if repaired > 0 {
         tracing::info!(repaired, "repaired security scan run history projections");
+    }
+    match runtime.repair_archived_runs().await {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "repaired security scan archive objects"),
+        Err(error) => tracing::warn!(%error, "security scan archive repair deferred"),
     }
     match runtime.list_reconciliation_runs().await {
         Ok(runs) => {
@@ -180,5 +229,8 @@ async fn reconcile_runs(
         Ok(0) => {}
         Ok(count) => tracing::info!(count, "re-enqueued recoverable security scan runs"),
         Err(error) => tracing::warn!(%error, "security scan queue recovery failed"),
+    }
+    if let Err(error) = action_executor.recover_actions().await {
+        tracing::warn!(%error, "security scan action recovery failed");
     }
 }

@@ -54,6 +54,30 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
     Ok(config)
 }
 
+pub async fn register_and_fetch_until_ready(iii: &IIIClient) -> WorkerConfig {
+    retry_until_ready(
+        || register_and_fetch(iii),
+        Duration::from_millis(CONFIG_RETRY_BACKOFF_MS),
+    )
+    .await
+}
+
+async fn retry_until_ready<T, F, Fut>(mut operation: F, delay: Duration) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, SecurityScanError>>,
+{
+    loop {
+        match operation().await {
+            Ok(value) => return value,
+            Err(error) => {
+                tracing::warn!(%error, "security-scan configuration unavailable; retrying");
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, SecurityScanError> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(response) => response.get("value").cloned().map(Some).ok_or_else(|| {
@@ -106,6 +130,7 @@ fn is_not_found(error: &SecurityScanError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn shipped_config_is_idle_and_valid() {
@@ -122,10 +147,32 @@ mod tests {
         assert!(schema["properties"]["analysis"].is_object());
         assert!(schema["definitions"]["RepositoryConfigV1"]["properties"]["github"].is_object());
         assert!(schema["definitions"]["RepositoryConfigV1"]["properties"]["schedule"].is_object());
+        assert!(schema["properties"]["archive"].is_object());
         let required = schema["definitions"]["RepositoryConfigV1"]["required"]
             .as_array()
             .expect("repository required fields");
         assert!(!required.iter().any(|field| field == "github"));
         assert!(!required.iter().any(|field| field == "schedule"));
+    }
+
+    #[tokio::test]
+    async fn transient_configuration_failure_is_retried_before_use() {
+        let attempts = AtomicUsize::new(0);
+        let value = retry_until_ready(
+            || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt < 2 {
+                        Err(SecurityScanError::Dependency("not ready".into()))
+                    } else {
+                        Ok("authoritative")
+                    }
+                }
+            },
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(value, "authoritative");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }

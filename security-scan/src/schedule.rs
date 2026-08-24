@@ -214,7 +214,7 @@ fn schedule_from_metadata(
     Ok((repository, schedule))
 }
 
-async fn resolve_target_sha(
+pub(crate) async fn resolve_target_sha(
     repository: &RepositoryConfigV1,
     target_ref: &str,
 ) -> Result<String, SecurityScanError> {
@@ -332,6 +332,7 @@ mod tests {
                 max_total_tokens: 50_000,
                 max_cost_usd: Some(2.0),
             },
+            archive: None,
         }
     }
 
@@ -403,6 +404,10 @@ mod tests {
 
     #[async_trait]
     impl SecurityRuntime for MemoryRuntime {
+        fn require_ready(&self) -> Result<(), SecurityScanError> {
+            Ok(())
+        }
+
         async fn get_run(&self, run_id: &str) -> Result<Option<RunRecordV1>, SecurityScanError> {
             Ok(self
                 .run
@@ -410,6 +415,36 @@ mod tests {
                 .expect("run lock")
                 .clone()
                 .filter(|run| run.run_id == run_id))
+        }
+
+        async fn list_run_summaries(
+            &self,
+        ) -> Result<Vec<crate::PublicRunSummaryV1>, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn get_reconciliation_snapshot(
+            &self,
+            _run_id: &str,
+        ) -> Result<Option<crate::ReconciliationSnapshotV1>, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn save_reconciliation_snapshot(
+            &self,
+            _snapshot: crate::ReconciliationSnapshotV1,
+        ) -> Result<(), SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn collect_reconciliation_source(
+            &self,
+            _source: crate::ReconciliationSourceV1,
+            _github_full_name: &str,
+            _target_sha: &str,
+            _collected_at: i64,
+        ) -> Result<crate::ReconciliationSourceCollectionV1, SecurityScanError> {
+            Err(unused_capability())
         }
 
         async fn create_run_if_absent(
@@ -443,6 +478,70 @@ mod tests {
             self.enqueued.lock().expect("enqueue lock").push(request);
             Ok(())
         }
+
+        async fn stop_analysis(
+            &self,
+            _harness: &crate::HarnessRunV1,
+        ) -> Result<(), SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn ensure_analysis_chat_link(
+            &self,
+            _run: &RunRecordV1,
+        ) -> Result<bool, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn get_action(
+            &self,
+            _action_id: &str,
+        ) -> Result<Option<crate::SecurityActionRecordV1>, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn list_actions(
+            &self,
+        ) -> Result<Vec<crate::SecurityActionRecordV1>, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn create_action_if_absent(
+            &self,
+            _action: crate::SecurityActionRecordV1,
+        ) -> Result<crate::CreateActionOutcome, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn replace_action(
+            &self,
+            _expected: &crate::SecurityActionRecordV1,
+            _replacement: crate::SecurityActionRecordV1,
+        ) -> Result<bool, SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn delete_action_if_unchanged(
+            &self,
+            _action: &crate::SecurityActionRecordV1,
+        ) -> Result<(), SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn enqueue_action_execute(
+            &self,
+            _request: crate::ActionEnqueueRequestV1,
+        ) -> Result<(), SecurityScanError> {
+            Err(unused_capability())
+        }
+
+        async fn approval_gate_is_live(&self) -> Result<bool, SecurityScanError> {
+            Err(unused_capability())
+        }
+    }
+
+    fn unused_capability() -> SecurityScanError {
+        SecurityScanError::Dependency("unused schedule test runtime capability".into())
     }
 
     #[tokio::test]

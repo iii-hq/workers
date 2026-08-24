@@ -41,6 +41,10 @@ fn runtime(
 
 #[async_trait]
 impl SecurityRuntime for FakeRuntime {
+    fn require_ready(&self) -> Result<(), SecurityScanError> {
+        Ok(())
+    }
+
     async fn get_run(&self, run_id: &str) -> Result<Option<RunRecordV1>, SecurityScanError> {
         Ok((self.run.run_id == run_id).then(|| self.run.clone()))
     }
@@ -109,6 +113,66 @@ impl SecurityRuntime for FakeRuntime {
     async fn enqueue_execute(&self, _request: EnqueueRequest) -> Result<(), SecurityScanError> {
         unreachable!("reconciliation does not enqueue runs")
     }
+
+    async fn stop_analysis(
+        &self,
+        _harness: &security_scan::HarnessRunV1,
+    ) -> Result<(), SecurityScanError> {
+        unreachable!("reconciliation does not cancel analysis")
+    }
+
+    async fn ensure_analysis_chat_link(
+        &self,
+        _run: &RunRecordV1,
+    ) -> Result<bool, SecurityScanError> {
+        unreachable!("reconciliation does not link analysis chats")
+    }
+
+    async fn get_action(
+        &self,
+        _action_id: &str,
+    ) -> Result<Option<security_scan::SecurityActionRecordV1>, SecurityScanError> {
+        unreachable!("reconciliation does not read actions")
+    }
+
+    async fn list_actions(
+        &self,
+    ) -> Result<Vec<security_scan::SecurityActionRecordV1>, SecurityScanError> {
+        unreachable!("reconciliation does not list actions")
+    }
+
+    async fn create_action_if_absent(
+        &self,
+        _action: security_scan::SecurityActionRecordV1,
+    ) -> Result<security_scan::CreateActionOutcome, SecurityScanError> {
+        unreachable!("reconciliation does not create actions")
+    }
+
+    async fn replace_action(
+        &self,
+        _expected: &security_scan::SecurityActionRecordV1,
+        _replacement: security_scan::SecurityActionRecordV1,
+    ) -> Result<bool, SecurityScanError> {
+        unreachable!("reconciliation does not replace actions")
+    }
+
+    async fn delete_action_if_unchanged(
+        &self,
+        _action: &security_scan::SecurityActionRecordV1,
+    ) -> Result<(), SecurityScanError> {
+        unreachable!("reconciliation does not delete actions")
+    }
+
+    async fn enqueue_action_execute(
+        &self,
+        _request: security_scan::ActionEnqueueRequestV1,
+    ) -> Result<(), SecurityScanError> {
+        unreachable!("reconciliation does not enqueue actions")
+    }
+
+    async fn approval_gate_is_live(&self) -> Result<bool, SecurityScanError> {
+        unreachable!("reconciliation does not inspect approvals")
+    }
 }
 
 fn config(github: bool) -> WorkerConfig {
@@ -129,6 +193,7 @@ fn config(github: bool) -> WorkerConfig {
             max_total_tokens: 50_000,
             max_cost_usd: Some(2.0),
         },
+        archive: None,
     }
 }
 
@@ -154,7 +219,10 @@ fn completed_run(finding_count: usize) -> RunRecordV1 {
         run_id: "sec_reconciliation".into(),
         repository: "iii-hq/iii".into(),
         target_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        resolved_from_head: false,
         mode: ScanModeV1::Scan,
+        model: None,
+        provider: None,
         operation_nonce: "private_state_nonce".into(),
         status: RunStatusV1::Completed,
         attempt: 1,

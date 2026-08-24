@@ -1,5 +1,5 @@
 {
-  "description": "Queue a report-only security review for an operator-configured repository at an exact 40-character Git commit SHA. Duplicate repository, commit, and mode requests return the same run id.",
+  "description": "Queue a report-only security review of the full tree at an exact 40-character Git commit SHA for an operator-configured repository. Omit target_sha to analyze the entire repository at HEAD. Optional model follows the Console composer catalog id. Duplicate repository, commit, mode, and model requests return the same run id.",
   "function_id": "security-scan::request",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -17,17 +17,32 @@
       "mode": {
         "$ref": "#/definitions/ScanModeV1"
       },
+      "model": {
+        "description": "Catalog model id from the Console composer. Omitted requests use operator `analysis.model`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider": {
+        "description": "Optional explicit provider. Omitted when `model` is a catalog id such as `deepseek::…`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "repository": {
         "type": "string"
       },
       "target_sha": {
+        "default": "",
+        "description": "Exact 40-character commit SHA. Omit or leave empty to analyze the entire repository at HEAD.",
         "type": "string"
       }
     },
     "required": [
       "mode",
-      "repository",
-      "target_sha"
+      "repository"
     ],
     "title": "SecurityScanRequestV1",
     "type": "object"

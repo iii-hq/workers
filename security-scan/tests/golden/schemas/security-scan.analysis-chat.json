@@ -1,0 +1,32 @@
+{
+  "description": "Make a run's Harness review discoverable through session metadata and report whether it is available, without returning the private session identifier.",
+  "function_id": "security-scan::analysis-chat",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "run_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "run_id"
+    ],
+    "title": "SecurityScanAnalysisChatRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "available": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "available"
+    ],
+    "title": "SecurityScanAnalysisChatResponseV1",
+    "type": "object"
+  }
+}

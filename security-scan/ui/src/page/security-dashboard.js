@@ -258,6 +258,11 @@ export function isUsefulRemediation(remediation) {
   )
 }
 
+/** @param {string} mode @param {string} status @param {number} findingCount */
+export function canRequestPatchSuggestions(mode, status, findingCount) {
+  return mode === 'scan' && status === 'completed' && findingCount > 0
+}
+
 /** @param {string | undefined} summary @param {number} findingCount @param {string} status */
 export function conciseReportTitle(summary, findingCount, status) {
   const normalized = summary?.trim().replace(/\s+/g, ' ') ?? ''
@@ -293,6 +298,7 @@ export function serializeSanitizedRun(run) {
     repository: run.repository,
     target_sha: run.target_sha,
     mode: run.mode,
+    ...(run.model == null || run.model === '' ? {} : { model: run.model }),
     status: run.status,
     attempt: run.attempt,
     ...(run.error

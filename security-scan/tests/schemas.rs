@@ -16,9 +16,16 @@ fn catalog_matches_the_registered_surface() {
             "security-scan::list",
             "security-scan::reconciliation",
             "security-scan::read",
+            "security-scan::analysis-chat",
+            "security-scan::cancel",
+            "security-scan::action",
+            "security-scan::action-read",
             "security-scan::execute",
             "security-scan::on-turn-completed",
             "security-scan::on-schedule",
+            "security-scan::action-execute",
+            "security-scan::action-commit",
+            "security-scan::action-push",
         ]
     );
 }

@@ -1,5 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { errText } from './errors.js'
 import { shouldAutoCollectGithubSources } from './security-dashboard.js'
 import {
   readReconciliation,
@@ -8,10 +9,6 @@ import {
 import { shouldReloadReconciliation } from './view-state.js'
 
 const RECONCILIATION_PAGE_SIZE = 50
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 
 export interface SecurityReconciliationState {
   data: SecurityReconciliation | null
@@ -86,7 +83,7 @@ export function useSecurityReconciliation(
           requestEpoch !== requestEpochRef.current
         )
           return
-        setError({ runId: requestRunId, message: message(error) })
+        setError({ runId: requestRunId, message: errText(error) })
       } finally {
         if (
           requestRunId === runIdRef.current &&
@@ -170,7 +167,7 @@ export function useSecurityReconciliation(
           requestRunId === runIdRef.current &&
           requestEpoch === requestEpochRef.current
         ) {
-          setError({ runId: requestRunId, message: message(error) })
+          setError({ runId: requestRunId, message: errText(error) })
         }
       })
       .finally(() => {

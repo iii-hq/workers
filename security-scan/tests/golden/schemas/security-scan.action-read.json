@@ -1,0 +1,201 @@
+{
+  "description": "Read a durable security-scan GitHub action without exposing internal checkout paths or Harness session identifiers.",
+  "function_id": "security-scan::action-read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "action_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action_id"
+    ],
+    "title": "SecurityScanActionReadRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "PublicActionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/definitions/SecurityActionKindV1"
+          },
+          "action_id": {
+            "type": "string"
+          },
+          "attempt": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunErrorV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finding_index": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SecurityActionResultV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/SecurityActionStatusV1"
+          },
+          "target_sha": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "action_id",
+          "attempt",
+          "created_at",
+          "finding_index",
+          "repository",
+          "run_id",
+          "schema_version",
+          "status",
+          "target_sha",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "RunErrorV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "SecurityActionKindV1": {
+        "enum": [
+          "issue",
+          "fix_pr"
+        ],
+        "type": "string"
+      },
+      "SecurityActionResultV1": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit_sha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "draft": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "validation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "url"
+        ],
+        "type": "object"
+      },
+      "SecurityActionStatusV1": {
+        "enum": [
+          "queued",
+          "preparing",
+          "awaiting_approval",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "action": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PublicActionV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "title": "SecurityScanActionReadResponseV1",
+    "type": "object"
+  }
+}

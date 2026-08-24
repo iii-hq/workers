@@ -1,5 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { errText } from './errors.js'
 import { createRefreshGate } from './refresh-gate.js'
 import {
   listRuns,
@@ -17,14 +18,8 @@ import { isRepositoryScopeCurrent, isStreamLive } from './view-state.js'
 
 const DOORBELL_DEBOUNCE_MS = 160
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function tabIsHidden(): boolean {
-  return (
-    typeof document !== 'undefined' && document.visibilityState === 'hidden'
-  )
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
 }
 
 function repositoryKey(filters: RunFilters): string {
@@ -53,33 +48,25 @@ interface RepositoryRunList {
   runs: RunSummary[]
 }
 
-export function useSecurityRunsLive(
-  host: Host,
-  filters: RunFilters,
-  selectedId: string | null,
-): SecurityRunsLive {
+export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId: string | null): SecurityRunsLive {
   const activeRepositoryKey = repositoryKey(filters)
   const [runList, setRunList] = useState<RepositoryRunList>({
     repositoryKey: null,
     runs: [],
   })
   const [detail, setDetail] = useState<SecurityRun | null>(null)
-  const [detailRepositoryKey, setDetailRepositoryKey] = useState<string | null>(
-    null,
-  )
+  const [detailRepositoryKey, setDetailRepositoryKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [streamBound, setStreamBound] = useState(false)
-  const [connectionState, setConnectionState] =
-    useState<unknown>('disconnected')
+  const [connectionState, setConnectionState] = useState<unknown>('disconnected')
   const [listError, setListError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<{
     runId: string
     message: string
   } | null>(null)
-  const [reconciliationRefreshRevision, setReconciliationRefreshRevision] =
-    useState(0)
+  const [reconciliationRefreshRevision, setReconciliationRefreshRevision] = useState(0)
 
   const listLoadedRef = useRef(false)
   const filtersRef = useRef(filters)
@@ -105,11 +92,9 @@ export function useSecurityRunsLive(
     } catch (error) {
       if (requestKey !== currentRepositoryKeyRef.current) return
       setRunList((current) =>
-        current.repositoryKey === requestKey
-          ? current
-          : { repositoryKey: requestKey, runs: [] },
+        current.repositoryKey === requestKey ? current : { repositoryKey: requestKey, runs: [] },
       )
-      setListError(message(error))
+      setListError(errText(error))
     } finally {
       if (requestKey === currentRepositoryKeyRef.current) {
         setLoading(false)
@@ -141,11 +126,7 @@ export function useSecurityRunsLive(
     setDetailLoading(true)
     try {
       const next = await readRun(host, runId)
-      if (
-        runId !== selectedIdRef.current ||
-        requestKey !== currentRepositoryKeyRef.current
-      )
-        return
+      if (runId !== selectedIdRef.current || requestKey !== currentRepositoryKeyRef.current) return
       setDetailRepositoryKey(requestKey)
       if (next && requestKey && next.repository !== requestKey) {
         setDetail(null)
@@ -153,30 +134,19 @@ export function useSecurityRunsLive(
         return
       }
       setDetail(next)
-      setDetailError(
-        next ? null : { runId, message: 'This run no longer exists.' },
-      )
+      setDetailError(next ? null : { runId, message: 'This run no longer exists.' })
     } catch (error) {
-      if (
-        runId !== selectedIdRef.current ||
-        requestKey !== currentRepositoryKeyRef.current
-      )
-        return
+      if (runId !== selectedIdRef.current || requestKey !== currentRepositoryKeyRef.current) return
       setDetailRepositoryKey(requestKey)
-      setDetailError({ runId, message: message(error) })
+      setDetailError({ runId, message: errText(error) })
     } finally {
-      if (
-        runId === selectedIdRef.current &&
-        requestKey === currentRepositoryKeyRef.current
-      ) {
+      if (runId === selectedIdRef.current && requestKey === currentRepositoryKeyRef.current) {
         setDetailLoading(false)
       }
     }
   }
 
-  const detailGateRef = useRef<ReturnType<typeof createRefreshGate> | null>(
-    null,
-  )
+  const detailGateRef = useRef<ReturnType<typeof createRefreshGate> | null>(null)
   if (!detailGateRef.current) {
     detailGateRef.current = createRefreshGate(() => detailTaskRef.current())
   }
@@ -226,10 +196,7 @@ export function useSecurityRunsLive(
     const scheduleRefresh = () => {
       if (tabIsHidden()) return
       if (debounceTimer !== undefined) window.clearTimeout(debounceTimer)
-      debounceTimer = window.setTimeout(
-        () => refreshRef.current(),
-        DOORBELL_DEBOUNCE_MS,
-      )
+      debounceTimer = window.setTimeout(() => refreshRef.current(), DOORBELL_DEBOUNCE_MS)
     }
 
     try {
@@ -273,37 +240,22 @@ export function useSecurityRunsLive(
       if (document.visibilityState === 'visible') refreshRef.current()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
-    return () =>
-      document.removeEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [])
 
-  const listScopeIsCurrent = isRepositoryScopeCurrent(
-    activeRepositoryKey,
-    runList.repositoryKey,
-  )
-  const allRuns = useMemo(
-    () => (listScopeIsCurrent ? runList.runs : []),
-    [listScopeIsCurrent, runList.runs],
-  )
+  const listScopeIsCurrent = isRepositoryScopeCurrent(activeRepositoryKey, runList.repositoryKey)
+  const allRuns = useMemo(() => (listScopeIsCurrent ? runList.runs : []), [listScopeIsCurrent, runList.runs])
   const runs = useMemo(
-    () =>
-      filters.status
-        ? allRuns.filter((run) => run.status === filters.status)
-        : allRuns,
+    () => (filters.status ? allRuns.filter((run) => run.status === filters.status) : allRuns),
     [allRuns, filters.status],
   )
   const statusCounts = useMemo(() => {
-    const counts = Object.fromEntries(
-      RUN_STATUSES.map((status) => [status, 0]),
-    ) as Record<RunStatus, number>
+    const counts = Object.fromEntries(RUN_STATUSES.map((status) => [status, 0])) as Record<RunStatus, number>
     for (const run of allRuns) counts[run.status] += 1
     return counts
   }, [allRuns])
   const live = isStreamLive(streamBound, connectionState)
-  const detailScopeIsCurrent = isRepositoryScopeCurrent(
-    activeRepositoryKey,
-    detailRepositoryKey,
-  )
+  const detailScopeIsCurrent = isRepositoryScopeCurrent(activeRepositoryKey, detailRepositoryKey)
   const currentDetail =
     detailScopeIsCurrent &&
     listScopeIsCurrent &&
@@ -341,11 +293,7 @@ export function useSecurityRunsLive(
     live,
     listError: listScopeIsCurrent ? listError : null,
     detailError:
-      listScopeIsCurrent &&
-      detailScopeIsCurrent &&
-      detailError?.runId === selectedId
-        ? detailError.message
-        : null,
+      listScopeIsCurrent && detailScopeIsCurrent && detailError?.runId === selectedId ? detailError.message : null,
     reconciliationRefreshRevision,
     refresh,
     retry,

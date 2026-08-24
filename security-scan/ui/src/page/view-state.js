@@ -26,6 +26,12 @@ export function isStreamLive(bound, connectionState) {
   return bound && connectionState === 'connected'
 }
 
+/** @param {number} total @param {boolean} narrow */
+export function scanHistoryDescription(total, narrow) {
+  if (!narrow) return `${total} recent repository reviews`
+  return `${total} ${total === 1 ? 'run' : 'runs'}`
+}
+
 /**
  * A repository-scoped value is renderable only after that exact repository
  * filter has resolved. `null` represents the initial unresolved list.
@@ -64,4 +70,48 @@ export function shouldReloadReconciliation(
   runId,
 ) {
   return Boolean(runId) && previousRevision !== nextRevision
+}
+
+export const ANALYSIS_SESSION_PREFIX = 'security-scan-analysis-'
+export const ANALYSIS_SESSION_TITLE = 'Security review'
+
+/** @param {unknown} value */
+export function analysisConversationFromSession(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const item = /** @type {Record<string, unknown>} */ (value)
+  const sessionId = typeof item.session_id === 'string' ? item.session_id.trim() : ''
+  const title = typeof item.title === 'string' ? item.title.trim() : ''
+  const metadata =
+    item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+      ? /** @type {Record<string, unknown>} */ (item.metadata)
+      : null
+  const runId =
+    typeof metadata?.security_scan_run_id === 'string'
+      ? metadata.security_scan_run_id.trim()
+      : ''
+  if (
+    !sessionId.startsWith(ANALYSIS_SESSION_PREFIX) ||
+    title !== ANALYSIS_SESSION_TITLE ||
+    metadata?.security_scan !== true ||
+    !runId
+  ) {
+    return null
+  }
+  return { sessionId, runId }
+}
+
+/**
+ * @param {{
+ *   followRunId: string | null,
+ *   startConversationId?: string | null,
+ *   currentConversationId?: string | null,
+ * }} input
+ */
+export function shouldFollowAnalysisChat(input) {
+  if (!input.followRunId) return false
+  const current = input.currentConversationId?.trim() ?? ''
+  const start = input.startConversationId?.trim() ?? ''
+  if (!current || !start) return true
+  if (current === start) return true
+  return current.startsWith(ANALYSIS_SESSION_PREFIX)
 }

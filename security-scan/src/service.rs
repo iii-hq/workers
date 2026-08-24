@@ -38,20 +38,40 @@ where
         &self,
         request: SecurityScanRequestV1,
     ) -> Result<SecurityScanResponseV1, SecurityScanError> {
-        let request = request.normalize()?;
-        if self.config.repository(&request.repository).is_none() {
+        self.runtime.require_ready()?;
+        let mut request = request.normalize()?;
+        let Some(repository) = self.config.repository(&request.repository).cloned() else {
             return Err(SecurityScanError::InvalidRequest(format!(
                 "repository {} is not configured",
                 request.repository
             )));
+        };
+        let resolved_from_head = request.target_sha.is_empty();
+        if resolved_from_head {
+            request.target_sha = self.runtime.resolve_target_ref(&repository, "HEAD").await?;
         }
+        let model = request
+            .model
+            .clone()
+            .unwrap_or_else(|| self.config.analysis.model.clone());
+        let provider = if request.model.is_some() {
+            request.provider.clone()
+        } else {
+            request
+                .provider
+                .clone()
+                .or_else(|| self.config.analysis.provider.clone())
+        };
         let now = ids::now_ms();
         let run = RunRecordV1 {
             schema_version: "1".into(),
-            run_id: ids::run_id(&request),
+            run_id: ids::run_id(&request, &model),
             repository: request.repository,
             target_sha: request.target_sha,
+            resolved_from_head,
             mode: request.mode,
+            model: Some(model),
+            provider,
             operation_nonce: ids::operation_nonce(),
             status: RunStatusV1::Queued,
             attempt: 1,
@@ -120,10 +140,78 @@ where
             .await
     }
 
+    pub async fn cancel(
+        &self,
+        request: crate::SecurityScanCancelRequestV1,
+    ) -> Result<crate::SecurityScanCancelResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
+        if request.run_id.trim().is_empty() {
+            return Err(SecurityScanError::InvalidRequest(
+                "run_id cannot be empty".into(),
+            ));
+        }
+        let Some(run) = self.runtime.get_run(&request.run_id).await? else {
+            return Err(SecurityScanError::InvalidRequest(format!(
+                "unknown run {}",
+                request.run_id
+            )));
+        };
+        if matches!(
+            run.status,
+            RunStatusV1::Completed | RunStatusV1::Failed | RunStatusV1::Cancelled
+        ) {
+            return Ok(crate::SecurityScanCancelResponseV1 {
+                run_id: run.run_id,
+                status: run.status,
+                deduplicated: true,
+            });
+        }
+        if run.status == RunStatusV1::Cancelling {
+            if let Some(harness) = run.harness.as_ref() {
+                self.runtime.stop_analysis(harness).await?;
+            }
+            return Ok(crate::SecurityScanCancelResponseV1 {
+                run_id: run.run_id,
+                status: run.status,
+                deduplicated: true,
+            });
+        }
+        let mut cancelling = run.clone();
+        cancelling.status = RunStatusV1::Cancelling;
+        cancelling.updated_at = ids::now_ms();
+        if !self.runtime.replace_run(&run, cancelling.clone()).await? {
+            let current = self
+                .runtime
+                .get_run(&request.run_id)
+                .await?
+                .ok_or_else(|| {
+                    SecurityScanError::Dependency(format!(
+                        "run {} disappeared during cancel",
+                        request.run_id
+                    ))
+                })?;
+            return Ok(crate::SecurityScanCancelResponseV1 {
+                run_id: current.run_id,
+                status: current.status,
+                deduplicated: true,
+            });
+        }
+        if let Some(harness) = cancelling.harness.as_ref() {
+            self.runtime.stop_analysis(harness).await?;
+        }
+        self.enqueue(&cancelling).await?;
+        Ok(crate::SecurityScanCancelResponseV1 {
+            run_id: cancelling.run_id,
+            status: cancelling.status,
+            deduplicated: false,
+        })
+    }
+
     pub async fn read(
         &self,
         request: SecurityScanReadRequestV1,
     ) -> Result<SecurityScanReadResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
         if request.run_id.trim().is_empty() {
             return Err(SecurityScanError::InvalidRequest(
                 "run_id cannot be empty".into(),
@@ -139,10 +227,31 @@ where
         })
     }
 
+    pub async fn analysis_chat(
+        &self,
+        request: crate::SecurityScanAnalysisChatRequestV1,
+    ) -> Result<crate::SecurityScanAnalysisChatResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
+        if request.run_id.trim().is_empty() || request.run_id.trim() != request.run_id {
+            return Err(SecurityScanError::InvalidRequest(
+                "run_id must be non-empty and trimmed".into(),
+            ));
+        }
+        let run = self
+            .runtime
+            .get_run(&request.run_id)
+            .await?
+            .ok_or_else(|| SecurityScanError::InvalidRequest("run_id was not found".into()))?;
+        Ok(crate::SecurityScanAnalysisChatResponseV1 {
+            available: self.runtime.ensure_analysis_chat_link(&run).await?,
+        })
+    }
+
     pub async fn list(
         &self,
         request: SecurityScanListRequestV1,
     ) -> Result<SecurityScanListResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
         let limit = request.limit.unwrap_or(DEFAULT_LIST_LIMIT);
         if !(1..=MAX_LIST_LIMIT).contains(&limit) {
             return Err(SecurityScanError::InvalidRequest(format!(
@@ -181,6 +290,7 @@ where
         &self,
         request: SecurityScanReconciliationRequestV1,
     ) -> Result<SecurityScanReconciliationResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
         if request.run_id.trim().is_empty() || request.run_id.trim() != request.run_id {
             return Err(SecurityScanError::InvalidRequest(
                 "run_id must be non-empty and trimmed".into(),
@@ -250,6 +360,146 @@ where
             records,
             next_cursor,
         })
+    }
+
+    pub async fn action(
+        &self,
+        request: crate::SecurityScanActionRequestV1,
+    ) -> Result<crate::SecurityScanActionResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
+        if request.run_id.trim().is_empty() {
+            return Err(SecurityScanError::InvalidRequest(
+                "run_id cannot be empty".into(),
+            ));
+        }
+        let run = self
+            .runtime
+            .get_run(&request.run_id)
+            .await?
+            .ok_or_else(|| {
+                SecurityScanError::InvalidRequest(format!("unknown run {}", request.run_id))
+            })?;
+        crate::action_executor::validate_action_request(
+            &run,
+            request.finding_index,
+            request.action,
+        )?;
+        let github_full_name = self
+            .config
+            .repository(&run.repository)
+            .and_then(|repository| repository.github.as_ref())
+            .map(|github| github.full_name.clone())
+            .ok_or_else(|| {
+                SecurityScanError::InvalidRequest(
+                    "repository has no operator-verified GitHub mapping".into(),
+                )
+            })?;
+        let now = ids::now_ms();
+        let action = crate::SecurityActionRecordV1 {
+            schema_version: "1".into(),
+            action_id: ids::action_id(&run.run_id, request.finding_index, request.action),
+            run_id: run.run_id.clone(),
+            finding_index: request.finding_index,
+            action: request.action,
+            repository: run.repository.clone(),
+            target_sha: run.target_sha.clone(),
+            github_full_name,
+            operation_nonce: ids::operation_nonce(),
+            status: crate::SecurityActionStatusV1::Queued,
+            attempt: 1,
+            step: 0,
+            step_failures: 0,
+            materialized: None,
+            harness: None,
+            result: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            cleanup_completed_at: None,
+        };
+        match self.runtime.create_action_if_absent(action.clone()).await? {
+            crate::CreateActionOutcome::Created => {
+                self.enqueue_action(&action).await?;
+                Ok(action_response(&action, false))
+            }
+            crate::CreateActionOutcome::Existing(existing)
+                if existing.status == crate::SecurityActionStatusV1::Failed
+                    && existing.error.as_ref().is_some_and(|error| error.retryable)
+                    && existing.result.is_none()
+                    && (existing.materialized.is_none()
+                        || existing.cleanup_completed_at.is_some()) =>
+            {
+                let mut retried = (*existing).clone();
+                retried.status = crate::SecurityActionStatusV1::Queued;
+                retried.operation_nonce = ids::operation_nonce();
+                retried.attempt = retried.attempt.checked_add(1).ok_or_else(|| {
+                    SecurityScanError::Dependency("security scan action attempt overflow".into())
+                })?;
+                retried.step = 0;
+                retried.step_failures = 0;
+                retried.harness = None;
+                retried.materialized = None;
+                retried.error = None;
+                retried.completed_at = None;
+                retried.cleanup_completed_at = None;
+                retried.updated_at = now;
+                if !self
+                    .runtime
+                    .replace_action(&existing, retried.clone())
+                    .await?
+                {
+                    let current = self
+                        .runtime
+                        .get_action(&retried.action_id)
+                        .await?
+                        .ok_or_else(|| {
+                            SecurityScanError::Dependency(format!(
+                                "action {} disappeared during retry",
+                                retried.action_id
+                            ))
+                        })?;
+                    return Ok(action_response(&current, true));
+                }
+                self.enqueue_action(&retried).await?;
+                Ok(action_response(&retried, false))
+            }
+            crate::CreateActionOutcome::Existing(existing) => Ok(action_response(&existing, true)),
+        }
+    }
+
+    pub async fn action_read(
+        &self,
+        request: crate::SecurityScanActionReadRequestV1,
+    ) -> Result<crate::SecurityScanActionReadResponseV1, SecurityScanError> {
+        self.runtime.require_ready()?;
+        if request.action_id.trim().is_empty() {
+            return Err(SecurityScanError::InvalidRequest(
+                "action_id cannot be empty".into(),
+            ));
+        }
+        Ok(crate::SecurityScanActionReadResponseV1 {
+            action: self
+                .runtime
+                .get_action(&request.action_id)
+                .await?
+                .as_ref()
+                .map(Into::into),
+        })
+    }
+
+    async fn enqueue_action(
+        &self,
+        action: &crate::SecurityActionRecordV1,
+    ) -> Result<(), SecurityScanError> {
+        self.runtime
+            .enqueue_action_execute(crate::ActionEnqueueRequestV1::new(
+                action.action_id.clone(),
+                action.run_id.clone(),
+                action.attempt,
+                action.step,
+            ))
+            .await
     }
 
     async fn refresh_reconciliation(
@@ -483,4 +733,18 @@ fn unknown_health() -> ReconciliationSourceHealthV1 {
 
 fn count_u32(count: usize) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+fn action_response(
+    action: &crate::SecurityActionRecordV1,
+    deduplicated: bool,
+) -> crate::SecurityScanActionResponseV1 {
+    crate::SecurityScanActionResponseV1 {
+        action_id: action.action_id.clone(),
+        run_id: action.run_id.clone(),
+        finding_index: action.finding_index,
+        action: action.action,
+        status: action.status,
+        deduplicated,
+    }
 }
