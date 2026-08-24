@@ -936,7 +936,7 @@ export async function resizeBrowser(
   sessionId: string,
   width: number,
   height: number,
-  options: { deviceScaleFactor?: number; mobile?: boolean } = {},
+  options: { deviceScaleFactor?: number; mobile?: boolean; fit?: boolean } = {},
 ): Promise<{ width: number; height: number } | null> {
   const res = await iii.trigger<unknown>(BROWSER_RESIZE_FUNCTION_ID, {
     session_id: sessionId,
@@ -946,6 +946,7 @@ export async function resizeBrowser(
       ? { device_scale_factor: options.deviceScaleFactor }
       : {}),
     ...(options.mobile ? { mobile: options.mobile } : {}),
+    ...(options.fit ? { fit: true } : {}),
   })
   const parsed = resizeSchema.safeParse(res)
   return parsed.success

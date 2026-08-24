@@ -1197,6 +1197,33 @@ impl Sessions {
     /// Release a screencast consumer. Stops the Chromium screencast on the
     /// 1->0 transition, leaving it running while any other consumer remains
     /// (so stopping a recording never cuts off a UI viewer). Never underflows.
+    /// Force a fresh screencast frame (e.g. after a viewport resize) without
+    /// racing the acquire/release counter: hold a consumer slot of our own
+    /// while re-issuing StartScreencast, so a real viewer's release cannot
+    /// hit the 1 -> 0 stop transition mid-restart. With no other viewer the
+    /// acquire starts and the release stops the cast; both are the counted
+    /// paths, so the counter and the CDP state stay in step.
+    pub async fn nudge_screencast(&self, session: &Arc<Session>) {
+        if self.acquire_screencast(session).await.is_err() {
+            return;
+        }
+        if session
+            .screencast_consumers
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 1
+        {
+            use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+            let quality = self.config.load().screenshot_quality as i64;
+            let restart = cdp_page::StartScreencastParams::builder()
+                .format(cdp_page::StartScreencastFormat::Jpeg)
+                .quality(quality)
+                .every_nth_frame(1)
+                .build();
+            let _ = session.page.execute(restart).await;
+        }
+        self.release_screencast(session).await;
+    }
+
     pub async fn release_screencast(&self, session: &Arc<Session>) {
         use chromiumoxide::cdp::browser_protocol::page as cdp_page;
         let prev = session

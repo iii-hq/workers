@@ -1739,7 +1739,25 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::resize")?;
                 session.touch();
+                // A pane auto-fit only applies while this is the one viewer;
+                // with several panes watching the same session, whoever
+                // resized explicitly (or first) keeps the viewport and the
+                // other panes letterbox-scale it instead of fighting.
+                if req.fit.unwrap_or(false)
+                    && session
+                        .screencast_consumers
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        > 1
+                {
+                    let (width, height) = session.viewport();
+                    return Ok::<_, Error>(resize::ResizeOutput {
+                        ok: true,
+                        width,
+                        height,
+                    });
+                }
                 let width = resize::clamp(req.width);
                 let height = resize::clamp(req.height);
                 let dpr = req.device_scale_factor.unwrap_or(1.0).clamp(0.5, 3.0);
@@ -1757,17 +1775,9 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .map_err(|e| handler_err(format!("resize failed: {e}")))?;
                 session.set_viewport(width, height);
                 // The page content did not change, so the compositor may not
-                // push a screencast frame at the new size on its own. Restart
-                // the screencast to force one, but only while someone is
-                // watching (acquire/release owns the on/off transitions).
-                if session.screencast_on() {
-                    let restart = cdp_page::StartScreencastParams::builder()
-                        .format(cdp_page::StartScreencastFormat::Jpeg)
-                        .quality(sx.config.load().screenshot_quality as i64)
-                        .every_nth_frame(1)
-                        .build();
-                    let _ = session.page.execute(restart).await;
-                }
+                // push a screencast frame at the new size on its own; nudge
+                // one out through the counted screencast paths.
+                sx.nudge_screencast(&session).await;
                 Ok::<_, Error>(resize::ResizeOutput {
                     ok: true,
                     width,

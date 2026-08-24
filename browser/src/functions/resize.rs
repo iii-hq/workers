@@ -25,6 +25,12 @@ pub struct ResizeInput {
     /// Default false. The device toolbar sets this for phone presets.
     #[serde(default)]
     pub mobile: Option<bool>,
+    /// This resize is a pane auto-fit, not an explicit choice. A fit is
+    /// refused (current size returned) while more than one viewer watches
+    /// the session, so two open panes do not fight over the shared
+    /// viewport; explicit resizes (device toolbar, agents) always apply.
+    #[serde(default)]
+    pub fit: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

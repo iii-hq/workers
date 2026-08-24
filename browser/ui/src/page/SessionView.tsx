@@ -535,7 +535,7 @@ export function SessionView({
       window.clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = window.setTimeout(() => {
         lastSentSizeRef.current = { w: width, h: height }
-        void resizeBrowser(host.iii, sessionId, width, height)
+        void resizeBrowser(host.iii, sessionId, width, height, { fit: true })
           .then((applied) => {
             if (applied) setReseedToken((t) => t + 1)
           })
