@@ -51,6 +51,18 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
+def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
+    steps = workflow("ci.yml")["jobs"]["interface-smoke"]["steps"]
+    run = named_step(steps, "Start III engine")["run"]
+
+    assert "deadline=$((SECONDS + 60))" in run
+    assert "while (( SECONDS < deadline )); do" in run
+    assert (
+        "timeout --signal=KILL 5s iii trigger 'engine::workers::list' "
+        "--json '{}' >/dev/null 2>&1"
+    ) in run
+
+
 def test_harness_integration_caches_the_final_engine_and_skips_rebuilds() -> None:
     integration = workflow("_harness-integration.yml")
     steps = integration["jobs"]["integration"]["steps"]

@@ -65,8 +65,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-018")
-            // Sorted: the harness renders the policy prompt line in id order,
-            // and the dsl template joins this list verbatim.
+            // Expansion renders the policy prompt line in sorted id order.
             .allow_id(SPAWN)
             .allow_function(&record)
             .allow_id(ENSURE),
@@ -307,6 +306,18 @@ pub(super) fn scenario() -> ScenarioFixture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expand::expand_compiled_fixture;
+
+    #[test]
+    fn fixture_prompt_sorts_expanded_allowed_function_ids() {
+        let fixture = scenario();
+        let expanded =
+            expand_compiled_fixture(&fixture.compiled(), "ir123456789abc", "session-123").unwrap();
+
+        assert!(expanded
+            .system_prompt
+            .contains("harness::spawn, ir123456789abc::record, session::ensure"));
+    }
 
     #[test]
     fn fixture_pins_the_refusal_and_the_own_child_reuse() {

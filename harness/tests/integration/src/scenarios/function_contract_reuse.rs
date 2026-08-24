@@ -9,7 +9,7 @@ use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const INFO: &str = "engine::functions::info";
-const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","namespace":"default","registered_triggers":[],"request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"response_schema":{"$schema":"http://json-schema.org/draft-07/schema#","const":{"content":[{"text":"recorded","type":"text"}],"is_error":false}},"worker_name":"integration-probe"}"#;
+const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","registered_triggers":[],"request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"response_schema":{"$schema":"http://json-schema.org/draft-07/schema#","const":{"content":[{"text":"recorded","type":"text"}],"is_error":false}},"worker_name":"integration-probe"}"#;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-025";
