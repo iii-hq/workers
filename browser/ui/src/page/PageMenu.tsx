@@ -71,7 +71,7 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
               aria-label="zoom out"
               title="zoom out"
             >
-              <Minus size={14} aria-hidden />
+              <Minus size={16} aria-hidden />
             </button>
             <span
               className={cn('br-ui-menu-zoom-level', zoom !== 100 && 'is-set')}
@@ -87,7 +87,7 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
               aria-label="zoom in"
               title="zoom in"
             >
-              <Plus size={14} aria-hidden />
+              <Plus size={16} aria-hidden />
             </button>
             <button
               type="button"
@@ -97,7 +97,7 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
               aria-label="reset zoom"
               title="reset zoom"
             >
-              <RefreshCw size={14} aria-hidden />
+              <RefreshCw size={16} aria-hidden />
             </button>
           </span>
         </fieldset>

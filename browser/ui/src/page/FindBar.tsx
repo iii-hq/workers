@@ -37,7 +37,7 @@ export function FindBar({
   const empty = state.query.trim() === ''
   return (
     <search className="br-ui-findbar" aria-label="find in page">
-      <Search size={14} aria-hidden className="br-ui-findbar-icon" />
+      <Search size={16} aria-hidden className="br-ui-findbar-icon" />
       <Input
         ref={inputRef}
         value={state.query}
