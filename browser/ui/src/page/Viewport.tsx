@@ -1,7 +1,25 @@
+import * as ConsoleUi from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { type BrowserClickOptions, type BrowserPickHint, elementLabel } from '../lib/browser'
+import {
+  type BrowserClickOptions,
+  type BrowserPickHint,
+  elementLabel,
+} from '../lib/browser'
 import { cn } from '../lib/cn'
+import type { Annotation } from './annotations'
 import type { LiveFrame } from './useLiveFrames'
+
+/** Annotate mode: the frame is frozen, clicks drop pins instead of reaching
+    the page, and the pins render over the picture. */
+export interface ViewportAnnotation {
+  annotations: readonly Annotation[]
+  selectedId: string | null
+  onAdd: (x: number, y: number) => void
+  onSelect: (id: string | null) => void
+  onMove: (id: string, x: number, y: number) => void
+  onRemove: (id: string) => void
+  onNote: (id: string, note: string) => void
+}
 
 /**
  * The session viewport: the latest screencast frame scaled to fit the pane
@@ -60,7 +78,11 @@ interface RenderedImageRect {
  * only expose the element box, so derive the centered painted rect from the
  * frame dimensions before translating pointer coordinates.
  */
-function renderedImageRect(img: HTMLImageElement, frameWidth: number, frameHeight: number): RenderedImageRect | null {
+function renderedImageRect(
+  img: HTMLImageElement,
+  frameWidth: number,
+  frameHeight: number,
+): RenderedImageRect | null {
   if (frameWidth <= 0 || frameHeight <= 0) return null
   const box = img.getBoundingClientRect()
   if (box.width <= 0 || box.height <= 0) return null
@@ -80,58 +102,60 @@ interface ViewportProps {
   frame: LiveFrame | null
   loading: boolean
   error: string | null
-  picking: boolean
   onClickAt: (x: number, y: number, options?: BrowserClickOptions) => void
-  onPickAt: (x: number, y: number) => void
   onScrollAt: (x: number, y: number, deltaY: number) => void
   onTextInput: (text: string) => void
   onPressKey: (key: string) => void
   requestHint: (x: number, y: number) => Promise<BrowserPickHint | null>
+  /** Present while annotating; the frame shown is the frozen one. */
+  annotation?: ViewportAnnotation | null
 }
 
 export function Viewport({
   frame,
   loading,
   error,
-  picking,
   onClickAt,
-  onPickAt,
   onScrollAt,
   onTextInput,
   onPressKey,
   requestHint,
+  annotation = null,
 }: ViewportProps) {
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const annotating = annotation !== null
   const imgRef = useRef<HTMLImageElement>(null)
 
   const frameRef = useRef(frame)
   frameRef.current = frame
-  const pickingRef = useRef(picking)
-  pickingRef.current = picking
+  const annotatingRef = useRef(annotating)
+  annotatingRef.current = annotating
   const onScrollAtRef = useRef(onScrollAt)
   onScrollAtRef.current = onScrollAt
 
   /** Client point -> page-viewport point, null outside the rendered image. */
-  const mapToPage = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
-    const current = frameRef.current
-    const img = imgRef.current
-    if (!current || !img || current.width <= 0 || current.height <= 0) {
-      return null
-    }
-    const rect = renderedImageRect(img, current.width, current.height)
-    if (!rect) return null
-    const relX = (clientX - rect.left) / rect.width
-    const relY = (clientY - rect.top) / rect.height
-    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
-    return {
-      x: Math.min(current.width - 1, Math.round(relX * current.width)),
-      y: Math.min(current.height - 1, Math.round(relY * current.height)),
-    }
-  }, [])
+  const mapToPage = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const current = frameRef.current
+      const img = imgRef.current
+      if (!current || !img || current.width <= 0 || current.height <= 0) {
+        return null
+      }
+      const rect = renderedImageRect(img, current.width, current.height)
+      if (!rect) return null
+      const relX = (clientX - rect.left) / rect.width
+      const relY = (clientY - rect.top) / rect.height
+      if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
+      return {
+        x: Math.min(current.width - 1, Math.round(relX * current.width)),
+        y: Math.min(current.height - 1, Math.round(relY * current.height)),
+      }
+    },
+    [],
+  )
 
   // Single vs double click: a first click waits out the double-click window
-  // so a dblclick can replace it with one click_count:2 act. Pick mode skips
-  // the wait (the click resolves the pick).
+  // so a dblclick can replace it with one click_count:2 act.
   const pendingClickRef = useRef<number | undefined>(undefined)
   const clearPendingClick = useCallback(() => {
     window.clearTimeout(pendingClickRef.current)
@@ -139,16 +163,13 @@ export function Viewport({
   }, [])
   useEffect(() => clearPendingClick, [clearPendingClick])
   useEffect(() => {
-    if (picking) clearPendingClick()
-  }, [picking, clearPendingClick])
+    if (annotating) clearPendingClick()
+  }, [annotating, clearPendingClick])
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (annotating) return
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
-    if (picking) {
-      onPickAt(pt.x, pt.y)
-      return
-    }
     if (e.detail >= 2) {
       clearPendingClick()
       return
@@ -161,7 +182,7 @@ export function Viewport({
   }
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (picking) return
+    if (annotating) return
     clearPendingClick()
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
@@ -172,7 +193,7 @@ export function Viewport({
     const pt = mapToPage(e.clientX, e.clientY)
     if (!pt) return
     e.preventDefault()
-    if (picking) return
+    if (annotating) return
     onClickAt(pt.x, pt.y, { button: 'right' })
   }
 
@@ -192,7 +213,7 @@ export function Viewport({
       const pt = mapToPage(e.clientX, e.clientY)
       if (!pt) return
       e.preventDefault()
-      if (pickingRef.current) return
+      if (annotatingRef.current) return
       const scale = e.deltaMode === 1 ? 16 : 1
       accum.delta += e.deltaY * scale
       accum.pt = pt
@@ -218,9 +239,9 @@ export function Viewport({
   }, [mapToPage])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    // Pick mode owns the keyboard: Escape bubbles to the page-level
-    // listener that exits pick mode; nothing forwards to the page.
-    if (picking) return
+    // Annotate mode owns the keyboard: Escape bubbles to the page-level
+    // listener that exits the mode; nothing forwards to the page.
+    if (annotating) return
     // The page wants Tab and Escape, which is exactly what a keyboard user
     // needs to leave with. Shift+Escape is reserved as the way out and
     // never reaches the page.
@@ -244,15 +265,15 @@ export function Viewport({
     }
   }
 
-  // Pick hover hint: while picking, sample the latest cursor position on an
-  // interval and ask the worker what a click would hit; the highlight box
-  // is drawn client-side over the image, never waiting for a screenshot
-  // frame.
+  // Hover hint: while annotating, sample the latest cursor position on an
+  // interval and ask the worker what a pin dropped there would point at; the
+  // highlight box is drawn client-side over the frozen frame (the page under
+  // it is still live, so the hit-test matches what the frame shows).
   const cursorRef = useRef<{ x: number; y: number } | null>(null)
   const [hint, setHint] = useState<HintDisplay | null>(null)
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!picking) return
+    if (!annotating) return
     const pt = mapToPage(e.clientX, e.clientY)
     cursorRef.current = pt
     if (!pt) setHint(null)
@@ -264,7 +285,7 @@ export function Viewport({
   }
 
   useEffect(() => {
-    if (!picking) {
+    if (!annotating) {
       cursorRef.current = null
       setHint(null)
       return
@@ -319,7 +340,7 @@ export function Viewport({
       window.clearInterval(id)
       setHint(null)
     }
-  }, [picking, requestHint])
+  }, [annotating, requestHint])
 
   return (
     <div
@@ -328,30 +349,63 @@ export function Viewport({
       // biome-ignore lint/a11y/noNoninteractiveTabindex: a live remote-browser surface forwarding raw mouse/keyboard input; focus is how typing reaches the page
       tabIndex={0}
       aria-label={
-        picking
-          ? 'browser viewport, pick mode: click an element to copy it to the clipboard'
+        annotating
+          ? 'browser viewport, annotate mode: click an element to drop a numbered pin on the frozen view'
           : 'browser viewport: clicks, scrolling, and typing forward to the page'
       }
-      onPointerDown={() => surfaceRef.current?.focus()}
+      onPointerDown={(e) => {
+        if (
+          (e.target as HTMLElement).closest(
+            '[data-annotation-pin], [data-annotation-callout]',
+          )
+        )
+          return
+        surfaceRef.current?.focus()
+      }}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onKeyDown={handleKeyDown}
-      className={cn('br-ui-vp', picking && 'is-picking')}
+      className={cn('br-ui-vp', annotating && 'is-annotating')}
     >
-      {frame ? (
+      {frame && annotation && ConsoleUi.AnnotationLayer ? (
+        <ConsoleUi.AnnotationLayer
+          annotations={annotation.annotations}
+          image={{ width: frame.width, height: frame.height }}
+          active
+          selectedId={annotation.selectedId}
+          onAdd={annotation.onAdd}
+          onSelect={annotation.onSelect}
+          onMove={annotation.onMove}
+          onRemove={annotation.onRemove}
+          onNote={annotation.onNote}
+          className="br-ui-vp-annot"
+        >
+          <img
+            ref={imgRef}
+            src={frame.dataUrl}
+            alt="frozen view of the current page"
+            draggable={false}
+            className="br-ui-vp-img"
+          />
+        </ConsoleUi.AnnotationLayer>
+      ) : frame ? (
         <img
           ref={imgRef}
           src={frame.dataUrl}
           alt="live view of the current page"
           draggable={false}
-          className={cn('br-ui-vp-img', picking && 'is-picking')}
+          className="br-ui-vp-img"
         />
       ) : (
         <p className="br-ui-vp-empty">
-          {error ? `live view failed: ${error}` : loading ? 'waiting for the first frame...' : 'no frame yet'}
+          {error
+            ? `live view failed: ${error}`
+            : loading
+              ? 'waiting for the first frame...'
+              : 'no frame yet'}
         </p>
       )}
       {hint ? (
@@ -365,7 +419,12 @@ export function Viewport({
             height: hint.height,
           }}
         >
-          <span className={cn('br-ui-vp-hint-label', hint.top >= 22 ? 'above' : 'below')}>
+          <span
+            className={cn(
+              'br-ui-vp-hint-label',
+              hint.top >= 22 ? 'above' : 'below',
+            )}
+          >
             <span className="br-ui-vp-hint-tag">{hint.label}</span>
             <span className="br-ui-vp-hint-dims">{hint.dims}</span>
           </span>

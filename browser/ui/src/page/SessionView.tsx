@@ -24,32 +24,48 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_PICKED_TRIGGER,
   type BrowserClickOptions,
-  type BrowserPickedEvent,
   type BrowserSessionInfo,
   clickBrowserAt,
   controlBrowserHistory,
   errorMessage,
-  formatPickedElement,
   hintBrowserPick,
   navigateBrowser,
   parsePickedEvent,
-  pickedSelector,
+  pinLabel,
   pressBrowserKey,
   resolveBrowserPick,
   scrollBrowserAt,
-  startBrowserPick,
-  stopBrowserPick,
   stopBrowserSession,
   typeBrowserText,
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
 import { formatMtime } from '../lib/format'
-import { Crosshair, ExternalLink, Globe, RefreshCw, X } from '../lib/icons'
+import {
+  ExternalLink,
+  Globe,
+  MessageSquarePlus,
+  RefreshCw,
+  X,
+} from '../lib/icons'
 import { BackButton, ChevronLeftIcon } from '../lib/widgets'
+import {
+  type Annotation,
+  type AnnotationSet,
+  addAnnotation,
+  annotationFileName,
+  annotationPinFileName,
+  annotationsMarkdown,
+  labelAnnotation,
+  moveAnnotation,
+  noteAnnotation,
+  removeAnnotation,
+  renderAnnotatedImage,
+  renderAnnotationCrop,
+} from './annotations'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
-import { useLiveFrames } from './useLiveFrames'
+import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
@@ -62,12 +78,22 @@ type NarrowPane = 'viewport' | FeedPane
  * this component's session-local state. */
 export interface SessionActions {
   stop: () => void
-  toggleInspect: () => void
   focusUrl: () => void
+  toggleAnnotate: () => void
+  annotating: () => boolean
+  annotationCount: () => number
+  sendAnnotations: () => void
+  downloadAnnotations: () => void
+  clearAnnotations: () => void
 }
 
 const FEED_PANES: readonly FeedPane[] = ['console', 'network']
 const NARROW_PANES: readonly NarrowPane[] = ['viewport', 'console', 'network']
+const PANE_LABELS: Record<NarrowPane, string> = {
+  viewport: 'Viewport',
+  console: 'Console',
+  network: 'Network',
+}
 
 function readStored(key: string): string | null {
   try {
@@ -124,16 +150,16 @@ export function SessionView({
   onStopped,
 }: SessionViewProps) {
   const sessionId = session.session_id
-  const [picking, setPicking] = useState(false)
 
   // Narrow-mode segment (viewport | console | network); session-local, so a
   // drill-in always lands on the viewport.
   const [narrowPane, setNarrowPane] = useState<NarrowPane>('viewport')
   // Wide-mode feeds dock (console | network), persisted per workspace tab.
   const dockStoreKey = `browser-ui:${tabId || 'page'}:dock`
-  const [dockPane, setDockPaneState] = useState<FeedPane>(() =>
-    readStored(dockStoreKey) === 'network' ? 'network' : 'console',
-  )
+  const [dockPane, setDockPaneState] = useState<FeedPane>(() => {
+    const stored = readStored(dockStoreKey)
+    return stored === 'network' ? stored : 'console'
+  })
   const dockCollapsedStoreKey = `browser-ui:${tabId || 'page'}:dock-collapsed`
   const [dockCollapsed, setDockCollapsedState] = useState(
     () => readStored(dockCollapsedStoreKey) === 'true',
@@ -214,80 +240,173 @@ export function SessionView({
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }, [session.url, urlDraft])
 
-  // Pick-to-clipboard. The worker auto-exits inspect mode after one pick, so
-  // a received event only flips local state; explicit toggles and unmounts
-  // send pick::stop.
-  const [lastPicked, setLastPicked] = useState<BrowserPickedEvent | null>(null)
-  const pickingRef = useRef(false)
-  pickingRef.current = picking
-
   useEffect(() => {
-    setPicking(false)
-    setLastPicked(null)
     setActionError(null)
-    return () => {
-      if (pickingRef.current) {
-        void stopBrowserPick(host.iii, sessionId).catch(() => {})
-      }
-    }
-  }, [host, sessionId])
+  }, [sessionId])
 
-  const togglePick = useCallback(() => {
-    if (picking) {
-      setPicking(false)
-      void runAction(() => stopBrowserPick(host.iii, sessionId))
-      return
-    }
-    void runAction(async () => {
-      await startBrowserPick(host.iii, sessionId)
-      setPicking(true)
+  // Annotate mode freezes the frame the pins sit on; the live view resumes
+  // when the mode ends. The pins outlive the mode until sent or cleared.
+  const [annotating, setAnnotating] = useState(false)
+  const [frozen, setFrozen] = useState<LiveFrame | null>(null)
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(
+    null,
+  )
+  const [sending, setSending] = useState(false)
+  const unlabeledPinsRef = useRef<string[]>([])
+  useEffect(() => {
+    setAnnotating(false)
+    setFrozen(null)
+    setAnnotations([])
+    setSelectedAnnotation(null)
+    unlabeledPinsRef.current = []
+  }, [sessionId])
+  const liveFrameRef = useRef(live.frame)
+  liveFrameRef.current = live.frame
+  const toggleAnnotate = useCallback(() => {
+    setAnnotating((current) => {
+      if (current) return false
+      // Re-entering with unsent marks resumes them on their own frozen
+      // frame; only a fresh session starts from the live frame.
+      if (annotationsRef.current.length > 0 && frozenRef.current) return true
+      const frame = liveFrameRef.current
+      if (!frame) {
+        setActionError('no frame to annotate yet')
+        return false
+      }
+      setFrozen(frame)
+      setAnnotations([])
+      setSelectedAnnotation(null)
+      unlabeledPinsRef.current = []
+      return true
     })
-  }, [host, picking, sessionId, runAction])
+  }, [])
+  const annotationSet = useCallback((): AnnotationSet | null => {
+    if (!frozen) return null
+    return {
+      subject: session.url,
+      imageUrl: frozen.dataUrl,
+      width: frozen.width,
+      height: frozen.height,
+      annotations,
+      capturedAt: Date.now(),
+    }
+  }, [frozen, session.url, annotations])
+  const sendAnnotations = useCallback(() => {
+    const set = annotationSet()
+    if (!set || set.annotations.length === 0 || !host.chat?.compose) return
+    setSending(true)
+    void runAction(async () => {
+      const whole = new File(
+        [await renderAnnotatedImage(set)],
+        annotationFileName(set, 'png'),
+        { type: 'image/png' },
+      )
+      const pins = await Promise.all(
+        set.annotations.map(async (pin, index) => {
+          const blob = await renderAnnotationCrop(set, pin.id)
+          return new File([blob], annotationPinFileName(pin, index, 'png'), {
+            type: 'image/png',
+          })
+        }),
+      )
+      host.chat?.compose?.({
+        text: annotationsMarkdown(set),
+        files: [whole, ...pins],
+      })
+      setAnnotating(false)
+      setAnnotations([])
+      unlabeledPinsRef.current = []
+    }).finally(() => setSending(false))
+  }, [annotationSet, host, runAction])
+  const downloadAnnotations = useCallback(() => {
+    const set = annotationSet()
+    if (!set || set.annotations.length === 0) return
+    void runAction(async () => {
+      const blob = await renderAnnotatedImage(set)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = annotationFileName(set, 'png')
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    })
+  }, [annotationSet, runAction])
+  const clearAnnotations = useCallback(() => {
+    setAnnotations([])
+    setSelectedAnnotation(null)
+    unlabeledPinsRef.current = []
+  }, [])
+  const viewportAnnotation = annotating
+    ? {
+        annotations,
+        selectedId: selectedAnnotation,
+        onAdd: (x: number, y: number) => {
+          const next = addAnnotation(annotationsRef.current, x, y)
+          const pin = next[next.length - 1]
+          setAnnotations(next)
+          setSelectedAnnotation(pin?.id ?? null)
+          if (!pin || !frozen) return
+          unlabeledPinsRef.current.push(pin.id)
+          void resolveBrowserPick(
+            host.iii,
+            sessionId,
+            Math.min(frozen.width - 1, Math.round(x * frozen.width)),
+            Math.min(frozen.height - 1, Math.round(y * frozen.height)),
+          ).catch(() => {
+            unlabeledPinsRef.current = unlabeledPinsRef.current.filter(
+              (queued) => queued !== pin.id,
+            )
+          })
+        },
+        onSelect: setSelectedAnnotation,
+        onMove: (id: string, x: number, y: number) =>
+          setAnnotations((list) => moveAnnotation(list, id, x, y)),
+        onRemove: (id: string) =>
+          setAnnotations((list) => removeAnnotation(list, id)),
+        onNote: (id: string, note: string) =>
+          setAnnotations((list) => noteAnnotation(list, id, note)),
+      }
+    : null
 
   useEffect(() => {
-    if (!picking) return
+    if (!annotating) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      const target = e.target as HTMLElement | null
+      // A note field keeps its own Escape; the mode ends from the viewport.
+      if (target?.tagName === 'INPUT') return
       e.preventDefault()
-      setPicking(false)
-      void stopBrowserPick(host.iii, sessionId).catch(() => {})
+      setAnnotating(false)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [host, picking, sessionId])
+  }, [annotating])
 
+  // A dropped pin asks the worker what sits under it (the page is still
+  // live under the frozen frame); the answer labels the newest unlabeled
+  // pin so the note carries the element it points at.
+  // Picked events carry no correlation token, so pins waiting for their
+  // element label queue up first-in first-out; two quick drops each get
+  // their own answer instead of the second overwriting the first.
   useBrowserSessionEvent({
     host,
-    enabled: enabled && picking,
+    enabled: enabled && annotating,
     triggerType: BROWSER_PICKED_TRIGGER,
     sessionId,
     fnId: PICKED_FN,
     onEvent: (payload) => {
       const evt = parsePickedEvent(payload)
       if (!evt || evt.session_id !== sessionId) return
-      setLastPicked(evt)
-      // No composer slot in injected UI: copy the summary for the user to
-      // paste into chat.
-      void navigator.clipboard
-        ?.writeText(formatPickedElement(evt))
-        .catch(() => {})
-      setPicking(false)
+      const id = unlabeledPinsRef.current.shift()
+      if (!id) return
+      setAnnotations((list) => labelAnnotation(list, id, pinLabel(evt)))
     },
   })
 
   const handleClickAt = useCallback(
     (x: number, y: number, options?: BrowserClickOptions) => {
       void runAction(() => clickBrowserAt(host.iii, sessionId, x, y, options))
-    },
-    [host, sessionId, runAction],
-  )
-
-  // Pick-mode click: resolve the element at the exact clicked point (the
-  // worker emits browser::picked), so what the hover highlight showed is
-  // what gets picked.
-  const handlePickAt = useCallback(
-    (x: number, y: number) => {
-      void runAction(() => resolveBrowserPick(host.iii, sessionId, x, y))
     },
     [host, sessionId, runAction],
   )
@@ -365,13 +484,31 @@ export function SessionView({
     if (!actionsRef) return
     actionsRef.current = {
       stop: handleStop,
-      toggleInspect: togglePick,
       focusUrl: () => urlInputRef.current?.focus(),
+      toggleAnnotate,
+      annotating: () => annotatingRef.current,
+      annotationCount: () => annotationsRef.current.length,
+      sendAnnotations,
+      downloadAnnotations,
+      clearAnnotations,
     }
     return () => {
       actionsRef.current = null
     }
-  }, [actionsRef, handleStop, togglePick])
+  }, [
+    actionsRef,
+    handleStop,
+    toggleAnnotate,
+    sendAnnotations,
+    downloadAnnotations,
+    clearAnnotations,
+  ])
+  const annotatingRef = useRef(annotating)
+  annotatingRef.current = annotating
+  const annotationsRef = useRef(annotations)
+  annotationsRef.current = annotations
+  const frozenRef = useRef(frozen)
+  frozenRef.current = frozen
 
   const displayName =
     session.title?.trim() || hostOf(session.url) || 'about:blank'
@@ -425,19 +562,48 @@ export function SessionView({
           </span>
         </div>
         <div className="br-ui-doc-actions">
+          {annotations.length > 0 ? (
+            <>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={sendAnnotations}
+                disabled={sending || typeof host.chat?.compose !== 'function'}
+                title="send the pins to the chat, one attachment each (⌘↵)"
+              >
+                {sending ? 'Sending…' : `Send ${annotations.length} to chat`}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={downloadAnnotations}
+                title="save the frozen view with its pins as a PNG"
+              >
+                Download
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearAnnotations}
+                title="drop every pin"
+              >
+                Clear
+              </Button>
+            </>
+          ) : null}
           <button
             type="button"
-            onClick={togglePick}
-            aria-pressed={picking}
+            onClick={toggleAnnotate}
+            aria-pressed={annotating}
             title={
-              picking
-                ? 'pick mode on: click an element in the viewport to copy it to the clipboard (esc cancels)'
-                : 'pick an element to the clipboard'
+              annotating
+                ? 'annotating: click an element to drop a pin on it, esc ends'
+                : 'freeze the view and pin elements with notes'
             }
-            className={cn('br-ui-pick-btn', picking && 'is-on')}
+            className={cn('br-ui-pick-btn', annotating && 'is-on')}
           >
-            <Crosshair size={16} aria-hidden />
-            {picking ? 'Inspecting...' : 'Inspect'}
+            <MessageSquarePlus size={16} aria-hidden />
+            {annotating ? 'Annotating' : 'Annotate'}
           </button>
           <Button
             variant="ghost"
@@ -449,30 +615,6 @@ export function SessionView({
           </Button>
         </div>
       </header>
-
-      {lastPicked ? (
-        <div className="br-ui-picked">
-          <span className="br-ui-picked-label">Picked</span>
-          <span
-            className="br-ui-picked-chip"
-            title={lastPicked.element.outer_html}
-          >
-            <span className="br-ui-picked-ref">{lastPicked.element.ref}</span>
-            <span className="br-ui-truncate">
-              {pickedSelector(lastPicked.element)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setLastPicked(null)}
-              aria-label="dismiss picked element"
-              className="br-ui-picked-x"
-            >
-              <X size={16} aria-hidden />
-            </button>
-          </span>
-          <span className="br-ui-picked-note">Copied to clipboard</span>
-        </div>
-      ) : null}
 
       {actionError ? (
         <div className="br-ui-banner alert" role="alert">
@@ -494,12 +636,7 @@ export function SessionView({
             onChange={setNarrowPane}
             options={NARROW_PANES.map((pane) => ({
               value: pane,
-              label:
-                pane === 'console'
-                  ? 'Console'
-                  : pane === 'network'
-                    ? 'Network'
-                    : 'Viewport',
+              label: PANE_LABELS[pane],
             }))}
             className="br-ui-tabs"
             aria-label="Session view"
@@ -586,12 +723,11 @@ export function SessionView({
               </button>
             </form>
             <Viewport
-              frame={live.frame}
+              frame={annotating && frozen ? frozen : live.frame}
               loading={live.loading}
               error={live.error}
-              picking={picking}
+              annotation={viewportAnnotation}
               onClickAt={handleClickAt}
-              onPickAt={handlePickAt}
               onScrollAt={handleScrollAt}
               onTextInput={handleTextInput}
               onPressKey={handlePressKey}
@@ -617,7 +753,7 @@ export function SessionView({
               onChange={setDockPane}
               options={FEED_PANES.map((pane) => ({
                 value: pane,
-                label: pane === 'console' ? 'Console' : 'Network',
+                label: PANE_LABELS[pane],
               }))}
               className="br-ui-tabs"
               aria-label="Session feeds"
@@ -682,9 +818,9 @@ export function SessionView({
         </span>
         <span className="spacer" />
         {viewportShown ? (
-          picking ? (
+          annotating ? (
             <span className="fact hint">
-              pick mode: click an element to copy it — esc cancels
+              annotating: click an element to pin it, esc ends
             </span>
           ) : (
             <>

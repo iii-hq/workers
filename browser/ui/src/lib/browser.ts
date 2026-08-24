@@ -385,8 +385,6 @@ export function consoleLevelTone(level: string): 'ink' | 'warn' | 'alert' {
 }
 
 const PICKED_TEXT_LIMIT = 80
-const PICKED_ERROR_LIMIT = 3
-const PICKED_ERROR_LINE_LIMIT = 200
 
 /**
  * Selector-ish summary from the picked element's attributes, restricted to
@@ -406,29 +404,22 @@ export function pickedSelector(element: BrowserPickedElement): string {
 }
 
 /**
- * Compact text block copied to the clipboard for a picked element: one
- * summary line, the url, recent console errors when present, and the ref the
- * agent can use directly. Never includes outer_html.
+ * What a dropped pin points at: `selector "text" (ref e12)`. The ref is the
+ * handle `browser::act` / `browser::styles::read` take, so an agent reading
+ * the note can reach the element directly. Never includes outer_html.
  */
-export function formatPickedElement(evt: BrowserPickedEvent): string {
+export function pinLabel(evt: BrowserPickedEvent): string {
   const el = evt.element
-  const text = el.text.replace(/\s+/g, ' ').trim().slice(0, PICKED_TEXT_LIMIT)
+  // The document roots carry the whole page's text (and its styles); the
+  // selector alone says enough about them.
+  const text = ROOT_TAGS.has(el.tag)
+    ? ''
+    : el.text.replace(/\s+/g, ' ').trim().slice(0, PICKED_TEXT_LIMIT)
   const summary = text.length > 0 ? ` "${text}"` : ''
-  const lines = [
-    `picked element ${pickedSelector(el)}${summary} (session ${evt.session_id}, ref ${el.ref})`,
-    `url: ${el.url}`,
-  ]
-  if (el.console_recent.length > 0) {
-    lines.push('recent console errors:')
-    for (const err of el.console_recent.slice(-PICKED_ERROR_LIMIT)) {
-      lines.push(
-        `- ${err.replace(/\s+/g, ' ').trim().slice(0, PICKED_ERROR_LINE_LIMIT)}`,
-      )
-    }
-  }
-  lines.push(`ref ${el.ref} works with browser::act / browser::styles::read`)
-  return lines.join('\n')
+  return `${pickedSelector(el)}${summary} (ref ${el.ref})`
 }
+
+const ROOT_TAGS = new Set(['html', 'body', 'head'])
 
 export async function listBrowserSessions(
   iii: ExtensionIii,

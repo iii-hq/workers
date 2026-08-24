@@ -12,6 +12,7 @@
 
 import tokenNames from '@iii-dev/console-ui/token-names'
 import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
+import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -103,6 +104,8 @@ import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
  * component-names manifest (the shim's export list).
  */
 export const components: ConsoleApi['components'] = {
+  AnnotationLayer,
+  AnnotationList,
   AnsiText,
   Badge,
   Button,

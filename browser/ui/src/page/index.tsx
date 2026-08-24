@@ -154,7 +154,7 @@ export function BrowserPage({
     setDrilled(true)
   }, [])
 
-  // Per-session verbs (stop / inspect / focus url) live inside SessionView;
+  // Per-session verbs (stop / annotate / focus url) live inside SessionView;
   // this ref lets page-level commands reach the mounted session's handlers
   // without lifting their state up.
   const sessionActionsRef = useRef<SessionActions | null>(null)
@@ -194,13 +194,50 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.stop(),
         },
         {
-          id: 'toggle-inspect',
-          title: 'Toggle inspect',
-          detail: 'Pick an element to copy it to the clipboard',
-          keywords: ['pick', 'inspect', 'element'],
-          shortcut: 'I',
+          id: 'annotate',
+          title: 'Annotate the view',
+          detail: 'Freeze the live view and pin elements with notes',
+          keywords: [
+            'pin',
+            'inspect',
+            'pick',
+            'element',
+            'comment',
+            'markup',
+            'feedback',
+            'screenshot',
+          ],
+          shortcut: 'C',
           enabled: () => selected !== null,
-          run: () => sessionActionsRef.current?.toggleInspect(),
+          run: () => sessionActionsRef.current?.toggleAnnotate(),
+        },
+        {
+          id: 'send-annotations',
+          title: 'Send annotations to the chat',
+          detail: 'Attach each pin to the conversation, plus the whole view',
+          keywords: ['annotations', 'chat', 'share', 'send'],
+          shortcut: 'Mod+Enter',
+          firesWhileTyping: true,
+          enabled: () =>
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.sendAnnotations(),
+        },
+        {
+          id: 'download-annotations',
+          title: 'Download the annotated picture',
+          detail: 'Save the frozen view with its pins as a PNG',
+          keywords: ['annotations', 'save', 'png', 'export'],
+          enabled: () =>
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.downloadAnnotations(),
+        },
+        {
+          id: 'clear-annotations',
+          title: 'Clear the annotations',
+          keywords: ['annotations', 'remove', 'reset'],
+          enabled: () =>
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.clearAnnotations(),
         },
         {
           id: 'focus-url',

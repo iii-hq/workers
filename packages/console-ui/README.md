@@ -72,6 +72,10 @@ Use the shared contracts for repeated Console interactions:
   `IconButton` combines an accessible label with the shared tooltip contract.
   `ConfirmDialog` replaces `window.confirm`: cancel owns initial focus, Escape
   cancels, and unsaved items can be listed under the description.
+- `AnnotationLayer` is the one way to put numbered pins with notes on a
+  picture: the note is written in a callout beside the pin; the page owns
+  the list and sends it on through `host.chat.compose`. `AnnotationList`
+  is the same notes as rows.
 - `ImageViewer` is the one full-screen image surface: wheel and pinch zoom
   about the pointer, drag pans, double-click toggles fit and actual size,
   `+`/`-`/`0`/`1` and arrows on the keyboard, Escape closes and focus returns
