@@ -78,10 +78,17 @@ async function boundedImageUrl(dataUrl: string): Promise<string> {
   return canvas.toDataURL('image/jpeg', 0.8)
 }
 
-async function readIndex(iii: ExtensionIii): Promise<SavedSetSummary[]> {
+/** The stored index, an empty list when absent, or null when the read
+ * itself failed - callers must not mistake a failed read for emptiness. */
+async function readIndex(iii: ExtensionIii): Promise<SavedSetSummary[] | null> {
+  let failed = false
   const res = await iii
     .trigger<unknown>('state::get', { scope: ANNOTATION_SETS_SCOPE, key: INDEX_KEY })
-    .catch(() => null)
+    .catch(() => {
+      failed = true
+      return null
+    })
+  if (failed) return null
   const parsed = indexSchema.safeParse(res)
   return parsed.success ? parsed.data : []
 }
@@ -94,6 +101,9 @@ async function updateIndex(
 ): Promise<void> {
   for (let attempt = 0; attempt <= CAS_RETRIES; attempt += 1) {
     const current = await readIndex(iii)
+    if (current === null) {
+      throw new Error('the saved-sets index could not be read; nothing changed')
+    }
     const next = change(current)
     if (attempt === CAS_RETRIES) {
       await iii.trigger('state::set', {
@@ -168,6 +178,7 @@ export async function listAnnotationSets(
   signal?: AbortSignal,
 ): Promise<SavedSetSummary[]> {
   const index = await readIndex(iii)
+  if (index === null) throw new Error('the saved-sets list could not be read')
   if (signal?.aborted) return []
   return [...index].sort((a, b) => b.capturedAt - a.capturedAt)
 }

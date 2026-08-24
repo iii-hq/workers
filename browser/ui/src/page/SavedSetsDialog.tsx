@@ -114,25 +114,31 @@ export function SavedSetsDialog({
   const sendToChat = useCallback(() => {
     const set = selectedSet
     if (!set || !host.chat?.compose) return
-    void renderAnnotatedFile(set).then((file) => {
-      host.chat?.compose?.({ text: annotationsMarkdown(set), files: [file] })
-      setStatus('sent to the chat')
-    })
+    void renderAnnotatedFile(set)
+      .then((file) => {
+        host.chat?.compose?.({ text: annotationsMarkdown(set), files: [file] })
+        setStatus('sent to the chat')
+      })
+      .catch((e: unknown) => setStatus(errorMessage(e)))
   }, [selectedSet, host])
 
   const download = useCallback(() => {
     const set = selectedSet
     if (!set) return
-    void renderAnnotatedFile(set).then(downloadFile)
+    void renderAnnotatedFile(set)
+      .then(downloadFile)
+      .catch((e: unknown) => setStatus(errorMessage(e)))
   }, [selectedSet])
 
   const remove = useCallback(() => {
     const key = selectedKey
     if (!key) return
-    void deleteAnnotationSet(host.iii, key).then(() => {
-      setSelectedKey(null)
-      refresh()
-    })
+    void deleteAnnotationSet(host.iii, key)
+      .then(() => {
+        setSelectedKey(null)
+        refresh()
+      })
+      .catch((e: unknown) => setStatus(errorMessage(e)))
   }, [selectedKey, host, refresh])
   const askRemove = useCallback(() => setConfirmingDelete(true), [])
 
@@ -198,7 +204,9 @@ export function SavedSetsDialog({
                   ) : null}
                 </>
               ) : (
-                <p className="br-ui-sets-empty">Pick a set to preview it.</p>
+                <p className="br-ui-sets-empty">
+                  {status ?? 'Pick a set to preview it.'}
+                </p>
               )}
             </div>
           </div>
