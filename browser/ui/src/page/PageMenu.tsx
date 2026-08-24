@@ -23,6 +23,9 @@ export interface PageMenuActions {
   zoomOut: () => void
   zoomReset: () => void
   clearData: () => void
+  toggleDeviceToolbar: () => void
+  importCookies: () => void
+  copyCookies: () => void
 }
 
 interface PageMenuProps {
@@ -103,11 +106,14 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
           </span>
         </fieldset>
         <DropdownMenuSeparator />
+        {row('Show device toolbar', 'toggleDeviceToolbar')}
         {row('Take a screenshot', 'takeScreenshot')}
         {row('Screenshot to chat', 'screenshotToChat', {
           disabled: !canSendToChat,
         })}
         <DropdownMenuSeparator />
+        {row('Import cookies…', 'importCookies')}
+        {row('Copy cookies', 'copyCookies')}
         {row('Clear browsing data', 'clearData')}
       </DropdownMenuContent>
     </DropdownMenu>
