@@ -814,7 +814,13 @@ Enter or Escape closes it), so the note is written where the pin is, not
 in a list elsewhere. A pin may carry a `label`, what it points at when the
 page can tell (the browser page resolves the element under a dropped pin
 through `browser::pick::resolve`); the callout shows it under the note and
-the chat text appends it in parentheses. `AnnotationList` renders the same
+the chat text appends it in parentheses. Beyond pins, a mark can be a
+`rect` or an `arrow` (`kind`, `x2`/`y2`, `color`): the page passes `tool`
+and the `onAddShape` / `onResizeShape` / `onEndShape` trio and the layer
+draws the shape on drag, dropping one smaller than `MIN_SHAPE_SIZE`;
+`undoAnnotation` drops the newest mark. Exports paint every mark
+(`paintMark`) and the chat text prefixes non-pin marks (`2. box: ...`).
+`AnnotationList` renders the same
 notes as rows for a page that wants a list too.
 
 ```tsx
