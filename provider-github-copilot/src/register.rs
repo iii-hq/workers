@@ -53,9 +53,6 @@ pub fn declaration() -> ProviderDeclaration {
         // No static slice: GET /models is the source of truth once a login
         // exists, and a refresh fires right after registration.
         models: None,
-        // Identity prompt served through router::system_prompt::get; operators
-        // can override or disable it in the llm-router configuration.
-        system_prompt: Some(include_str!("../prompts/identity.txt").to_string()),
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-github-copilot".into()),
     }
@@ -241,15 +238,6 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::declaration;
-
-    #[test]
-    fn declaration_ships_the_identity_prompt() {
-        let prompt = declaration().system_prompt.expect("declared prompt");
-        assert_eq!(prompt, include_str!("../prompts/identity.txt"));
-        assert!(prompt.starts_with("You are an iii agent worker."));
-        assert!(prompt.contains("agent_trigger"));
-        assert!(prompt.contains("Never use a function id from memory."));
-    }
 
     #[test]
     fn declaration_declares_no_api_url_default() {

@@ -10,6 +10,8 @@
 //! their own storage; a busy lease or failed summariser falls through
 //! to emergency reduction and the hard budget check.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -147,6 +149,11 @@ pub struct AssembleRequest {
     /// Model-facing invocation schemas included in every budget count.
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
+    /// Named auxiliary texts to count individually with the same
+    /// estimator. Counted in `breakdown.by_part` only; never added to
+    /// the assembled context.
+    #[serde(default)]
+    pub parts: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub options: Option<AssembleOptions>,
 }
@@ -203,6 +210,10 @@ pub struct AssembleBreakdown {
     pub tools_tokens: u64,
     /// The returned messages' tokens by role.
     pub by_role: ByRoleTokens,
+    /// Per-part estimates for the request's `parts`, keyed by the
+    /// caller's names; present when the request carried `parts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by_part: Option<BTreeMap<String, u64>>,
     pub estimator: EstimatorName,
 }
 
@@ -436,6 +447,12 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     }
 
     let by_role = by_role_from_sizes(&working, &sizes);
+    let by_part = req.parts.as_ref().map(|parts| {
+        parts
+            .iter()
+            .map(|(name, text)| (name.clone(), estimator.text(text)))
+            .collect()
+    });
 
     Ok(AssembleResponse {
         system_prompt,
@@ -453,6 +470,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             system_prompt_tokens: prompt_tokens,
             tools_tokens: tool_tokens,
             by_role: by_role.into(),
+            by_part,
             estimator: estimator.kind().into(),
         },
     })

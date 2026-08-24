@@ -236,7 +236,6 @@ export function EvalPage({ host, panelSide = 'left' }: { host: Host } & Partial<
             <NewEvaluationForm
               models={models}
               modelCatalogError={modelCatalogError}
-              onLoadDefaultSystemPrompt={(provider) => api.systemPrompt(provider)}
               onCreate={create}
             />
           ) : surface === 'experiments' && selected ? (

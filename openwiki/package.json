@@ -1,6 +1,6 @@
 {
   "name": "openwiki",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Source-grounded markdown wiki for code repositories, as an iii worker: generated and refreshed from the repo itself, with a browser UI and JSON API under /openwiki.",
   "license": "Apache-2.0",

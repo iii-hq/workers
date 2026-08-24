@@ -89,9 +89,13 @@ impl From<crate::clients::context::ByRoleTokens> for SnapshotMessagesV1 {
 /// unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotCategoriesV1 {
-    /// Final assembled system prompt: mode paragraph, identity, per-step
-    /// aids, and any compaction summary section.
+    /// Final assembled system prompt excluding tokens attributed to `skills`:
+    /// mode paragraph, identity, per-step aids, and any compaction summary
+    /// section.
     pub system_prompt: u64,
+    /// Selected skill bodies contained in the system prompt.
+    #[serde(default)]
+    pub skills: u64,
     /// Function schemas exposed to the model.
     pub tools: u64,
     pub messages: SnapshotMessagesV1,
@@ -231,6 +235,7 @@ fn probe_messages() -> Vec<serde_json::Value> {
 /// `count_tokens` field it fills, its cache kind, and its cache content key.
 enum Part<'a> {
     System(&'a str),
+    Skills(&'a str),
     Tools(&'a [AgentFunction]),
 }
 
@@ -238,13 +243,14 @@ impl Part<'_> {
     fn kind(&self) -> &'static str {
         match self {
             Part::System(_) => "system_prompt",
+            Part::Skills(_) => "skills",
             Part::Tools(_) => "tools",
         }
     }
 
     fn content_key(&self) -> String {
         match self {
-            Part::System(prompt) => (*prompt).to_string(),
+            Part::System(prompt) | Part::Skills(prompt) => (*prompt).to_string(),
             Part::Tools(tools) => serde_json::to_string(tools).unwrap_or_default(),
         }
     }
@@ -290,7 +296,7 @@ async fn counted_delta(
         return Some(Counted { tokens, estimator });
     }
     let (system_prompt, tools) = match part {
-        Part::System(prompt) => (Some(prompt), None),
+        Part::System(prompt) | Part::Skills(prompt) => (Some(prompt), None),
         Part::Tools(tools) => (None, Some(tools)),
     };
     let (with_part, estimator) = router
@@ -313,6 +319,7 @@ pub async fn exactify(
     snapshot: &mut ContextSnapshotV1,
     router: &RouterClient,
     system_prompt: Option<&str>,
+    skills_prompt: Option<&str>,
     tools: &[AgentFunction],
 ) {
     let Some(usage) = snapshot.usage.as_ref() else {
@@ -334,11 +341,18 @@ pub async fn exactify(
     };
 
     let system_part = system_prompt.filter(|p| !p.is_empty()).map(Part::System);
+    let skills_part = skills_prompt.filter(|p| !p.is_empty()).map(Part::Skills);
     let tools_part = (!tools.is_empty()).then_some(Part::Tools(tools));
     // Independent round trips: run them together.
-    let (counted_system, counted_tools) = tokio::join!(
+    let (counted_system, counted_skills, counted_tools) = tokio::join!(
         async {
             match system_part {
+                Some(part) => counted_delta(router, &model, provider, base, part).await,
+                None => Some(Counted::default()),
+            }
+        },
+        async {
+            match skills_part {
                 Some(part) => counted_delta(router, &model, provider, base, part).await,
                 None => Some(Counted::default()),
             }
@@ -350,14 +364,36 @@ pub async fn exactify(
             }
         },
     );
-    let (Some(counted_system), Some(counted_tools)) = (counted_system, counted_tools) else {
+    let (Some(counted_system), Some(counted_skills), Some(counted_tools)) =
+        (counted_system, counted_skills, counted_tools)
+    else {
         return;
     };
     let estimator = counted_system
         .estimator
-        .or(counted_tools.estimator)
+        .clone()
+        .or(counted_skills.estimator.clone())
+        .or(counted_tools.estimator.clone())
         .unwrap_or_else(|| "provider".into());
 
+    apply_exact_counts(
+        snapshot,
+        billed,
+        &counted_system,
+        &counted_skills,
+        &counted_tools,
+        estimator,
+    );
+}
+
+fn apply_exact_counts(
+    snapshot: &mut ContextSnapshotV1,
+    billed: u64,
+    counted_system: &Counted,
+    counted_skills: &Counted,
+    counted_tools: &Counted,
+    estimator: String,
+) {
     let remainder = billed
         .saturating_sub(counted_system.tokens)
         .saturating_sub(counted_tools.tokens);
@@ -376,7 +412,9 @@ pub async fn exactify(
         }
     };
 
-    snapshot.categories.system_prompt = counted_system.tokens;
+    let skills = counted_skills.tokens.min(counted_system.tokens);
+    snapshot.categories.system_prompt = counted_system.tokens - skills;
+    snapshot.categories.skills = skills;
     snapshot.categories.tools = counted_tools.tokens;
     snapshot.categories.messages = messages;
     snapshot.categories.overhead = 0;
@@ -389,6 +427,90 @@ pub async fn exactify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_without_skills_category_defaults_to_zero() {
+        let value = serde_json::json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "step": 1,
+            "model": "m",
+            "usable": 100,
+            "effective_max_output_tokens": 20,
+            "total": 10,
+            "free": 90,
+            "categories": {
+                "system_prompt": 4,
+                "tools": 0,
+                "messages": { "user": 6, "assistant": 0, "function_result": 0, "custom": 0 },
+                "overhead": 0
+            },
+            "compacted": false,
+            "timestamp": 1
+        });
+
+        let snapshot: ContextSnapshotV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(snapshot.categories.skills, 0);
+    }
+
+    #[test]
+    fn exact_counts_split_skills_from_the_full_system_prompt() {
+        let mut snapshot = ContextSnapshotV1 {
+            session_id: "s_1".into(),
+            turn_id: "t_1".into(),
+            step: 1,
+            model: "m".into(),
+            provider: None,
+            estimator: Some("heuristic".into()),
+            usable: 300,
+            effective_max_output_tokens: 50,
+            total: 150,
+            free: 150,
+            categories: SnapshotCategoriesV1 {
+                system_prompt: 40,
+                skills: 20,
+                tools: 10,
+                messages: SnapshotMessagesV1 {
+                    user: 60,
+                    assistant: 40,
+                    ..Default::default()
+                },
+                overhead: 10,
+                hook_guidance: 10,
+            },
+            compacted: false,
+            summarized_head_tokens: None,
+            usage: None,
+            session_cost_usd: None,
+            timestamp: 1,
+        };
+
+        apply_exact_counts(
+            &mut snapshot,
+            200,
+            &Counted {
+                tokens: 80,
+                estimator: Some("provider".into()),
+            },
+            &Counted {
+                tokens: 30,
+                estimator: Some("provider".into()),
+            },
+            &Counted {
+                tokens: 10,
+                estimator: Some("provider".into()),
+            },
+            "provider".into(),
+        );
+
+        assert_eq!(snapshot.categories.system_prompt, 50);
+        assert_eq!(snapshot.categories.skills, 30);
+        assert_eq!(snapshot.categories.tools, 10);
+        assert_eq!(snapshot.categories.messages.user, 66);
+        assert_eq!(snapshot.categories.messages.assistant, 44);
+        assert_eq!(snapshot.total, 200);
+        assert_eq!(snapshot.free, 100);
+    }
 
     #[test]
     fn snapshot_round_trips_and_tolerates_unknown_fields() {
@@ -405,6 +527,7 @@ mod tests {
             free: 38_000,
             categories: SnapshotCategoriesV1 {
                 system_prompt: 2_400,
+                skills: 0,
                 tools: 9_800,
                 messages: SnapshotMessagesV1 {
                     user: 10_000,

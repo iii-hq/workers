@@ -32,10 +32,7 @@ function opengantryWorkerOptions() {
 }
 
 async function startWorker() {
-  const url = process.env.III_URL ?? process.env.III_ENGINE_URL;
-  if (!url) {
-    throw new Error('opengantry worker: III_URL or III_ENGINE_URL is required');
-  }
+  const url = process.env.III_URL ?? process.env.III_ENGINE_URL ?? 'ws://127.0.0.1:49134';
 
   const worker = registerWorker(url, opengantryWorkerOptions());
   const verdictEmitter = createVerdictEmitter({

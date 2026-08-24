@@ -9,6 +9,6 @@ tags: [memory, deduplication, cleanup, schedule, maintenance]
 description: Scheduled hygiene for the memory worker — deterministic dedup of near-duplicate memories, applied supersede-only through the public memory functions, pinned untouchable, with catch-up-on-boot scheduling. Install, stop, or remove it without touching stored memory.
 
 dependencies:
-  memory: "0.x"
+  memory: "^0.2.2"
   configuration: "0.x"
-  state: "0.x"
+  state: "^0.22.2"

@@ -15,13 +15,13 @@ const ALLOWED_BOOT_FAILURE =
   /ECONNREFUSED|connect ECONNREFUSED|WebSocket|failed to connect|connection refused/i;
 
 const bundleUrl = pathToFileURL(bundle).href;
+const { III_URL: _iiiUrl, III_ENGINE_URL: _iiiEngineUrl, ...sandboxEnv } = process.env;
 const result = spawnSync(
   process.execPath,
   [
     '--input-type=module',
     '-e',
     `const url = ${JSON.stringify(bundleUrl)};
-process.env.III_URL = 'ws://127.0.0.1:1';
 try {
   await import(url);
 } catch (e) {
@@ -35,7 +35,7 @@ try {
 process.exit(0);`,
   ],
   {
-    env: { ...process.env, III_URL: 'ws://127.0.0.1:1' },
+    env: sandboxEnv,
     timeout: 15_000,
     stdio: 'inherit',
   },

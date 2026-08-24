@@ -243,17 +243,6 @@ impl ScriptedRouter {
                 ),
             );
         }
-        iii.register_function(
-            "router::system_prompt::get",
-            with_router_contract(
-                RegisterFunction::new_async(move |_input: Value| async move {
-                    // `system_prompt` omitted: the harness falls back to its
-                    // checked-in built-in prompt.
-                    Ok::<Value, Error>(json!({ "provider": "scripted" }))
-                }),
-                "router::system_prompt::get",
-            ),
-        );
     }
 
     /// Number of generations consumed so far.
@@ -379,10 +368,6 @@ fn router_surfaces() -> Vec<(String, RouterFunctionSurface)> {
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../llm-router/tests/golden/schemas/router.models.supports.json"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../llm-router/tests/golden/schemas/router.system_prompt.get.json"
         )),
     ]
     .into_iter()

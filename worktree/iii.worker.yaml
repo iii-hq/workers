@@ -10,5 +10,5 @@ description: Git worktree lifecycle for parallel agents — mint, claim, and tra
 
 dependencies:
   configuration: "0.x"
-  state: "0.x"
-  shell: "0.x"
+  state: "^0.22.2"
+  shell: "^0.11.9"

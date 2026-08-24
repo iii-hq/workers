@@ -68,7 +68,6 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         let schema = provider_entry_schema(
             rec.declaration.config_schema.as_ref(),
             &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
-            rec.declaration.system_prompt.as_deref(),
         );
         provider_schemas.insert(rec.declaration.id.clone(), schema);
     }
@@ -170,15 +169,6 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         surface::PROVIDER_LIST_ID,
         RegisterFunction::new_async(make_provider_list(config.clone(), registry.clone()))
             .description(surface::PROVIDER_LIST_DESC),
-    );
-    iii.register_function(
-        surface::SYSTEM_PROMPT_GET_ID,
-        RegisterFunction::new_async(crate::system_prompt::make_system_prompt_get(
-            config.clone(),
-            registry.clone(),
-        ))
-        .description(surface::SYSTEM_PROMPT_GET_DESC)
-        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::ROUTE_ID,

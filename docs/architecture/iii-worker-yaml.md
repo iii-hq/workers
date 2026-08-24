@@ -55,13 +55,15 @@ tags:
 
 Example: [`harness/iii.worker.yaml`](../../harness/iii.worker.yaml).
 
-Shared dependencies that are still pre-1.0 use npm-style major wildcards.
-Workers declare `0.x` for every zero-major dependency (`state`, `configuration`,
-`queue`, `cron`, `shell`, and the rest), accepting every stable `0.x` release
-while still excluding `1.0.0` and above. Consumers of `llm-router` retain
-`^1.0.0`: once a dependency is on a stable major, the caret accepts compatible
-`1.x` releases and excludes `2.0.0` and above. These forms are understood
-directly by iii and the Registry.
+Engine-owned dependencies such as `configuration`, `iii-stream`, and
+`iii-observability` use npm-style major wildcards such as `0.x`. Published stable
+worker dependencies use a caret range whose lower bound is the newest stable
+release validated with the current SDK. For example, `state: "^0.22.2"` accepts
+compatible patch releases without falling back to an older SDK build. A worker
+installed explicitly from a candidate channel may temporarily use a newer
+candidate lower bound, but stable dependents must wait until that candidate is
+promoted. Experimental workers may retain broad ranges until their dependency
+stack is promoted. These forms are understood directly by iii and the Registry.
 
 ## Example (minimal Rust binary)
 

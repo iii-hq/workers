@@ -66,6 +66,10 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "provider-command-code")]
+        {
+            expected += 2;
+        }
         #[cfg(feature = "provider-deepseek")]
         {
             expected += 1;

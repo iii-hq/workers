@@ -1,12 +1,12 @@
 {
   "name": "opengantry",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "description": "OpenGantry governance worker for iii: kernel verify and middleware gate.",
   "license": "Apache-2.0",
-  "author": "Jürgen Eger (https://github.com/jeger-at)",
+  "author": "J\u00fcrgen Eger (https://github.com/jeger-at)",
   "contributors": [
-    "Jürgen Eger (https://github.com/jeger-at)"
+    "J\u00fcrgen Eger (https://github.com/jeger-at)"
   ],
   "type": "module",
   "engines": {
@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@jeger-ai/opengantry": "^3.2.5",
-    "iii-sdk": "^0.22.1",
+    "iii-sdk": "0.23.0-rc.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

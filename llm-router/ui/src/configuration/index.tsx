@@ -3,7 +3,7 @@
  * registered through `host.configForms`, replacing the console's generic
  * schema-driven form for this worker only.
  *
- * One card per provider (api_key / api_url / max_tokens / system_prompt),
+ * One card per provider (api_key / api_url / max_tokens),
  * a default-provider picker fed by the configured provider ids, the stream
  * budget knobs, and the routing-heuristics table. The form edits the
  * working draft via `onChange`; dirty tracking, save/reset, validation and
@@ -50,27 +50,6 @@ function hasEnvReference(v: string): boolean {
 function suggestedEnvVar(providerId: string): string {
   const slug = providerId.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
   return `${slug || 'PROVIDER'}_API_KEY`
-}
-
-/**
- * The provider-declared identity prompt, from the entry schema — the
- * registration rides it in as the `system_prompt` field's `default`
- * (llm-router/src/config/schema.rs, system_prompt_schema).
- */
-function providerPromptDefault(
-  schema: Record<string, unknown> | null,
-  id: string,
-): string | null {
-  const get = (o: unknown, k: string): unknown =>
-    o && typeof o === 'object' && !Array.isArray(o)
-      ? (o as Record<string, unknown>)[k]
-      : undefined
-  const field = get(
-    get(get(get(get(get(schema, 'properties'), 'providers'), 'properties'), id), 'properties'),
-    'system_prompt',
-  )
-  const dflt = get(field, 'default')
-  return typeof dflt === 'string' && dflt.length > 0 ? dflt : null
 }
 
 /**
@@ -195,7 +174,6 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
             key={id}
             id={id}
             slice={asObject(providers[id])}
-            promptDefault={providerPromptDefault(props.schema, id)}
             onChange={(next) =>
               commit({ providers: { ...providers, [id]: next } })
             }
@@ -315,13 +293,10 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
 function ProviderCard({
   id,
   slice,
-  promptDefault,
   onChange,
 }: {
   id: string
   slice: JsonObject
-  /** The provider-declared identity prompt (schema default), if any. */
-  promptDefault: string | null
   onChange(next: JsonObject): void
 }) {
   const apiKey = asString(slice.api_key)
@@ -329,8 +304,6 @@ function ProviderCard({
   // reference (`sk-${SUFFIX}`) still embeds secret material, so only the
   // pure `${VAR}` shape counts as safe.
   const plainTextKey = apiKey.length > 0 && !isEnvReference(apiKey)
-  const systemPrompt = slice.system_prompt
-
   const set = (key: string, v: JsonValue | undefined) => {
     const next = { ...slice }
     if (v === undefined) delete next[key]
@@ -416,43 +389,6 @@ function ProviderCard({
         }}
       />
 
-      <div className="llmr-cfg-prompt-head">
-        <span className="llmr-cfg-label">system prompt</span>
-        {typeof systemPrompt === 'string' ? (
-          <button
-            type="button"
-            className="llmr-cfg-toggle"
-            onClick={() => set('system_prompt', undefined)}
-          >
-            use provider default
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="llmr-cfg-toggle"
-            // Prefill with the provider's own prompt: an override usually
-            // starts as an edit of it, not a blank page.
-            onClick={() => set('system_prompt', promptDefault ?? '')}
-          >
-            override
-          </button>
-        )}
-      </div>
-      {typeof systemPrompt === 'string' ? (
-        <textarea
-          className="llmr-cfg-input llmr-cfg-textarea"
-          value={systemPrompt}
-          rows={4}
-          placeholder="override the provider-declared identity prompt"
-          onChange={(e) => set('system_prompt', e.target.value)}
-        />
-      ) : promptDefault ? (
-        <div className="llmr-cfg-prompt-preview" title={promptDefault}>
-          {promptDefault}
-        </div>
-      ) : (
-        <div className="llmr-cfg-echo">no provider-declared prompt</div>
-      )}
     </section>
   )
 }

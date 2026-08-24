@@ -649,6 +649,17 @@
           }
         ]
       },
+      "parts": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": null,
+        "description": "Named auxiliary texts to count individually with the same estimator. Counted in `breakdown.by_part` only; never added to the assembled context.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "system_prompt": {
         "default": null,
         "description": "Base system prompt to prepend/merge.",
@@ -956,6 +967,18 @@
       "AssembleBreakdown": {
         "description": "Where the returned `token_count` sits, by category — the same sums the pipeline already maintains, exposed so callers can render a context breakdown without re-counting: `token_count` equals the by_role sum plus `system_prompt_tokens`, `tools_tokens`, and the request overhead.",
         "properties": {
+          "by_part": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "description": "Per-part estimates for the request's `parts`, keyed by the caller's names; present when the request carried `parts`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "by_role": {
             "allOf": [
               {

@@ -11,7 +11,7 @@
  * is. The chip is injected into the header's `chat` slot, the same slot the
  * harness uses for its context meter.
  *
- * A chip receives only `{ sessionId, modelId, contextWindow }`, so the active
+ * A chip receives only `{ sessionId }`, so the active
  * choice is read from the session's own metadata (`system_prompt`, written by
  * the console's new-session picker) and kept current by two events —
  * `session::meta-updated` and `session::created`, see the subscribe effect for
@@ -106,14 +106,6 @@ function readPromptContext(metadata: unknown): SessionPromptContext {
     mode,
     filesystemRoot,
   }
-}
-
-/** Catalog model keys are `<provider>::<model>`; the router keys its identity
- * prompt by that provider. */
-function providerOf(modelId: string | undefined): string | undefined {
-  if (!modelId) return undefined
-  const separator = modelId.indexOf('::')
-  return separator > 0 ? modelId.slice(0, separator) : undefined
 }
 
 const FETCH_FAILED =
@@ -248,7 +240,7 @@ interface SessionMetaEvent {
 }
 
 export function createSystemPromptChip(host: Host) {
-  return function SystemPromptChip({ sessionId, modelId }: SessionChipProps) {
+  return function SystemPromptChip({ sessionId }: SessionChipProps) {
     const [context, setContext] = useState<SessionPromptContext>({
       active: null,
     })
@@ -332,7 +324,6 @@ export function createSystemPromptChip(host: Host) {
       setOpen(true)
       setPreview(null)
       setNotice(null)
-      const provider = providerOf(modelId)
       const selectedPrompt = active?.snapshotBody.trim()
         ? {
             name: active.name,
@@ -346,7 +337,6 @@ export function createSystemPromptChip(host: Host) {
       host.iii
         .trigger<SystemPromptPreview>('harness::system-prompt::get', {
           session_id: sessionId,
-          ...(provider ? { provider } : {}),
           ...(context.mode ? { mode: context.mode } : {}),
           ...(context.filesystemRoot
             ? { filesystem_root: context.filesystemRoot }
@@ -355,7 +345,7 @@ export function createSystemPromptChip(host: Host) {
         })
         .then(setPreview)
         .catch(() => setNotice(FETCH_FAILED))
-    }, [active, context.filesystemRoot, context.mode, modelId, sessionId])
+    }, [active, context.filesystemRoot, context.mode, sessionId])
 
     const strategy = active?.strategy
 

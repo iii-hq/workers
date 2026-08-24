@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 
-use crate::case::{ProtocolFamily, ProviderCase};
+use crate::case::{ModelCatalogFixture, ProtocolFamily, ProviderCase};
 use crate::stub::StubResponse;
 
 pub(crate) fn happy_sse(family: ProtocolFamily) -> &'static str {
@@ -64,8 +64,11 @@ pub(crate) fn truncated_sse(family: ProtocolFamily) -> &'static str {
     }
 }
 
-pub(crate) fn models_body(family: ProtocolFamily) -> &'static str {
-    match family {
+pub(crate) fn models_body(case: ProviderCase) -> &'static str {
+    if matches!(case.model_catalog_fixture, ModelCatalogFixture::CommandCode) {
+        return r#"{"object":"list","data":[{"id":"gpt-5.4","object":"model","owned_by":"openai","name":"GPT-5.4","context_length":400000},{"id":"gpt-5.6-luna","object":"model","owned_by":"openai","name":"GPT-5.6 Luna","context_length":400000},{"id":"claude-sonnet-4-6","object":"model","owned_by":"anthropic","name":"Claude Sonnet 4.6","context_length":1000000},{"id":"claude-opus-4-8","object":"model","owned_by":"anthropic","name":"Claude Opus 4.8","context_length":1000000}]}"#;
+    }
+    match case.family {
         ProtocolFamily::AnthropicMessages => {
             r#"{"data":[{"id":"claude-sonnet-4-6","display_name":"Claude Sonnet 4.6","max_input_tokens":200000,"max_tokens":8192}]}"#
         }
@@ -98,6 +101,10 @@ pub(crate) fn quota_response(case: ProviderCase) -> StubResponse {
         "anthropic" | "claude-code" => StubResponse::json(
             StatusCode::BAD_REQUEST,
             r#"{"type":"error","error":{"type":"billing_error","message":"credit balance is too low"}}"#,
+        ),
+        "command-code" => StubResponse::json(
+            StatusCode::FORBIDDEN,
+            r#"{"error":{"type":"upgrade_required","message":"upgrade required"}}"#,
         ),
         "deepseek" => StubResponse::json(
             StatusCode::PAYMENT_REQUIRED,

@@ -32,9 +32,8 @@ lasted one more change — see
 Anything still naming `harness::react` in a prompt or a config is dead wiring;
 a repo-wide test (`harness/tests/prompts.rs`) now fails if a shipped prompt
 mentions it. That test exists because the removal originally missed all eight
-provider identity prompts — and the provider's prompt, not the harness's
-fallback, is what an agent actually reads. Agents kept reaching for `react`
-because they were still being told to.
+provider identity prompts. Agents kept reaching for `react` because they were
+still being told to.
 
 ## Change 2 — one durable binding, one delivery hop
 

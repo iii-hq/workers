@@ -36,7 +36,6 @@ fn schemas_for(records: &[ProviderRecord]) -> BTreeMap<String, Value> {
             let schema = provider_entry_schema(
                 rec.declaration.config_schema.as_ref(),
                 &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
-                rec.declaration.system_prompt.as_deref(),
             );
             (rec.declaration.id.clone(), schema)
         })
