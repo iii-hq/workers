@@ -127,6 +127,16 @@ export function AnnotationLayer({
 
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
   const drawingRef = useRef(false)
+  const endDrawing = (event: PointerEvent<HTMLElement>) => {
+    if (!drawingRef.current) return
+    drawingRef.current = false
+    try {
+      rootRef.current?.releasePointerCapture(event.pointerId)
+    } catch {
+      // never captured; nothing to release
+    }
+    onEndShape?.()
+  }
 
   // The selected pin's note takes the caret: writing it is the point of
   // selecting a pin. Runs after the pointer handlers, so it wins focus.
@@ -181,16 +191,8 @@ export function AnnotationLayer({
           Math.min(1, Math.max(0, at.y)),
         )
       }}
-      onPointerUp={(event) => {
-        if (!drawingRef.current) return
-        drawingRef.current = false
-        try {
-          rootRef.current?.releasePointerCapture(event.pointerId)
-        } catch {
-          // never captured; nothing to release
-        }
-        onEndShape?.()
-      }}
+      onPointerUp={endDrawing}
+      onPointerCancel={endDrawing}
     >
       {children}
       {annotations.map((annotation) => {

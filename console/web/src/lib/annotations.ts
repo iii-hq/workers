@@ -136,9 +136,7 @@ export function resizeAnnotation(
   x2: number,
   y2: number,
 ): Annotation[] {
-  return list.map((a) =>
-    a.id === id ? { ...a, x2: clamp(x2), y2: clamp(y2) } : a,
-  )
+  return updateAnnotation(list, id, { x2: clamp(x2), y2: clamp(y2) })
 }
 
 /** Set a mark's colour. */
@@ -147,7 +145,7 @@ export function colorAnnotation(
   id: string,
   color: string,
 ): Annotation[] {
-  return list.map((a) => (a.id === id ? { ...a, color } : a))
+  return updateAnnotation(list, id, { color })
 }
 
 /** Drop the most recently added mark (undo). */
@@ -185,7 +183,9 @@ export function containedImageBox(
 export function annotationsMarkdown(set: AnnotationSet): string {
   const lines = set.annotations.map((a, index) => {
     const kind = a.kind ?? 'pin'
-    const prefix = kind === 'pin' ? '' : kind === 'rect' ? 'box: ' : 'arrow: '
+    let prefix = ''
+    if (kind === 'rect') prefix = 'box: '
+    else if (kind === 'arrow') prefix = 'arrow: '
     const note = a.note.trim()
     const label = a.label?.trim() ?? ''
     if (note && label) return `${index + 1}. ${prefix}${note} (${label})`
@@ -243,13 +243,15 @@ export async function renderAnnotationCrop(
   const image = await loadImage(set.imageUrl)
   const width = Math.min(image.naturalWidth, CROP_SIZE)
   const height = Math.min(image.naturalHeight, Math.round((CROP_SIZE * 2) / 3))
+  const cx = pin.x2 === undefined ? pin.x : (pin.x + pin.x2) / 2
+  const cy = pin.y2 === undefined ? pin.y : (pin.y + pin.y2) / 2
   const left = clampInt(
-    pin.x * image.naturalWidth - width / 2,
+    cx * image.naturalWidth - width / 2,
     0,
     image.naturalWidth - width,
   )
   const top = clampInt(
-    pin.y * image.naturalHeight - height / 2,
+    cy * image.naturalHeight - height / 2,
     0,
     image.naturalHeight - height,
   )
@@ -310,10 +312,12 @@ function paintRect(
   canvasH: number,
   radius: number,
 ) {
-  const x1 = Math.min(a.x, a.x2 ?? a.x) * canvasW - offsetX
-  const y1 = Math.min(a.y, a.y2 ?? a.y) * canvasH - offsetY
-  const x2 = Math.max(a.x, a.x2 ?? a.x) * canvasW - offsetX
-  const y2 = Math.max(a.y, a.y2 ?? a.y) * canvasH - offsetY
+  const ax2 = a.x2 ?? a.x
+  const ay2 = a.y2 ?? a.y
+  const x1 = Math.min(a.x, ax2) * canvasW - offsetX
+  const y1 = Math.min(a.y, ay2) * canvasH - offsetY
+  const x2 = Math.max(a.x, ax2) * canvasW - offsetX
+  const y2 = Math.max(a.y, ay2) * canvasH - offsetY
   context.lineWidth = Math.max(3, radius / 4)
   context.beginPath()
   context.rect(x1, y1, x2 - x1, y2 - y1)
