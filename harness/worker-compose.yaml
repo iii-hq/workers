@@ -1,3 +1,4 @@
+namespace: my-project #comment if you want to be default
 startup_timeout: 15m
 stop_timeout: 10s
 
