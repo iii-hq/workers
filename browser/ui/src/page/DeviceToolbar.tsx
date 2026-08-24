@@ -140,7 +140,7 @@ export function DeviceToolbar({
         title="rotate"
         aria-label="rotate viewport"
       >
-        <RefreshCw size={14} aria-hidden />
+        <RefreshCw size={16} aria-hidden />
       </Button>
       <Button variant="ghost" size="sm" onClick={onReset} title="fit to pane">
         Reset
