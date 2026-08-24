@@ -12,6 +12,7 @@ description = "Hermetic iii/llm-router/provider contract tests."
 default = []
 provider-anthropic = ["dep:provider-anthropic"]
 provider-claude-code = ["dep:provider-claude-code"]
+provider-command-code = ["dep:provider-command-code"]
 provider-deepseek = ["dep:provider-deepseek"]
 provider-kimi = ["dep:provider-kimi"]
 provider-openai = ["dep:provider-openai"]
@@ -27,6 +28,7 @@ iii-sdk = "=0.23.0-rc.2"
 llm-router = { path = "../../llm-router", default-features = false }
 provider-anthropic = { path = "../../provider-anthropic", optional = true }
 provider-claude-code = { path = "../../provider-claude-code", optional = true }
+provider-command-code = { path = "../../provider-command-code", optional = true }
 provider-deepseek = { path = "../../provider-deepseek", optional = true }
 provider-kimi = { path = "../../provider-kimi", optional = true }
 provider-openai = { path = "../../provider-openai", optional = true }

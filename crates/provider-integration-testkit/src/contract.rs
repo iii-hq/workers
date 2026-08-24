@@ -112,6 +112,42 @@ async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result
     }
 }
 
+async fn wait_for_discovered_models(router: &IIIClient, case: ProviderCase) -> anyhow::Result<()> {
+    if !case.requires_model_discovery {
+        return Ok(());
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let list = call(
+            router,
+            "router::models::list",
+            json!({ "provider": case.id }),
+        )
+        .await?;
+        let ids: Vec<&str> = list["models"]
+            .as_array()
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| model["id"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.contains(&case.model) && ids.contains(&case.alternate_model) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "{} discovery did not reconcile {} and {}; have {ids:?}",
+                case.id,
+                case.model,
+                case.alternate_model
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 struct ChatResult {
     response: Value,
     frames: Vec<Value>,
@@ -183,8 +219,11 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
     std::env::set_var("CODEX_HOME", isolated_home.path().join("codex"));
     std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude"));
     std::env::set_var("PROVIDER_READ_TIMEOUT_SECS", "5");
+    if case.id == "command-code" {
+        std::env::set_var("CMD_ZDR", "0");
+    }
 
-    let stub = StubUpstream::start(case.family).await?;
+    let stub = StubUpstream::start(case).await?;
     stub.respond([StubResponse::sse(happy_sse(case.family))]);
     let router = register_worker(&engine.url, test_init_options());
     register_router(router.clone())
@@ -206,6 +245,7 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
             "OAuth provider not available: {listed}"
         ),
     }
+    wait_for_discovered_models(&router, case).await?;
     let token = call(
         &provider,
         "state::get",
@@ -477,16 +517,18 @@ fn assert_request(
         serde_json::to_string(&request.redacted())?
     );
     match case.credential {
-        CredentialMode::ApiKey if case.family == ProtocolFamily::AnthropicMessages => {
+        CredentialMode::ApiKey
+            if case.id == "command-code" || case.family != ProtocolFamily::AnthropicMessages =>
+        {
             anyhow::ensure!(
-                request.header("x-api-key") == Some(API_KEY),
-                "x-api-key missing"
+                request.header("authorization") == Some(&format!("Bearer {API_KEY}")),
+                "bearer key missing"
             );
         }
         CredentialMode::ApiKey => {
             anyhow::ensure!(
-                request.header("authorization") == Some(&format!("Bearer {API_KEY}")),
-                "bearer key missing"
+                request.header("x-api-key") == Some(API_KEY),
+                "x-api-key missing"
             );
         }
         CredentialMode::ClaudeOauth => {

@@ -14,7 +14,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::case::ProtocolFamily;
+use crate::case::ProviderCase;
 use crate::protocol::models_body;
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,9 +111,9 @@ pub(crate) struct StubUpstream {
 }
 
 impl StubUpstream {
-    pub(crate) async fn start(family: ProtocolFamily) -> anyhow::Result<Self> {
+    pub(crate) async fn start(case: ProviderCase) -> anyhow::Result<Self> {
         let state = Arc::new(StubState {
-            models_body: Mutex::new(models_body(family).to_string()),
+            models_body: Mutex::new(models_body(case).to_string()),
             ..StubState::default()
         });
         let app = Router::new()

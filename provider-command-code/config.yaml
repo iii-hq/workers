@@ -1,0 +1,7 @@
+# provider-command-code has no file-based configuration.
+#
+# Configure credentials, `api_url`, and `max_tokens` in the `command-code`
+# provider slice of llm-router. Set COMMAND_CODE_API_KEY in this worker's
+# environment as a credential fallback. Set CMD_ZDR=1 to require a
+# zero-data-retention upstream; Command Code then fails closed with 422 when
+# no ZDR-capable upstream exists.
