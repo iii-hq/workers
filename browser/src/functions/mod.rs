@@ -1738,6 +1738,7 @@ fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::clear-data")?;
                 session.touch();
                 let mut cleared = Vec::new();
                 if req.cookies.unwrap_or(true) {
@@ -1764,8 +1765,9 @@ fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             .storage_types("all".to_string())
                             .build()
                         {
-                            let _ = session.page.execute(params).await;
-                            cleared.push("storage".to_string());
+                            if session.page.execute(params).await.is_ok() {
+                                cleared.push("storage".to_string());
+                            }
                         }
                     }
                 }
@@ -1817,7 +1819,20 @@ fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     handler_err("this session does not own downloads (attached session)")
                 })?;
                 ensure_safe_guid(&req.guid)?;
-                let bytes = std::fs::read(dir.join(&req.guid))
+                let path = dir.join(&req.guid);
+                let size = std::fs::metadata(&path)
+                    .map_err(|e| handler_err(format!("read download failed: {e}")))?
+                    .len();
+                if size > downloads::MAX_DOWNLOAD_BYTES {
+                    return Err(handler_err(format!(
+                        "download is {size} bytes, over the {} byte cap; it stays on disk at {}",
+                        downloads::MAX_DOWNLOAD_BYTES,
+                        path.display()
+                    )));
+                }
+                let bytes = tokio::task::spawn_blocking(move || std::fs::read(path))
+                    .await
+                    .map_err(|e| handler_err(format!("read download failed: {e}")))?
                     .map_err(|e| handler_err(format!("read download failed: {e}")))?;
                 Ok::<_, Error>(downloads::DownloadOutput {
                     ok: true,

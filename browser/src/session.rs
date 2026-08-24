@@ -695,16 +695,32 @@ impl Sessions {
         // Let the session download files, named by guid into a per-session
         // dir the worker owns, with progress events. Best-effort: a browser
         // that refuses leaves downloads disabled, not the session broken.
-        let downloads_dir =
-            std::env::temp_dir().join(format!("iii-browser-dl-{}-{slot}", std::process::id()));
-        let _ = std::fs::create_dir_all(&downloads_dir);
-        if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
-            .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
-            .download_path(downloads_dir.to_string_lossy().to_string())
-            .events_enabled(true)
-            .build()
+        // The dir name carries a nonce so it cannot be squatted in advance,
+        // and it is created fresh, owner-only, refusing a pre-existing path.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let downloads_dir = std::env::temp_dir().join(format!(
+            "iii-browser-dl-{}-{slot}-{nonce:08x}",
+            std::process::id()
+        ));
+        let mut dir_builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
         {
-            let _ = page.execute(params).await;
+            use std::os::unix::fs::DirBuilderExt;
+            dir_builder.mode(0o700);
+        }
+        let dir_ok = dir_builder.create(&downloads_dir).is_ok();
+        if dir_ok {
+            if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
+                .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
+                .download_path(downloads_dir.to_string_lossy().to_string())
+                .events_enabled(true)
+                .build()
+            {
+                let _ = page.execute(params).await;
+            }
         }
 
         let id = format!("b{slot}");
@@ -735,7 +751,7 @@ impl Sessions {
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             history: Mutex::new(Vec::new()),
             downloads: Mutex::new(Vec::new()),
-            downloads_dir: Some(downloads_dir.clone()),
+            downloads_dir: dir_ok.then(|| downloads_dir.clone()),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
@@ -1458,7 +1474,15 @@ async fn spawn_event_pumps(
                     continue; // subframes don't invalidate top-document refs
                 }
                 s.clear_refs();
-                let title = s.page.get_title().await.ok().flatten().unwrap_or_default();
+                // A wedged renderer must not stall the navigation pump on a
+                // title read; after a short wait the visit records untitled.
+                let title =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), s.page.get_title())
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                        .unwrap_or_default();
                 s.record_visit(&event.frame.url, &title);
                 sx.emitter
                     .emit(
@@ -1555,6 +1579,10 @@ async fn spawn_event_pumps(
             let s = session.clone();
             let sx = sessions.clone();
             tasks.push(tokio::spawn(async move {
+                // Chromium reports progress very often on a fast download;
+                // terminal states always emit, in-flight ones at most every
+                // 250ms so the bus is not flooded.
+                let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
                 while let Some(event) = events.next().await {
                     let state = match event.state {
                         cdp_browser::DownloadProgressState::InProgress => "in_progress",
@@ -1567,7 +1595,10 @@ async fn spawn_event_pumps(
                         event.total_bytes as u64,
                         state,
                     );
-                    emit_download_changed(&sx, &s).await;
+                    if state != "in_progress" || last_emit.elapsed().as_millis() >= 250 {
+                        last_emit = std::time::Instant::now();
+                        emit_download_changed(&sx, &s).await;
+                    }
                 }
             }));
         }

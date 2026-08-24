@@ -19,6 +19,10 @@ pub struct DownloadsListOutput {
     pub downloads: Vec<DownloadRecord>,
 }
 
+/// Upper bound on a download returned inline: the bytes travel base64 over
+/// the bus, so anything larger stays on disk and the caller is told where.
+pub const MAX_DOWNLOAD_BYTES: u64 = 25 * 1024 * 1024;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DownloadInput {
     pub session_id: String,

@@ -5,7 +5,7 @@
  */
 
 import { type Host, Input } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_NAVIGATED_TRIGGER,
   type BrowserHistoryVisit,
@@ -29,11 +29,19 @@ export function HistoryPanel({ host, sessionId, enabled }: HistoryPanelProps) {
   const [visits, setVisits] = useState<BrowserHistoryVisit[]>([])
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Only the newest search may touch the list; a slow earlier response
+  // must not overwrite what a faster later keystroke already showed.
+  const searchRevRef = useRef(0)
   const refresh = useCallback(
     (q: string) => {
+      const revision = ++searchRevRef.current
       void listBrowserHistory(host.iii, sessionId, q || undefined)
-        .then(setVisits)
-        .catch((e: unknown) => setError(errorMessage(e)))
+        .then((list) => {
+          if (revision === searchRevRef.current) setVisits(list)
+        })
+        .catch((e: unknown) => {
+          if (revision === searchRevRef.current) setError(errorMessage(e))
+        })
     },
     [host, sessionId],
   )

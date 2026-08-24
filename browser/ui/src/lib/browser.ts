@@ -898,12 +898,16 @@ export async function readBrowserDownload(
   })
   const parsed = downloadSchema.safeParse(res)
   if (!parsed.success) return null
-  return {
-    file: fileFromBase64(
-      parsed.data.data,
-      parsed.data.file_name,
-      'application/octet-stream',
-    ),
+  try {
+    return {
+      file: fileFromBase64(
+        parsed.data.data,
+        parsed.data.file_name,
+        'application/octet-stream',
+      ),
+    }
+  } catch {
+    return null
   }
 }
 

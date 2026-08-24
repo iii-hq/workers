@@ -297,7 +297,7 @@ export function BrowserPage({
           title: 'Clear browsing data',
           detail: 'Cookies, cache and storage for this session',
           keywords: ['clear', 'cookies', 'cache', 'storage', 'reset'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.clearData(),
         },
         {

@@ -6,7 +6,7 @@
  */
 
 import { type Host, IconButton } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_DOWNLOAD_CHANGED_TRIGGER,
   type BrowserDownload,
@@ -42,14 +42,28 @@ export function DownloadsPanel({
 }: DownloadsPanelProps) {
   const [downloads, setDownloads] = useState<BrowserDownload[]>([])
   const [error, setError] = useState<string | null>(null)
+  // Stale guard: a response for the previous session must not land in the
+  // next one's list after a quick session switch.
+  const refreshRevRef = useRef(0)
   const refresh = useCallback(() => {
+    const revision = ++refreshRevRef.current
     void listBrowserDownloads(host.iii, sessionId)
-      .then(setDownloads)
-      .catch((e: unknown) => setError(errorMessage(e)))
+      .then((list) => {
+        if (revision !== refreshRevRef.current) return
+        setDownloads(list)
+        setError(null)
+      })
+      .catch((e: unknown) => {
+        if (revision === refreshRevRef.current) setError(errorMessage(e))
+      })
   }, [host, sessionId])
   useEffect(() => {
     setError(null)
+    setDownloads([])
     refresh()
+    return () => {
+      refreshRevRef.current += 1
+    }
   }, [refresh])
   useBrowserSessionEvent({
     host,
@@ -63,23 +77,29 @@ export function DownloadsPanel({
   const canSendToChat = typeof host.chat?.compose === 'function'
   const sendToChat = useCallback(
     (guid: string) => {
-      void readBrowserDownload(host.iii, sessionId, guid).then((result) => {
-        if (result) host.chat?.compose?.({ files: [result.file] })
-      })
+      void readBrowserDownload(host.iii, sessionId, guid)
+        .then((result) => {
+          if (result) host.chat?.compose?.({ files: [result.file] })
+        })
+        .catch((e: unknown) => setError(errorMessage(e)))
     },
     [host, sessionId],
   )
   const save = useCallback(
     (guid: string) => {
-      void readBrowserDownload(host.iii, sessionId, guid).then((result) => {
-        if (result) downloadFile(result.file)
-      })
+      void readBrowserDownload(host.iii, sessionId, guid)
+        .then((result) => {
+          if (result) downloadFile(result.file)
+        })
+        .catch((e: unknown) => setError(errorMessage(e)))
     },
     [host, sessionId],
   )
   const remove = useCallback(
     (guid: string) => {
-      void removeBrowserDownload(host.iii, sessionId, guid).then(refresh)
+      void removeBrowserDownload(host.iii, sessionId, guid)
+        .then(refresh)
+        .catch((e: unknown) => setError(errorMessage(e)))
     },
     [host, sessionId, refresh],
   )
