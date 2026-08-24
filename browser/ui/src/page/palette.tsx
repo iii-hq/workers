@@ -11,6 +11,8 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { listBrowserSessions } from '../lib/browser'
+import { formatMtime } from '../lib/format'
+import { listAnnotationSets } from './annotations-store'
 
 const SESSION_ROWS = 30
 
@@ -41,6 +43,32 @@ export function registerBrowserPalette(host: Host): void {
             host.panels?.open({
               pageId: 'browser',
               context: { type: 'session', sessionId: session.session_id },
+            }),
+        }))
+    },
+  })
+
+  host.palette?.registerSource({
+    id: 'annotation-sets',
+    title: 'Saved annotations',
+    kind: 'item',
+    minQuery: 2,
+    async search(query, { signal }) {
+      const sets = await listAnnotationSets(host.iii)
+      if (signal.aborted) return []
+      const needle = query.toLowerCase()
+      return sets
+        .filter((set) => set.subject.toLowerCase().includes(needle))
+        .slice(0, 20)
+        .map((set) => ({
+          id: set.key,
+          title: `Annotations on ${set.subject}`,
+          detail: `${set.count} ${set.count === 1 ? 'mark' : 'marks'} · ${formatMtime(Math.floor(set.capturedAt / 1000))}`,
+          keywords: ['annotations', 'saved'],
+          run: () =>
+            host.panels?.open({
+              pageId: 'browser',
+              context: { type: 'saved-set', key: set.key },
             }),
         }))
     },

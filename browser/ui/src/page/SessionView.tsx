@@ -96,6 +96,7 @@ import {
   resizeAnnotation,
   undoAnnotation,
 } from './annotations'
+import { saveAnnotationSet } from './annotations-store'
 import { ConsolePanel } from './ConsolePanel'
 import {
   type DevicePreset,
@@ -155,6 +156,8 @@ export interface SessionActions {
   importCookies: () => void
   copyCookies: () => void
   showDiagnostics: () => void
+  saveSet: () => void
+  openSavedSets: () => void
 }
 
 const FEED_PANES: readonly FeedPane[] = [
@@ -205,6 +208,8 @@ function hostOf(url: string): string {
 }
 
 interface SessionViewProps {
+  /** Opens the saved-sets dialog (page-level; works without a session). */
+  onOpenSavedSets?: (key?: string | null) => void
   host: Host
   session: BrowserSessionInfo
   chromiumVersion: string | null
@@ -222,6 +227,7 @@ interface SessionViewProps {
 
 export function SessionView({
   host,
+  onOpenSavedSets,
   session,
   chromiumVersion,
   enabled,
@@ -415,6 +421,17 @@ export function SessionView({
       unlabeledPinsRef.current = []
     }).finally(() => setSending(false))
   }, [annotationSet, host, runAction])
+  const saveSet = useCallback(() => {
+    const set = annotationSet()
+    if (!set || set.annotations.length === 0) return
+    void runAction(async () => {
+      await saveAnnotationSet(host.iii, set)
+      setActionError(
+        `saved ${set.annotations.length} mark${set.annotations.length === 1 ? '' : 's'}`,
+      )
+    })
+  }, [annotationSet, host, runAction])
+
   const downloadAnnotations = useCallback(() => {
     const set = annotationSet()
     if (!set || set.annotations.length === 0) return
@@ -1035,6 +1052,8 @@ export function SessionView({
       importCookies,
       copyCookies,
       showDiagnostics: () => setShowDoctor(true),
+      saveSet,
+      openSavedSets: () => onOpenSavedSets?.(),
     }
     return () => {
       actionsRef.current = null
@@ -1054,6 +1073,8 @@ export function SessionView({
     toggleDeviceToolbar,
     importCookies,
     copyCookies,
+    saveSet,
+    onOpenSavedSets,
   ])
   const annotatingRef = useRef(annotating)
   annotatingRef.current = annotating
@@ -1125,6 +1146,14 @@ export function SessionView({
                 title="send the pins to the chat, one attachment each (⌘↵)"
               >
                 {sending ? 'Sending…' : `Send ${annotations.length} to chat`}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={saveSet}
+                title="save this set for later; anyone on this engine can reopen it"
+              >
+                Save
               </Button>
               <Button
                 variant="ghost"
@@ -1283,6 +1312,7 @@ export function SessionView({
                   importCookies,
                   copyCookies,
                   showDiagnostics: () => setShowDoctor(true),
+                  openSavedSets: () => onOpenSavedSets?.(),
                 }}
               />
               <button
