@@ -568,11 +568,16 @@ export interface UiClasses {
 /* ── the shared component library ───────────────────────────────────── */
 
 /** A numbered pin with a note, positioned as fractions of the picture. */
+export type AnnotationKind = 'pin' | 'rect' | 'arrow'
 export interface Annotation {
   id: string
   x: number
   y: number
   note: string
+  kind?: AnnotationKind
+  x2?: number
+  y2?: number
+  color?: string
   /** What the pin points at, when the page knows: an element, a window, a page. */
   label?: string
 }
@@ -590,6 +595,13 @@ export interface AnnotationLayerProps {
   onRemove?: (id: string) => void
   /** With it, the selected pin opens a callout that edits its note in place. */
   onNote?: (id: string, note: string) => void
+  /** The active tool: pin (default) drops pins; rect / arrow draw on drag. */
+  tool?: AnnotationKind
+  /** Colour for a newly drawn shape. */
+  drawColor?: string
+  onAddShape?: (kind: 'rect' | 'arrow', x: number, y: number) => void
+  onResizeShape?: (x2: number, y2: number) => void
+  onEndShape?: () => void
   className?: string
   /** The picture element, rendered by the caller. */
   children: React.ReactNode

@@ -77,17 +77,22 @@ import {
 import { BackButton, ChevronLeftIcon } from '../lib/widgets'
 import {
   type Annotation,
+  type AnnotationKind,
   type AnnotationSet,
   addAnnotation,
+  addShape,
   annotationFileName,
   annotationPinFileName,
   annotationsMarkdown,
   labelAnnotation,
+  MIN_SHAPE_SIZE,
   moveAnnotation,
   noteAnnotation,
   removeAnnotation,
   renderAnnotatedImage,
   renderAnnotationCrop,
+  resizeAnnotation,
+  undoAnnotation,
 } from './annotations'
 import { ConsolePanel } from './ConsolePanel'
 import {
@@ -105,6 +110,13 @@ import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
+const SHAPE_COLORS = [
+  '#e5484d',
+  '#f5a623',
+  '#30a46c',
+  '#0091ff',
+  '#8e4ec6',
+] as const
 const HANDOFF_FN = 'iii::browser-ui::handoff'
 const HANDOFF_RESOLVED_FN = 'iii::browser-ui::handoff-resolved'
 const NAVIGATED_FN = 'iii::browser-ui::navigated'
@@ -320,6 +332,8 @@ export function SessionView({
   // Annotate mode freezes the frame the pins sit on; the live view resumes
   // when the mode ends. The pins outlive the mode until sent or cleared.
   const [annotating, setAnnotating] = useState(false)
+  const [tool, setTool] = useState<AnnotationKind>('pin')
+  const [drawColor, setDrawColor] = useState<string>(SHAPE_COLORS[0])
   const [frozen, setFrozen] = useState<LiveFrame | null>(null)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(
@@ -333,6 +347,7 @@ export function SessionView({
     setAnnotations([])
     setSelectedAnnotation(null)
     unlabeledPinsRef.current = []
+    setTool('pin')
   }, [sessionId])
   const liveFrameRef = useRef(live.frame)
   liveFrameRef.current = live.frame
@@ -410,8 +425,36 @@ export function SessionView({
     setSelectedAnnotation(null)
     unlabeledPinsRef.current = []
   }, [])
+  const drawingIdRef = useRef<string | null>(null)
   const viewportAnnotation = annotating
     ? {
+        tool,
+        drawColor,
+        onAddShape: (kind: 'rect' | 'arrow', x: number, y: number) => {
+          const next = addShape(annotationsRef.current, kind, x, y, drawColor)
+          const shape = next[next.length - 1]
+          drawingIdRef.current = shape?.id ?? null
+          setAnnotations(next)
+          setSelectedAnnotation(shape?.id ?? null)
+        },
+        onResizeShape: (x2: number, y2: number) => {
+          const id = drawingIdRef.current
+          if (id) setAnnotations((list) => resizeAnnotation(list, id, x2, y2))
+        },
+        onEndShape: () => {
+          const id = drawingIdRef.current
+          drawingIdRef.current = null
+          if (!id) return
+          setAnnotations((list) => {
+            const s = list.find((a) => a.id === id)
+            if (!s) return list
+            const w = Math.abs((s.x2 ?? s.x) - s.x)
+            const h = Math.abs((s.y2 ?? s.y) - s.y)
+            return w < MIN_SHAPE_SIZE && h < MIN_SHAPE_SIZE
+              ? list.filter((a) => a.id !== id)
+              : list
+          })
+        },
         annotations,
         selectedId: selectedAnnotation,
         onAdd: (x: number, y: number) => {
@@ -1284,6 +1327,60 @@ export function SessionView({
                 event.target.value = ''
               }}
             />
+            {annotating ? (
+              <fieldset
+                className="br-ui-annot-tools"
+                aria-label="annotation tools"
+              >
+                <SegmentedControl<AnnotationKind>
+                  value={tool}
+                  onChange={setTool}
+                  options={[
+                    { value: 'pin', label: 'Pin' },
+                    { value: 'rect', label: 'Box' },
+                    { value: 'arrow', label: 'Arrow' },
+                  ]}
+                  className="br-ui-tabs"
+                  aria-label="annotation tool"
+                />
+                <span className="br-ui-annot-swatches">
+                  {SHAPE_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      aria-pressed={drawColor === c}
+                      aria-label={`colour ${c}`}
+                      className={cn(
+                        'br-ui-annot-swatch',
+                        drawColor === c && 'is-on',
+                      )}
+                      style={{ background: c }}
+                      onClick={() => {
+                        setDrawColor(c)
+                        const id = selectedAnnotation
+                        if (id)
+                          setAnnotations((list) =>
+                            list.map((a) =>
+                              a.id === id && (a.kind ?? 'pin') !== 'pin'
+                                ? { ...a, color: c }
+                                : a,
+                            ),
+                          )
+                      }}
+                    />
+                  ))}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setAnnotations((list) => undoAnnotation(list))}
+                  disabled={annotations.length === 0}
+                  title="undo the last mark"
+                >
+                  Undo
+                </Button>
+              </fieldset>
+            ) : null}
             <Viewport
               frame={annotating && frozen ? frozen : live.frame}
               loading={live.loading}

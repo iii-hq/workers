@@ -7,12 +7,23 @@
  * draw it, the browser page (or any page with a picture) owns the state.
  */
 
+/** A pin marks a point; a rect boxes a region; an arrow points from x,y to
+ * x2,y2. All coordinates are fractions of the image. */
+export type AnnotationKind = 'pin' | 'rect' | 'arrow'
+
 export interface Annotation {
   id: string
-  /** Position as fractions of the image width and height. */
+  /** Point (pin) or first corner / arrow tail, as fractions of the image. */
   x: number
   y: number
   note: string
+  /** Mark kind; a missing kind is a pin (older sets). */
+  kind?: AnnotationKind
+  /** Second corner (rect) or arrow head, for non-pin marks. */
+  x2?: number
+  y2?: number
+  /** Mark colour (CSS); the theme accent when missing. */
+  color?: string
   /** What the pin points at, when the page knows: an element, a window, a page. */
   label?: string
 }
@@ -91,6 +102,63 @@ export function removeAnnotation(
   return list.filter((a) => a.id !== id)
 }
 
+/** The kind of a mark; a mark without one is a pin. */
+export function annotationKind(a: Annotation): AnnotationKind {
+  return a.kind ?? 'pin'
+}
+
+/** Start a shape (rect or arrow) at a point; its second point starts equal
+ * so a click with no drag is a zero-size mark the caller can drop. */
+export function addShape(
+  list: readonly Annotation[],
+  kind: 'rect' | 'arrow',
+  x: number,
+  y: number,
+  color?: string,
+): Annotation[] {
+  const mark: Annotation = {
+    id: newAnnotationId(),
+    x: clamp(x),
+    y: clamp(y),
+    x2: clamp(x),
+    y2: clamp(y),
+    kind,
+    note: '',
+  }
+  if (color) mark.color = color
+  return [...list, mark]
+}
+
+/** Update a shape's second point (during a drag). */
+export function resizeAnnotation(
+  list: readonly Annotation[],
+  id: string,
+  x2: number,
+  y2: number,
+): Annotation[] {
+  return list.map((a) =>
+    a.id === id ? { ...a, x2: clamp(x2), y2: clamp(y2) } : a,
+  )
+}
+
+/** Set a mark's colour. */
+export function colorAnnotation(
+  list: readonly Annotation[],
+  id: string,
+  color: string,
+): Annotation[] {
+  return list.map((a) => (a.id === id ? { ...a, color } : a))
+}
+
+/** Drop the most recently added mark (undo). */
+export function undoAnnotation(list: readonly Annotation[]): Annotation[] {
+  return list.slice(0, -1)
+}
+
+/** A shape narrower/shorter than this (fraction) is a stray click, not a
+ * mark; the caller drops it on pointer up. */
+export const MIN_SHAPE_SIZE = 0.01
+
 /** The painted box of an `object-fit: contain` image inside its element. */
 export function containedImageBox(
   element: { width: number; height: number },
@@ -152,7 +220,7 @@ export async function renderAnnotatedImage(
   context.drawImage(image, 0, 0)
   const radius = Math.max(12, Math.round(Math.min(width, height) / 48))
   set.annotations.forEach((a, index) => {
-    paintPin(context, a.x * width, a.y * height, index + 1, radius, options)
+    paintMark(context, a, index + 1, width, height, 0, 0, radius, options)
   })
   return toPng(context.canvas)
 }
@@ -185,11 +253,14 @@ export async function renderAnnotationCrop(
   )
   const context = canvasContext(width, height)
   context.drawImage(image, left, top, width, height, 0, 0, width, height)
-  paintPin(
+  paintMark(
     context,
-    pin.x * image.naturalWidth - left,
-    pin.y * image.naturalHeight - top,
+    pin,
     index + 1,
+    image.naturalWidth,
+    image.naturalHeight,
+    left,
+    top,
     Math.max(12, Math.round(Math.min(width, height) / 24)),
     options,
   )
@@ -223,6 +294,99 @@ function paintPin(
 
 const clampRange = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), Math.max(min, max))
+
+function strokeColor(a: Annotation, options: AnnotationExportOptions): string {
+  return a.color ?? options.color ?? accentColor()
+}
+
+function paintRect(
+  context: CanvasRenderingContext2D,
+  a: Annotation,
+  offsetX: number,
+  offsetY: number,
+  canvasW: number,
+  canvasH: number,
+  radius: number,
+) {
+  const x1 = Math.min(a.x, a.x2 ?? a.x) * canvasW - offsetX
+  const y1 = Math.min(a.y, a.y2 ?? a.y) * canvasH - offsetY
+  const x2 = Math.max(a.x, a.x2 ?? a.x) * canvasW - offsetX
+  const y2 = Math.max(a.y, a.y2 ?? a.y) * canvasH - offsetY
+  context.lineWidth = Math.max(3, radius / 4)
+  context.beginPath()
+  context.rect(x1, y1, x2 - x1, y2 - y1)
+  context.stroke()
+}
+
+function paintArrow(
+  context: CanvasRenderingContext2D,
+  a: Annotation,
+  offsetX: number,
+  offsetY: number,
+  canvasW: number,
+  canvasH: number,
+  radius: number,
+) {
+  const x1 = a.x * canvasW - offsetX
+  const y1 = a.y * canvasH - offsetY
+  const x2 = (a.x2 ?? a.x) * canvasW - offsetX
+  const y2 = (a.y2 ?? a.y) * canvasH - offsetY
+  const width = Math.max(3, radius / 4)
+  context.lineWidth = width
+  context.lineCap = 'round'
+  context.beginPath()
+  context.moveTo(x1, y1)
+  context.lineTo(x2, y2)
+  context.stroke()
+  const angle = Math.atan2(y2 - y1, x2 - x1)
+  const head = Math.max(10, radius * 0.9)
+  context.beginPath()
+  context.moveTo(x2, y2)
+  context.lineTo(
+    x2 - head * Math.cos(angle - Math.PI / 6),
+    y2 - head * Math.sin(angle - Math.PI / 6),
+  )
+  context.lineTo(
+    x2 - head * Math.cos(angle + Math.PI / 6),
+    y2 - head * Math.sin(angle + Math.PI / 6),
+  )
+  context.closePath()
+  context.fill()
+}
+
+/** Paint one mark into a canvas whose top-left is (offsetX, offsetY) of the
+ * picture, in picture pixels. Pins are numbered; shapes carry a colour. */
+function paintMark(
+  context: CanvasRenderingContext2D,
+  a: Annotation,
+  number: number,
+  canvasW: number,
+  canvasH: number,
+  offsetX: number,
+  offsetY: number,
+  radius: number,
+  options: AnnotationExportOptions,
+) {
+  const kind = a.kind ?? 'pin'
+  if (kind === 'pin') {
+    paintPin(
+      context,
+      a.x * canvasW - offsetX,
+      a.y * canvasH - offsetY,
+      number,
+      radius,
+      { ...options, color: a.color ?? options.color },
+    )
+    return
+  }
+  context.strokeStyle = strokeColor(a, options)
+  context.fillStyle = strokeColor(a, options)
+  if (kind === 'rect') {
+    paintRect(context, a, offsetX, offsetY, canvasW, canvasH, radius)
+  } else {
+    paintArrow(context, a, offsetX, offsetY, canvasW, canvasH, radius)
+  }
+}
 
 const clampInt = (value: number, min: number, max: number) =>
   Math.round(clampRange(value, min, max))

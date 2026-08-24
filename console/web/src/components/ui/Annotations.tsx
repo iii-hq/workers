@@ -22,7 +22,12 @@ import {
 } from 'react'
 import { IconButton } from '@/components/ui/IconButton'
 import { Input } from '@/components/ui/Input'
-import { type Annotation, containedImageBox } from '@/lib/annotations'
+import {
+  type Annotation,
+  type AnnotationKind,
+  annotationKind,
+  containedImageBox,
+} from '@/lib/annotations'
 import { cn } from '@/lib/utils'
 
 export interface AnnotationLayerProps {
@@ -38,6 +43,17 @@ export interface AnnotationLayerProps {
   onRemove?: (id: string) => void
   /** With it, the selected pin opens a callout that edits its note in place. */
   onNote?: (id: string, note: string) => void
+  /** The active tool. `pin` (default) drops a pin on click; `rect` / `arrow`
+   * draw a shape on drag. */
+  tool?: AnnotationKind
+  /** Colour for a newly drawn shape. */
+  drawColor?: string
+  /** Begin a shape at a point (rect corner / arrow tail). */
+  onAddShape?: (kind: 'rect' | 'arrow', x: number, y: number) => void
+  /** Update the shape being drawn (its far corner / arrow head). */
+  onResizeShape?: (x2: number, y2: number) => void
+  /** Finish the shape being drawn; the caller drops a too-small one. */
+  onEndShape?: () => void
   className?: string
   /** The picture element, rendered by the caller. */
   children: ReactNode
@@ -57,6 +73,10 @@ export function AnnotationLayer({
   onMove,
   onRemove,
   onNote,
+  tool = 'pin',
+  onAddShape,
+  onResizeShape,
+  onEndShape,
   className,
   children,
 }: AnnotationLayerProps) {
@@ -106,6 +126,7 @@ export function AnnotationLayer({
   const pinTop = (pin: Annotation) => box.top + pin.y * box.height
 
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
+  const drawingRef = useRef(false)
 
   // The selected pin's note takes the caret: writing it is the point of
   // selecting a pin. Runs after the pointer handlers, so it wins focus.
@@ -130,18 +151,121 @@ export function AnnotationLayer({
         if (!active || event.button !== 0) return
         if (
           (event.target as HTMLElement).closest(
-            '[data-annotation-pin], [data-annotation-callout]',
+            '[data-annotation-pin], [data-annotation-shape], [data-annotation-callout]',
           )
         )
           return
         const at = fractionAt(event)
         if (!at || at.x < 0 || at.x > 1 || at.y < 0 || at.y > 1) return
         event.preventDefault()
-        onAdd?.(at.x, at.y)
+        if (tool === 'pin') {
+          onAdd?.(at.x, at.y)
+          return
+        }
+        if (!onAddShape) return
+        drawingRef.current = true
+        rootRef.current?.setPointerCapture(event.pointerId)
+        onAddShape(tool, at.x, at.y)
+      }}
+      onPointerMove={(event) => {
+        if (!drawingRef.current) return
+        const at = fractionAt(event)
+        if (!at) return
+        onResizeShape?.(
+          Math.min(1, Math.max(0, at.x)),
+          Math.min(1, Math.max(0, at.y)),
+        )
+      }}
+      onPointerUp={(event) => {
+        if (!drawingRef.current) return
+        drawingRef.current = false
+        rootRef.current?.releasePointerCapture(event.pointerId)
+        onEndShape?.()
       }}
     >
       {children}
+      {annotations.map((annotation) => {
+        const kind = annotationKind(annotation)
+        if (kind === 'pin') return null
+        const sel = annotation.id === selectedId
+        const color = annotation.color ?? 'var(--color-accent)'
+        const x1 = Math.min(annotation.x, annotation.x2 ?? annotation.x)
+        const y1 = Math.min(annotation.y, annotation.y2 ?? annotation.y)
+        const x2 = Math.max(annotation.x, annotation.x2 ?? annotation.x)
+        const y2 = Math.max(annotation.y, annotation.y2 ?? annotation.y)
+        if (kind === 'rect') {
+          return (
+            <button
+              key={annotation.id}
+              type="button"
+              data-annotation-shape={annotation.id}
+              aria-label={`rectangle${annotation.note ? `: ${annotation.note}` : ''}`}
+              aria-pressed={sel}
+              onPointerDown={(event) => {
+                event.stopPropagation()
+                onSelect?.(annotation.id)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Delete' || event.key === 'Backspace') {
+                  event.preventDefault()
+                  onRemove?.(annotation.id)
+                }
+              }}
+              style={{
+                left: box.left + x1 * box.width,
+                top: box.top + y1 * box.height,
+                width: (x2 - x1) * box.width,
+                height: (y2 - y1) * box.height,
+                borderColor: color,
+              }}
+              className={cn(
+                'absolute z-10 border-2 bg-transparent',
+                sel && 'ring-2 ring-white/70 ring-offset-1',
+              )}
+            />
+          )
+        }
+        return (
+          <svg
+            key={annotation.id}
+            data-annotation-shape={annotation.id}
+            aria-label={`arrow${annotation.note ? `: ${annotation.note}` : ''}`}
+            className="pointer-events-none absolute inset-0 z-10 size-full overflow-visible"
+          >
+            <title>{annotation.note || 'arrow'}</title>
+            <defs>
+              <marker
+                id={`arrow-${annotation.id}`}
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M0 0 L10 5 L0 10 z" fill={color} />
+              </marker>
+            </defs>
+            <line
+              x1={box.left + annotation.x * box.width}
+              y1={box.top + annotation.y * box.height}
+              x2={box.left + (annotation.x2 ?? annotation.x) * box.width}
+              y2={box.top + (annotation.y2 ?? annotation.y) * box.height}
+              stroke={color}
+              strokeWidth={3}
+              strokeLinecap="round"
+              markerEnd={`url(#arrow-${annotation.id})`}
+              className="pointer-events-auto cursor-pointer"
+              onPointerDown={(event) => {
+                event.stopPropagation()
+                onSelect?.(annotation.id)
+              }}
+            />
+          </svg>
+        )
+      })}
       {annotations.map((annotation, index) => {
+        if (annotationKind(annotation) !== 'pin') return null
         const isSelected = annotation.id === selectedId
         return (
           <button
@@ -220,9 +344,8 @@ export function AnnotationLayer({
         )
       })}
       {selected && onNote ? (
-        <div
+        <fieldset
           data-annotation-callout={selected.id}
-          role="group"
           aria-label={`note for annotation ${selectedIndex + 1}`}
           style={{
             width: CALLOUT_WIDTH,
@@ -259,7 +382,7 @@ export function AnnotationLayer({
             </IconButton>
           </div>
           <PinLabel label={selected.label} />
-        </div>
+        </fieldset>
       ) : null}
     </div>
   )
