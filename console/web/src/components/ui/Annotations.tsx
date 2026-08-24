@@ -63,17 +63,27 @@ export function AnnotationLayer({
   const rootRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ left: 0, top: 0, width: 0, height: 0 })
   const [rootWidth, setRootWidth] = useState(0)
+  const imageWidth = image.width
+  const imageHeight = image.height
   const measure = useCallback(() => {
     const root = rootRef.current
     if (!root) return
     setRootWidth(root.clientWidth)
-    setBox(
-      containedImageBox(
-        { width: root.clientWidth, height: root.clientHeight },
-        image,
-      ),
+    const next = containedImageBox(
+      { width: root.clientWidth, height: root.clientHeight },
+      { width: imageWidth, height: imageHeight },
     )
-  }, [image])
+    // Callers pass `image` as a fresh object each render; comparing the
+    // computed box keeps a same-size remeasure from re-rendering.
+    setBox((current) =>
+      current.left === next.left &&
+      current.top === next.top &&
+      current.width === next.width &&
+      current.height === next.height
+        ? current
+        : next,
+    )
+  }, [imageWidth, imageHeight])
   useLayoutEffect(measure, [measure])
   useEffect(() => {
     const root = rootRef.current
@@ -92,6 +102,9 @@ export function AnnotationLayer({
     }
   }
 
+  const pinLeft = (pin: Annotation) => box.left + pin.x * box.width
+  const pinTop = (pin: Annotation) => box.top + pin.y * box.height
+
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
 
   // The selected pin's note takes the caret: writing it is the point of
@@ -104,9 +117,7 @@ export function AnnotationLayer({
   const selectedIndex = annotations.findIndex((a) => a.id === selectedId)
   const selected = selectedIndex >= 0 ? annotations[selectedIndex] : null
   const calloutLeft =
-    selected && box.width > 0
-      ? box.left + selected.x * box.width + CALLOUT_GAP
-      : 0
+    selected && box.width > 0 ? pinLeft(selected) + CALLOUT_GAP : 0
   const calloutFlips = calloutLeft + CALLOUT_WIDTH > rootWidth
 
   return (
@@ -130,22 +141,22 @@ export function AnnotationLayer({
     >
       {children}
       {annotations.map((annotation, index) => {
-        const selected = annotation.id === selectedId
+        const isSelected = annotation.id === selectedId
         return (
           <button
             key={annotation.id}
             type="button"
             data-annotation-pin={annotation.id}
             aria-label={`annotation ${index + 1}${annotation.note ? `: ${annotation.note}` : ''}`}
-            aria-pressed={selected}
+            aria-pressed={isSelected}
             title={annotation.note || annotation.label}
             style={{
-              left: box.left + annotation.x * box.width,
-              top: box.top + annotation.y * box.height,
+              left: pinLeft(annotation),
+              top: pinTop(annotation),
             }}
             className={cn(
               'absolute z-10 flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-accent font-mono text-[12px] font-semibold text-accent-fg shadow-md transition-transform [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:scale-95',
-              selected &&
+              isSelected &&
                 'ring-2 ring-white/80 ring-offset-2 ring-offset-accent',
               active ? 'cursor-grab' : 'cursor-pointer',
             )}
@@ -167,6 +178,16 @@ export function AnnotationLayer({
             onPointerUp={(event) => {
               if (dragRef.current?.id === annotation.id) {
                 event.currentTarget.releasePointerCapture(event.pointerId)
+                dragRef.current = null
+              }
+            }}
+            onPointerCancel={(event) => {
+              if (dragRef.current?.id === annotation.id) {
+                try {
+                  event.currentTarget.releasePointerCapture(event.pointerId)
+                } catch {
+                  // never captured; nothing to release
+                }
                 dragRef.current = null
               }
             }}
@@ -207,7 +228,7 @@ export function AnnotationLayer({
             left: calloutFlips
               ? Math.max(0, calloutLeft - CALLOUT_GAP * 2 - CALLOUT_WIDTH)
               : calloutLeft,
-            top: box.top + selected.y * box.height,
+            top: pinTop(selected),
           }}
           className="absolute z-20 flex -translate-y-1/2 flex-col gap-1 rounded-sm border border-edge bg-panel p-2 shadow-md"
           onPointerDown={(event) => event.stopPropagation()}
@@ -236,14 +257,7 @@ export function AnnotationLayer({
               <Trash2 aria-hidden className="size-4" />
             </IconButton>
           </div>
-          {selected.label ? (
-            <span
-              className="truncate px-1 font-mono text-[11px] text-ink-faint"
-              title={selected.label}
-            >
-              {selected.label}
-            </span>
-          ) : null}
+          <PinLabel label={selected.label} />
         </div>
       ) : null}
     </div>
@@ -338,14 +352,7 @@ export function AnnotationList({
               preserveCase
               className="h-8 normal-case"
             />
-            {annotation.label ? (
-              <span
-                className="truncate px-1 font-mono text-[11px] text-ink-faint"
-                title={annotation.label}
-              >
-                {annotation.label}
-              </span>
-            ) : null}
+            <PinLabel label={annotation.label} />
           </div>
           <IconButton
             label={`remove annotation ${index + 1}`}
@@ -356,5 +363,18 @@ export function AnnotationList({
         </li>
       ))}
     </ol>
+  )
+}
+
+/** What a pin points at, under its note. Nothing when the page knows nothing. */
+function PinLabel({ label }: { label?: string }) {
+  if (!label) return null
+  return (
+    <span
+      className="truncate px-1 font-mono text-[11px] text-ink-faint"
+      title={label}
+    >
+      {label}
+    </span>
   )
 }

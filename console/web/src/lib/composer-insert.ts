@@ -6,44 +6,56 @@
  * the moment one subscribes, so a pick never disappears silently.
  */
 
+/** A bus that holds what it cannot deliver yet, and drains on subscribe. */
+function bufferedBus<T>() {
+  const listeners = new Set<(value: T) => void>()
+  let pending: T[] = []
+  return {
+    publish(value: T): void {
+      if (listeners.size === 0) {
+        pending.push(value)
+        return
+      }
+      for (const listener of listeners) listener(value)
+    },
+    subscribe(listener: (value: T) => void): () => void {
+      listeners.add(listener)
+      if (pending.length > 0) {
+        const drained = pending
+        pending = []
+        for (const value of drained) listener(value)
+      }
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+  }
+}
+
 type ComposerInsertListener = (text: string) => void
 
-const listeners = new Set<ComposerInsertListener>()
-let pending: string[] = []
+const inserts = bufferedBus<string>()
 
 export function insertIntoComposer(text: string): void {
-  if (listeners.size === 0) {
-    pending.push(text)
-    return
-  }
-  for (const listener of listeners) listener(text)
+  inserts.publish(text)
+}
+
+export function onComposerInsert(listener: ComposerInsertListener): () => void {
+  return inserts.subscribe(listener)
 }
 
 type ComposerAttachListener = (files: File[]) => void
 
-const attachListeners = new Set<ComposerAttachListener>()
-let pendingFiles: File[][] = []
+const attachments = bufferedBus<File[]>()
 
 /** Hand files to the composer as attachments; buffered like inserts. */
 export function attachToComposer(files: File[]): void {
   if (files.length === 0) return
-  if (attachListeners.size === 0) {
-    pendingFiles.push(files)
-    return
-  }
-  for (const listener of attachListeners) listener(files)
+  attachments.publish(files)
 }
 
 export function onComposerAttach(listener: ComposerAttachListener): () => void {
-  attachListeners.add(listener)
-  if (pendingFiles.length > 0) {
-    const drained = pendingFiles
-    pendingFiles = []
-    for (const files of drained) listener(files)
-  }
-  return () => {
-    attachListeners.delete(listener)
-  }
+  return attachments.subscribe(listener)
 }
 
 type ComposerFocusListener = () => void
@@ -62,17 +74,5 @@ export function onComposerFocusRequest(
   focusListeners.add(listener)
   return () => {
     focusListeners.delete(listener)
-  }
-}
-
-export function onComposerInsert(listener: ComposerInsertListener): () => void {
-  listeners.add(listener)
-  if (pending.length > 0) {
-    const drained = pending
-    pending = []
-    for (const text of drained) listener(text)
-  }
-  return () => {
-    listeners.delete(listener)
   }
 }

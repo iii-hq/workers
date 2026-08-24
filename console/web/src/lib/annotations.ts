@@ -51,12 +51,20 @@ export function addAnnotation(
   return [...list, pin]
 }
 
+function updateAnnotation(
+  list: readonly Annotation[],
+  id: string,
+  change: Partial<Annotation>,
+): Annotation[] {
+  return list.map((a) => (a.id === id ? { ...a, ...change } : a))
+}
+
 export function labelAnnotation(
   list: readonly Annotation[],
   id: string,
   label: string,
 ): Annotation[] {
-  return list.map((a) => (a.id === id ? { ...a, label } : a))
+  return updateAnnotation(list, id, { label })
 }
 
 export function moveAnnotation(
@@ -65,7 +73,7 @@ export function moveAnnotation(
   x: number,
   y: number,
 ): Annotation[] {
-  return list.map((a) => (a.id === id ? { ...a, x: clamp(x), y: clamp(y) } : a))
+  return updateAnnotation(list, id, { x: clamp(x), y: clamp(y) })
 }
 
 export function noteAnnotation(
@@ -73,7 +81,7 @@ export function noteAnnotation(
   id: string,
   note: string,
 ): Annotation[] {
-  return list.map((a) => (a.id === id ? { ...a, note } : a))
+  return updateAnnotation(list, id, { note })
 }
 
 export function removeAnnotation(
@@ -139,27 +147,14 @@ export async function renderAnnotatedImage(
   options: AnnotationExportOptions = {},
 ): Promise<Blob> {
   const image = await loadImage(set.imageUrl)
-  const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth
-  canvas.height = image.naturalHeight
-  const context = canvas.getContext('2d')
-  if (!context) throw new Error('canvas 2d context unavailable')
+  const context = canvasContext(image.naturalWidth, image.naturalHeight)
+  const { width, height } = context.canvas
   context.drawImage(image, 0, 0)
-  const radius = Math.max(
-    12,
-    Math.round(Math.min(canvas.width, canvas.height) / 48),
-  )
+  const radius = Math.max(12, Math.round(Math.min(width, height) / 48))
   set.annotations.forEach((a, index) => {
-    paintPin(
-      context,
-      a.x * canvas.width,
-      a.y * canvas.height,
-      index + 1,
-      radius,
-      options,
-    )
+    paintPin(context, a.x * width, a.y * height, index + 1, radius, options)
   })
-  return toPng(canvas)
+  return toPng(context.canvas)
 }
 
 /**
@@ -188,11 +183,7 @@ export async function renderAnnotationCrop(
     0,
     image.naturalHeight - height,
   )
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const context = canvas.getContext('2d')
-  if (!context) throw new Error('canvas 2d context unavailable')
+  const context = canvasContext(width, height)
   context.drawImage(image, left, top, width, height, 0, 0, width, height)
   paintPin(
     context,
@@ -202,17 +193,20 @@ export async function renderAnnotationCrop(
     Math.max(12, Math.round(Math.min(width, height) / 24)),
     options,
   )
-  return toPng(canvas)
+  return toPng(context.canvas)
 }
 
 function paintPin(
   context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
+  rawX: number,
+  rawY: number,
   number: number,
   radius: number,
   options: AnnotationExportOptions,
 ) {
+  // A pin at the very edge stays fully inside the exported picture.
+  const x = clampRange(rawX, radius, context.canvas.width - radius)
+  const y = clampRange(rawY, radius, context.canvas.height - radius)
   context.font = `bold ${Math.round(radius * 1.15)}px system-ui, sans-serif`
   context.textAlign = 'center'
   context.textBaseline = 'middle'
@@ -227,8 +221,24 @@ function paintPin(
   context.fillText(String(number), x, y + radius * 0.05)
 }
 
+const clampRange = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), Math.max(min, max))
+
 const clampInt = (value: number, min: number, max: number) =>
-  Math.round(Math.min(Math.max(value, min), Math.max(min, max)))
+  Math.round(clampRange(value, min, max))
+
+/** A fresh canvas of that pixel size, with its 2d context. */
+function canvasContext(
+  width: number,
+  height: number,
+): CanvasRenderingContext2D {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('canvas 2d context unavailable')
+  return context
+}
 
 function toPng(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
