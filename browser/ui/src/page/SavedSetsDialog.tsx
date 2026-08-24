@@ -38,6 +38,13 @@ interface SavedSetsDialogProps {
   initialKey?: string | null
 }
 
+async function renderAnnotatedFile(set: AnnotationSet): Promise<File> {
+  const blob = await renderAnnotatedImage(set)
+  return new File([blob], annotationFileName(set, 'png'), {
+    type: 'image/png',
+  })
+}
+
 export function SavedSetsDialog({
   host,
   open,
@@ -107,10 +114,7 @@ export function SavedSetsDialog({
   const sendToChat = useCallback(() => {
     const set = selectedSet
     if (!set || !host.chat?.compose) return
-    void renderAnnotatedImage(set).then((blob) => {
-      const file = new File([blob], annotationFileName(set, 'png'), {
-        type: 'image/png',
-      })
+    void renderAnnotatedFile(set).then((file) => {
       host.chat?.compose?.({ text: annotationsMarkdown(set), files: [file] })
       setStatus('sent to the chat')
     })
@@ -119,13 +123,7 @@ export function SavedSetsDialog({
   const download = useCallback(() => {
     const set = selectedSet
     if (!set) return
-    void renderAnnotatedImage(set).then((blob) => {
-      downloadFile(
-        new File([blob], annotationFileName(set, 'png'), {
-          type: 'image/png',
-        }),
-      )
-    })
+    void renderAnnotatedFile(set).then(downloadFile)
   }, [selectedSet])
 
   const remove = useCallback(() => {
