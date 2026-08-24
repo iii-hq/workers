@@ -2,7 +2,7 @@
 
 [package]
 name = "pdf"
-version = "0.1.1-experimental"
+version = "0.1.2"
 edition = "2021"
 description = "PDF worker for iii — local classification, markdown conversion, positioned text and table extraction, and per-page OCR routing (pdf::* functions)"
 license = "Apache-2.0"
