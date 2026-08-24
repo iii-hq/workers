@@ -35,6 +35,11 @@ export function FindBar({
     inputRef.current?.select()
   }, [])
   const empty = state.query.trim() === ''
+  let countLabel = ''
+  if (!empty) {
+    countLabel =
+      state.count === 0 ? 'No matches' : `${state.index} of ${state.count}`
+  }
   return (
     <search className="br-ui-findbar" aria-label="find in page">
       <Search size={16} aria-hidden className="br-ui-findbar-icon" />
@@ -64,11 +69,7 @@ export function FindBar({
         data-empty={empty || undefined}
         data-none={(!empty && state.count === 0) || undefined}
       >
-        {empty
-          ? ''
-          : state.count === 0
-            ? 'No matches'
-            : `${state.index} of ${state.count}`}
+        {countLabel}
       </span>
       <IconButton
         label="previous match"

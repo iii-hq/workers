@@ -48,15 +48,18 @@ pub fn find_script(query: &str, action: &str, case_sensitive: bool) -> String {
     try {{ CSS.highlights.delete('iii-find'); CSS.highlights.delete('iii-find-current'); }} catch (e) {{}}
     S.ranges = []; S.index = -1; S.query = '';
   }};
-  if (action === 'close' || q === '') {{ clear(); return {{ count: 0, index: 0 }}; }}
+  // next / previous with no query step through the saved search.
+  const effective = q !== '' ? q : (action === 'next' || action === 'previous' ? S.query : '');
+  if (action === 'close' || effective === '') {{ clear(); return {{ count: 0, index: 0 }}; }}
+  const query = effective;
   if (!document.getElementById('iii-find-style')) {{
     const st = document.createElement('style');
     st.id = 'iii-find-style';
     st.textContent = '::highlight(iii-find){{background:#ffe066;color:#111}}::highlight(iii-find-current){{background:#ff9b00;color:#111}}';
     (document.head || document.documentElement).appendChild(st);
   }}
-  if (action === 'search' || S.query !== q || S.cs !== cs) {{
-    S.ranges = []; S.query = q; S.cs = cs;
+  if (action === 'search' || S.query !== query || S.cs !== cs) {{
+    S.ranges = []; S.query = query; S.cs = cs;
     const root = document.body || document.documentElement;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {{
       acceptNode: (n) => {{
@@ -69,7 +72,7 @@ pub fn find_script(query: &str, action: &str, case_sensitive: bool) -> String {
         return NodeFilter.FILTER_ACCEPT;
       }},
     }});
-    const needle = cs ? q : q.toLowerCase();
+    const needle = cs ? query : query.toLowerCase();
     let n;
     while ((n = walker.nextNode())) {{
       const text = cs ? n.data : n.data.toLowerCase();
@@ -77,9 +80,9 @@ pub fn find_script(query: &str, action: &str, case_sensitive: bool) -> String {
       while (i >= 0) {{
         const r = new Range();
         r.setStart(n, i);
-        r.setEnd(n, i + q.length);
+        r.setEnd(n, i + query.length);
         S.ranges.push(r);
-        i = text.indexOf(needle, i + q.length);
+        i = text.indexOf(needle, i + query.length);
       }}
     }}
     S.index = S.ranges.length ? 0 : -1;
@@ -96,7 +99,7 @@ pub fn find_script(query: &str, action: &str, case_sensitive: bool) -> String {
     const el = S.ranges[S.index].startContainer.parentElement;
     if (el) el.scrollIntoView({{ block: 'center', inline: 'nearest' }});
   }}
-  return {{ count: S.ranges.length, index: S.index + 1 }};
+  return {{ count: S.ranges.length, index: S.index + 1, query: S.query }};
 }})()"#
     )
 }

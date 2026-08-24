@@ -734,7 +734,7 @@ export async function findInBrowserPage(
 export const ZOOM_LEVELS = [
   50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200,
 ] as const
-export type BrowserZoomAction = 'in' | 'out' | 'reset' | 'set'
+export type BrowserZoomAction = 'in' | 'out' | 'reset' | 'set' | 'read'
 
 const zoomSchema = z.object({ ok: z.boolean(), level: z.number() })
 

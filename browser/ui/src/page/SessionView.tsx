@@ -492,18 +492,26 @@ export function SessionView({
   // side keeps the query, the count and the current index for the bar.
   const [find, setFind] = useState<FindState | null>(null)
   const findTimerRef = useRef<number | undefined>(undefined)
+  // Responses can land out of order while typing; only the newest request
+  // may touch the bar.
+  const findRevisionRef = useRef(0)
   const runFind = useCallback(
     (query: string, action: BrowserFindAction) => {
       window.clearTimeout(findTimerRef.current)
+      const revision = ++findRevisionRef.current
       void findInBrowserPage(host.iii, sessionId, query, action)
-        .then((result) =>
+        .then((result) => {
+          if (revision !== findRevisionRef.current) return
           setFind((current) =>
             current === null
               ? current
               : { ...current, count: result.count, index: result.index },
-          ),
-        )
-        .catch((error: unknown) => setActionError(errorMessage(error)))
+          )
+        })
+        .catch((error: unknown) => {
+          if (revision !== findRevisionRef.current) return
+          setActionError(errorMessage(error))
+        })
     },
     [host, sessionId],
   )
@@ -512,6 +520,7 @@ export function SessionView({
   }, [])
   const closeFind = useCallback(() => {
     window.clearTimeout(findTimerRef.current)
+    findRevisionRef.current += 1
     setFind(null)
     void findInBrowserPage(host.iii, sessionId, '', 'close').catch(() => {})
   }, [host, sessionId])
@@ -546,7 +555,20 @@ export function SessionView({
   const [zoom, setZoom] = useState(100)
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
-  useEffect(() => setZoom(100), [sessionId])
+  // The document keeps its zoom across a pane remount; read it back so the
+  // menu shows the real level.
+  useEffect(() => {
+    setZoom(100)
+    let cancelled = false
+    void zoomBrowserPage(host.iii, sessionId, 'read')
+      .then((level) => {
+        if (!cancelled) setZoom(level)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [host, sessionId])
   const applyZoom = useCallback(
     (action: 'in' | 'out' | 'reset' | 'set', level?: number) => {
       void runAction(async () => {

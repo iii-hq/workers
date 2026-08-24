@@ -190,7 +190,7 @@ export function BrowserPage({
           detail: 'Stop the selected browser session',
           keywords: ['close', 'end'],
           shortcut: 'X',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.stop(),
         },
         {
@@ -208,7 +208,7 @@ export function BrowserPage({
             'screenshot',
           ],
           shortcut: 'C',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.toggleAnnotate(),
         },
         {
@@ -237,7 +237,7 @@ export function BrowserPage({
           detail: 'Search the page text; Enter steps, Escape closes',
           keywords: ['search', 'text', 'match'],
           shortcut: 'Mod+F',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.findInPage(),
         },
         {
@@ -245,7 +245,7 @@ export function BrowserPage({
           title: 'Zoom in',
           keywords: ['zoom', 'bigger', 'scale'],
           shortcut: 'Mod+=',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.zoom('in'),
         },
         {
@@ -253,7 +253,7 @@ export function BrowserPage({
           title: 'Zoom out',
           keywords: ['zoom', 'smaller', 'scale'],
           shortcut: 'Mod+-',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.zoom('out'),
         },
         {
@@ -262,7 +262,7 @@ export function BrowserPage({
           detail: 'Back to 100 %',
           keywords: ['zoom', 'actual', 'size'],
           shortcut: 'Mod+0',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.zoom('reset'),
         },
         {
@@ -270,7 +270,7 @@ export function BrowserPage({
           title: 'Take a screenshot',
           detail: 'Save the page as a JPEG',
           keywords: ['capture', 'image', 'download'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.takeScreenshot(),
         },
         {
@@ -278,7 +278,10 @@ export function BrowserPage({
           title: 'Screenshot to chat',
           detail: 'Attach the page as an image to the conversation',
           keywords: ['capture', 'image', 'attach', 'send'],
-          enabled: () => selected !== null,
+          enabled: () =>
+            selected !== null &&
+            sessionActionsRef.current !== null &&
+            typeof host.chat?.compose === 'function',
           run: () => sessionActionsRef.current?.screenshotToChat(),
         },
         {
@@ -286,7 +289,7 @@ export function BrowserPage({
           title: 'Print to PDF',
           detail: 'Save the page as a PDF',
           keywords: ['print', 'pdf', 'save', 'export'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.printToPdf(),
         },
         {
@@ -303,7 +306,7 @@ export function BrowserPage({
           detail: 'Type a url to navigate the selected session',
           keywords: ['address', 'navigate', 'url'],
           shortcut: 'L',
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.focusUrl(),
         },
       ]),
