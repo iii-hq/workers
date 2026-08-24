@@ -9,8 +9,12 @@ const composer = (page: Page) => page.getByLabel('message composer')
 
 async function settle(page: Page): Promise<void> {
   await page.evaluate(() => {
-    const active = document.activeElement
-    if (active instanceof HTMLElement) active.blur()
+    const doc = (
+      globalThis as {
+        document?: { activeElement?: { blur?: () => void } | null }
+      }
+    ).document
+    doc?.activeElement?.blur?.()
   })
 }
 
