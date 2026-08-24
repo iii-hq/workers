@@ -329,7 +329,7 @@ export function BrowserPage({
           title: 'Browser diagnostics',
           detail: 'What Chromium the worker launches and what it allows',
           keywords: ['doctor', 'diagnostics', 'environment', 'chromium'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.showDiagnostics(),
         },
         {
