@@ -569,6 +569,7 @@ export interface UiClasses {
 
 /** A numbered pin with a note, positioned as fractions of the picture. */
 export type AnnotationKind = 'pin' | 'rect' | 'arrow'
+export type AnnotationTool = AnnotationKind | 'select'
 export interface Annotation {
   id: string
   x: number
@@ -596,7 +597,7 @@ export interface AnnotationLayerProps {
   /** With it, the selected pin opens a callout that edits its note in place. */
   onNote?: (id: string, note: string) => void
   /** The active tool: pin (default) drops pins; rect / arrow draw on drag. */
-  tool?: AnnotationKind
+  tool?: AnnotationTool
   /** Colour for a newly drawn shape. */
   drawColor?: string
   onAddShape?: (kind: 'rect' | 'arrow', x: number, y: number) => void

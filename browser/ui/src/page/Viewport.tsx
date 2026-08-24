@@ -19,7 +19,7 @@ export interface ViewportAnnotation {
   onMove: (id: string, x: number, y: number) => void
   onRemove: (id: string) => void
   onNote: (id: string, note: string) => void
-  tool?: 'pin' | 'rect' | 'arrow'
+  tool?: 'pin' | 'rect' | 'arrow' | 'select'
   drawColor?: string
   onAddShape?: (kind: 'rect' | 'arrow', x: number, y: number) => void
   onResizeShape?: (x2: number, y2: number) => void

@@ -5,9 +5,9 @@
  * console/web/src/lib/annotations.ts.
  */
 
-import type { Annotation, AnnotationKind } from '@iii-dev/console-ui'
+import type { Annotation, AnnotationKind, AnnotationTool } from '@iii-dev/console-ui'
 
-export type { Annotation, AnnotationKind }
+export type { Annotation, AnnotationKind, AnnotationTool }
 
 export interface AnnotationSet {
   /** What was annotated: a page url, a file, a session. */
@@ -104,6 +104,31 @@ export function addShape(
     x2: clamp(x),
     y2: clamp(y),
     kind,
+    note: '',
+  }
+  if (color) mark.color = color
+  return [...list, mark]
+}
+
+
+/** A rect mark snapped to an element's bounds, labelled with its selector. */
+export function addElementMark(
+  list: readonly Annotation[],
+  x: number,
+  y: number,
+  x2: number,
+  y2: number,
+  color: string | undefined,
+  label: string,
+): Annotation[] {
+  const mark: Annotation = {
+    id: newAnnotationId(),
+    x: clamp(x),
+    y: clamp(y),
+    x2: clamp(x2),
+    y2: clamp(y2),
+    kind: 'rect',
+    label,
     note: '',
   }
   if (color) mark.color = color

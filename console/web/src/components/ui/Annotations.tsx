@@ -44,8 +44,9 @@ export interface AnnotationLayerProps {
   /** With it, the selected pin opens a callout that edits its note in place. */
   onNote?: (id: string, note: string) => void
   /** The active tool. `pin` (default) drops a pin on click; `rect` / `arrow`
-   * draw a shape on drag. */
-  tool?: AnnotationKind
+   * draw a shape on drag; `select` clicks an element (the caller resolves
+   * what sits under the point and adds the mark itself). */
+  tool?: AnnotationTool
   /** Colour for a newly drawn shape. */
   drawColor?: string
   /** Begin a shape at a point (rect corner / arrow tail). */
@@ -168,7 +169,7 @@ export function AnnotationLayer({
         const at = fractionAt(event)
         if (!at || at.x < 0 || at.x > 1 || at.y < 0 || at.y > 1) return
         event.preventDefault()
-        if (tool === 'pin') {
+        if (tool === 'pin' || tool === 'select') {
           onAdd?.(at.x, at.y)
           return
         }

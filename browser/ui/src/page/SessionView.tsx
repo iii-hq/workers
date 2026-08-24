@@ -44,6 +44,7 @@ import {
   errorMessage,
   fileFromBase64,
   findInBrowserPage,
+  elementLabel,
   hintBrowserPick,
   listBrowserCookies,
   navigateBrowser,
@@ -77,9 +78,10 @@ import {
 import { BackButton, ChevronLeftIcon } from '../lib/widgets'
 import {
   type Annotation,
-  type AnnotationKind,
   type AnnotationSet,
+  type AnnotationTool,
   addAnnotation,
+  addElementMark,
   addShape,
   annotationFileName,
   annotationPinFileName,
@@ -332,7 +334,7 @@ export function SessionView({
   // Annotate mode freezes the frame the pins sit on; the live view resumes
   // when the mode ends. The pins outlive the mode until sent or cleared.
   const [annotating, setAnnotating] = useState(false)
-  const [tool, setTool] = useState<AnnotationKind>('pin')
+  const [tool, setTool] = useState<AnnotationTool>('pin')
   const [drawColor, setDrawColor] = useState<string>(SHAPE_COLORS[0])
   const [frozen, setFrozen] = useState<LiveFrame | null>(null)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
@@ -431,11 +433,11 @@ export function SessionView({
         tool,
         drawColor,
         onAddShape: (kind: 'rect' | 'arrow', x: number, y: number) => {
+          if (kind !== 'rect' && kind !== 'arrow') return
           const next = addShape(annotationsRef.current, kind, x, y, drawColor)
           const shape = next[next.length - 1]
           drawingIdRef.current = shape?.id ?? null
           setAnnotations(next)
-          setSelectedAnnotation(shape?.id ?? null)
         },
         onResizeShape: (x2: number, y2: number) => {
           const id = drawingIdRef.current
@@ -458,11 +460,38 @@ export function SessionView({
         annotations,
         selectedId: selectedAnnotation,
         onAdd: (x: number, y: number) => {
+          if (!frozen) return
+          if (tool === 'select') {
+            // The element under the click becomes a box snapped to its
+            // bounds, labelled with its selector - the inspector gesture.
+            void hintBrowserPick(
+              host.iii,
+              sessionId,
+              Math.min(frozen.width - 1, Math.round(x * frozen.width)),
+              Math.min(frozen.height - 1, Math.round(y * frozen.height)),
+            )
+              .then((hint) => {
+                if (!hint?.hit || !hint.bounds) return
+                const b = hint.bounds
+                setAnnotations(
+                  addElementMark(
+                    annotationsRef.current,
+                    b.x / frozen.width,
+                    b.y / frozen.height,
+                    (b.x + b.width) / frozen.width,
+                    (b.y + b.height) / frozen.height,
+                    drawColor,
+                    elementLabel(hint.tag, hint.id, hint.classes),
+                  ),
+                )
+              })
+              .catch(() => {})
+            return
+          }
           const next = addAnnotation(annotationsRef.current, x, y)
           const pin = next[next.length - 1]
           setAnnotations(next)
-          setSelectedAnnotation(pin?.id ?? null)
-          if (!pin || !frozen) return
+          if (!pin) return
           unlabeledPinsRef.current.push(pin.id)
           void resolveBrowserPick(
             host.iii,
@@ -1332,11 +1361,12 @@ export function SessionView({
                 className="br-ui-annot-tools"
                 aria-label="annotation tools"
               >
-                <SegmentedControl<AnnotationKind>
+                <SegmentedControl<AnnotationTool>
                   value={tool}
                   onChange={setTool}
                   options={[
                     { value: 'pin', label: 'Pin' },
+                    { value: 'select', label: 'Element' },
                     { value: 'rect', label: 'Box' },
                     { value: 'arrow', label: 'Arrow' },
                   ]}
