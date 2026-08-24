@@ -27,6 +27,7 @@ export interface PageMenuActions {
   importCookies: () => void
   copyCookies: () => void
   showDiagnostics: () => void
+  openSavedSets: () => void
 }
 
 interface PageMenuProps {
@@ -117,6 +118,7 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
         {row('Copy cookies', 'copyCookies')}
         {row('Clear browsing data', 'clearData')}
         <DropdownMenuSeparator />
+        {row('Saved annotations', 'openSavedSets')}
         {row('Browser diagnostics', 'showDiagnostics')}
       </DropdownMenuContent>
     </DropdownMenu>

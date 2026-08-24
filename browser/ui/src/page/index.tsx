@@ -43,6 +43,7 @@ import {
   RefreshButton,
   useContainerNarrow,
 } from '../lib/widgets'
+import { SavedSetsDialog } from './SavedSetsDialog'
 import { SessionRail } from './SessionRail'
 import { type SessionActions, SessionView } from './SessionView'
 import { useBrowserSessionsLive } from './useBrowserSessionsLive'
@@ -158,6 +159,14 @@ export function BrowserPage({
   // this ref lets page-level commands reach the mounted session's handlers
   // without lifting their state up.
   const sessionActionsRef = useRef<SessionActions | null>(null)
+  const [savedSets, setSavedSets] = useState<{
+    open: boolean
+    key: string | null
+  }>({ open: false, key: null })
+  const openSavedSets = useCallback(
+    (key: string | null = null) => setSavedSets({ open: true, key }),
+    [],
+  )
 
   // A palette "sessions" row (or any other host.panels.open caller) selects
   // a session by id through the standard panelContext channel.
@@ -171,7 +180,17 @@ export function BrowserPage({
         ? (context as Record<string, unknown>).sessionId
         : null
     if (typeof sessionId === 'string' && sessionId) openSession(sessionId)
-  }, [panelContext, openSession])
+    const type =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).type
+        : null
+    const setKey =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).key
+        : null
+    if (type === 'saved-set' && typeof setKey === 'string')
+      openSavedSets(setKey)
+  }, [panelContext, openSession, openSavedSets])
 
   useEffect(
     () =>
@@ -325,6 +344,24 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.copyCookies(),
         },
         {
+          id: 'save-annotations',
+          title: 'Save the annotations',
+          detail: 'Keep this set; reopen or send it later from Saved annotations',
+          keywords: ['annotations', 'save', 'keep'],
+          enabled: () =>
+            selected !== null &&
+            sessionActionsRef.current !== null &&
+            (sessionActionsRef.current?.annotationCount() ?? 0) > 0,
+          run: () => sessionActionsRef.current?.saveSet(),
+        },
+        {
+          id: 'saved-annotations',
+          title: 'Saved annotations',
+          detail: 'Sets saved from any session; send or download them again',
+          keywords: ['annotations', 'saved', 'sets', 'share'],
+          run: () => openSavedSets(),
+        },
+        {
           id: 'browser-diagnostics',
           title: 'Browser diagnostics',
           detail: 'What Chromium the worker launches and what it allows',
@@ -350,7 +387,7 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.focusUrl(),
         },
       ]),
-    [commands, handleNewSession, selected],
+    [commands, handleNewSession, selected, openSavedSets],
   )
 
   // Narrow: one pane at a time — the rail or the opened session workspace.
@@ -484,6 +521,7 @@ export function BrowserPage({
               // never leak across sessions.
               key={selected.session_id}
               host={host}
+              onOpenSavedSets={openSavedSets}
               session={selected}
               chromiumVersion={chromiumVersion}
               enabled
@@ -518,6 +556,14 @@ export function BrowserPage({
           onClose={() => setConfigOpen(false)}
         />
       ) : null}
+      <SavedSetsDialog
+        host={host}
+        open={savedSets.open}
+        onOpenChange={(next) =>
+          setSavedSets((s) => ({ open: next, key: next ? s.key : null }))
+        }
+        initialKey={savedSets.key}
+      />
     </PageShell>
   )
 }

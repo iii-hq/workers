@@ -820,6 +820,10 @@ and the `onAddShape` / `onResizeShape` / `onEndShape` trio and the layer
 draws the shape on drag, dropping one smaller than `MIN_SHAPE_SIZE`;
 `undoAnnotation` drops the newest mark. Exports paint every mark
 (`paintMark`) and the chat text prefixes non-pin marks (`2. box: ...`).
+A set can be saved to the `state` worker (scope `annotations`) so it
+outlives the session: the browser page's Save action persists it, a
+palette source lists saved sets by subject, and a dialog previews one over
+its stored picture with send / download / delete.
 `AnnotationList` renders the same
 notes as rows for a page that wants a list too.
 
