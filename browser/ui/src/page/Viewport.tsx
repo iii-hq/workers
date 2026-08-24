@@ -109,6 +109,10 @@ interface ViewportProps {
   requestHint: (x: number, y: number) => Promise<BrowserPickHint | null>
   /** Present while annotating; the frame shown is the frozen one. */
   annotation?: ViewportAnnotation | null
+  /** The surface's CSS pixel size, reported as it changes, so the caller can
+   * match the live viewport to the pane (no letterboxing). Not called while
+   * annotating (the frozen frame must not resize under the pins). */
+  onSurfaceResize?: (width: number, height: number) => void
 }
 
 export function Viewport({
@@ -121,6 +125,7 @@ export function Viewport({
   onPressKey,
   requestHint,
   annotation = null,
+  onSurfaceResize,
 }: ViewportProps) {
   const surfaceRef = useRef<HTMLDivElement>(null)
   const annotating = annotation !== null
@@ -132,6 +137,26 @@ export function Viewport({
   annotatingRef.current = annotating
   const onScrollAtRef = useRef(onScrollAt)
   onScrollAtRef.current = onScrollAt
+
+  // Report the surface's CSS pixel size so the caller can size the live
+  // viewport to match the pane. Paused while annotating (the frozen frame
+  // and its pins must not move); the caller debounces the actual resize.
+  const onSurfaceResizeRef = useRef(onSurfaceResize)
+  onSurfaceResizeRef.current = onSurfaceResize
+  useEffect(() => {
+    const surface = surfaceRef.current
+    if (!surface || typeof ResizeObserver === 'undefined') return
+    const report = () => {
+      if (annotatingRef.current) return
+      const w = surface.clientWidth
+      const h = surface.clientHeight
+      if (w > 0 && h > 0) onSurfaceResizeRef.current?.(w, h)
+    }
+    const observer = new ResizeObserver(report)
+    observer.observe(surface)
+    report()
+    return () => observer.disconnect()
+  }, [])
 
   /** Client point -> page-viewport point, null outside the rendered image. */
   const mapToPage = useCallback(

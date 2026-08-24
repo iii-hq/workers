@@ -46,6 +46,7 @@ import {
   pinLabel,
   pressBrowserKey,
   printBrowserPageToPdf,
+  resizeBrowser,
   resolveBrowserPick,
   screenshotFileName,
   scrollBrowserAt,
@@ -228,7 +229,13 @@ export function SessionView({
   // The screencast subscription is gated on the viewport actually being
   // visible: wide mode always shows it, narrow only on its segment.
   const viewportShown = !narrow || narrowPane === 'viewport'
-  const live = useLiveFrames(host, sessionId, enabled && viewportShown)
+  const [reseedToken, setReseedToken] = useState(0)
+  const live = useLiveFrames(
+    host,
+    sessionId,
+    enabled && viewportShown,
+    reseedToken,
+  )
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -514,6 +521,37 @@ export function SessionView({
     (x: number, y: number) => hintBrowserPick(host.iii, sessionId, x, y),
     [host, sessionId],
   )
+
+  // Match the Chromium viewport to the pane as it resizes, so the streamed
+  // frame fills the surface with no letterboxing and clicks map 1:1. The
+  // observer fires often; debounce and skip sub-pixel-ish changes.
+  const resizeTimerRef = useRef<number | undefined>(undefined)
+  const lastSentSizeRef = useRef<{ w: number; h: number } | null>(null)
+  const onSurfaceResize = useCallback(
+    (width: number, height: number) => {
+      const last = lastSentSizeRef.current
+      if (last && Math.abs(last.w - width) < 4 && Math.abs(last.h - height) < 4)
+        return
+      window.clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = window.setTimeout(() => {
+        lastSentSizeRef.current = { w: width, h: height }
+        void resizeBrowser(host.iii, sessionId, width, height, {
+          fit: true,
+          deviceScaleFactor: Math.min(window.devicePixelRatio || 1, 2),
+        })
+          .then((applied) => {
+            if (applied) setReseedToken((t) => t + 1)
+          })
+          .catch(() => {})
+      }, 180)
+    },
+    [host, sessionId],
+  )
+  useEffect(() => {
+    lastSentSizeRef.current = null
+    setReseedToken(0)
+    return () => window.clearTimeout(resizeTimerRef.current)
+  }, [sessionId])
 
   // Find in page: the worker keeps the match list in the document; this
   // side keeps the query, the count and the current index for the bar.
@@ -967,6 +1005,7 @@ export function SessionView({
               loading={live.loading}
               error={live.error}
               annotation={viewportAnnotation}
+              onSurfaceResize={onSurfaceResize}
               onClickAt={handleClickAt}
               onScrollAt={handleScrollAt}
               onTextInput={handleTextInput}

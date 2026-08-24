@@ -40,6 +40,9 @@ export function useLiveFrames(
   host: Host,
   sessionId: string | null,
   enabled: boolean,
+  /** Bump to re-read the current frame once (e.g. after a resize), so the
+   * new size paints even if the screencast stream is momentarily quiet. */
+  reseedToken = 0,
 ): LiveViewState {
   const [frame, setFrame] = useState<LiveFrame | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -127,6 +130,29 @@ export function useLiveFrames(
       setError(null)
     },
   })
+
+  // Re-seed on demand: read the current frame once and apply it if newer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fires on the token, reads live refs
+  useEffect(() => {
+    if (!enabled || !sessionId || reseedToken === 0) return
+    let cancelled = false
+    void readBrowserFrame(host.iii, sessionId)
+      .then((seed) => {
+        if (cancelled || !seed?.frame || seed.frame_seq <= lastSeqRef.current)
+          return
+        lastSeqRef.current = seed.frame_seq
+        setFrame({
+          dataUrl: `data:image/jpeg;base64,${seed.frame}`,
+          width: seed.width,
+          height: seed.height,
+        })
+        setError(null)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [reseedToken])
 
   return { frame, loading: frame === null && error === null, error }
 }

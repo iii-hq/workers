@@ -5,7 +5,7 @@
 //! the live feed the console UI subscribes to.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -304,8 +304,12 @@ pub struct Session {
     /// Viewport captured at launch. Config viewport is a session-start
     /// setting (a running session keeps the browser it launched with), so
     /// per-call consumers read these fields, not the live config.
-    pub viewport_width: u32,
-    pub viewport_height: u32,
+    /// The live viewport the session renders at. Set at launch, then tracked
+    /// to the console pane's size by browser::resize (or overridden by the
+    /// device toolbar), so the streamed frame fills the pane with no
+    /// letterboxing and click coordinates map 1:1.
+    pub viewport_width: AtomicU32,
+    pub viewport_height: AtomicU32,
     pub created_ms: i64,
     /// Temp profile dir removed on shutdown. None in persistent
     /// `user_data_dir` mode.
@@ -361,6 +365,18 @@ pub struct Session {
 impl Session {
     pub fn touch(&self) {
         self.last_used_ms.store(now_ms() as u64, Ordering::Relaxed);
+    }
+
+    pub fn viewport(&self) -> (u32, u32) {
+        (
+            self.viewport_width.load(Ordering::Relaxed),
+            self.viewport_height.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_viewport(&self, width: u32, height: u32) {
+        self.viewport_width.store(width, Ordering::Relaxed);
+        self.viewport_height.store(height, Ordering::Relaxed);
     }
 
     pub fn last_used_ms(&self) -> i64 {
@@ -730,8 +746,8 @@ impl Sessions {
             headless,
             kind: SessionKind::Launched,
             read_only,
-            viewport_width: cfg.viewport_width,
-            viewport_height: cfg.viewport_height,
+            viewport_width: AtomicU32::new(cfg.viewport_width),
+            viewport_height: AtomicU32::new(cfg.viewport_height),
             created_ms: now,
             ephemeral_profile,
             latest_frame: Mutex::new(None),
@@ -828,8 +844,8 @@ impl Sessions {
             headless: false,
             kind: SessionKind::Attached { owns_page },
             read_only,
-            viewport_width: cfg.viewport_width,
-            viewport_height: cfg.viewport_height,
+            viewport_width: AtomicU32::new(cfg.viewport_width),
+            viewport_height: AtomicU32::new(cfg.viewport_height),
             created_ms: now,
             ephemeral_profile: None,
             latest_frame: Mutex::new(None),
@@ -1181,6 +1197,33 @@ impl Sessions {
     /// Release a screencast consumer. Stops the Chromium screencast on the
     /// 1->0 transition, leaving it running while any other consumer remains
     /// (so stopping a recording never cuts off a UI viewer). Never underflows.
+    /// Force a fresh screencast frame (e.g. after a viewport resize) without
+    /// racing the acquire/release counter: hold a consumer slot of our own
+    /// while re-issuing StartScreencast, so a real viewer's release cannot
+    /// hit the 1 -> 0 stop transition mid-restart. With no other viewer the
+    /// acquire starts and the release stops the cast; both are the counted
+    /// paths, so the counter and the CDP state stay in step.
+    pub async fn nudge_screencast(&self, session: &Arc<Session>) {
+        if self.acquire_screencast(session).await.is_err() {
+            return;
+        }
+        if session
+            .screencast_consumers
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 1
+        {
+            use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+            let quality = self.config.load().screenshot_quality as i64;
+            let restart = cdp_page::StartScreencastParams::builder()
+                .format(cdp_page::StartScreencastFormat::Jpeg)
+                .quality(quality)
+                .every_nth_frame(1)
+                .build();
+            let _ = session.page.execute(restart).await;
+        }
+        self.release_screencast(session).await;
+    }
+
     pub async fn release_screencast(&self, session: &Arc<Session>) {
         use chromiumoxide::cdp::browser_protocol::page as cdp_page;
         let prev = session
@@ -1474,6 +1517,9 @@ async fn spawn_event_pumps(
                     continue; // subframes don't invalidate top-document refs
                 }
                 s.clear_refs();
+                // A cross-process navigation kills a running screencast with
+                // the old renderer; restart it so the stream never blanks.
+                sx.nudge_screencast(&s).await;
                 // A wedged renderer must not stall the navigation pump on a
                 // title read; after a short wait the visit records untitled.
                 let title =
