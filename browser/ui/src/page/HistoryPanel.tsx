@@ -58,7 +58,7 @@ export function HistoryPanel({ host, sessionId, enabled }: HistoryPanelProps) {
   return (
     <div className="br-ui-history">
       <div className="br-ui-history-search">
-        <Search size={14} aria-hidden className="br-ui-history-search-icon" />
+        <Search size={16} aria-hidden className="br-ui-history-search-icon" />
         <Input
           value={query}
           onChange={setQuery}
@@ -84,7 +84,7 @@ export function HistoryPanel({ host, sessionId, enabled }: HistoryPanelProps) {
                 onClick={() => go(v.url)}
                 title={v.url}
               >
-                <Globe size={15} aria-hidden className="br-ui-history-icon" />
+                <Globe size={16} aria-hidden className="br-ui-history-icon" />
                 <span className="br-ui-history-text">
                   <span className="br-ui-history-title">
                     {v.title || v.url}

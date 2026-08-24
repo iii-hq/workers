@@ -127,20 +127,20 @@ export function DownloadsPanel({
                 onClick={() => sendToChat(d.guid)}
                 disabled={!done || !canSendToChat}
               >
-                <MessageSquarePlus size={15} aria-hidden />
+                <MessageSquarePlus size={16} aria-hidden />
               </IconButton>
               <IconButton
                 label={`save ${d.file_name}`}
                 onClick={() => save(d.guid)}
                 disabled={!done}
               >
-                <Download size={15} aria-hidden />
+                <Download size={16} aria-hidden />
               </IconButton>
               <IconButton
                 label={`remove ${d.file_name}`}
                 onClick={() => remove(d.guid)}
               >
-                <X size={15} aria-hidden />
+                <X size={16} aria-hidden />
               </IconButton>
             </span>
           </li>
