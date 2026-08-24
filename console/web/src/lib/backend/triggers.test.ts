@@ -65,6 +65,7 @@ describe('listSessionTriggers', () => {
               trigger_type: 'state',
               config: { scope: 'run', key: 'done' },
               label: 'gate',
+              action: 'run completion received',
               once: true,
               fires: 0,
               created_at: 10,
@@ -100,6 +101,7 @@ describe('listSessionTriggers', () => {
       triggerType: 'state',
       delivery: { kind: 'notify' },
       label: 'gate',
+      action: 'run completion received',
       once: true,
     })
     expect(rows[1].delivery).toEqual({
@@ -166,6 +168,7 @@ describe('mergeFiredTriggers', () => {
           fires: 4,
           trigger_type: 'cron',
           config: { expression: '0 * * * * *' },
+          action: 'scheduled report became due',
           outcome: 'expired',
           retirement_reason: 'expired',
         }),
@@ -176,6 +179,7 @@ describe('mergeFiredTriggers', () => {
     expect(merged[0].label).toBe('remembered')
     expect(merged[0].triggerType).toBe('cron')
     expect(merged[0].config).toEqual({ expression: '0 * * * * *' })
+    expect(merged[0].action).toBe('scheduled report became due')
     expect(merged[0].conditions).toEqual([{ function_id: 'fp::when' }])
     expect(merged[0].fires).toBe(4)
     expect(merged[0].outcome).toBe('expired')

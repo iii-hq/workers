@@ -90,7 +90,8 @@ one is a regression even if all types still line up):
 7. **`set_status` is spec-strict:** same status AND same stored reason ⇒ no
    write, no event. A reason change alone re-emits (live phase detail within
    one `working` stretch). `status_reason` is stored with `error` (failure
-   cause) and `working` (phase detail), cleared by `idle`/`done`.
+   cause), `working` (phase detail), and `done` (terminal detail such as a
+   user stop); `idle` clears it.
 8. **`set_meta` replaces `metadata` wholesale** when supplied (it is the
    tenancy hook; merging would leak stale keys). An all-`None` request is a
    silent no-op.

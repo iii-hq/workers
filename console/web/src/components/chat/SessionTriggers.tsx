@@ -1,11 +1,4 @@
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Trash2,
-  Zap,
-} from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import {
@@ -14,6 +7,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
@@ -194,22 +188,23 @@ function TriggerRow({
   stateNote,
 }: TriggerRowProps) {
   const name = trigger.label ?? null
+  const title = name ?? trigger.triggerType
   const summary = stateNote ?? summarizeTriggerConfig(trigger.config)
   const lifecycle = lifecycleNote(trigger)
   return (
     <div
       className={`flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0${trigger.fired ? ' opacity-55' : ''}`}
     >
-      <Zap size={16} className="shrink-0 text-ink-ghost" aria-hidden />
+      <TriggerIcon size={16} className="shrink-0 fill-ink-ghost" aria-hidden />
       <button
         type="button"
         onClick={onOpen}
         className="min-w-0 flex-1 truncate text-left hover:text-ink transition-colors"
         title="show subscription detail"
       >
-        {name || trigger.triggerType}
+        {title}
         <span className="text-ink-ghost">
-          {name ? ` · ${trigger.triggerType}` : ''}
+          {title !== trigger.triggerType ? ` · ${trigger.triggerType}` : ''}
           {` · ${deliveryLabel(trigger)}`}
           {summary ? ` · ${summary}` : ''}
           {lifecycle ? ` · ${lifecycle}` : ''}
@@ -220,7 +215,7 @@ function TriggerRow({
         disabled={busy}
         onClick={onUnregister}
         className="shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors disabled:opacity-50"
-        aria-label={`${trigger.fired ? 'dismiss' : 'unregister'} ${name ?? trigger.triggerType}`}
+        aria-label={`${trigger.fired ? 'dismiss' : 'unregister'} ${title}`}
         title={trigger.fired ? 'dismiss' : 'unregister'}
       >
         {busy ? '…' : '✕'}
@@ -375,7 +370,11 @@ export function SessionTriggers({
               aria-expanded={expanded}
               className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-[12px] hover:text-ink transition-colors"
             >
-              <Zap size={16} className="shrink-0 text-ink-ghost" aria-hidden />
+              <TriggerIcon
+                size={16}
+                className="shrink-0 fill-ink-ghost"
+                aria-hidden
+              />
               <span className="min-w-0 flex-1 truncate text-left">
                 {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
                 registered
@@ -439,7 +438,7 @@ export function SessionTriggers({
               className="mr-2 inline-flex align-baseline text-ink-ghost"
               aria-hidden
             >
-              <Zap size={16} />
+              <TriggerIcon size={16} className="fill-ink-ghost" />
             </span>
             {selected ? selected.label || selected.triggerType : ''}
           </DialogTitle>

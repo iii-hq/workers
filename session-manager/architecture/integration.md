@@ -144,9 +144,9 @@ session-manager` / `get function info`); the shapes below are the contract.
 // session::list). Empty / whitespace-only text clears.
 { session_id, draft? } -> { draft: string | null }
 
-// session::set-status — fires session::status-changed; SAME status = no-op,
-// no event (even with a different reason). reason stored only with "error",
-// cleared on any other status.
+// session::set-status — fires session::status-changed; same status AND reason
+// is a no-op, while a reason-only change re-emits. reason is retained with
+// working/done/error and cleared with idle.
 { session_id, status, reason? } -> { status, previous_status }
 
 // session::delete — removes meta + entries + leaf. Fires session::deleted.

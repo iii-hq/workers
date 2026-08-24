@@ -628,6 +628,22 @@ describe('entrySegments', () => {
     ).toBe('cron · notified this chat')
   })
 
+  it('prefers registration action as the fired event summary', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        trigger_type: 'on-message',
+        target: 'harness::send',
+        label: 'explorer-messages',
+        action: 'new Explorer message received',
+        once: false,
+        retired: false,
+        outcome: 'delivered',
+        fired_at: 0,
+      }),
+    ).toBe('new Explorer message received · notified this chat')
+  })
+
   it('renders a persisted failure with partial-output and recovery context', () => {
     const [notice] = entrySegments({
       entry_id: 'e-t-1-error',

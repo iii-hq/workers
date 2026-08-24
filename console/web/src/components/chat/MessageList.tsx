@@ -19,7 +19,9 @@ import {
 } from '@/components/function-trigger/renderer-registry'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import {
-  type TriggerAwareMessageListRow,
+  collapsedTimelineActivities,
+  groupTimelineActivities,
+  type TimelineActivityGroupRow,
   triggerActivityRows,
 } from '@/components/trigger-activity/grouping'
 import {
@@ -42,12 +44,8 @@ import {
 import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
-import {
-  collapsedFunctionTriggerCalls,
-  functionTriggerGroups,
-  type MessageListRow,
-} from './function-trigger-groups'
-import { Message } from './Message'
+import { functionTriggerGroups } from './function-trigger-groups'
+import { Message, type SpawnTaskContext } from './Message'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
@@ -100,6 +98,8 @@ interface MessageListProps {
   onManageFilesystemAccess?: () => void
   /** Open the model/provider picker from the empty provider state. */
   onConfigureProvider?: () => void
+  /** Current child-session identity shown by direct spawn seed messages. */
+  spawnContext?: SpawnTaskContext
   workingDir?: string | null
   /**
    * Render every function-call card (and group) already expanded. Off in the
@@ -243,6 +243,7 @@ export function resolveRegistrations(
                 trigger_type: t.trigger_type,
                 config: t.config,
                 label: t.label,
+                metadata: t.action ? { action: t.action } : undefined,
                 function_id:
                   t.target &&
                   t.target !== 'notify' &&
@@ -281,6 +282,7 @@ export function MessageList({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   onConfigureProvider,
+  spawnContext,
   workingDir,
   defaultOpenCalls,
   triggersById,
@@ -303,7 +305,10 @@ export function MessageList({
     [messages],
   )
   const rows = useMemo(
-    () => triggerActivityRows(functionTriggerGroups(messages)),
+    () =>
+      groupTimelineActivities(
+        triggerActivityRows(functionTriggerGroups(messages)),
+      ),
     [messages],
   )
   const registrations = useMemo(
@@ -605,13 +610,14 @@ export function MessageList({
           className="mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
         >
           {header}
-          {rows.map((row, i) => {
-            if (row.kind === 'function-trigger-group') {
+          {rows.map((row) => {
+            if (row.kind === 'activity-group') {
               return (
                 <div key={row.id} data-message-row={row.id}>
                   <FunctionTriggerGroup
                     row={row}
                     renderers={renderers}
+                    registrations={registrations}
                     defaultOpenCalls={defaultOpenCalls}
                     onResolveApproval={onResolveApproval}
                     onAlwaysAllow={onAlwaysAllow}
@@ -649,45 +655,20 @@ export function MessageList({
               m.role === 'assistant' && (m.content || calls?.length)
                 ? () => assistantCopyText(m.content, calls ?? [], redactFor)
                 : undefined
-            // Consecutive trigger-fired notices share the same compact visual
-            // language as call groups, so keep those system rows close too.
-            const triggerFired = (x: TriggerAwareMessageListRow | undefined) =>
-              x?.kind === 'trigger-activity' ||
-              (x?.kind === 'message' &&
-                x.message.role === 'system' &&
-                x.message.kind === 'trigger-fired')
-            const tight = triggerFired(row) && triggerFired(rows[i - 1])
-            const rowKey =
-              row.kind === 'trigger-activity' ? row.id : row.message.id
-            const node = (
-              <Message
-                key={rowKey}
-                message={m}
-                triggerNotification={
-                  row.kind === 'trigger-activity' ? row.notification : undefined
-                }
-                copyText={copyText}
-                defaultOpenCalls={defaultOpenCalls}
-                onResolveApproval={onResolveApproval}
-                onAlwaysAllow={onAlwaysAllow}
-                onResolveFilesystemAccess={onResolveFilesystemAccess}
-                onManageFilesystemAccess={onManageFilesystemAccess}
-                workingDir={workingDir}
-                registration={
-                  registrations.get(m.id) ??
-                  (row.kind === 'trigger-activity' && row.notification
-                    ? registrations.get(row.notification.id)
-                    : undefined)
-                }
-              />
-            )
             return (
-              <div
-                key={rowKey}
-                data-message-row={rowKey}
-                className={tight ? '-mt-6.5' : undefined}
-              >
-                {node}
+              <div key={m.id} data-message-row={m.id}>
+                <Message
+                  message={m}
+                  spawnContext={spawnContext}
+                  copyText={copyText}
+                  defaultOpenCalls={defaultOpenCalls}
+                  onResolveApproval={onResolveApproval}
+                  onAlwaysAllow={onAlwaysAllow}
+                  onResolveFilesystemAccess={onResolveFilesystemAccess}
+                  onManageFilesystemAccess={onManageFilesystemAccess}
+                  workingDir={workingDir}
+                  registration={registrations.get(m.id)}
+                />
               </div>
             )
           })}
@@ -727,8 +708,9 @@ export function MessageList({
 }
 
 interface FunctionTriggerGroupProps {
-  row: Extract<MessageListRow, { kind: 'function-trigger-group' }>
+  row: TimelineActivityGroupRow
   renderers: ReturnType<typeof useFunctionTriggerRenderers>
+  registrations: ReadonlyMap<string, TriggerRegistration>
   defaultOpenCalls?: boolean
   summaryCopyText?: string | (() => string)
   onResolveApproval?: MessageListProps['onResolveApproval']
@@ -747,6 +729,7 @@ interface FunctionTriggerGroupProps {
 function FunctionTriggerGroup({
   row,
   renderers,
+  registrations,
   defaultOpenCalls,
   summaryCopyText,
   onResolveApproval,
@@ -757,22 +740,22 @@ function FunctionTriggerGroup({
 }: FunctionTriggerGroupProps) {
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
   const contentId = useId()
-  const collapsedCalls = collapsedFunctionTriggerCalls(row.calls, (call) =>
+  const collapsedItems = collapsedTimelineActivities(row.items, (call) =>
     renderers.some(
       (renderer) =>
         renderer.metadata?.display === true &&
         renderer.isMatch(call.functionId),
     ),
   )
-  const hiddenCount = row.calls.length - collapsedCalls.length
-  const visibleCalls = expanded ? row.calls : collapsedCalls
+  const hiddenCount = row.items.length - collapsedItems.length
+  const visibleItems = expanded ? row.items : collapsedItems
   const canCollapse = hiddenCount > 0
 
   return (
     <section
       className="flex flex-col gap-y-8"
       data-function-trigger-group=""
-      data-function-trigger-count={row.calls.length}
+      data-function-trigger-count={row.items.length}
     >
       <div className="flex flex-col gap-y-8">
         {canCollapse ? (
@@ -794,7 +777,7 @@ function FunctionTriggerGroup({
                 expanded && 'rotate-90',
               )}
             />
-            <span className="tabular-nums">{row.calls.length} triggers</span>
+            <span className="tabular-nums">{row.items.length} triggers</span>
             <span className="text-ink-ghost">
               · {expanded ? 'show latest' : 'show all'}
             </span>
@@ -805,19 +788,31 @@ function FunctionTriggerGroup({
           className={cn('flex flex-col gap-y-8', canCollapse && '-mt-6.5')}
           data-function-trigger-group-calls=""
         >
-          {visibleCalls.map((call, index) => (
-            <div key={call.id} className={cn(index > 0 && '-mt-6.5')}>
-              <Message
-                message={call}
-                defaultOpenCalls={defaultOpenCalls}
-                onResolveApproval={onResolveApproval}
-                onAlwaysAllow={onAlwaysAllow}
-                onResolveFilesystemAccess={onResolveFilesystemAccess}
-                onManageFilesystemAccess={onManageFilesystemAccess}
-                workingDir={workingDir}
-              />
-            </div>
-          ))}
+          {visibleItems.map((item, index) => {
+            const message = item.message
+            const notification =
+              item.kind === 'trigger-activity' ? item.notification : undefined
+            return (
+              <div key={item.id} className={cn(index > 0 && '-mt-6.5')}>
+                <Message
+                  message={message}
+                  triggerNotification={notification}
+                  registration={
+                    registrations.get(message.id) ??
+                    (notification
+                      ? registrations.get(notification.id)
+                      : undefined)
+                  }
+                  defaultOpenCalls={defaultOpenCalls}
+                  onResolveApproval={onResolveApproval}
+                  onAlwaysAllow={onAlwaysAllow}
+                  onResolveFilesystemAccess={onResolveFilesystemAccess}
+                  onManageFilesystemAccess={onManageFilesystemAccess}
+                  workingDir={workingDir}
+                />
+              </div>
+            )
+          })}
         </div>
       </div>
       {row.summary ? (

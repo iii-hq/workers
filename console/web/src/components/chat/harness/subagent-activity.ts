@@ -1,5 +1,6 @@
 import type { AgentMessage, TranscriptItem } from '@/lib/sessions/types'
-import type { Conversation, ConversationStatus } from '@/types/chat'
+import type { Conversation } from '@/types/chat'
+import { deriveSubagentVisualStatus } from '../active-subagents'
 
 export type SubagentActivityKind =
   | 'active'
@@ -7,9 +8,14 @@ export type SubagentActivityKind =
   | 'thinking'
   | 'messaging'
   | 'error'
+  | 'completed'
+  | 'stopped'
+  | 'disconnected'
+  | 'queued'
+  | 'waiting'
 
 export interface SubagentActivitySignal {
-  kind: Exclude<SubagentActivityKind, 'active' | 'error'>
+  kind: Extract<SubagentActivityKind, 'working' | 'thinking' | 'messaging'>
   timestamp: number
 }
 
@@ -56,13 +62,21 @@ export function latestSubagentActivity(
 /** Session status is authoritative for terminal/idle states; transcript
  * activity refines only a session that is still working. */
 export function displayedSubagentActivity(
-  status: ConversationStatus | undefined,
+  conversation: Conversation | undefined,
   signal: SubagentActivitySignal | null,
+  connectionState: Parameters<
+    typeof deriveSubagentVisualStatus
+  >[1] = 'connected',
 ): SubagentActivityKind {
-  if (status === 'error') return 'error'
-  if (status === 'idle' || status === 'done') return 'active'
-  if (status === 'working') return signal?.kind ?? 'working'
-  return signal?.kind ?? 'working'
+  if (!conversation) {
+    return connectionState === 'connected'
+      ? (signal?.kind ?? 'working')
+      : 'disconnected'
+  }
+  const visual = deriveSubagentVisualStatus(conversation, connectionState)
+  if (visual === 'failed') return 'error'
+  if (visual === 'working') return signal?.kind ?? 'working'
+  return visual
 }
 
 interface ResolveChildSessionInput {

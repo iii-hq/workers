@@ -59,9 +59,11 @@ harness::trigger::deliver        ← the ONE target the engine ever sees
                                     delivery record
 ```
 
-The engine-side metadata is now exactly `{"__binding": "<id>"}`. Owner, target,
-conditions, lifecycle, frozen capability and fire count live in a durable
-record; nothing an agent writes into metadata is read back.
+The engine-side metadata is exactly `{"__binding": "<id>"}`. Owner, target,
+conditions, lifecycle, frozen capability, fire count, and the canonical
+registration live in a durable record. Agent-authored metadata is never
+trusted for routing or authorization; the presentation-only `action` field is
+read from that canonical record so active and fired UI can use the same copy.
 
 Three consequences worth knowing:
 
@@ -82,7 +84,10 @@ Three consequences worth knowing:
 {
   "trigger_type": "state",       // required
   "config":  { },                // that type's own filters, passed verbatim
-  "label":   "…",                // optional, echoed in the notification text
+  "label":   "explorer-messages", // optional binding identity
+  "metadata": {
+    "action": "new Explorer message received" // optional event copy for UI
+  },
   "once":    true,               // shorthand for lifecycle.once
 
   //   omit the target entirely            → wake me
@@ -97,6 +102,16 @@ Three consequences worth knowing:
 Response: `{ subscription_id, once, note? }`. `once` is the **effective** value
 after the per-type default — trust the echo. `note` is advisory: the
 registration succeeded but the wiring looks suspicious.
+
+`label` and `metadata.action` are deliberately different. The label is a
+short stable name used to identify and correlate the binding. The action is a
+short user-facing description of what a future fire will mean. The harness
+returns the action from `harness::triggers::list` before the first fire and
+copies it into every durable `trigger_fired` record. If action is absent, UIs
+for fired events fall back to label and then to the trigger source. Registration
+and active-binding surfaces use label; action is revealed when the trigger
+fires. `metadata.action` must be a non-empty string; it is display text only
+and never changes delivery.
 
 ### `trigger_type` → `config`
 
@@ -188,7 +203,7 @@ switch them off.
 session and starts a turn. This is the only shape that can reach you.
 
 **A function call** — `function_id: "<any function your policy allows>"`,
-`metadata: { payload?, event_into? }`. The event is injected into your template
+`metadata: { action?, payload?, event_into? }`. The event is injected into your template
 at `event_into` (default `/event`). Deterministic, token-free, no session — and
 its **result is discarded**; it cannot reach you. Gated twice: your dispatch
 policy, and the approval gate, because a fired call runs outside any turn and

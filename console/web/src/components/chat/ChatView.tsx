@@ -1,4 +1,4 @@
-import { ArrowLeft, Folder } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
@@ -49,7 +49,6 @@ import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
 import { expandSlashInvocation, slashChip } from '@/lib/slash-commands'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
-import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
   consoleClaimFor,
@@ -82,6 +81,7 @@ import {
   type UserMessage,
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
+import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { MessageList } from './MessageList'
@@ -90,7 +90,6 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
 } from './system-prompt-selection'
-import { WorktreeBadge } from './WorktreeBadge'
 
 /**
  * Saved dirs already re-validated this page load, keyed sessionId + dir —
@@ -154,6 +153,8 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
+  /** Header label for a session-pinned workspace panel. */
+  panelTitle?: string
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
   /** The pane's command registrar: chat's keys and palette rows. */
@@ -178,6 +179,7 @@ export function ChatView({
   modelOptions,
   catalogLoading,
   density = 'route',
+  panelTitle,
   onRequestClose,
   commands,
   onBack,
@@ -962,9 +964,9 @@ export function ChatView({
     conversation.id,
   ])
 
-  // The worktrees tab, the working-directory badge, claim/release, and the
-  // landed / land-blocked live events all require the optional `worktree`
-  // worker; gate the whole surface on its presence like shell above.
+  // The worktrees tab, claim/release, and the landed / land-blocked live
+  // events all require the optional `worktree` worker; gate the whole surface
+  // on its presence like shell above.
   const worktreeEnabled =
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.worktreeAvailable : false)
@@ -1742,8 +1744,8 @@ export function ChatView({
     ? 'px-3 pb-3 pt-2 sm:px-4 sm:pb-4'
     : 'px-3 pb-3 pt-2 sm:px-6 sm:pb-5 lg:px-9 lg:pb-6'
 
-  // Resolve the working directory to its managed worktree (badge), and keep
-  // it fresh across landed / land-blocked events.
+  // Resolve the working directory to its managed worktree so landed /
+  // land-blocked events can be scoped to this conversation.
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const worktreeInfo = useWorktreeBinding(
     conversation.workingDir ?? null,
@@ -1753,8 +1755,8 @@ export function ChatView({
   const worktreeInfoRef = useRef<WorktreeInfo | null>(worktreeInfo)
   worktreeInfoRef.current = worktreeInfo
 
-  // Only surface events for the worktree this conversation points at (badge)
-  // or claimed through this console flow — never every land on the bus.
+  // Only surface events for the worktree this conversation points at or
+  // claimed through this console flow — never every land on the bus.
   const eventConcernsConversation = useCallback(
     (worktreeId: string) =>
       worktreeInfoRef.current?.worktree_id === worktreeId ||
@@ -2096,7 +2098,9 @@ export function ChatView({
               <ArrowLeft aria-hidden className="size-4 shrink-0" />
             </button>
           ) : null}
-          <span className="shrink-0 font-medium text-ink">Chat</span>
+          <span className="min-w-0 truncate font-medium text-ink">
+            {panelTitle ?? 'Chat'}
+          </span>
           <span className="shrink-0 text-ink-ghost">·</span>
           <span className="min-w-0 truncate">{effectiveModel}</span>
         </div>
@@ -2110,6 +2114,11 @@ export function ChatView({
 
       <MessageList
         messages={conversation.messages}
+        spawnContext={{
+          title: conversation.title,
+          model: effectiveModel,
+          appearance: conversation.subagentAppearance,
+        }}
         transcriptHydrated={conversation.hydrated !== false}
         isThinking={isThinking}
         thinkingDetail={
@@ -2131,51 +2140,14 @@ export function ChatView({
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
-          {workingDirEnabled ? (
-            <div className="mb-1 hidden flex-wrap items-center gap-1.5 px-1 text-ink-faint sm:flex sm:text-[11px]">
-              {worktreeInfo ? (
-                // Managed worktree: branch + id + dirty/ahead + lifecycle
-                // replace the raw path chip (path stays as the tooltip).
-                <WorktreeBadge worktree={worktreeInfo} className="min-w-0" />
-              ) : (
-                <>
-                  <Folder className="size-4 shrink-0" aria-hidden />
-                  {conversation.workingDir ? (
-                    <span
-                      // dir=rtl keeps the trailing (most-distinguishing) path
-                      // segment visible when truncated in the narrow dock.
-                      dir="rtl"
-                      className={cn(
-                        'min-w-0 flex-1 truncate text-left font-mono',
-                        workingDirError && 'text-warn',
-                      )}
-                      title={workingDirError ?? conversation.workingDir}
-                    >
-                      {conversation.workingDir}
-                    </span>
-                  ) : (
-                    <span className="min-w-0 flex-1 text-ink-ghost">
-                      No working directory — using default workspace
-                    </span>
-                  )}
-                </>
-              )}
-              <button
-                type="button"
-                onClick={handleManageFilesystemAccess}
-                title={
-                  approvalEnabled
-                    ? 'Access is limited to this workspace until you approve another folder.'
-                    : 'The working directory sets where commands start; shell configuration controls access.'
-                }
-                className="min-h-12 basis-full text-left text-ink-ghost hover:text-ink sm:ml-auto sm:min-h-0 sm:basis-auto"
-              >
-                Access: {approvalEnabled ? 'Workspace' : 'Shell defaults'}
-                {approvalEnabled && filesystemGrants.grants.length > 0
-                  ? ` · ${filesystemGrants.grants.length}`
-                  : ''}
-              </button>
-            </div>
+          {conversationsCtx ? (
+            <ActiveSubagentChips
+              className="mb-1 px-1"
+              conversations={conversationsCtx.conversations}
+              rootSessionId={conversation.id}
+              connectionState={conversationsCtx.connectionState}
+              onOpen={conversationsCtx.openConversationInPanel}
+            />
           ) : null}
           <SessionTriggers
             triggers={mergedTriggers}

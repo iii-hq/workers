@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { TriggerRegisteredDisplay } from '@/components/chat/engine/RegisterTriggerView'
+import {
+  RegisterTriggerView,
+  TriggerRegisteredDisplay,
+} from '@/components/chat/engine/RegisterTriggerView'
 import { SpawnActivityCard } from '@/components/chat/harness/SpawnView'
 import {
   engineFunctionsListEmpty,
@@ -79,8 +82,42 @@ describe('spawn activity display', () => {
 
     expect(html).toContain(`data-subagent-status="${status}"`)
     expect(html).toContain(label)
-    expect(html).toContain('New sub-agent')
+    expect(html).toContain('Review the release')
+    expect(html).toContain('Sub-agent')
     expect(html).toContain(`${label} for 2m`)
+  })
+
+  it.each([
+    ['completed', 'Completed'],
+    ['stopped', 'Stopped'],
+  ] as const)('renders the %s terminal state', (status, label) => {
+    const html = renderToStaticMarkup(
+      <SpawnActivityCard
+        title="Reviewer"
+        task="Audit the release candidate."
+        status={status}
+        activityAt={now - 120_000}
+        now={now}
+      />,
+    )
+
+    expect(html).toContain(label)
+    expect(html).toContain(`${label} 2m ago`)
+  })
+
+  it('does not present stale activity age as disconnect duration', () => {
+    const html = renderToStaticMarkup(
+      <SpawnActivityCard
+        title="Reviewer"
+        task="Audit the release candidate."
+        status="disconnected"
+        activityAt={now - 10_800_000}
+        now={now}
+      />,
+    )
+
+    expect(html).toContain('Disconnected')
+    expect(html).not.toContain('Disconnected for')
   })
 
   it('renders the requested metadata and the entire widget as the session destination', () => {
@@ -90,6 +127,8 @@ describe('spawn activity display', () => {
         task="Audit the release candidate."
         status="working"
         sessionId="child-1"
+        icon="review"
+        color="purple"
         createdAt={now - 120_000}
         activityAt={now - 120_000}
         now={now}
@@ -98,7 +137,11 @@ describe('spawn activity display', () => {
     )
 
     expect(html.match(/<button/g)).toHaveLength(1)
-    expect(html).toContain('Open sub-agent session child-1')
+    expect(html).toContain(
+      'aria-label="Open Review the release sub-agent in a new panel"',
+    )
+    expect(html).toContain('data-color="purple"')
+    expect(html).toContain('lucide-clipboard-check')
     expect(html).toContain('Open details')
     expect(html).toContain('2m ago')
     expect(html).toContain('ID: child-1')
@@ -162,6 +205,44 @@ describe('trigger registration display', () => {
     expect(html).toContain('bg-ok-muted')
     expect(html).toContain('stroke-ok')
     expect(html).toContain('animate-pulse')
+  })
+
+  it('keeps action hidden until the trigger fires', () => {
+    const html = renderToStaticMarkup(
+      <TriggerRegisteredDisplay
+        input={{
+          trigger_type: 'on-message',
+          label: 'explorer-messages',
+          metadata: { action: 'new Explorer message received' },
+        }}
+        output={{ subscription_id: 'sub-1', once: false }}
+      />,
+    )
+
+    expect(html).toContain('data-trigger-registration-label=""')
+    expect(html).toContain('explorer-messages')
+    expect(html).not.toContain('new Explorer message received')
+  })
+
+  it('omits action from readable registration details while preserving other metadata', () => {
+    const html = renderToStaticMarkup(
+      <RegisterTriggerView
+        messageId="register-1"
+        input={{
+          trigger_type: 'on-message',
+          label: 'explorer-messages',
+          metadata: {
+            action: 'new Explorer message received',
+            source: 'explorer',
+          },
+        }}
+        output={{ subscription_id: 'sub-1', once: false }}
+      />,
+    )
+
+    expect(html).not.toContain('new Explorer message received')
+    expect(html).toContain('Registration metadata')
+    expect(html).toContain('explorer')
   })
 
   it('places status above open details only at the desktop container breakpoint', () => {

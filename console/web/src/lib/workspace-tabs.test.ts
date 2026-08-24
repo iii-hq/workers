@@ -3,7 +3,9 @@ import fixtures from './workspace-open.fixtures.json'
 import {
   adjacentTabId,
   CHAT_SCREEN,
+  chatSessionScreen,
   defaultTabs,
+  isChatScreen,
   MAX_COLUMNS,
   parseActivation,
   parseActiveTabId,
@@ -12,6 +14,7 @@ import {
   resolvePointer,
   screenForView,
   screenLabel,
+  sessionIdForChatScreen,
   shouldFlushPendingWrite,
   tabColumns,
   tabLabel,
@@ -50,6 +53,8 @@ describe('parseWorkspaceTabs', () => {
           { id: 't5', columns: 2, screens: [null, 'traces'] },
           { id: 't6', columns: 3, screens: ['traces', 'chat', 'workers'] },
           { id: 't7', columns: 2, screens: ['chat', 'traces'], sizes: [1, 3] },
+          { id: 't8', screens: ['chat:child:attempt:2'] },
+          { id: 'bad-empty-chat-session', screens: ['chat:'] },
           { id: 'bad-screen', screens: ['nonsense'] },
           {
             id: 'bad-too-many-screens',
@@ -73,6 +78,7 @@ describe('parseWorkspaceTabs', () => {
       't5',
       't6',
       't7',
+      't8',
     ])
   })
 
@@ -173,6 +179,22 @@ describe('active pointer round-trip', () => {
 })
 
 describe('screen mapping + labels', () => {
+  it('round-trips session-specific chat screens without splitting session ids', () => {
+    expect(isChatScreen(CHAT_SCREEN)).toBe(true)
+    expect(isChatScreen('chat:child:attempt:2')).toBe(true)
+    expect(isChatScreen('chat:')).toBe(false)
+    expect(isChatScreen('traces')).toBe(false)
+    expect(chatSessionScreen('child:attempt:2')).toBe('chat:child:attempt:2')
+    expect(chatSessionScreen('  child  ')).toBe('chat:child')
+    expect(sessionIdForChatScreen('chat:child:attempt:2')).toBe(
+      'child:attempt:2',
+    )
+    expect(sessionIdForChatScreen(CHAT_SCREEN)).toBeNull()
+    expect(sessionIdForChatScreen('chat:')).toBeNull()
+    expect(() => chatSessionScreen('')).toThrow(/non-empty session id/)
+    expect(() => chatSessionScreen('   ')).toThrow(/non-empty session id/)
+  })
+
   it('maps views to screens; ext-without-id and configuration have none', () => {
     expect(screenForView('workers', null)).toBe('workers')
     expect(screenForView('ext', 'my-page')).toBe('ext:my-page')
@@ -187,6 +209,7 @@ describe('screen mapping + labels', () => {
     const titles = new Map([['my-page', 'my page']])
     expect(screenLabel('ext:my-page', titles)).toBe('my page')
     expect(screenLabel('ext:ghost', titles)).toBe('ghost')
+    expect(screenLabel('chat:child', titles)).toBe('chat')
     expect(screenLabel('traces', titles)).toBe('traces')
   })
 
@@ -391,6 +414,19 @@ describe('withScreenOpenedBeside', () => {
     expect(next?.sizes?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1)
   })
 
+  it('treats a session-specific chat as the chat placement anchor', () => {
+    const tab: WorkspaceTab = {
+      id: 'a',
+      columns: 2,
+      screens: ['chat:parent:attempt:1', 'traces'],
+    }
+    expect(withScreenOpenedBeside(tab, 'chat:child')?.screens).toEqual([
+      'chat:parent:attempt:1',
+      'chat:child',
+      'traces',
+    ])
+  })
+
   it('reuses an existing screen and refuses to overwrite a full tab', () => {
     const existing: WorkspaceTab = {
       id: 'a',
@@ -446,6 +482,37 @@ describe('withWorkspaceScreenOpened', () => {
     ).toEqual({ tabs, activeTabId: 'chat-and-shell' })
   })
 
+  it('reuses the exact chat session but keeps distinct sessions distinct', () => {
+    const tabs: WorkspaceTab[] = [
+      {
+        id: 'session',
+        columns: 2,
+        screens: ['chat:child:attempt:1', 'traces'],
+      },
+    ]
+    expect(
+      withWorkspaceScreenOpened(
+        tabs,
+        'session',
+        'chat:child:attempt:1',
+        () => 'new',
+      ),
+    ).toEqual({ tabs, activeTabId: 'session' })
+
+    const distinct = withWorkspaceScreenOpened(
+      tabs,
+      'session',
+      'chat:child:attempt:2',
+      () => 'new',
+      () => 'pane-new',
+    )
+    expect(distinct.tabs[0].screens).toEqual([
+      'chat:child:attempt:1',
+      'chat:child:attempt:2',
+      'traces',
+    ])
+  })
+
   it('places beside chat, then creates a safe split when the active tab is full', () => {
     const open = withWorkspaceScreenOpened(
       [{ id: 'chat', columns: 2, screens: [CHAT_SCREEN, 'traces'] }],
@@ -479,6 +546,24 @@ describe('withWorkspaceScreenOpened', () => {
       id: 'new',
       columns: 2,
       screens: [CHAT_SCREEN, 'ext:shell'],
+    })
+  })
+
+  it('opens a session-specific chat alone when a new tab is required', () => {
+    const fullScreens = Array.from(
+      { length: MAX_COLUMNS },
+      (_, index) => `ext:full-${index}`,
+    )
+    const opened = withWorkspaceScreenOpened(
+      [{ id: 'full', columns: MAX_COLUMNS, screens: fullScreens }],
+      'full',
+      'chat:child',
+      () => 'new',
+    )
+    expect(opened.tabs[1]).toEqual({
+      id: 'new',
+      columns: 1,
+      screens: ['chat:child'],
     })
   })
 })

@@ -142,6 +142,14 @@ fn every_identity_prompt_teaches_the_live_surface() {
             "{name} never mentions how to start a sub-agent"
         );
         assert!(
+            body.contains("display: { name, icon?, color? }"),
+            "{name} never teaches the sub-agent display identity"
+        );
+        assert!(
+            normalized.contains("user-visible identity, not its technical id"),
+            "{name} conflates a child's display identity with its session id"
+        );
+        assert!(
             body.contains("orchestrator: true"),
             "{name} never mentions the leaf default's escape hatch"
         );

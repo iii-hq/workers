@@ -32,7 +32,7 @@ import {
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
 import { requestComposerFocus } from '@/lib/composer-insert'
-import { getIiiClient } from '@/lib/iii-client'
+import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
   deleteSession,
@@ -52,7 +52,12 @@ import {
   subscribeSessionDirectory,
   subscribeSessionTranscript,
 } from '@/lib/sessions/events'
-import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
+import type {
+  MetaUpdatedEvent,
+  SessionMeta,
+  StatusChangedEvent,
+  TranscriptItem,
+} from '@/lib/sessions/types'
 import {
   loadActiveId,
   loadLastModel,
@@ -68,10 +73,18 @@ import {
   type MessagePatch,
   type Mode,
   type ModelId,
+  type SubagentAppearance,
+  type SubagentColor,
+  type SubagentIcon,
 } from '@/types/chat'
 
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
+}
+
+/** Parse an id list serialized locally with JSON.stringify. */
+function sessionIdsFromSignature(signature: string): string[] {
+  return JSON.parse(signature) as string[]
 }
 
 /** Composer-draft save cadence (`session::set-draft` is event-silent, so the
@@ -118,6 +131,51 @@ export function isUntouchedDraft(conversation: Conversation): boolean {
 
 function isMode(v: unknown): v is Mode {
   return v === 'ask' || v === 'agent'
+}
+
+const SUBAGENT_ICON_VALUES = new Set<SubagentIcon>([
+  'agent',
+  'code',
+  'search',
+  'terminal',
+  'database',
+  'test',
+  'review',
+  'docs',
+  'design',
+])
+const SUBAGENT_COLOR_VALUES = new Set<SubagentColor>([
+  'neutral',
+  'blue',
+  'purple',
+  'teal',
+  'green',
+  'amber',
+  'rose',
+])
+
+function decodeSubagentAppearance(
+  value: unknown,
+): SubagentAppearance | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+  if (!name) return undefined
+  const icon =
+    typeof raw.icon === 'string' &&
+    SUBAGENT_ICON_VALUES.has(raw.icon as SubagentIcon)
+      ? (raw.icon as SubagentIcon)
+      : undefined
+  const color =
+    typeof raw.color === 'string' &&
+    SUBAGENT_COLOR_VALUES.has(raw.color as SubagentColor)
+      ? (raw.color as SubagentColor)
+      : undefined
+  return {
+    name: Array.from(name).slice(0, 48).join(''),
+    ...(icon ? { icon } : {}),
+    ...(color ? { color } : {}),
+  }
 }
 
 /**
@@ -189,7 +247,7 @@ function decodeSystemPrompt(v: unknown): SystemPromptState {
 }
 
 /** The console's session metadata convention (replaces wholesale on writes). */
-function metadataFor(
+export function metadataFor(
   c: Pick<
     Conversation,
     | 'model'
@@ -198,10 +256,26 @@ function metadataFor(
     | 'workingDir'
     | 'memoryBank'
     | 'systemPrompt'
+    | 'sessionMetadata'
   >,
 ): Record<string, unknown> {
   const systemPrompt = encodeSystemPrompt(c.systemPrompt)
+  // session::set-meta replaces metadata wholesale. Keep keys owned by the
+  // harness (parent linkage and sub-agent presentation) and other surfaces,
+  // while rebuilding the console-owned keys below so clearing one really
+  // removes it.
+  const {
+    surface: _surface,
+    model: _model,
+    mode: _mode,
+    title_manual: _titleManual,
+    fs_scope: _fsScope,
+    memory_bank: _memoryBank,
+    system_prompt: _systemPrompt,
+    ...preserved
+  } = c.sessionMetadata ?? {}
   return {
+    ...preserved,
     surface: 'console',
     ...(c.model ? { model: c.model } : {}),
     mode: c.mode,
@@ -233,6 +307,11 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
         ? md.memory_bank
         : null,
     systemPrompt: decodeSystemPrompt(md.system_prompt),
+    sessionMetadata: md,
+    serverMetaUpdatedAt: meta.updated_at,
+    serverMetadataUpdatedAt: meta.updated_at,
+    serverStatusUpdatedAt: meta.updated_at,
+    subagentAppearance: decodeSubagentAppearance(md.subagent_display),
     parentId:
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
@@ -254,6 +333,87 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
     hydrated: false,
     createdAt: meta.created_at,
     updatedAt: meta.updated_at,
+  }
+}
+
+/** Apply one partial metadata event without letting unordered delivery roll
+ * back a newer title or sub-agent presentation event. */
+export function applyConversationMetadataEvent(
+  conversation: Conversation,
+  event: MetaUpdatedEvent,
+): Conversation {
+  if (
+    conversation.serverMetadataUpdatedAt !== undefined &&
+    event.timestamp < conversation.serverMetadataUpdatedAt
+  ) {
+    return conversation
+  }
+  const md = event.metadata ?? {}
+  return {
+    ...conversation,
+    title: event.title || conversation.title,
+    titleManual: md.title_manual === true || conversation.titleManual,
+    model:
+      typeof md.model === 'string' && md.model.length > 0
+        ? md.model
+        : conversation.model,
+    mode: isMode(md.mode) ? md.mode : conversation.mode,
+    memoryBank:
+      typeof md.memory_bank === 'string' && md.memory_bank.length > 0
+        ? md.memory_bank
+        : null,
+    systemPrompt: decodeSystemPrompt(md.system_prompt),
+    sessionMetadata: md,
+    subagentAppearance: decodeSubagentAppearance(md.subagent_display),
+    serverMetaUpdatedAt: Math.max(
+      conversation.serverMetaUpdatedAt ?? -Infinity,
+      event.timestamp,
+    ),
+    serverMetadataUpdatedAt: event.timestamp,
+    parentId:
+      typeof md.parent_session_id === 'string'
+        ? md.parent_session_id
+        : conversation.parentId,
+    parentFunctionCallId:
+      typeof md.function_call_id === 'string'
+        ? md.function_call_id
+        : conversation.parentFunctionCallId,
+    depth: typeof md.depth === 'number' ? md.depth : conversation.depth,
+    spawnedBy:
+      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
+        ? md.spawned_by
+        : conversation.spawnedBy,
+    updatedAt: Math.max(conversation.updatedAt, event.timestamp),
+  }
+}
+
+/** Apply one partial lifecycle event without letting an older delivery turn a
+ * terminal sub-agent back into an active chip. */
+export function applyConversationStatusEvent(
+  conversation: Conversation,
+  event: StatusChangedEvent,
+): Conversation {
+  if (
+    conversation.serverStatusUpdatedAt !== undefined &&
+    event.timestamp < conversation.serverStatusUpdatedAt
+  ) {
+    return conversation
+  }
+  return {
+    ...conversation,
+    status: event.status,
+    statusReason: event.status_reason,
+    serverMetaUpdatedAt: Math.max(
+      conversation.serverMetaUpdatedAt ?? -Infinity,
+      event.timestamp,
+    ),
+    serverStatusUpdatedAt: event.timestamp,
+    // Turn over: drop dangling streaming/running flags.
+    messages:
+      event.status === 'working'
+        ? conversation.messages
+        : clearTransientFlags(conversation.messages),
+    updatedAt: Math.max(conversation.updatedAt, event.timestamp),
   }
 }
 
@@ -321,17 +481,68 @@ export function markBackgroundedStale(
   return changed ? next : conversations
 }
 
+/** Mark server sessions that have no mounted chat panel stale. Unlike the
+ * legacy active-only helper, this keeps every visible side-by-side panel
+ * hydrated and live. */
+export function markUnwatchedStale(
+  conversations: Conversation[],
+  watchedIds: ReadonlySet<string>,
+): Conversation[] {
+  let changed = false
+  const next = conversations.map((c) => {
+    if (watchedIds.has(c.id) || c.draft || !c.hydrated) return c
+    changed = true
+    return { ...c, hydrated: false }
+  })
+  return changed ? next : conversations
+}
+
 export function mergeConversationMeta(
   existing: Conversation | undefined,
   meta: SessionMeta,
 ): Conversation {
   const mapped = conversationFromMeta(meta)
   if (!existing || existing.draft) return mapped
-  return {
+  const metadataIsStale =
+    existing.serverMetadataUpdatedAt !== undefined &&
+    meta.updated_at < existing.serverMetadataUpdatedAt
+  const statusIsStale =
+    existing.serverStatusUpdatedAt !== undefined &&
+    meta.updated_at < existing.serverStatusUpdatedAt
+  const merged: Conversation = {
     ...mapped,
     messages: existing.messages,
     hydrated: existing.hydrated,
+    serverMetaUpdatedAt: Math.max(
+      existing.serverMetaUpdatedAt ?? -Infinity,
+      meta.updated_at,
+    ),
+    updatedAt: Math.max(existing.updatedAt, meta.updated_at),
   }
+  if (metadataIsStale) {
+    Object.assign(merged, {
+      title: existing.title,
+      titleManual: existing.titleManual,
+      model: existing.model,
+      mode: existing.mode,
+      workingDir: existing.workingDir,
+      memoryBank: existing.memoryBank,
+      systemPrompt: existing.systemPrompt,
+      sessionMetadata: existing.sessionMetadata,
+      subagentAppearance: existing.subagentAppearance,
+      parentId: existing.parentId,
+      parentFunctionCallId: existing.parentFunctionCallId,
+      depth: existing.depth,
+      spawnedBy: existing.spawnedBy,
+      serverMetadataUpdatedAt: existing.serverMetadataUpdatedAt,
+    })
+  }
+  if (statusIsStale) {
+    merged.status = existing.status
+    merged.statusReason = existing.statusReason
+    merged.serverStatusUpdatedAt = existing.serverStatusUpdatedAt
+  }
+  return merged
 }
 
 /** Merge the boot-time session list without dropping sessions discovered by
@@ -358,6 +569,36 @@ export function mergeSessionListSnapshot(
     ...concurrent,
     ...listed,
   ]
+}
+
+/** A fresh reconnect directory row wins unless this same refresh already has
+ * a definitive exact not-found/deleted tombstone for the session. */
+export function shouldAcceptReconnectDirectoryRow(input: {
+  currentGeneration: number
+  missingGeneration?: number
+}): boolean {
+  return input.missingGeneration !== input.currentGeneration
+}
+
+export function missingGenerationForDirectoryRefresh(
+  tombstone:
+    | { lookupGeneration: number; directoryRefreshGeneration: number }
+    | undefined,
+  refreshGeneration: number,
+): number | undefined {
+  return tombstone?.directoryRefreshGeneration === refreshGeneration
+    ? tombstone.lookupGeneration
+    : undefined
+}
+
+/** Increment only one panel session's lifecycle token. */
+export function bumpSessionWatchEpoch(
+  epochs: Map<string, number>,
+  sessionId: string,
+): number {
+  const next = (epochs.get(sessionId) ?? 0) + 1
+  epochs.set(sessionId, next)
+  return next
 }
 
 export function appendMessageToConversation(
@@ -403,8 +644,14 @@ export interface ConversationsApi {
   conversations: Conversation[]
   activeId: string | null
   active: Conversation | null
+  /** Current engine connection, used to avoid presenting cached work as live. */
+  connectionState: IIIConnectionState
+  /** Exact session ids confirmed absent/deleted by session-manager. */
+  missingConversationIds: ReadonlySet<string>
   createNew: () => string
   select: (id: string) => void
+  /** Keep one session hydrated and subscribed while a chat panel is mounted. */
+  watchConversation: (id: string) => () => void
   rename: (id: string, title: string) => void
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
@@ -457,6 +704,28 @@ export interface ConversationsApi {
 /** Live entry upsert captured while a hydration fetch was in flight. */
 export type HydrationUpsert = { item: TranscriptItem; updated: boolean }
 
+export interface HydrationRun {
+  cancelled: boolean
+  connectionEpoch: number
+  watchEpoch: number
+  upserts: HydrationUpsert[]
+}
+
+/** Invalidate reads issued on an older connection before starting fresh
+ * post-reconnect hydration for the same mounted panels. */
+export function cancelHydrationRunsForSessions(
+  sessionIds: readonly string[],
+  runs: Map<string, HydrationRun>,
+  buffers: Map<string, HydrationUpsert[]>,
+): void {
+  for (const sessionId of sessionIds) {
+    const run = runs.get(sessionId)
+    if (run) run.cancelled = true
+    runs.delete(sessionId)
+    buffers.delete(sessionId)
+  }
+}
+
 /** Fold a hydration read together with what the live feed did meanwhile:
     replay the buffered upserts on top (same entry id → live wins, the
     fetched snapshot predates them), then re-append live-only messages the
@@ -507,7 +776,33 @@ export function useConversations(
        create two. */
     emptyConversation(loadLastModel()),
   ])
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
+  const [connectionState, setConnectionState] = useState<IIIConnectionState>(
+    serverEnabled ? 'connecting' : 'connected',
+  )
+  const [hydrationEpoch, setHydrationEpoch] = useState(0)
+  const hydrationEpochRef = useRef(0)
+  // The revision wakes effects after a same-commit unwatch -> watch, while
+  // the per-session epochs ensure mounting panel B never tears down panel A.
+  const [watchLifecycleRevision, setWatchLifecycleRevision] = useState(0)
+  const watchLifecycleEpochsRef = useRef(new Map<string, number>())
+  const [watchedSessionIds, setWatchedSessionIds] = useState<string[]>([])
+  const [missingSessionIds, setMissingSessionIds] = useState<string[]>([])
+  const watchCountsRef = useRef(new Map<string, number>())
+  const visibleSessionIdsRef = useRef<string[]>([])
+  const sessionMetaLookupGenerationRef = useRef(new Map<string, number>())
+  const missingSessionLookupGenerationRef = useRef(
+    new Map<
+      string,
+      { lookupGeneration: number; directoryRefreshGeneration: number }
+    >(),
+  )
+  const sessionMetaLookupTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  )
+  const directoryRefreshGenerationRef = useRef(0)
   const pendingSelectIdRef = useRef<string | null>(null)
 
   /** Highest seen `message-updated` revision per (session, entry). */
@@ -515,10 +810,13 @@ export function useConversations(
 
   /** Upserts received while a hydration fetch is in flight; replayed over
       the fetched snapshot so the older read can't clobber a newer entry. */
-  const hydrationBufferRef = useRef<{
-    sessionId: string
-    upserts: HydrationUpsert[]
-  } | null>(null)
+  const hydrationBuffersRef = useRef(new Map<string, HydrationUpsert[]>())
+  const hydrationRunsRef = useRef(new Map<string, HydrationRun>())
+  const hydrationRetryTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  )
+  const transcriptSubscriptionsRef = useRef(new Map<string, () => void>())
+  const transcriptSubscriptionEpochsRef = useRef(new Map<string, number>())
 
   /* ── Composer drafts (SessionMeta.draft) ──────────────────────────────
      The live editor text lives in refs — one map entry per conversation —
@@ -543,24 +841,251 @@ export function useConversations(
     [],
   )
 
-  /* ── Boot: list sessions from session-manager ─────────────────────────── */
+  const markConversationMissing = useCallback((id: string) => {
+    setMissingSessionIds((current) =>
+      current.includes(id) ? current : [...current, id],
+    )
+  }, [])
+
+  const clearConversationMissing = useCallback((id: string) => {
+    setMissingSessionIds((current) =>
+      current.includes(id)
+        ? current.filter((sessionId) => sessionId !== id)
+        : current,
+    )
+  }, [])
+
+  const invalidateSessionMetaLookup = useCallback((sessionId: string) => {
+    const generations = sessionMetaLookupGenerationRef.current
+    generations.set(sessionId, (generations.get(sessionId) ?? 0) + 1)
+    const timer = sessionMetaLookupTimersRef.current.get(sessionId)
+    if (timer) clearTimeout(timer)
+    sessionMetaLookupTimersRef.current.delete(sessionId)
+  }, [])
+
+  const lookupSessionMeta = useCallback(
+    (
+      sessionId: string,
+      options: { requireWatched?: boolean; retries?: number } = {},
+    ) => {
+      invalidateSessionMetaLookup(sessionId)
+      const generation =
+        sessionMetaLookupGenerationRef.current.get(sessionId) ?? 0
+      const directoryRefreshGeneration = directoryRefreshGenerationRef.current
+      const retries = options.retries ?? 0
+
+      const run = (attempt: number) => {
+        sessionMetaLookupTimersRef.current.delete(sessionId)
+        void getSession(sessionId)
+          .then((meta) => {
+            if (
+              sessionMetaLookupGenerationRef.current.get(sessionId) !==
+              generation
+            ) {
+              return
+            }
+            if (
+              options.requireWatched &&
+              (watchCountsRef.current.get(sessionId) ?? 0) === 0
+            ) {
+              return
+            }
+            if (meta) {
+              missingSessionLookupGenerationRef.current.delete(sessionId)
+              clearConversationMissing(sessionId)
+            } else {
+              missingSessionLookupGenerationRef.current.set(sessionId, {
+                lookupGeneration: generation,
+                directoryRefreshGeneration,
+              })
+              markConversationMissing(sessionId)
+            }
+            setConversations((current) => {
+              const existing = current.find(
+                (conversation) => conversation.id === sessionId,
+              )
+              if (!meta) {
+                return existing && !existing.draft
+                  ? current.filter(
+                      (conversation) => conversation.id !== sessionId,
+                    )
+                  : current
+              }
+              if (!existing) return [conversationFromMeta(meta), ...current]
+              return current.map((conversation) =>
+                conversation.id === sessionId
+                  ? mergeConversationMeta(conversation, meta)
+                  : conversation,
+              )
+            })
+          })
+          .catch(() => {
+            const stillCurrent =
+              sessionMetaLookupGenerationRef.current.get(sessionId) ===
+              generation
+            const stillWatched =
+              !options.requireWatched ||
+              (watchCountsRef.current.get(sessionId) ?? 0) > 0
+            if (!stillCurrent || !stillWatched) return
+            const retryDelay =
+              attempt < retries
+                ? 500 * (attempt + 1)
+                : options.requireWatched
+                  ? 5_000
+                  : null
+            if (retryDelay === null) return
+            // A mounted deep-link panel remains the owner of this retry. Keep
+            // trying at a quiet cadence after the short initial backoff; an
+            // unwatch or any newer directory event invalidates the generation.
+            const timer = setTimeout(() => run(attempt + 1), retryDelay)
+            sessionMetaLookupTimersRef.current.set(sessionId, timer)
+          })
+      }
+
+      run(0)
+    },
+    [
+      clearConversationMissing,
+      invalidateSessionMetaLookup,
+      markConversationMissing,
+    ],
+  )
+
+  /* ── Boot + reconnect: refresh durable session metadata ───────────────── */
   useEffect(() => {
-    if (!serverEnabled) return
+    if (!serverEnabled) {
+      setConnectionState('connected')
+      return
+    }
     let cancelled = false
-    void listSessions()
-      .then((metas) => {
+    let off: (() => void) | undefined
+    void getIiiClient().then((client) => {
+      if (cancelled) return
+      off = client.addConnectionStateListener((state) => {
         if (cancelled) return
-        setConversations((prev) => mergeSessionListSnapshot(prev, metas))
-      })
-      .catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn('[conversations] session::list failed', err)
+        setConnectionState(state)
+        if (state !== 'connected') return
+        // Read the directory before issuing exact lookups. This gives the two
+        // RPCs an unambiguous causal order: a later exact null may remove a
+        // listed row, while a row created between the calls is seen by the
+        // exact read instead of being hidden by a parallel negative result.
+        const refreshGeneration = ++directoryRefreshGenerationRef.current
+        for (const [
+          sessionId,
+          tombstone,
+        ] of missingSessionLookupGenerationRef.current) {
+          if (tombstone.directoryRefreshGeneration < refreshGeneration) {
+            missingSessionLookupGenerationRef.current.delete(sessionId)
+          }
         }
+        const exactIds = [
+          ...new Set([
+            ...visibleSessionIdsRef.current,
+            ...conversationsRef.current
+              .filter(
+                (conversation) =>
+                  Boolean(conversation.parentId) &&
+                  !conversation.draft &&
+                  (conversation.status === 'idle' ||
+                    conversation.status === 'working'),
+              )
+              .map((conversation) => conversation.id),
+          ]),
+        ]
+        if (exactIds.length > 0) {
+          const exactSet = new Set(exactIds)
+          // A request issued before the connection break cannot be trusted to
+          // represent the post-reconnect transcript. Cancel it explicitly;
+          // the epoch below starts a fresh durable read even when the session
+          // was already marked unhydrated.
+          cancelHydrationRunsForSessions(
+            exactIds,
+            hydrationRunsRef.current,
+            hydrationBuffersRef.current,
+          )
+          for (const sessionId of exactIds) {
+            const retryTimer = hydrationRetryTimersRef.current.get(sessionId)
+            if (retryTimer) clearTimeout(retryTimer)
+            hydrationRetryTimersRef.current.delete(sessionId)
+          }
+          hydrationEpochRef.current += 1
+          setHydrationEpoch(hydrationEpochRef.current)
+          setConversations((current) =>
+            current.map((conversation) =>
+              exactSet.has(conversation.id) &&
+              !conversation.draft &&
+              conversation.hydrated
+                ? { ...conversation, hydrated: false }
+                : conversation,
+            ),
+          )
+        }
+        // Session triggers are at-least-once but not replayed. Re-list after
+        // reconnect so terminal child states missed while offline replace the
+        // cached working rows instead of leaving false-active chips behind.
+        void (async () => {
+          try {
+            const metas = await listSessions()
+            if (
+              cancelled ||
+              directoryRefreshGenerationRef.current !== refreshGeneration
+            ) {
+              return
+            }
+            const safeMetas = metas.filter((meta) => {
+              const currentGeneration =
+                sessionMetaLookupGenerationRef.current.get(meta.session_id) ?? 0
+              const tombstone = missingSessionLookupGenerationRef.current.get(
+                meta.session_id,
+              )
+              return shouldAcceptReconnectDirectoryRow({
+                currentGeneration,
+                missingGeneration: missingGenerationForDirectoryRefresh(
+                  tombstone,
+                  refreshGeneration,
+                ),
+              })
+            })
+            if (safeMetas.length > 0) {
+              const listedIds = new Set(
+                safeMetas.map((meta) => meta.session_id),
+              )
+              setMissingSessionIds((current) =>
+                current.some((id) => listedIds.has(id))
+                  ? current.filter((id) => !listedIds.has(id))
+                  : current,
+              )
+            }
+            setConversations((prev) =>
+              mergeSessionListSnapshot(prev, safeMetas),
+            )
+          } catch (err) {
+            if (import.meta.env.DEV) {
+              console.warn('[conversations] session::list failed', err)
+            }
+          }
+          if (
+            cancelled ||
+            directoryRefreshGenerationRef.current !== refreshGeneration
+          ) {
+            return
+          }
+          for (const sessionId of exactIds) {
+            const requireWatched =
+              (watchCountsRef.current.get(sessionId) ?? 0) > 0
+            lookupSessionMeta(sessionId, {
+              requireWatched,
+              retries: 2,
+            })
+          }
+        })()
       })
+    })
     return () => {
       cancelled = true
+      off?.()
     }
-  }, [serverEnabled])
+  }, [serverEnabled, lookupSessionMeta])
 
   /* ── Sidebar-level live events (all sessions) ─────────────────────────── */
   useEffect(() => {
@@ -571,19 +1096,37 @@ export function useConversations(
       if (cancelled) return
       off = subscribeSessionDirectory(client, {
         onCreated: (event) => {
+          clearConversationMissing(event.session_id)
+          invalidateSessionMetaLookup(event.session_id)
+          missingSessionLookupGenerationRef.current.delete(event.session_id)
           setConversations((prev) => {
             const existing = prev.find((c) => c.id === event.session_id)
             if (existing) {
               // The first send materialises the draft; flip it server-backed.
-              return prev.map((c) =>
-                c.id === event.session_id
-                  ? {
-                      ...c,
-                      draft: false,
-                      title: c.draft ? c.title : event.title,
-                    }
-                  : c,
-              )
+              return prev.map((conversation) => {
+                if (
+                  conversation.id !== event.session_id ||
+                  !conversation.draft
+                ) {
+                  return conversation
+                }
+                return {
+                  ...conversation,
+                  draft: false,
+                  serverMetaUpdatedAt: Math.max(
+                    conversation.serverMetaUpdatedAt ?? -Infinity,
+                    event.created_at,
+                  ),
+                  serverMetadataUpdatedAt: Math.max(
+                    conversation.serverMetadataUpdatedAt ?? -Infinity,
+                    event.created_at,
+                  ),
+                  serverStatusUpdatedAt: Math.max(
+                    conversation.serverStatusUpdatedAt ?? -Infinity,
+                    event.created_at,
+                  ),
+                }
+              })
             }
             const stub: Conversation = {
               id: event.session_id,
@@ -592,6 +1135,9 @@ export function useConversations(
               mode: DEFAULT_MODE,
               messages: [],
               status: event.status,
+              serverMetaUpdatedAt: event.created_at,
+              serverMetadataUpdatedAt: event.created_at,
+              serverStatusUpdatedAt: event.created_at,
               hydrated: false,
               createdAt: event.created_at,
               updatedAt: event.created_at,
@@ -602,63 +1148,72 @@ export function useConversations(
           // sub-agent / workflow node arrives here with no parent link and would
           // sit flat until a reload re-lists it. Fetch its meta once to learn
           // parent_session_id so it nests live in the sidebar tree.
-          void getSession(event.session_id)
-            .then((meta) => {
-              if (cancelled || !meta) return
-              patchConversation(event.session_id, (c) =>
-                mergeConversationMeta(c, meta),
-              )
+          if (!cancelled) {
+            const requireWatched =
+              (watchCountsRef.current.get(event.session_id) ?? 0) > 0
+            lookupSessionMeta(event.session_id, {
+              requireWatched,
+              retries: requireWatched ? 2 : 1,
             })
-            .catch(() => {})
+          }
         },
         onMetaUpdated: (event) => {
-          patchConversation(event.session_id, (c) => {
-            const md = event.metadata ?? {}
-            return {
-              ...c,
-              title: event.title || c.title,
-              titleManual: md.title_manual === true || c.titleManual,
-              model:
-                typeof md.model === 'string' && md.model.length > 0
-                  ? md.model
-                  : c.model,
-              mode: isMode(md.mode) ? md.mode : c.mode,
-              memoryBank:
-                typeof md.memory_bank === 'string' && md.memory_bank.length > 0
-                  ? md.memory_bank
-                  : null,
-              systemPrompt: decodeSystemPrompt(md.system_prompt),
-              parentId:
-                typeof md.parent_session_id === 'string'
-                  ? md.parent_session_id
-                  : c.parentId,
-              parentFunctionCallId:
-                typeof md.function_call_id === 'string'
-                  ? md.function_call_id
-                  : c.parentFunctionCallId,
-              depth: typeof md.depth === 'number' ? md.depth : c.depth,
-              spawnedBy:
-                md.spawned_by === 'trigger' || md.spawned_by === 'agent'
-                  ? md.spawned_by
-                  : c.spawnedBy,
-              updatedAt: event.timestamp,
-            }
-          })
+          clearConversationMissing(event.session_id)
+          missingSessionLookupGenerationRef.current.delete(event.session_id)
+          const known = conversationsRef.current.some(
+            (conversation) => conversation.id === event.session_id,
+          )
+          patchConversation(event.session_id, (conversation) =>
+            applyConversationMetadataEvent(conversation, event),
+          )
+          if (!known) {
+            const requireWatched =
+              (watchCountsRef.current.get(event.session_id) ?? 0) > 0
+            lookupSessionMeta(event.session_id, {
+              requireWatched,
+              retries: requireWatched ? 2 : 1,
+            })
+          }
         },
         onStatusChanged: (event) => {
-          patchConversation(event.session_id, (c) => ({
-            ...c,
-            status: event.status,
-            statusReason: event.status_reason,
-            // Turn over: drop dangling streaming/running flags.
-            messages:
-              event.status === 'working'
-                ? c.messages
-                : clearTransientFlags(c.messages),
-            updatedAt: event.timestamp,
-          }))
+          clearConversationMissing(event.session_id)
+          missingSessionLookupGenerationRef.current.delete(event.session_id)
+          const known = conversationsRef.current.some(
+            (conversation) => conversation.id === event.session_id,
+          )
+          patchConversation(event.session_id, (conversation) =>
+            applyConversationStatusEvent(conversation, event),
+          )
+          if (!known) {
+            const requireWatched =
+              (watchCountsRef.current.get(event.session_id) ?? 0) > 0
+            lookupSessionMeta(event.session_id, {
+              requireWatched,
+              retries: requireWatched ? 2 : 1,
+            })
+          }
         },
         onDeleted: (event) => {
+          markConversationMissing(event.session_id)
+          invalidateSessionMetaLookup(event.session_id)
+          missingSessionLookupGenerationRef.current.set(event.session_id, {
+            lookupGeneration:
+              sessionMetaLookupGenerationRef.current.get(event.session_id) ?? 0,
+            directoryRefreshGeneration: directoryRefreshGenerationRef.current,
+          })
+          cancelHydrationRunsForSessions(
+            [event.session_id],
+            hydrationRunsRef.current,
+            hydrationBuffersRef.current,
+          )
+          transcriptSubscriptionsRef.current.get(event.session_id)?.()
+          transcriptSubscriptionsRef.current.delete(event.session_id)
+          transcriptSubscriptionEpochsRef.current.delete(event.session_id)
+          const retryTimer = hydrationRetryTimersRef.current.get(
+            event.session_id,
+          )
+          if (retryTimer) clearTimeout(retryTimer)
+          hydrationRetryTimersRef.current.delete(event.session_id)
           setConversations((list) =>
             list.filter((c) => c.id !== event.session_id),
           )
@@ -673,161 +1228,297 @@ export function useConversations(
       cancelled = true
       off?.()
     }
-  }, [serverEnabled, patchConversation])
+  }, [
+    serverEnabled,
+    clearConversationMissing,
+    markConversationMissing,
+    patchConversation,
+    invalidateSessionMetaLookup,
+    lookupSessionMeta,
+  ])
 
-  /* ── Active-session transcript: live reconcile + hydration ────────────── */
-  const activeIsServerBacked = useMemo(() => {
-    if (!serverEnabled || !activeId) return false
-    const conv = conversations.find((c) => c.id === activeId)
-    return Boolean(conv && !conv.draft)
-  }, [serverEnabled, activeId, conversations])
+  /* ── Visible-session transcripts: live reconcile + hydration ──────────── */
+  // Every mounted ChatPanel registers explicitly. Keeping the global active
+  // id here would leave a transcript subscription alive after the final chat
+  // panel closes.
+  const watchedIds = useMemo(
+    () => new Set(watchedSessionIds),
+    [watchedSessionIds],
+  )
+  const watchedIdsSignature = JSON.stringify([...watchedIds].sort())
+  const serverWatchedIds = useMemo(
+    () =>
+      conversations
+        .filter(
+          (conversation) =>
+            watchedIds.has(conversation.id) && !conversation.draft,
+        )
+        .map((conversation) => conversation.id)
+        .sort(),
+    [conversations, watchedIds],
+  )
+  const serverWatchedSignature = JSON.stringify(serverWatchedIds)
+  visibleSessionIdsRef.current = [...watchedIds].sort()
 
   useEffect(() => {
-    if (!activeIsServerBacked || !activeId) return
-    const sessionId = activeId
-    let cancelled = false
-    let off: (() => void) | null = null
-
-    const revisionsFor = (sid: string) => {
-      let revs = revisionsRef.current.get(sid)
-      if (!revs) {
-        revs = new Map()
-        revisionsRef.current.set(sid, revs)
+    // Per-session epochs live in a ref; the revision intentionally wakes this
+    // reconciliation after a same-signature unwatch -> watch transition.
+    void watchLifecycleRevision
+    const subscriptions = transcriptSubscriptionsRef.current
+    const wanted = new Set(
+      serverEnabled ? sessionIdsFromSignature(serverWatchedSignature) : [],
+    )
+    for (const [sessionId, off] of subscriptions) {
+      if (
+        wanted.has(sessionId) &&
+        transcriptSubscriptionEpochsRef.current.get(sessionId) ===
+          (watchLifecycleEpochsRef.current.get(sessionId) ?? 0)
+      ) {
+        continue
       }
-      return revs
+      off()
+      subscriptions.delete(sessionId)
+      transcriptSubscriptionEpochsRef.current.delete(sessionId)
+    }
+    if (!serverEnabled || wanted.size === 0) return
+
+    let cancelled = false
+    const revisionsFor = (sessionId: string) => {
+      let revisions = revisionsRef.current.get(sessionId)
+      if (!revisions) {
+        revisions = new Map()
+        revisionsRef.current.set(sessionId, revisions)
+      }
+      return revisions
     }
 
     void getIiiClient().then((client) => {
       if (cancelled) return
-      off = subscribeSessionTranscript(client, sessionId, {
-        onMessageAdded: (event) => {
-          const item = {
-            entry_id: event.entry_id,
-            message: event.message,
-            custom: event.custom,
-            origin: event.origin,
-          }
-          const buf = hydrationBufferRef.current
-          if (buf && buf.sessionId === sessionId) {
-            buf.upserts.push({ item, updated: false })
-          }
-          patchConversation(sessionId, (c) => ({
-            ...c,
-            messages: applyEntryUpsert(c.messages, item, {
-              sessionId,
-              working: c.status === 'working',
-            }),
-            updatedAt: event.timestamp,
-          }))
-        },
-        onMessageUpdated: (event) => {
-          const revs = revisionsFor(sessionId)
-          const prev = revs.get(event.entry_id) ?? -1
-          if (event.revision <= prev) return
-          revs.set(event.entry_id, event.revision)
-          const item = {
-            entry_id: event.entry_id,
-            message: event.message,
-            origin: event.origin,
-          }
-          const buf = hydrationBufferRef.current
-          if (buf && buf.sessionId === sessionId) {
-            buf.upserts.push({ item, updated: true })
-          }
-          patchConversation(sessionId, (c) => ({
-            ...c,
-            messages: applyEntryUpsert(c.messages, item, {
-              sessionId,
-              streaming: c.status === 'working',
-              working: c.status === 'working',
-            }),
-            updatedAt: event.timestamp,
-          }))
-        },
-      })
+      for (const sessionId of wanted) {
+        if (subscriptions.has(sessionId)) continue
+        const watchEpoch = watchLifecycleEpochsRef.current.get(sessionId) ?? 0
+        const off = subscribeSessionTranscript(client, sessionId, {
+          onMessageAdded: (event) => {
+            const item = {
+              entry_id: event.entry_id,
+              message: event.message,
+              custom: event.custom,
+              origin: event.origin,
+            }
+            hydrationBuffersRef.current
+              .get(sessionId)
+              ?.push({ item, updated: false })
+            patchConversation(sessionId, (conversation) => ({
+              ...conversation,
+              messages: applyEntryUpsert(conversation.messages, item, {
+                sessionId,
+                working: conversation.status === 'working',
+              }),
+              updatedAt: event.timestamp,
+            }))
+          },
+          onMessageUpdated: (event) => {
+            const revisions = revisionsFor(sessionId)
+            const previous = revisions.get(event.entry_id) ?? -1
+            if (event.revision <= previous) return
+            revisions.set(event.entry_id, event.revision)
+            const item = {
+              entry_id: event.entry_id,
+              message: event.message,
+              origin: event.origin,
+            }
+            hydrationBuffersRef.current
+              .get(sessionId)
+              ?.push({ item, updated: true })
+            patchConversation(sessionId, (conversation) => ({
+              ...conversation,
+              messages: applyEntryUpsert(conversation.messages, item, {
+                sessionId,
+                streaming: conversation.status === 'working',
+                working: conversation.status === 'working',
+              }),
+              updatedAt: event.timestamp,
+            }))
+          },
+        })
+        if (
+          cancelled ||
+          !wanted.has(sessionId) ||
+          (watchCountsRef.current.get(sessionId) ?? 0) === 0 ||
+          (watchLifecycleEpochsRef.current.get(sessionId) ?? 0) !== watchEpoch
+        )
+          off()
+        else {
+          subscriptions.set(sessionId, off)
+          transcriptSubscriptionEpochsRef.current.set(sessionId, watchEpoch)
+        }
+      }
     })
-
     return () => {
       cancelled = true
-      off?.()
     }
-  }, [activeIsServerBacked, activeId, patchConversation])
+  }, [
+    serverEnabled,
+    serverWatchedSignature,
+    watchLifecycleRevision,
+    patchConversation,
+  ])
 
-  /* Hydrate the active conversation's transcript once (read-back, then the
-     live subscription above keeps it current). Folding through
-     applyEntryUpsert makes the read idempotent against events that raced in
-     while the fetch was in flight.
-
-     Keyed on the active conversation's `hydrated` FLAG, not the
-     conversations array: every live message-added/updated rebuilds the
-     array, and an array dep would cancel + restart the in-flight fetch on
-     each event — under a fast stream the paginated read never lands and
-     hammers the backend. The flag stays false for the whole fetch, so live
-     events don't disturb it. */
-  const activeNeedsHydration =
-    activeIsServerBacked &&
-    !!activeId &&
-    conversations.some((c) => c.id === activeId && !c.hydrated)
+  const hydrationTargetIds = serverWatchedIds.filter((sessionId) =>
+    conversations.some(
+      (conversation) => conversation.id === sessionId && !conversation.hydrated,
+    ),
+  )
+  const hydrationTargetSignature = JSON.stringify(hydrationTargetIds)
   useEffect(() => {
-    if (!activeNeedsHydration || !activeId) return
-    const sessionId = activeId
-    let cancelled = false
-    /* Buffer live upserts for the fetch window: for the same entry id they
-       are newer than the snapshot, and replaying them after the merge keeps
-       the read from clobbering a revision that landed mid-flight. */
-    const upserts: HydrationUpsert[] = []
-    hydrationBufferRef.current = { sessionId, upserts }
-    const releaseBuffer = () => {
-      if (hydrationBufferRef.current?.upserts === upserts) {
-        hydrationBufferRef.current = null
+    // See the transcript subscription effect above.
+    void watchLifecycleRevision
+    const runs = hydrationRunsRef.current
+    const wanted = new Set(
+      serverEnabled ? sessionIdsFromSignature(serverWatchedSignature) : [],
+    )
+    for (const [sessionId, run] of runs) {
+      if (
+        wanted.has(sessionId) &&
+        run.watchEpoch === (watchLifecycleEpochsRef.current.get(sessionId) ?? 0)
+      ) {
+        continue
       }
+      run.cancelled = true
+      runs.delete(sessionId)
+      hydrationBuffersRef.current.delete(sessionId)
     }
-    void fetchTranscript(sessionId)
-      .then((items) => {
-        if (cancelled) return
-        patchConversation(sessionId, (c) => {
-          const working = c.status === 'working'
-          return {
-            ...c,
-            messages: mergeHydratedTranscript(
-              transcriptToMessages(items, sessionId, { working }),
-              c.messages,
-              upserts,
-              { sessionId, working },
-            ),
-            hydrated: true,
+    if (!serverEnabled) return
+
+    for (const sessionId of sessionIdsFromSignature(hydrationTargetSignature)) {
+      if (runs.has(sessionId)) continue
+      // One buffer per session lets sibling panels hydrate concurrently while
+      // preserving live revisions that race either durable read.
+      const upserts: HydrationUpsert[] = []
+      const watchEpoch = watchLifecycleEpochsRef.current.get(sessionId) ?? 0
+      const run: HydrationRun = {
+        cancelled: false,
+        connectionEpoch: hydrationEpoch,
+        watchEpoch,
+        upserts,
+      }
+      runs.set(sessionId, run)
+      hydrationBuffersRef.current.set(sessionId, upserts)
+      void fetchTranscript(sessionId)
+        .then((items) => {
+          if (
+            run.cancelled ||
+            run.connectionEpoch !== hydrationEpochRef.current ||
+            run.watchEpoch !==
+              (watchLifecycleEpochsRef.current.get(sessionId) ?? 0)
+          ) {
+            return
+          }
+          patchConversation(sessionId, (conversation) => {
+            const working = conversation.status === 'working'
+            return {
+              ...conversation,
+              messages: mergeHydratedTranscript(
+                transcriptToMessages(items, sessionId, { working }),
+                conversation.messages,
+                upserts,
+                { sessionId, working },
+              ),
+              hydrated: true,
+            }
+          })
+          const retryTimer = hydrationRetryTimersRef.current.get(sessionId)
+          if (retryTimer) clearTimeout(retryTimer)
+          hydrationRetryTimersRef.current.delete(sessionId)
+        })
+        .catch((err) => {
+          if (
+            run.cancelled ||
+            run.connectionEpoch !== hydrationEpochRef.current ||
+            run.watchEpoch !==
+              (watchLifecycleEpochsRef.current.get(sessionId) ?? 0)
+          ) {
+            return
+          }
+          patchConversation(sessionId, completeFailedHydration)
+          if (
+            (watchCountsRef.current.get(sessionId) ?? 0) > 0 &&
+            !hydrationRetryTimersRef.current.has(sessionId)
+          ) {
+            const retryTimer = setTimeout(() => {
+              hydrationRetryTimersRef.current.delete(sessionId)
+              if ((watchCountsRef.current.get(sessionId) ?? 0) === 0) return
+              patchConversation(sessionId, (conversation) =>
+                conversation.hydrated
+                  ? { ...conversation, hydrated: false }
+                  : conversation,
+              )
+            }, 2_000)
+            hydrationRetryTimersRef.current.set(sessionId, retryTimer)
+          }
+          if (import.meta.env.DEV) {
+            console.warn(
+              '[conversations] transcript hydration failed',
+              sessionId,
+              err,
+            )
           }
         })
-      })
-      .catch((err) => {
-        // A request from a conversation the user already left must stay stale
-        // so re-activating it starts a fresh authoritative read.
-        if (cancelled) return
-        patchConversation(sessionId, completeFailedHydration)
-        if (import.meta.env.DEV) {
-          console.warn(
-            '[conversations] transcript hydration failed',
-            sessionId,
-            err,
-          )
-        }
-      })
-      .finally(releaseBuffer)
-    return () => {
-      cancelled = true
-      releaseBuffer()
+        .finally(() => {
+          if (runs.get(sessionId) === run) runs.delete(sessionId)
+          if (hydrationBuffersRef.current.get(sessionId) === upserts) {
+            hydrationBuffersRef.current.delete(sessionId)
+          }
+        })
     }
-  }, [activeNeedsHydration, activeId, patchConversation])
+  }, [
+    serverEnabled,
+    serverWatchedSignature,
+    hydrationTargetSignature,
+    hydrationEpoch,
+    watchLifecycleRevision,
+    patchConversation,
+  ])
 
-  /* Backgrounded sessions receive no transcript events (the subscription
-     above is active-only), so anything that changed while away is missing
-     from their in-memory messages. Mark them stale on every activation
-     switch; the hydration effect above then refetches on return, folding
-     durable truth over frozen mid-stream snapshots. */
+  useEffect(
+    () => () => {
+      for (const off of transcriptSubscriptionsRef.current.values()) off()
+      transcriptSubscriptionsRef.current.clear()
+      transcriptSubscriptionEpochsRef.current.clear()
+      watchLifecycleEpochsRef.current.clear()
+      for (const run of hydrationRunsRef.current.values()) run.cancelled = true
+      hydrationRunsRef.current.clear()
+      hydrationBuffersRef.current.clear()
+      for (const timer of hydrationRetryTimersRef.current.values()) {
+        clearTimeout(timer)
+      }
+      hydrationRetryTimersRef.current.clear()
+      for (const timer of sessionMetaLookupTimersRef.current.values()) {
+        clearTimeout(timer)
+      }
+      sessionMetaLookupTimersRef.current.clear()
+      for (const [
+        sessionId,
+        generation,
+      ] of sessionMetaLookupGenerationRef.current) {
+        sessionMetaLookupGenerationRef.current.set(sessionId, generation + 1)
+      }
+      missingSessionLookupGenerationRef.current.clear()
+    },
+    [],
+  )
+
+  /* Sessions without a mounted panel receive no transcript events. Mark them
+     stale when visibility changes so reopening always re-reads durable truth. */
   useEffect(() => {
     if (!serverEnabled) return
-    setConversations((prev) => markBackgroundedStale(prev, activeId))
-  }, [serverEnabled, activeId])
+    setConversations((previous) =>
+      markUnwatchedStale(
+        previous,
+        new Set(sessionIdsFromSignature(watchedIdsSignature)),
+      ),
+    )
+  }, [serverEnabled, watchedIdsSignature])
 
   /* Migrate model ids once catalog-backed keys are known (local-only; the
      server metadata is rewritten on the next explicit model change). Gated
@@ -866,6 +1557,10 @@ export function useConversations(
     () => conversations.find((c) => c.id === activeId) ?? null,
     [conversations, activeId],
   )
+  const missingConversationIds = useMemo(
+    () => new Set(missingSessionIds),
+    [missingSessionIds],
+  )
 
   const createNew = useCallback(() => {
     // Asking for a new chat while an untouched one is already open reads as
@@ -889,6 +1584,78 @@ export function useConversations(
     pendingSelectIdRef.current = id
     setActiveId(id)
   }, [])
+
+  const bumpWatchLifecycle = useCallback((id: string) => {
+    bumpSessionWatchEpoch(watchLifecycleEpochsRef.current, id)
+    setWatchLifecycleRevision((revision) => revision + 1)
+  }, [])
+
+  const watchConversation = useCallback(
+    (rawId: string) => {
+      const id = rawId.trim()
+      if (!id) return () => {}
+      const counts = watchCountsRef.current
+      const previousCount = counts.get(id) ?? 0
+      counts.set(id, previousCount + 1)
+      if (previousCount === 0) {
+        bumpWatchLifecycle(id)
+        setWatchedSessionIds((current) =>
+          current.includes(id) ? current : [...current, id],
+        )
+        if (
+          serverEnabled &&
+          !conversationsRef.current.some(
+            (conversation) => conversation.id === id,
+          )
+        ) {
+          // A persisted panel can deep-link to a session outside the bounded
+          // directory list. Resolve it directly instead of leaving the panel
+          // blank forever.
+          lookupSessionMeta(id, { requireWatched: true, retries: 2 })
+        }
+      }
+
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const currentCount = counts.get(id) ?? 0
+        if (currentCount > 1) {
+          counts.set(id, currentCount - 1)
+          return
+        }
+        counts.delete(id)
+        bumpWatchLifecycle(id)
+        invalidateSessionMetaLookup(id)
+        cancelHydrationRunsForSessions(
+          [id],
+          hydrationRunsRef.current,
+          hydrationBuffersRef.current,
+        )
+        transcriptSubscriptionsRef.current.get(id)?.()
+        transcriptSubscriptionsRef.current.delete(id)
+        transcriptSubscriptionEpochsRef.current.delete(id)
+        const retryTimer = hydrationRetryTimersRef.current.get(id)
+        if (retryTimer) clearTimeout(retryTimer)
+        hydrationRetryTimersRef.current.delete(id)
+        patchConversation(id, (conversation) =>
+          !conversation.draft && conversation.hydrated
+            ? { ...conversation, hydrated: false }
+            : conversation,
+        )
+        setWatchedSessionIds((current) =>
+          current.filter((sessionId) => sessionId !== id),
+        )
+      }
+    },
+    [
+      serverEnabled,
+      bumpWatchLifecycle,
+      invalidateSessionMetaLookup,
+      lookupSessionMeta,
+      patchConversation,
+    ],
+  )
 
   const rename = useCallback(
     (id: string, title: string) => {
@@ -918,6 +1685,23 @@ export function useConversations(
     (id: string) => {
       const conv = conversations.find((c) => c.id === id)
       setConversations((list) => list.filter((c) => c.id !== id))
+      markConversationMissing(id)
+      invalidateSessionMetaLookup(id)
+      missingSessionLookupGenerationRef.current.set(id, {
+        lookupGeneration: sessionMetaLookupGenerationRef.current.get(id) ?? 0,
+        directoryRefreshGeneration: directoryRefreshGenerationRef.current,
+      })
+      cancelHydrationRunsForSessions(
+        [id],
+        hydrationRunsRef.current,
+        hydrationBuffersRef.current,
+      )
+      transcriptSubscriptionsRef.current.get(id)?.()
+      transcriptSubscriptionsRef.current.delete(id)
+      transcriptSubscriptionEpochsRef.current.delete(id)
+      const retryTimer = hydrationRetryTimersRef.current.get(id)
+      if (retryTimer) clearTimeout(retryTimer)
+      hydrationRetryTimersRef.current.delete(id)
       revisionsRef.current.delete(id)
       draftTextsRef.current.delete(id)
       lastSavedDraftRef.current.delete(id)
@@ -932,7 +1716,12 @@ export function useConversations(
           console.warn('[conversations] delete failed', err)
       })
     },
-    [serverEnabled, conversations],
+    [
+      serverEnabled,
+      conversations,
+      invalidateSessionMetaLookup,
+      markConversationMissing,
+    ],
   )
 
   const writeMeta = useCallback(
@@ -1091,9 +1880,6 @@ export function useConversations(
   /* Live mirror for the draft callbacks: they fire from debounce timers and
      editor events, where a stale `conversations` closure would misclassify a
      just-materialised session as still-local. */
-  const conversationsRef = useRef(conversations)
-  conversationsRef.current = conversations
-
   const flushDraft = useCallback(() => {
     if (draftTimerRef.current) {
       clearTimeout(draftTimerRef.current)
@@ -1164,8 +1950,11 @@ export function useConversations(
     conversations,
     activeId,
     active,
+    connectionState,
+    missingConversationIds,
     createNew,
     select,
+    watchConversation,
     rename,
     remove,
     setModel,

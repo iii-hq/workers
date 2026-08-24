@@ -1,6 +1,7 @@
-import { Bot, ChevronDown, ChevronRight, Trash2, Zap } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 
@@ -149,9 +150,9 @@ export function ConversationRow({
           }
         >
           {conversation.spawnedBy === 'trigger' ? (
-            <Zap
+            <TriggerIcon
               aria-label="spawned by a trigger"
-              className="size-4 shrink-0"
+              className="size-4 shrink-0 fill-ink-ghost"
             />
           ) : (
             <Bot aria-label="spawned by an agent" className="size-4 shrink-0" />

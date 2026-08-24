@@ -663,16 +663,22 @@ pattern belongs in shared console code.
 
 ### `host.triggerRenderers?.register(renderer)`
 
-Render the source-specific section of a normalized trigger activity. This is
-separate from `host.functionTriggers`: match the inner trigger type (`cron`,
-`state`, or a worker-defined value), never the shared function
-`engine::register_trigger`.
+Customize a normalized trigger activity. This is separate from
+`host.functionTriggers`: match the inner trigger type (`cron`, `state`, or a
+worker-defined value), never the shared function `engine::register_trigger`.
 
 ```ts
 interface TriggerActivityRenderer {
   id: string
   isMatch(triggerType: string): boolean
+  // Source section inside the generic detail view (compatibility/base hook).
   tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  // Optional complete expanded Terminal tab.
+  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  // Optional compact clickable timeline content; no interactive children.
+  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  // Optional raw registration/fire redaction; pure, total, cycle-safe.
+  redactRaw?(value: unknown): unknown
 }
 
 interface TriggerActivityMessage {
@@ -680,6 +686,8 @@ interface TriggerActivityMessage {
   kind: 'registration' | 'fired' | 'retirement'
   triggerType: string
   config?: unknown
+  label?: string
+  action?: string // registration metadata.action: what the event means
   delivery:
     | { kind: 'notify' }
     | { kind: 'call'; functionId: string }
@@ -710,14 +718,24 @@ export default function setup(host: Host) {
 }
 ```
 
-The worker owns only source interpretation: schedule, filter, topic, event
-shape, or similar worker-specific meaning. The host retains the activity
-chrome, **Trigger fired** label, delivery target/result, lifecycle and
-controls, raw JSON, and generic fallback. A once trigger that fires and is
-automatically retired remains one host activity; never duplicate it with a
-worker-rendered unbind notice.
+Use the smallest hook that fits. `tryRender` owns only source interpretation;
+`tryRenderDetails` owns the complete readable detail; `tryRenderDisplay` owns
+the compact row content. The host retains the disclosure interaction,
+per-slot fallbacks, and Raw JSON tab after `redactRaw`. A once trigger that
+fires and is automatically retired remains one activity; never duplicate it
+with a worker-rendered unbind notice.
 
-Renderers dispatch in registration order and the first non-null node wins.
+For harness bindings, `label` names the binding while `metadata.action`
+describes the future event (for example, `new Explorer message received`).
+The action is available in binding data before the first fire and is persisted
+as `activity.action`, but registration and active-binding UI show the label.
+The default UI reveals action only on a fired row: a status mark plus action,
+falling back to label/source; clicking it opens the detail already expanded.
+Worker displays should likewise read action only when `kind === 'fired'`.
+The Raw JSON tab retains the original registration metadata for inspection.
+
+Each renderer slot dispatches in registration order and the first non-null
+node wins.
 Return `null` for a different type or an unrecognized config. A throwing
 matcher is treated as no match; render failures are error-bounded. The same
 renderer should tolerate all three `kind` values because source identity does

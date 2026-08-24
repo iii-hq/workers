@@ -85,7 +85,7 @@
             "$ref": "#/definitions/SessionStatus"
           },
           "status_reason": {
-            "description": "Short cause, set on `error`, cleared on any other status.",
+            "description": "Short lifecycle detail retained on `working`, `done`, and `error`.",
             "type": [
               "string",
               "null"

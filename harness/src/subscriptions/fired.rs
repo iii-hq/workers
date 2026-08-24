@@ -67,6 +67,10 @@ pub struct TriggerFired<'a> {
     pub target: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<&'a str>,
+    /// Human-readable event text declared as `metadata.action` when the
+    /// binding was registered. Unlike `label`, this says what happened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<&'a str>,
     /// Registered event source and its source-owned configuration. Records
     /// predating the durable binding dedup key legitimately omit both.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,6 +144,7 @@ pub fn retirement_record<'a>(
         trigger_id: binding.trigger_id.as_deref(),
         target: &binding.target.function_id,
         label,
+        action: binding.event_action(),
         trigger_type,
         config,
         outcome,
@@ -299,6 +304,7 @@ mod tests {
             trigger_id: None,
             target: "harness::send",
             label: None,
+            action: None,
             trigger_type: None,
             config: None,
             outcome: TriggerOutcome::Delivered,
@@ -324,6 +330,7 @@ mod tests {
         // Skipped optionals must not appear.
         assert!(v.get("trigger_id").is_none());
         assert!(v.get("label").is_none());
+        assert!(v.get("action").is_none());
         assert!(v.get("trigger_type").is_none());
         assert!(v.get("config").is_none());
         assert!(v.get("payload").is_none());
@@ -337,6 +344,7 @@ mod tests {
             trigger_id: Some("trig_1"),
             target: "state::set",
             label: Some("heartbeat"),
+            action: Some("scheduled heartbeat received"),
             trigger_type: Some("cron"),
             config: Some(&config),
             outcome: TriggerOutcome::DeliveryFailed,
@@ -352,6 +360,7 @@ mod tests {
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["trigger_type"], "cron");
+        assert_eq!(v["action"], "scheduled heartbeat received");
         assert_eq!(v["config"], config);
         assert_eq!(v["outcome"], "delivery_failed");
         assert_eq!(v["fires"], 7);
@@ -411,6 +420,7 @@ mod tests {
             trigger_id: None,
             target: "receiving::check_completion",
             label: None,
+            action: None,
             trigger_type: Some("database::row-changed"),
             config: None,
             outcome: TriggerOutcome::Delivered,
@@ -437,6 +447,7 @@ mod tests {
             trigger_id: Some("trig_1"),
             target: "receiving::check_completion",
             label: Some("lbl"),
+            action: Some("record changed"),
             trigger_type: Some("state"),
             config: None,
             outcome: TriggerOutcome::DeliveryFailed,
@@ -455,6 +466,7 @@ mod tests {
         assert_eq!(stripped.trigger_id, Some("trig_1"));
         assert_eq!(stripped.target, "receiving::check_completion");
         assert_eq!(stripped.label, Some("lbl"));
+        assert_eq!(stripped.action, Some("record changed"));
         assert_eq!(stripped.trigger_type, Some("state"));
         assert_eq!(stripped.outcome, TriggerOutcome::DeliveryFailed);
         assert!(!stripped.once);

@@ -14,8 +14,35 @@
 
 import type { View } from '@/hooks/use-hash-route'
 
-/** `chat`, a routed first-party view, or `ext:<page-id>`. */
+/** `chat`, `chat:<session-id>`, a routed view, or `ext:<page-id>`. */
 export type TabScreen = string
+
+export const CHAT_SCREEN: TabScreen = 'chat'
+const CHAT_SESSION_SCREEN_PREFIX = `${CHAT_SCREEN}:`
+
+/** Whether a screen is the generic chat or a chat pinned to one session. */
+export function isChatScreen(screen: TabScreen): boolean {
+  return screen === CHAT_SCREEN || sessionIdForChatScreen(screen) !== null
+}
+
+/** Persisted screen identity for a chat pinned to `sessionId`. */
+export function chatSessionScreen(sessionId: string): TabScreen {
+  const normalized = sessionId.trim()
+  if (normalized.length === 0) {
+    throw new Error('chat session screen requires a non-empty session id')
+  }
+  return `${CHAT_SESSION_SCREEN_PREFIX}${normalized}`
+}
+
+/**
+ * Read the session suffix after the first `chat:` prefix. Session ids may
+ * themselves contain colons, so the remainder is deliberately left intact.
+ */
+export function sessionIdForChatScreen(screen: TabScreen): string | null {
+  if (!screen.startsWith(CHAT_SESSION_SCREEN_PREFIX)) return null
+  const sessionId = screen.slice(CHAT_SESSION_SCREEN_PREFIX.length)
+  return sessionId.length > 0 ? sessionId : null
+}
 
 /** Defensive persistence ceiling; the UI no longer has a three-panel cap. */
 export const MAX_COLUMNS = 64
@@ -160,7 +187,11 @@ export function withScreenOpenedBeside(
   )
   if (screens.includes(screen)) return tab
 
-  const anchorIndex = screens.indexOf(anchor)
+  const anchorIndex = screens.findIndex(
+    (candidate) =>
+      candidate === anchor ||
+      (anchor === CHAT_SCREEN && candidate !== null && isChatScreen(candidate)),
+  )
   const adjacentEmpty =
     anchorIndex >= 0 && screens[anchorIndex + 1] === null ? anchorIndex + 1 : -1
   const emptyIndex = adjacentEmpty >= 0 ? adjacentEmpty : screens.indexOf(null)
@@ -232,7 +263,6 @@ export function withPaneRemoved(
 }
 
 export const EXT_SCREEN_PREFIX = 'ext:'
-export const CHAT_SCREEN: TabScreen = 'chat'
 
 /**
  * First-party screens whose page migrated to injected UI, mapped to the
@@ -287,7 +317,7 @@ export function screenForView(
 
 const isValidScreen = (s: unknown): s is TabScreen =>
   typeof s === 'string' &&
-  (s === CHAT_SCREEN ||
+  (isChatScreen(s) ||
     isRoutedScreen(s) ||
     (s.startsWith(EXT_SCREEN_PREFIX) && s.length > EXT_SCREEN_PREFIX.length))
 
@@ -569,7 +599,8 @@ export interface OpenWorkspaceScreenResult {
 /**
  * Reuse a screen wherever it is already mounted; otherwise place it beside
  * chat in the active tab without replacing any pane. A saturated workspace
- * gets a fresh chat + context tab.
+ * gets a fresh tab. Chat targets are already complete screens, so
+ * their fallback tab does not add a second, generic chat panel.
  */
 export function withWorkspaceScreenOpened(
   tabs: WorkspaceTab[],
@@ -604,10 +635,11 @@ export function withWorkspaceScreenOpened(
     }
   }
 
+  const chatTarget = isChatScreen(screen)
   const tab: WorkspaceTab = {
     id: makeTabId(),
-    columns: 2,
-    screens: [CHAT_SCREEN, screen],
+    columns: chatTarget ? 1 : 2,
+    screens: chatTarget ? [screen] : [CHAT_SCREEN, screen],
   }
   return { tabs: [...tabs, tab], activeTabId: tab.id }
 }
@@ -617,6 +649,7 @@ export function screenLabel(
   screen: TabScreen,
   extPageTitles: ReadonlyMap<string, string>,
 ): string {
+  if (isChatScreen(screen)) return CHAT_SCREEN
   const extId = extPageIdForScreen(screen)
   if (extId !== null) return extPageTitles.get(extId) ?? extId
   return screen

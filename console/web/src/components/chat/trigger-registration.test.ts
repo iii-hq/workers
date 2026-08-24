@@ -138,6 +138,7 @@ describe('resolveRegistrations', () => {
     trigger_type: 'database::row-changed',
     config: { db: 'mysql', table: 't' },
     label: 'ledger',
+    metadata: { action: 'ledger row changed' },
   }
   const regOutput = {
     content: [{ type: 'text', text: '{"subscription_id":"sub_1"}' }],
@@ -198,6 +199,7 @@ describe('resolveRegistrations', () => {
         triggerType: 'database::row-changed',
         config: { db: 'mysql', table: 't' },
         label: 'ledger',
+        action: 'ledger row changed',
       },
     })
   })

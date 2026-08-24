@@ -50,6 +50,7 @@ describe('spawnRequestSchema', () => {
   it('accepts a fully-populated request', () => {
     const r = safeParseRequest(spawnRequestSchema, {
       task: 'audit the CI runs',
+      display: { name: 'Reviewer', icon: 'review', color: 'purple' },
       model: 'claude-sonnet-4-6',
       provider: 'anthropic',
       session_id: 's_123',
@@ -73,6 +74,11 @@ describe('spawnRequestSchema', () => {
       },
     })
     expect(r?.options?.mode).toBe('agent')
+    expect(r?.display).toEqual({
+      name: 'Reviewer',
+      icon: 'review',
+      color: 'purple',
+    })
     expect(r?.options?.output?.type).toBe('json')
     expect(r?.options?.functions?.allow).toEqual(['web::fetch'])
   })
@@ -112,6 +118,19 @@ describe('spawnRequestSchema', () => {
 
   it('rejects a non-object payload', () => {
     expect(safeParseRequest(spawnRequestSchema, 'not a request')).toBeNull()
+  })
+
+  it('drops arbitrary display tokens without dropping the spawn card', () => {
+    const parsed = safeParseRequest(spawnRequestSchema, {
+      task: 'x',
+      display: { name: 'Unsafe', icon: '<svg>', color: '#ff00ff' },
+    })
+
+    expect(parsed?.display).toEqual({
+      name: 'Unsafe',
+      icon: undefined,
+      color: undefined,
+    })
   })
 })
 

@@ -16,7 +16,7 @@
     },
     "properties": {
       "reason": {
-        "description": "Short cause/phase stored as `status_reason` — kept on `error` (failure cause) and `working` (live phase detail), cleared on `idle`/`done`.",
+        "description": "Short cause/phase stored as `status_reason` — kept on `error` (failure cause), `working` (live phase detail), and `done` (for terminal detail such as `stopped`); cleared on `idle`.",
         "type": [
           "string",
           "null"

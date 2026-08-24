@@ -33,6 +33,61 @@
       }
     },
     {
+      "name": "reuses the exact session-specific chat screen",
+      "tabs": [
+        { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+        {
+          "id": "b",
+          "columns": 1,
+          "screens": ["chat:child:attempt:1"]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "chat:child:attempt:1",
+      "expect": {
+        "activeTabId": "b",
+        "tabs": [
+          { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+          {
+            "id": "b",
+            "columns": 1,
+            "screens": ["chat:child:attempt:1"]
+          }
+        ]
+      }
+    },
+    {
+      "name": "inserts a distinct session beside a pinned chat",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat:parent:attempt:1", "traces"],
+          "sizes": [0.5, 0.5]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "chat:child:attempt:2",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 3,
+            "screens": [
+              "chat:parent:attempt:1",
+              "chat:child:attempt:2",
+              "traces"
+            ],
+            "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
+            "sizes": [
+              0.33333333333333337, 0.3333333333333333, 0.33333333333333337
+            ]
+          }
+        ]
+      }
+    },
+    {
       "name": "fills the empty column beside chat",
       "tabs": [
         { "id": "a", "columns": 3, "screens": ["traces", "chat", null] }
@@ -142,6 +197,29 @@
       "expect": {
         "tabIds": [],
         "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"] }]
+      }
+    },
+    {
+      "name": "removes only the exact session-specific chat screen",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 3,
+          "screens": ["chat", "chat:child:attempt:1", "chat:child:attempt:2"]
+        }
+      ],
+      "screen": "chat:child:attempt:1",
+      "expect": {
+        "tabIds": ["a"],
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 2,
+            "screens": ["chat", "chat:child:attempt:2"],
+            "paneIds": ["a:pane:0", "a:pane:2"],
+            "sizes": [0.5, 0.5]
+          }
+        ]
       }
     }
   ]

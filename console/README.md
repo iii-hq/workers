@@ -164,10 +164,10 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 |---|---|---|
 | `console::status` | `{}` | `{ http_port, engine_url, version }` |
 | `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, active }], active_tab_id }` |
-| `console::workspace::open` | `{ screen, activate? }` | `{ tab_id, column, placement, screens, activated }` |
-| `console::workspace::close` | `{ screen }` | `{ tab_ids }` |
+| `console::workspace::open` | `{ screen, session_id?, activate? }` | `{ tab_id, column, placement, screens, activated }` |
+| `console::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |
 
-A screen is `chat`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:shell`, `ext:browser`, `ext:editor`, ...). The workspace layout is the `workspace` section of the `console` configuration entry, so every browser pointed at this engine picks the change up. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside chat in the active tab (adjacent empty column, any empty column, new column), else opens a fresh chat + screen tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreachable configuration worker with `WORKSPACE_UNAVAILABLE`.
+A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:shell`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is the `workspace` section of the `console` configuration entry, so every browser pointed at this engine picks the change up. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside chat in the active tab (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreachable configuration worker with `WORKSPACE_UNAVAILABLE`.
 
 Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs).
 
@@ -227,7 +227,7 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 ## Injectable UI
 
 Workers extend the console at **runtime** — whole pages, function-trigger
-renderers, and source-specific trigger-activity renderers as plain React
+renderers, and layered trigger-activity renderers as plain React
 components sharing the console's React instance
 (spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns three
 trigger types:
@@ -246,9 +246,10 @@ export `setup(host)` and register through `host.pages` (whole pages at
 `#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
 built-in id overrides it; `metadata.display` promotes the winning renderer's
-rich result into the collapsed chat flow), `host.triggerRenderers` (render
-the source section of normalized registration/fired/retirement activities
-while the host retains delivery, lifecycle, raw data, and fallback), and
+rich result into the collapsed chat flow), `host.triggerRenderers` (override
+the compact timeline display, expanded details, source section, and raw-data
+redaction for normalized registration/fired/retirement activities, with host
+fallbacks for every slot), and
 `host.configForms` (replace the workers-tab
 form region for one configuration id; dirty/save/reset stay host-owned). A
 configuration form can opt into `{ layout: 'full' }` to receive the entire

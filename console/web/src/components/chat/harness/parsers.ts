@@ -86,8 +86,32 @@ export const taskMessageSchema = z
 export const spawnTaskSchema = z.union([z.string(), taskMessageSchema])
 export type SpawnTask = z.infer<typeof spawnTaskSchema>
 
+export const subagentDisplaySchema = z.object({
+  name: z.string(),
+  icon: z
+    .enum([
+      'agent',
+      'code',
+      'search',
+      'terminal',
+      'database',
+      'test',
+      'review',
+      'docs',
+      'design',
+    ])
+    .nullish()
+    .catch(undefined),
+  color: z
+    .enum(['neutral', 'blue', 'purple', 'teal', 'green', 'amber', 'rose'])
+    .nullish()
+    .catch(undefined),
+})
+export type SubagentDisplay = z.infer<typeof subagentDisplaySchema>
+
 export const spawnRequestSchema = z.object({
   task: spawnTaskSchema.optional(),
+  display: subagentDisplaySchema.nullish(),
   model: z.string().nullish(),
   provider: z.string().nullish(),
   session_id: z.string().nullish(),

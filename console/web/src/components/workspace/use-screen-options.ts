@@ -16,8 +16,8 @@ import {
   MessageSquareText,
   Monitor,
   SquareTerminal,
-  Zap,
 } from 'lucide-react'
+import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { buildViewOptions } from '@/lib/nav-options'
 import { useExtPages } from '@/lib/ui-slots'
 import {
@@ -95,7 +95,7 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     description: 'Shared runtime state.',
   },
   triggers: {
-    icon: Zap,
+    icon: TriggerIcon,
     description: 'Event and schedule triggers.',
   },
   worktree: {

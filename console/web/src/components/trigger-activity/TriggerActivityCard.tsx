@@ -1,13 +1,18 @@
 import {
   Bell,
+  Check,
   CircleAlert,
   FunctionSquare,
   Info,
   RadioTower,
-  Zap,
+  X,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { FilterChip } from '@/components/chat/engine/shared'
+import {
+  TimelineActivityDisclosure,
+  TimelineActivityTrail,
+} from '@/components/chat/TimelineActivityTrail'
 import { Badge } from '@/components/ui/Badge'
 import {
   CollapsibleCard,
@@ -15,6 +20,7 @@ import {
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { timestampMilliseconds } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
 import type { SystemMessage, UserMessage } from '@/types/chat'
@@ -24,6 +30,11 @@ import {
   parseNotification,
   type TriggerRegistration,
 } from './model'
+import {
+  firstRenderedTriggerActivitySlot,
+  triggerActivityRawRedactor,
+  useTriggerActivityRenderers,
+} from './renderer-registry'
 import {
   TriggerJsonPane,
   TriggerStats,
@@ -36,6 +47,8 @@ interface TriggerActivityCardProps {
   record?: SystemMessage
   notification?: UserMessage
   registration?: TriggerRegistration
+  /** Open the full activity card on first render (showcase/detail surfaces). */
+  defaultOpen?: boolean
 }
 
 /** One host-owned card for registration delivery, fire, and retirement state. */
@@ -43,6 +56,7 @@ export function TriggerActivityCard({
   record,
   notification,
   registration,
+  defaultOpen,
 }: TriggerActivityCardProps) {
   const parsed = notification ? parseNotification(notification.content) : null
   const fromRecord = record
@@ -54,7 +68,32 @@ export function TriggerActivityCard({
     base && base.payload === undefined && parsed
       ? { ...base, payload: parsed.payload }
       : base
+  const renderers = useTriggerActivityRenderers()
+  const redactor = useMemo(
+    () =>
+      activity
+        ? triggerActivityRawRedactor(renderers, activity.triggerType)
+        : undefined,
+    [activity, renderers],
+  )
+  const raw = useMemo(
+    () => ({
+      registration: redactor ? redactor(registration?.raw) : registration?.raw,
+      notification: redactor
+        ? redactor(parsed?.payload ?? notification?.content)
+        : (parsed?.payload ?? notification?.content),
+      fire: redactor ? redactor(record?.trigger) : record?.trigger,
+    }),
+    [
+      notification?.content,
+      parsed?.payload,
+      record?.trigger,
+      redactor,
+      registration?.raw,
+    ],
+  )
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
+  const [open, setOpen] = useState(!!defaultOpen)
 
   if (!activity) {
     return (
@@ -63,10 +102,9 @@ export function TriggerActivityCard({
         data-message-role="trigger-activity"
       >
         <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-warn-muted sm:size-9">
-          <Zap
+          <TriggerIcon
             aria-hidden
-            className="size-5 shrink-0 stroke-warn sm:size-4"
-            strokeWidth={2.25}
+            className="size-5 shrink-0 fill-warn sm:size-4"
           />
         </div>
         <div className="min-w-0 flex-1 font-sans text-base wrap-break-word text-ink sm:text-sm">
@@ -82,6 +120,60 @@ export function TriggerActivityCard({
     activity.delivery.kind === 'call'
       ? activity.delivery.functionId
       : 'this chat'
+  const display = firstRenderedTriggerActivitySlot(
+    renderers,
+    activity,
+    (renderer) => renderer.tryRenderDisplay?.(activity) ?? null,
+  )
+  const details = firstRenderedTriggerActivitySlot(
+    renderers,
+    activity,
+    (renderer) => renderer.tryRenderDetails?.(activity) ?? null,
+  )
+  const eventText = activityEventText(activity)
+
+  // A successful fire reads like a settled function call in the timeline:
+  // one checkmark and the event text. Clicking swaps in the existing full
+  // card already expanded; collapsing the card returns to this row.
+  if (activity.kind === 'fired' && !open) {
+    return (
+      <section
+        className="overflow-visible bg-transparent"
+        data-message-id={activity.id}
+        data-message-role="trigger-activity"
+        data-trigger-activity-kind={activity.kind}
+        data-expanded="false"
+      >
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-expanded="false"
+          aria-label={`Show trigger details for ${eventText}`}
+          className="group flex w-full min-w-0 cursor-pointer items-center gap-2 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:py-1"
+        >
+          {activity.outcome === 'skipped' ||
+          activity.outcome === 'delivery_failed' ? (
+            <X
+              aria-hidden
+              strokeWidth={2.5}
+              className="size-4 shrink-0 stroke-alert"
+            />
+          ) : (
+            <Check
+              aria-hidden
+              strokeWidth={2.5}
+              className="size-4 shrink-0 stroke-muted-foreground"
+            />
+          )}
+          <TimelineActivityTrail kind="trigger" />
+          <div className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground sm:text-[0.8125rem]">
+            {display?.node ?? eventText}
+          </div>
+          <TimelineActivityDisclosure />
+        </button>
+      </section>
+    )
+  }
 
   return (
     <article
@@ -89,50 +181,59 @@ export function TriggerActivityCard({
       data-message-role="trigger-activity"
       data-trigger-activity-kind={activity.kind}
     >
-      <CollapsibleCard className="@container">
+      <CollapsibleCard
+        open={activity.kind === 'fired' ? open : undefined}
+        onOpenChange={activity.kind === 'fired' ? setOpen : undefined}
+        className="@container"
+      >
         <CollapsibleCardTrigger className="p-4 select-none sm:p-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div
-              className={cn(
-                'flex size-12 shrink-0 items-center justify-center rounded-md sm:size-10',
-                activity.kind === 'retirement' ? 'bg-surface' : 'bg-warn-muted',
-              )}
-            >
-              <Zap
-                aria-hidden
+          {display?.node ?? (
+            <div className="flex min-w-0 items-start gap-3">
+              <div
                 className={cn(
-                  'size-6 shrink-0 sm:size-5',
+                  'flex size-12 shrink-0 items-center justify-center rounded-md sm:size-10',
                   activity.kind === 'retirement'
-                    ? 'stroke-ink-ghost'
-                    : 'stroke-warn',
+                    ? 'bg-surface'
+                    : 'bg-warn-muted',
                 )}
-                strokeWidth={2.25}
-              />
-            </div>
-
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 font-sans text-base sm:text-sm">
-                <div className="font-semibold text-ink">{title}</div>
-                <span aria-hidden className="text-ink-ghost">
-                  ·
-                </span>
-                <div className="flex min-w-0 items-baseline gap-2 text-ink-faint">
-                  <span className="min-w-0 truncate" title={source}>
-                    {source}
-                  </span>
-                  <span aria-hidden className="shrink-0 text-ink-ghost">
-                    →
-                  </span>
-                  <span className="min-w-0 truncate" title={target}>
-                    {target}
-                  </span>
-                </div>
+              >
+                <TriggerIcon
+                  aria-hidden
+                  className={cn(
+                    'size-6 shrink-0 sm:size-5',
+                    activity.kind === 'retirement'
+                      ? 'fill-ink-ghost'
+                      : 'fill-warn',
+                  )}
+                />
               </div>
-              <p className="text-pretty font-sans text-base text-ink-faint sm:text-sm">
-                {activityDescription(activity)}
-              </p>
+
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 font-sans text-base sm:text-sm">
+                  <div className="font-semibold text-ink">{title}</div>
+                  <span aria-hidden className="text-ink-ghost">
+                    ·
+                  </span>
+                  <div className="flex min-w-0 items-baseline gap-2 text-ink-faint">
+                    <span className="min-w-0 truncate" title={source}>
+                      {source}
+                    </span>
+                    <span aria-hidden className="shrink-0 text-ink-ghost">
+                      →
+                    </span>
+                    <span className="min-w-0 truncate" title={target}>
+                      {target}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-pretty font-sans text-base text-ink-faint sm:text-sm">
+                  {activity.kind === 'fired'
+                    ? (activity.action ?? activityDescription(activity))
+                    : activityDescription(activity)}
+                </p>
+              </div>
             </div>
-          </div>
+          )}
         </CollapsibleCardTrigger>
 
         <CollapsibleCardContent>
@@ -148,24 +249,24 @@ export function TriggerActivityCard({
               </TabsList>
             </div>
             <TabsContent value="terminal" className="p-4 sm:p-3">
-              <TriggerActivityTerminal activity={activity} />
+              {details?.node ?? <TriggerActivityTerminal activity={activity} />}
             </TabsContent>
             <TabsContent value="json" className="p-4 sm:p-3">
               <div className="flex min-w-0 flex-col gap-3">
                 {registration ? (
                   <TriggerJsonPane
                     label="Registration"
-                    value={registration.raw}
+                    value={raw.registration}
                   />
                 ) : null}
                 {notification ? (
                   <TriggerJsonPane
                     label="Notification"
-                    value={parsed?.payload ?? notification.content}
+                    value={raw.notification}
                   />
                 ) : null}
                 {record?.trigger ? (
-                  <TriggerJsonPane label="Fire" value={record.trigger} />
+                  <TriggerJsonPane label="Fire" value={raw.fire} />
                 ) : null}
               </div>
             </TabsContent>
@@ -201,6 +302,7 @@ function activityFromNotification(
     ...((parsed?.name ?? inherited?.label)
       ? { label: parsed?.name ?? inherited?.label }
       : {}),
+    ...(inherited?.action ? { action: inherited.action } : {}),
     ...(inherited?.conditions ? { conditions: inherited.conditions } : {}),
     delivery: { kind: 'notify' },
     lifecycle: {
@@ -374,6 +476,29 @@ function TriggerTarget({
       </div>
     </TriggerTraceNode>
   )
+}
+
+/** Human-readable compact event copy. `action` describes what happened;
+ * `label` remains the historical fallback that names the binding. */
+export function activityEventText(activity: TriggerActivityMessage): string {
+  const action = activity.action?.trim()
+  if (action) return action
+  const label = activity.label?.trim()
+  if (label) return label
+  if (
+    activity.triggerType === 'state' &&
+    activity.config &&
+    typeof activity.config === 'object' &&
+    !Array.isArray(activity.config)
+  ) {
+    const config = activity.config as Record<string, unknown>
+    if (typeof config.key === 'string' && config.key.length > 0) {
+      return typeof config.scope === 'string' && config.scope.length > 0
+        ? `${config.scope}/${config.key}`
+        : config.key
+    }
+  }
+  return activity.triggerType
 }
 
 function activityTitle(activity: TriggerActivityMessage): string {

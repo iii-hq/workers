@@ -2,8 +2,9 @@
 
 How to add bespoke UI for `function-trigger` messages in the console chat, instead of the default request/response JSON panes.
 
-To customize a trigger source such as `cron` across registration, firing,
-and retirement, use [`custom-trigger-components.md`](custom-trigger-components.md)
+To customize a trigger such as `cron` across registration, firing, and
+retirement — source section, compact timeline display, or complete expanded
+details — use [`custom-trigger-components.md`](custom-trigger-components.md)
 and `host.triggerRenderers` instead. Do not match
 `engine::register_trigger` as though each trigger type were a function family.
 

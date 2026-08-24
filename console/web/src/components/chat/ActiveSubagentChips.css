@@ -1,0 +1,78 @@
+.active-subagent-chip {
+  --subagent-chip-tone: var(--color-ink-faint);
+  background-color: color-mix(
+    in oklab,
+    var(--subagent-chip-tone) 11%,
+    var(--color-panel)
+  );
+  color: var(--subagent-chip-tone);
+}
+
+.active-subagent-chip:hover {
+  background-color: color-mix(
+    in oklab,
+    var(--subagent-chip-tone) 17%,
+    var(--color-panel)
+  );
+}
+
+.active-subagent-chip[data-color="blue"] {
+  --subagent-chip-tone: #235f9c;
+}
+
+.active-subagent-chip[data-color="purple"] {
+  --subagent-chip-tone: #7250a0;
+}
+
+.active-subagent-chip[data-color="teal"] {
+  --subagent-chip-tone: #0d746c;
+}
+
+.active-subagent-chip[data-color="green"] {
+  --subagent-chip-tone: var(--color-ok);
+}
+
+.active-subagent-chip[data-color="amber"] {
+  --subagent-chip-tone: #765200;
+}
+
+.active-subagent-chip[data-color="rose"] {
+  --subagent-chip-tone: #b5375c;
+}
+
+[data-theme="dark"] .active-subagent-chip[data-color="blue"] {
+  --subagent-chip-tone: #79b7f2;
+}
+
+[data-theme="dark"] .active-subagent-chip[data-color="purple"] {
+  --subagent-chip-tone: #c09ae8;
+}
+
+[data-theme="dark"] .active-subagent-chip[data-color="teal"] {
+  --subagent-chip-tone: #5acac0;
+}
+
+[data-theme="dark"] .active-subagent-chip[data-color="rose"] {
+  --subagent-chip-tone: #f28ca8;
+}
+
+[data-theme="dark"] .active-subagent-chip[data-color="amber"] {
+  --subagent-chip-tone: #e8b949;
+}
+
+.active-subagent-chip__status {
+  background-color: var(--subagent-chip-tone);
+}
+
+.active-subagent-chip[data-status="queued"] .active-subagent-chip__status {
+  background-color: var(--color-warn);
+}
+
+.active-subagent-chip[data-status="working"] .active-subagent-chip__status {
+  background-color: var(--color-accent);
+}
+
+.active-subagent-chip[data-status="disconnected"]
+  .active-subagent-chip__status {
+  background-color: var(--color-ink-ghost);
+}

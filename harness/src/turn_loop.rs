@@ -1232,8 +1232,9 @@ pub async fn run_step(
                     Vec::new(),
                 );
                 // Done immediately, but the child ids stay on the checkpoint:
-                // they feed the fan-out guard, `harness::status` children, and
-                // the stop cascade.
+                // they feed `harness::status` children and the stop cascade.
+                // The reuse marker keeps re-tasks out of the separate
+                // session-creation count used by the fan-out guard.
                 record.calls.insert(
                     call.id.clone(),
                     CallCheckpoint {
@@ -1242,6 +1243,7 @@ pub async fn run_step(
                         entry_id: Some(entry_id),
                         child_session_id: child.as_ref().map(|c| c.session_id.clone()),
                         child_turn_id: child.as_ref().map(|c| c.turn_id.clone()),
+                        child_session_reused: child.as_ref().is_some_and(|c| c.reused),
                         held_by: None,
                         held_arguments: None,
                         pending_timeout_ms: None,
@@ -1261,6 +1263,7 @@ pub async fn run_step(
                     entry_id: None,
                     child_session_id: None,
                     child_turn_id: None,
+                    child_session_reused: false,
                     held_by: None,
                     held_arguments: None,
                     pending_timeout_ms: None,
@@ -2148,7 +2151,9 @@ async fn finalize_cancelled(
             Some(&origin(&record.turn_id)),
         )
         .await;
-    let _ = session.set_status(&record.session_id, "done", None).await;
+    let _ = session
+        .set_status(&record.session_id, "done", Some("stopped"))
+        .await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -2231,6 +2236,7 @@ fn checkpoint_pending(
             entry_id: None,
             child_session_id: info.child_session_id.clone(),
             child_turn_id: info.child_turn_id.clone(),
+            child_session_reused: false,
             held_by: info.held_by.clone(),
             held_arguments: info.held_arguments.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
@@ -2251,6 +2257,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             entry_id: Some(entry_id.to_string()),
             child_session_id: None,
             child_turn_id: None,
+            child_session_reused: false,
             held_by: None,
             held_arguments: None,
             pending_timeout_ms: None,

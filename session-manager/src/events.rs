@@ -285,7 +285,7 @@ pub struct StatusChangedEvent {
     pub session_id: String,
     pub status: SessionStatus,
     pub previous_status: SessionStatus,
-    /// Short cause, set on `"error"`.
+    /// Short lifecycle detail retained on `working`, `done`, and `error`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
     pub timestamp: i64,
