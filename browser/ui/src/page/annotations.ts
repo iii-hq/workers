@@ -110,7 +110,6 @@ export function addShape(
   return [...list, mark]
 }
 
-
 /** A rect mark snapped to an element's bounds, labelled with its selector. */
 export function addElementMark(
   list: readonly Annotation[],
