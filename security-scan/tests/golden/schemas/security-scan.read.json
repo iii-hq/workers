@@ -87,6 +87,12 @@
           "mode": {
             "$ref": "#/definitions/ScanModeV1"
           },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "report": {
             "anyOf": [
               {
@@ -99,6 +105,9 @@
           },
           "repository": {
             "type": "string"
+          },
+          "resolved_from_head": {
+            "type": "boolean"
           },
           "run_id": {
             "type": "string"

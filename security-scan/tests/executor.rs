@@ -6,9 +6,9 @@ use std::sync::{
 use async_trait::async_trait;
 use security_scan::{
     AnalysisConfigV1, AnalysisHandle, AnalysisPlan, CreateRunOutcome, EnqueueRequest,
-    ExecuteResponseV1, ExecutionRuntime, MaterializedTargetV1, RepositoryConfigV1, RunRecordV1,
-    RunStatusV1, ScanModeV1, SecurityRuntime, SecurityScanError, SecurityScanExecutor,
-    TurnCompletedEventV1, WorkerConfig,
+    ExecuteResponseV1, ExecutionRuntime, MaterializationRequest, MaterializedTargetV1,
+    RepositoryConfigV1, RunRecordV1, RunStatusV1, ScanModeV1, SecurityRuntime, SecurityScanError,
+    SecurityScanExecutor, TurnCompletedEventV1, WorkerConfig,
 };
 use tokio::sync::Mutex;
 
@@ -29,7 +29,10 @@ fn queued_run() -> RunRecordV1 {
         run_id: "sec_0123456789abcdef01234567".into(),
         repository: "iii-hq/iii".into(),
         target_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        resolved_from_head: false,
         mode: ScanModeV1::Suggest,
+        model: None,
+        provider: None,
         operation_nonce: "private_nonce".into(),
         status: RunStatusV1::Queued,
         attempt: 1,
@@ -61,11 +64,16 @@ fn config() -> WorkerConfig {
             max_total_tokens: 50_000,
             max_cost_usd: Some(2.0),
         },
+        archive: None,
     }
 }
 
 #[async_trait]
 impl SecurityRuntime for FakeRuntime {
+    fn require_ready(&self) -> Result<(), SecurityScanError> {
+        Ok(())
+    }
+
     async fn get_run(&self, _run_id: &str) -> Result<Option<RunRecordV1>, SecurityScanError> {
         Ok(Some(self.run.lock().await.clone()))
     }
@@ -101,6 +109,66 @@ impl SecurityRuntime for FakeRuntime {
         self.enqueued.lock().await.push(request);
         Ok(())
     }
+
+    async fn stop_analysis(
+        &self,
+        _harness: &security_scan::HarnessRunV1,
+    ) -> Result<(), SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn ensure_analysis_chat_link(
+        &self,
+        _run: &RunRecordV1,
+    ) -> Result<bool, SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn get_action(
+        &self,
+        _action_id: &str,
+    ) -> Result<Option<security_scan::SecurityActionRecordV1>, SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn list_actions(
+        &self,
+    ) -> Result<Vec<security_scan::SecurityActionRecordV1>, SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn create_action_if_absent(
+        &self,
+        _action: security_scan::SecurityActionRecordV1,
+    ) -> Result<security_scan::CreateActionOutcome, SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn replace_action(
+        &self,
+        _expected: &security_scan::SecurityActionRecordV1,
+        _replacement: security_scan::SecurityActionRecordV1,
+    ) -> Result<bool, SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn delete_action_if_unchanged(
+        &self,
+        _action: &security_scan::SecurityActionRecordV1,
+    ) -> Result<(), SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn enqueue_action_execute(
+        &self,
+        _request: security_scan::ActionEnqueueRequestV1,
+    ) -> Result<(), SecurityScanError> {
+        unreachable!()
+    }
+
+    async fn approval_gate_is_live(&self) -> Result<bool, SecurityScanError> {
+        unreachable!()
+    }
 }
 
 #[async_trait]
@@ -121,7 +189,7 @@ impl ExecutionRuntime for FakeRuntime {
     async fn materialize_target(
         &self,
         repository: &RepositoryConfigV1,
-        run: &RunRecordV1,
+        request: &MaterializationRequest,
     ) -> Result<MaterializedTargetV1, SecurityScanError> {
         if self.fail_materialize.load(Ordering::SeqCst) {
             return Err(SecurityScanError::Dependency("worktree unavailable".into()));
@@ -130,7 +198,7 @@ impl ExecutionRuntime for FakeRuntime {
         Ok(MaterializedTargetV1 {
             worktree_id: "wt_security_scan".into(),
             path: "/private/tmp/wt_security_scan".into(),
-            base_sha: run.target_sha.clone(),
+            base_sha: request.target_sha.clone(),
         })
     }
 
@@ -316,6 +384,52 @@ async fn terminal_harness_completion_persists_the_validated_security_report() {
         runtime.cleaned.lock().await.as_slice(),
         ["wt_security_scan"]
     );
+}
+
+#[tokio::test]
+async fn max_turns_notice_is_reported_as_analysis_budget_exhaustion() {
+    let mut run = queued_run();
+    run.status = RunStatusV1::Analyzing;
+    run.step = 2;
+    run.materialized = Some(MaterializedTargetV1 {
+        worktree_id: "wt_security_scan".into(),
+        path: "/private/tmp/wt_security_scan".into(),
+        base_sha: run.target_sha.clone(),
+    });
+    run.harness = Some(security_scan::HarnessRunV1 {
+        session_id: "session_security_scan".into(),
+        turn_id: "turn_security_scan".into(),
+    });
+    let completion = TurnCompletedEventV1 {
+        session_id: "session_security_scan".into(),
+        turn_id: "turn_security_scan".into(),
+        status: "completed".into(),
+        terminal: true,
+        result: Some(serde_json::json!("max_turns (6) reached; ending the turn.")),
+        result_error: None,
+        reason: None,
+    };
+    let runtime = Arc::new(FakeRuntime {
+        run: Mutex::new(run),
+        materialized: Mutex::new(Vec::new()),
+        plans: Mutex::new(Vec::new()),
+        enqueued: Mutex::new(Vec::new()),
+        completed: Mutex::new(Some(completion.clone())),
+        cleaned: Mutex::new(Vec::new()),
+        fail_enqueue_once: AtomicBool::new(false),
+        fail_materialize: AtomicBool::new(false),
+    });
+    let executor = SecurityScanExecutor::new(runtime.clone(), config());
+
+    let response = executor.on_turn_completed(completion).await.unwrap();
+
+    assert!(response.woke);
+    assert_eq!(response.status, Some(RunStatusV1::Failed));
+    let stored = runtime.run.lock().await.clone();
+    let error = stored.error.unwrap();
+    assert_eq!(error.code, "analysis_budget_exhausted");
+    assert!(error.message.contains("6 generation turns"));
+    assert!(error.retryable);
 }
 
 #[tokio::test]

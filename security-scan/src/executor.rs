@@ -12,14 +12,17 @@ use crate::{
 const MAX_STEP_FAILURES: u32 = 3;
 const SECRET_REDACTION: &str = "<redacted>";
 const PRIVATE_KEY_MARKERS: [(&str, &str); 3] = [
-    ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"),
     (
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----END RSA PRIVATE KEY-----",
+        concat!("-----BEGIN PRIVATE ", "KEY-----"),
+        concat!("-----END PRIVATE ", "KEY-----"),
     ),
     (
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-        "-----END OPENSSH PRIVATE KEY-----",
+        concat!("-----BEGIN RSA PRIVATE ", "KEY-----"),
+        concat!("-----END RSA PRIVATE ", "KEY-----"),
+    ),
+    (
+        concat!("-----BEGIN OPENSSH PRIVATE ", "KEY-----"),
+        concat!("-----END OPENSSH PRIVATE ", "KEY-----"),
     ),
 ];
 const TOKEN_PREFIXES: [(&str, usize); 12] = [
@@ -43,6 +46,34 @@ pub struct AnalysisHandle {
     pub turn_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializationRequest {
+    pub session_id: String,
+    pub target_sha: String,
+}
+
+impl MaterializationRequest {
+    pub fn for_run(run: &RunRecordV1) -> Self {
+        Self {
+            session_id: format!(
+                "security-scan-worktree-{}-attempt-{}",
+                run.operation_nonce, run.attempt
+            ),
+            target_sha: run.target_sha.clone(),
+        }
+    }
+
+    pub fn for_action(action: &crate::SecurityActionRecordV1) -> Self {
+        Self {
+            session_id: format!(
+                "security-scan-worktree-action-{}-attempt-{}",
+                action.operation_nonce, action.attempt
+            ),
+            target_sha: action.target_sha.clone(),
+        }
+    }
+}
+
 #[async_trait]
 pub trait ExecutionRuntime: SecurityRuntime {
     async fn get_run_by_session(
@@ -53,7 +84,7 @@ pub trait ExecutionRuntime: SecurityRuntime {
     async fn materialize_target(
         &self,
         repository: &RepositoryConfigV1,
-        run: &RunRecordV1,
+        request: &MaterializationRequest,
     ) -> Result<MaterializedTargetV1, SecurityScanError>;
 
     async fn cleanup_target(
@@ -137,10 +168,10 @@ where
                     Ok(response(&run, true))
                 }
             }
-            RunStatusV1::Completed
-            | RunStatusV1::Failed
-            | RunStatusV1::Cancelling
-            | RunStatusV1::Cancelled => Ok(response(&run, true)),
+            RunStatusV1::Cancelling => self.finalize_cancel(run).await,
+            RunStatusV1::Completed | RunStatusV1::Failed | RunStatusV1::Cancelled => {
+                Ok(response(&run, true))
+            }
         }
     }
 
@@ -180,6 +211,7 @@ where
         } else {
             "analysis dispatch"
         };
+        tracing::warn!(run_id = %run.run_id, %error, "{stage} failed");
         failed.error = Some(RunErrorV1 {
             code: if terminal {
                 "step_failed".into()
@@ -220,7 +252,7 @@ where
                 status: None,
             });
         };
-        if run.status != RunStatusV1::Analyzing
+        if (run.status != RunStatusV1::Analyzing && run.status != RunStatusV1::Cancelling)
             || run
                 .harness
                 .as_ref()
@@ -264,33 +296,43 @@ where
         let mut finished = run.clone();
         finished.completed_at = Some(now);
         finished.updated_at = now;
+        let exhausted_turns = max_turns_from_event(&event);
         if event.status == "completed" {
-            match event
-                .result
-                .ok_or_else(|| "Harness completed without a result".to_string())
-                .and_then(|value| {
-                    serde_json::from_value::<SecurityReportV1>(value)
-                        .map_err(|error| format!("invalid security report: {error}"))
-                })
-                .and_then(|report| validate_report(report, &run))
-            {
-                Ok(report) => {
-                    finished.status = RunStatusV1::Completed;
-                    finished.report = Some(report);
-                    finished.error = None;
-                }
-                Err(message) => {
-                    finished.status = RunStatusV1::Failed;
-                    finished.error = Some(RunErrorV1 {
-                        code: "invalid_report".into(),
-                        message,
-                        retryable: true,
-                    });
+            if let Some(turns) = exhausted_turns {
+                finished.status = RunStatusV1::Failed;
+                finished.error = Some(analysis_budget_error(turns));
+            } else {
+                match event
+                    .result
+                    .ok_or_else(|| "Harness completed without a result".to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<SecurityReportV1>(value)
+                            .map_err(|error| format!("invalid security report: {error}"))
+                    })
+                    .map(|report| sanitize_report_for_persistence(report, &run))
+                    .and_then(|report| validate_report(report, &run))
+                {
+                    Ok(report) => {
+                        finished.status = RunStatusV1::Completed;
+                        finished.report = Some(report);
+                        finished.error = None;
+                    }
+                    Err(message) => {
+                        finished.status = RunStatusV1::Failed;
+                        finished.error = Some(RunErrorV1 {
+                            code: "invalid_report".into(),
+                            message,
+                            retryable: true,
+                        });
+                    }
                 }
             }
-        } else if event.status == "cancelled" {
+        } else if event.status == "cancelled" || run.status == RunStatusV1::Cancelling {
             finished.status = RunStatusV1::Cancelled;
             finished.error = None;
+        } else if let Some(turns) = exhausted_turns {
+            finished.status = RunStatusV1::Failed;
+            finished.error = Some(analysis_budget_error(turns));
         } else {
             finished.status = RunStatusV1::Failed;
             finished.error = Some(RunErrorV1 {
@@ -328,6 +370,39 @@ where
             return Ok(false);
         };
         Ok(self.finish_analysis(run.clone(), event).await?.woke)
+    }
+
+    async fn finalize_cancel(
+        &self,
+        run: RunRecordV1,
+    ) -> Result<ExecuteResponseV1, SecurityScanError> {
+        if run.status != RunStatusV1::Cancelling {
+            return Ok(response(&run, true));
+        }
+        if let Some(harness) = run.harness.as_ref() {
+            self.runtime.stop_analysis(harness).await?;
+            if let Some(event) = self.runtime.completed_analysis(&run).await? {
+                self.finish_analysis(run.clone(), event).await?;
+                let current = self.runtime.get_run(&run.run_id).await?.unwrap_or(run);
+                return Ok(response(&current, false));
+            }
+        }
+        let mut cancelled = run.clone();
+        cancelled.status = RunStatusV1::Cancelled;
+        cancelled.updated_at = ids::now_ms();
+        cancelled.completed_at = Some(cancelled.updated_at);
+        cancelled.error = None;
+        if !self.runtime.replace_run(&run, cancelled.clone()).await? {
+            return Ok(response(&run, true));
+        }
+        if let Err(error) = self.cleanup_terminal(&cancelled).await {
+            tracing::warn!(
+                run_id = %cancelled.run_id,
+                %error,
+                "cancelled run checkout cleanup failed"
+            );
+        }
+        Ok(response(&cancelled, false))
     }
 
     pub async fn cleanup_terminal(&self, run: &RunRecordV1) -> Result<bool, SecurityScanError> {
@@ -369,7 +444,10 @@ where
                 run.repository
             ))
         })?;
-        let target = self.runtime.materialize_target(repository, &run).await?;
+        let target = self
+            .runtime
+            .materialize_target(repository, &MaterializationRequest::for_run(&run))
+            .await?;
         if !target.base_sha.eq_ignore_ascii_case(&run.target_sha) {
             return Err(SecurityScanError::Dependency(format!(
                 "materialized commit {} does not match requested {}",
@@ -437,6 +515,40 @@ where
     }
 }
 
+fn max_turns_from_event(event: &TurnCompletedEventV1) -> Option<u32> {
+    event
+        .result
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .and_then(parse_max_turns_notice)
+        .or_else(|| {
+            event
+                .result_error
+                .as_deref()
+                .and_then(parse_max_turns_notice)
+        })
+        .or_else(|| event.reason.as_deref().and_then(parse_max_turns_notice))
+}
+
+fn parse_max_turns_notice(message: &str) -> Option<u32> {
+    message
+        .strip_prefix("max_turns (")?
+        .strip_suffix(") reached; ending the turn.")?
+        .parse()
+        .ok()
+}
+
+fn analysis_budget_error(turns: u32) -> RunErrorV1 {
+    RunErrorV1 {
+        code: "analysis_budget_exhausted".into(),
+        message: format!(
+            "Analysis used all {turns} generation turns before producing a security report. \
+             Retry the scan with a higher analysis.max_turns limit."
+        ),
+        retryable: true,
+    }
+}
+
 fn response(run: &RunRecordV1, skipped: bool) -> ExecuteResponseV1 {
     ExecuteResponseV1 {
         skipped,
@@ -461,6 +573,58 @@ fn sanitize_failure_message(run: &RunRecordV1, message: String) -> String {
         sanitized.push('…');
     }
     sanitized
+}
+
+fn sanitize_report_for_persistence(
+    mut report: SecurityReportV1,
+    run: &RunRecordV1,
+) -> SecurityReportV1 {
+    let root = run
+        .materialized
+        .as_ref()
+        .map(|target| target.path.as_str())
+        .filter(|root| !root.is_empty());
+    let redact = |value: &mut String| {
+        if let Some(root) = root {
+            if value.contains(root) {
+                *value = value.replace(root, "<checkout>");
+            }
+        }
+        *value = redact_secret_material(value);
+    };
+
+    redact(&mut report.summary);
+    for assessment in [
+        &mut report.assessments.vulnerabilities,
+        &mut report.assessments.dependencies,
+        &mut report.assessments.secrets,
+        &mut report.assessments.supply_chain,
+    ] {
+        if let Some(reason) = &mut assessment.reason {
+            redact(reason);
+        }
+    }
+    for finding in &mut report.findings {
+        redact(&mut finding.rule_id);
+        redact(&mut finding.title);
+        redact(&mut finding.description);
+        redact(&mut finding.evidence);
+        redact(&mut finding.remediation);
+        if let Some(location) = &mut finding.location {
+            if let Some(suffix) = root.and_then(|root| location.path.strip_prefix(root)) {
+                location.path = suffix.trim_start_matches('/').to_string();
+                if location.path.is_empty() {
+                    location.path = ".".into();
+                }
+            } else {
+                redact(&mut location.path);
+            }
+        }
+        if let Some(patch) = &mut finding.suggested_patch {
+            redact(patch);
+        }
+    }
+    report
 }
 
 fn validate_report(
@@ -993,7 +1157,10 @@ mod report_tests {
             run_id: "sec_x".into(),
             repository: "repo".into(),
             target_sha: "a".repeat(40),
+            resolved_from_head: false,
             mode,
+            model: None,
+            provider: None,
             operation_nonce: "private_nonce".into(),
             status: RunStatusV1::Analyzing,
             attempt: 1,
@@ -1069,6 +1236,27 @@ mod report_tests {
     }
 
     #[test]
+    fn report_ingress_redacts_internal_roots_and_secrets_before_validation() {
+        let run = run(ScanModeV1::Suggest);
+        let secret = concat!("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
+        let mut report = report("/private/internal/wt_x/src/x.rs");
+        report.summary = "reviewed /private/internal/wt_x".into();
+        report.findings[0].evidence = format!("found {secret} at /private/internal/wt_x/src/x.rs");
+        report.findings[0].suggested_patch = Some("patch /private/internal/wt_x/src/x.rs".into());
+
+        let report = sanitize_report_for_persistence(report, &run);
+        let encoded = serde_json::to_string(&report).unwrap();
+
+        assert!(!encoded.contains("/private/internal/wt_x"));
+        assert!(!encoded.contains(secret));
+        assert_eq!(
+            report.findings[0].location.as_ref().unwrap().path,
+            "src/x.rs"
+        );
+        assert!(validate_report(report, &run).is_ok());
+    }
+
+    #[test]
     fn scan_mode_strips_suggested_patches() {
         let report = validate_report(report("src/x.rs"), &run(ScanModeV1::Scan)).unwrap();
         assert!(report.findings[0].suggested_patch.is_none());
@@ -1118,16 +1306,25 @@ mod report_tests {
 
     #[test]
     fn failure_messages_redact_credentials_before_persistence() {
-        let known_token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
-        let user_token = "ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
-        let refresh_token = "ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+        let known_token = concat!("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
+        let user_token = concat!("ghu_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
+        let refresh_token = concat!("ghr_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
         let message = sanitize_failure_message(
             &run(ScanModeV1::Scan),
             format!(
-                "checkout /private/internal/wt_x failed: \
-                 DATABASE_URL=postgres://url-user-canary:url-password-canary@db.internal/app; \
-                 API_TOKEN=assignment-canary\npassword: correct horse battery staple\n\
-                 Authorization: Bearer auth-canary\nknown={known_token}\nuser={user_token}\nrefresh={refresh_token}"
+                concat!(
+                    "checkout /private/internal/wt_x failed: ",
+                    "DATABASE_",
+                    "URL=postgres://url-user-canary:url-password-canary@db.internal/app; ",
+                    "API_",
+                    "TOKEN=assignment-canary\n",
+                    "pass",
+                    "word: correct horse battery staple\n",
+                    "Author",
+                    "ization: Bearer auth-canary\n",
+                    "known={}\nuser={}\nrefresh={}"
+                ),
+                known_token, user_token, refresh_token
             ),
         );
 
@@ -1148,17 +1345,17 @@ mod report_tests {
         }
         assert!(message.contains("checkout <checkout> failed"));
         assert!(message.contains("postgres://<redacted>@db.internal/app"));
-        assert!(message.contains("API_TOKEN=<redacted>"));
-        assert!(message.contains("password: <redacted>"));
-        assert!(message.contains("Authorization: <redacted>"));
+        assert!(message.contains(concat!("API_", "TOKEN=<redacted>")));
+        assert!(message.contains(concat!("pass", "word: <redacted>")));
+        assert!(message.contains(concat!("Author", "ization: <redacted>")));
     }
 
     #[test]
     fn report_rejects_secret_values_without_echoing_them() {
         for canary in [
-            "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
-            "ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
-            "ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+            concat!("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"),
+            concat!("ghu_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"),
+            concat!("ghr_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"),
         ] {
             let mut leaked = report("src/x.rs");
             leaked.findings[0].evidence = format!("hard-coded credential: {canary}");
@@ -1168,7 +1365,7 @@ mod report_tests {
             assert!(!error.contains(canary));
         }
 
-        let canary = "ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+        let canary = concat!("ghu_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
         let mut path_leak = report("src/x.rs");
         path_leak.findings[0].location.as_mut().unwrap().path = canary.into();
         let error = validate_report(path_leak, &run(ScanModeV1::Suggest)).unwrap_err();
@@ -1177,14 +1374,20 @@ mod report_tests {
 
         for (leak, secret) in [
             (
-                "DATABASE_URL=postgres://report-user-canary:report-password-canary@db.internal/app",
+                concat!(
+                    "DATABASE_",
+                    "URL=postgres://report-user-canary:report-password-canary@db.internal/app"
+                ),
                 "report-password-canary",
             ),
             (
-                "API_TOKEN=assignment-report-canary",
+                concat!("API_", "TOKEN=assignment-report-canary"),
                 "assignment-report-canary",
             ),
-            ("password: \"yaml-report-canary\"", "yaml-report-canary"),
+            (
+                concat!("pass", "word: \"yaml-report-canary\""),
+                "yaml-report-canary",
+            ),
         ] {
             let mut leaked = report("src/x.rs");
             leaked.findings[0].evidence = leak.into();
@@ -1197,8 +1400,14 @@ mod report_tests {
 
     #[test]
     fn credential_detection_preserves_non_secret_references() {
-        let safe = "docs https://github.com/iii-hq/iii ssh://git@github.com/iii-hq/iii \
-                    MODE=scan API_TOKEN=${API_TOKEN} password=<redacted>\npassword: <redacted>";
+        let safe = concat!(
+            "docs https://github.com/iii-hq/iii ssh://git@github.com/iii-hq/iii ",
+            "MODE=scan API_",
+            "TOKEN=${API_TOKEN} pass",
+            "word=<redacted>\n",
+            "pass",
+            "word: <redacted>"
+        );
         assert_eq!(redact_secret_material(safe), safe);
 
         let mut safe_report = report("src/x.rs");

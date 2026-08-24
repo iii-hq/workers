@@ -4,6 +4,7 @@ import {
   assertCompleteGithubSourceSet,
   buildSecuritySourceSummary,
   buildStatusOptions,
+  canRequestPatchSuggestions,
   categorizeFindings,
   categoryCoverageLabel,
   classifyFinding,
@@ -172,6 +173,13 @@ test('omits placeholder remediation without treating real guidance as empty', ()
     isUsefulRemediation('Rotate the token and invalidate active sessions.'),
     true,
   )
+})
+
+test('offers patch suggestions for completed report-only scans with findings', () => {
+  assert.equal(canRequestPatchSuggestions('scan', 'completed', 7), true)
+  assert.equal(canRequestPatchSuggestions('scan', 'completed', 0), false)
+  assert.equal(canRequestPatchSuggestions('scan', 'analyzing', 7), false)
+  assert.equal(canRequestPatchSuggestions('suggest', 'completed', 7), false)
 })
 
 test('uses a concise report title with deterministic fallbacks', () => {

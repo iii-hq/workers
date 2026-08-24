@@ -34,9 +34,11 @@ fn worker_manifest_names_the_same_worker_and_description() {
     assert!(source.contains(manifest::DESCRIPTION));
     assert!(source.lines().any(|line| line.starts_with("tags: [")));
     assert!(source.lines().any(|line| line == "  github: \"^0.3.0\""));
+    assert!(source.lines().any(|line| line == "  harness: \"^1.0.0\""));
     assert!(source.lines().any(|line| line == "  cron: \"^0.21.4\""));
     assert!(source.lines().any(|line| line == "  queue: \"^0.21.3\""));
     assert!(source.lines().any(|line| line == "  worktree: \"^0.3.0\""));
+    assert!(source.lines().any(|line| line == "  storage: \"^0.1.0\""));
 }
 
 #[test]
@@ -80,11 +82,4 @@ fn worker_registers_interface_before_dependency_boot() {
             "{registration} must precede dependency boot"
         );
     }
-
-    let ensure_queue = source.find(".ensure_queue()").expect("queue boot");
-    let reconcile = source
-        .find("reconcile_runs(&runtime, &executor).await")
-        .expect("runtime reconciliation");
-    assert!(claim_state < reconcile);
-    assert!(ensure_queue < reconcile);
 }

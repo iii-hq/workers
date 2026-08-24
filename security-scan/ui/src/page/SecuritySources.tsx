@@ -50,9 +50,7 @@ export interface GitHubAlertView {
   url?: string
 }
 
-function severityVariant(
-  severity: Severity,
-): 'default' | 'warn' | 'alert' | 'accent' {
+function severityVariant(severity: Severity): 'default' | 'warn' | 'alert' | 'accent' {
   if (severity === 'critical' || severity === 'high') return 'alert'
   if (severity === 'medium') return 'warn'
   if (severity === 'low') return 'accent'
@@ -72,14 +70,8 @@ function alertLocation(record: GitHubAlertRecord): string | null {
   return `${record.path}:${record.start_line}`
 }
 
-function toAlertView(
-  record: GitHubAlertRecord,
-  reconciliation: SecurityReconciliation,
-): GitHubAlertView {
-  const scope = reconciliationScopeLabel(
-    record.scope,
-    reconciliation.target_sha,
-  )
+function toAlertView(record: GitHubAlertRecord, reconciliation: SecurityReconciliation): GitHubAlertView {
+  const scope = reconciliationScopeLabel(record.scope, reconciliation.target_sha)
   const location = alertLocation(record)
   return {
     id: `${record.source}:${record.number}`,
@@ -93,9 +85,28 @@ function toAlertView(
   }
 }
 
+function safeGitHubHttpsUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') return undefined
+    if (parsed.username || parsed.password) return undefined
+    if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') {
+      return undefined
+    }
+    if (parsed.pathname.includes('\\') || parsed.pathname.includes('//')) {
+      return undefined
+    }
+    return parsed.toString()
+  } catch {
+    return undefined
+  }
+}
+
 function AlertLink({ alert }: { alert: GitHubAlertView }) {
-  return alert.url ? (
-    <a href={alert.url} target="_blank" rel="noreferrer">
+  const url = safeGitHubHttpsUrl(alert.url)
+  return url ? (
+    <a href={url} target="_blank" rel="noreferrer">
       {alert.title}
     </a>
   ) : (
@@ -122,9 +133,7 @@ function GitHubAlertsTable({ alerts }: { alerts: GitHubAlertView[] }) {
           {alerts.map((alert) => (
             <tr key={alert.id}>
               <td>
-                <Badge variant={severityVariant(alert.severity)}>
-                  {alert.severity}
-                </Badge>
+                <Badge variant={severityVariant(alert.severity)}>{alert.severity}</Badge>
               </td>
               <td>{sourceLabel(alert.source)}</td>
               <td className="security-scan-ui-source-alert-title">
@@ -143,16 +152,11 @@ function GitHubAlertsTable({ alerts }: { alerts: GitHubAlertView[] }) {
 
 function GitHubAlertsList({ alerts }: { alerts: GitHubAlertView[] }) {
   return (
-    <ul
-      className="security-scan-ui-source-alert-list"
-      aria-label="Open GitHub security alert records"
-    >
+    <ul className="security-scan-ui-source-alert-list" aria-label="Open GitHub security alert records">
       {alerts.map((alert) => (
         <li key={alert.id}>
           <div className="security-scan-ui-source-alert-head">
-            <Badge variant={severityVariant(alert.severity)}>
-              {alert.severity}
-            </Badge>
+            <Badge variant={severityVariant(alert.severity)}>{alert.severity}</Badge>
             <span>{sourceLabel(alert.source)}</span>
             <span>{alert.lifecycle}</span>
           </div>
@@ -187,13 +191,8 @@ function GitHubSourceCard({
   const state = githubCollectionState(source.status) as GitHubCollectionState
   const copy = githubCollectionStateCopy(state, source.record_count)
   const healthTool = source.health.tool ? ` · ${source.health.tool}` : ''
-  const healthCommit = sourceCommitPresentation(
-    source.health.commit_sha,
-    targetSha,
-  )
-  const healthCommitUrl = healthCommit
-    ? githubCommitUrl(githubRepository ?? '', healthCommit.sha)
-    : null
+  const healthCommit = sourceCommitPresentation(source.health.commit_sha, targetSha)
+  const healthCommitUrl = healthCommit ? githubCommitUrl(githubRepository ?? '', healthCommit.sha) : null
   return (
     <section className="security-scan-ui-source-card" data-state={state}>
       <header>
@@ -214,11 +213,7 @@ function GitHubSourceCard({
         </div>
         <div>
           <dt>snapshot time</dt>
-          <dd>
-            {source.collected_at == null
-              ? 'Not collected'
-              : formatTimestamp(source.collected_at)}
-          </dd>
+          <dd>{source.collected_at == null ? 'Not collected' : formatTimestamp(source.collected_at)}</dd>
         </div>
         <div>
           <dt>source health</dt>
@@ -235,12 +230,7 @@ function GitHubSourceCard({
                 {healthCommit ? (
                   <>
                     {healthCommitUrl ? (
-                      <a
-                        href={healthCommitUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={healthCommit.sha}
-                      >
+                      <a href={healthCommitUrl} target="_blank" rel="noreferrer" title={healthCommit.sha}>
                         <code>{healthCommit.short}</code>
                       </a>
                     ) : (
@@ -259,9 +249,7 @@ function GitHubSourceCard({
               <dt>analysis observed</dt>
               <dd>
                 {source.health.observed_at ? (
-                  <time dateTime={source.health.observed_at}>
-                    {source.health.observed_at}
-                  </time>
+                  <time dateTime={source.health.observed_at}>{source.health.observed_at}</time>
                 ) : (
                   'Not reported'
                 )}
@@ -298,19 +286,13 @@ export function SecuritySources({
   onLoadMore(): void
 }) {
   const [filter, setFilter] = useState<GitHubAlertFilter>('all')
-  const [visibleAlertCount, setVisibleAlertCount] =
-    useState(INITIAL_ALERT_COUNT)
+  const [visibleAlertCount, setVisibleAlertCount] = useState(INITIAL_ALERT_COUNT)
   const [revealAfterLoad, setRevealAfterLoad] = useState(false)
   const sources = reconciliation?.sources ?? []
   const count = githubOpenAlertCount(sources)
-  const collectionState = overallGithubCollectionState(
-    sources,
-  ) as GitHubCollectionState
+  const collectionState = overallGithubCollectionState(sources) as GitHubCollectionState
   const alerts = useMemo(
-    () =>
-      reconciliation?.records.map((record) =>
-        toAlertView(record, reconciliation),
-      ) ?? [],
+    () => reconciliation?.records.map((record) => toAlertView(record, reconciliation)) ?? [],
     [reconciliation],
   )
   const harnessVerifiedCount =
@@ -324,10 +306,7 @@ export function SecuritySources({
     reconciliation?.matching.status === 'available',
   )
   const stateCopy = githubCollectionStateCopy(collectionState, count.count)
-  const filteredAlerts = useMemo(
-    () => filterGithubAlerts(alerts, filter) as GitHubAlertView[],
-    [alerts, filter],
-  )
+  const filteredAlerts = useMemo(() => filterGithubAlerts(alerts, filter) as GitHubAlertView[], [alerts, filter])
   const visibleAlerts = filteredAlerts.slice(0, visibleAlertCount)
   const remainingAlertCount = filteredAlerts.length - visibleAlerts.length
 
@@ -343,24 +322,14 @@ export function SecuritySources({
   }, [filter])
 
   useEffect(() => {
-    if (
-      !revealAfterLoad ||
-      loadingMore ||
-      filteredAlerts.length <= visibleAlertCount
-    )
-      return
-    setVisibleAlertCount((current) =>
-      nextVisibleAlertCount(current, filteredAlerts.length, ALERT_PAGE_SIZE),
-    )
+    if (!revealAfterLoad || loadingMore || filteredAlerts.length <= visibleAlertCount) return
+    setVisibleAlertCount((current) => nextVisibleAlertCount(current, filteredAlerts.length, ALERT_PAGE_SIZE))
     setRevealAfterLoad(false)
   }, [filteredAlerts.length, loadingMore, revealAfterLoad, visibleAlertCount])
 
   const latestSnapshotAt = sources.reduce<number | null>(
     (latest, source) =>
-      source.collected_at != null &&
-      (latest == null || source.collected_at > latest)
-        ? source.collected_at
-        : latest,
+      source.collected_at != null && (latest == null || source.collected_at > latest) ? source.collected_at : latest,
     null,
   )
   const matchingLabel =
@@ -376,27 +345,14 @@ export function SecuritySources({
       : `${stateCopy.label}. ${visibleAlerts.length} alerts shown.`
 
   return (
-    <section
-      className="security-scan-ui-sources"
-      aria-labelledby="security-scan-sources-title"
-    >
+    <section className="security-scan-ui-sources" aria-labelledby="security-scan-sources-title">
       <div className="security-scan-ui-sources-head">
         <div>
-          <span className="security-scan-ui-section-label">
-            source reconciliation
-          </span>
+          <span className="security-scan-ui-section-label">source reconciliation</span>
           <h3 id="security-scan-sources-title">Security sources</h3>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onRefresh}
-          disabled={loading || refreshing || loadingMore}
-        >
-          <RefreshIcon
-            size={14}
-            className={refreshing ? 'is-spinning' : undefined}
-          />
+        <Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading || refreshing || loadingMore}>
+          <RefreshIcon size={14} className={refreshing ? 'is-spinning' : undefined} />
           {refreshing ? 'refreshing' : stateCopy.action}
         </Button>
       </div>
@@ -424,18 +380,12 @@ export function SecuritySources({
         </section>
       </div>
 
-      <p className="security-scan-ui-source-qualification">
-        {summary.qualification}
-      </p>
+      <p className="security-scan-ui-source-qualification">{summary.qualification}</p>
 
       <dl className="security-scan-ui-source-facts">
         <div>
           <dt>latest GitHub snapshot</dt>
-          <dd>
-            {latestSnapshotAt == null
-              ? 'Not collected'
-              : formatTimestamp(latestSnapshotAt)}
-          </dd>
+          <dd>{latestSnapshotAt == null ? 'Not collected' : formatTimestamp(latestSnapshotAt)}</dd>
         </div>
         <div>
           <dt>source completeness</dt>
@@ -466,15 +416,10 @@ export function SecuritySources({
         <div>
           <strong>GitHub open alert records</strong>
           <span>
-            {count.count == null
-              ? 'count unavailable'
-              : `${sourceCountLabel(count.count, count.complete)} open`}
+            {count.count == null ? 'count unavailable' : `${sourceCountLabel(count.count, count.complete)} open`}
           </span>
         </div>
-        <fieldset
-          className="security-scan-ui-source-filters"
-          aria-label="Filter GitHub alerts by source"
-        >
+        <fieldset className="security-scan-ui-source-filters" aria-label="Filter GitHub alerts by source">
           {GITHUB_ALERT_FILTERS.map((option) => (
             <button
               type="button"
@@ -502,19 +447,14 @@ export function SecuritySources({
         <GitHubAlertsTable alerts={visibleAlerts} />
       )}
 
-      <span
-        className="security-scan-ui-source-live"
-        aria-live="polite"
-        aria-atomic="true"
-      >
+      <span className="security-scan-ui-source-live" aria-live="polite" aria-atomic="true">
         {liveMessage}
       </span>
 
       {remainingAlertCount > 0 || reconciliation?.next_cursor ? (
         <div className="security-scan-ui-source-more">
           <span>
-            showing {visibleAlerts.length} of {filteredAlerts.length} loaded
-            alerts
+            showing {visibleAlerts.length} of {filteredAlerts.length} loaded alerts
             {reconciliation?.next_cursor ? ' · more available' : ''}
           </span>
           <Button
@@ -524,11 +464,7 @@ export function SecuritySources({
             onClick={() => {
               if (remainingAlertCount > 0) {
                 setVisibleAlertCount((current) =>
-                  nextVisibleAlertCount(
-                    current,
-                    filteredAlerts.length,
-                    ALERT_PAGE_SIZE,
-                  ),
+                  nextVisibleAlertCount(current, filteredAlerts.length, ALERT_PAGE_SIZE),
                 )
                 return
               }

@@ -1,6 +1,6 @@
 use security_scan::{
-    AnalysisConfigV1, RepositoryConfigV1, RepositoryGitHubConfigV1, RepositoryScheduleV1,
-    ScanModeV1, SecurityScanError, WorkerConfig,
+    AnalysisConfigV1, ArchiveConfigV1, RepositoryConfigV1, RepositoryGitHubConfigV1,
+    RepositoryScheduleV1, ScanModeV1, SecurityScanError, WorkerConfig,
 };
 
 fn valid_config() -> WorkerConfig {
@@ -23,6 +23,7 @@ fn valid_config() -> WorkerConfig {
             max_total_tokens: 50_000,
             max_cost_usd: Some(2.0),
         },
+        archive: None,
     }
 }
 
@@ -46,6 +47,23 @@ fn config_rejects_duplicate_repository_schedule_ids_and_relative_paths() {
     let mut relative = valid_config();
     relative.repositories[0].path = "repos/iii".into();
     assert!(relative.validate().is_err());
+}
+
+#[test]
+fn config_rejects_an_empty_or_escaping_archive() {
+    let mut empty = valid_config();
+    empty.archive = Some(ArchiveConfigV1 {
+        bucket: " ".into(),
+        prefix: None,
+    });
+    assert!(empty.validate().is_err());
+
+    let mut escaping = valid_config();
+    escaping.archive = Some(ArchiveConfigV1 {
+        bucket: "security-scan".into(),
+        prefix: Some("../runs".into()),
+    });
+    assert!(escaping.validate().is_err());
 }
 
 #[test]
@@ -90,6 +108,9 @@ fn github_mapping_is_optional_and_requires_an_explicit_full_name() {
         "iii-hq/",
         "iii hq/iii",
         "iii-hq/../iii",
+        ".iii-hq/iii",
+        "iii-hq/iii.",
+        "iii..hq/iii",
     ] {
         config.repositories[0].github = Some(RepositoryGitHubConfigV1 {
             full_name: full_name.into(),
