@@ -325,6 +325,14 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.copyCookies(),
         },
         {
+          id: 'browser-diagnostics',
+          title: 'Browser diagnostics',
+          detail: 'What Chromium the worker launches and what it allows',
+          keywords: ['doctor', 'diagnostics', 'environment', 'chromium'],
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
+          run: () => sessionActionsRef.current?.showDiagnostics(),
+        },
+        {
           id: 'clear-annotations',
           title: 'Clear the annotations',
           keywords: ['annotations', 'remove', 'reset'],
