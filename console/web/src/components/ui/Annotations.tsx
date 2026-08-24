@@ -24,7 +24,7 @@ import { IconButton } from '@/components/ui/IconButton'
 import { Input } from '@/components/ui/Input'
 import {
   type Annotation,
-  type AnnotationKind,
+  type AnnotationTool,
   annotationKind,
   containedImageBox,
 } from '@/lib/annotations'
