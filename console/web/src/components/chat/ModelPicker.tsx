@@ -30,6 +30,8 @@ const DEFAULT_EFFORT: ReasoningEffortOption = {
   description: 'use the model default',
 }
 
+const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
+
 interface ModelPickerProps {
   value: ModelId | null
   options: ModelOption[]
@@ -289,6 +291,7 @@ export function ModelPicker({
                   disabled={disabled}
                   loading={loading}
                   contentClassName="space-y-4 px-3 pb-3"
+                  autoFocusFilter
                 />
               </div>
             )}
@@ -332,6 +335,9 @@ interface ModelPickerPanelProps {
   loading?: boolean
   className?: string
   contentClassName?: string
+  /** Put the caret in the filter on mount: the dropdown does, a sheet page
+      that opens under a finger does not. */
+  autoFocusFilter?: boolean
 }
 
 /**
@@ -351,9 +357,16 @@ export function ModelPickerPanel({
   loading,
   className,
   contentClassName,
+  autoFocusFilter = false,
 }: ModelPickerPanelProps) {
   const ctx = useConversationsCtxOptional()
   const effortByModel = useRef(new Map<ModelId, ThinkingLevel>())
+  // Type to filter, arrows to move, Enter to pick: the caret stays in the
+  // filter the whole time, the way a command palette behaves, because forty
+  // models across eight providers is a list you search, not one you scroll.
+  const [filter, setFilter] = useState('')
+  const [activeIndex, setActiveIndex] = useState(0)
+  const listRef = useRef<HTMLDivElement>(null)
   const optionsById = useMemo(
     () => new Map(options.map((option) => [option.id, option])),
     [options],
@@ -368,12 +381,30 @@ export function ModelPickerPanel({
   )
   const modelGroups = groupByProvider(options)
   const grouped = new Set(modelGroups.map((group) => group.label))
+  const filterWords = filter.toLowerCase().split(/\s+/).filter(Boolean)
+  const matchesFilter = (option: ModelOption, provider: string) => {
+    if (filterWords.length === 0) return true
+    const hay =
+      `${formatModelLabel(option.label)} ${option.id} ${formatProviderLabel(provider) ?? provider}`.toLowerCase()
+    return filterWords.every((word) => hay.includes(word))
+  }
   const groups = [
-    ...modelGroups,
+    ...modelGroups.map((group) => ({
+      label: group.label,
+      options: group.options.filter((option) =>
+        matchesFilter(option, group.label),
+      ),
+    })),
     ...presentIds
       .filter((id) => !grouped.has(id))
       .map((id) => ({ label: id, options: [] })),
-  ].sort((a, b) => a.label.localeCompare(b.label))
+  ]
+    .filter((group) => filterWords.length === 0 || group.options.length > 0)
+    .sort((a, b) => a.label.localeCompare(b.label))
+  const visibleIds = groups.flatMap((group) =>
+    group.options.map((option) => option.id),
+  )
+  const activeId = visibleIds[Math.min(activeIndex, visibleIds.length - 1)]
 
   useEffect(() => {
     if (!safeValue) return
@@ -384,6 +415,43 @@ export function ModelPickerPanel({
     if (thinkingLevel !== 'default') onThinkingLevelChange('default')
     effortByModel.current.set(safeValue, 'default')
   }, [safeValue, selectedEfforts, thinkingLevel, onThinkingLevelChange])
+
+  useEffect(() => {
+    if (!activeId) return
+    listRef.current
+      ?.querySelector(`[data-model-option="${CSS.escape(activeId)}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [activeId])
+
+  const onFilterKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!FILTER_KEYS.includes(event.key)) return
+    // Escape with a filter typed clears it; the menu closes on the next one.
+    if (event.key === 'Escape') {
+      if (filter === '') return
+      event.preventDefault()
+      event.stopPropagation()
+      setFilter('')
+      setActiveIndex(0)
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.key === 'Enter') {
+      if (activeId) selectModel(activeId)
+      return
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      setActiveIndex(event.key === 'Home' ? 0 : visibleIds.length - 1)
+      return
+    }
+    if (visibleIds.length === 0) return
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    setActiveIndex(
+      (current) =>
+        (Math.min(current, visibleIds.length - 1) + step + visibleIds.length) %
+        visibleIds.length,
+    )
+  }
 
   function selectModel(next: ModelId) {
     if (disabled || loading) return
@@ -399,7 +467,35 @@ export function ModelPickerPanel({
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
+      <div className="shrink-0 px-3 pb-3">
+        <input
+          type="search"
+          value={filter}
+          onChange={(event) => {
+            setFilter(event.target.value)
+            setActiveIndex(0)
+          }}
+          onKeyDown={onFilterKeyDown}
+          // biome-ignore lint/a11y/noAutofocus: the dropdown opened to pick a model; typing is the fastest way to one
+          autoFocus={autoFocusFilter}
+          placeholder="Filter models…"
+          aria-label="filter models"
+          aria-activedescendant={
+            activeId ? `model-option-${activeId}` : undefined
+          }
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="model-picker-list"
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+          className="h-9 w-full rounded-md bg-surface px-3 font-sans text-sm text-ink outline-none ring-1 ring-inset ring-edge placeholder:text-ink-ghost focus-visible:ring-rule-focus"
+        />
+      </div>
       <div
+        id="model-picker-list"
+        ref={listRef}
         className={cn(
           'min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4',
           contentClassName,
@@ -411,7 +507,9 @@ export function ModelPickerPanel({
           </div>
         ) : groups.length === 0 ? (
           <div className="rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint">
-            No models are configured.
+            {filterWords.length > 0
+              ? `No model matches "${filter.trim()}".`
+              : 'No models are configured.'}
           </div>
         ) : (
           groups.map((group) => {
@@ -465,16 +563,26 @@ export function ModelPickerPanel({
                   ) : catalogIsUsable ? (
                     group.options.map((option) => {
                       const selectedOption = option.id === safeValue
+                      const highlighted = option.id === activeId
                       return (
                         <button
                           key={option.id}
+                          id={`model-option-${option.id}`}
+                          data-model-option={option.id}
                           type="button"
                           disabled={disabled || unavailable}
                           onClick={() => selectModel(option.id)}
+                          onMouseEnter={() =>
+                            setActiveIndex(visibleIds.indexOf(option.id))
+                          }
                           aria-pressed={selectedOption}
                           className={cn(
-                            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:outline-none focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40',
+                            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover active:bg-surface-selected focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:outline-none focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40',
                             selectedOption && 'bg-surface-selected',
+                            highlighted &&
+                              !selectedOption &&
+                              'bg-surface-hover',
+                            highlighted && 'ring-1 ring-inset ring-rule-focus',
                           )}
                         >
                           <span className="min-w-0 flex-1 truncate font-medium">

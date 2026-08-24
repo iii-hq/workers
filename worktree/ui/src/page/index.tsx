@@ -29,12 +29,12 @@ import {
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, GitBranch, type IconProps, RefreshCw } from './icons'
 import { useWorktreesLive } from './useWorktreesLive'
-import { cn } from './worktree-data'
 import { WorktreeDetailPanel } from './WorktreeDetailPanel'
 import { WorktreeGraph } from './WorktreeGraph'
+import { cn } from './worktree-data'
 
 /** Container width (px) below which the page collapses to the drill-in
  * graph ⇄ detail flow: the detail column (300) plus a usable slice of the
@@ -77,6 +77,8 @@ export function WorktreesPage({
   host,
   panelSide = 'left',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const { worktrees, loading, error, live, refresh } = useWorktreesLive(host)
 
@@ -84,6 +86,44 @@ export function WorktreesPage({
   const selected = useMemo(
     () => worktrees.find((w) => w.worktree_id === selectedId) ?? null,
     [worktrees, selectedId],
+  )
+
+  // A palette "worktrees" row (or any other host.panels.open caller) selects
+  // a worktree by id through the standard panelContext channel.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context
+    const worktreeId =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).worktreeId
+        : null
+    if (typeof worktreeId === 'string' && worktreeId) setSelectedId(worktreeId)
+  }, [panelContext])
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'refresh',
+          title: 'Refresh worktrees',
+          detail: 'Re-read the worktree registry',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: refresh,
+        },
+        {
+          id: 'close-detail',
+          title: 'Close worktree details',
+          detail: 'Back to the topology graph',
+          keywords: ['back', 'deselect'],
+          shortcut: 'Escape',
+          enabled: () => selected !== null,
+          run: () => setSelectedId(null),
+        },
+      ]),
+    [commands, refresh, selected],
   )
 
   const [bodyRef, narrow] = useContainerNarrow(NARROW_BELOW)
@@ -142,7 +182,7 @@ export function WorktreesPage({
         ref={bodyRef}
       >
         {showCanvas ? (
-          <div className="wt-ui-canvas">
+          <div className="wt-ui-canvas" tabIndex={-1} data-autofocus="">
             {error ? (
               <StatusPanel
                 variant="alert"

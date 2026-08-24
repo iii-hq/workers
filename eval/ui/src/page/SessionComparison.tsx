@@ -238,7 +238,7 @@ export function SessionComparison({ host }: { host: Host }) {
         <>
           <section className="eval-ui-panel eval-ui-session-picker">
             <div className="eval-ui-panel-title">sessions · {selected.length}/5 selected</div>
-            <input className="eval-ui-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title or session id" />
+            <input className="eval-ui-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title or session id" data-autofocus="" />
             <div className="eval-ui-session-list">
               {filteredSessions.map((session) => {
                 const checked = selected.includes(session.session_id)

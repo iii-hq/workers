@@ -585,6 +585,7 @@ export function MessageList({
     <div className="relative flex min-h-0 min-w-0 flex-1">
       <section
         ref={containerRef}
+        data-message-list=""
         data-tail-scroll={tailState}
         aria-label="conversation messages"
         tabIndex={-1}
@@ -607,32 +608,33 @@ export function MessageList({
           {rows.map((row, i) => {
             if (row.kind === 'function-trigger-group') {
               return (
-                <FunctionTriggerGroup
-                  key={row.id}
-                  row={row}
-                  renderers={renderers}
-                  defaultOpenCalls={defaultOpenCalls}
-                  onResolveApproval={onResolveApproval}
-                  onAlwaysAllow={onAlwaysAllow}
-                  onResolveFilesystemAccess={onResolveFilesystemAccess}
-                  onManageFilesystemAccess={onManageFilesystemAccess}
-                  workingDir={workingDir}
-                  summaryCopyText={
-                    row.summary
-                      ? (() => {
-                          const calls = fcallsByAssistant.get(row.summary.id)
-                          return calls?.length
-                            ? () =>
-                                assistantCopyText(
-                                  row.summary?.content ?? '',
-                                  calls,
-                                  redactFor,
-                                )
-                            : row.summary.content
-                        })()
-                      : undefined
-                  }
-                />
+                <div key={row.id} data-message-row={row.id}>
+                  <FunctionTriggerGroup
+                    row={row}
+                    renderers={renderers}
+                    defaultOpenCalls={defaultOpenCalls}
+                    onResolveApproval={onResolveApproval}
+                    onAlwaysAllow={onAlwaysAllow}
+                    onResolveFilesystemAccess={onResolveFilesystemAccess}
+                    onManageFilesystemAccess={onManageFilesystemAccess}
+                    workingDir={workingDir}
+                    summaryCopyText={
+                      row.summary
+                        ? (() => {
+                            const calls = fcallsByAssistant.get(row.summary.id)
+                            return calls?.length
+                              ? () =>
+                                  assistantCopyText(
+                                    row.summary?.content ?? '',
+                                    calls,
+                                    redactFor,
+                                  )
+                              : row.summary.content
+                          })()
+                        : undefined
+                    }
+                  />
+                </div>
               )
             }
 
@@ -679,12 +681,14 @@ export function MessageList({
                 }
               />
             )
-            return tight ? (
-              <div key={rowKey} className="-mt-6.5">
+            return (
+              <div
+                key={rowKey}
+                data-message-row={rowKey}
+                className={tight ? '-mt-6.5' : undefined}
+              >
                 {node}
               </div>
-            ) : (
-              node
             )
           })}
           {isThinking ? (

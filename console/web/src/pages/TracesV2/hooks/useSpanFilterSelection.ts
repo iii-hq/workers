@@ -23,10 +23,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  type ConsoleConfigValue,
-  fetchConsoleConfigValue,
-  setConsoleConfigValue,
-} from '@/lib/console-config'
+  CONSOLE_CONFIG_QUERY_KEY,
+  consoleConfigWriter,
+} from '@/hooks/lib/console-config-writer'
+import type { ConsoleConfigValue } from '@/lib/console-config'
 import {
   EMPTY_HIDDEN_IDS,
   fetchTraceHiddenFunctionIds,
@@ -40,19 +40,16 @@ import {
   withSpanFilters,
 } from '../lib/spanFilters'
 
-// Same key as `useTraceViews` — both hooks read the one `console` entry,
-// sharing the React Query cache.
-const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
-
 const TRACE_HIDDEN_FUNCTIONS_QUERY_KEY = ['traceHiddenFunctions']
 
 const SAVE_DEBOUNCE_MS = 400
 
 export function useSpanFilterSelection(): SpanFilterControls {
   const qc = useQueryClient()
+  const writer = consoleConfigWriter(qc)
   const { data } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,
-    queryFn: fetchConsoleConfigValue,
+    queryFn: () => writer.readForQuery(),
     staleTime: 30_000,
     retry: 1,
   })
@@ -82,18 +79,16 @@ export function useSpanFilterSelection(): SpanFilterControls {
 
   const persist = useCallback(
     async (next: SpanFilterPrefs) => {
+      // Configuration worker unavailable — keep the selection in-memory.
+      if (data == null) return
       try {
-        const current = await fetchConsoleConfigValue()
-        // Configuration worker unavailable — keep the selection in-memory.
-        if (current == null) return
-        const value = withSpanFilters(current, next)
-        await setConsoleConfigValue(value)
-        qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, value)
+        writer.enqueue((value) => withSpanFilters(value, next), data)
+        await writer.whenIdle()
       } catch {
         // Best-effort persistence; the in-memory selection stays live.
       }
     },
-    [qc],
+    [data, writer],
   )
 
   // Debounced save: a burst of toggles collapses into one write. `dirty`

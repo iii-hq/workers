@@ -29,4 +29,14 @@ export default function setup(host: Host) {
     title: 'github',
     render: (props) => <GithubPage host={host} {...props} />,
   })
+
+  host.commands?.register('github', [
+    {
+      id: 'open',
+      title: 'Open github',
+      detail: 'The working repository commit graph and worker calls, live',
+      keywords: ['git', 'commits', 'activity'],
+      run: () => host.panels?.open({ pageId: 'github', context: {} }),
+    },
+  ])
 }

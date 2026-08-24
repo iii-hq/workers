@@ -1,5 +1,5 @@
 import { Button, Input, Select } from '@iii-dev/console-ui'
-import { useState } from 'react'
+import { forwardRef, useImperativeHandle, useState } from 'react'
 import type { ComputerDisplay, StartSessionInput } from '../lib/computer'
 
 /**
@@ -23,11 +23,16 @@ interface StartSessionFormProps {
   onStart: (input: StartSessionInput) => void
 }
 
-export function StartSessionForm({
-  displays,
-  starting,
-  onStart,
-}: StartSessionFormProps) {
+/** Imperative handle so a page-level command can submit whatever mode and
+ * fields the user currently has set, without lifting that state up. */
+export interface StartSessionFormHandle {
+  submit(): void
+}
+
+export const StartSessionForm = forwardRef<
+  StartSessionFormHandle,
+  StartSessionFormProps
+>(function StartSessionForm({ displays, starting, onStart }, ref) {
   const [mode, setMode] = useState<Mode>('native')
   const [image, setImage] = useState('')
   const [endpoint, setEndpoint] = useState('')
@@ -51,6 +56,8 @@ export function StartSessionForm({
     }
   }
 
+  useImperativeHandle(ref, () => ({ submit }))
+
   return (
     <form
       className="cp-ui-start"
@@ -65,6 +72,7 @@ export function StartSessionForm({
         onChange={setMode}
         aria-label="what to drive"
         className="cp-ui-start-mode"
+        data-autofocus=""
       />
       {mode === 'sandbox' ? (
         <Input
@@ -107,4 +115,4 @@ export function StartSessionForm({
       </Button>
     </form>
   )
-}
+})

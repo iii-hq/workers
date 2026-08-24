@@ -21,8 +21,18 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'pdf-reader',
     title: 'pdf',
-    render: () => <PdfPage host={host} />,
+    render: (props) => <PdfPage host={host} {...props} />,
   })
 
   host.functionTriggers.register(createPdfTriggerRenderer(host))
+
+  host.commands?.register('pdf-reader', [
+    {
+      id: 'open',
+      title: 'Open pdf',
+      detail: 'Classify a document and read its extracted markdown',
+      keywords: ['document', 'ocr', 'markdown'],
+      run: () => host.panels?.open({ pageId: 'pdf-reader', context: {} }),
+    },
+  ])
 }

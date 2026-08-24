@@ -1,5 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { strToU8, zipSync } from 'fflate'
 import {
   Badge,
   Button,
@@ -10,24 +8,47 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   EmptyState,
+  type Host,
   List,
   ListItem,
   PageBody,
   PageHeader,
   PageMain,
+  type PageRenderProps,
   PageShell,
   PageSidebar,
   StatusPanel,
-  type Host,
-  type PageRenderProps,
 } from '@iii-dev/console-ui'
-import { exportCode, exportSurface, getSurface, listSurfaces, listTemplates, mutateSurface } from './data'
+import { strToU8, zipSync } from 'fflate'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  exportCode,
+  exportSurface,
+  getSurface,
+  listSurfaces,
+  listTemplates,
+  mutateSurface,
+} from './data'
 import { useSurfaceEvents } from './live'
 import { Surface } from './surface'
-import type { SurfaceExport, SurfaceRecord, SurfaceSummary, SurfaceTemplate } from './types'
-import { writeCodeBundle, type WorkspaceExport } from './workspace'
+import type {
+  SurfaceExport,
+  SurfaceRecord,
+  SurfaceSummary,
+  SurfaceTemplate,
+} from './types'
+import { type WorkspaceExport, writeCodeBundle } from './workspace'
 
-export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationId, workingDir }: PageRenderProps & { host: Host }) {
+export function A2uiPage({
+  host,
+  panelSide,
+  tabId,
+  onRequestClose,
+  conversationId,
+  workingDir,
+  commands,
+  panelContext,
+}: PageRenderProps & { host: Host }) {
   const [surfaces, setSurfaces] = useState<SurfaceSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selected, setSelected] = useState<SurfaceRecord | null>(null)
@@ -35,8 +56,21 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
   const [exporting, setExporting] = useState(false)
   const [templates, setTemplates] = useState<SurfaceTemplate[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [workspaceExport, setWorkspaceExport] = useState<WorkspaceExport | null>(null)
+  const [workspaceExport, setWorkspaceExport] =
+    useState<WorkspaceExport | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
+  // A palette row (or any panels.open caller) names a surface to show.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context
+    const surfaceId =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).surfaceId
+        : null
+    if (typeof surfaceId === 'string' && surfaceId) setSelectedId(surfaceId)
+  }, [panelContext])
 
   const refresh = useCallback(async () => {
     if (!conversationId) {
@@ -74,7 +108,11 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
     let alive = true
     void getSurface(host, conversationId, selectedId)
       .then((surface) => alive && setSelected(surface))
-      .catch((cause) => alive && setError(cause instanceof Error ? cause.message : String(cause)))
+      .catch(
+        (cause) =>
+          alive &&
+          setError(cause instanceof Error ? cause.message : String(cause)),
+      )
     return () => {
       alive = false
     }
@@ -84,7 +122,11 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
     if (!conversationId || !selected) return
     setExporting(true)
     try {
-      const portable = await exportSurface(host, conversationId, selected.surface_id)
+      const portable = await exportSurface(
+        host,
+        conversationId,
+        selected.surface_id,
+      )
       downloadText(
         `${JSON.stringify(portable, null, 2)}\n`,
         `${safeFileName(selected.surface_id)}.a2ui.json`,
@@ -101,13 +143,22 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
   const writeReactApp = useCallback(async () => {
     if (!conversationId || !selected) return
     if (!workingDir) {
-      setError('Choose a working directory in Harness before writing the React app.')
+      setError(
+        'Choose a working directory in Harness before writing the React app.',
+      )
       return
     }
     setExporting(true)
     try {
-      const bundle = await exportCode(host, conversationId, selected.surface_id, 'react')
-      setWorkspaceExport(await writeCodeBundle(host, workingDir, bundle, selected.revision))
+      const bundle = await exportCode(
+        host,
+        conversationId,
+        selected.surface_id,
+        'react',
+      )
+      setWorkspaceExport(
+        await writeCodeBundle(host, workingDir, bundle, selected.revision),
+      )
       setError(null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -138,9 +189,16 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
       if (!conversationId || !selected) return
       setExporting(true)
       try {
-        const bundle = await exportCode(host, conversationId, selected.surface_id, target)
+        const bundle = await exportCode(
+          host,
+          conversationId,
+          selected.surface_id,
+          target,
+        )
         const archive = zipSync(
-          Object.fromEntries(bundle.files.map((file) => [file.path, strToU8(file.content)])),
+          Object.fromEntries(
+            bundle.files.map((file) => [file.path, strToU8(file.content)]),
+          ),
         )
         downloadBytes(
           archive,
@@ -162,17 +220,88 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
       if (!file || !conversationId) return
       void file
         .text()
-        .then((text) => run('a2ui::surface::import', { package: JSON.parse(text) as SurfaceExport }))
-        .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
+        .then((text) =>
+          run('a2ui::surface::import', {
+            package: JSON.parse(text) as SurfaceExport,
+          }),
+        )
+        .catch((cause) =>
+          setError(cause instanceof Error ? cause.message : String(cause)),
+        )
     },
     [conversationId, run],
+  )
+
+  // The page's primary verbs, for the palette and for the keyboard while
+  // this pane has focus — all wrap the actions already reachable from the
+  // sidebar/menu above.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new-from-template',
+          title: 'New from template',
+          detail: 'Create a surface from the first saved template',
+          keywords: ['create', 'template'],
+          shortcut: 'N',
+          enabled: () => templates.length > 0,
+          run: () => {
+            const template = templates[0]
+            if (!template) return
+            void run('a2ui::template::apply', {
+              template_id: template.template_id,
+              surface_id: `template-${safeFileName(template.template_id).slice(0, 80)}-${Date.now()}`,
+            })
+          },
+        },
+        {
+          id: 'undo',
+          title: 'Undo latest change',
+          detail: 'Restore the previous saved revision',
+          shortcut: 'Z',
+          enabled: () => selected !== null && selected.history.length > 0,
+          run: () => {
+            if (selected)
+              void run('a2ui::surface::undo', {
+                surface_id: selected.surface_id,
+              })
+          },
+        },
+        {
+          id: 'pin',
+          title: 'Pin/unpin interface',
+          detail: 'Keep this surface at the top of the library',
+          shortcut: 'P',
+          enabled: () => selected !== null,
+          run: () => {
+            if (selected)
+              void run('a2ui::surface::pin', {
+                surface_id: selected.surface_id,
+                pinned: !selected.pinned,
+              })
+          },
+        },
+        {
+          id: 'export-react',
+          title: 'Write React app to workspace',
+          detail: 'Create a complete editable React app as workspace files',
+          shortcut: 'E',
+          enabled: () => selected !== null && !!workingDir,
+          run: () => void writeReactApp(),
+        },
+      ]),
+    [commands, templates, selected, run, writeReactApp, workingDir],
   )
 
   return (
     <PageShell className="a2ui-page">
       <PageHeader
         title="A2UI"
-        description={<span className="a2ui-page-description">Generative interfaces for this conversation</span>}
+        description={
+          <span className="a2ui-page-description">
+            Generative interfaces for this conversation
+          </span>
+        }
         actions={<Badge variant="accent">v0.9.1</Badge>}
         onClose={onRequestClose}
       />
@@ -195,16 +324,23 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
           className="a2ui-sidebar"
         >
           {!conversationId ? (
-            <div className="a2ui-note">Open the page beside a Harness conversation.</div>
+            <div className="a2ui-note">
+              Open the page beside a Harness conversation.
+            </div>
           ) : surfaces.length === 0 ? (
-            <div className="a2ui-note">{loading ? 'Loading…' : 'Ask the agent to create an interface.'}</div>
+            <div className="a2ui-note">
+              {loading ? 'Loading…' : 'Ask the agent to create an interface.'}
+            </div>
           ) : (
             <List className="a2ui-list">
-              {surfaces.map((surface) => (
+              {surfaces.map((surface, index) => (
                 <ListItem
                   key={surface.surface_id}
+                  data-autofocus={index === 0 ? '' : undefined}
                   selected={selectedId === surface.surface_id}
-                  label={<span className="a2ui-list-title">{surface.title}</span>}
+                  label={
+                    <span className="a2ui-list-title">{surface.title}</span>
+                  }
                   description={
                     <span className="a2ui-list-meta">
                       {surface.component_count} components · r{surface.revision}
@@ -239,6 +375,7 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
               variant="ghost"
               size="sm"
               disabled={!conversationId}
+              data-autofocus={surfaces.length === 0 ? '' : undefined}
               onClick={() => importInput.current?.click()}
             >
               Import JSON
@@ -276,8 +413,12 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
                   aria-label={`delete template ${template.title}`}
                   title="Delete this saved template"
                   onClick={() => {
-                    if (window.confirm(`Delete template “${template.title}”?`)) {
-                      void run('a2ui::template::delete', { template_id: template.template_id })
+                    if (
+                      window.confirm(`Delete template “${template.title}”?`)
+                    ) {
+                      void run('a2ui::template::delete', {
+                        template_id: template.template_id,
+                      })
                     }
                   }}
                 >
@@ -288,7 +429,11 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
           </div>
           {error ? (
             <div className="a2ui-page-error" role="alert">
-              <StatusPanel variant="alert" headline="A2UI page error" detail={error} />
+              <StatusPanel
+                variant="alert"
+                headline="A2UI page error"
+                detail={error}
+              />
               <Button variant="ghost" size="sm" onClick={() => setError(null)}>
                 Dismiss
               </Button>
@@ -298,10 +443,14 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
             <div className="a2ui-workspace-export" role="status">
               <div>
                 <strong>React app ready in the workspace</strong>
-                <span title={workspaceExport.directory}>{workspaceExport.directory}</span>
+                <span title={workspaceExport.directory}>
+                  {workspaceExport.directory}
+                </span>
                 <small>
                   {workspaceExport.written} files written
-                  {workspaceExport.existing > 0 ? ` · ${workspaceExport.existing} existing files preserved` : ''}
+                  {workspaceExport.existing > 0
+                    ? ` · ${workspaceExport.existing} existing files preserved`
+                    : ''}
                   {' · '}run it in Shell, then open the local URL in Browser
                 </small>
               </div>
@@ -319,14 +468,21 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
                 <div className="a2ui-surface-title">
                   <h2 title={selected.title}>{selected.title}</h2>
                   <div className="a2ui-surface-meta">
-                    <span title={selected.surface_id}>{selected.surface_id}</span>
+                    <span title={selected.surface_id}>
+                      {selected.surface_id}
+                    </span>
                     <Badge>r{selected.revision}</Badge>
                   </div>
                 </div>
                 <div className="a2ui-surface-actions">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="sm" disabled={exporting} aria-label="surface actions">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={exporting}
+                        aria-label="surface actions"
+                      >
                         {exporting ? 'Working…' : 'Actions'}
                       </Button>
                     </DropdownMenuTrigger>
@@ -381,22 +537,47 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
                       <DropdownMenuLabel>Workspace</DropdownMenuLabel>
                       <DropdownMenuItem
                         disabled={!workingDir}
-                        title={workingDir ? 'Create a complete editable React app as workspace files' : 'Choose a working directory in Harness first'}
+                        title={
+                          workingDir
+                            ? 'Create a complete editable React app as workspace files'
+                            : 'Choose a working directory in Harness first'
+                        }
                         onSelect={() => void writeReactApp()}
                       >
                         Write React app to workspace
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuLabel>Export</DropdownMenuLabel>
-                      <DropdownMenuItem title="Portable A2UI data for re-import" onSelect={() => void downloadSelected()}>Download JSON package</DropdownMenuItem>
-                      <DropdownMenuItem title="ZIP with a complete runnable React app" onSelect={() => void downloadCode('react')}>Download React app ZIP</DropdownMenuItem>
-                      <DropdownMenuItem title="ZIP with an iii worker template that serves this surface as data" onSelect={() => void downloadCode('worker')}>Download data worker template</DropdownMenuItem>
+                      <DropdownMenuItem
+                        title="Portable A2UI data for re-import"
+                        onSelect={() => void downloadSelected()}
+                      >
+                        Download JSON package
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        title="ZIP with a complete runnable React app"
+                        onSelect={() => void downloadCode('react')}
+                      >
+                        Download React app ZIP
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        title="ZIP with an iii worker template that serves this surface as data"
+                        onSelect={() => void downloadCode('worker')}
+                      >
+                        Download data worker template
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         title="Permanently remove this surface"
                         onSelect={() => {
-                          if (window.confirm(`Delete surface “${selected.title}”?`)) {
-                            void run('a2ui::surface::delete', { surface_id: selected.surface_id })
+                          if (
+                            window.confirm(
+                              `Delete surface “${selected.title}”?`,
+                            )
+                          ) {
+                            void run('a2ui::surface::delete', {
+                              surface_id: selected.surface_id,
+                            })
                           }
                         }}
                       >
@@ -423,7 +604,9 @@ export function A2uiPage({ host, panelSide, tabId, onRequestClose, conversationI
 }
 
 function safeFileName(value: string): string {
-  return value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'surface'
+  return (
+    value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'surface'
+  )
 }
 
 function downloadText(content: string, name: string, type: string) {

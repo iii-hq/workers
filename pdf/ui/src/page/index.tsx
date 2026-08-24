@@ -14,6 +14,7 @@ import {
   CodeEditor,
   EmptyState,
   MarkdownPreview,
+  type PageRenderProps,
   StatusPanel,
   Tabs,
   TabsContent,
@@ -24,7 +25,7 @@ import {
   TooltipTrigger,
   type Host,
 } from '@iii-dev/console-ui'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   documentTypeLabel,
@@ -40,7 +41,11 @@ type State =
   | { status: 'done'; name: string; result: Inspection }
   | { status: 'failed'; name: string; error: string }
 
-export function PdfPage({ host }: { host: Host }) {
+export function PdfPage({
+  host,
+  onRequestClose,
+  commands,
+}: { host: Host } & Partial<PageRenderProps>) {
   const [state, setState] = useState<State>({ status: 'idle' })
   const [dragging, setDragging] = useState(false)
   const input = useRef<HTMLInputElement>(null)
@@ -77,10 +82,38 @@ export function PdfPage({ host }: { host: Host }) {
   const hasResult = state.status === 'done' || state.status === 'failed'
   const loadedName = hasResult ? state.name : null
 
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'choose-file',
+          title: 'Choose a file',
+          detail: 'Pick a PDF to classify and extract',
+          keywords: ['open', 'upload', 'drop'],
+          shortcut: 'O',
+          enabled: () => state.status !== 'reading',
+          run: () => input.current?.click(),
+        },
+      ]),
+    [commands, state.status],
+  )
+
   return (
     <div className="pdf-ui">
       <header className="pdf-ui__head">
-        <h1 className="pdf-ui__title">pdf</h1>
+        <div className="pdf-ui__head-row">
+          <h1 className="pdf-ui__title">pdf</h1>
+          {onRequestClose ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRequestClose}
+              aria-label="close pdf"
+            >
+              close
+            </Button>
+          ) : null}
+        </div>
         <p className="pdf-ui__lede">
           Classify a document, see which pages need OCR, and read the markdown
           an agent would get. Parsing runs in the worker on this machine.
@@ -122,6 +155,7 @@ export function PdfPage({ host }: { host: Host }) {
           variant={hasResult ? 'ghost' : 'pill'}
           onClick={() => input.current?.click()}
           disabled={state.status === 'reading'}
+          data-autofocus=""
         >
           {hasResult ? 'Read another' : 'Choose a file'}
         </Button>

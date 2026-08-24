@@ -26,13 +26,14 @@ import {
   EmptyState,
   type Host,
   JsonHighlight,
+  type PageCommandsApi,
   PageHeader,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeCron, nextCronRun, untilLabel } from './cron'
 import {
   type FunctionSummary,
@@ -115,15 +116,18 @@ export function TriggersPage({
   host,
   side,
   onRequestClose,
+  commands,
 }: {
   host: Host
   side?: 'left' | 'right'
   onRequestClose?: () => void
+  commands?: PageCommandsApi
 }) {
   const [showInternal, setShowInternal] = useState(false)
   const [search, setSearch] = useState('')
   const [family, setFamily] = useState<Family | null>(null)
   const [selected, setSelected] = useState<Selection | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   // Three independent reads the page needs together, so it pays for one round
   // trip. Functions come along to put each binding's target description on
@@ -282,6 +286,31 @@ export function TriggersPage({
     }
   }, [catalog.data, selected])
 
+  // The page's primary verbs, for the palette and the keyboard while this
+  // pane has focus.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'search',
+          title: 'Search triggers',
+          detail: 'Focus the trigger search field',
+          keywords: ['find', 'filter'],
+          shortcut: '/',
+          run: () => searchInputRef.current?.focus(),
+        },
+        {
+          id: 'refresh',
+          title: 'Refresh triggers',
+          detail: 'Reload the trigger catalog',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: () => catalog.reload(),
+        },
+      ]),
+    [commands, catalog.reload],
+  )
+
   return (
     <CatalogShell
       side={side}
@@ -320,6 +349,7 @@ export function TriggersPage({
               value={search}
               onChange={setSearch}
               placeholder="search triggers…"
+              inputRef={searchInputRef}
             />
             <Button
               variant="pill"

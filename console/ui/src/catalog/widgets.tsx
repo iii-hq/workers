@@ -24,7 +24,13 @@ import {
   PageSidebar,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { Fragment, type ReactNode, useCallback, useState } from 'react'
+import {
+  Fragment,
+  type ReactNode,
+  type Ref,
+  useCallback,
+  useState,
+} from 'react'
 import type { Family, Tone } from './trigger-kinds'
 
 /**
@@ -131,15 +137,19 @@ export function SearchField({
   value,
   onChange,
   placeholder,
+  inputRef,
 }: {
   value: string
   onChange: (next: string) => void
   placeholder: string
+  /** Lets the page command palette focus this field on `/`. */
+  inputRef?: Ref<HTMLInputElement>
 }) {
   return (
     <div className="console-catalog-search">
       <SearchGlassIcon />
       <Input
+        ref={inputRef}
         name="catalog-search"
         value={value}
         onChange={onChange}
@@ -147,6 +157,7 @@ export function SearchField({
         placeholder={placeholder}
         aria-label={placeholder}
         className="console-catalog-search-input"
+        data-autofocus=""
         onKeyDown={(e) => {
           if (e.key === 'Escape' && value) {
             e.stopPropagation()

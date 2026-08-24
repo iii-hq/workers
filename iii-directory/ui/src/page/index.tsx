@@ -16,7 +16,7 @@ import {
   PageShell,
   SegmentedControl,
 } from '@iii-dev/console-ui'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { formatBytes, formatRelativeTime } from '../lib/format'
 import { MarkdownFileIcon } from '../lib/widgets'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
@@ -46,7 +46,8 @@ const skillsAdapter: BrowserAdapter = {
   defaultNameKey: 'name',
   // Skill ids are slash-separated lowercase segments (ns/skill/…).
   namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
-  nameHint: 'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
+  nameHint:
+    'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
   onChangeType: 'directory::skills::on-change',
   emptyTitle: 'Select a skill',
   emptyBody:
@@ -83,7 +84,10 @@ const skillsAdapter: BrowserAdapter = {
     return out.id ?? id
   },
   async create(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>('directory::skills::create', { id, content })
+    const out = await host.iii.trigger<{ id: string }>(
+      'directory::skills::create',
+      { id, content },
+    )
     return out.id ?? id
   },
   async remove(host, id) {
@@ -230,8 +234,44 @@ export function DirectoryPage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [collection, setCollection] = useState<Collection>('skills')
+  const [pendingOpen, setPendingOpen] = useState<{
+    id: number
+    collection: Collection
+    key: string
+  } | null>(null)
+
+  // A palette row (see palette.ts) selects a collection + entry here once
+  // the page is open. `panelContext.id` is monotonic, so a repeated
+  // identical click still re-applies.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context as {
+      collection?: string
+      key?: string
+    } | null
+    const collectionValue = context?.collection
+    if (
+      !context ||
+      typeof collectionValue !== 'string' ||
+      typeof context.key !== 'string' ||
+      !COLLECTIONS.some((c) => c.value === collectionValue)
+    ) {
+      return
+    }
+    const nextCollection = collectionValue as Collection
+    setCollection(nextCollection)
+    setPendingOpen({
+      id: panelContext.id,
+      collection: nextCollection,
+      key: context.key,
+    })
+  }, [panelContext])
 
   const switcher = (
     <SegmentedControl<Collection>
@@ -263,6 +303,13 @@ export function DirectoryPage({
             nav={switcher}
             panelSide={panelSide}
             storageKey={`iii-directory-ui:${tabId || 'page'}:${c.value}`}
+            commands={commands}
+            active={collection === c.value}
+            pendingOpen={
+              pendingOpen && pendingOpen.collection === c.value
+                ? pendingOpen
+                : null
+            }
           />
         </div>
       ))}

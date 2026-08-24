@@ -1,9 +1,9 @@
 /* The search tab — content + path search over the browsed root via the
    worker's `coder::search`. Rows open the file in the editor pane. */
 
+import type { Host } from '@iii-dev/console-ui'
 import { Input } from '@iii-dev/console-ui'
 import { useCallback, useRef, useState } from 'react'
-import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '../lib/format'
 import { renderWithHighlight } from '../lib/highlight'
 import { coderSearch, relativeTo, type SearchResponse } from './coder'
@@ -72,6 +72,7 @@ export function SearchTab({
           placeholder="search files & folders…"
           preserveCase
           aria-label="search query"
+          data-shell-search-input=""
         />
         <div className="shui-search-opts">
           <label className="opt">
@@ -142,9 +143,7 @@ function SearchResults({
   return (
     <div className="shui-search-results">
       {truncated ? (
-        <div className="shui-side-note warn">
-          truncated — refine the query
-        </div>
+        <div className="shui-side-note warn">truncated — refine the query</div>
       ) : null}
 
       {folderMatches.length > 0 ? (

@@ -330,6 +330,11 @@ export function TabStrip({
         closeTab(focusedId)
         return
       }
+      if (e.key === 'F2') {
+        e.preventDefault()
+        setRenamingId(focusedId)
+        return
+      }
       const next = tabIndexForKey(e.key, current, tabs.length)
       if (next === null) return
       e.preventDefault()

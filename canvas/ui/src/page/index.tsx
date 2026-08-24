@@ -64,6 +64,8 @@ export function CanvasPage({
   host,
   panelSide,
   onRequestClose,
+  commands,
+  panelContext,
 }: { host: Host } & PageRenderProps) {
   const [canvases, setCanvases] = useState<CanvasRecord[]>([])
   const [listState, setListState] = useState<ListState>({ phase: 'loading' })
@@ -84,6 +86,9 @@ export function CanvasPage({
   // The freeform surface's imperative handle: flush() before switching away
   // so a settling whiteboard edit is persisted, never silently dropped.
   const freeformHandleRef = useRef<FreeformPaneHandle | null>(null)
+  // The open mermaid pane's imperative save, for the page-level Mod+S
+  // command (freeform saves on its own debounce; there's nothing to wrap).
+  const mermaidSaveRef = useRef<(() => void) | null>(null)
   // Bumped when the OPEN record changes under us (an agent edit streaming
   // in) — the pane keys include it, so a remount rehydrates from the
   // refreshed cache. Own saves must NOT bump it: a remount mid-typing
@@ -242,6 +247,19 @@ export function CanvasPage({
     [host],
   )
 
+  // A palette row (or any panels.open caller) names a canvas to open.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context
+    const canvasId =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).canvasId
+        : null
+    if (typeof canvasId === 'string' && canvasId) select(canvasId)
+  }, [panelContext, select])
+
   const onDirtyChange = useCallback((id: string, dirty: boolean) => {
     setDirtyIds((prev) => {
       if (prev.has(id) === dirty) return prev
@@ -330,6 +348,53 @@ export function CanvasPage({
     [host, mergeSaved],
   )
 
+  // The page's primary verbs, for the palette and for the keyboard while
+  // this pane has the focus.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new-canvas',
+          title: 'New canvas',
+          detail: 'Create a canvas from the starter flowchart',
+          shortcut: 'N',
+          enabled: () => !creating,
+          run: create,
+        },
+        {
+          id: 'save',
+          title: 'Save',
+          shortcut: 'Mod+S',
+          firesWhileTyping: true,
+          enabled: () =>
+            selectedId !== null &&
+            dirtyIds.has(selectedId) &&
+            record?.format === 'mermaid',
+          run: () => mermaidSaveRef.current?.(),
+        },
+        {
+          id: 'delete-canvas',
+          title: 'Delete canvas',
+          shortcut: 'X',
+          enabled: () => selectedId !== null,
+          run: () => {
+            const rec = canvases.find((c) => c.id === selectedId)
+            if (rec) remove(rec)
+          },
+        },
+      ]),
+    [
+      commands,
+      create,
+      creating,
+      selectedId,
+      dirtyIds,
+      record,
+      canvases,
+      remove,
+    ],
+  )
+
   const nowSecs = Math.floor(Date.now() / 1000)
 
   return (
@@ -364,6 +429,7 @@ export function CanvasPage({
                 onClick={create}
                 disabled={creating}
                 title="new canvas (starter flowchart)"
+                data-autofocus={canvases.length === 0 ? '' : undefined}
               >
                 <Plus size={16} aria-hidden />
                 new
@@ -471,6 +537,9 @@ export function CanvasPage({
               cache={cacheRef.current}
               onSaved={mergeSaved}
               onDirtyChange={onDirtyChange}
+              saveRef={(fn) => {
+                mermaidSaveRef.current = fn
+              }}
             />
           ) : (
             <FreeformPane

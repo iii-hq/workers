@@ -149,4 +149,108 @@ describe('createKeyDispatcher', () => {
     dispatcher.onKeyDown(key('c'))
     expect(seen).toEqual([])
   })
+
+  describe('pane-scoped page commands', () => {
+    const pane = (id: string) => {
+      const root = { dataset: { workspacePaneId: id } }
+      return {
+        tagName: 'DIV',
+        dataset: {},
+        closest: (selector: string) =>
+          selector.includes('workspace-pane-id') ? root : null,
+      } as unknown as EventTarget
+    }
+    const entry = (
+      paneId: string,
+      binding: string,
+      run: () => void,
+      extra: Partial<{
+        enabled: () => boolean
+        firesWhileTyping: boolean
+      }> = {},
+    ) => ({
+      key: `page.${binding}`,
+      pageId: 'page',
+      source: 'page' as const,
+      paneId,
+      bindings: [binding],
+      command: { id: binding, title: binding, run, ...extra },
+    })
+
+    it('fires only while focus is inside the pane that registered it', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({}),
+        'mac',
+        (paneId) =>
+          paneId === 'pane-1'
+            ? [entry('pane-1', 'P', () => seen.push('open'))]
+            : [],
+      )
+      dispatcher.onKeyDown(key('p', { target: pane('pane-2') }))
+      dispatcher.onKeyDown(key('p'))
+      expect(seen).toEqual([])
+      const inside = key('p', { target: pane('pane-1') })
+      dispatcher.onKeyDown(inside)
+      expect(seen).toEqual(['open'])
+      expect(inside.defaultPrevented).toBe(true)
+    })
+
+    it('never shadows a console key and skips a disabled command', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({ 'workspace.create': () => seen.push('create') }),
+        'mac',
+        () => [
+          entry('pane-1', 'T', () => seen.push('page-t')),
+          entry('pane-1', 'X', () => seen.push('page-x'), {
+            enabled: () => false,
+          }),
+        ],
+      )
+      dispatcher.onKeyDown(key('t', { target: pane('pane-1') }))
+      dispatcher.onKeyDown(key('x', { target: pane('pane-1') }))
+      expect(seen).toEqual(['create'])
+    })
+
+    it('completes a page chord and stands down in a field unless asked', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({}),
+        'mac',
+        () => [
+          entry('pane-1', 'Q L', () => seen.push('line')),
+          entry('pane-1', 'Escape', () => seen.push('stop'), {
+            firesWhileTyping: true,
+          }),
+        ],
+      )
+      dispatcher.onKeyDown(key('q', { target: pane('pane-1') }))
+      dispatcher.onKeyDown(key('l', { target: pane('pane-1') }))
+      expect(seen).toEqual(['line'])
+
+      const field = {
+        tagName: 'TEXTAREA',
+        dataset: {},
+        closest: (selector: string) =>
+          selector.includes('workspace-pane-id')
+            ? { dataset: { workspacePaneId: 'pane-1' } }
+            : null,
+      } as unknown as EventTarget
+      dispatcher.onKeyDown(key('q', { target: field }))
+      dispatcher.onKeyDown(key('l', { target: field }))
+      dispatcher.onKeyDown(key('Escape', { target: field }))
+      expect(seen).toEqual(['line', 'stop'])
+    })
+
+    it('leaves a key a component already answered alone', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({ 'workspace.create': () => seen.push('create') }),
+        'mac',
+      )
+      dispatcher.onKeyDown(key('t', { defaultPrevented: true }))
+      expect(seen).toEqual([])
+    })
+  })
 })

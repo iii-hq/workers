@@ -25,6 +25,7 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { MemoryPage } from './src/page'
+import { registerMemoryPalette } from './src/page/palette'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -32,4 +33,5 @@ export default function setup(host: Host) {
     title: 'memory',
     render: (props) => <MemoryPage host={host} {...props} />,
   })
+  registerMemoryPalette(host)
 }

@@ -20,9 +20,13 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { BrowserConfigForm } from './src/configuration'
-import { createBrowserRenderer, createBrowserScreenshotRenderer } from './src/function-trigger-message'
+import {
+  createBrowserRenderer,
+  createBrowserScreenshotRenderer,
+} from './src/function-trigger-message'
 import { createScraplingRenderer } from './src/function-trigger-message/scrapling'
 import { BrowserPage } from './src/page'
+import { registerBrowserPalette } from './src/page/palette'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -30,6 +34,8 @@ export default function setup(host: Host) {
     title: 'browser',
     render: (props) => <BrowserPage host={host} {...props} />,
   })
+
+  registerBrowserPalette(host)
 
   host.configForms.register('browser', BrowserConfigForm, { layout: 'full' })
 

@@ -23,7 +23,7 @@ import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
 import { usePanelContext } from '@/lib/panel-context'
 import { useExtPages } from '@/lib/ui-slots'
-import type { PanelSide } from '@/types/injectable-ui'
+import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 
 interface ExtPageProps {
   onMissing: () => void
@@ -58,6 +58,7 @@ interface ExtPageProps {
   conversationId?: string | null
   /** Report unsaved work so closing the pane or workspace asks first. */
   setDirty?: (dirty: boolean | string) => void
+  commands?: PageCommandsApi
 }
 
 export function ExtPage({
@@ -69,6 +70,7 @@ export function ExtPage({
   workingDir,
   conversationId,
   setDirty,
+  commands,
 }: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
@@ -133,6 +135,7 @@ export function ExtPage({
         panelContext={panelContext}
         conversationId={conversationId}
         setDirty={setDirty}
+        commands={commands}
       />
     </div>
   )

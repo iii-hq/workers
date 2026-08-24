@@ -9,18 +9,21 @@
 import { useEffect, useRef } from 'react'
 import {
   bindingMatchesEvent,
+  isSequence,
   type KeyEventLike,
   type Platform,
   shortcutPlatform,
+  splitSequence,
 } from '@/lib/keybindings/bindings'
 import {
   KEYBINDINGS,
   type KeybindingActionId,
-  type KeybindingDefinition,
   matchDigitIndex,
   matchesKeybinding,
   sequencesFor,
 } from '@/lib/keybindings/registry'
+import { paneCommands, type RegisteredPageCommand } from '@/lib/page-commands'
+import { paneRootOf } from '@/lib/pane-focus'
 
 /** How long a chord prefix waits for its next key before it is forgotten. */
 export const CHORD_TIMEOUT_MS = 1500
@@ -60,7 +63,7 @@ export function insideDialog(target: EventTarget | null): boolean {
  */
 export function allowsWhileTyping(
   target: EventTarget | null,
-  actionId: KeybindingActionId,
+  actionId: string,
 ): boolean {
   const element = target as HTMLElement | null
   const allow = element?.dataset?.keybindingsAllow
@@ -70,14 +73,28 @@ export function allowsWhileTyping(
 
 export type DispatchEvent = KeyEventLike &
   Pick<KeyboardEvent, 'isComposing' | 'repeat' | 'target'> & {
+    defaultPrevented?: boolean
     preventDefault: () => void
   }
 
+interface ChordCandidate {
+  chords: readonly string[]
+  run: () => void
+  /** Re-asked on every later chord: focus may have left the pane, or the
+      command may have been disabled, since the prefix. */
+  stillEligible?: (event: DispatchEvent) => boolean
+}
+
 interface PendingChord {
-  candidates: Array<{ id: KeybindingActionId; chords: string[] }>
+  candidates: ChordCandidate[]
   depth: number
   timer: ReturnType<typeof setTimeout>
 }
+
+/** The keyed commands of the pane that holds the focus, if any. */
+export type PaneCommandsSource = (
+  paneId: string,
+) => readonly RegisteredPageCommand[]
 
 /**
  * The keystroke-to-handler logic, separated from the window listener so it
@@ -88,6 +105,7 @@ interface PendingChord {
 export function createKeyDispatcher(
   getHandlers: () => KeybindingHandlers,
   platform: Platform = shortcutPlatform(),
+  getPaneCommands: PaneCommandsSource = paneCommands,
 ) {
   let pending: PendingChord | null = null
   const cancel = () => {
@@ -103,28 +121,30 @@ export function createKeyDispatcher(
     }
   }
   const standsDown = (
-    definition: KeybindingDefinition,
+    binding: { id: string; firesWhileTyping?: boolean },
     event: DispatchEvent,
     typing: boolean,
     inDialog: boolean,
   ): boolean =>
-    (inDialog && !definition.firesWhileTyping) ||
+    (inDialog && !binding.firesWhileTyping) ||
     (typing &&
-      !definition.firesWhileTyping &&
-      !allowsWhileTyping(event.target, definition.id))
+      !binding.firesWhileTyping &&
+      !allowsWhileTyping(event.target, binding.id))
 
   const onKeyDown = (event: DispatchEvent): void => {
     // A shortcut must not fire off the keystroke that finishes a character
-    // being composed by an IME.
-    if (event.isComposing || event.repeat) return
+    // being composed by an IME, nor one a component already answered.
+    if (event.isComposing || event.repeat || event.defaultPrevented) return
     const typing = isTyping(event.target)
     const inDialog = insideDialog(event.target)
 
     if (pending) {
       const { candidates, depth } = pending
       cancel()
-      const advanced = candidates.filter((candidate) =>
-        bindingMatchesEvent(candidate.chords[depth] ?? '', event, platform),
+      const advanced = candidates.filter(
+        (candidate) =>
+          bindingMatchesEvent(candidate.chords[depth] ?? '', event, platform) &&
+          (candidate.stillEligible?.(event) ?? true),
       )
       if (advanced.length > 0) {
         event.preventDefault()
@@ -132,7 +152,7 @@ export function createKeyDispatcher(
           (candidate) => candidate.chords.length === depth + 1,
         )
         if (complete) {
-          getHandlers()[complete.id]?.(0)
+          complete.run()
           return
         }
         arm(advanced, depth + 1)
@@ -141,7 +161,7 @@ export function createKeyDispatcher(
       // Anything else ends the chord and is handled as an ordinary key.
     }
 
-    const prefixed: PendingChord['candidates'] = []
+    const prefixed: ChordCandidate[] = []
     for (const definition of KEYBINDINGS) {
       if (definition.scope !== 'global') continue
       if (standsDown(definition, event, typing, inDialog)) continue
@@ -161,10 +181,51 @@ export function createKeyDispatcher(
       }
       for (const chords of sequencesFor(definition.id, platform)) {
         if (bindingMatchesEvent(chords[0] ?? '', event, platform)) {
-          prefixed.push({ id: definition.id, chords })
+          prefixed.push({ chords, run: () => run(0) })
         }
       }
     }
+
+    // The focused pane's own commands come after the console's keys, so a
+    // page can never shadow a global chord, and only while focus is inside
+    // that pane, so two panes of the same page never both answer.
+    const paneId = paneRootOf(event.target)?.dataset.workspacePaneId
+    for (const entry of paneId ? getPaneCommands(paneId) : []) {
+      const { command } = entry
+      const guard = {
+        id: entry.key,
+        firesWhileTyping: command.firesWhileTyping,
+      }
+      if (standsDown(guard, event, typing, inDialog)) continue
+      if (command.enabled?.() === false) continue
+      for (const binding of entry.bindings) {
+        if (isSequence(binding)) {
+          const chords = splitSequence(binding)
+          if (bindingMatchesEvent(chords[0] ?? '', event, platform)) {
+            prefixed.push({
+              chords,
+              run: command.run,
+              stillEligible: (next) =>
+                paneRootOf(next.target)?.dataset.workspacePaneId === paneId &&
+                !standsDown(
+                  guard,
+                  next,
+                  isTyping(next.target),
+                  insideDialog(next.target),
+                ) &&
+                command.enabled?.() !== false,
+            })
+          }
+          continue
+        }
+        if (bindingMatchesEvent(binding, event, platform)) {
+          event.preventDefault()
+          command.run()
+          return
+        }
+      }
+    }
+
     if (prefixed.length > 0) {
       event.preventDefault()
       arm(prefixed, 1)

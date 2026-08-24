@@ -94,7 +94,10 @@ export function workspaceValidate(
   host: Host,
   path: string,
 ): Promise<WorkspaceValidateResponse> {
-  return host.iii.trigger<WorkspaceValidateResponse>('shell::workspace::validate', { path })
+  return host.iii.trigger<WorkspaceValidateResponse>(
+    'shell::workspace::validate',
+    { path },
+  )
 }
 
 export function coderTree(
@@ -205,18 +208,20 @@ export interface SearchParams {
   regex: boolean
   ignoreCase: boolean
   path: string
+  /** Default true; false asks for path matches only (quick open). */
+  searchContent?: boolean
 }
 
 export function coderSearch(
   host: Host,
-  { query, regex, ignoreCase, path }: SearchParams,
+  { query, regex, ignoreCase, path, searchContent = true }: SearchParams,
 ): Promise<SearchResponse> {
   return host.iii.trigger<SearchResponse>('coder::search', {
     query,
     regex,
     ignore_case: ignoreCase,
     path,
-    search_content: true,
+    search_content: searchContent,
     search_paths: true,
   })
 }

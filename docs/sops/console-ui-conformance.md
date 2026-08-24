@@ -86,6 +86,40 @@ selection, tooltip, or selector behavior.
 | Dialogs, menus, selects, selectors, tooltips, sheets | Shared portal scope and motion vocabulary |
 | Streaming context usage | High-frequency width updates are immediate |
 
+## Commands
+
+A page's primary verbs are palette rows (`PageRenderProps.commands`, or
+`host.commands` for a page not yet open), each with a key where one is
+natural, scoped to the page's pane. No page listens for a key the console
+owns; the registry refuses those at registration. See the injectable-UI SOP,
+"Commands: the keyboard reaches every page".
+
+| Page | Commands (render time unless noted) | Keys | Palette source |
+|---|---|---|---|
+| chat (first-party) | focus composer, next / previous message, approve / deny the pending call, expand, copy, latest, switch model, stop, new chat, search conversations | `I`, `J` / `K`, `A` / `D`, `O`, `Y`, `End`, `M`, `Escape`, `N`, `/` | chats (built in) |
+| workers (first-party) | refresh, search | `R`, `/` | workers, functions (built in) |
+| traces (first-party) | search, follow turns, clear filters, close detail | `/`, `F`, `Escape` | |
+| shell | open file…, search in files, file tree, toggle sidebar, toggle terminal, next / previous tab, close tab, next / previous change; setup: open file…, open | `P`, `F`, `E`, `B`, `` ` ``, `Alt+←` / `Alt+→`, `W`, `J` / `K` | files (`coder::search`, `#`) |
+| database | focus SQL, refresh, focus tables; setup: open | `S`, `R`, `/` | tables (`database::listTables`) |
+| cron | new schedule, search, refresh, focus composer; setup: open, new schedule… | `N`, `/`, `R` | schedules (`listAllSchedules`) |
+| state | save; setup: open | `Mod+S` | keys (`state::list_groups` + `state::list_keys`) |
+| storage | upload, refresh; setup: open | `U`, `R` | objects (`storage::listObjects`) |
+| memory | reload, new bank; setup: open | `R`, `N` | banks (`memory::bank::list`), memories (`memory::list`) |
+| iii-directory | new entry, filter, save; setup: open | `N`, `/`, `Mod+S` | entries (`directory::skills::list`, `prompts::list`, `system-prompts::list`) |
+| canvas | new, save, delete; setup: open | `N`, `Mod+S`, `X` | canvases (`canvas::list`) |
+| a2ui | new from template, undo, pin, export React; setup: open | `N`, `Z`, `P`, `E` | surfaces (`a2ui::surface::list`, per conversation) |
+| browser | new session, stop, inspect, address bar; setup: open | `N`, `X`, `I`, `L` | sessions (`browser::sessions::list`) |
+| sandbox-code-runner | new, run code, refresh; setup: open | `N`, `C`, `R` | sandboxes (`sandbox::list`) |
+| computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
+| worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
+| console catalog (functions, triggers) | search, toggle internal, refresh, run function; setup: open | `/`, `I`, `R`, `Mod+Enter` | functions (built in) |
+| eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
+| github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |
+| pdf | choose file; setup: open | `O` | |
+| editor (deprecated) | save; setup: open | `Mod+S` | |
+
+Every page names its `data-autofocus` target. Shared `TableRow interactive` and `List` carry the arrows, Enter and Space for the rows and lists built from them.
+
 ## Deliberate local-control exceptions
 
 - `DirectoryPicker` and model/provider navigation use hierarchical drill-in

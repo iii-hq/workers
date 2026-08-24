@@ -61,6 +61,13 @@ import {
   keybindingGroups,
   resolveBindings,
 } from '@/lib/keybindings/registry'
+import { registerPageCommands } from '@/lib/page-commands'
+import { onPaletteOpenRequest } from '@/lib/palette/open-request'
+import {
+  focusPane,
+  requestPaneFocus,
+  takePaneFocusRequest,
+} from '@/lib/pane-focus'
 import { subscribePanelOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
@@ -92,7 +99,71 @@ import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
-import type { PanelSide } from '@/types/injectable-ui'
+import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
+
+function firstPartyPageTitle(screen: TabScreen): string {
+  if (screen === CHAT_SCREEN) return 'Chat'
+  if (screen === 'workers') return 'Workers'
+  if (screen === 'traces') return 'Traces'
+  return screen
+}
+
+function paneRoot(paneId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-workspace-pane-id="${CSS.escape(paneId)}"]`,
+  )
+}
+
+/** Focus the pane of the screen the keyboard asked for, if it is open. */
+function focusRequestedPane(tab: WorkspaceTab): void {
+  const screen = takePaneFocusRequest(tab.screens)
+  if (screen === null) return
+  const paneId = tabPaneIds(tab)[tab.screens.indexOf(screen)]
+  if (!paneId) return
+  const root = paneRoot(paneId)
+  if (root) focusPane(root)
+}
+
+/**
+ * The `commands` a pane hands its page: registrations are keyed to this pane
+ * so their keys fire only while focus is inside it, and every one still
+ * registered when the pane unmounts is removed with it.
+ */
+function usePaneCommandsApi(
+  pageId: string,
+  pageTitle: string | undefined,
+  paneId: string,
+): PageCommandsApi {
+  const removersRef = useRef(new Set<() => void>())
+  const api = useMemo<PageCommandsApi>(
+    () => ({
+      register(commands) {
+        const off = registerPageCommands({
+          pageId,
+          pageTitle,
+          source: 'page',
+          paneId,
+          commands,
+        })
+        const remove = () => {
+          removersRef.current.delete(remove)
+          off()
+        }
+        removersRef.current.add(remove)
+        return remove
+      },
+    }),
+    [pageId, pageTitle, paneId],
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new api means a new pane identity; what the old one registered goes with it.
+  useEffect(
+    () => () => {
+      for (const remove of [...removersRef.current]) remove()
+    },
+    [api],
+  )
+  return api
+}
 
 function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
   return new Map(tabs.map((tab) => [tab.id, new Set(tabPaneIds(tab))]))
@@ -121,6 +192,15 @@ export function App({
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
   // search affordance is the other, so the state has to sit above both.
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [paletteQuery, setPaletteQuery] = useState('')
+  useEffect(
+    () =>
+      onPaletteOpenRequest((request) => {
+        setPaletteQuery(request.query ?? '')
+        setPaletteOpen(true)
+      }),
+    [],
+  )
   const workspace = useWorkspaceTabs()
   const { activeTab, activeTabId } = workspace
   const workspaceRef = useRef(workspace)
@@ -240,9 +320,28 @@ export function App({
   )
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
   const openWorkspaceScreen = useCallback((screen: TabScreen) => {
+    // The keyboard asked for this screen, so the keyboard lands in it: the
+    // panes consume the request once the screen has a pane.
+    requestPaneFocus(screen)
     const commands = panelCommandsRef.current
     if (commands) commands.openScreen(screen)
     else workspaceRef.current.openScreen(screen)
+    window.requestAnimationFrame(() =>
+      focusRequestedPane(workspaceRef.current.activeTab),
+    )
+  }, [])
+  const stepPaneFocus = useCallback((delta: 1 | -1) => {
+    const roots = tabPaneIds(workspaceRef.current.activeTab)
+      .map(paneRoot)
+      .filter((root): root is HTMLElement => root !== null)
+    if (roots.length === 0) return
+    const current = roots.findIndex((root) =>
+      root.contains(document.activeElement),
+    )
+    const start = delta === 1 ? 0 : roots.length - 1
+    const next =
+      current === -1 ? start : (current + delta + roots.length) % roots.length
+    focusPane(roots[next])
   }, [])
   const splitWorkspacePanel = useCallback(() => {
     const commands = panelCommandsRef.current
@@ -346,12 +445,14 @@ export function App({
       close: requestCloseTab,
       step: (delta) => workspaceRef.current.activateAdjacent(delta),
       split: splitWorkspacePanel,
+      focusPane: stepPaneFocus,
     }),
     [
       workspace.tabs,
       workspace.activeTabId,
       requestCloseTab,
       splitWorkspacePanel,
+      stepPaneFocus,
     ],
   )
 
@@ -359,7 +460,10 @@ export function App({
      Which keys reach here while the caret is in a field, and which stand
      down, is the registry's call — not this component's. */
   useKeybindings({
-    'palette.toggle': () => setPaletteOpen((current) => !current),
+    'palette.toggle': () => {
+      setPaletteQuery('')
+      setPaletteOpen((current) => !current)
+    },
     'app.settings': toggleSettings,
     'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
     'page.workers': () => openWorkspaceScreen('workers'),
@@ -369,6 +473,8 @@ export function App({
     'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
     'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),
     'panel.split': splitWorkspacePanel,
+    'panel.next': () => stepPaneFocus(1),
+    'panel.previous': () => stepPaneFocus(-1),
     // Out of range is a no-op rather than a wrap: pressing 7 with four
     // workspaces open should do nothing, not land somewhere surprising.
     'workspace.selectByIndex': (index) => {
@@ -391,7 +497,10 @@ export function App({
           onCloseTab={requestCloseTab}
           settingsOpen={view === 'configuration'}
           onToggleSettings={toggleSettings}
-          onOpenPalette={() => setPaletteOpen(true)}
+          onOpenPalette={() => {
+            setPaletteQuery('')
+            setPaletteOpen(true)
+          }}
         />
         <WorkspacePanes
           workspace={workspace}
@@ -430,6 +539,7 @@ export function App({
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
           onThemeChange={setTheme}
+          initialQuery={paletteQuery}
         />
       </Sheet>
     </ConversationsProvider>
@@ -491,6 +601,12 @@ function WorkspacePanes({
   const { activeTab } = workspace
   const columns = tabColumns(activeTab)
   const containerRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() =>
+      focusRequestedPane(activeTab),
+    )
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeTab])
   const desktopPanelMotion = useMediaQuery(DESKTOP_PANEL_MOTION_QUERY)
   const reducedMotion = useMediaQuery(REDUCED_MOTION_QUERY)
   const paneIds = useMemo(() => tabPaneIds(activeTab), [activeTab])
@@ -1348,6 +1464,11 @@ function ScreenBody({
     [tabId, paneId],
   )
   const extId = extPageIdForScreen(screen)
+  const commands = usePaneCommandsApi(
+    extId ?? screen,
+    extId === null ? firstPartyPageTitle(screen) : undefined,
+    paneId,
+  )
   if (extId !== null) {
     return (
       <ExtPage
@@ -1356,6 +1477,7 @@ function ScreenBody({
         tabId={tabId}
         onRequestClose={onClose}
         setDirty={setDirty}
+        commands={commands}
         onMissing={onExtMissing}
         workingDir={active?.workingDir ?? null}
         conversationId={active?.id ?? null}
@@ -1371,12 +1493,13 @@ function ScreenBody({
           density="dock"
           panelSide={panelSide}
           onRequestClose={onClose}
+          commands={commands}
         />
       )
     case 'workers':
-      return <Workers onRequestClose={onClose} />
+      return <Workers onRequestClose={onClose} commands={commands} />
     default:
-      return <TracesV2 onRequestClose={onClose} />
+      return <TracesV2 onRequestClose={onClose} commands={commands} />
   }
 }
 
@@ -1510,7 +1633,7 @@ function Header({
             onClick={onOpenPalette}
             aria-label={hoverTitle('Search and commands', 'palette.toggle')}
             title={hoverTitle('Search and commands', 'palette.toggle')}
-            className="relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
+            className="relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
           >
             <KeyCombo
               binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}

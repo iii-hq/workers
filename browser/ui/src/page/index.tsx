@@ -44,7 +44,7 @@ import {
   useContainerNarrow,
 } from '../lib/widgets'
 import { SessionRail } from './SessionRail'
-import { SessionView } from './SessionView'
+import { type SessionActions, SessionView } from './SessionView'
 import { useBrowserSessionsLive } from './useBrowserSessionsLive'
 
 /** Container width (px) below which the page collapses to the drill-in
@@ -56,6 +56,8 @@ export function BrowserPage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [configOpen, setConfigOpen] = useState(false)
   const ConfigurationDialog = host.components.WorkerConfigurationDialog as
@@ -128,7 +130,7 @@ export function BrowserPage({
 
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
-  const handleNewSession = async () => {
+  const handleNewSession = useCallback(async () => {
     if (starting) return
     setStarting(true)
     try {
@@ -145,12 +147,73 @@ export function BrowserPage({
     } finally {
       setStarting(false)
     }
-  }
+  }, [host, refresh, starting])
 
   const openSession = useCallback((sessionId: string) => {
     setSelectedId(sessionId)
     setDrilled(true)
   }, [])
+
+  // Per-session verbs (stop / inspect / focus url) live inside SessionView;
+  // this ref lets page-level commands reach the mounted session's handlers
+  // without lifting their state up.
+  const sessionActionsRef = useRef<SessionActions | null>(null)
+
+  // A palette "sessions" row (or any other host.panels.open caller) selects
+  // a session by id through the standard panelContext channel.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context
+    const sessionId =
+      context && typeof context === 'object' && !Array.isArray(context)
+        ? (context as Record<string, unknown>).sessionId
+        : null
+    if (typeof sessionId === 'string' && sessionId) openSession(sessionId)
+  }, [panelContext, openSession])
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new-session',
+          title: 'New session',
+          detail: 'Start a browser session',
+          keywords: ['start', 'chromium'],
+          shortcut: 'N',
+          run: () => void handleNewSession(),
+        },
+        {
+          id: 'stop-session',
+          title: 'Stop session',
+          detail: 'Stop the selected browser session',
+          keywords: ['close', 'end'],
+          shortcut: 'X',
+          enabled: () => selected !== null,
+          run: () => sessionActionsRef.current?.stop(),
+        },
+        {
+          id: 'toggle-inspect',
+          title: 'Toggle inspect',
+          detail: 'Pick an element to copy it to the clipboard',
+          keywords: ['pick', 'inspect', 'element'],
+          shortcut: 'I',
+          enabled: () => selected !== null,
+          run: () => sessionActionsRef.current?.toggleInspect(),
+        },
+        {
+          id: 'focus-url',
+          title: 'Focus the address bar',
+          detail: 'Type a url to navigate the selected session',
+          keywords: ['address', 'navigate', 'url'],
+          shortcut: 'L',
+          enabled: () => selected !== null,
+          run: () => sessionActionsRef.current?.focusUrl(),
+        },
+      ]),
+    [commands, handleNewSession, selected],
+  )
 
   // Narrow: one pane at a time — the rail or the opened session workspace.
   const stageVisible = !narrow || (drilled && selected !== null)
@@ -215,6 +278,7 @@ export function BrowserPage({
                   size="sm"
                   onClick={() => void handleNewSession()}
                   disabled={starting}
+                  data-autofocus=""
                 >
                   <Plus size={16} aria-hidden />
                   {starting ? 'Starting...' : 'New session'}
@@ -287,6 +351,7 @@ export function BrowserPage({
               enabled
               narrow={narrow}
               tabId={tabId}
+              actionsRef={sessionActionsRef}
               onBack={() => setDrilled(false)}
               onSessionsRefresh={refresh}
               onStopped={() => {

@@ -11,6 +11,7 @@ import {
   matchesKeybinding,
   resolveBindings,
   sequencesFor,
+  shortcutClaimReason,
 } from './registry'
 
 const PLATFORMS: Platform[] = ['mac', 'other']
@@ -90,6 +91,26 @@ describe('lookup', () => {
       'Search (ctrl K)',
     )
     expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (G then C)')
+  })
+
+  it('says why a page may not take a key, or lets it', () => {
+    expect(shortcutClaimReason('t', 'mac')).toMatch(/New workspace/)
+    expect(shortcutClaimReason('7', 'mac')).toMatch(/Select workspace/)
+    expect(shortcutClaimReason('G', 'mac')).toMatch(/Go to/)
+    expect(shortcutClaimReason('G X', 'mac')).toMatch(/starts like/)
+    expect(shortcutClaimReason('Mod+K', 'other')).toMatch(
+      /command palette|Search|palette/i,
+    )
+    expect(shortcutClaimReason('Mod+W', 'mac')).toBe('the browser owns it')
+    expect(shortcutClaimReason('Hyper+Q', 'mac')).toBe('it does not parse')
+    expect(shortcutClaimReason('P', 'mac')).toBeNull()
+    expect(shortcutClaimReason('Escape', 'mac')).toBeNull()
+    expect(shortcutClaimReason('Q L', 'mac')).toBeNull()
+  })
+
+  it('steps panel focus with the braces', () => {
+    expect(bindingsFor('panel.next', 'mac')).toEqual(['}'])
+    expect(bindingsFor('panel.previous', 'other')).toEqual(['{'])
   })
 
   it('lists the chords of a go-to sequence', () => {

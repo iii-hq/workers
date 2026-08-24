@@ -21,6 +21,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { DirectoryConfigForm } from './src/configuration'
 import { createDirectoryTriggerRenderer } from './src/function-trigger'
 import { DirectoryPage } from './src/page'
+import { registerDirectoryPalette } from './src/page/palette'
 import { createSearchTriggerRenderer } from './src/search/search-card'
 import { createSystemPromptChip } from './src/session-chip'
 
@@ -41,6 +42,8 @@ export default function setup(host: Host) {
     title: 'Directory',
     render: (props) => <DirectoryPage host={host} {...props} />,
   })
+
+  registerDirectoryPalette(host)
 
   host.functionTriggers.register(createDirectoryTriggerRenderer())
   host.functionTriggers.register(createSearchTriggerRenderer())

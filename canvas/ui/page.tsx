@@ -18,6 +18,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { createCanvasTriggerRenderer } from './src/function-trigger-message'
 import { CanvasPage } from './src/page'
+import { listCanvases } from './src/page/data'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -25,6 +26,46 @@ export default function setup(host: Host) {
     title: 'canvas',
     render: (props) => <CanvasPage host={host} {...props} />,
   })
+
+  host.palette?.registerSource({
+    id: 'canvases',
+    title: 'Canvases',
+    kind: 'item',
+    minQuery: 2,
+    async search(query, { signal }) {
+      const { canvases } = await listCanvases(host)
+      if (signal.aborted) return []
+      const needle = query.toLowerCase()
+      return canvases
+        .filter(
+          (canvas) =>
+            canvas.name.toLowerCase().includes(needle) ||
+            canvas.id.toLowerCase().includes(needle),
+        )
+        .slice(0, 30)
+        .map((canvas) => ({
+          id: canvas.id,
+          title: canvas.name,
+          detail: canvas.family ?? canvas.format,
+          keywords: [canvas.id],
+          run: () =>
+            host.panels?.open({
+              pageId: 'canvas',
+              context: { canvasId: canvas.id },
+            }),
+        }))
+    },
+  })
+
+  host.commands?.register('canvas', [
+    {
+      id: 'open',
+      title: 'Open canvas',
+      detail: 'Diagrams stored as editable source',
+      keywords: ['mermaid', 'freeform', 'diagram', 'whiteboard'],
+      run: () => host.panels?.open({ pageId: 'canvas', context: {} }),
+    },
+  ])
 
   host.functionTriggers.register(createCanvasTriggerRenderer(host))
 }

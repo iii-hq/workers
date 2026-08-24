@@ -21,6 +21,13 @@
   gap: 0.35rem;
 }
 
+[data-iii-ui="pdf"] .pdf-ui__head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 [data-iii-ui="pdf"] .pdf-ui__title {
   font-size: 1.35rem;
   font-weight: 600;

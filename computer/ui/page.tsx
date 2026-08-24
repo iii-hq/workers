@@ -22,6 +22,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { createComputerRenderer } from './src/function-trigger-message'
 import { ComputerPage } from './src/page'
+import { registerComputerPalette } from './src/page/palette'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -29,6 +30,8 @@ export default function setup(host: Host) {
     title: 'computer',
     render: (props) => <ComputerPage host={host} {...props} />,
   })
+
+  registerComputerPalette(host)
 
   host.functionTriggers.register(createComputerRenderer(host))
 }

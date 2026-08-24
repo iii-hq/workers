@@ -16,11 +16,23 @@
  * reports dirty up); column navigation asks before discarding one.
  */
 
-import { Button, type Host, PageSidebar } from '@iii-dev/console-ui'
+import {
+  Button,
+  type Host,
+  type PageCommandsApi,
+  PageSidebar,
+  type PanelContextEvent,
+} from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
-import { BackButton, DatabaseIcon, RefreshButton, useFlash } from '../lib/widgets'
+import {
+  BackButton,
+  DatabaseIcon,
+  RefreshButton,
+  useFlash,
+} from '../lib/widgets'
+import { parseStatePanelContext } from './panel-context'
 import { ValueEditor } from './ValueEditor'
 
 /** Container width (px) below which the browser collapses to the
@@ -33,7 +45,9 @@ const NARROW_BELOW = 800
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none) are ignored so a hidden browser keeps its
  * last real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(
+  threshold: number,
+): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -119,10 +133,14 @@ export function StateBrowser({
   host,
   subscribe,
   panelSide = 'left',
+  panelContext,
+  commands,
 }: {
   host: Host
   subscribe: Subscribe
   panelSide?: 'left' | 'right'
+  panelContext?: PanelContextEvent
+  commands?: PageCommandsApi
 }) {
   const [scopes, setScopes] = useState<string[] | null>(null)
   const [scopesError, setScopesError] = useState<string | null>(null)
@@ -152,7 +170,8 @@ export function StateBrowser({
   const onDirtyChange = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty
   }, [])
-  const confirmDiscard = () => !dirtyRef.current || window.confirm('Discard unsaved changes?')
+  const confirmDiscard = () =>
+    !dirtyRef.current || window.confirm('Discard unsaved changes?')
 
   const loadScopes = useCallback(() => {
     host.iii
@@ -161,7 +180,9 @@ export function StateBrowser({
         setScopesError(null)
         setScopes(r.groups)
       })
-      .catch((err: unknown) => setScopesError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) =>
+        setScopesError(err instanceof Error ? err.message : String(err)),
+      )
   }, [host])
   useEffect(loadScopes, [loadScopes])
 
@@ -177,7 +198,8 @@ export function StateBrowser({
   }, [loadScopes])
   useEffect(
     () => () => {
-      if (refetchTimer.current !== null) window.clearTimeout(refetchTimer.current)
+      if (refetchTimer.current !== null)
+        window.clearTimeout(refetchTimer.current)
     },
     [],
   )
@@ -204,6 +226,36 @@ export function StateBrowser({
     setKeysError(null)
     if (scope !== null) loadKeys()
   }, [scope, loadKeys])
+
+  // A context from the palette source (or another worker's "inspect this
+  // key" affordance) selects a scope, then its key, as each list loads —
+  // the page can mount before the first fetch resolves.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseStatePanelContext(panelContext.context)
+    if (!context) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    if (scopes === null) return
+    if (!scopes.includes(context.scope)) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    if (scope !== context.scope) {
+      setScope(context.scope)
+      setKey(null)
+      return
+    }
+    if (keys === null) return
+    if (!keys.includes(context.key)) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    appliedContextRef.current = panelContext.id
+    setKey(context.key)
+  }, [panelContext, scopes, scope, keys])
 
   useStateEvents(subscribe, (e) => {
     if (e.event_type === 'state:deleted') {
@@ -255,7 +307,10 @@ export function StateBrowser({
   const showDoc = !narrow || key !== null
 
   return (
-    <div className={`state-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`} ref={rootRef}>
+    <div
+      className={`state-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
+      ref={rootRef}
+    >
       {showScopes ? (
         <PageSidebar
           label="scopes"
@@ -265,11 +320,15 @@ export function StateBrowser({
           defaultWidth={208}
           narrow={narrow}
           className="state-ui-col scopes"
+          data-autofocus=""
+          tabIndex={-1}
           header={
             <div className="state-ui-col-head state-ui-primary-head">
               <span className="label">scopes</span>
               <span className="spacer" />
-              {scopes !== null && !scopesError ? <span className="count">{scopes.length}</span> : null}
+              {scopes !== null && !scopesError ? (
+                <span className="count">{scopes.length}</span>
+              ) : null}
               <RefreshButton onClick={loadScopes} label="refresh scopes" />
             </div>
           }
@@ -285,7 +344,9 @@ export function StateBrowser({
             empty={
               <div className="state-ui-col-empty">
                 <p>No scopes yet.</p>
-                <p className="dim">A scope appears here live with its first state::set.</p>
+                <p className="dim">
+                  A scope appears here live with its first state::set.
+                </p>
               </div>
             }
           />
@@ -299,18 +360,27 @@ export function StateBrowser({
               <header className="state-ui-col-head">
                 <span className="label">keys</span>
               </header>
-              <div className="state-ui-col-hint">Select a scope to list its keys.</div>
+              <div className="state-ui-col-hint">
+                Select a scope to list its keys.
+              </div>
             </>
           ) : (
             <>
               <header className="state-ui-col-head">
-                {narrow ? <BackButton onClick={backToScopes} label="back to scopes" /> : null}
+                {narrow ? (
+                  <BackButton onClick={backToScopes} label="back to scopes" />
+                ) : null}
                 <span className="scope-name" title={scope}>
                   {scope}
                 </span>
                 <span className="spacer" />
-                {keys !== null && !keysError ? <span className="count">{keys.length}</span> : null}
-                <RefreshButton onClick={loadKeys} label={`refresh keys of ${scope}`} />
+                {keys !== null && !keysError ? (
+                  <span className="count">{keys.length}</span>
+                ) : null}
+                <RefreshButton
+                  onClick={loadKeys}
+                  label={`refresh keys of ${scope}`}
+                />
               </header>
               <ColumnBody
                 error={keysError}
@@ -324,7 +394,8 @@ export function StateBrowser({
                   <div className="state-ui-col-empty">
                     <p>Scope is empty.</p>
                     <p className="dim">
-                      New writes appear here live; the scope disappears once its last key is deleted.
+                      New writes appear here live; the scope disappears once its
+                      last key is deleted.
                     </p>
                   </div>
                 }
@@ -341,8 +412,8 @@ export function StateBrowser({
               <DatabaseIcon className="state-ui-hero-icon" />
               <h2 className="state-ui-hero-title">Select a key</h2>
               <p className="state-ui-hero-body">
-                Pick a scope, then a key, to view and edit its JSON value. Edits save back with state::set; remote
-                changes stream in live.
+                Pick a scope, then a key, to view and edit its JSON value. Edits
+                save back with state::set; remote changes stream in live.
               </p>
               <p className="state-ui-hero-hint">
                 <kbd>⌘S</kbd> saves
@@ -359,6 +430,7 @@ export function StateBrowser({
               narrow={narrow}
               onBack={backToKeys}
               onDirtyChange={onDirtyChange}
+              commands={commands}
             />
           )}
         </section>

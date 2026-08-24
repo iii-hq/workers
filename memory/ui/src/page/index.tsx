@@ -32,7 +32,7 @@ import {
   SegmentedControl,
   StatusDot,
 } from '@iii-dev/console-ui'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BankRail } from './BankRail'
 import { Brain, RefreshCw } from './icons'
 import { MemoriesPanel } from './MemoriesPanel'
@@ -122,6 +122,8 @@ export function MemoryPage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const {
     banks,
@@ -204,6 +206,54 @@ export function MemoryPage({
     setDrilled(false)
   }
 
+  // Palette rows for a bank/memory (see palette.ts) select it here once the
+  // page is open. `panelContext.id` is monotonic, so a repeated identical
+  // click still re-applies.
+  const appliedContextRef = useRef(0)
+  const shellRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context as {
+      type?: string
+      bank?: string
+    } | null
+    if (!context || typeof context.bank !== 'string') return
+    openBank(context.bank)
+    if (context.type === 'memory') setPanel('memories')
+  }, [panelContext, openBank, setPanel])
+
+  // The page's primary verbs, for the palette and for the keyboard while
+  // this pane has the focus.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'reload',
+          title: 'Reload from disk',
+          detail: 'Re-read every bank — picks up hand-edited files',
+          shortcut: 'R',
+          enabled: () => !loading && !busy,
+          run: () => void act(() => reloadStore(host)),
+        },
+        {
+          id: 'new-bank',
+          title: 'New bank',
+          detail: 'Create a named memory scope',
+          shortcut: 'N',
+          run: () => {
+            if (narrow && drilled) backToBanks()
+            window.requestAnimationFrame(() => {
+              shellRef.current
+                ?.querySelector<HTMLElement>('[data-mem-new-bank-input]')
+                ?.focus()
+            })
+          },
+        },
+      ]),
+    [commands, host, act, loading, busy, narrow, drilled, backToBanks],
+  )
+
   const bankInfo = selected
     ? (banks.find((b) => b.name === selected) ?? null)
     : null
@@ -213,7 +263,7 @@ export function MemoryPage({
   const showDoc = !narrow || (drilled && selected !== null)
 
   return (
-    <PageShell className="mem-ui-shell">
+    <PageShell ref={shellRef} className="mem-ui-shell">
       <PageHeader
         icon={<Brain size={16} />}
         title="Memory"
@@ -281,6 +331,7 @@ export function MemoryPage({
               onSelect={openBank}
               onCreate={(name) => act(() => createBank(host, name))}
               creating={busy}
+              autofocusFirst={selected === null}
             />
           </PageSidebar>
         ) : null}

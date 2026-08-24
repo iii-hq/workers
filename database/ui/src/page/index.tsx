@@ -77,8 +77,9 @@ import {
   Settings,
   Table2,
 } from './icons'
+import { parseDatabasePanelContext } from './panel-context'
 import { SchemaTree } from './SchemaTree'
-import { SqlPanel } from './SqlPanel'
+import { SqlPanel, type SqlPanelHandle } from './SqlPanel'
 import { TableDataPanel } from './TableDataPanel'
 import { useDatabaseRead } from './useDatabaseRead'
 
@@ -192,6 +193,8 @@ export function DatabasePage({
   panelSide = 'left',
   tabId = '',
   onRequestClose,
+  panelContext,
+  commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [selectedDb, setSelectedDb] = useState<string | undefined>(undefined)
   const [selectedTable, setSelectedTable] = useState<string | null>(null)
@@ -228,6 +231,9 @@ export function DatabasePage({
   const onSqlDirtyChange = useCallback((dirty: boolean) => {
     sqlDirtyRef.current = dirty
   }, [])
+  // Lets the `S` command move focus into the Monaco editor after switching
+  // the panel to SQL — the panel itself owns the editor instance.
+  const sqlPanelRef = useRef<SqlPanelHandle>(null)
 
   const follow = useCallback(
     (table: string, column: string, value: unknown) => {
@@ -362,6 +368,78 @@ export function DatabasePage({
     if (narrow) setDrilled(true)
   }
 
+  // A context from the palette source (or another worker's "inspect this
+  // table" affordance) selects a table once its database's list has loaded.
+  // Left unapplied rather than clearing selectedTable while it loads — the
+  // db/table pair only becomes valid once both requests settle.
+  const appliedContextRef = useRef(0)
+  const shellRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    const context = parseDatabasePanelContext(panelContext.context)
+    if (!context) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    const targetDb = context.db ?? activeDb?.name
+    if (!targetDb) return
+    if (targetDb !== activeDb?.name) {
+      if (dbs.some((d) => d.name === targetDb)) setSelectedDb(targetDb)
+      return
+    }
+    if (!tables.some((t) => t.name === context.table)) return
+    appliedContextRef.current = panelContext.id
+    setTrail([])
+    setSelectedTable(context.table)
+    setMode('data')
+    if (narrow) setDrilled(true)
+  }, [panelContext, activeDb, dbs, tables, narrow])
+
+  // The page's verbs, for the palette and for the keyboard while this pane
+  // has the focus. The keys stay clear of the console's own.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'focus-sql',
+          title: 'Focus the SQL editor',
+          detail: 'Switch to the SQL panel and start typing a statement',
+          keywords: ['sql', 'query', 'editor'],
+          shortcut: 'S',
+          enabled: () => !!activeDb,
+          run: () => {
+            pickMode('sql')
+            window.requestAnimationFrame(() => sqlPanelRef.current?.focus())
+          },
+        },
+        {
+          id: 'refresh',
+          title: 'Refresh',
+          detail: 'Reload databases, tables and the active panel',
+          keywords: ['reload'],
+          shortcut: 'R',
+          run: refresh,
+        },
+        {
+          id: 'focus-tables',
+          title: 'Focus the table filter',
+          detail: 'Jump to the table list and start typing to filter it',
+          keywords: ['tables', 'filter', 'schema'],
+          shortcut: '/',
+          enabled: () => !!activeDb,
+          run: () => {
+            if (narrow) setDrilled(false)
+            window.requestAnimationFrame(() =>
+              shellRef.current
+                ?.querySelector<HTMLElement>('[data-db-tables-filter]')
+                ?.focus(),
+            )
+          },
+        },
+      ]),
+    [commands, activeDb, narrow],
+  )
+
   // A configured database without a `url` (redacted in the worker's config
   // response) still counts as configured — fall back to its name, not to the
   // "nothing here" copy.
@@ -376,7 +454,7 @@ export function DatabasePage({
   const showMain = !narrow || drilled
 
   return (
-    <PageShell className="db-ui-shell">
+    <PageShell ref={shellRef} className="db-ui-shell">
       <PageHeader
         icon={<Database size={16} />}
         title="Database"
@@ -613,6 +691,7 @@ export function DatabasePage({
                         can't disconfirm what just happened. */}
                     <SqlPanel
                       key={activeDb.name}
+                      ref={sqlPanelRef}
                       host={host}
                       db={activeDb.name}
                       seedSql={seedSql}

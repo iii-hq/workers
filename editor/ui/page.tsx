@@ -26,4 +26,14 @@ export default function setup(host: Host) {
     title: 'editor',
     render: (props) => <EditorPage host={host} {...props} />,
   })
+
+  host.commands?.register('editor', [
+    {
+      id: 'open',
+      title: 'Open editor',
+      detail: 'Changed files, tabs, and the shared Monaco editor',
+      keywords: ['file', 'code', 'diff'],
+      run: () => host.panels?.open({ pageId: 'editor', context: {} }),
+    },
+  ])
 }

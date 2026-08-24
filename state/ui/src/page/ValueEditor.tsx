@@ -14,7 +14,12 @@
  * `onDirtyChange` so column navigation can ask before discarding them.
  */
 
-import { Button, CodeEditor, type Host } from '@iii-dev/console-ui'
+import {
+  Button,
+  CodeEditor,
+  type Host,
+  type PageCommandsApi,
+} from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
 import { BackButton } from '../lib/widgets'
@@ -27,6 +32,7 @@ export function ValueEditor({
   narrow,
   onBack,
   onDirtyChange,
+  commands,
 }: {
   host: Host
   scope: string
@@ -35,6 +41,7 @@ export function ValueEditor({
   narrow: boolean
   onBack: () => void
   onDirtyChange: (dirty: boolean) => void
+  commands?: PageCommandsApi
 }) {
   const [stored, setStored] = useState<{ loaded: boolean; value: unknown }>({
     loaded: false,
@@ -62,11 +69,15 @@ export function ValueEditor({
         setLoadError(null)
         setStored({ loaded: true, value })
       })
-      .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) =>
+        setLoadError(err instanceof Error ? err.message : String(err)),
+      )
   }, [host, scope, itemKey])
   useEffect(load, [load])
 
-  const storedText = stored.loaded ? JSON.stringify(stored.value ?? null, null, 2) : ''
+  const storedText = stored.loaded
+    ? JSON.stringify(stored.value ?? null, null, 2)
+    : ''
   const text = draft ?? storedText
   const dirty = draft !== null && draft !== storedText
 
@@ -95,7 +106,9 @@ export function ValueEditor({
     // typically the echo of our own save): apply in place.
     setServerNotice(null)
     setStored((prev) => {
-      const prevText = prev.loaded ? JSON.stringify(prev.value ?? null, null, 2) : null
+      const prevText = prev.loaded
+        ? JSON.stringify(prev.value ?? null, null, 2)
+        : null
       if (prevText !== nextText) setLiveAt(Date.now())
       return { loaded: true, value: e.new_value ?? null }
     })
@@ -129,7 +142,11 @@ export function ValueEditor({
     }
     setSaving(true)
     try {
-      await host.iii.trigger('state::set', { scope, key: itemKey, value: parsed })
+      await host.iii.trigger('state::set', {
+        scope,
+        key: itemKey,
+        value: parsed,
+      })
       setStored({ loaded: true, value: parsed })
       setDraft(null)
       setServerNotice(null)
@@ -142,6 +159,25 @@ export function ValueEditor({
       setSaving(false)
     }
   }, [host, scope, itemKey, text, saving])
+
+  // Surfaces the existing ⌘S handler in ⌘K too; the raw keydown below stays
+  // so the shortcut still works while the caret is inside Monaco.
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'save',
+          title: 'Save',
+          detail: 'Write this value back with state::set',
+          keywords: ['state::set', 'write'],
+          shortcut: 'Mod+S',
+          firesWhileTyping: true,
+          enabled: () => dirty && !parseError,
+          run: () => void save(),
+        },
+      ]),
+    [commands, dirty, parseError, save],
+  )
 
   const loadLatest = useCallback(() => {
     if (serverNotice?.kind !== 'changed') return
@@ -160,17 +196,31 @@ export function ValueEditor({
 
   const lines = stored.loaded ? text.split('\n').length : 0
   const bytes = stored.loaded ? new Blob([text]).size : 0
-  const saveStatus = saving ? 'saving…' : savedFlash ? '✓ saved' : dirty ? 'unsaved' : ''
+  const saveStatus = saving
+    ? 'saving…'
+    : savedFlash
+      ? '✓ saved'
+      : dirty
+        ? 'unsaved'
+        : ''
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay (⌘S saves) around real controls
     <div className="state-ui-doc-inner" onKeyDown={onWorkspaceKeyDown}>
       <header className="state-ui-doc-head">
-        {narrow ? <BackButton onClick={onBack} label={`back to ${scope}`} /> : null}
+        {narrow ? (
+          <BackButton onClick={onBack} label={`back to ${scope}`} />
+        ) : null}
         <div className="state-ui-doc-identity">
           <span className="state-ui-doc-name" title={`${scope} / ${itemKey}`}>
             <span className="txt">{itemKey}</span>
-            {dirty ? <span className="state-ui-dirty-dot" title="unsaved changes" aria-hidden /> : null}
+            {dirty ? (
+              <span
+                className="state-ui-dirty-dot"
+                title="unsaved changes"
+                aria-hidden
+              />
+            ) : null}
           </span>
           {!narrow ? (
             <span className="state-ui-doc-crumb">
@@ -194,7 +244,12 @@ export function ValueEditor({
               revert
             </Button>
           ) : null}
-          <Button variant="primary" size="sm" disabled={!dirty || !!parseError || saving} onClick={() => void save()}>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!dirty || !!parseError || saving}
+            onClick={() => void save()}
+          >
             {saving ? 'saving…' : 'save'}
           </Button>
         </div>
@@ -209,7 +264,11 @@ export function ValueEditor({
       {serverNotice?.kind === 'changed' ? (
         <div className="state-ui-banner warn" role="status">
           <span>This value changed on the server while you were editing.</span>
-          <button type="button" className="state-ui-linkish" onClick={loadLatest}>
+          <button
+            type="button"
+            className="state-ui-linkish"
+            onClick={loadLatest}
+          >
             load latest (discards your draft)
           </button>
         </div>
@@ -221,10 +280,18 @@ export function ValueEditor({
             state::set failed.
             <span className="detail">{saveError}</span>
           </span>
-          <button type="button" className="state-ui-linkish" onClick={() => void save()}>
+          <button
+            type="button"
+            className="state-ui-linkish"
+            onClick={() => void save()}
+          >
             retry
           </button>
-          <button type="button" className="state-ui-linkish quiet" onClick={() => setSaveError(null)}>
+          <button
+            type="button"
+            className="state-ui-linkish quiet"
+            onClick={() => setSaveError(null)}
+          >
             dismiss
           </button>
         </div>

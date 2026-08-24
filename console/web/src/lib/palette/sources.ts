@@ -21,7 +21,47 @@ export type PaletteKind =
   | 'page'
   | 'chat'
   | 'workspace'
+  | 'command'
   | 'action'
+  | 'file'
+  | 'item'
+
+/** A group header: a kind, or the recents the empty query opens on. */
+export type PaletteGroup = PaletteKind | 'recent'
+
+/**
+ * A leading character picks a mode, the way editors and chat apps do: `>`
+ * and `/` commands, `#` files, `@` chats. The rest of the query is the
+ * search text.
+ */
+export const PREFIX_MODES: Record<string, readonly PaletteKind[]> = {
+  '>': ['command', 'action'],
+  '/': ['command', 'action'],
+  '#': ['file'],
+  '@': ['chat'],
+}
+
+export interface ParsedQuery {
+  prefix: string | null
+  kinds: ReadonlySet<PaletteKind> | null
+  text: string
+}
+
+export function parseQuery(
+  raw: string,
+  filter: PaletteKind | 'all',
+): ParsedQuery {
+  const first = raw[0] ?? ''
+  const mode = PREFIX_MODES[first]
+  if (mode) {
+    return { prefix: first, kinds: new Set(mode), text: raw.slice(1).trim() }
+  }
+  return {
+    prefix: null,
+    kinds: filter === 'all' ? null : new Set([filter]),
+    text: raw.trim(),
+  }
+}
 
 export interface PaletteEntry {
   id: string
@@ -145,15 +185,45 @@ export async function readEngine(): Promise<EngineSnapshot> {
  * `engine::workers::list`) comes last, because it is the loosest and would
  * otherwise bury the obvious answers.
  */
+/** Kinds whose titles are ids or paths, where `ewl` for `engine::workers::list`
+    is a real habit. Prose titles rank by words only, so "ping" never lands
+    on "Open settings". */
+const SUBSEQUENCE_KINDS: ReadonlySet<PaletteKind> = new Set([
+  'worker',
+  'function',
+  'file',
+])
+
 export function scoreEntry(entry: PaletteEntry, query: string): number {
   if (!query) return 1
-  const needle = query.toLowerCase()
   const haystacks = [
     entry.title,
     entry.detail ?? '',
     ...(entry.keywords ?? []),
   ].map((value) => value.toLowerCase())
+  // Several words match in any order ("file open" finds "Open file…"); the
+  // row scores as its weakest word, so every word has to land somewhere.
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const fuzzy = SUBSEQUENCE_KINDS.has(entry.kind)
+  if (words.length > 1) {
+    let weakest = Number.POSITIVE_INFINITY
+    for (const word of words) {
+      const score = scoreWord(haystacks, word, fuzzy)
+      if (score === 0) return 0
+      weakest = Math.min(weakest, score)
+    }
+    const whole = scoreWord(haystacks, words.join(' '), fuzzy)
+    return Math.max(whole, weakest)
+  }
+  return scoreWord(haystacks, words[0] ?? '', fuzzy)
+}
 
+function scoreWord(
+  haystacks: string[],
+  needle: string,
+  fuzzy: boolean,
+): number {
+  if (!needle) return 1
   let best = 0
   for (const hay of haystacks) {
     if (!hay) continue
@@ -170,6 +240,7 @@ export function scoreEntry(entry: PaletteEntry, query: string): number {
     }
   }
   if (best > 0) return best
+  if (!fuzzy) return 0
 
   // Subsequence: every needle character appears in order.
   const title = haystacks[0]
@@ -185,10 +256,14 @@ export function scoreEntry(entry: PaletteEntry, query: string): number {
 export function filterEntries(
   entries: PaletteEntry[],
   query: string,
-  kind: PaletteKind | 'all',
+  kind: PaletteKind | 'all' | ReadonlySet<PaletteKind> | null,
 ): PaletteEntry[] {
   const scoped =
-    kind === 'all' ? entries : entries.filter((entry) => entry.kind === kind)
+    kind === 'all' || kind === null
+      ? entries
+      : typeof kind === 'string'
+        ? entries.filter((entry) => entry.kind === kind)
+        : entries.filter((entry) => kind.has(entry.kind))
   if (!query.trim()) return scoped
   return scoped
     .map((entry) => ({ entry, score: scoreEntry(entry, query.trim()) }))
@@ -197,36 +272,48 @@ export function filterEntries(
     .map((row) => row.entry)
 }
 
-export const KIND_LABEL: Record<PaletteKind, string> = {
+export const KIND_LABEL: Record<PaletteGroup, string> = {
+  recent: 'Recent',
   worker: 'Workers',
   function: 'Functions',
   page: 'Pages',
   chat: 'Chats',
   workspace: 'Workspaces',
+  command: 'Commands',
   action: 'Actions',
+  file: 'Files',
+  item: 'Results',
 }
 
 /** Group in a fixed order so the list does not reshuffle as scores change. */
 export const KIND_ORDER: PaletteKind[] = [
+  'file',
+  'command',
   'action',
   'workspace',
   'page',
   'chat',
+  'item',
   'worker',
   'function',
 ]
 
+/** Group in a fixed order so the list does not reshuffle as scores change;
+    `recent` rows, when given, lead and are not repeated below. */
 export function groupEntries(
   entries: PaletteEntry[],
-): Array<[PaletteKind, PaletteEntry[]]> {
+  recent: PaletteEntry[] = [],
+): Array<[PaletteGroup, PaletteEntry[]]> {
+  const recentIds = new Set(recent.map((entry) => entry.id))
   const groups = new Map<PaletteKind, PaletteEntry[]>()
   for (const entry of entries) {
+    if (recentIds.has(entry.id)) continue
     const bucket = groups.get(entry.kind)
     if (bucket) bucket.push(entry)
     else groups.set(entry.kind, [entry])
   }
-  return KIND_ORDER.filter((kind) => groups.has(kind)).map((kind) => [
-    kind,
-    groups.get(kind) as PaletteEntry[],
-  ])
+  const ordered: Array<[PaletteGroup, PaletteEntry[]]> = KIND_ORDER.filter(
+    (kind) => groups.has(kind),
+  ).map((kind) => [kind, groups.get(kind) as PaletteEntry[]])
+  return recent.length > 0 ? [['recent', recent], ...ordered] : ordered
 }

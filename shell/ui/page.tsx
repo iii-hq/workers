@@ -22,6 +22,7 @@ import { createShellTriggerRenderer } from './src/function-trigger'
 import { createAgentRunRenderer } from './src/function-trigger/AgentRunView'
 import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
 import { ShellExplorerPage } from './src/page'
+import { registerShellPalette } from './src/page/palette'
 import { ShellTurnSummary } from './src/page/ShellTurnSummary'
 import { createTerminalOutputRouter } from './src/page/terminal-output-router'
 
@@ -57,6 +58,10 @@ export default function setup(host: Host) {
     id: 'shell-last-turn',
     render: ShellTurnSummary,
   })
+
+  // The palette reaches the shell before the page is open: files by name
+  // as you type (`#`), and the verbs that open the page and act.
+  registerShellPalette(host)
 
   return () => terminalRouter.dispose()
 }

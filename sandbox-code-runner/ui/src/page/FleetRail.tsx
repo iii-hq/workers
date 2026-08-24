@@ -10,6 +10,7 @@
  */
 
 import { Badge, EmptyState, type Host, StatusDot } from '@iii-dev/console-ui'
+import type { KeyboardEvent } from 'react'
 import { useState } from 'react'
 import {
   displayAgeSecs,
@@ -19,8 +20,8 @@ import {
   type SandboxState,
   sandboxState,
 } from './format'
-import { BoxIcon, ChevronIcon } from './icons'
 import { InvokeDialog } from './InvokeDialog'
+import { BoxIcon, ChevronIcon } from './icons'
 import type {
   CatalogImage,
   FleetTombstone,
@@ -36,6 +37,21 @@ const STATUS_DOT: Record<
   running: { tone: 'accent', pulse: false },
   busy: { tone: 'warn', pulse: true },
   stopped: { tone: 'ink', pulse: false },
+}
+
+/** Cheap roving nav: arrow keys step focus between sibling sandbox rows. */
+function onRowKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  const rows = Array.from(
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+      'button.cr-page-fleet-row',
+    ) ?? [],
+  )
+  const index = rows.indexOf(event.currentTarget)
+  if (index === -1) return
+  event.preventDefault()
+  const next = index + (event.key === 'ArrowDown' ? 1 : -1)
+  rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus()
 }
 
 function SandboxRow({
@@ -62,11 +78,14 @@ function SandboxRow({
       type="button"
       className={`cr-page-fleet-row${selected ? ' selected' : ''}${reapSoon ? ' reap-soon' : ''}`}
       onClick={() => onSelect(sandbox.sandbox_id)}
+      onKeyDown={onRowKeyDown}
       title={`${sandbox.sandbox_id} · ${state}${reapSoon ? ' · idle reap imminent' : ''}`}
       aria-current={selected ? 'true' : undefined}
     >
       <StatusDot tone={dot.tone} pulse={dot.pulse} />
-      <span className="cr-page-fleet-id">{sandbox.name || sandbox.sandbox_id}</span>
+      <span className="cr-page-fleet-id">
+        {sandbox.name || sandbox.sandbox_id}
+      </span>
       <span className="cr-page-fleet-meta">
         <span className="cr-page-fleet-image" title={sandbox.image}>
           {sandbox.image}
@@ -110,7 +129,10 @@ function RuntimeRow({
           disabled={count === 0}
           title={count === 0 ? 'no functions registered' : 'show functions'}
         >
-          <ChevronIcon className={expanded ? 'cr-page-chev open' : 'cr-page-chev'} aria-hidden />
+          <ChevronIcon
+            className={expanded ? 'cr-page-chev open' : 'cr-page-chev'}
+            aria-hidden
+          />
           <span className="cr-page-rt-lang">{runtime.lang}</span>
           <span className="cr-page-rt-count">
             {count} fn{count === 1 ? '' : 's'}
@@ -261,7 +283,9 @@ export function FleetRail({
                 {t.sandbox.name || t.sandbox.sandbox_id}
               </span>
               <span className="cr-page-fleet-meta">
-                <span className="cr-page-fleet-gone">gone — reaped or stopped</span>
+                <span className="cr-page-fleet-gone">
+                  gone — reaped or stopped
+                </span>
               </span>
             </div>
           ))}
@@ -295,7 +319,11 @@ export function FleetRail({
           <div className="cr-page-rail-label">catalog</div>
           <ul className="cr-page-catalog">
             {images.map((image) => (
-              <li key={image.name} className="cr-page-catalog-row" title={image.oci_ref}>
+              <li
+                key={image.name}
+                className="cr-page-catalog-row"
+                title={image.oci_ref}
+              >
                 <span className="cr-page-catalog-name">{image.name}</span>
                 <Badge variant={image.kind === 'preset' ? 'default' : 'accent'}>
                   {image.kind}
@@ -306,7 +334,11 @@ export function FleetRail({
         </>
       ) : null}
 
-      <InvokeDialog host={host} functionId={invokeFn} onClose={() => setInvokeFn(null)} />
+      <InvokeDialog
+        host={host}
+        functionId={invokeFn}
+        onClose={() => setInvokeFn(null)}
+      />
     </div>
   )
 }

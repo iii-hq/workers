@@ -17,7 +17,10 @@ import {
   type KeybindingActionId,
   keybinding,
 } from '@/lib/keybindings/registry'
+import { usePageCommands } from '@/lib/page-commands'
+import { usePaletteSources } from '@/lib/palette/providers'
 import type { PaletteEntry } from '@/lib/palette/sources'
+import { useExtPages } from '@/lib/ui-slots'
 import {
   type TabScreen,
   tabColumns,
@@ -33,6 +36,8 @@ type WorkspaceActionId = Extract<
   KeybindingActionId,
   | 'workspace.create'
   | 'panel.split'
+  | 'panel.next'
+  | 'panel.previous'
   | 'workspace.next'
   | 'workspace.previous'
   | 'workspace.close'
@@ -44,6 +49,11 @@ const WORKSPACE_ACTIONS: ReadonlyArray<{
 }> = [
   { id: 'workspace.create', detail: 'Open an empty workspace' },
   { id: 'panel.split', detail: 'Add a panel beside the current one' },
+  { id: 'panel.next', detail: 'Move the keyboard to the panel on the right' },
+  {
+    id: 'panel.previous',
+    detail: 'Move the keyboard to the panel on the left',
+  },
   { id: 'workspace.next', detail: 'Switch to the workspace on the right' },
   { id: 'workspace.previous', detail: 'Switch to the workspace on the left' },
   { id: 'workspace.close', detail: 'Close the current workspace' },
@@ -56,6 +66,10 @@ const PAGE_ACTIONS: Partial<Record<string, KeybindingActionId>> = {
   traces: 'page.traces',
 }
 
+function capitalised(text: string): string {
+  return text.length === 0 ? text : text[0].toUpperCase() + text.slice(1)
+}
+
 export interface PaletteWorkspace {
   tabs: readonly WorkspaceTab[]
   activeTabId: string
@@ -64,6 +78,7 @@ export interface PaletteWorkspace {
   close: (id: string) => void
   step: (delta: 1 | -1) => void
   split: () => void
+  focusPane: (delta: 1 | -1) => void
 }
 
 export interface PaletteHostProps {
@@ -77,6 +92,8 @@ export interface PaletteHostProps {
   onOpenShortcuts: () => void
   theme: 'light' | 'dark'
   onThemeChange: (theme: 'light' | 'dark') => void
+  /** Text the palette opens with this time (`#` for files). */
+  initialQuery?: string
 }
 
 export function PaletteHost({
@@ -88,9 +105,13 @@ export function PaletteHost({
   onOpenShortcuts,
   theme,
   onThemeChange,
+  initialQuery,
 }: PaletteHostProps) {
   const { screenOptions, extPageTitles } = useScreenOptions()
-  const { conversations, select, createNew } = useConversationsCtx()
+  const { conversations, select, createNew, active } = useConversationsCtx()
+  const pageCommands = usePageCommands()
+  const extPages = useExtPages()
+  const sources = usePaletteSources()
 
   // Both land on the workers page, filtered to what was picked: a worker by
   // its name, a function by the worker that registers it, falling back to the
@@ -110,6 +131,7 @@ export function PaletteHost({
     [openScreen],
   )
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `open` re-asks each command's `enabled` when the palette opens.
   const localEntries = useMemo((): PaletteEntry[] => {
     const platform = shortcutPlatform()
     const pages: PaletteEntry[] = screenOptions.map((option) => {
@@ -165,13 +187,24 @@ export function PaletteHost({
     const workspaceRun: Record<WorkspaceActionId, () => void> = {
       'workspace.create': workspace.create,
       'panel.split': workspace.split,
+      'panel.next': () => workspace.focusPane(1),
+      'panel.previous': () => workspace.focusPane(-1),
       'workspace.next': () => workspace.step(1),
       'workspace.previous': () => workspace.step(-1),
       'workspace.close': () => workspace.close(workspace.activeTabId),
     }
     const several = workspace.tabs.length > 1
+    const panes = tabColumns(
+      workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ??
+        workspace.tabs[0],
+    )
+    const offered = (id: WorkspaceActionId): boolean => {
+      if (id === 'workspace.create' || id === 'panel.split') return true
+      if (id === 'panel.next' || id === 'panel.previous') return panes > 1
+      return several
+    }
     const workspaceActions: PaletteEntry[] = WORKSPACE_ACTIONS.filter(
-      ({ id }) => several || id === 'workspace.create' || id === 'panel.split',
+      ({ id }) => offered(id),
     ).map(({ id, detail }) => {
       const definition = keybinding(id)
       return {
@@ -184,6 +217,31 @@ export function PaletteHost({
         run: workspaceRun[id],
       }
     })
+
+    // A worker-level command needs its page registered (the worker is here);
+    // a page-level one is registered by a mounted page, which is the same
+    // thing said twice. The same page in two panes registers twice: one row.
+    const seenCommands = new Set<string>()
+    const pageCommandRows: PaletteEntry[] = []
+    for (const entry of pageCommands) {
+      const page = extPages.find((candidate) => candidate.id === entry.pageId)
+      if (entry.source !== 'page' && !page) continue
+      if (entry.command.enabled?.() === false) continue
+      if (seenCommands.has(entry.key)) continue
+      seenCommands.add(entry.key)
+      const pageTitle = capitalised(
+        entry.pageTitle ?? page?.title ?? entry.pageId,
+      )
+      pageCommandRows.push({
+        id: `command:${entry.key}`,
+        kind: 'command',
+        title: `${pageTitle}: ${entry.command.title}`,
+        detail: entry.command.detail,
+        keywords: [...(entry.command.keywords ?? []), entry.pageId],
+        shortcut: entry.bindings[0],
+        run: entry.command.run,
+      })
+    }
 
     const actions: PaletteEntry[] = [
       ...workspaceActions,
@@ -226,11 +284,15 @@ export function PaletteHost({
       },
     ]
 
-    return [...actions, ...workspaces, ...pages, ...chats]
+    return [...actions, ...pageCommandRows, ...workspaces, ...pages, ...chats]
   }, [
     screenOptions,
     extPageTitles,
     workspace,
+    pageCommands,
+    extPages,
+    // `enabled` is re-asked each time the palette opens.
+    open,
     conversations,
     select,
     createNew,
@@ -248,6 +310,10 @@ export function PaletteHost({
       localEntries={localEntries}
       onOpenWorker={openWorker}
       onOpenFunction={openFunction}
+      sources={sources}
+      workingDir={active?.workingDir ?? null}
+      conversationId={active?.id ?? null}
+      initialQuery={initialQuery}
     />
   )
 }

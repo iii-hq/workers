@@ -32,12 +32,16 @@ describe('scoreEntry', () => {
     expect(anywhere).toBeGreaterThan(0)
   })
 
-  it('falls back to a subsequence, below every literal match', () => {
-    const subsequence = scoreEntry(entry('engine::workers::list'), 'ewl')
+  it('falls back to a subsequence for ids and paths, below every literal match', () => {
+    const fn = entry('engine::workers::list', 'function')
+    const subsequence = scoreEntry(fn, 'ewl')
     expect(subsequence).toBeGreaterThan(0)
-    expect(subsequence).toBeLessThan(
-      scoreEntry(entry('engine::workers::list'), 'workers'),
-    )
+    expect(subsequence).toBeLessThan(scoreEntry(fn, 'workers'))
+  })
+
+  it('never fuzzes a prose title', () => {
+    expect(scoreEntry(entry('Open settings'), 'ping')).toBe(0)
+    expect(scoreEntry(entry('Open settings'), 'settings')).toBeGreaterThan(0)
   })
 
   it('rejects an entry it cannot match at all', () => {

@@ -434,8 +434,15 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "skills": {
+            "default": 0,
+            "description": "Selected skill bodies contained in the system prompt.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "system_prompt": {
-            "description": "Final assembled system prompt: mode paragraph, identity, per-step aids, and any compaction summary section.",
+            "description": "Final assembled system prompt excluding tokens attributed to `skills`: mode paragraph, identity, per-step aids, and any compaction summary section.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"

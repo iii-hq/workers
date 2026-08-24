@@ -41,6 +41,7 @@ import type {
   CompactResult,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
@@ -80,6 +81,7 @@ import {
   type TriggerFiredData,
   type UserMessage,
 } from '@/types/chat'
+import type { PageCommandsApi } from '@/types/injectable-ui'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { MessageList } from './MessageList'
@@ -154,6 +156,8 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
+  /** The pane's command registrar: chat's keys and palette rows. */
+  commands?: PageCommandsApi
   /**
    * Drill-out affordance for narrow (one-pane-at-a-time) hosts: when
    * set, the header renders a ← back button returning to the session
@@ -175,6 +179,7 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   onRequestClose,
+  commands,
   onBack,
   onUpdateModel,
   onUpdateMode,
@@ -1851,8 +1856,169 @@ export function ChatView({
     [conversation.id, onAppendMessage],
   )
 
+  // Chat's keyboard, through the same contract a worker page uses, so the
+  // palette lists these rows under "Chat" with their keys.
+  const viewRef = useRef<HTMLElement>(null)
+  const working = conversation.status === 'working'
+  useEffect(() => {
+    if (!commands) return
+    const messageNodes = () =>
+      Array.from(
+        viewRef.current?.querySelectorAll<HTMLElement>('[data-message-row]') ??
+          [],
+      )
+    const focusedRow = () =>
+      messageNodes().find((node) => node.contains(document.activeElement))
+    const actOnFocused = (action: string) => {
+      const row = focusedRow()
+      const button = row?.querySelector<HTMLButtonElement>(
+        `[data-message-action="${action}"]`,
+      )
+      if (button && !button.disabled) button.click()
+    }
+    const pendingApproval = () => {
+      const view = viewRef.current
+      return (
+        view !== null && view.querySelector('[data-approval-actions]') !== null
+      )
+    }
+    const answerApproval = (action: 'approve' | 'deny' | 'always-allow') => {
+      const row = focusedRow()
+      const waiting = Array.from(
+        viewRef.current?.querySelectorAll('[data-approval-actions]') ?? [],
+      )
+      // The focused row if it is waiting; else the only waiting call. Two
+      // waiting calls and no focus is a choice the keyboard must not make.
+      const scope = row?.querySelector('[data-approval-actions]')
+        ? row
+        : waiting.length === 1
+          ? waiting[0]
+          : null
+      scope
+        ?.querySelector<HTMLButtonElement>(`[data-message-action="${action}"]`)
+        ?.click()
+    }
+    const focusMessage = (delta: 1 | -1) => {
+      const nodes = messageNodes()
+      if (nodes.length === 0) return
+      const current = nodes.findIndex((node) =>
+        node.contains(document.activeElement),
+      )
+      const start = delta === 1 ? 0 : nodes.length - 1
+      const index =
+        current === -1
+          ? start
+          : Math.min(nodes.length - 1, Math.max(0, current + delta))
+      const node = nodes[index]
+      node.tabIndex = -1
+      node.focus({ preventScroll: true })
+      node.scrollIntoView({ block: 'nearest' })
+    }
+    return commands.register([
+      {
+        id: 'focus-composer',
+        title: 'Focus the composer',
+        detail: 'Put the caret in the message box',
+        keywords: ['type', 'write', 'input', 'message'],
+        shortcut: 'I',
+        run: () => requestComposerFocus(),
+      },
+      {
+        id: 'next-message',
+        title: 'Next message',
+        detail: 'Move the focus down the conversation',
+        keywords: ['down', 'read', 'inspect'],
+        shortcut: 'J',
+        run: () => focusMessage(1),
+      },
+      {
+        id: 'previous-message',
+        title: 'Previous message',
+        detail: 'Move the focus up the conversation',
+        keywords: ['up', 'read', 'inspect'],
+        shortcut: 'K',
+        run: () => focusMessage(-1),
+      },
+      {
+        id: 'latest',
+        title: 'Jump to the latest message',
+        detail: 'Scroll to the end of the conversation',
+        keywords: ['bottom', 'end', 'scroll', 'tail'],
+        shortcut: 'End',
+        run: () => {
+          const list = viewRef.current?.querySelector<HTMLElement>(
+            '[data-message-list]',
+          )
+          list?.scrollTo({ top: list.scrollHeight })
+        },
+      },
+      {
+        id: 'approve',
+        title: 'Approve the pending call',
+        detail: 'Let the focused (or the only waiting) function call run',
+        keywords: ['allow', 'yes', 'permission'],
+        shortcut: 'A',
+        enabled: pendingApproval,
+        run: () => answerApproval('approve'),
+      },
+      {
+        id: 'deny',
+        title: 'Deny the pending call',
+        detail: 'Refuse the focused (or the only waiting) function call',
+        keywords: ['reject', 'no', 'permission'],
+        shortcut: 'D',
+        enabled: pendingApproval,
+        run: () => answerApproval('deny'),
+      },
+      {
+        id: 'always-allow',
+        title: 'Always allow the pending call',
+        detail: 'Approve it and stop asking for this function',
+        keywords: ['allow', 'permission', 'session', 'trust'],
+        shortcut: 'S',
+        enabled: pendingApproval,
+        run: () => answerApproval('always-allow'),
+      },
+      {
+        id: 'expand',
+        title: 'Expand or collapse the focused message',
+        detail: 'Open a function call card, or fold it',
+        keywords: ['open', 'fold', 'details'],
+        shortcut: 'O',
+        run: () => actOnFocused('toggle'),
+      },
+      {
+        id: 'copy',
+        title: 'Copy the focused message',
+        detail: 'Copy its text to the clipboard',
+        keywords: ['clipboard'],
+        shortcut: 'Y',
+        run: () => actOnFocused('copy'),
+      },
+      {
+        id: 'model',
+        title: 'Switch model',
+        detail: 'Open the model picker',
+        keywords: ['provider', 'picker', 'llm'],
+        shortcut: 'M',
+        run: handleOpenModelPicker,
+      },
+      {
+        id: 'stop',
+        title: 'Stop the turn',
+        detail: 'Interrupt the running generation',
+        keywords: ['cancel', 'interrupt', 'abort'],
+        shortcut: 'Escape',
+        firesWhileTyping: true,
+        enabled: () => working || streamingIndicator,
+        run: handleStop,
+      },
+    ])
+  }, [commands, handleOpenModelPicker, handleStop, working, streamingIndicator])
+
   return (
     <section
+      ref={viewRef}
       data-chat-session-id={conversation.id}
       data-chat-session-hydrated={conversation.hydrated}
       className="flex-1 flex flex-col min-w-0 min-h-0"

@@ -23,10 +23,13 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { createSandboxCodeRunnerRenderers } from './src/function-trigger-message'
-import { SandboxPage, createSandboxSessionChip } from './src/page'
+import { createSandboxSessionChip, SandboxPage } from './src/page'
+import { registerSandboxPalette } from './src/page/palette'
 import { createSandboxFamilyRenderer } from './src/sandbox-family'
 
 export default function setup(host: Host) {
+  registerSandboxPalette(host)
+
   const removers = [
     ...createSandboxCodeRunnerRenderers(host).map((renderer) =>
       host.functionTriggers.register(renderer),

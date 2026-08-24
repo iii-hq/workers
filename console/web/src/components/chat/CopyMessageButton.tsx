@@ -32,6 +32,7 @@ export function CopyMessageButton({
   }
   return (
     <button
+      data-message-action="copy"
       type="button"
       onClick={copy}
       className={cn(

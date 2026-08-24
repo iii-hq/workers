@@ -469,6 +469,7 @@ export function FunctionTriggerCard({
       >
         <button
           type="button"
+          data-message-action="toggle"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           className={cn(
@@ -698,6 +699,7 @@ export function FunctionTriggerCard({
             <Button
               variant="primary"
               size="sm"
+              data-message-action="approve"
               onClick={() => void runResolve('approve')}
               disabled={!onApprove || !!submitting}
             >
@@ -706,6 +708,7 @@ export function FunctionTriggerCard({
             <Button
               variant="pill"
               size="sm"
+              data-message-action="deny"
               onClick={() => void runResolve('deny')}
               disabled={!onDeny || !!submitting}
             >

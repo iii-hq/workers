@@ -79,11 +79,18 @@ export function activateTab(state: TabsState, path: string): TabsState {
   return { ...state, active: path }
 }
 
+/** The neighbour in strip order, wrapping at either end. */
+export function cycleTab(state: TabsState, delta: 1 | -1): TabsState {
+  if (state.tabs.length < 2 || state.active === null) return state
+  const index = state.tabs.findIndex((t) => t.path === state.active)
+  if (index === -1) return state
+  const next =
+    state.tabs[(index + delta + state.tabs.length) % state.tabs.length]
+  return { ...state, active: next.path }
+}
+
 /** Restore from persisted state, dropping malformed entries. */
-export function restoreTabs(
-  open: unknown,
-  active: unknown,
-): TabsState {
+export function restoreTabs(open: unknown, active: unknown): TabsState {
   const tabs: OpenTab[] = []
   if (Array.isArray(open)) {
     for (const entry of open) {

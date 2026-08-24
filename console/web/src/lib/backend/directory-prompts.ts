@@ -60,7 +60,10 @@ export function skillBodyWithBaseDir(skill: SkillBody): string {
   // `C:\...\SKILL.md`. A missing separator must fall through to body-only —
   // `slice(0, -1)` would otherwise hand the model a path with its last
   // character shaved off, which is worse than saying nothing.
-  const cut = Math.max(skill.path.lastIndexOf('/'), skill.path.lastIndexOf('\\'))
+  const cut = Math.max(
+    skill.path.lastIndexOf('/'),
+    skill.path.lastIndexOf('\\'),
+  )
   if (cut <= 0) return skill.body
   const dir = skill.path.slice(0, cut)
   return `${skill.body}\n\nSkill base directory: ${dir} — resolve the skill's relative paths (scripts/, reference/, …) against it; keep the working directory at the user's project.`
