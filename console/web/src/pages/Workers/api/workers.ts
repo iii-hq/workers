@@ -86,10 +86,16 @@ export async function mapWithConcurrency<T, R>(
 }
 
 export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
+  // Supervisor and configuration reads are enrichment: an engine without
+  // worker::list (a compose-managed engine, or one booted with no
+  // supervisor) must not blank the whole page - the connected fleet from
+  // engine::workers::list still renders, just without stop/config detail.
   const [engineList, supervisorList, configurations] = await Promise.all([
     fetchEngineWorkersList(),
-    fetchSupervisorWorkersList(),
-    fetchConfigurationIds(),
+    fetchSupervisorWorkersList().catch(
+      (): WorkerListResponse => ({ workers: [] }),
+    ),
+    fetchConfigurationIds().catch((): ConfigurationSchemaView[] => []),
   ])
 
   const connected = engineList.workers.filter(
@@ -100,7 +106,7 @@ export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
     .filter((name, i, arr) => arr.indexOf(name) === i)
 
   const infoEntries = await mapWithConcurrency(names, 8, async (name) => {
-    const info = await fetchEngineWorkerInfo(name)
+    const info = await fetchEngineWorkerInfo(name).catch(() => null)
     return [name, info?.worker ?? null] as const
   })
 
