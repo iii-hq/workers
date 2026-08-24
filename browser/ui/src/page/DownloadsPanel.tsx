@@ -23,6 +23,12 @@ import { Download, MessageSquarePlus, X } from '../lib/icons'
 
 const DOWNLOADS_FEED_FN = 'iii::browser-ui::downloads-feed'
 
+function downloadStatusText(d: BrowserDownload, pct: number): string {
+  if (d.state === 'in_progress') return `Downloading… ${pct}%`
+  if (d.state === 'canceled') return 'Canceled'
+  return formatSize(d.received_bytes)
+}
+
 interface DownloadsPanelProps {
   host: Host
   sessionId: string
@@ -104,11 +110,7 @@ export function DownloadsPanel({
                 {d.file_name}
               </span>
               <span className="br-ui-download-meta">
-                {d.state === 'in_progress'
-                  ? `Downloading… ${pct}%`
-                  : d.state === 'canceled'
-                    ? 'Canceled'
-                    : formatSize(d.received_bytes)}
+                {downloadStatusText(d, pct)}
                 <span aria-hidden> · </span>
                 {formatTime(Math.floor(d.started_ms / 1000))}
               </span>

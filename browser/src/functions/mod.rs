@@ -35,7 +35,6 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
-use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::css as cdp_css;
 use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
 use chromiumoxide::cdp::browser_protocol::input;
@@ -368,6 +367,15 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 
 fn handler_err(msg: impl Into<String>) -> Error {
     Error::Handler(msg.into())
+}
+
+/// Download guids are used as file names under the session's download dir;
+/// reject anything that could escape it before it reaches the filesystem.
+fn ensure_safe_guid(guid: &str) -> Result<(), Error> {
+    if guid.contains(['/', '\\']) || guid.contains("..") {
+        return Err(handler_err("download guids never contain path parts"));
+    }
+    Ok(())
 }
 
 /// `scheme://host[:port]` of a url, for the storage origin. None for
@@ -1808,6 +1816,7 @@ fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let dir = dir.ok_or_else(|| {
                     handler_err("this session does not own downloads (attached session)")
                 })?;
+                ensure_safe_guid(&req.guid)?;
                 let bytes = std::fs::read(dir.join(&req.guid))
                     .map_err(|e| handler_err(format!("read download failed: {e}")))?;
                 Ok::<_, Error>(downloads::DownloadOutput {
@@ -1830,6 +1839,16 @@ fn register_download_remove(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                // Only a guid the session actually recorded names a file the
+                // worker wrote; anything else must not reach the filesystem.
+                let known = {
+                    let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
+                    downloads.iter().any(|d| d.guid == req.guid)
+                };
+                if !known {
+                    return Err(handler_err(format!("no download '{}'", req.guid)));
+                }
+                ensure_safe_guid(&req.guid)?;
                 if let Some(dir) = &session.downloads_dir {
                     let _ = std::fs::remove_file(dir.join(&req.guid));
                 }

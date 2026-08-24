@@ -128,6 +128,10 @@ pub struct HistoryVisit {
 /// How many navigations a session keeps for the history panel.
 const HISTORY_CAP: usize = 200;
 
+/// How many downloads a session keeps; the oldest record and its file are
+/// dropped past this, like the other per-session buffers.
+const DOWNLOADS_CAP: usize = 100;
+
 /// A download Chromium started, tracked by its CDP guid.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct DownloadRecord {
@@ -405,6 +409,15 @@ impl Session {
             total_bytes: 0,
             started_ms: now_ms(),
         });
+        if downloads.len() > DOWNLOADS_CAP {
+            let overflow = downloads.len() - DOWNLOADS_CAP;
+            let evicted: Vec<DownloadRecord> = downloads.drain(0..overflow).collect();
+            if let Some(dir) = &self.downloads_dir {
+                for record in evicted {
+                    let _ = std::fs::remove_file(dir.join(&record.guid));
+                }
+            }
+        }
     }
 
     /// Update a download's progress and state by guid.
