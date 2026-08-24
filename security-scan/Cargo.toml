@@ -2,7 +2,7 @@
 
 [package]
 name = "security-scan"
-version = "0.1.0-experimental"
+version = "0.1.1-experimental"
 edition = "2021"
 publish = false
 
