@@ -106,7 +106,6 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
           </span>
         </fieldset>
         <DropdownMenuSeparator />
-        <DropdownMenuSeparator />
         {row('Show device toolbar', 'toggleDeviceToolbar')}
         {row('Take a screenshot', 'takeScreenshot')}
         {row('Screenshot to chat', 'screenshotToChat', {

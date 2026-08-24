@@ -696,8 +696,11 @@ export function SessionView({
   const copyCookies = useCallback(() => {
     void (async () => {
       try {
+        if (!navigator.clipboard) {
+          throw new Error('clipboard unavailable in this context')
+        }
         const cookies = await listBrowserCookies(host.iii, sessionId)
-        await navigator.clipboard?.writeText(JSON.stringify(cookies, null, 2))
+        await navigator.clipboard.writeText(JSON.stringify(cookies, null, 2))
         setActionError(`copied ${cookies.length} cookies to the clipboard`)
       } catch (err) {
         setActionError(errorMessage(err))

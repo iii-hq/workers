@@ -1821,6 +1821,7 @@ fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::cookies::set")?;
                 session.touch();
                 let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let count = req.cookies.len();
@@ -1862,6 +1863,7 @@ fn register_cookies_clear(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::cookies::clear")?;
                 session.touch();
                 session
                     .page

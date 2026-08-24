@@ -305,7 +305,7 @@ export function BrowserPage({
           title: 'Toggle device toolbar',
           detail: 'Pin the viewport to a device size',
           keywords: ['device', 'responsive', 'mobile', 'viewport', 'width'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.toggleDeviceToolbar(),
         },
         {
@@ -313,7 +313,7 @@ export function BrowserPage({
           title: 'Import cookies',
           detail: 'Load a JSON or Netscape cookie file into the session',
           keywords: ['cookies', 'import', 'auth', 'session'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.importCookies(),
         },
         {
@@ -321,7 +321,7 @@ export function BrowserPage({
           title: 'Copy cookies',
           detail: 'Copy the session cookies as JSON',
           keywords: ['cookies', 'export', 'copy'],
-          enabled: () => selected !== null,
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.copyCookies(),
         },
         {

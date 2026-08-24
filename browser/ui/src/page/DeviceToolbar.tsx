@@ -86,7 +86,7 @@ interface DeviceToolbarProps {
 
 function parseDimension(value: string): number | null {
   const n = Number(value)
-  return Number.isFinite(n) ? n : null
+  return Number.isInteger(n) && n > 0 ? n : null
 }
 
 export function DeviceToolbar({
