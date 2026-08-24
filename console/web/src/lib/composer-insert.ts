@@ -6,7 +6,11 @@
  * the moment one subscribes, so a pick never disappears silently.
  */
 
-/** A bus that holds what it cannot deliver yet, and drains on subscribe. */
+/** A bus that holds what it cannot deliver yet, and drains on subscribe.
+ * The buffer is bounded: with no listener the oldest entries fall off, so
+ * a page publishing into a never-opened composer cannot grow memory. */
+const PENDING_CAP = 16
+
 function bufferedBus<T>() {
   const listeners = new Set<(value: T) => void>()
   let pending: T[] = []
@@ -14,6 +18,7 @@ function bufferedBus<T>() {
     publish(value: T): void {
       if (listeners.size === 0) {
         pending.push(value)
+        if (pending.length > PENDING_CAP) pending.shift()
         return
       }
       for (const listener of listeners) listener(value)
