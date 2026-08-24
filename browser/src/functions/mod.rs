@@ -83,8 +83,8 @@ pub const SCREENSHOT_DESC: &str =
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
     "Interact with the page: click (left/right/middle, single or double), hover, type, press, \
-     or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or \
-     raw viewport coordinates.";
+     scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with \
+     a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -773,6 +773,58 @@ async fn dispatch_hover(session: &Session, x: f64, y: f64) -> Result<(), Error> 
     Ok(())
 }
 
+/// Press at (x1, y1), glide to (x2, y2) over a few steps, release. The
+/// interpolated moves make the drag read as a real gesture so listeners that
+/// track pointer movement (drawing surfaces, sliders) follow it.
+async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) -> Result<(), Error> {
+    use input::{DispatchMouseEventParams, DispatchMouseEventType, MouseButton};
+    let send = |params| async {
+        session
+            .page
+            .execute(params)
+            .await
+            .map_err(|e| handler_err(format!("mouse event failed: {e}")))?;
+        Ok::<(), Error>(())
+    };
+    let moved = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseMoved)
+        .x(x1)
+        .y(y1)
+        .build()
+        .map_err(handler_err)?;
+    send(moved).await?;
+    let pressed = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MousePressed)
+        .x(x1)
+        .y(y1)
+        .button(MouseButton::Left)
+        .click_count(1)
+        .build()
+        .map_err(handler_err)?;
+    send(pressed).await?;
+    const STEPS: i64 = 8;
+    for step in 1..=STEPS {
+        let t = step as f64 / STEPS as f64;
+        let step_move = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseMoved)
+            .x(x1 + (x2 - x1) * t)
+            .y(y1 + (y2 - y1) * t)
+            .button(MouseButton::Left)
+            .build()
+            .map_err(handler_err)?;
+        send(step_move).await?;
+    }
+    let released = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseReleased)
+        .x(x2)
+        .y(y2)
+        .button(MouseButton::Left)
+        .click_count(1)
+        .build()
+        .map_err(handler_err)?;
+    send(released).await
+}
+
 fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -892,9 +944,19 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
                         format!("scrolled {delta_y:.0}px")
                     }
+                    "drag" => {
+                        let (x1, y1) = action_point(&session, &req).await?;
+                        let (x2, y2) = match (req.x2, req.y2) {
+                            (Some(x), Some(y)) => (x, y),
+                            _ => return Err(handler_err("drag needs x2 and y2")),
+                        };
+                        dispatch_drag(&session, x1, y1, x2, y2).await?;
+                        move_ghost_cursor(&session, x2, y2, true).await;
+                        format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
+                    }
                     other => {
                         return Err(handler_err(format!(
-                            "unknown action '{other}' (click, hover, type, press, scroll)"
+                            "unknown action '{other}' (click, hover, type, press, scroll, drag)"
                         )))
                     }
                 };

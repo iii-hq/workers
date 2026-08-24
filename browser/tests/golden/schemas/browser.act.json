@@ -1,6 +1,6 @@
 {
   "function_id": "browser::act",
-  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
+  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ActInput",
@@ -11,7 +11,7 @@
     ],
     "properties": {
       "action": {
-        "description": "`click`, `hover`, `type`, `press`, or `scroll`.",
+        "description": "`click`, `hover`, `type`, `press`, `scroll`, or `drag`.",
         "type": "string"
       },
       "button": {
@@ -77,8 +77,26 @@
         ],
         "format": "double"
       },
+      "x2": {
+        "description": "Drag end x, in viewport pixels (`drag`). The start is `x`/`y` or a `ref`; the end is `x2`/`y2`.",
+        "default": null,
+        "type": [
+          "number",
+          "null"
+        ],
+        "format": "double"
+      },
       "y": {
         "description": "Viewport y, when acting by coordinates instead of ref.",
+        "default": null,
+        "type": [
+          "number",
+          "null"
+        ],
+        "format": "double"
+      },
+      "y2": {
+        "description": "Drag end y, in viewport pixels (`drag`).",
         "default": null,
         "type": [
           "number",
