@@ -126,6 +126,12 @@ rules:
   - '!eval::step'
   - '!eval::on-turn-completed'
   - '!eval::sweep'
+  # security-scan: durable queue, cron, and Harness callback targets trust
+  # private State checkpoints or operator configuration. Agents must use the
+  # report-only request/list/read surface.
+  - '!security-scan::execute'
+  - '!security-scan::on-turn-completed'
+  - '!security-scan::on-schedule'
   # The shaping hop for a trigger bound to an ordinary function: the engine
   # fires it, agents never call it. Agents name their real target in
   # engine::register_trigger's `function_id`, which is checked against the

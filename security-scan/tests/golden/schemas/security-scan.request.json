@@ -1,0 +1,73 @@
+{
+  "description": "Queue a report-only security review for an operator-configured repository at an exact 40-character Git commit SHA. Duplicate repository, commit, and mode requests return the same run id.",
+  "function_id": "security-scan::request",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ScanModeV1": {
+        "enum": [
+          "scan",
+          "suggest"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "mode": {
+        "$ref": "#/definitions/ScanModeV1"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "target_sha": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "mode",
+      "repository",
+      "target_sha"
+    ],
+    "title": "SecurityScanRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "deduplicated": {
+        "type": "boolean"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatusV1"
+      }
+    },
+    "required": [
+      "deduplicated",
+      "run_id",
+      "status"
+    ],
+    "title": "SecurityScanResponseV1",
+    "type": "object"
+  }
+}

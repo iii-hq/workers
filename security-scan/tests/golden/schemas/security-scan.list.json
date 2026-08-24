@@ -1,0 +1,179 @@
+{
+  "description": "List security-scan runs as sanitized lightweight summaries, newest update first. Optional repository and status filters are applied before the bounded result limit.",
+  "function_id": "security-scan::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "limit": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "repository": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RunStatusV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "title": "SecurityScanListRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "PublicRunSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunErrorV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finding_count": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/definitions/ScanModeV1"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/RunStatusV1"
+          },
+          "target_sha": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempt",
+          "created_at",
+          "finding_count",
+          "mode",
+          "repository",
+          "run_id",
+          "status",
+          "target_sha",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "RunErrorV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ScanModeV1": {
+        "enum": [
+          "scan",
+          "suggest"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "runs": {
+        "items": {
+          "$ref": "#/definitions/PublicRunSummaryV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "runs"
+    ],
+    "title": "SecurityScanListResponseV1",
+    "type": "object"
+  }
+}

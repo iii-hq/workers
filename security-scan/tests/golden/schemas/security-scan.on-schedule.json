@@ -1,0 +1,87 @@
+{
+  "description": "Internal UTC cron target that uses invocation metadata only to look up an operator-configured repository schedule, resolves its local Git ref at fire time, and queues the exact commit through security-scan::request.",
+  "function_id": "security-scan::on-schedule",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Payload emitted by the iii cron trigger. Its values are observability data only; the handler resolves all scan inputs from operator configuration.",
+    "properties": {
+      "actual_time": {
+        "type": "string"
+      },
+      "job_id": {
+        "type": "string"
+      },
+      "scheduled_time": {
+        "type": "string"
+      },
+      "trigger": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "actual_time",
+      "job_id",
+      "scheduled_time",
+      "trigger"
+    ],
+    "title": "SecurityScanScheduleEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ScanModeV1": {
+        "enum": [
+          "scan",
+          "suggest"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "deduplicated": {
+        "type": "boolean"
+      },
+      "mode": {
+        "$ref": "#/definitions/ScanModeV1"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatusV1"
+      },
+      "target_sha": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "deduplicated",
+      "mode",
+      "repository",
+      "run_id",
+      "status",
+      "target_sha"
+    ],
+    "title": "SecurityScanScheduleResponseV1",
+    "type": "object"
+  }
+}

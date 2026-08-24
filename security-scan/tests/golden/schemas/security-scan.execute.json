@@ -1,0 +1,74 @@
+{
+  "description": "Internal durable queue step for target materialization and read-only Harness dispatch.",
+  "function_id": "security-scan::execute",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "attempt": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "attempt",
+      "repository",
+      "run_id",
+      "step"
+    ],
+    "title": "EnqueueRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "skipped": {
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatusV1"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "skipped",
+      "status",
+      "step"
+    ],
+    "title": "ExecuteResponseV1",
+    "type": "object"
+  }
+}

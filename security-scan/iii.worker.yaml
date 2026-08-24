@@ -1,0 +1,28 @@
+iii: v1
+name: security-scan
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: security-scan
+tags: [security, scanning, code-review, supply-chain, git]
+description: Report-only security reviews of operator-configured repositories at immutable Git commits, dispatched through a read-only Harness policy.
+
+config:
+  repositories: []
+  analysis:
+    model: ""
+    max_turns: 4
+    max_output_tokens: 8000
+    max_total_tokens: 50000
+    max_cost_usd: 2.0
+
+dependencies:
+  github: "^0.3.0"
+  cron: "^0.21.4"
+  state: "^0.22.0"
+  queue: "^0.21.3"
+  worktree: "^0.3.0"
+  configuration: "^0.21.6"
+  iii-observability: "^0.21.6"
+  iii-stream: "^0.21.6"
