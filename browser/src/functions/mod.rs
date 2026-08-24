@@ -437,6 +437,16 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| "about:blank".to_string());
+                let title = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    session.page.get_title(),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .flatten()
+                .unwrap_or_default();
+                session.record_visit(&url, &title);
                 sx.emitter
                     .emit(
                         EventKind::SessionStarted,

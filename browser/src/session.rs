@@ -1499,6 +1499,44 @@ async fn spawn_event_pumps(
         }));
     }
 
+    // same-document navigations (hash routes, pushState): single-page apps
+    // move this way, so they count as visits and emit the same event
+    if let Ok(mut events) = page
+        .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventNavigatedWithinDocument>(
+        )
+        .await
+    {
+        let s = session.clone();
+        let sx = sessions.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                let main_frame = s.page.mainframe().await.ok().flatten();
+                if main_frame.is_some_and(|id| id != event.frame_id) {
+                    continue;
+                }
+                let title =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), s.page.get_title())
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                        .unwrap_or_default();
+                s.record_visit(&event.url, &title);
+                sx.emitter
+                    .emit(
+                        EventKind::Navigated,
+                        &s.id,
+                        &NavigatedEvent {
+                            session_id: s.id.clone(),
+                            url: event.url.clone(),
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+            }
+        }));
+    }
+
     // screencast frames: keep only the newest, ack every frame so Chromium
     // keeps pushing
     if let Ok(mut events) = page
