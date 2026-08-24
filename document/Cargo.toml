@@ -2,7 +2,7 @@
 
 [package]
 name = "document"
-version = "0.1.1-experimental"
+version = "0.1.2"
 edition = "2021"
 description = "Document worker for iii — convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF to markdown on the machine, detect the format from the bytes, and pull out embedded images (document::* functions)"
 license = "Apache-2.0"
