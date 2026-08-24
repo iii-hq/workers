@@ -115,8 +115,8 @@ const PICKED_FN = 'iii::browser-ui::picked'
 const TOOL_HINTS: Record<AnnotationTool, string> = {
   pin: 'Click a spot to drop a numbered pin.',
   select: 'Click an element to box it, labelled with its selector.',
-  rect: 'Drag a rectangle around a region.',
-  arrow: 'Drag from tail to head to point at something.',
+  rect: 'Drag a rectangle, then add a note to it.',
+  arrow: 'Drag from tail to head, then add a note to it.',
 }
 const SHAPE_COLORS = [
   '#e5484d',
@@ -453,15 +453,17 @@ export function SessionView({
           const id = drawingIdRef.current
           drawingIdRef.current = null
           if (!id) return
-          setAnnotations((list) => {
-            const s = list.find((a) => a.id === id)
-            if (!s) return list
-            const w = Math.abs((s.x2 ?? s.x) - s.x)
-            const h = Math.abs((s.y2 ?? s.y) - s.y)
-            return w < MIN_SHAPE_SIZE && h < MIN_SHAPE_SIZE
-              ? list.filter((a) => a.id !== id)
-              : list
-          })
+          const shape = annotationsRef.current.find((a) => a.id === id)
+          if (!shape) return
+          const w = Math.abs((shape.x2 ?? shape.x) - shape.x)
+          const h = Math.abs((shape.y2 ?? shape.y) - shape.y)
+          if (w < MIN_SHAPE_SIZE && h < MIN_SHAPE_SIZE) {
+            setAnnotations((list) => list.filter((a) => a.id !== id))
+            return
+          }
+          // A finished box or arrow opens its note editor, like a dropped
+          // pin, so a mark and its message are one gesture.
+          setSelectedAnnotation(id)
         },
         annotations,
         selectedId: selectedAnnotation,
@@ -1384,12 +1386,12 @@ export function SessionView({
                     {
                       value: 'rect',
                       label: 'Box',
-                      title: 'Drag a rectangle around a region',
+                      title: 'Drag a rectangle, then add a note',
                     },
                     {
                       value: 'arrow',
                       label: 'Arrow',
-                      title: 'Drag to point an arrow at something',
+                      title: 'Drag an arrow, then add a note',
                     },
                   ]}
                   className="br-ui-tabs"
