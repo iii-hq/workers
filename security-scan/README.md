@@ -1,6 +1,6 @@
 # security-scan
 
-`security-scan` accepts manual and operator-scheduled review requests for configured repositories and queues a report-only security analysis of an exact Git commit. It creates an isolated checkout resolved to that commit, constrains Harness to read-only code functions, validates the structured result, and never applies a suggested change.
+`security-scan` accepts manual and operator-scheduled review requests for configured repositories and queues a report-only security analysis of an exact Git commit. It creates an isolated checkout of the **full tree at that commit**, constrains Harness to read-only code functions, validates the structured result, and never applies a suggested change. The SHA is not a commit-diff review and not a scan of git history. Omit `target_sha` (or leave the Console SHA field blank) to analyze the entire repository at HEAD.
 
 ## Install
 
@@ -8,13 +8,14 @@
 iii worker add security-scan
 ```
 
-Analysis also requires the Harness stack to be running. It is a runtime prerequisite rather than a registry dependency so the worker install graph stays within the registry depth limit.
+Analysis requires the Harness stack. GitHub issue and draft fix-PR actions also require `approval-gate` to be live; those mutations stay closed until a user approves each one.
 
 ```bash
 iii worker add harness
+iii worker add approval-gate
 ```
 
-The worker composes existing iii infrastructure rather than implementing local substitutes: private compare-and-set records live in `state`, durable steps run through `queue`, exact checkouts come from `worktree`, configured schedules bind through the `cron` dependency, GitHub source reconciliation calls the existing `github::api` function, and analysis runs through `harness`.
+The worker composes existing iii infrastructure rather than implementing local substitutes: private compare-and-set records live in `state`, durable steps run through `queue`, exact checkouts come from `worktree`, configured schedules bind through the `cron` dependency, analysis runs through `harness`, and GitHub publication is held by `approval-gate`.
 
 ## Quickstart
 
@@ -24,7 +25,8 @@ Request a scan using a configured repository id and a full commit SHA:
 iii trigger security-scan::request \
   repository=iii-hq/iii \
   target_sha="$(git -C /srv/repos/iii rev-parse HEAD)" \
-  mode=scan
+  mode=scan \
+  model=deepseek::deepseek-v4-flash
 ```
 
 The request returns immediately:
@@ -37,7 +39,7 @@ The request returns immediately:
 }
 ```
 
-Submitting the same repository, commit, and mode again returns the same run id with `deduplicated: true`. A retryable failed run is restarted as a new attempt under that same id. If the first queue wake fails, the durable queued checkpoint remains available to the recovery sweep. Use `mode=suggest` to include minimal patch suggestions in the report; suggestions remain text and are never applied.
+Submitting the same repository, commit, mode, and model again returns the same run id with `deduplicated: true`. Omit `target_sha` to resolve HEAD and analyze the entire repository. Omit `model` to use the operator `analysis.model` (and its provider). A Console scan from the sidebar runs on the model picked in its analysis-model control; that picker defaults to following the composer catalog id of the open chat, such as `deepseek::deepseek-v4-flash`. A retryable failed run is restarted as a new attempt under that same id. If the first queue wake fails, the durable queued checkpoint remains available to the recovery sweep. Use `mode=suggest` to include minimal patch suggestions in the report; suggestions remain text and are never applied.
 
 Read the current status or completed report:
 
@@ -66,7 +68,9 @@ iii trigger security-scan::list repository=iii-hq/iii status=completed limit=50
 
 ## Console page
 
-When `security-scan` and Console are connected, open `#/ext/security-scan` to browse persisted run history and inspect a selected report. The page shows the exact repository and commit, current pipeline status, evidence and remediation for each finding, and suggested patches in `suggest` mode. Suggested patches remain read-only.
+When `security-scan` and Console are connected, open `#/ext/security-scan` to browse persisted run history and inspect a selected report. The page shows the exact repository and commit, current pipeline status, evidence and remediation for each finding, and suggested patches in `suggest` mode. Suggested patches remain read-only until you explicitly create a draft fix PR and approve the GitHub mutation. The sidebar form reviews the full tree at the pasted SHA. Its analysis-model picker lists the live router catalog and pins one model for the scan; left on `follow chat` it takes the model selected in the open chat composer, and falls back to the operator `analysis.model` when that chat has none. The catalog is re-read on the router's `router::models::changed` fan-out, so a credential added or a provider removed updates the list without a reload.
+
+Each Harness finding can start an approval-gated GitHub issue. Completed `suggest` findings that include a patch can also start an isolated draft fix PR. GitHub reconciliation alerts are a separate snapshot and cannot start exact-commit Harness actions.
 
 Run updates arrive through the `security-scan:runs` stream. The stream is a refresh doorbell rather than the source of truth: each frame makes the page refetch `security-scan::list` and `security-scan::read`. Nothing is polled. The page re-reads on three other events instead — the socket reconnecting, the tab becoming visible, and the refresh control — so a dropped frame delays convergence until the next event rather than stranding the view.
 
@@ -104,24 +108,47 @@ analysis:
   max_output_tokens: 8000  # ceiling for one generation
   max_total_tokens: 50000  # ceiling for the complete review
   max_cost_usd: 2.0        # optional spend ceiling
+archive:                   # optional; JSON copies of run records in `storage`
+  bucket: security-scan    # worker-facing bucket name
+  prefix: runs             # object key prefix, default runs/
 ```
 
 The shipped configuration leaves `analysis.model` empty and `repositories: []` unchanged. Set a model and at least one repository before requesting a scan; the empty repository allowlist rejects every request.
 
-`github.full_name` is optional so existing local-only repositories remain valid, but it must be configured explicitly as `owner/name` before refresh is enabled for that repository. The `github` worker's existing `github::api` function needs an authenticated GitHub CLI session or `GH_TOKEN` with permission to read Dependabot and code-scanning alerts for the mapped repository. The scanner normalizes those REST responses locally. Authentication, permission, and disabled-feature failures are stored only as sanitized source statuses; credentials and raw dependency payloads are never persisted or returned.
+`github.full_name` is optional so existing local-only repositories remain valid, but it must be configured explicitly as `owner/name` before refresh is enabled for that repository. The `github` worker needs an authenticated GitHub CLI session or `GH_TOKEN` with permission to read Dependabot and code-scanning alerts for the mapped repository. Authentication, permission, and disabled-feature failures are stored only as sanitized source statuses; credentials and raw dependency payloads are never persisted or returned.
 
 Each repository has at most one schedule, so the repository id is also its unique schedule identity. The expression must use six fields starting with seconds, with an optional seventh year field. Cron evaluation is UTC. Fires missed while `cron` or `security-scan` is stopped are skipped and are not replayed.
 
 At fire time the internal handler uses trigger metadata only to find this operator-owned configuration. It resolves `target_ref` with a bounded local `git rev-parse` call, does not fetch, requires one lowercase full 40-character commit SHA, and submits that SHA through the same `security-scan::request` path used manually. Repeated fires that resolve to the same repository, commit, and mode therefore return the existing run instead of creating duplicate work.
 
-Configuration is loaded at worker startup in this MVP. Restart `security-scan` after changing repositories, GitHub mappings, schedules, or analysis settings. The worker manifest starts `github` and `cron` as dependencies. If a manually assembled stack starts `security-scan` before a cron trigger owner is available, manual scans remain available and the recovery loop binds each configured schedule once `cron` appears.
+Configuration is loaded at worker startup in this MVP. Restart `security-scan` after changing repositories, GitHub mappings, schedules, analysis settings, or archive settings. The worker manifest starts `github` and `cron` as dependencies. If a manually assembled stack starts `security-scan` before a cron trigger owner is available, manual scans remain available and the recovery loop binds each configured schedule once `cron` appears.
+
+## Persistence
+
+The Console Scan runs list is served from `state`. Point that worker at a file-backed or Redis adapter so history survives engine restarts. `store_method: in_memory` drops every run on shutdown.
+
+Optional JSON copies of each run record are written through `storage::putObject` when `archive.bucket` is set. On boot, missing runs are imported from that bucket into `state` using `storage::getObject` and `runs/manifest.json` (`storage` does not list objects). Configure the bucket on the `storage` worker first:
+
+```yaml
+providers:
+  local:
+    data_dir: ./data/storage
+buckets:
+  security-scan:
+    provider: local
+    bucket: security-scan
+```
+
+The local provider spawns a rustfs sidecar (`iii worker add storage`). Set `$RUSTFS_BIN` or put `rustfs` on `PATH`. JSON copies are a backup; the Console Scan runs list still comes from `state`.
 
 ## Safety boundary
 
-The worker accepts only 40-character commit SHAs and verifies the materialized checkout matches the requested commit. Scanner checkouts use the existing `worktree::create` contract; keep the Worktree worker's default `provision.copy_ignored: false` so local `.env`, dependency, and cache files are not copied into the review scope. The Harness turn can discover function contracts and call only `coder::info`, `coder::tree`, `coder::list-folder`, `coder::read-file`, and `coder::search`. It cannot run repository code, access the network, mutate files, update state, or start another agent.
+The worker accepts only 40-character commit SHAs, verifies the materialized checkout matches the requested commit, and disables ignored-file provisioning for scanner worktrees so local `.env`, dependency, and cache files are not copied into the review scope. The Harness scan turn can discover function contracts and call only `coder::info`, `coder::tree`, `coder::list-folder`, `coder::read-file`, and `coder::search`. It cannot run repository code, access the network, mutate files, update state, or start another agent.
 
 Dependency sessions use private random identities rather than the public run id. Structured output is rejected if it exposes the internal checkout root or high-confidence credential material. Terminal scanner worktrees are removed through the existing `worktree` worker.
 
-The public MVP exposes `security-scan::request`, `security-scan::read`, `security-scan::list`, and `security-scan::reconciliation`. `security-scan::execute`, `security-scan::on-turn-completed`, and `security-scan::on-schedule` are internal worker functions. This phase does not expose apply, commit, push, comment, review, merge, or alert-dismissal functions.
+GitHub issue and draft fix-PR actions use a separate Harness session after an explicit user request. Issue sessions may call only `github::issue::create`. Fix sessions use an exact-SHA worktree with scoped file writes, explicit git commands, and `github::pr::create`. Both require `approval::gate` to be live; GitHub publication, branch push, and PR creation stay held until the user approves them. Fix PRs open as drafts and never merge automatically.
+
+The public MVP exposes `security-scan::request`, `security-scan::read`, `security-scan::list`, `security-scan::reconciliation`, `security-scan::action`, and `security-scan::action-read`. `security-scan::execute`, `security-scan::action-execute`, `security-scan::on-turn-completed`, and `security-scan::on-schedule` are internal worker functions. Scan analysis still does not apply, commit, push, comment, review, merge, or dismiss alerts on its own.
 
 This first phase is the bounded investigation layer. A later phase will feed it deterministic, pinned SAST, dependency, and secret-scanner candidates before Harness analysis, following the same candidate-discovery then evidence-review split used by DeepSec.

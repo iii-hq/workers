@@ -1,0 +1,40 @@
+{
+  "description": "Commit the current fix action through its checkout-bound capability.",
+  "function_id": "security-scan::action-commit",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "action_id": {
+        "type": "string"
+      },
+      "capability": {
+        "type": "string"
+      },
+      "message": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action_id",
+      "capability",
+      "message"
+    ],
+    "title": "ActionCommitRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "commit_sha": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "commit_sha"
+    ],
+    "title": "ActionCommitResponseV1",
+    "type": "object"
+  }
+}

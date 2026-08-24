@@ -1341,6 +1341,7 @@ version = "0.1.0-experimental"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "clap",
  "cron",
  "iii-console-ui",

@@ -63,6 +63,12 @@ export const SearchIcon = (props: IconProps) => (
   </Icon>
 )
 
+export const ChatIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" />
+  </Icon>
+)
+
 export const DownloadIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M12 3v12" />

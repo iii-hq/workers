@@ -24,8 +24,16 @@ impl ScanModeV1 {
 #[serde(deny_unknown_fields)]
 pub struct SecurityScanRequestV1 {
     pub repository: String,
+    /// Exact 40-character commit SHA. Omit or leave empty to analyze the entire repository at HEAD.
+    #[serde(default)]
     pub target_sha: String,
     pub mode: ScanModeV1,
+    /// Catalog model id from the Console composer. Omitted requests use operator `analysis.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Optional explicit provider. Omitted when `model` is a catalog id such as `deepseek::…`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Metadata injected by the iii engine. It is accepted on the wire but is
     /// not part of the public function schema or the request identity.
     #[serde(rename = "_caller_worker_id", default, skip_serializing)]
@@ -39,19 +47,38 @@ impl SecurityScanRequestV1 {
             repository,
             target_sha,
             mode,
+            model: None,
+            provider: None,
             _caller_worker_id: None,
         }
     }
 
     pub(crate) fn normalize(mut self) -> Result<Self, SecurityScanError> {
-        if self.target_sha.len() != 40
-            || !self.target_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+        self.target_sha = self.target_sha.trim().to_ascii_lowercase();
+        if !self.target_sha.is_empty()
+            && (self.target_sha.len() != 40
+                || !self.target_sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
         {
             return Err(SecurityScanError::InvalidRequest(
                 "target_sha must be an immutable 40-character Git commit SHA".into(),
             ));
         }
-        self.target_sha.make_ascii_lowercase();
+        if let Some(model) = self.model.as_mut() {
+            *model = model.trim().to_string();
+            if model.is_empty() {
+                return Err(SecurityScanError::InvalidRequest(
+                    "model cannot be empty when set".into(),
+                ));
+            }
+        }
+        if let Some(provider) = self.provider.as_mut() {
+            *provider = provider.trim().to_string();
+            if provider.is_empty() {
+                return Err(SecurityScanError::InvalidRequest(
+                    "provider cannot be empty when set".into(),
+                ));
+            }
+        }
         Ok(self)
     }
 }
@@ -100,7 +127,15 @@ pub struct RunRecordV1 {
     pub run_id: String,
     pub repository: String,
     pub target_sha: String,
+    /// True when the operator omitted a SHA and the run resolved repository HEAD.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resolved_from_head: bool,
     pub mode: ScanModeV1,
+    /// Catalog model used for Harness analysis. Absent on runs created before per-request models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Opaque private identity for dependency sessions. This field is not
     /// included in the public run projection.
     pub operation_nonce: String,
@@ -206,7 +241,11 @@ pub struct PublicRunV1 {
     pub run_id: String,
     pub repository: String,
     pub target_sha: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resolved_from_head: bool,
     pub mode: ScanModeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub status: RunStatusV1,
     pub attempt: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -226,7 +265,9 @@ impl From<&RunRecordV1> for PublicRunV1 {
             run_id: run.run_id.clone(),
             repository: run.repository.clone(),
             target_sha: run.target_sha.clone(),
+            resolved_from_head: run.resolved_from_head,
             mode: run.mode,
+            model: run.model.clone(),
             status: run.status,
             attempt: run.attempt,
             report: run.report.clone(),
@@ -244,7 +285,11 @@ pub struct PublicRunSummaryV1 {
     pub run_id: String,
     pub repository: String,
     pub target_sha: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resolved_from_head: bool,
     pub mode: ScanModeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub status: RunStatusV1,
     pub attempt: u32,
     pub finding_count: u32,
@@ -262,7 +307,9 @@ impl From<&RunRecordV1> for PublicRunSummaryV1 {
             run_id: run.run_id.clone(),
             repository: run.repository.clone(),
             target_sha: run.target_sha.clone(),
+            resolved_from_head: run.resolved_from_head,
             mode: run.mode,
+            model: run.model.clone(),
             status: run.status,
             attempt: run.attempt,
             finding_count: run
@@ -287,8 +334,58 @@ pub struct SecurityScanReadResponseV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SecurityScanAnalysisChatRequestV1 {
+    pub run_id: String,
+    #[serde(rename = "_caller_worker_id", default, skip_serializing)]
+    #[schemars(skip)]
+    _caller_worker_id: Option<String>,
+}
+
+impl SecurityScanAnalysisChatRequestV1 {
+    pub fn new(run_id: String) -> Self {
+        Self {
+            run_id,
+            _caller_worker_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanAnalysisChatResponseV1 {
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityScanListResponseV1 {
     pub runs: Vec<PublicRunSummaryV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanCancelRequestV1 {
+    pub run_id: String,
+    #[serde(rename = "_caller_worker_id", default, skip_serializing)]
+    #[schemars(skip)]
+    _caller_worker_id: Option<String>,
+}
+
+impl SecurityScanCancelRequestV1 {
+    pub fn new(run_id: String) -> Self {
+        Self {
+            run_id,
+            _caller_worker_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanCancelResponseV1 {
+    pub run_id: String,
+    pub status: RunStatusV1,
+    pub deduplicated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -299,6 +396,18 @@ pub enum SeverityV1 {
     Medium,
     Low,
     Info,
+}
+
+impl SeverityV1 {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Info => "info",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -635,4 +744,218 @@ pub struct TurnCompletedResponseV1 {
     pub woke: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<RunStatusV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityActionKindV1 {
+    Issue,
+    FixPr,
+}
+
+impl SecurityActionKindV1 {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Issue => "issue",
+            Self::FixPr => "fix_pr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityActionStatusV1 {
+    Queued,
+    Preparing,
+    AwaitingApproval,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl SecurityActionStatusV1 {
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanActionRequestV1 {
+    pub run_id: String,
+    pub finding_index: u32,
+    pub action: SecurityActionKindV1,
+    #[serde(rename = "_caller_worker_id", default, skip_serializing)]
+    #[schemars(skip)]
+    _caller_worker_id: Option<String>,
+}
+
+impl SecurityScanActionRequestV1 {
+    pub fn new(run_id: String, finding_index: u32, action: SecurityActionKindV1) -> Self {
+        Self {
+            run_id,
+            finding_index,
+            action,
+            _caller_worker_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanActionResponseV1 {
+    pub action_id: String,
+    pub run_id: String,
+    pub finding_index: u32,
+    pub action: SecurityActionKindV1,
+    pub status: SecurityActionStatusV1,
+    pub deduplicated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanActionReadRequestV1 {
+    pub action_id: String,
+    #[serde(rename = "_caller_worker_id", default, skip_serializing)]
+    #[schemars(skip)]
+    _caller_worker_id: Option<String>,
+}
+
+impl SecurityScanActionReadRequestV1 {
+    pub fn new(action_id: String) -> Self {
+        Self {
+            action_id,
+            _caller_worker_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityScanActionReadResponseV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<PublicActionV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityActionResultV1 {
+    pub url: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityActionRecordV1 {
+    pub schema_version: String,
+    pub action_id: String,
+    pub run_id: String,
+    pub finding_index: u32,
+    pub action: SecurityActionKindV1,
+    pub repository: String,
+    pub target_sha: String,
+    pub github_full_name: String,
+    pub operation_nonce: String,
+    pub status: SecurityActionStatusV1,
+    pub attempt: u32,
+    pub step: u64,
+    #[serde(default)]
+    pub step_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized: Option<MaterializedTargetV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessRunV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<SecurityActionResultV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RunErrorV1>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicActionV1 {
+    pub schema_version: String,
+    pub action_id: String,
+    pub run_id: String,
+    pub finding_index: u32,
+    pub action: SecurityActionKindV1,
+    pub repository: String,
+    pub target_sha: String,
+    pub status: SecurityActionStatusV1,
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<SecurityActionResultV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RunErrorV1>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
+impl From<&SecurityActionRecordV1> for PublicActionV1 {
+    fn from(action: &SecurityActionRecordV1) -> Self {
+        Self {
+            schema_version: action.schema_version.clone(),
+            action_id: action.action_id.clone(),
+            run_id: action.run_id.clone(),
+            finding_index: action.finding_index,
+            action: action.action,
+            repository: action.repository.clone(),
+            target_sha: action.target_sha.clone(),
+            status: action.status,
+            attempt: action.attempt,
+            result: action.result.clone(),
+            error: action.error.clone(),
+            created_at: action.created_at,
+            updated_at: action.updated_at,
+            completed_at: action.completed_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ActionEnqueueRequestV1 {
+    pub action_id: String,
+    pub run_id: String,
+    pub attempt: u32,
+    pub step: u64,
+    #[serde(rename = "_caller_worker_id", default, skip_serializing)]
+    #[schemars(skip)]
+    _caller_worker_id: Option<String>,
+}
+
+impl ActionEnqueueRequestV1 {
+    pub fn new(action_id: String, run_id: String, attempt: u32, step: u64) -> Self {
+        Self {
+            action_id,
+            run_id,
+            attempt,
+            step,
+            _caller_worker_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ActionExecuteResponseV1 {
+    pub skipped: bool,
+    pub status: SecurityActionStatusV1,
+    pub step: u64,
 }

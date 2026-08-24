@@ -37,6 +37,14 @@ mod tests {
         assert!(PAGE_JS.contains("security-scan::list"));
         assert!(PAGE_JS.contains("security-scan::read"));
         assert!(PAGE_JS.contains("security-scan::request"));
+        assert!(PAGE_JS.contains("security-scan::cancel"));
+        assert!(PAGE_JS.contains("start scan"));
+        assert!(PAGE_JS.contains("stop scan"));
+        assert!(PAGE_JS.contains("entire repo analysis"));
+        assert!(PAGE_JS.contains("HEAD ->"));
+        assert!(PAGE_JS.contains("selectConversation"));
+        assert!(PAGE_JS.contains("composerModel"));
+        assert!(PAGE_JS.contains("session::get"));
         assert!(PAGE_JS.contains("security-scan:runs"));
         assert!(!PAGE_JS.contains("state::get"));
         assert!(!PAGE_JS.contains("state::list"));

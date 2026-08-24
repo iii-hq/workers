@@ -49,11 +49,25 @@ pub struct AnalysisConfigV1 {
     pub max_cost_usd: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveConfigV1 {
+    /// Worker-facing `storage` bucket that stores JSON run records.
+    pub bucket: String,
+    /// Object key prefix. Defaults to `runs/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     pub repositories: Vec<RepositoryConfigV1>,
     pub analysis: AnalysisConfigV1,
+    /// Optional `storage` bucket for durable JSON copies of run records.
+    /// History in `state` remains authoritative for the Console list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ArchiveConfigV1>,
 }
 
 impl WorkerConfig {
@@ -118,6 +132,18 @@ impl WorkerConfig {
                 "analysis.max_cost_usd must be finite and positive when set",
             ));
         }
+        if let Some(archive) = &self.archive {
+            if archive.bucket.trim().is_empty() {
+                return Err(invalid("archive.bucket cannot be empty"));
+            }
+            if archive
+                .prefix
+                .as_ref()
+                .is_some_and(|prefix| prefix.contains("..") || prefix.contains('\\'))
+            {
+                return Err(invalid("archive.prefix cannot contain '..' or backslashes"));
+            }
+        }
         Ok(())
     }
 
@@ -132,16 +158,19 @@ pub(crate) fn is_valid_github_full_name(full_name: &str) -> bool {
     let mut parts = full_name.split('/');
     let owner = parts.next().unwrap_or_default();
     let name = parts.next().unwrap_or_default();
-    parts.next().is_none() && is_valid_github_part(owner) && is_valid_github_part(name)
+    parts.next().is_none() && is_valid_github_name(owner) && is_valid_github_name(name)
 }
 
-fn is_valid_github_part(part: &str) -> bool {
-    !part.is_empty()
-        && part != "."
-        && part != ".."
-        && part
+pub(crate) fn is_valid_github_name(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && !value.ends_with('.')
+        && !value.contains("..")
 }
 
 fn validate_schedule(

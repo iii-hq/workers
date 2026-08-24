@@ -13,14 +13,30 @@ pub const ANALYSIS_READ_FUNCTIONS: [&str; 7] = [
     "coder::tree",
 ];
 
+pub const ANALYSIS_DENIED_FUNCTIONS: [&str; 11] = [
+    "shell::*",
+    "state::*",
+    "queue::*",
+    "worktree::*",
+    "harness::*",
+    "github::*",
+    "approval::*",
+    "configuration::*",
+    "storage::*",
+    "database::*",
+    "security-scan::*",
+];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisPlan {
+    pub run_id: Option<String>,
     pub session_id: String,
     pub idempotency_key: String,
     pub filesystem_root: String,
     pub system_prompt: String,
     pub message: String,
     pub allowed_functions: Vec<String>,
+    pub denied_functions: Vec<String>,
     pub output_schema: Value,
     pub model: String,
     pub provider: Option<String>,
@@ -28,6 +44,9 @@ pub struct AnalysisPlan {
     pub max_output_tokens: u64,
     pub max_total_tokens: u64,
     pub max_cost_usd: Option<f64>,
+    /// Analysis sessions auto-approve their jailed read functions. Action
+    /// sessions stay on the Console approval gate.
+    pub unattended: bool,
 }
 
 pub fn build_analysis_plan(
@@ -43,7 +62,9 @@ pub fn build_analysis_plan(
             "Give every verified finding a concrete remediation plan and include a minimal suggested patch when one can be produced safely."
         }
     };
+    let (model, provider) = analysis_routing(run, config);
     AnalysisPlan {
+        run_id: Some(run.run_id.clone()),
         session_id: format!(
             "security-scan-analysis-{}-attempt-{}",
             run.operation_nonce, run.attempt
@@ -74,13 +95,52 @@ pub fn build_analysis_plan(
             .iter()
             .map(|function| (*function).to_string())
             .collect(),
+        denied_functions: ANALYSIS_DENIED_FUNCTIONS
+            .iter()
+            .map(|function| (*function).to_string())
+            .collect(),
         output_schema: serde_json::to_value(schema_for!(SecurityReportV1))
             .expect("security report schema must serialize"),
-        model: config.model.clone(),
-        provider: config.provider.clone(),
+        model,
+        provider,
         max_turns: config.max_turns,
         max_output_tokens: config.max_output_tokens,
         max_total_tokens: config.max_total_tokens,
         max_cost_usd: config.max_cost_usd,
+        unattended: true,
     }
+}
+
+fn analysis_routing(run: &RunRecordV1, config: &AnalysisConfigV1) -> (String, Option<String>) {
+    let selected = run
+        .model
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let mut model = selected.clone().unwrap_or_else(|| config.model.clone());
+    let mut provider = if selected.is_some() {
+        run.provider
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    } else {
+        config.provider.clone()
+    };
+    if provider.is_none() {
+        if let Some((catalog_provider, catalog_id)) = split_catalog_model(&model) {
+            model = catalog_id;
+            provider = Some(catalog_provider);
+        }
+    }
+    (model, provider)
+}
+
+fn split_catalog_model(model: &str) -> Option<(String, String)> {
+    let (provider, id) = model.split_once("::")?;
+    if provider.is_empty() || id.is_empty() {
+        return None;
+    }
+    Some((provider.to_string(), id.to_string()))
 }
