@@ -110,9 +110,10 @@ export function AnnotationLayer({
   // The selected pin's note takes the caret: writing it is the point of
   // selecting a pin. Runs after the pointer handlers, so it wins focus.
   const noteRef = useRef<HTMLInputElement>(null)
+  const canNote = onNote !== undefined
   useEffect(() => {
-    if (selectedId && onNote) noteRef.current?.focus()
-  }, [selectedId, onNote])
+    if (selectedId && canNote) noteRef.current?.focus()
+  }, [selectedId, canNote])
 
   const selectedIndex = annotations.findIndex((a) => a.id === selectedId)
   const selected = selectedIndex >= 0 ? annotations[selectedIndex] : null
