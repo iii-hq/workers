@@ -29,6 +29,7 @@ pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
 pub mod styles;
+pub mod upload;
 pub mod zoom;
 
 use std::sync::Arc;
@@ -53,6 +54,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
+use crate::config::{origin_label, origin_policy_config_key_for, origin_policy_for, WorkerConfig};
 use crate::events::{EventKind, HandoffRequestedEvent, HandoffResolvedEvent, SessionStartedEvent};
 use crate::session::{now_ms, Session, Sessions};
 
@@ -216,6 +218,10 @@ pub const DOWNLOAD_DESC: &str =
 pub const DOWNLOAD_REMOVE_ID: &str = "browser::download::remove";
 pub const DOWNLOAD_REMOVE_DESC: &str =
     "Forget a download and delete its file from the session's download dir.";
+pub const UPLOAD_ID: &str = "browser::upload";
+pub const UPLOAD_DESC: &str =
+    "Attach up to eight base64 files to exactly one input[type=file] selected by CSS. Files are \
+     staged privately for the session and removed when it stops.";
 pub const RESIZE_ID: &str = "browser::resize";
 pub const RESIZE_DESC: &str =
     "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
@@ -338,6 +344,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             DOWNLOAD_REMOVE_ID,
             DOWNLOAD_REMOVE_DESC,
         ),
+        spec::<upload::UploadInput, upload::UploadOutput>(UPLOAD_ID, UPLOAD_DESC),
         spec::<resize::ResizeInput, resize::ResizeOutput>(RESIZE_ID, RESIZE_DESC),
         spec::<cookies::CookiesListInput, cookies::CookiesListOutput>(
             COOKIES_LIST_ID,
@@ -392,6 +399,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_downloads_list(iii, sessions);
     register_download(iii, sessions);
     register_download_remove(iii, sessions);
+    register_upload(iii, sessions);
     register_resize(iii, sessions);
     register_cookies_list(iii, sessions);
     register_cookies_set(iii, sessions);
@@ -450,6 +458,59 @@ fn ensure_writable(session: &Session, what: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum OriginPermission {
+    Access,
+    Downloads,
+    Uploads,
+    Scripting,
+}
+
+impl OriginPermission {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Access => "access",
+            Self::Downloads => "downloads",
+            Self::Uploads => "uploads",
+            Self::Scripting => "scripting",
+        }
+    }
+
+    fn allowed(self, config: &WorkerConfig, url: &str) -> bool {
+        let policy = origin_policy_for(config, url);
+        match self {
+            Self::Access => policy.access,
+            Self::Downloads => policy.downloads,
+            Self::Uploads => policy.uploads,
+            Self::Scripting => policy.scripting,
+        }
+    }
+}
+
+fn check_origin_permission(
+    config: &WorkerConfig,
+    url: &str,
+    permission: OriginPermission,
+) -> Result<(), String> {
+    if permission.allowed(config, url) {
+        return Ok(());
+    }
+    Err(format!(
+        "origin '{}' is denied by {} ({})",
+        origin_label(url),
+        origin_policy_config_key_for(config, url),
+        permission.key()
+    ))
+}
+
+fn ensure_origin_permission(
+    config: &WorkerConfig,
+    url: &str,
+    permission: OriginPermission,
+) -> Result<(), Error> {
+    check_origin_permission(config, url, permission).map_err(handler_err)
+}
+
 fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -458,7 +519,9 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 if let Some(url) = &req.url {
-                    sessions::check_scheme(&sx.config.load(), url).map_err(handler_err)?;
+                    let config = sx.config.load();
+                    sessions::check_scheme(&config, url).map_err(handler_err)?;
+                    ensure_origin_permission(&config, url, OriginPermission::Access)?;
                 }
                 let session = sx
                     .start(req.url, req.headful, req.read_only.unwrap_or(false))
@@ -654,18 +717,25 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let cfg = sx.config.load_full();
                 sessions::check_scheme(&cfg, &req.url).map_err(handler_err)?;
+                ensure_origin_permission(&cfg, &req.url, OriginPermission::Access)?;
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+                let _navigation = session.navigation_lock.lock().await;
+                session.clear_navigation_error();
 
-                session
-                    .page
-                    .goto(req.url.as_str())
-                    .await
-                    .map_err(|e| handler_err(format!("navigation failed: {e}")))?;
+                if let Err(error) = session.page.goto(req.url.as_str()).await {
+                    if let Some(policy_error) = session.take_navigation_error() {
+                        return Err(handler_err(policy_error));
+                    }
+                    return Err(handler_err(format!("navigation failed: {error}")));
+                }
                 let timed_out = timeout(wait, session.page.wait_for_navigation())
                     .await
                     .is_err();
+                if let Some(policy_error) = session.take_navigation_error() {
+                    return Err(handler_err(policy_error));
+                }
 
                 let url = session.page.url().await.ok().flatten().unwrap_or(req.url);
                 let title = session.page.get_title().await.ok().flatten();
@@ -1161,8 +1231,12 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id)?;
                 ensure_writable(&session, "browser::execute")?;
                 session.touch();
-                let cfg = sx.config.load();
+                let cfg = sx.config.load_full();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+                let _navigation = session.navigation_lock.lock().await;
+                let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
+                ensure_origin_permission(&cfg, &page_url, OriginPermission::Scripting)?;
+                session.clear_navigation_error();
 
                 let state_json = {
                     let state = session.exec_state.lock().unwrap_or_else(|p| p.into_inner());
@@ -1176,7 +1250,11 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .return_by_value(true)
                     .build()
                     .map_err(handler_err)?;
+
                 let evaluated = timeout(wait, session.page.execute(params)).await;
+                if let Some(error) = session.take_navigation_error() {
+                    return Err(handler_err(error));
+                }
                 session.touch();
 
                 let current_state = || {
@@ -1440,6 +1518,14 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     max_sessions: cfg.max_sessions,
                     active_sessions,
                     allowed_schemes: cfg.allowed_schemes.clone(),
+                    configured_origin_policies: cfg
+                        .origin_policies
+                        .as_ref()
+                        .map(|policies| policies.len() as u64)
+                        .unwrap_or(0),
+                    default_origin_policy_set: cfg.default_origin_policy.is_some(),
+                    allow_history_access: cfg.allow_history_access,
+                    allow_cookie_import: cfg.allow_cookie_import,
                     attach_enabled: cfg.allow_attach,
                     recording_available,
                     issues,
@@ -1834,6 +1920,11 @@ fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 ensure_writable(&session, "browser::cookies::set")?;
+                if !sx.config.load().allow_cookie_import {
+                    return Err(handler_err(
+                        "browser::cookies::set is denied by allow_cookie_import=false",
+                    ));
+                }
                 session.touch();
                 let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let count = req.cookies.len();
@@ -1959,6 +2050,11 @@ fn register_history_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: history_list::HistoryListInput| {
             let sx = sx.clone();
             async move {
+                if !sx.config.load().allow_history_access {
+                    return Err(handler_err(
+                        "browser::history::list is denied by allow_history_access=false",
+                    ));
+                }
                 let session = get_session(&sx, &req.session_id)?;
                 let visits = session.history.lock().unwrap_or_else(|p| p.into_inner());
                 let out =
@@ -2047,14 +2143,19 @@ fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
-                let (file_name, dir) = {
+                let (file_name, url, dir) = {
                     let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
                     let record = downloads
                         .iter()
                         .find(|d| d.guid == req.guid)
                         .ok_or_else(|| handler_err(format!("no download '{}'", req.guid)))?;
-                    (record.file_name.clone(), session.downloads_dir.clone())
+                    (
+                        record.file_name.clone(),
+                        record.url.clone(),
+                        session.downloads_dir.clone(),
+                    )
                 };
+                ensure_origin_permission(&sx.config.load(), &url, OriginPermission::Downloads)?;
                 let dir = dir.ok_or_else(|| {
                     handler_err("this session does not own downloads (attached session)")
                 })?;
@@ -2116,6 +2217,120 @@ fn register_download_remove(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(DOWNLOAD_REMOVE_DESC),
+    );
+}
+
+fn register_upload(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        UPLOAD_ID,
+        RegisterFunction::new_async(move |req: upload::UploadInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::upload")?;
+                upload::validate_files(&req.files).map_err(handler_err)?;
+                session.touch();
+                let _navigation = session.navigation_lock.lock().await;
+                let config = sx.config.load_full();
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                ensure_origin_permission(&config, &url, OriginPermission::Uploads)?;
+
+                session
+                    .page
+                    .execute(cdp_dom::EnableParams::default())
+                    .await
+                    .map_err(|error| handler_err(format!("enable DOM failed: {error}")))?;
+                let document = session
+                    .page
+                    .execute(cdp_dom::GetDocumentParams::default())
+                    .await
+                    .map_err(|error| handler_err(format!("document read failed: {error}")))?;
+                let selected = session
+                    .page
+                    .execute(cdp_dom::QuerySelectorParams::new(
+                        document.root.node_id,
+                        req.selector.clone(),
+                    ))
+                    .await
+                    .map_err(|error| handler_err(format!("selector failed: {error}")))?;
+                let matches = session
+                    .page
+                    .execute(cdp_dom::QuerySelectorAllParams::new(
+                        document.root.node_id,
+                        req.selector.clone(),
+                    ))
+                    .await
+                    .map_err(|error| handler_err(format!("selector failed: {error}")))?;
+                if matches.node_ids.len() != 1 {
+                    return Err(handler_err(format!(
+                        "selector '{}' matched {} elements; expected exactly one input[type=file]",
+                        req.selector,
+                        matches.node_ids.len()
+                    )));
+                }
+
+                let described = session
+                    .page
+                    .execute(
+                        cdp_dom::DescribeNodeParams::builder()
+                            .node_id(selected.node_id)
+                            .build(),
+                    )
+                    .await
+                    .map_err(|error| handler_err(format!("describe file input failed: {error}")))?;
+                let is_file_input = described.node.node_name.eq_ignore_ascii_case("input")
+                    && described
+                        .node
+                        .attributes
+                        .as_deref()
+                        .unwrap_or_default()
+                        .chunks(2)
+                        .any(|pair| {
+                            pair.len() == 2
+                                && pair[0].eq_ignore_ascii_case("type")
+                                && pair[1].eq_ignore_ascii_case("file")
+                        });
+                if !is_file_input {
+                    return Err(handler_err(format!(
+                        "selector '{}' must match an input[type=file]",
+                        req.selector
+                    )));
+                }
+
+                let file_names: Vec<String> =
+                    req.files.iter().map(|file| file.name.clone()).collect();
+                let staging_dir = session.create_upload_dir().map_err(handler_err)?;
+                let paths = tokio::task::spawn_blocking(move || {
+                    upload::stage_files(&staging_dir, req.files)
+                })
+                .await
+                .map_err(|error| handler_err(format!("stage upload files failed: {error}")))?
+                .map_err(handler_err)?;
+                let path_strings: Vec<String> = paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect();
+                session
+                    .page
+                    .execute(
+                        cdp_dom::SetFileInputFilesParams::builder()
+                            .files(path_strings)
+                            .node_id(selected.node_id)
+                            .build()
+                            .map_err(handler_err)?,
+                    )
+                    .await
+                    .map_err(|error| handler_err(format!("attach upload files failed: {error}")))?;
+                session.touch();
+                Ok::<_, Error>(upload::UploadOutput {
+                    ok: true,
+                    attached: file_names.len(),
+                    file_names,
+                })
+            }
+        })
+        .description(UPLOAD_DESC),
     );
 }
 
@@ -2698,4 +2913,30 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         .description(FRAME_DESC)
         .metadata(json!({ "internal": true })),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{OriginPolicy, OriginPolicyDecision};
+
+    #[test]
+    fn origin_denial_names_the_origin_source_and_permission() {
+        let config = WorkerConfig {
+            origin_policies: Some(std::collections::BTreeMap::from([(
+                "https://x.y".to_string(),
+                OriginPolicy {
+                    access: Some(OriginPolicyDecision::Deny),
+                    ..OriginPolicy::default()
+                },
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        assert_eq!(
+            check_origin_permission(&config, "https://x.y/path", OriginPermission::Access)
+                .unwrap_err(),
+            "origin 'https://x.y' is denied by origin_policies (access)"
+        );
+    }
 }

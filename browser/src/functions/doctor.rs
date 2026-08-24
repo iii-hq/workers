@@ -30,6 +30,10 @@ pub struct DoctorOutput {
     pub max_sessions: u64,
     pub active_sessions: u64,
     pub allowed_schemes: Vec<String>,
+    pub configured_origin_policies: u64,
+    pub default_origin_policy_set: bool,
+    pub allow_history_access: bool,
+    pub allow_cookie_import: bool,
     /// Whether attach mode is enabled (allow_attach).
     pub attach_enabled: bool,
     /// Whether ffmpeg is on PATH, which browser::recording requires.

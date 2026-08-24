@@ -115,6 +115,15 @@ presets), `browser::cookies::list` / `set` / `clear` (import a cookie file),
 panel backing), and `browser::sessions::list` / `browser::sessions::stop`.
 Function ids and schemas live in the code and `iii worker info browser`.
 
+File transfer functions:
+
+| Function | Purpose |
+|---|---|
+| `browser::downloads::list` | List files the session downloaded |
+| `browser::download` | Read one recorded download as base64 |
+| `browser::download::remove` | Delete and forget one recorded download |
+| `browser::upload` | Attach up to eight base64 files to exactly one `input[type=file]` selected by CSS |
+
 Beyond single actions: `browser::execute` runs a multi-step async script in
 the page — top-level await, `log(...)`, `sleep(ms)`, `waitFor(selector)`, and
 a `state` object that persists across execute calls for the session — so one
@@ -346,6 +355,18 @@ browser:
   screenshot_quality: 60    # JPEG quality 1-100
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
+  default_origin_policy:    # omitted fields default to allow
+    access: allow
+    downloads: allow
+    uploads: allow
+    scripting: allow
+  origin_policies:
+    'https://app.example.com:8443':
+      uploads: deny
+    app.example.com:
+      scripting: deny
+  allow_history_access: true
+  allow_cookie_import: true
   allow_attach: false       # true = allow sessions::attach into a running browser's real profile
 
   scrapling:
@@ -373,6 +394,18 @@ worth knowing what that permits: navigation is not checked against a session's
 filesystem scope the way the workers that read files directly are, so anything
 that can reach `browser::navigate` can open any file this process can read.
 Narrow the list on a shared machine.
+
+Origin policy keys do not accept wildcards. An exact origin, including its
+scheme and non-default port, wins over a bare host; a bare host matches any
+scheme or port. Origin keys are URL-normalized before matching, including
+lowercased hosts and removal of explicit default ports; bare-host keys match
+case-insensitively. URLs with no matching key use `default_origin_policy`.
+Each policy field defaults to `allow` when omitted.
+
+Sessions started while any origin policy is configured reload the policy on
+every top-document request, so edits apply to their later navigations. A
+session started with no origin policy does not enable interception; adding the
+first policy later applies the navigation gate to new sessions.
 
 The compatibility fields are part of the stable configuration surface.
 Non-Tier-1 or artifact-free builds retain safe mode and reject compat

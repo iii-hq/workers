@@ -14,6 +14,7 @@ use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::dom;
+use chromiumoxide::cdp::browser_protocol::fetch as cdp_fetch;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::js_protocol::runtime;
@@ -22,7 +23,9 @@ use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{SharedConfig, WorkerConfig};
+use crate::config::{
+    origin_label, origin_policy_config_key_for, origin_policy_for, SharedConfig, WorkerConfig,
+};
 use crate::events::{
     Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, NavigatedEvent,
     PickedElement, PickedEvent, SessionStoppedEvent,
@@ -43,6 +46,32 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn temp_nonce() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn create_private_temp_dir(
+    prefix: &str,
+    owner: &str,
+    nonce: u128,
+) -> std::io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{owner}-{nonce:032x}",
+        std::process::id()
+    ));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path)?;
+    Ok(path)
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -131,6 +160,23 @@ const HISTORY_CAP: usize = 200;
 /// How many downloads a session keeps; the oldest record and its file are
 /// dropped past this, like the other per-session buffers.
 const DOWNLOADS_CAP: usize = 100;
+
+/// How many upload staging directories a session retains while the page may
+/// still read their files.
+const UPLOAD_DIRS_CAP: usize = 16;
+
+fn remove_oldest_upload_dir(upload_dirs: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+    let Some(oldest) = upload_dirs.first() else {
+        return Ok(());
+    };
+    match std::fs::remove_dir_all(oldest) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove oldest upload staging dir failed: {error}")),
+    }
+    upload_dirs.remove(0);
+    Ok(())
+}
 
 /// A download Chromium started, tracked by its CDP guid.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -350,6 +396,11 @@ pub struct Session {
     /// Cross-call state for `browser::execute`; lives until the session
     /// stops.
     pub exec_state: Mutex<serde_json::Value>,
+    /// Serializes explicit navigation, execute, and file-input attachment.
+    pub navigation_lock: tokio::sync::Mutex<()>,
+    /// Loud policy denial captured by the session navigation gate for the
+    /// explicit navigation or execute call currently holding the lock.
+    navigation_error: Mutex<Option<String>>,
     /// Committed top-document navigations, newest last, for the history
     /// panel and address-bar suggestions. Capped like the other buffers.
     pub history: Mutex<Vec<HistoryVisit>>,
@@ -358,6 +409,10 @@ pub struct Session {
     pub downloads: Mutex<Vec<DownloadRecord>>,
     /// Where `allowAndName` writes files (named by guid); removed on stop.
     pub downloads_dir: Option<std::path::PathBuf>,
+    /// File-input staging directories retained while Chromium may still read
+    /// their paths, then removed on stop.
+    upload_dirs: Mutex<Vec<std::path::PathBuf>>,
+    upload_counter: AtomicU64,
     pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -365,6 +420,30 @@ pub struct Session {
 impl Session {
     pub fn touch(&self) {
         self.last_used_ms.store(now_ms() as u64, Ordering::Relaxed);
+    }
+
+    pub fn clear_navigation_error(&self) {
+        *self
+            .navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    pub fn record_navigation_error(&self, error: String) {
+        let mut slot = self
+            .navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    pub fn take_navigation_error(&self) -> Option<String> {
+        self.navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     pub fn viewport(&self) -> (u32, u32) {
@@ -437,13 +516,41 @@ impl Session {
     }
 
     /// Update a download's progress and state by guid.
-    pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) {
+    pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) -> bool {
         let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(record) = downloads.iter_mut().find(|d| d.guid == guid) {
             record.received_bytes = received;
             record.total_bytes = total.max(received);
             record.state = state.to_string();
+            true
+        } else {
+            false
         }
+    }
+
+    pub fn remove_download_file(&self, guid: &str) {
+        if guid.contains(['/', '\\']) || guid.contains("..") {
+            return;
+        }
+        if let Some(dir) = &self.downloads_dir {
+            let _ = std::fs::remove_file(dir.join(guid));
+        }
+    }
+
+    pub fn create_upload_dir(&self) -> Result<std::path::PathBuf, String> {
+        let mut upload_dirs = self
+            .upload_dirs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if upload_dirs.len() >= UPLOAD_DIRS_CAP {
+            remove_oldest_upload_dir(&mut upload_dirs)?;
+        }
+        let sequence = self.upload_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let owner = format!("{}-{sequence}", self.id);
+        let path = create_private_temp_dir("iii-browser-upload", &owner, temp_nonce())
+            .map_err(|error| format!("create upload staging dir failed: {error}"))?;
+        upload_dirs.push(path.clone());
+        Ok(path)
     }
 
     pub fn next_seq(&self) -> u64 {
@@ -590,6 +697,14 @@ impl Session {
                 }
             }
         }
+        for dir in self
+            .upload_dirs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain(..)
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -678,6 +793,7 @@ impl Sessions {
         };
         let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
         let (browser_config, ephemeral_profile) = build_browser_config(&cfg, headless, slot)?;
+        let origin_gate_enabled = origin_gate_configured(&cfg);
 
         let (browser, mut handler) = Browser::launch(browser_config)
             .await
@@ -691,10 +807,12 @@ impl Sessions {
             }
         });
 
-        let page = match browser
-            .new_page(url.as_deref().unwrap_or("about:blank"))
-            .await
-        {
+        let initial_url = if origin_gate_enabled {
+            "about:blank"
+        } else {
+            url.as_deref().unwrap_or("about:blank")
+        };
+        let page = match browser.new_page(initial_url).await {
             Ok(p) => p,
             Err(e) => {
                 handler_task.abort();
@@ -713,22 +831,9 @@ impl Sessions {
         // that refuses leaves downloads disabled, not the session broken.
         // The dir name carries a nonce so it cannot be squatted in advance,
         // and it is created fresh, owner-only, refusing a pre-existing path.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let downloads_dir = std::env::temp_dir().join(format!(
-            "iii-browser-dl-{}-{slot}-{nonce:08x}",
-            std::process::id()
-        ));
-        let mut dir_builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            dir_builder.mode(0o700);
-        }
-        let dir_ok = dir_builder.create(&downloads_dir).is_ok();
-        if dir_ok {
+        let downloads_dir =
+            create_private_temp_dir("iii-browser-dl", &slot.to_string(), temp_nonce()).ok();
+        if let Some(downloads_dir) = &downloads_dir {
             if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
                 .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
                 .download_path(downloads_dir.to_string_lossy().to_string())
@@ -765,19 +870,46 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            navigation_lock: tokio::sync::Mutex::new(()),
+            navigation_error: Mutex::new(None),
             history: Mutex::new(Vec::new()),
             downloads: Mutex::new(Vec::new()),
-            downloads_dir: dir_ok.then(|| downloads_dir.clone()),
+            downloads_dir,
+            upload_dirs: Mutex::new(Vec::new()),
+            upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 
-        let pumps = spawn_event_pumps(self.clone(), session.clone()).await;
+        let pumps =
+            match spawn_event_pumps(self.clone(), session.clone(), origin_gate_enabled).await {
+                Ok(pumps) => pumps,
+                Err(error) => {
+                    session.shutdown().await;
+                    return Err(error);
+                }
+            };
         session
             .tasks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .extend(pumps);
+
+        if origin_gate_enabled {
+            if let Some(url) = url.as_deref() {
+                session.clear_navigation_error();
+                let navigation = session.page.goto(url).await;
+                let policy_error = session.take_navigation_error();
+                if let Some(error) = policy_error {
+                    session.shutdown().await;
+                    return Err(error);
+                }
+                if let Err(error) = navigation {
+                    session.shutdown().await;
+                    return Err(format!("failed to open page: {error}"));
+                }
+            }
+        }
 
         self.lock().insert(id, session.clone());
         Ok(session)
@@ -802,6 +934,7 @@ impl Sessions {
                 cfg.max_sessions
             ));
         }
+        let origin_gate_enabled = origin_gate_configured(&cfg);
 
         let (browser, mut handler) = Browser::connect(cdp_url.clone())
             .await
@@ -820,7 +953,11 @@ impl Sessions {
                 Err(e) => Err(e),
             },
             None => browser
-                .new_page(url.as_deref().unwrap_or("about:blank"))
+                .new_page(if origin_gate_enabled {
+                    "about:blank"
+                } else {
+                    url.as_deref().unwrap_or("about:blank")
+                })
                 .await
                 .map(|p| (p, true))
                 .map_err(|e| format!("failed to open tab: {e}")),
@@ -863,19 +1000,47 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            navigation_lock: tokio::sync::Mutex::new(()),
+            navigation_error: Mutex::new(None),
             history: Mutex::new(Vec::new()),
             downloads: Mutex::new(Vec::new()),
             downloads_dir: None,
+            upload_dirs: Mutex::new(Vec::new()),
+            upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 
-        let pumps = spawn_event_pumps(self.clone(), session.clone()).await;
+        let pumps =
+            match spawn_event_pumps(self.clone(), session.clone(), origin_gate_enabled).await {
+                Ok(pumps) => pumps,
+                Err(error) => {
+                    self.release_adopted_page(&session);
+                    session.shutdown().await;
+                    return Err(error);
+                }
+            };
         session
             .tasks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .extend(pumps);
+
+        if origin_gate_enabled && owns_page {
+            if let Some(url) = url.as_deref() {
+                session.clear_navigation_error();
+                let navigation = session.page.goto(url).await;
+                let policy_error = session.take_navigation_error();
+                if let Some(error) = policy_error {
+                    session.shutdown().await;
+                    return Err(error);
+                }
+                if let Err(error) = navigation {
+                    session.shutdown().await;
+                    return Err(format!("failed to open tab: {error}"));
+                }
+            }
+        }
 
         self.lock().insert(id, session.clone());
         Ok(session)
@@ -963,6 +1128,16 @@ impl Sessions {
         }
     }
 
+    fn release_adopted_page(&self, session: &Session) {
+        if let SessionKind::Attached { owns_page: false } = session.kind {
+            let target = session.page.target_id().as_ref().to_string();
+            self.adopted_targets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&target);
+        }
+    }
+
     /// Remove + shut down. Returns whether the session was running —
     /// stopping an unknown id succeeds (delete semantics: the caller wants
     /// it gone, and it is).
@@ -970,13 +1145,7 @@ impl Sessions {
         let session = self.lock().remove(id);
         match session {
             Some(session) => {
-                if let SessionKind::Attached { owns_page: false } = session.kind {
-                    let target = session.page.target_id().as_ref().to_string();
-                    self.adopted_targets
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&target);
-                }
+                self.release_adopted_page(&session);
                 // Drop any handoff parked on this session so its call
                 // unblocks (its receiver errors) instead of waiting for the
                 // full timeout against a dead page.
@@ -1330,15 +1499,105 @@ fn build_browser_config(
     Ok((builder.build()?, ephemeral))
 }
 
+fn origin_gate_configured(config: &WorkerConfig) -> bool {
+    config.origin_policies.is_some() || config.default_origin_policy.is_some()
+}
+
+fn origin_access_denial(config: &WorkerConfig, url: &str) -> Option<String> {
+    if origin_policy_for(config, url).access {
+        return None;
+    }
+    Some(format!(
+        "origin '{}' is denied by {} (access)",
+        origin_label(url),
+        origin_policy_config_key_for(config, url)
+    ))
+}
+
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
 /// pushes into the ring buffer, and (console + pick) forwards to trigger
 /// subscribers.
 async fn spawn_event_pumps(
     sessions: Arc<Sessions>,
     session: Arc<Session>,
-) -> Vec<tokio::task::JoinHandle<()>> {
+    origin_gate_enabled: bool,
+) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let mut tasks = Vec::new();
     let page = &session.page;
+
+    if origin_gate_enabled {
+        let main_frame = page
+            .mainframe()
+            .await
+            .map_err(|error| format!("origin policy gate failed to read main frame: {error}"))?
+            .ok_or_else(|| "origin policy gate found no main frame".to_string())?;
+        let mut events = page
+            .event_listener::<cdp_fetch::EventRequestPaused>()
+            .await
+            .map_err(|error| format!("origin policy gate failed to listen: {error}"))?;
+        let document_pattern = cdp_fetch::RequestPattern::builder()
+            .resource_type(cdp_network::ResourceType::Document)
+            .build();
+        page.execute(
+            cdp_fetch::EnableParams::builder()
+                .pattern(document_pattern)
+                .build(),
+        )
+        .await
+        .map_err(|error| format!("origin policy gate failed to enable: {error}"))?;
+
+        let s = session.clone();
+        let sx = sessions.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                let is_top_document = event.resource_type == cdp_network::ResourceType::Document
+                    && event.frame_id == main_frame;
+                if !is_top_document {
+                    let _ = s
+                        .page
+                        .execute(cdp_fetch::ContinueRequestParams::new(
+                            event.request_id.clone(),
+                        ))
+                        .await;
+                    continue;
+                }
+
+                let denial = {
+                    let config = sx.config.load();
+                    origin_access_denial(&config, &event.request.url)
+                };
+                if let Some(error) = denial {
+                    s.record_navigation_error(error);
+                    if let Err(command_error) = s
+                        .page
+                        .execute(cdp_fetch::FailRequestParams::new(
+                            event.request_id.clone(),
+                            cdp_network::ErrorReason::BlockedByClient,
+                        ))
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %s.id,
+                            error = %command_error,
+                            "origin policy request failure command failed"
+                        );
+                    }
+                } else if let Err(command_error) = s
+                    .page
+                    .execute(cdp_fetch::ContinueRequestParams::new(
+                        event.request_id.clone(),
+                    ))
+                    .await
+                {
+                    tracing::debug!(
+                        session_id = %s.id,
+                        error = %command_error,
+                        "origin policy request continue failed"
+                    );
+                }
+            }
+        }));
+    }
 
     // console.* calls
     if let Ok(mut events) = page
@@ -1651,6 +1910,14 @@ async fn spawn_event_pumps(
             let sx = sessions.clone();
             tasks.push(tokio::spawn(async move {
                 while let Some(event) = events.next().await {
+                    if !origin_policy_for(&sx.config.load(), &event.url).downloads {
+                        let _ = s
+                            .page
+                            .execute(cdp_browser::CancelDownloadParams::new(event.guid.clone()))
+                            .await;
+                        s.remove_download_file(&event.guid);
+                        continue;
+                    }
                     s.download_begin(&event.guid, &event.suggested_filename, &event.url);
                     emit_download_changed(&sx, &s).await;
                 }
@@ -1673,12 +1940,16 @@ async fn spawn_event_pumps(
                         cdp_browser::DownloadProgressState::Completed => "completed",
                         cdp_browser::DownloadProgressState::Canceled => "canceled",
                     };
-                    s.download_progress(
+                    let recorded = s.download_progress(
                         &event.guid,
                         event.received_bytes as u64,
                         event.total_bytes as u64,
                         state,
                     );
+                    if !recorded {
+                        s.remove_download_file(&event.guid);
+                        continue;
+                    }
                     if state != "in_progress" || last_emit.elapsed().as_millis() >= 250 {
                         last_emit = std::time::Instant::now();
                         emit_download_changed(&sx, &s).await;
@@ -1688,7 +1959,7 @@ async fn spawn_event_pumps(
         }
     }
 
-    tasks
+    Ok(tasks)
 }
 
 async fn emit_download_changed(sessions: &Arc<Sessions>, session: &Arc<Session>) {
@@ -2010,5 +2281,40 @@ mod tests {
         assert_eq!(b.y, 20.0);
         assert_eq!(b.width, 100.0);
         assert_eq!(b.height, 40.0);
+    }
+
+    #[test]
+    fn private_temp_dir_is_fresh_and_owner_only() {
+        let owner = format!("test-{}", temp_nonce());
+        let nonce = temp_nonce();
+        let path = create_private_temp_dir("iii-browser-dir-test", &owner, nonce).unwrap();
+        assert!(create_private_temp_dir("iii-browser-dir-test", &owner, nonce).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        std::fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn upload_dir_cap_removes_the_oldest_directory() {
+        let owner = format!("upload-cap-test-{}", temp_nonce());
+        let root = create_private_temp_dir("iii-browser-dir-test", &owner, temp_nonce()).unwrap();
+        let mut upload_dirs = Vec::new();
+        for index in 0..UPLOAD_DIRS_CAP {
+            let path = root.join(index.to_string());
+            std::fs::create_dir(&path).unwrap();
+            upload_dirs.push(path);
+        }
+        let oldest = upload_dirs[0].clone();
+
+        remove_oldest_upload_dir(&mut upload_dirs).unwrap();
+
+        assert_eq!(upload_dirs.len(), UPLOAD_DIRS_CAP - 1);
+        assert!(!oldest.exists());
+        assert_eq!(upload_dirs[0], root.join("1"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
