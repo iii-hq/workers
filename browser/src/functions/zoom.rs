@@ -13,7 +13,8 @@ pub const LEVELS: [u32; 11] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ZoomInput {
     pub session_id: String,
-    /// `in`, `out`, `reset`, or `set` (default when `level` is given).
+    /// `in`, `out`, `reset`, `set` (default when `level` is given), or
+    /// `read` to report the current level without changing it.
     #[serde(default)]
     pub action: Option<String>,
     /// Explicit level in percent (50–200); snapped to the ladder.

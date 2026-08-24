@@ -10,7 +10,7 @@
     ],
     "properties": {
       "action": {
-        "description": "`in`, `out`, `reset`, or `set` (default when `level` is given).",
+        "description": "`in`, `out`, `reset`, `set` (default when `level` is given), or `read` to report the current level without changing it.",
         "default": null,
         "type": [
           "string",
