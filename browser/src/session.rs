@@ -1517,6 +1517,9 @@ async fn spawn_event_pumps(
                     continue; // subframes don't invalidate top-document refs
                 }
                 s.clear_refs();
+                // A cross-process navigation kills a running screencast with
+                // the old renderer; restart it so the stream never blanks.
+                sx.nudge_screencast(&s).await;
                 // A wedged renderer must not stall the navigation pump on a
                 // title read; after a short wait the visit records untitled.
                 let title =
