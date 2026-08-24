@@ -610,13 +610,14 @@ jobs:
           iii --config config.yaml --no-update-check > iii-engine.log 2>&1 &
           echo "$!" > iii-engine.pid
 
-          for _ in {1..60}; do
+          deadline=$((SECONDS + 60))
+          while (( SECONDS < deadline )); do
             if ! kill -0 "$(cat iii-engine.pid)" 2>/dev/null; then
               echo "::error::iii engine exited before becoming ready"
               cat iii-engine.log
               exit 1
             fi
-            if iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
+            if timeout --signal=KILL 5s iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1

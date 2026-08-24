@@ -184,7 +184,7 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
     // (pricing bills the splits additively). The wire's `prompt_tokens` is a
     // TOTAL that includes the cached slice, so the miss slice is derived —
     // mapping the total verbatim would bill the cached prefix twice.
-    let mut cached = None;
+    let mut cached = raw.get("cached_tokens").and_then(Value::as_u64);
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
@@ -435,6 +435,22 @@ mod tests {
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));
+    }
+
+    #[test]
+    fn top_level_cached_tokens_are_disjoint_from_input() {
+        let mut usage = Usage::default();
+        merge_usage(
+            &json!({
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "cached_tokens": 4,
+            }),
+            &mut usage,
+        );
+        assert_eq!(usage.input, Some(6));
+        assert_eq!(usage.cache_read, Some(4));
+        assert_eq!(usage.output, Some(2));
     }
 
     #[test]

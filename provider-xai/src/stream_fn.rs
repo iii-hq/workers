@@ -18,6 +18,7 @@ use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
+use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
@@ -85,6 +86,13 @@ async fn pump_stream(
     }
 }
 
+fn uses_responses_agent_tools(
+    config: &crate::config::WorkerConfig,
+    has_client_functions: bool,
+) -> bool {
+    config.tools_enabled && !config.tool_sources.is_empty() && !has_client_functions
+}
+
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
@@ -138,22 +146,14 @@ async fn run_stream_call(
             return;
         }
     };
+    let affinity_id = input.session_id.as_deref().and_then(derive_affinity_id);
+    let has_client_functions = input.tools.as_ref().is_some_and(|tools| !tools.is_empty());
 
-    // Agent Tools path (opt-in via the console config): when enabled, route to
-    // the /v1/responses API with server-side tools (x_search / web_search) so
-    // the model can pull live X / web data. Otherwise fall through to the plain
-    // Chat Completions path below.
-    if wc.tools_enabled && !wc.tool_sources.is_empty() {
-        // Report-and-continue: the Responses path carries the conversation +
-        // server-side tools, but not the chat-path per-request controls, so
-        // name each dropped one instead of silently ignoring it.
-        if input.tools.as_ref().is_some_and(|t| !t.is_empty()) {
-            warnings.push(
-                "client function tools are not sent on the xAI Agent Tools path; \
-                 disable provider-xai tools to use function calling"
-                    .to_string(),
-            );
-        }
+    // Agent Tools are a server-tool-only path. Client function calls retain
+    // Chat Completions so their tool definitions are forwarded intact.
+    if uses_responses_agent_tools(wc, has_client_functions) {
+        // Report-and-continue: the Responses path carries server-side tools,
+        // but not the Chat Completions per-request controls.
         if input.response_format.is_some() {
             warnings.push("response_format is not applied on the xAI Agent Tools path".to_string());
         }
@@ -172,8 +172,9 @@ async fn run_stream_call(
             &input.messages,
             &tool_types,
             cfg.max_tokens,
+            affinity_id.as_deref(),
         );
-        let headers = build_headers(&cfg);
+        let headers = build_headers(&cfg, None);
         // Aborted while we were setting up — never start the upstream request.
         if abort_reg.is_some_and(|g| g.is_fired()) {
             return;
@@ -234,7 +235,7 @@ async fn run_stream_call(
         reasoning_effort,
         response_format: input.response_format,
     });
-    let headers = build_headers(&cfg);
+    let headers = build_headers(&cfg, affinity_id.as_deref());
 
     // Aborted while we were setting up — never start the upstream request.
     if abort_reg.is_some_and(|g| g.is_fired()) {
@@ -254,5 +255,21 @@ async fn run_stream_call(
     // out from under us: drop the cache so the next attempt re-resolves.
     if pump_stream(rx, sink, abort_reg.map(|g| g.watch())).await == Some(ErrorKind::AuthExpired) {
         cache.invalidate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ToolSource, WorkerConfig};
+
+    #[test]
+    fn client_functions_force_chat_while_server_tool_only_calls_use_responses() {
+        let agent_tools = WorkerConfig {
+            tools_enabled: true,
+            tool_sources: vec![ToolSource::XSearch],
+        };
+        assert!(uses_responses_agent_tools(&agent_tools, false));
+        assert!(!uses_responses_agent_tools(&agent_tools, true));
     }
 }

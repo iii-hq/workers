@@ -7,6 +7,7 @@
 use serde_json::{json, Value};
 
 use super::{ScenarioDriver, VerifyFn};
+use crate::expand::ALLOWED_FUNCTIONS_MARKER;
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
@@ -1441,7 +1442,7 @@ fn system_prompt(allowed_functions: &[String]) -> String {
              else — including discovery (engine::functions::list / ::info) unless listed above — \
              is denied. Do not probe: if the task genuinely needs an unlisted function or an \
              unknown contract, report that blocker and finish.",
-            allowed_functions.join(", ")
+            ALLOWED_FUNCTIONS_MARKER
         )
     };
     format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")

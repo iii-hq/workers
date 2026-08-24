@@ -416,6 +416,10 @@ pub async fn edit_queued(
 /// in the window gets a fresh turn seeded, whose step-0 drain delivers the
 /// row. A row landing after the loop's last queue check is appended by the
 /// finalize drain — queued messages are never silently dropped.
+fn reseed_prior<'a, T>(recheck: Option<&'a T>, existing: Option<&'a T>) -> Option<&'a T> {
+    recheck.or(existing)
+}
+
 async fn try_enqueue(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -424,8 +428,7 @@ async fn try_enqueue(
     d: &Delivery<'_>,
 ) -> Result<Option<(StartOutcome, String)>, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
-    match existing {
+    match existing.as_ref() {
         Some(rec) if rec.status == TurnStatus::Running => {}
         _ => return Ok(None),
     }
@@ -465,13 +468,13 @@ async fn try_enqueue(
                 deduplicated: false,
             }
         }
-        _ => {
+        prior => {
             let mut seeded = seed_new(
                 deps,
                 cfg,
                 session_id,
                 options.clone(),
-                prior_generation,
+                reseed_prior(prior.as_ref(), existing.as_ref()),
                 message_preview(d.message),
                 d.lineage,
             )
@@ -721,13 +724,12 @@ async fn seed_or_merge(
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     // Carry the session's last-acknowledged registry generation onto a new turn
     // so run_step can notice a registry change that landed between turns.
-    let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
     apply_default_filesystem_root(
         &mut options,
         existing.is_none(),
         cfg.resolved_default_filesystem_root().as_deref(),
     );
-    match existing {
+    match existing.as_ref() {
         Some(rec) if !rec.status.is_terminal() => {
             // Merge path: the message is already appended; the running loop's
             // steering check folds it in. Double-check the record didn't go
@@ -748,13 +750,13 @@ async fn seed_or_merge(
                         deduplicated: false,
                     })
                 }
-                _ => {
+                prior => {
                     seed_new(
                         deps,
                         cfg,
                         session_id,
                         options,
-                        prior_generation,
+                        reseed_prior(prior.as_ref(), existing.as_ref()),
                         message_preview,
                         lineage,
                     )
@@ -768,7 +770,7 @@ async fn seed_or_merge(
                 cfg,
                 session_id,
                 options,
-                prior_generation,
+                existing.as_ref(),
                 message_preview,
                 lineage,
             )
@@ -786,12 +788,16 @@ pub(crate) async fn seed_new(
     cfg: &WorkerConfig,
     session_id: &str,
     options: TurnOptions,
-    functions_generation: Option<u64>,
+    prior: Option<&TurnRecord>,
     message_preview: Option<String>,
     lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
+    let functions_generation = prior.and_then(|record| record.functions_generation);
+    let function_contract_ledger = prior
+        .map(|record| record.function_contract_ledger.clone())
+        .unwrap_or_default();
     let record = TurnRecord {
         turn_id: turn_id.clone(),
         session_id: session_id.to_string(),
@@ -808,6 +814,7 @@ pub(crate) async fn seed_new(
         parent: lineage.parent.clone(),
         display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
+        function_contract_ledger,
         context_snapshot: None,
         result: None,
         result_error: None,
@@ -838,6 +845,18 @@ pub(crate) async fn seed_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_recheck_wins_when_seeding_the_next_turn() {
+        let initial = 1;
+        let terminal = 2;
+
+        assert_eq!(
+            reseed_prior(Some(&terminal), Some(&initial)),
+            Some(&terminal)
+        );
+        assert_eq!(reseed_prior(None, Some(&initial)), Some(&initial));
+    }
 
     #[test]
     fn selected_skill_prompt_keeps_only_ordered_nonblank_bodies_in_resolved_prompt() {

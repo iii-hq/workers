@@ -180,20 +180,33 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
     // (pricing bills the splits additively). The wire's `prompt_tokens` is a
     // TOTAL that includes the cached slice, so the miss slice is derived —
     // mapping the total verbatim would bill the cached prefix twice.
-    let mut cached = None;
+    let mut cache_read = None;
+    let mut cache_write = None;
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
             .and_then(Value::as_u64)
         {
-            cached = Some(v);
+            cache_read = Some(v);
+        }
+        if let Some(v) = raw
+            .pointer(&format!("/{parent}/cache_write_tokens"))
+            .and_then(Value::as_u64)
+        {
+            cache_write = Some(v);
         }
     }
-    if let Some(v) = cached {
+    if let Some(v) = cache_read {
         into.cache_read = Some(v);
     }
+    if let Some(v) = cache_write {
+        into.cache_write = Some(v);
+    }
     if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
-        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
+        into.input = Some(
+            v.saturating_sub(cache_read.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0)),
+        );
     }
     if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
         into.output = Some(v);
@@ -640,6 +653,18 @@ mod tests {
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));
+    }
+
+    #[test]
+    fn usage_keeps_cache_reads_and_writes_disjoint_from_input() {
+        let (state, _) = run(&[json!({"choices":[],"usage":{
+            "prompt_tokens":12,
+            "prompt_tokens_details":{"cached_tokens":6,"cache_write_tokens":2}
+        }})]);
+        let usage = build_final(&state, "gpt-test").usage.unwrap();
+        assert_eq!(usage.input, Some(4));
+        assert_eq!(usage.cache_read, Some(6));
+        assert_eq!(usage.cache_write, Some(2));
     }
 
     #[test]

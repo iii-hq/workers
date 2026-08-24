@@ -23,26 +23,16 @@ use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, ProviderStreamInput, ProviderStreamOutput,
 };
 
-#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
-#[schemars(rename = "ProviderStreamInput")]
-pub struct CodexStreamInput {
-    #[serde(flatten)]
-    pub input: ProviderStreamInput,
-    /// Durable conversation identity used only to derive header affinity.
-    #[serde(default)]
-    pub session_id: Option<String>,
-}
-
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
     cache: ScaffoldCache,
     aborts: StreamAborts,
-) -> impl Fn(CodexStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
+) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
-    move |input: CodexStreamInput| {
+    move |input: ProviderStreamInput| {
         let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         Box::pin(async move {
             // Register BEFORE the first await: an abort landing while the sink
@@ -50,11 +40,10 @@ pub fn make_stream(
             // deregisters on every exit — early returns and an executor
             // cancelling this future mid-await alike.
             let abort_reg = input
-                .input
                 .resolution_key
                 .as_ref()
                 .map(|rid| aborts.register(rid));
-            let sink = open_sink(&iii, &input.input.writer_ref).await?;
+            let sink = open_sink(&iii, &input.writer_ref).await?;
             run_stream_call(&iii, http, &cache, abort_reg.as_ref(), input, sink.as_ref()).await;
             sink.close();
             Ok(ProviderStreamOutput { ok: true })
@@ -77,10 +66,9 @@ async fn run_stream_call(
     http: reqwest::Client,
     cache: &ScaffoldCache,
     abort_reg: Option<&AbortGuard>,
-    input: CodexStreamInput,
+    input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
-    let CodexStreamInput { input, session_id } = input;
     let model = input.model.clone(); // router id (e.g. codex/gpt-5.5)
     let mut warnings = Vec::new();
 
@@ -166,7 +154,7 @@ async fn run_stream_call(
     let system_prompt = input.system_prompt.unwrap_or_default();
     let (affinity_headers, prompt_cache_key) = resolve_cache_routing(
         input.provider_options.as_ref(),
-        session_id.as_deref(),
+        input.session_id.as_deref(),
         input.resolution_key.as_deref(),
     );
     tracing::debug!(

@@ -214,6 +214,20 @@ pub struct ParentLink {
     pub function_call_id: String,
 }
 
+/// A model-visible function contract retained for reuse within one session.
+/// Digests keep the durable turn record small; raw contracts remain only in
+/// the session transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionContractLedgerEntry {
+    pub contract_digest: String,
+    pub source_function_call_id: String,
+    pub source_content_digest: String,
+    /// True only after final context assembly confirmed the exact source is
+    /// still model-visible. Newly appended and legacy rows start ineligible.
+    #[serde(default)]
+    pub eligible: bool,
+}
+
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
 /// `harness::send` / `spawn`, advanced one step per `harness::turn`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -253,6 +267,10 @@ pub struct TurnRecord {
     /// contracts get re-fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions_generation: Option<u64>,
+    /// Function contracts whose exact full source result was retained in the
+    /// most recently assembled model context for this session.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
     /// Latest generation's context accounting (also stored under
     /// `harness_context/<session_id>` once the generation completes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,6 +363,7 @@ mod tests {
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
+            function_contract_ledger: Default::default(),
             context_snapshot: None,
             result: None,
             result_error: None,
@@ -353,6 +372,30 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn legacy_turn_records_default_to_an_empty_function_contract_ledger() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("function_contract_ledger");
+
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert!(decoded.function_contract_ledger.is_empty());
+    }
+
+    #[test]
+    fn legacy_contract_ledger_entries_default_to_ineligible() {
+        let decoded: FunctionContractLedgerEntry = serde_json::from_value(serde_json::json!({
+            "contract_digest": "contract",
+            "source_function_call_id": "call-1",
+            "source_content_digest": "content"
+        }))
+        .unwrap();
+
+        assert!(!decoded.eligible);
     }
 
     fn cp(state: CallState, child: Option<&str>) -> CallCheckpoint {

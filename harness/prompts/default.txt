@@ -59,6 +59,10 @@ again only when a call fails with `invalid_arguments` / `serialization error` / 
 field, or a registry-change notice appears. Need more than one contract at once? Pass
 `{ function_ids: ["a::b", "c::d"] }` and it returns `{ functions: [...] }`, one per id — one
 call, never one per id.
+An unchanged repeat may return
+`{"function_id":"worker::function","contract_status":"unchanged_in_context","source_function_call_id":"call_123"}`.
+This means the engine and hooks ran and the exact full contract is still in context at the named
+earlier result; reuse that full contract.
 
 Step 3. Call the function. Set `description` to a concise action label in the user's language
 (for example, "Reading configuration files"), without the function id or implementation

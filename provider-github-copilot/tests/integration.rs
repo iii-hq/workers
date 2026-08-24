@@ -464,7 +464,7 @@ async fn chat_streams_end_to_end_through_the_ready_bearer_path() {
         res["usage"]["cost_usd"].is_null(),
         "no cost on this wire: {res}"
     );
-    assert_eq!(res["usage"]["input"], 12);
+    assert_eq!(res["usage"]["input"], 8);
 
     let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
     let frames = frames.lock().unwrap();

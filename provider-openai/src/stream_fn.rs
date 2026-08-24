@@ -14,6 +14,7 @@ use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
+use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
@@ -34,6 +35,18 @@ fn compatible_reasoning_effort(
     } else {
         (effort, false)
     }
+}
+
+fn resolve_prompt_cache_key(
+    provider_options: Option<&serde_json::Value>,
+    session_id: Option<&str>,
+) -> Option<String> {
+    provider_options
+        .and_then(|options| options.get("prompt_cache_key"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|key| !key.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| session_id.and_then(derive_affinity_id))
 }
 
 pub fn make_stream(
@@ -165,6 +178,10 @@ async fn run_stream_call(
             tools,
             reasoning_effort,
             response_format: input.response_format,
+            prompt_cache_key: resolve_prompt_cache_key(
+                input.provider_options.as_ref(),
+                input.session_id.as_deref(),
+            ),
         },
         cfg.api_mode,
     );
@@ -198,6 +215,26 @@ async fn run_stream_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_key_prefers_a_nonblank_provider_option_to_the_session() {
+        assert_eq!(
+            resolve_prompt_cache_key(
+                Some(&serde_json::json!({ "prompt_cache_key": "shared-key" })),
+                Some("s_conversation"),
+            )
+            .as_deref(),
+            Some("shared-key")
+        );
+        assert_eq!(
+            resolve_prompt_cache_key(
+                Some(&serde_json::json!({ "prompt_cache_key": "  " })),
+                Some("s_conversation"),
+            )
+            .as_deref(),
+            Some("3e66265f-70e5-4dda-a97f-4fabfc61b5ed")
+        );
+    }
 
     #[test]
     fn luna_tools_disable_effort_only_on_chat_completions() {

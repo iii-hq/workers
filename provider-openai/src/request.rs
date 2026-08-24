@@ -17,6 +17,7 @@ pub struct BodyArgs {
     /// Pre-resolved effort string (Task 6); None omits the param.
     pub reasoning_effort: Option<&'static str>,
     pub response_format: Option<ResponseFormat>,
+    pub prompt_cache_key: Option<String>,
 }
 
 /// `ResponseFormat { type: "json", schema? }` → native OpenAI knob.
@@ -57,6 +58,9 @@ fn build_chat_body(args: &BodyArgs) -> Value {
     if let Some(rf) = &args.response_format {
         body["response_format"] = build_chat_response_format(rf);
     }
+    if let Some(key) = &args.prompt_cache_key {
+        body["prompt_cache_key"] = json!(key);
+    }
     body
 }
 
@@ -90,6 +94,9 @@ fn build_responses_body(args: &BodyArgs) -> Value {
     }
     if let Some(response_format) = &args.response_format {
         body["text"] = build_responses_text(response_format);
+    }
+    if let Some(key) = &args.prompt_cache_key {
+        body["prompt_cache_key"] = json!(key);
     }
     body
 }
@@ -128,6 +135,7 @@ mod tests {
             tools: vec![],
             reasoning_effort: None,
             response_format: None,
+            prompt_cache_key: None,
         }
     }
 
@@ -220,6 +228,20 @@ mod tests {
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert!(body.get("messages").is_none());
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn both_api_modes_send_the_prompt_cache_key() {
+        let mut a = args();
+        a.prompt_cache_key = Some("stable-session-key".into());
+        assert_eq!(
+            build_body(&a, ApiMode::Responses)["prompt_cache_key"],
+            "stable-session-key"
+        );
+        assert_eq!(
+            build_body(&a, ApiMode::ChatCompletions)["prompt_cache_key"],
+            "stable-session-key"
+        );
     }
 
     #[test]

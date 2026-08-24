@@ -32,6 +32,7 @@ No provider key or network access is required.
 | INT-022 | `idempotency-key-collision` | direct | distinct idempotency keys whose punctuation previously collapsed retain two durable user messages and turns |
 | INT-023 | `function-call-id-collision` | direct | distinct function-call ids whose punctuation previously collapsed retain both executed function results |
 | INT-024 | `truncated-function-call-stream` | direct | a provider stream cut inside function-call arguments keeps the partial text, never executes the degraded call, resumes once, runs the re-issued call exactly once, and a follow-up on the same session is answered without a restart |
+| INT-025 | `function-contract-reuse` | direct | a repeated `engine::functions::info` call still executes and retains exact details while its unchanged model-facing contract reuses the full earlier result |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |

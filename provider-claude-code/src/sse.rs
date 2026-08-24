@@ -686,6 +686,24 @@ mod tests {
     }
 
     #[test]
+    fn cache_usage_fields_are_preserved_separately_from_input() {
+        let mut usage = Usage::default();
+        merge_usage(
+            &serde_json::json!({
+                "input_tokens": 7,
+                "cache_read_input_tokens": 11,
+                "cache_creation_input_tokens": 13,
+                "output_tokens": 17,
+            }),
+            &mut usage,
+        );
+        assert_eq!(usage.input, Some(7));
+        assert_eq!(usage.cache_read, Some(11));
+        assert_eq!(usage.cache_write, Some(13));
+        assert_eq!(usage.output, Some(17));
+    }
+
+    #[test]
     fn unknown_block_type_does_not_corrupt_prior_tool_use() {
         let (state, events) = run(&[
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell__exec\"}}",

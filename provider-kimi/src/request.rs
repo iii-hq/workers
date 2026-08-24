@@ -18,6 +18,7 @@ pub struct BodyArgs {
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
     pub response_format: Option<ResponseFormat>,
+    pub prompt_cache_key: Option<String>,
 }
 
 /// Moonshot supports only JSON mode (`{"type":"json_object"}`) — there is no
@@ -48,6 +49,9 @@ pub fn build_body(args: &BodyArgs) -> Value {
     if let Some(rf) = &args.response_format {
         body["response_format"] = build_response_format(rf);
     }
+    if let Some(key) = &args.prompt_cache_key {
+        body["prompt_cache_key"] = json!(key);
+    }
     body
 }
 
@@ -76,6 +80,7 @@ mod tests {
             })],
             tools: vec![],
             response_format: None,
+            prompt_cache_key: None,
         }
     }
 
@@ -139,6 +144,13 @@ mod tests {
             schema: None,
         });
         assert_eq!(build_body(&a)["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn body_carries_a_prompt_cache_key_when_supplied() {
+        let mut a = args();
+        a.prompt_cache_key = Some("stable-session-key".into());
+        assert_eq!(build_body(&a)["prompt_cache_key"], "stable-session-key");
     }
 
     #[test]

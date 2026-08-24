@@ -7,18 +7,261 @@
 //! P1 covers the glob policy + target + normalisation. The `pre_trigger` /
 //! `post_trigger` hook chain and `pending` deferral layer on in later phases.
 
+use std::collections::{BTreeMap, HashMap};
+
+use jsonschema::JSONSchema;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::clients::EngineClient;
 use crate::policy::CompiledPolicy;
 use crate::types::content::ContentBlock;
+use crate::types::turn::FunctionContractLedgerEntry;
 
 /// A normalised function result ready to become a `function_result` entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResultData {
     pub content: Vec<ContentBlock>,
     pub is_error: bool,
     pub details: Value,
+}
+
+/// Discard ledger rows whose exact full source is not the only model-facing
+/// result for its call id.
+pub(crate) fn retain_visible_contract_sources(
+    ledger: &mut BTreeMap<String, FunctionContractLedgerEntry>,
+    messages: &[Value],
+) {
+    ledger.retain(|_, source| {
+        let eligible = unique_visible_result(messages, &source.source_function_call_id)
+            .is_some_and(|(function_id, content)| {
+                function_id == Some("engine::functions::info")
+                    && content.and_then(digest_value).as_deref()
+                        == Some(source.source_content_digest.as_str())
+            });
+        source.eligible = eligible;
+        eligible
+    });
+}
+
+/// Record a successful function-result append. Reusing a source call id
+/// invalidates every row that named it; such an ambiguous id cannot become a
+/// replacement source in the same append.
+pub(crate) fn apply_contract_updates_after_append(
+    ledger: &mut BTreeMap<String, FunctionContractLedgerEntry>,
+    call_id: &str,
+    updates: Vec<(String, FunctionContractLedgerEntry)>,
+) {
+    let reused_source = ledger
+        .values()
+        .any(|source| source.source_function_call_id == call_id);
+    ledger.retain(|_, source| source.source_function_call_id != call_id);
+    if !reused_source {
+        ledger.extend(updates);
+    }
+}
+
+fn unique_visible_result<'a>(
+    messages: &'a [Value],
+    call_id: &str,
+) -> Option<(Option<&'a str>, Option<&'a Value>)> {
+    let mut found = None;
+    let mut call_seen = false;
+    for message in messages {
+        for block in message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            match block.get("type").and_then(Value::as_str) {
+                Some("function_call")
+                    if block.get("id").and_then(Value::as_str) == Some(call_id) =>
+                {
+                    let function_id = block.get("function_id").and_then(Value::as_str);
+                    let wrapped_target = block
+                        .get("arguments")
+                        .and_then(|arguments| arguments.get("function"))
+                        .and_then(Value::as_str);
+                    let is_info = function_id == Some("engine::functions::info")
+                        || (function_id == Some("agent_trigger")
+                            && wrapped_target == Some("engine::functions::info"));
+                    if call_seen || !is_info {
+                        return None;
+                    }
+                    call_seen = true;
+                }
+                Some("function_result")
+                    if block.get("function_call_id").and_then(Value::as_str) == Some(call_id) =>
+                {
+                    if found.is_some() {
+                        return None;
+                    }
+                    // Inline provider-style results do not carry the source
+                    // function id, so they can never validate a top-level source.
+                    found = Some((None, block.get("content")));
+                }
+                _ => {}
+            }
+        }
+        if message.get("role").and_then(Value::as_str) == Some("function_result")
+            && message.get("function_call_id").and_then(Value::as_str) == Some(call_id)
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((
+                message.get("function_id").and_then(Value::as_str),
+                message.get("content"),
+            ));
+        }
+    }
+    found
+}
+
+/// Compact unchanged, successful `engine::functions::info` contracts while
+/// preserving the raw result in `details`. Returned ledger updates are applied
+/// only after the caller successfully appends the result.
+pub(crate) fn prepare_info_result(
+    call_id: &str,
+    arguments: &Value,
+    data: &ResultData,
+    ledger: &BTreeMap<String, FunctionContractLedgerEntry>,
+    hook_unchanged: bool,
+) -> (ResultData, Vec<(String, FunctionContractLedgerEntry)>) {
+    if data.is_error || !hook_unchanged || normalize(&data.details).0 != data.content {
+        return (data.clone(), Vec::new());
+    }
+
+    let requested_single = arguments.get("function_id").and_then(Value::as_str);
+    let requested_batch = arguments.get("function_ids").and_then(Value::as_array);
+    let mut display = data.details.clone();
+    let mut candidates = Vec::new();
+
+    if let (Some(requested), Some(item)) = (requested_single, display.as_object()) {
+        if valid_contract_id(&Value::Object(item.clone())) == Some(requested) {
+            candidates.push((None, requested.to_string()));
+        }
+    } else if let (Some(requested), Some(items)) = (
+        requested_batch,
+        display.get("functions").and_then(Value::as_array),
+    ) {
+        let requested_counts = counts(requested.iter().filter_map(Value::as_str));
+        let result_counts = counts(items.iter().filter_map(|item| {
+            item.get("function_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+        }));
+        for (index, item) in items.iter().enumerate() {
+            let Some(id) = valid_contract_id(item) else {
+                continue;
+            };
+            if requested_counts.get(id) == Some(&1) && result_counts.get(id) == Some(&1) {
+                candidates.push((Some(index), id.to_string()));
+            }
+        }
+    } else {
+        return (data.clone(), Vec::new());
+    }
+
+    let mut full = Vec::new();
+    let mut compacted = false;
+    for (index, function_id) in candidates {
+        let contract = match index {
+            Some(index) => &data.details["functions"][index],
+            None => &data.details,
+        };
+        let Some(contract_digest) = digest_value(contract) else {
+            continue;
+        };
+        match ledger.get(&function_id) {
+            Some(source)
+                if source.eligible
+                    && source.contract_digest == contract_digest
+                    && source.source_function_call_id != call_id =>
+            {
+                let marker = json!({
+                    "function_id": function_id,
+                    "contract_status": "unchanged_in_context",
+                    "source_function_call_id": source.source_function_call_id,
+                });
+                match index {
+                    Some(index) => display["functions"][index] = marker,
+                    None => display = marker,
+                }
+                compacted = true;
+            }
+            Some(source) if source.source_function_call_id == call_id => {}
+            _ => full.push((function_id, contract_digest)),
+        }
+    }
+
+    let mut prepared = data.clone();
+    if compacted {
+        prepared.content = normalize(&display).0;
+    }
+    let Some(source_content_digest) = digest_content(&prepared.content) else {
+        return (prepared, Vec::new());
+    };
+    let updates = full
+        .into_iter()
+        .map(|(function_id, contract_digest)| {
+            (
+                function_id,
+                FunctionContractLedgerEntry {
+                    contract_digest,
+                    source_function_call_id: call_id.to_string(),
+                    source_content_digest: source_content_digest.clone(),
+                    eligible: false,
+                },
+            )
+        })
+        .collect();
+    (prepared, updates)
+}
+
+fn valid_contract_id(value: &Value) -> Option<&str> {
+    let object = value.as_object()?;
+    if object.contains_key("error") || !contract_schemas_compile(object) {
+        return None;
+    }
+    object
+        .get("function_id")
+        .or_else(|| object.get("id"))
+        .and_then(Value::as_str)
+}
+
+fn contract_schemas_compile(object: &serde_json::Map<String, Value>) -> bool {
+    ["parameters", "request_format", "request_schema"]
+        .iter()
+        .find_map(|key| object.get(*key))
+        .is_some_and(|schema| JSONSchema::compile(schema).is_ok())
+        && ["response_format", "response_schema"]
+            .iter()
+            .find_map(|key| object.get(*key))
+            .is_some_and(|schema| JSONSchema::compile(schema).is_ok())
+}
+
+fn counts<'a>(ids: impl Iterator<Item = &'a str>) -> HashMap<&'a str, usize> {
+    let mut counts = HashMap::new();
+    for id in ids {
+        *counts.entry(id).or_default() += 1;
+    }
+    counts
+}
+
+fn digest_content(content: &[ContentBlock]) -> Option<String> {
+    serde_json::to_value(content)
+        .ok()
+        .as_ref()
+        .and_then(digest_value)
+}
+
+fn digest_value(value: &Value) -> Option<String> {
+    Some(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).ok()?)
+    ))
 }
 
 /// The outcome of triggering one call.
@@ -271,6 +514,7 @@ fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
 mod tests {
     use super::*;
     use crate::types::turn::FunctionPolicy;
+    use std::collections::BTreeMap;
 
     fn pol(allow: &[&str]) -> CompiledPolicy {
         CompiledPolicy::from(Some(&FunctionPolicy {
@@ -343,6 +587,520 @@ mod tests {
         assert!(arguments_degraded(&json!([1, 2])));
         assert!(!arguments_degraded(&json!({})));
         assert!(!arguments_degraded(&json!({ "path": "/tmp" })));
+    }
+
+    #[test]
+    fn unchanged_info_contract_reuses_an_exact_model_visible_source() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+
+        let (first, updates) = prepare_info_result(
+            "call_123",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        assert_eq!(
+            first.content, data.content,
+            "the first full result is retained"
+        );
+        ledger.extend(updates);
+
+        let source = json!({
+            "role": "function_result",
+            "function_call_id": "call_123",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&first.content).unwrap(),
+            "details": first.details,
+            "is_error": false,
+            "timestamp": 1
+        });
+        retain_visible_contract_sources(&mut ledger, &[source]);
+
+        let (second, updates) = prepare_info_result(
+            "call_456",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        assert_eq!(
+            second.content,
+            vec![ContentBlock::text(
+                json!({
+                    "function_id": "worker::function",
+                    "contract_status": "unchanged_in_context",
+                    "source_function_call_id": "call_123"
+                })
+                .to_string()
+            )]
+        );
+        assert_eq!(second.details, data.details, "details stay exact");
+        assert!(updates.is_empty(), "markers never replace the full source");
+    }
+
+    #[test]
+    fn info_batch_preserves_order_cardinality_unknowns_and_details() {
+        let details = json!({ "functions": [
+            {
+                "function_id": "a::one",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "string" }
+            },
+            { "function_id": "missing::fn", "error": "not available" },
+            {
+                "function_id": "b::two",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "number" }
+            }
+        ]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let args = json!({ "function_ids": ["a::one", "missing::fn", "b::two"] });
+        let (first, updates) =
+            prepare_info_result("batch-full", &args, &data, &BTreeMap::new(), true);
+        let mut ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let source = json!({
+            "role": "function_result",
+            "function_call_id": "batch-full",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&first.content).unwrap()
+        });
+        retain_visible_contract_sources(&mut ledger, &[source]);
+
+        let (prepared, updates) = prepare_info_result("batch-repeat", &args, &data, &ledger, true);
+        let rendered: Value = serde_json::from_str(&ContentBlock::join_text(&prepared.content))
+            .expect("prepared batch content is JSON");
+        let functions = rendered["functions"].as_array().unwrap();
+        assert_eq!(functions.len(), 3);
+        assert_eq!(functions[0]["contract_status"], "unchanged_in_context");
+        assert_eq!(functions[1], details["functions"][1]);
+        assert_eq!(functions[2]["contract_status"], "unchanged_in_context");
+        assert_eq!(prepared.details, details);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_or_unverifiable_info_sources_stay_full() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let args = json!({ "function_id": "worker::function" });
+        let (first, updates) = prepare_info_result("source", &args, &data, &BTreeMap::new(), true);
+        let mut ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let exact = json!({
+            "role": "function_result",
+            "function_call_id": "source",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&first.content).unwrap()
+        });
+        let mutated = json!({
+            "role": "user",
+            "content": [{
+                "type": "function_result",
+                "function_call_id": "source",
+                "content": [{ "type": "text", "text": "changed by a hook" }]
+            }]
+        });
+        retain_visible_contract_sources(&mut ledger, &[exact, mutated]);
+        assert!(ledger.is_empty(), "the exact last result must match");
+
+        let (without_source, updates) = prepare_info_result("repeat", &args, &data, &ledger, true);
+        assert_eq!(without_source.content, data.content);
+        assert_eq!(updates.len(), 1, "the new full result becomes the source");
+
+        let same_call_ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let (same_call, updates) =
+            prepare_info_result("repeat", &args, &data, &same_call_ledger, true);
+        assert_eq!(same_call.content, data.content);
+        assert!(updates.is_empty(), "a call id cannot source itself");
+
+        let (hook_mutated, updates) =
+            prepare_info_result("later", &args, &data, &same_call_ledger, false);
+        assert_eq!(hook_mutated, data);
+        assert!(updates.is_empty());
+
+        let changed_details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "string" }
+        });
+        let changed = ResultData {
+            content: normalize(&changed_details).0,
+            is_error: false,
+            details: changed_details,
+        };
+        let (prepared, updates) =
+            prepare_info_result("changed", &args, &changed, &same_call_ledger, true);
+        assert_eq!(prepared, changed);
+        assert_eq!(updates.len(), 1, "a changed contract stays full");
+
+        let error = ResultData {
+            is_error: true,
+            ..data.clone()
+        };
+        let (prepared, updates) =
+            prepare_info_result("error", &args, &error, &same_call_ledger, true);
+        assert_eq!(prepared, error);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn malformed_single_info_contract_stays_full_and_is_not_recorded() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": null,
+            "response_schema": "not a schema"
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let ledger = BTreeMap::from([(
+            "worker::function".into(),
+            FunctionContractLedgerEntry {
+                contract_digest: digest_value(&details).unwrap(),
+                source_function_call_id: "source".into(),
+                source_content_digest: "source-content".into(),
+                eligible: true,
+            },
+        )]);
+
+        let (prepared, updates) = prepare_info_result(
+            "repeat",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+
+        assert_eq!(prepared, data);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn malformed_batch_entry_stays_full_while_a_valid_sibling_reuses_its_source() {
+        let details = json!({ "functions": [
+            {
+                "function_id": "worker::bad",
+                "request_schema": { "type": 42 },
+                "response_schema": { "type": "object" }
+            },
+            {
+                "function_id": "worker::good",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "string" }
+            }
+        ]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let ledger = BTreeMap::from([
+            (
+                "worker::bad".into(),
+                FunctionContractLedgerEntry {
+                    contract_digest: digest_value(&details["functions"][0]).unwrap(),
+                    source_function_call_id: "bad-source".into(),
+                    source_content_digest: "bad-content".into(),
+                    eligible: true,
+                },
+            ),
+            (
+                "worker::good".into(),
+                FunctionContractLedgerEntry {
+                    contract_digest: digest_value(&details["functions"][1]).unwrap(),
+                    source_function_call_id: "good-source".into(),
+                    source_content_digest: "good-content".into(),
+                    eligible: true,
+                },
+            ),
+        ]);
+
+        let (prepared, updates) = prepare_info_result(
+            "batch-repeat",
+            &json!({ "function_ids": ["worker::bad", "worker::good"] }),
+            &data,
+            &ledger,
+            true,
+        );
+        let rendered: Value = serde_json::from_str(&ContentBlock::join_text(&prepared.content))
+            .expect("prepared batch content is JSON");
+
+        assert_eq!(rendered["functions"][0], details["functions"][0]);
+        assert_eq!(
+            rendered["functions"][1],
+            json!({
+                "function_id": "worker::good",
+                "contract_status": "unchanged_in_context",
+                "source_function_call_id": "good-source"
+            })
+        );
+        assert_eq!(prepared.details, details);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn malformed_same_id_batch_is_never_compacted_or_recorded() {
+        let details = json!({ "functions": [
+            {
+                "function_id": "worker::same",
+                "request_schema": { "type": 42 },
+                "response_schema": { "type": "object" }
+            },
+            {
+                "function_id": "worker::same",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "string" }
+            }
+        ]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let ledger = BTreeMap::from([(
+            "worker::same".into(),
+            FunctionContractLedgerEntry {
+                contract_digest: digest_value(&details["functions"][1]).unwrap(),
+                source_function_call_id: "source".into(),
+                source_content_digest: "source-content".into(),
+                eligible: true,
+            },
+        )]);
+
+        let (prepared, updates) = prepare_info_result(
+            "repeat",
+            &json!({ "function_ids": ["worker::same"] }),
+            &data,
+            &ledger,
+            true,
+        );
+
+        assert_eq!(prepared, data);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn duplicate_non_source_result_id_cannot_become_contract_source() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+        let (prepared, updates) = prepare_info_result(
+            "duplicate",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        apply_contract_updates_after_append(&mut ledger, "duplicate", updates);
+        retain_visible_contract_sources(
+            &mut ledger,
+            &[
+                json!({
+                    "role": "function_result",
+                    "function_call_id": "duplicate",
+                    "function_id": "worker::other",
+                    "content": [{ "type": "text", "text": "earlier" }]
+                }),
+                json!({
+                    "role": "function_result",
+                    "function_call_id": "duplicate",
+                    "function_id": "engine::functions::info",
+                    "content": serde_json::to_value(&prepared.content).unwrap()
+                }),
+            ],
+        );
+
+        assert!(
+            ledger.is_empty(),
+            "a call id shared by visible results is ambiguous"
+        );
+    }
+
+    #[test]
+    fn duplicate_visible_calls_cannot_source_a_contract() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+        let (prepared, updates) = prepare_info_result(
+            "duplicate",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        apply_contract_updates_after_append(&mut ledger, "duplicate", updates);
+        retain_visible_contract_sources(
+            &mut ledger,
+            &[
+                json!({
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "function_call",
+                            "id": "duplicate",
+                            "function_id": "engine::functions::info"
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "duplicate",
+                            "function_id": "worker::other"
+                        }
+                    ]
+                }),
+                json!({
+                    "role": "function_result",
+                    "function_call_id": "duplicate",
+                    "function_id": "engine::functions::info",
+                    "content": serde_json::to_value(&prepared.content).unwrap()
+                }),
+            ],
+        );
+
+        assert!(
+            ledger.is_empty(),
+            "a call id shared by visible calls is ambiguous"
+        );
+    }
+
+    #[test]
+    fn visible_source_call_must_resolve_to_info() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+        let (prepared, updates) = prepare_info_result(
+            "source",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        apply_contract_updates_after_append(&mut ledger, "source", updates);
+        let result = json!({
+            "role": "function_result",
+            "function_call_id": "source",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&prepared.content).unwrap()
+        });
+
+        let mut wrapper_ledger = ledger.clone();
+        retain_visible_contract_sources(
+            &mut wrapper_ledger,
+            &[
+                json!({
+                    "role": "assistant",
+                    "content": [{
+                        "type": "function_call",
+                        "id": "source",
+                        "function_id": "agent_trigger",
+                        "arguments": { "function": "engine::functions::info" }
+                    }]
+                }),
+                result.clone(),
+            ],
+        );
+        assert!(wrapper_ledger["worker::function"].eligible);
+
+        retain_visible_contract_sources(
+            &mut ledger,
+            &[
+                json!({
+                    "role": "assistant",
+                    "content": [{
+                        "type": "function_call",
+                        "id": "source",
+                        "function_id": "worker::other",
+                        "arguments": {}
+                    }]
+                }),
+                result,
+            ],
+        );
+        assert!(
+            ledger.is_empty(),
+            "a mismatched visible call cannot identify the info result"
+        );
+    }
+
+    #[test]
+    fn duplicate_batch_entries_are_never_compacted_or_recorded() {
+        let contract = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let details = json!({ "functions": [contract.clone(), contract] });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+
+        let (prepared, updates) = prepare_info_result(
+            "duplicates",
+            &json!({ "function_ids": ["worker::function", "worker::function"] }),
+            &data,
+            &BTreeMap::new(),
+            true,
+        );
+        assert_eq!(prepared, data);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn persisted_contract_digests_are_stable_sha256() {
+        assert_eq!(
+            digest_value(&json!({ "a": 1 })).as_deref(),
+            Some("015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862")
+        );
     }
 
     #[test]

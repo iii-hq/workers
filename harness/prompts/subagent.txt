@@ -35,6 +35,8 @@ Step 1. Find the id with `engine::functions::list` — filter with `{ search: "<
 `{ prefix: "<worker>::" }`. Never use a function id from memory.
 Step 2. Fetch the contract with `engine::functions::info { function_id: "<id>" }` — once per
 function; it stays valid all session. Batch several with `{ function_ids: [...] }`.
+An `unchanged_in_context` result names the earlier call containing the exact full contract; reuse
+that contract.
 Step 3. Call it. Set `description` to a concise action label in the user's language, without
 the function id or implementation jargon. `payload` is a JSON OBJECT, never a JSON-encoded
 string, and every argument goes INSIDE `payload`. Nested objects stay literal objects;

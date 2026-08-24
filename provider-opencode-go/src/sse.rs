@@ -173,19 +173,36 @@ pub fn map_finish_reason(s: &str) -> StopReason {
 
 pub fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
-    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
-        into.input = Some(v);
-    }
-    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
-        into.output = Some(v);
-    }
+    let mut cache_read = None;
+    let mut cache_write = None;
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
             .and_then(Value::as_u64)
         {
-            into.cache_read = Some(v);
+            cache_read = Some(v);
         }
+        if let Some(v) = raw
+            .pointer(&format!("/{parent}/cache_write_tokens"))
+            .and_then(Value::as_u64)
+        {
+            cache_write = Some(v);
+        }
+    }
+    if let Some(v) = cache_read {
+        into.cache_read = Some(v);
+    }
+    if let Some(v) = cache_write {
+        into.cache_write = Some(v);
+    }
+    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
+        into.input = Some(
+            v.saturating_sub(cache_read.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0)),
+        );
+    }
+    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
+        into.output = Some(v);
     }
     if let Some(v) = raw
         .pointer("/completion_tokens_details/reasoning_tokens")
@@ -422,6 +439,24 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, AssistantMessageEvent::Usage { .. })));
+    }
+
+    #[test]
+    fn cache_read_and_write_are_disjoint_from_input_with_saturation() {
+        let mut usage = Usage::default();
+        merge_usage(
+            &json!({
+                "input_tokens": 8,
+                "input_tokens_details": {
+                    "cached_tokens": 6,
+                    "cache_write_tokens": 4,
+                },
+            }),
+            &mut usage,
+        );
+        assert_eq!(usage.input, Some(0));
+        assert_eq!(usage.cache_read, Some(6));
+        assert_eq!(usage.cache_write, Some(4));
     }
 
     #[test]

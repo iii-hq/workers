@@ -14,6 +14,7 @@ use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
+use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::pump::pump_abortable;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use llm_router::types::model::{Model, ThinkingLevel};
@@ -23,6 +24,18 @@ use tokio::sync::mpsc;
 
 /// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+fn resolve_session_id(
+    provider_options: Option<&serde_json::Value>,
+    session_id: Option<&str>,
+) -> Option<String> {
+    provider_options
+        .and_then(|options| options.get("session_id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|key| !key.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| session_id.and_then(derive_affinity_id))
+}
 
 pub fn make_stream(
     iii: IIIClient,
@@ -173,6 +186,10 @@ async fn run_stream_call(
         response_format: input.response_format,
         reasoning_effort,
         allow_json_schema,
+        session_id: resolve_session_id(
+            input.provider_options.as_ref(),
+            input.session_id.as_deref(),
+        ),
     });
     let headers = build_headers(&cfg);
 
@@ -246,6 +263,28 @@ mod tests {
         AssistantMessageEvent::Done {
             message: empty_assistant("gpt-test"),
         }
+    }
+
+    #[test]
+    fn session_id_prefers_an_explicit_option_then_session_affinity() {
+        let options = serde_json::json!({ "session_id": "caller-key" });
+        assert_eq!(
+            resolve_session_id(Some(&options), Some("s_conversation")).as_deref(),
+            Some("caller-key")
+        );
+        assert_eq!(
+            resolve_session_id(None, Some("s_conversation")),
+            llm_router::provider_scaffold::cache::derive_affinity_id("s_conversation")
+        );
+        for blank in ["", "   "] {
+            let options = serde_json::json!({ "session_id": blank });
+            assert_eq!(
+                resolve_session_id(Some(&options), Some("s_conversation")),
+                llm_router::provider_scaffold::cache::derive_affinity_id("s_conversation")
+            );
+        }
+        assert_eq!(resolve_session_id(None, Some("   ")), None);
+        assert_eq!(resolve_session_id(None, None), None);
     }
 
     fn meta_with_efforts(efforts: &[&str]) -> Model {
