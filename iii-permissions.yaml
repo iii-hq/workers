@@ -51,6 +51,7 @@ rules:
   # Internal hot-reload trigger handler — must not be agent-callable; it is
   # invoked only by the engine's `configuration:updated` trigger dispatch.
   - '!shell::on-config-change'
+  - '!cursor::on-config-change'
   # Operator/automation health signal, not an agent tool: it can surface a
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.

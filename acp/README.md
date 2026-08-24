@@ -8,7 +8,7 @@ Editors and clients that already speak ACP launch `iii-acp` as a subprocess
 and drive it through their native agent UI. No editor plugin, no fork, no
 bespoke per-client integration.
 
-> Status: 0.1.0. Server-side only (`acp-client` for consuming external ACP
+> Status: 0.3.0. Server-side only (`acp-client` for consuming external ACP
 > agents ships separately). All eleven client→agent methods are implemented
 > (`initialize`, `authenticate`, `session/{new,load,resume,list,prompt,cancel,close,set_mode,set_config_option}`)
 > plus the `session/update` agent→client notification. Reverse-RPC paths
@@ -16,6 +16,10 @@ bespoke per-client integration.
 > `terminal/{create,kill,output,release,wait_for_exit}`) remain deferred —
 > internal iii brains use iii primitives directly for filesystem and
 > terminal access. Full per-method status in the [Methods](#methods) table.
+
+## Upgrading from 0.2
+
+Version 0.3 stores records, history, ownership, and prompt claims in the isolated `acp-v0.3` state scope. Existing 0.2 sessions remain untouched but are not listed or loadable through 0.3. This deliberate compatibility fence prevents mixed 0.2 and 0.3 processes from mutating the same history or dispatching overlapping prompts; finish or close important 0.2 sessions before upgrading.
 
 ## Why this exists (vs MCP, skills, agent workers)
 
@@ -147,6 +151,7 @@ iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anth
 | `--engine-url` (`-e`, `IIIACP_ENGINE_URL`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
 | `--debug` (`-d`) | Verbose tracing on stderr. |
 | `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that runs the prompt turn. Falls back to a built-in echo brain when unset. Canonical value is `run::start_and_wait` (turn-orchestrator). |
+| `--brain-stop-fn` (`IIIACP_BRAIN_STOP_FN`) | Optional iii function id called with `session_id` when ACP cancels an external brain turn. |
 | `--use-canonical-brain` (`IIIACP_USE_CANONICAL_BRAIN`) | Shortcut for `--brain-fn run::start_and_wait`. |
 | `--model` (`IIIACP_MODEL`) | Model id forwarded to the brain (e.g. `claude-sonnet-4-5-20250929`). |
 | `--provider` (`IIIACP_PROVIDER`) | Provider id forwarded to the brain (e.g. `anthropic`). Routes to `provider::<provider>::complete`. |
@@ -291,17 +296,17 @@ already subscribe to. **No bespoke iii-acp publish protocol.**
 
 ## State layout
 
-All keys live in scope `acp`. `connId` is regenerated per subprocess so
-concurrent editors don't collide.
+All keys live in scope `acp-v0.3`. Session IDs are global UUIDs, while
+`conn_id` is stored as ownership metadata and regenerated per subprocess.
 
-```
-<connId>:sessions:_index           = ["sess_a", "sess_b", ...]
-<connId>:sessions:<sessId>         = { sessionId, connId, cwd, mcpServers, created_at_ms, last_activity_ms }
-<connId>:sessions:<sessId>:history = [ session/update entries ... ]
+```text
+sessions:_index            = ["sess_a", "sess_b", ...]
+sessions:<session_id>      = { session_id, conn_id, cwd, mcp_servers, created_at_ms, last_activity_ms, mode, config_options }
+sessions:<session_id>:history = { entries, cursor_item_ids, owner_conn_id, active_prompt, closed, closed_by_conn_id }
 ```
 
 Streaming wire: `agent::events` (per-session events), per-connection topic
-`acp:<connId>:session:<sessId>:cancel` (best-effort cancel signal).
+`acp:<conn_id>:session:<session_id>:cancel` (best-effort cancel signal).
 
 ## Wire example (raw stdio)
 
@@ -318,5 +323,5 @@ Replies stream on stdout, one JSON frame per line.
 cargo test
 ```
 
-17 lib + 7 protocol envelope tests. Integration smoke against a live engine
+37 lib + 10 protocol envelope tests. Integration smoke against a live engine
 lives in the iii test harness.
