@@ -44,6 +44,7 @@ import {
   errorMessage,
   fileFromBase64,
   findInBrowserPage,
+  elementLabel,
   hintBrowserPick,
   listBrowserCookies,
   navigateBrowser,
@@ -78,16 +79,22 @@ import { BackButton, ChevronLeftIcon } from '../lib/widgets'
 import {
   type Annotation,
   type AnnotationSet,
+  type AnnotationTool,
   addAnnotation,
+  addElementMark,
+  addShape,
   annotationFileName,
   annotationPinFileName,
   annotationsMarkdown,
   labelAnnotation,
+  MIN_SHAPE_SIZE,
   moveAnnotation,
   noteAnnotation,
   removeAnnotation,
   renderAnnotatedImage,
   renderAnnotationCrop,
+  resizeAnnotation,
+  undoAnnotation,
 } from './annotations'
 import { ConsolePanel } from './ConsolePanel'
 import {
@@ -105,6 +112,19 @@ import { type LiveFrame, useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 const PICKED_FN = 'iii::browser-ui::picked'
+const TOOL_HINTS: Record<AnnotationTool, string> = {
+  pin: 'Click a spot to drop a numbered pin.',
+  select: 'Click an element to box it, labelled with its selector.',
+  rect: 'Drag a rectangle, then add a note to it.',
+  arrow: 'Drag from tail to head, then add a note to it.',
+}
+const SHAPE_COLORS = [
+  '#e5484d',
+  '#f5a623',
+  '#30a46c',
+  '#0091ff',
+  '#8e4ec6',
+] as const
 const HANDOFF_FN = 'iii::browser-ui::handoff'
 const HANDOFF_RESOLVED_FN = 'iii::browser-ui::handoff-resolved'
 const NAVIGATED_FN = 'iii::browser-ui::navigated'
@@ -320,6 +340,8 @@ export function SessionView({
   // Annotate mode freezes the frame the pins sit on; the live view resumes
   // when the mode ends. The pins outlive the mode until sent or cleared.
   const [annotating, setAnnotating] = useState(false)
+  const [tool, setTool] = useState<AnnotationTool>('pin')
+  const [drawColor, setDrawColor] = useState<string>(SHAPE_COLORS[0])
   const [frozen, setFrozen] = useState<LiveFrame | null>(null)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(
@@ -333,6 +355,7 @@ export function SessionView({
     setAnnotations([])
     setSelectedAnnotation(null)
     unlabeledPinsRef.current = []
+    setTool('pin')
   }, [sessionId])
   const liveFrameRef = useRef(live.frame)
   liveFrameRef.current = live.frame
@@ -410,16 +433,73 @@ export function SessionView({
     setSelectedAnnotation(null)
     unlabeledPinsRef.current = []
   }, [])
+  const drawingIdRef = useRef<string | null>(null)
   const viewportAnnotation = annotating
     ? {
+        tool,
+        drawColor,
+        onAddShape: (kind: 'rect' | 'arrow', x: number, y: number) => {
+          if (kind !== 'rect' && kind !== 'arrow') return
+          const next = addShape(annotationsRef.current, kind, x, y, drawColor)
+          const shape = next[next.length - 1]
+          drawingIdRef.current = shape?.id ?? null
+          setAnnotations(next)
+        },
+        onResizeShape: (x2: number, y2: number) => {
+          const id = drawingIdRef.current
+          if (id) setAnnotations((list) => resizeAnnotation(list, id, x2, y2))
+        },
+        onEndShape: () => {
+          const id = drawingIdRef.current
+          drawingIdRef.current = null
+          if (!id) return
+          const shape = annotationsRef.current.find((a) => a.id === id)
+          if (!shape) return
+          const w = Math.abs((shape.x2 ?? shape.x) - shape.x)
+          const h = Math.abs((shape.y2 ?? shape.y) - shape.y)
+          if (w < MIN_SHAPE_SIZE && h < MIN_SHAPE_SIZE) {
+            setAnnotations((list) => list.filter((a) => a.id !== id))
+            return
+          }
+          // A finished box or arrow opens its note editor, like a dropped
+          // pin, so a mark and its message are one gesture.
+          setSelectedAnnotation(id)
+        },
         annotations,
         selectedId: selectedAnnotation,
         onAdd: (x: number, y: number) => {
+          if (!frozen) return
+          if (tool === 'select') {
+            // The element under the click becomes a box snapped to its
+            // bounds, labelled with its selector - the inspector gesture.
+            void hintBrowserPick(
+              host.iii,
+              sessionId,
+              Math.min(frozen.width - 1, Math.round(x * frozen.width)),
+              Math.min(frozen.height - 1, Math.round(y * frozen.height)),
+            )
+              .then((hint) => {
+                if (!hint?.hit || !hint.bounds) return
+                const b = hint.bounds
+                setAnnotations(
+                  addElementMark(
+                    annotationsRef.current,
+                    b.x / frozen.width,
+                    b.y / frozen.height,
+                    (b.x + b.width) / frozen.width,
+                    (b.y + b.height) / frozen.height,
+                    drawColor,
+                    elementLabel(hint.tag, hint.id, hint.classes),
+                  ),
+                )
+              })
+              .catch(() => {})
+            return
+          }
           const next = addAnnotation(annotationsRef.current, x, y)
           const pin = next[next.length - 1]
           setAnnotations(next)
-          setSelectedAnnotation(pin?.id ?? null)
-          if (!pin || !frozen) return
+          if (!pin) return
           unlabeledPinsRef.current.push(pin.id)
           void resolveBrowserPick(
             host.iii,
@@ -1284,6 +1364,78 @@ export function SessionView({
                 event.target.value = ''
               }}
             />
+            {annotating ? (
+              <fieldset
+                className="br-ui-annot-tools"
+                aria-label="annotation tools"
+              >
+                <SegmentedControl<AnnotationTool>
+                  value={tool}
+                  onChange={setTool}
+                  options={[
+                    {
+                      value: 'pin',
+                      label: 'Pin',
+                      title: 'Drop a numbered pin on a spot',
+                    },
+                    {
+                      value: 'select',
+                      label: 'Element',
+                      title: 'Click an element to box it and label its selector',
+                    },
+                    {
+                      value: 'rect',
+                      label: 'Box',
+                      title: 'Drag a rectangle, then add a note',
+                    },
+                    {
+                      value: 'arrow',
+                      label: 'Arrow',
+                      title: 'Drag an arrow, then add a note',
+                    },
+                  ]}
+                  className="br-ui-tabs"
+                  aria-label="annotation tool"
+                />
+                <span className="br-ui-annot-hint">{TOOL_HINTS[tool]}</span>
+                <span className="br-ui-annot-swatches">
+                  {SHAPE_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      aria-pressed={drawColor === c}
+                      aria-label={`colour ${c}`}
+                      className={cn(
+                        'br-ui-annot-swatch',
+                        drawColor === c && 'is-on',
+                      )}
+                      style={{ background: c }}
+                      onClick={() => {
+                        setDrawColor(c)
+                        const id = selectedAnnotation
+                        if (id)
+                          setAnnotations((list) =>
+                            list.map((a) =>
+                              a.id === id && (a.kind ?? 'pin') !== 'pin'
+                                ? { ...a, color: c }
+                                : a,
+                            ),
+                          )
+                      }}
+                    />
+                  ))}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setAnnotations((list) => undoAnnotation(list))}
+                  disabled={annotations.length === 0}
+                  title="undo the last mark"
+                >
+                  Undo
+                </Button>
+              </fieldset>
+            ) : null}
             <Viewport
               frame={annotating && frozen ? frozen : live.frame}
               loading={live.loading}
@@ -1365,9 +1517,7 @@ export function SessionView({
         <span className="spacer" />
         {viewportShown ? (
           annotating ? (
-            <span className="fact hint">
-              annotating: click an element to pin it, esc ends
-            </span>
+            <span className="fact hint">{TOOL_HINTS[tool]} Esc ends.</span>
           ) : (
             <>
               <span className="fact hint">Click to focus</span>

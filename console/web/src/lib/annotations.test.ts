@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MIN_SHAPE_SIZE,
   addAnnotation,
+  addShape,
   annotationFileName,
   annotationPinFileName,
   annotationsMarkdown,
@@ -8,9 +10,30 @@ import {
   moveAnnotation,
   noteAnnotation,
   removeAnnotation,
+  resizeAnnotation,
+  undoAnnotation,
 } from './annotations'
 
 describe('annotations', () => {
+  it('draws shapes: start equal, resize clamps, undo drops the newest', () => {
+    let list = addShape([], 'rect', 0.2, 0.3, '#e5484d')
+    const rect = list[0]
+    expect(rect).toMatchObject({
+      kind: 'rect',
+      x: 0.2,
+      y: 0.3,
+      x2: 0.2,
+      y2: 0.3,
+      color: '#e5484d',
+    })
+    list = resizeAnnotation(list, rect.id, 1.4, 0.9)
+    expect(list[0]).toMatchObject({ x2: 1, y2: 0.9 })
+    list = addShape(list, 'arrow', 0.5, 0.5)
+    expect(list[1].kind).toBe('arrow')
+    expect(undoAnnotation(list)).toHaveLength(1)
+    expect(MIN_SHAPE_SIZE).toBeGreaterThan(0)
+  })
+
   it('keeps pins as clamped fractions and numbers them by order', () => {
     let list = addAnnotation([], 0.25, 0.5)
     list = addAnnotation(list, 1.4, -0.2)
@@ -66,7 +89,7 @@ describe('annotations', () => {
     }
     expect(annotationsMarkdown(set)).toBe(
       [
-        'Annotations on https://example.com/pricing?plan=team (3 pins)',
+        'Annotations on https://example.com/pricing?plan=team (3 marks)',
         '1. logo is blurry (img.logo (ref e3))',
         '2. (no note)',
         '3. a.cta "Learn more"',
