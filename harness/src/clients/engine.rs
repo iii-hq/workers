@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -43,11 +43,16 @@ impl std::fmt::Display for DispatchError {
 pub struct EngineClient {
     iii: Arc<IIIClient>,
     timeout_ms: u64,
+    compose: ComposeScope,
 }
 
 impl EngineClient {
     pub fn new(iii: Arc<IIIClient>, timeout_ms: u64) -> Self {
-        Self { iii, timeout_ms }
+        Self {
+            iii,
+            timeout_ms,
+            compose: ComposeScope::from_env(),
+        }
     }
 
     /// Dispatch an arbitrary iii function and return its raw result. This is
@@ -63,17 +68,23 @@ impl EngineClient {
         function_id: &str,
         payload: Value,
     ) -> Result<Value, DispatchError> {
+        let (payload, target_namespace) = self.compose.prepare(function_id, payload);
         // Capture the epoch immediately before the invocation instead of
         // comparing against process-global state. A global baseline becomes
         // stale when the engine restarts while this worker is idle and would
         // falsely interrupt the first slow call made afterwards.
         let baseline = engine_epoch_ms(&self.iii).await;
-        let call = self.iii.trigger(TriggerRequest {
+        let mut request: TriggerRequestWithMetadata = TriggerRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
             timeout_ms: Some(self.timeout_ms),
-        });
+        }
+        .into();
+        if let Some(namespace) = target_namespace {
+            request = request.namespace(namespace);
+        }
+        let call = self.iii.trigger(request);
         let result = match baseline {
             Some(baseline) => {
                 tokio::select! {
@@ -160,6 +171,51 @@ impl EngineClient {
         let items = resp.get("functions").and_then(Value::as_array)?;
         Some(items.iter().filter_map(descriptor_of).collect())
     }
+}
+
+/// Compose starts project workers in the project namespace, while its control
+/// functions live in the daemon namespace. These two environment values are
+/// supervisor-owned: they route `compose::*` to the daemon that started this
+/// harness and pin every request to this harness's compose file.
+#[derive(Clone, Debug, Default)]
+struct ComposeScope {
+    namespace: Option<String>,
+    file: Option<String>,
+}
+
+impl ComposeScope {
+    fn from_env() -> Self {
+        Self {
+            namespace: nonempty_env("III_COMPOSE_NAMESPACE"),
+            file: nonempty_env("III_COMPOSE_FILE"),
+        }
+    }
+
+    fn prepare<'a>(&'a self, function_id: &str, mut payload: Value) -> (Value, Option<&'a str>) {
+        if !function_id.starts_with("compose::") {
+            return (payload, None);
+        }
+
+        if payload.is_null() {
+            payload = json!({});
+        }
+        if let Some(arguments) = payload.as_object_mut() {
+            if let Some(file) = &self.file {
+                arguments.insert("file".to_string(), Value::String(file.clone()));
+            }
+            if let Some(namespace) = &self.namespace {
+                arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
+            }
+        }
+        (payload, self.namespace.as_deref())
+    }
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// How often an in-flight dispatch samples the engine epoch, and how long
@@ -357,6 +413,40 @@ mod tests {
         });
         assert_eq!(parse_engine_epoch(&response), Some(20));
         assert_eq!(parse_engine_epoch(&json!({ "workers": [] })), None);
+    }
+
+    #[test]
+    fn compose_calls_are_routed_and_scoped_to_the_supervised_project() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        let (payload, namespace) = scope.prepare(
+            "compose::add",
+            json!({
+                "worker": "database",
+                "file": "/tmp/other.yaml",
+                "namespace": "other-daemon"
+            }),
+        );
+
+        assert_eq!(namespace, Some("compose-daemon"));
+        assert_eq!(payload["worker"], "database");
+        assert_eq!(payload["file"], "/srv/app/worker-compose.yaml");
+        assert_eq!(payload["namespace"], "compose-daemon");
+    }
+
+    #[test]
+    fn ordinary_calls_keep_the_project_namespace_and_payload() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        let payload = json!({ "path": "." });
+        let (prepared, namespace) = scope.prepare("shell::fs::ls", payload.clone());
+
+        assert_eq!(prepared, payload);
+        assert_eq!(namespace, None);
     }
 
     #[test]

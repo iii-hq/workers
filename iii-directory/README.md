@@ -405,7 +405,7 @@ Ranking pipeline:
    consults the public workers registry in-process with the same capability
    queries plus informative-term retries (all concurrent; verified authors
    only). Candidates merge round-robin across search variants, returning up to
-   2 workers / 6 candidates that WOULD match if installed, with `worker::add`
+   2 workers / 6 candidates that WOULD match if installed, with `compose::add`
    guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.

@@ -32,8 +32,8 @@ ids, then fetch their contracts in one batched `engine::functions::info` call.
 - The response may also carry an `installable` section: workers from the
   public registry (verified authors only) whose functions match but are NOT
   installed. Those functions are not callable yet — confirm with the user,
-  install with `worker::add` (`{ "source": { "kind": "registry", "name":
-  "<worker>" }, "wait": false }`, then poll `worker::status`), and only then
+  install with `compose::add` (`{ "worker": "<worker>" }`) and wait for that
+  call to report the worker ready, and only then
   search again, batch the selected ids through `engine::functions::info`, and
   then call them. The `registry_search` configuration knob turns the section
   off.
