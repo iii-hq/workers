@@ -12,8 +12,12 @@
     "type": "object",
     "required": [
       "active_sessions",
+      "allow_cookie_import",
+      "allow_history_access",
       "allowed_schemes",
       "attach_enabled",
+      "configured_origin_policies",
+      "default_origin_policy_set",
       "headless_default",
       "issues",
       "max_sessions",
@@ -25,6 +29,12 @@
         "type": "integer",
         "format": "uint64",
         "minimum": 0.0
+      },
+      "allow_cookie_import": {
+        "type": "boolean"
+      },
+      "allow_history_access": {
+        "type": "boolean"
       },
       "allowed_schemes": {
         "type": "array",
@@ -47,6 +57,14 @@
           "string",
           "null"
         ]
+      },
+      "configured_origin_policies": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "default_origin_policy_set": {
+        "type": "boolean"
       },
       "headless_default": {
         "type": "boolean"

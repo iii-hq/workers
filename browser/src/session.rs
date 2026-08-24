@@ -22,7 +22,7 @@ use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{SharedConfig, WorkerConfig};
+use crate::config::{origin_policy_for, SharedConfig, WorkerConfig};
 use crate::events::{
     Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, NavigatedEvent,
     PickedElement, PickedEvent, SessionStoppedEvent,
@@ -43,6 +43,32 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn temp_nonce() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn create_private_temp_dir(
+    prefix: &str,
+    owner: &str,
+    nonce: u128,
+) -> std::io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{owner}-{nonce:032x}",
+        std::process::id()
+    ));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path)?;
+    Ok(path)
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -350,6 +376,8 @@ pub struct Session {
     /// Cross-call state for `browser::execute`; lives until the session
     /// stops.
     pub exec_state: Mutex<serde_json::Value>,
+    /// Serializes explicit navigation and execute's temporary document gate.
+    pub navigation_lock: tokio::sync::Mutex<()>,
     /// Committed top-document navigations, newest last, for the history
     /// panel and address-bar suggestions. Capped like the other buffers.
     pub history: Mutex<Vec<HistoryVisit>>,
@@ -358,6 +386,10 @@ pub struct Session {
     pub downloads: Mutex<Vec<DownloadRecord>>,
     /// Where `allowAndName` writes files (named by guid); removed on stop.
     pub downloads_dir: Option<std::path::PathBuf>,
+    /// File-input staging directories retained while Chromium may still read
+    /// their paths, then removed on stop.
+    upload_dirs: Mutex<Vec<std::path::PathBuf>>,
+    upload_counter: AtomicU64,
     pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -437,13 +469,37 @@ impl Session {
     }
 
     /// Update a download's progress and state by guid.
-    pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) {
+    pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) -> bool {
         let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(record) = downloads.iter_mut().find(|d| d.guid == guid) {
             record.received_bytes = received;
             record.total_bytes = total.max(received);
             record.state = state.to_string();
+            true
+        } else {
+            false
         }
+    }
+
+    pub fn remove_download_file(&self, guid: &str) {
+        if guid.contains(['/', '\\']) || guid.contains("..") {
+            return;
+        }
+        if let Some(dir) = &self.downloads_dir {
+            let _ = std::fs::remove_file(dir.join(guid));
+        }
+    }
+
+    pub fn create_upload_dir(&self) -> Result<std::path::PathBuf, String> {
+        let sequence = self.upload_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let owner = format!("{}-{sequence}", self.id);
+        let path = create_private_temp_dir("iii-browser-upload", &owner, temp_nonce())
+            .map_err(|error| format!("create upload staging dir failed: {error}"))?;
+        self.upload_dirs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(path.clone());
+        Ok(path)
     }
 
     pub fn next_seq(&self) -> u64 {
@@ -590,6 +646,14 @@ impl Session {
                 }
             }
         }
+        for dir in self
+            .upload_dirs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain(..)
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -713,22 +777,9 @@ impl Sessions {
         // that refuses leaves downloads disabled, not the session broken.
         // The dir name carries a nonce so it cannot be squatted in advance,
         // and it is created fresh, owner-only, refusing a pre-existing path.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let downloads_dir = std::env::temp_dir().join(format!(
-            "iii-browser-dl-{}-{slot}-{nonce:08x}",
-            std::process::id()
-        ));
-        let mut dir_builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            dir_builder.mode(0o700);
-        }
-        let dir_ok = dir_builder.create(&downloads_dir).is_ok();
-        if dir_ok {
+        let downloads_dir =
+            create_private_temp_dir("iii-browser-dl", &slot.to_string(), temp_nonce()).ok();
+        if let Some(downloads_dir) = &downloads_dir {
             if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
                 .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
                 .download_path(downloads_dir.to_string_lossy().to_string())
@@ -765,9 +816,12 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            navigation_lock: tokio::sync::Mutex::new(()),
             history: Mutex::new(Vec::new()),
             downloads: Mutex::new(Vec::new()),
-            downloads_dir: dir_ok.then(|| downloads_dir.clone()),
+            downloads_dir,
+            upload_dirs: Mutex::new(Vec::new()),
+            upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
@@ -863,9 +917,12 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            navigation_lock: tokio::sync::Mutex::new(()),
             history: Mutex::new(Vec::new()),
             downloads: Mutex::new(Vec::new()),
             downloads_dir: None,
+            upload_dirs: Mutex::new(Vec::new()),
+            upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
@@ -1651,6 +1708,15 @@ async fn spawn_event_pumps(
             let sx = sessions.clone();
             tasks.push(tokio::spawn(async move {
                 while let Some(event) = events.next().await {
+                    let current_url = s.page.url().await.ok().flatten().unwrap_or_default();
+                    if !origin_policy_for(&sx.config.load(), &current_url).downloads {
+                        let _ = s
+                            .page
+                            .execute(cdp_browser::CancelDownloadParams::new(event.guid.clone()))
+                            .await;
+                        s.remove_download_file(&event.guid);
+                        continue;
+                    }
                     s.download_begin(&event.guid, &event.suggested_filename, &event.url);
                     emit_download_changed(&sx, &s).await;
                 }
@@ -1673,12 +1739,16 @@ async fn spawn_event_pumps(
                         cdp_browser::DownloadProgressState::Completed => "completed",
                         cdp_browser::DownloadProgressState::Canceled => "canceled",
                     };
-                    s.download_progress(
+                    let recorded = s.download_progress(
                         &event.guid,
                         event.received_bytes as u64,
                         event.total_bytes as u64,
                         state,
                     );
+                    if !recorded {
+                        s.remove_download_file(&event.guid);
+                        continue;
+                    }
                     if state != "in_progress" || last_emit.elapsed().as_millis() >= 250 {
                         last_emit = std::time::Instant::now();
                         emit_download_changed(&sx, &s).await;
@@ -2010,5 +2080,20 @@ mod tests {
         assert_eq!(b.y, 20.0);
         assert_eq!(b.width, 100.0);
         assert_eq!(b.height, 40.0);
+    }
+
+    #[test]
+    fn private_temp_dir_is_fresh_and_owner_only() {
+        let owner = format!("test-{}", temp_nonce());
+        let nonce = temp_nonce();
+        let path = create_private_temp_dir("iii-browser-dir-test", &owner, nonce).unwrap();
+        assert!(create_private_temp_dir("iii-browser-dir-test", &owner, nonce).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        std::fs::remove_dir(path).unwrap();
     }
 }

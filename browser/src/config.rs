@@ -5,6 +5,7 @@
 //! applies to sessions started after it — running sessions keep the browser
 //! they were launched with.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -108,6 +109,99 @@ pub const fn scrapling_compat_supported() -> bool {
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OriginPolicyDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct OriginPolicy {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<OriginPolicyDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloads: Option<OriginPolicyDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uploads: Option<OriginPolicyDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scripting: Option<OriginPolicyDecision>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedOriginPolicy {
+    pub access: bool,
+    pub downloads: bool,
+    pub uploads: bool,
+    pub scripting: bool,
+}
+
+impl Default for ResolvedOriginPolicy {
+    fn default() -> Self {
+        Self {
+            access: true,
+            downloads: true,
+            uploads: true,
+            scripting: true,
+        }
+    }
+}
+
+impl OriginPolicy {
+    fn resolve(&self) -> ResolvedOriginPolicy {
+        let allowed = |decision| decision != Some(OriginPolicyDecision::Deny);
+        ResolvedOriginPolicy {
+            access: allowed(self.access),
+            downloads: allowed(self.downloads),
+            uploads: allowed(self.uploads),
+            scripting: allowed(self.scripting),
+        }
+    }
+}
+
+fn configured_origin_policy_for<'a>(
+    config: &'a WorkerConfig,
+    raw_url: &str,
+) -> Option<&'a OriginPolicy> {
+    let policies = config.origin_policies.as_ref()?;
+    let parsed = url::Url::parse(raw_url).ok()?;
+    let origin = parsed.origin().ascii_serialization();
+    if origin != "null" {
+        if let Some(policy) = policies.get(&origin) {
+            return Some(policy);
+        }
+    }
+    parsed.host_str().and_then(|host| policies.get(host))
+}
+
+pub fn origin_policy_for(config: &WorkerConfig, raw_url: &str) -> ResolvedOriginPolicy {
+    configured_origin_policy_for(config, raw_url)
+        .or(config.default_origin_policy.as_ref())
+        .map(OriginPolicy::resolve)
+        .unwrap_or_default()
+}
+
+pub fn origin_policy_config_key_for(config: &WorkerConfig, raw_url: &str) -> &'static str {
+    if configured_origin_policy_for(config, raw_url).is_some() {
+        "origin_policies"
+    } else {
+        "default_origin_policy"
+    }
+}
+
+pub fn origin_label(raw_url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(raw_url) else {
+        return raw_url.to_string();
+    };
+    let origin = parsed.origin().ascii_serialization();
+    if origin == "null" {
+        raw_url.to_string()
+    } else {
+        origin
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkerConfig {
@@ -153,6 +247,16 @@ pub struct WorkerConfig {
     pub allowed_schemes: Vec<String>,
     /// Maximum nodes serialized by `browser::snapshot` before truncation.
     pub max_snapshot_nodes: u64,
+    /// Fallback access policy when no exact-origin or bare-host entry matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_origin_policy: Option<OriginPolicy>,
+    /// Exact-origin and bare-host policies. Exact origins take precedence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_policies: Option<BTreeMap<String, OriginPolicy>>,
+    /// Expose the session's visited-page list.
+    pub allow_history_access: bool,
+    /// Let callers import cookies with `browser::cookies::set`.
+    pub allow_cookie_import: bool,
     /// Allow `browser::sessions::attach` to connect to an already-running
     /// browser and adopt its tabs. Off by default: attaching reaches the
     /// user's real profile with its logged-in sessions, so it is opt-in.
@@ -189,6 +293,10 @@ impl Default for WorkerConfig {
             screenshot_quality: 60,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
+            default_origin_policy: None,
+            origin_policies: None,
+            allow_history_access: true,
+            allow_cookie_import: true,
             allow_attach: false,
             scrapling: ScraplingConfig::default(),
             allow_loopback: false,
@@ -273,6 +381,10 @@ mod tests {
         assert_eq!(c.screenshot_quality, 60);
         assert_eq!(c.allowed_schemes, vec!["http", "https", "file"]);
         assert_eq!(c.max_snapshot_nodes, 2_000);
+        assert!(c.default_origin_policy.is_none());
+        assert!(c.origin_policies.is_none());
+        assert!(c.allow_history_access);
+        assert!(c.allow_cookie_import);
         assert!(!c.allow_attach);
         assert_eq!(c.scrapling.security_mode, SecurityMode::Safe);
         assert_eq!(c.scrapling.chromium_executable, "");
@@ -327,6 +439,25 @@ mod tests {
         let v = serde_json::json!({ "browser": { "headless": false } });
         let c = WorkerConfig::from_json(&v).unwrap();
         assert!(!c.headless);
+    }
+
+    #[test]
+    fn from_json_parses_origin_and_surface_policies() {
+        let config = WorkerConfig::from_json(&serde_json::json!({
+            "default_origin_policy": {"access": "deny"},
+            "origin_policies": {
+                "example.com": {"access": "allow", "uploads": "deny"}
+            },
+            "allow_history_access": false,
+            "allow_cookie_import": false
+        }))
+        .unwrap();
+
+        let policy = origin_policy_for(&config, "https://example.com/path");
+        assert!(policy.access);
+        assert!(!policy.uploads);
+        assert!(!config.allow_history_access);
+        assert!(!config.allow_cookie_import);
     }
 
     #[test]
@@ -452,6 +583,106 @@ mod tests {
         assert_eq!(c.clamp_timeout(Some(600_000)), 120_000);
     }
 
+    fn policy(access: OriginPolicyDecision) -> OriginPolicy {
+        OriginPolicy {
+            access: Some(access),
+            ..OriginPolicy::default()
+        }
+    }
+
+    #[test]
+    fn origin_policy_exact_origin_precedes_host_and_default() {
+        let config = WorkerConfig {
+            default_origin_policy: Some(policy(OriginPolicyDecision::Deny)),
+            origin_policies: Some(BTreeMap::from([
+                (
+                    "app.example.com".to_string(),
+                    policy(OriginPolicyDecision::Deny),
+                ),
+                (
+                    "https://app.example.com:8443".to_string(),
+                    policy(OriginPolicyDecision::Allow),
+                ),
+            ])),
+            ..WorkerConfig::default()
+        };
+
+        assert!(origin_policy_for(&config, "https://app.example.com:8443/a").access);
+        assert!(!origin_policy_for(&config, "https://app.example.com/a").access);
+        assert!(!origin_policy_for(&config, "https://other.example.com/a").access);
+    }
+
+    #[test]
+    fn origin_policy_exact_origin_includes_port_and_scheme() {
+        let config = WorkerConfig {
+            origin_policies: Some(BTreeMap::from([(
+                "https://app.example.com:8443".to_string(),
+                policy(OriginPolicyDecision::Deny),
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        assert!(!origin_policy_for(&config, "https://app.example.com:8443/a").access);
+        assert!(origin_policy_for(&config, "https://app.example.com/a").access);
+        assert!(origin_policy_for(&config, "http://app.example.com:8443/a").access);
+    }
+
+    #[test]
+    fn origin_policy_bare_host_matches_any_scheme_or_port() {
+        let config = WorkerConfig {
+            origin_policies: Some(BTreeMap::from([(
+                "app.example.com".to_string(),
+                policy(OriginPolicyDecision::Deny),
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        assert!(!origin_policy_for(&config, "https://app.example.com/a").access);
+        assert!(!origin_policy_for(&config, "http://app.example.com:8080/a").access);
+    }
+
+    #[test]
+    fn origin_policy_unparseable_url_falls_back_to_default() {
+        let config = WorkerConfig {
+            default_origin_policy: Some(OriginPolicy {
+                uploads: Some(OriginPolicyDecision::Deny),
+                ..OriginPolicy::default()
+            }),
+            origin_policies: Some(BTreeMap::from([(
+                "not a url".to_string(),
+                OriginPolicy::default(),
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        let resolved = origin_policy_for(&config, "not a url");
+        assert!(resolved.access);
+        assert!(resolved.downloads);
+        assert!(!resolved.uploads);
+        assert!(resolved.scripting);
+    }
+
+    #[test]
+    fn omitted_policy_fields_default_to_allow() {
+        let config = WorkerConfig {
+            default_origin_policy: Some(OriginPolicy {
+                access: Some(OriginPolicyDecision::Deny),
+                ..OriginPolicy::default()
+            }),
+            ..WorkerConfig::default()
+        };
+
+        assert_eq!(
+            origin_policy_for(&config, "https://example.com"),
+            ResolvedOriginPolicy {
+                access: false,
+                downloads: true,
+                uploads: true,
+                scripting: true,
+            }
+        );
+    }
+
     #[test]
     fn schema_lists_fields() {
         let s = WorkerConfig::json_schema();
@@ -459,6 +690,10 @@ mod tests {
         assert!(props.get("executable").is_some());
         assert!(props.get("headless").is_some());
         assert!(props.get("allowed_schemes").is_some());
+        assert!(props.get("default_origin_policy").is_some());
+        assert!(props.get("origin_policies").is_some());
+        assert!(props.get("allow_history_access").is_some());
+        assert!(props.get("allow_cookie_import").is_some());
         let scrapling = &props["scrapling"];
         assert_eq!(
             scrapling["default"],
