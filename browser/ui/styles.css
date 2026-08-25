@@ -3004,3 +3004,25 @@
     max-height: 160px;
   }
 }
+
+/* open-in-browser action on scrape url lines */
+[data-iii-ui="browser"] .br-ui-open-in-browser {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="browser"] .br-ui-open-in-browser:hover {
+  color: var(--color-ink);
+  border-color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-open-in-browser:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

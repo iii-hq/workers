@@ -1,3 +1,5 @@
+import type { Host } from '@iii-dev/console-ui'
+import { OpenInBrowser } from '../open-in-browser'
 import { JsonHighlight } from '@iii-dev/console-ui'
 import {
   ActionLine,
@@ -138,10 +140,12 @@ export function SessionFetchView({
   input,
   output,
   running,
+  host,
 }: {
   input: unknown
   output: unknown
   running?: boolean
+  host?: Host
 }) {
   const header = fetchHeader(input)
   if (!header) return null
@@ -184,6 +188,9 @@ export function SessionFetchView({
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
         <span className="br-ui-scrape-break">{page.url || url || ''}</span>
+        {host && (page.url || url) ? (
+          <OpenInBrowser host={host} url={page.url || url || ''} />
+        ) : null}
       </ActionLine>
       {page.extracted ? (
         <div>
