@@ -1,7 +1,8 @@
 //! `directory::pre-generate` — the conditional search hint. One short
 //! standing instruction pointing the model at `directory::search_functions`,
-//! injected at most once per turn and only when discovery is plausibly
-//! needed. Moved from the reflex spike's `search` selector branch; measured
+//! appended as the generation's final message at most once per turn and only
+//! when discovery is plausibly needed. Moved from the reflex spike's `search`
+//! selector branch; measured
 //! there: an unconditional per-generation hint *induces* redundant discovery
 //! on guided tasks (double discovery, up to +110% tokens), so every gate
 //! below earns its place.
@@ -90,7 +91,12 @@ pub enum ExposeKind {
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct PreGenerateMutations {
-    pub system_prompt: String,
+    /// Ephemeral tail messages for this generation only. The hint rides here
+    /// rather than as a system-prompt mutation: the system prompt is the
+    /// provider's first input item, and a once-per-turn append there
+    /// invalidated the entire prompt-cache prefix twice per turn.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub append_messages: Vec<Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -284,14 +290,22 @@ Before calling any task function whose ID has not already been verified in this 
     )
 }
 
-/// The conditional hint block appended to the system prompt.
-fn hint_prompt(system_prompt: &str, functions_generation: u64, expose: ExposeKind) -> String {
-    let hint = hint_block(functions_generation, expose);
-    if system_prompt.is_empty() {
-        hint
-    } else {
-        format!("{system_prompt}\n\n{hint}")
-    }
+/// The hint as an ephemeral tail user message. `timestamp` is mandatory —
+/// the router's message types have no serde default for it — and never
+/// reaches the provider wire.
+fn hint_message(functions_generation: u64, expose: ExposeKind) -> Value {
+    serde_json::json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": hint_block(functions_generation, expose) }],
+        "timestamp": now_ms(),
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
@@ -320,7 +334,9 @@ pub fn hint_preview() -> HintPreviewResponse {
 pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGenerateHookResponse {
     let config = deps.config.load_full();
     let GeneratePayload {
-        system_prompt,
+        // Wire compat: the harness always sends it; the hint no longer
+        // mutates it (see PreGenerateMutations).
+        system_prompt: _,
         messages,
         functions_generation,
         tools,
@@ -400,7 +416,7 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
     PreGenerateHookResponse {
         decision: "continue".to_string(),
         mutations: Some(PreGenerateMutations {
-            system_prompt: hint_prompt(&system_prompt, functions_generation, expose),
+            append_messages: vec![hint_message(functions_generation, expose)],
         }),
         annotations: annotation(DiscoveryPassV1 {
             outcome: DiscoveryOutcome::HintInjected,
@@ -475,6 +491,21 @@ mod tests {
         assert_eq!(response.annotations.directory.data.reason, Some(reason));
     }
 
+    /// The hint must be exactly one appended user message with one text
+    /// block and a timestamp (the router's message types have no serde
+    /// default for it). Returns the hint text for content assertions.
+    fn hint_text(response: &PreGenerateHookResponse) -> String {
+        let appended = &response.mutations.as_ref().unwrap().append_messages;
+        assert_eq!(appended.len(), 1, "exactly one appended hint message");
+        let message = &appended[0];
+        assert_eq!(message["role"], "user");
+        assert!(message["timestamp"].is_i64());
+        let blocks = message["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        blocks[0]["text"].as_str().unwrap().to_string()
+    }
+
     #[tokio::test]
     async fn injects_the_hint_when_every_gate_clears() {
         let deps = deps();
@@ -483,8 +514,8 @@ mod tests {
             response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
-        let prompt = &response.mutations.as_ref().unwrap().system_prompt;
-        assert!(prompt.starts_with("base discovery prompt\n\n<discovery_assist"));
+        let prompt = hint_text(&response);
+        assert!(prompt.starts_with("<discovery_assist"));
         assert!(prompt.contains("call directory::search_functions ONCE"));
         assert!(prompt
             .contains("Before calling any task function whose ID has not already been verified"));
@@ -534,8 +565,10 @@ mod tests {
             response.annotations.directory.data.outcome,
             DiscoveryOutcome::HintInjected
         );
-        let prompt = &response.mutations.as_ref().unwrap().system_prompt;
-        assert!(prompt.contains("payload `{\"id\":\"<exact id>\"}`"));
+        // The hint rides as an appended message, so the system prompt (and the
+        // pre-verified guidance it carries) is untouched by construction; the
+        // hint's own carve-out for pre-verified calls must still be present.
+        let prompt = hint_text(&response);
         assert!(prompt.contains("A call marked pre-verified by a Harness runtime block or update"));
         assert!(prompt.contains("do not search for it or fetch its contract"));
         assert!(prompt
@@ -549,7 +582,7 @@ mod tests {
         let mut request = request_for("find the stars", wide_tools());
         request.generate.expose = ExposeKind::Native;
         let response = pre_generate(&deps, request).await;
-        let prompt = &response.mutations.as_ref().unwrap().system_prompt;
+        let prompt = hint_text(&response);
         assert!(prompt.contains("required `capabilities` request field"));
         assert!(!prompt.contains("agent_trigger"));
     }
