@@ -90,8 +90,11 @@ export async function searchPaletteSources(
   input: SourceSearchInput,
 ): Promise<PaletteEntry[]> {
   const asked = sources.filter(({ source }) => {
-    if (input.kinds && !input.kinds.has(source.kind)) return false
+    // A source's own prefix always reaches it, whatever kinds the mode
+    // carries: the bare palette only navigates, so a prefix (or a filter
+    // chip) is how a tables- or files-source gets asked at all.
     if (input.prefix !== null && input.prefix === source.prefix) return true
+    if (input.kinds && !input.kinds.has(source.kind)) return false
     return input.text.length >= (source.minQuery ?? 1)
   })
   // A source that ignores its abort signal must not hold the whole answer

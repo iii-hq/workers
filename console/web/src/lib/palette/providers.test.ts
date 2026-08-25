@@ -102,6 +102,25 @@ describe('palette sources', () => {
     ])
   })
 
+  it("reaches a source through its own prefix even outside the mode's kinds", async () => {
+    registerPaletteSource('database', {
+      id: 'tables',
+      title: 'Tables',
+      kind: 'item',
+      prefix: '#',
+      search: async () => [{ id: 't', title: 'users', run: () => {} }],
+    })
+    const rows = await searchPaletteSources(getPaletteSources(), {
+      text: 'us',
+      prefix: '#',
+      kinds: new Set(['file']),
+      workingDir: null,
+      conversationId: null,
+      signal: new AbortController().signal,
+    })
+    expect(rows.map((entry) => entry.title)).toEqual(['users'])
+  })
+
   it('skips a source outside the mode and one that throws', async () => {
     registerPaletteSource('shell', files(['src/main.rs']))
     registerPaletteSource('other', {
