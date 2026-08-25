@@ -8,6 +8,9 @@ import type {
 } from '@/types/injectable-ui'
 import {
   firstRenderedTriggerActivity,
+  firstRenderedTriggerActivitySlot,
+  TRIGGER_RAW_REDACTION_FAILED,
+  triggerActivityRawRedactor,
   triggerActivityRenderers,
 } from './renderer-registry'
 
@@ -172,5 +175,47 @@ describe('trigger activity renderer registry', () => {
     expect(isValidElement(reloaded?.node)).toBe(true)
     if (!isValidElement(first?.node) || !isValidElement(reloaded?.node)) return
     expect(first.node.key).not.toBe(reloaded.node.key)
+  })
+
+  it('exposes worker-owned compact display and full detail slots', () => {
+    const renderers = triggerActivityRenderers([
+      registration({
+        id: 'complete-cron',
+        isMatch: (triggerType) => triggerType === 'cron',
+        tryRender: () => <span>source</span>,
+        tryRenderDisplay: () => <span>report became due</span>,
+        tryRenderDetails: () => <section>complete cron details</section>,
+      }),
+    ])
+    const display = firstRenderedTriggerActivitySlot(
+      renderers,
+      activity(),
+      (renderer) => renderer.tryRenderDisplay?.(activity()) ?? null,
+    )
+    const details = firstRenderedTriggerActivitySlot(
+      renderers,
+      activity(),
+      (renderer) => renderer.tryRenderDetails?.(activity()) ?? null,
+    )
+    expect(renderToStaticMarkup(display?.node)).toContain('report became due')
+    expect(renderToStaticMarkup(details?.node)).toContain(
+      'complete cron details',
+    )
+  })
+
+  it('fails closed when a trigger raw-data redactor throws', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const renderers = triggerActivityRenderers([
+      registration({
+        id: 'secret-cron',
+        isMatch: () => true,
+        tryRender: () => null,
+        redactRaw: () => {
+          throw new Error('broken redactor')
+        },
+      }),
+    ])
+    const redact = triggerActivityRawRedactor(renderers, 'cron')
+    expect(redact?.({ token: 'secret' })).toBe(TRIGGER_RAW_REDACTION_FAILED)
   })
 })

@@ -198,6 +198,8 @@ export interface TriggerFiredData {
   trigger_type?: string
   config?: unknown
   label?: string
+  /** Human-readable event text declared as registration metadata.action. */
+  action?: string
   model?: string
   once: boolean
   /** Durable binding fire counter after this activity; absent on older records. */
@@ -310,6 +312,37 @@ export interface MessagePatch {
 /** Mirrors session-manager's SessionStatus. */
 export type ConversationStatus = 'idle' | 'working' | 'done' | 'error'
 
+/** Harness-provided presentation hints for a spawned sub-agent session. */
+export type SubagentIcon =
+  | 'agent'
+  | 'code'
+  | 'search'
+  | 'terminal'
+  | 'database'
+  | 'test'
+  | 'review'
+  | 'docs'
+  | 'design'
+
+export type SubagentColor =
+  | 'neutral'
+  | 'blue'
+  | 'purple'
+  | 'teal'
+  | 'green'
+  | 'amber'
+  | 'rose'
+
+/**
+ * Mirrors `SessionMeta.metadata.subagent_display`. The enums deliberately
+ * keep arbitrary wire values out of CSS classes and icon lookup tables.
+ */
+export interface SubagentAppearance {
+  name: string
+  icon?: SubagentIcon
+  color?: SubagentColor
+}
+
 export interface Conversation {
   /**
    * The engine session_id (`console-<uuid>` for console-created chats).
@@ -344,6 +377,14 @@ export interface Conversation {
    * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
    */
   systemPrompt?: SystemPromptState
+  /** Raw SessionMeta.metadata, retained because session::set-meta replaces it. */
+  sessionMetadata?: Record<string, unknown>
+  /** Last authoritative SessionMeta/event timestamp; excludes local UI edits. */
+  serverMetaUpdatedAt?: number
+  /** Last authoritative title/metadata timestamp for unordered events. */
+  serverMetadataUpdatedAt?: number
+  /** Last authoritative lifecycle timestamp for unordered status events. */
+  serverStatusUpdatedAt?: number
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's
@@ -361,6 +402,8 @@ export interface Conversation {
    * Absent on root chats and pre-existing sessions. Drives the sidebar icon.
    */
   spawnedBy?: 'trigger' | 'agent'
+  /** Optional chip identity from `metadata.subagent_display`. */
+  subagentAppearance?: SubagentAppearance
   /** Driver-owned session status (spinner + sidebar indicator). */
   status?: ConversationStatus
   statusReason?: string

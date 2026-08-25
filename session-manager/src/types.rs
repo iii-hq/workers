@@ -320,7 +320,7 @@ pub struct SessionMeta {
     pub title: String,
     pub description: String,
     pub status: SessionStatus,
-    /// Short cause, set on `error`, cleared on any other status.
+    /// Short lifecycle detail retained on `working`, `done`, and `error`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
     /// App-defined; the tenancy hook (e.g. `{ "owner": "u_1" }`) that

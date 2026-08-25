@@ -1,12 +1,15 @@
 import {
   Activity,
-  Bot,
   BrainCircuit,
+  CheckCircle2,
   CircleAlert,
+  CircleStop,
   LoaderCircle,
   Send,
+  WifiOff,
 } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
+import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
 import {
   ActionLine,
   Chip,
@@ -25,6 +28,7 @@ import { fetchTranscript } from '@/lib/sessions/api'
 import { subscribeSessionTranscript } from '@/lib/sessions/events'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
+import type { SubagentColor, SubagentIcon } from '@/types/chat'
 import {
   type SpawnRequest,
   safeParseRequest,
@@ -121,19 +125,25 @@ export function SpawnActivityDisplay({
     (conversation) => conversation.id === childSessionId,
   )
   const signal = useLiveSubagentActivity(childSessionId, child?.status)
-  const activity = displayedSubagentActivity(child?.status, signal)
+  const activity = displayedSubagentActivity(
+    child,
+    signal,
+    ctx?.connectionState,
+  )
   const clock = useRelativeClock(
     child?.createdAt ?? createdAt ?? signal?.timestamp ?? child?.updatedAt,
   )
 
   if (!req) return null
   const task = taskText(req.task) ?? 'Waiting for the assigned task.'
+  const display = child?.subagentAppearance ?? req.display ?? undefined
   const childTitle =
-    child?.title && child.title !== child.id ? child.title : task
+    display?.name?.trim() ||
+    (child?.title && child.title !== child.id ? child.title : task)
   const open =
-    ctx && child
+    ctx && childSessionId
       ? () => {
-          ctx.select(child.id)
+          ctx.openConversationInPanel(childSessionId)
         }
       : undefined
 
@@ -143,8 +153,14 @@ export function SpawnActivityDisplay({
       task={task}
       status={activity}
       sessionId={childSessionId}
+      icon={(display?.icon ?? 'agent') as SubagentIcon}
+      color={(display?.color ?? 'neutral') as SubagentColor}
       createdAt={child?.createdAt ?? createdAt}
-      activityAt={signal?.timestamp ?? child?.updatedAt ?? child?.createdAt}
+      activityAt={
+        activity === 'disconnected'
+          ? undefined
+          : (signal?.timestamp ?? child?.updatedAt ?? child?.createdAt)
+      }
       now={clock}
       onOpen={open}
     />
@@ -202,6 +218,8 @@ interface SpawnActivityCardProps {
   task: string
   status: SubagentActivityKind
   sessionId?: string | null
+  icon?: SubagentIcon
+  color?: SubagentColor
   createdAt?: number
   activityAt?: number
   /** Deterministic clock for stories/tests; live surfaces provide a timer. */
@@ -215,30 +233,39 @@ export function SpawnActivityCard({
   task,
   status,
   sessionId,
+  icon = 'agent',
+  color = 'neutral',
   createdAt,
   activityAt,
   now = Date.now(),
   onOpen,
 }: SpawnActivityCardProps) {
-  const activityAge = formatElapsed(activityAt, now)
+  const activityAge =
+    status === 'disconnected' ? null : formatElapsed(activityAt, now)
+  const AgentIcon = SUBAGENT_ICON_COMPONENTS[icon]
   const content = (
     <div className="grid min-w-0 gap-4 @xl:grid-cols-[minmax(0,1fr)_auto] @xl:items-center">
       <div className="flex min-w-0 items-start gap-3">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-accent-muted text-accent sm:size-9">
-          <Bot aria-hidden className="size-5" strokeWidth={2.25} />
+        <div
+          className="active-subagent-chip flex size-10 shrink-0 items-center justify-center rounded-md sm:size-9"
+          data-color={color}
+        >
+          <AgentIcon aria-hidden className="size-5" strokeWidth={2.25} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <div className="font-sans text-base font-semibold text-ink sm:text-sm">
-              New sub-agent
+              {title}
             </div>
             <span className="rounded-md bg-accent-muted px-2 py-0.5 font-sans text-sm font-medium text-accent sm:text-xs">
-              New
+              Sub-agent
             </span>
           </div>
-          <div className="mt-1 line-clamp-2 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
-            {task}
-          </div>
+          {task !== title ? (
+            <div className="mt-1 line-clamp-2 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
+              {task}
+            </div>
+          ) : null}
           <ActivityMetadata
             className="mt-3"
             createdAt={createdAt}
@@ -268,8 +295,8 @@ export function SpawnActivityCard({
         type="button"
         className={className}
         data-subagent-status={status}
-        aria-label={`Open sub-agent session ${sessionId ?? title}`}
-        title={sessionId ? `Open sub-agent session ${sessionId}` : undefined}
+        aria-label={`Open ${title} sub-agent in a new panel`}
+        title={sessionId ? `${title} · ${sessionId}` : title}
         onClick={onOpen}
       >
         {content}
@@ -299,13 +326,26 @@ function SubagentStatus({
           ? 'Working'
           : status === 'error'
             ? 'Needs attention'
-            : 'Active'
+            : status === 'completed'
+              ? 'Completed'
+              : status === 'stopped'
+                ? 'Stopped'
+                : status === 'disconnected'
+                  ? 'Disconnected'
+                  : status === 'queued'
+                    ? 'Queued'
+                    : status === 'waiting'
+                      ? 'Waiting'
+                      : 'Active'
+  const terminal = status === 'completed' || status === 'stopped'
   const detail =
     activityAge == null
       ? label
       : activityAge === 'just now'
         ? `${label} now`
-        : `${label} for ${activityAge}`
+        : terminal
+          ? `${label} ${activityAge} ago`
+          : `${label} for ${activityAge}`
   const Icon =
     status === 'thinking'
       ? BrainCircuit
@@ -315,7 +355,13 @@ function SubagentStatus({
           ? LoaderCircle
           : status === 'error'
             ? CircleAlert
-            : Activity
+            : status === 'completed'
+              ? CheckCircle2
+              : status === 'stopped'
+                ? CircleStop
+                : status === 'disconnected'
+                  ? WifiOff
+                  : Activity
 
   return (
     <ActivityStatus
@@ -323,13 +369,17 @@ function SubagentStatus({
       detail={activityAge ? detail : null}
       icon={Icon}
       tone={
-        status === 'active'
+        status === 'active' || status === 'completed'
           ? 'positive'
           : status === 'error'
             ? 'danger'
-            : status === 'thinking' || status === 'messaging'
-              ? 'accent'
-              : 'neutral'
+            : status === 'stopped'
+              ? 'warning'
+              : status === 'queued' || status === 'waiting'
+                ? 'warning'
+                : status === 'thinking' || status === 'messaging'
+                  ? 'accent'
+                  : 'neutral'
       }
       motion={
         status === 'working'
@@ -381,6 +431,7 @@ function SpawnChips({ req }: { req: SpawnRequest }) {
   const opts = req.options
   return (
     <>
+      {req.display?.name ? <KvChip k="agent" v={req.display.name} /> : null}
       {req.model ? <KvChip k="model" v={req.model} /> : null}
       {req.provider ? <KvChip k="provider" v={req.provider} /> : null}
       {opts?.mode ? <KvChip k="mode" v={opts.mode} /> : null}
@@ -426,7 +477,7 @@ function SessionLink({ sessionId }: { sessionId: string }) {
   return (
     <button
       type="button"
-      onClick={() => ctx.select(sessionId)}
+      onClick={() => ctx.openConversationInPanel(sessionId)}
       className="text-accent hover:underline cursor-pointer break-all text-left"
       title="open child session"
     >

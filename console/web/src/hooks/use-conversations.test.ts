@@ -1,18 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SYSTEM_PROMPT_STATE } from '@/components/chat/system-prompt-selection'
 import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
-import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
+import type {
+  MetaUpdatedEvent,
+  SessionMeta,
+  StatusChangedEvent,
+  TranscriptItem,
+} from '@/lib/sessions/types'
 import type { Conversation } from '@/types/chat'
 import {
   appendMessageToConversation,
   applyCatalogModelFallback,
+  applyConversationMetadataEvent,
+  applyConversationStatusEvent,
+  bumpSessionWatchEpoch,
+  cancelHydrationRunsForSessions,
   completeFailedHydration,
+  type HydrationRun,
+  type HydrationUpsert,
   isUntouchedDraft,
   markBackgroundedStale,
+  markUnwatchedStale,
   mergeConversationMeta,
   mergeHydratedTranscript,
   mergeSessionListSnapshot,
+  metadataFor,
+  missingGenerationForDirectoryRefresh,
   resolveActiveConversationId,
+  shouldAcceptReconnectDirectoryRow,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -170,6 +185,66 @@ describe('mergeConversationMeta', () => {
     expect(next.hydrated).toBe(true)
   })
 
+  it('does not regress a newer directory event with an older metadata read', () => {
+    const existing = conversation({
+      status: 'done',
+      statusReason: 'stopped',
+      serverMetaUpdatedAt: 4_000,
+      serverMetadataUpdatedAt: 4_000,
+      serverStatusUpdatedAt: 4_000,
+      updatedAt: 4_000,
+    })
+
+    const next = mergeConversationMeta(
+      existing,
+      sessionMeta({
+        status: 'working',
+        status_reason: 'waiting for model',
+        updated_at: 3_000,
+      }),
+    )
+
+    expect(next.status).toBe('done')
+    expect(next.statusReason).toBe('stopped')
+    expect(next.title).toBe(existing.title)
+  })
+
+  it('merges a full snapshot independently across metadata and status clocks', () => {
+    const existing = conversation({
+      title: 'Old name',
+      status: 'done',
+      statusReason: 'stopped',
+      serverMetaUpdatedAt: 200,
+      serverMetadataUpdatedAt: 100,
+      serverStatusUpdatedAt: 200,
+      updatedAt: 200,
+    })
+
+    const next = mergeConversationMeta(
+      existing,
+      sessionMeta({
+        title: 'Frontend',
+        status: 'working',
+        updated_at: 150,
+        metadata: {
+          subagent_display: {
+            name: 'Frontend',
+            icon: 'code',
+            color: 'blue',
+          },
+        },
+      }),
+    )
+
+    expect(next.title).toBe('Frontend')
+    expect(next.subagentAppearance?.name).toBe('Frontend')
+    expect(next.serverMetadataUpdatedAt).toBe(150)
+    expect(next.status).toBe('done')
+    expect(next.statusReason).toBe('stopped')
+    expect(next.serverStatusUpdatedAt).toBe(200)
+    expect(next.updatedAt).toBe(200)
+  })
+
   it('maps metadata.spawned_by to the sidebar origin discriminant', () => {
     const spawned = (v: unknown) =>
       mergeConversationMeta(
@@ -199,6 +274,227 @@ describe('mergeConversationMeta', () => {
 
     expect(next.parentId).toBe('console-parent')
     expect(next.parentFunctionCallId).toBe('call-spawn-1')
+  })
+
+  it('retains raw harness metadata for subsequent whole-object writes', () => {
+    const metadata = {
+      surface: 'harness',
+      parent_session_id: 'console-parent',
+      function_call_id: 'call-spawn-1',
+      spawned_by: 'agent',
+      depth: 2,
+      subagent_display: {
+        name: '  Frontend  ',
+        icon: 'code',
+        color: 'purple',
+      },
+      harness_private: { attempt: 3 },
+    }
+
+    const next = mergeConversationMeta(undefined, sessionMeta({ metadata }))
+
+    expect(next.sessionMetadata).toBe(metadata)
+    expect(next.subagentAppearance).toEqual({
+      name: 'Frontend',
+      icon: 'code',
+      color: 'purple',
+    })
+    expect(next.parentId).toBe('console-parent')
+    expect(next.parentFunctionCallId).toBe('call-spawn-1')
+  })
+})
+
+describe('unordered directory events', () => {
+  const metadataEvent = (
+    timestamp: number,
+    name: string,
+  ): MetaUpdatedEvent => ({
+    session_id: 'console-1',
+    title: name,
+    description: '',
+    metadata: {
+      parent_session_id: 'root',
+      subagent_display: { name, icon: 'code', color: 'blue' },
+    },
+    timestamp,
+  })
+  const statusEvent = (
+    timestamp: number,
+    status: StatusChangedEvent['status'],
+  ): StatusChangedEvent => ({
+    session_id: 'console-1',
+    status,
+    previous_status: status === 'done' ? 'working' : 'idle',
+    ...(status === 'done' ? { status_reason: 'stopped' } : {}),
+    timestamp,
+  })
+
+  it('does not turn a terminal child active when an older status arrives last', () => {
+    const done = applyConversationStatusEvent(
+      conversation({ status: 'working', serverStatusUpdatedAt: 2_000 }),
+      statusEvent(4_000, 'done'),
+    )
+    const stale = applyConversationStatusEvent(
+      done,
+      statusEvent(3_000, 'working'),
+    )
+
+    expect(stale).toBe(done)
+    expect(stale.status).toBe('done')
+    expect(stale.statusReason).toBe('stopped')
+  })
+
+  it('does not roll back a newer sub-agent name, icon, or color', () => {
+    const newest = applyConversationMetadataEvent(
+      conversation({ serverMetadataUpdatedAt: 2_000 }),
+      metadataEvent(4_000, 'Frontend'),
+    )
+    const stale = applyConversationMetadataEvent(
+      newest,
+      metadataEvent(3_000, 'Explorer'),
+    )
+
+    expect(stale).toBe(newest)
+    expect(stale.subagentAppearance).toEqual({
+      name: 'Frontend',
+      icon: 'code',
+      color: 'blue',
+    })
+  })
+
+  it('orders status and metadata independently because their payloads are partial', () => {
+    const renamed = applyConversationMetadataEvent(
+      conversation({
+        status: 'working',
+        serverMetadataUpdatedAt: 2_000,
+        serverStatusUpdatedAt: 2_000,
+      }),
+      metadataEvent(5_000, 'Reviewer'),
+    )
+    const completed = applyConversationStatusEvent(
+      renamed,
+      statusEvent(4_000, 'done'),
+    )
+
+    expect(completed.status).toBe('done')
+    expect(completed.subagentAppearance?.name).toBe('Reviewer')
+    expect(completed.updatedAt).toBe(5_000)
+  })
+})
+
+describe('reconnect hydration', () => {
+  it('cancels only pre-reconnect reads for sessions being refreshed', () => {
+    const first = {
+      cancelled: false,
+      connectionEpoch: 0,
+      watchEpoch: 0,
+      upserts: [],
+    }
+    const second = {
+      cancelled: false,
+      connectionEpoch: 0,
+      watchEpoch: 0,
+      upserts: [],
+    }
+    const runs = new Map<string, HydrationRun>([
+      ['first', first],
+      ['second', second],
+    ])
+    const firstBuffer: HydrationUpsert[] = []
+    const secondBuffer: HydrationUpsert[] = []
+    const buffers = new Map<string, HydrationUpsert[]>([
+      ['first', firstBuffer],
+      ['second', secondBuffer],
+    ])
+
+    cancelHydrationRunsForSessions(['first'], runs, buffers)
+
+    expect(first.cancelled).toBe(true)
+    expect(runs.has('first')).toBe(false)
+    expect(buffers.has('first')).toBe(false)
+    expect(second.cancelled).toBe(false)
+    expect(runs.get('second')).toBe(second)
+    expect(buffers.get('second')).toBe(secondBuffer)
+  })
+
+  it('keeps lifecycle epochs isolated between concurrently mounted panels', () => {
+    const epochs = new Map([
+      ['panel-a', 1],
+      ['panel-b', 1],
+    ])
+
+    bumpSessionWatchEpoch(epochs, 'panel-b')
+
+    expect(epochs.get('panel-a')).toBe(1)
+    expect(epochs.get('panel-b')).toBe(2)
+  })
+
+  it('accepts a fresh reconnect row across unrelated lookup generations', () => {
+    expect(
+      shouldAcceptReconnectDirectoryRow({
+        currentGeneration: 2,
+      }),
+    ).toBe(true)
+  })
+
+  it('never lets a reconnect list override a definitive missing tombstone', () => {
+    expect(
+      shouldAcceptReconnectDirectoryRow({
+        currentGeneration: 2,
+        missingGeneration: 2,
+      }),
+    ).toBe(false)
+  })
+
+  it('expires a negative tombstone before a later reconnect snapshot', () => {
+    const tombstone = {
+      lookupGeneration: 2,
+      directoryRefreshGeneration: 4,
+    }
+
+    expect(missingGenerationForDirectoryRefresh(tombstone, 4)).toBe(2)
+    expect(missingGenerationForDirectoryRefresh(tombstone, 5)).toBeUndefined()
+  })
+})
+
+describe('metadataFor', () => {
+  it('preserves harness linkage and appearance across whole-object writes', () => {
+    const next = metadataFor(
+      conversation({
+        model: 'provider::current-model',
+        workingDir: null,
+        sessionMetadata: {
+          surface: 'harness',
+          parent_session_id: 'console-parent',
+          parent_turn_id: 'turn-parent',
+          function_call_id: 'call-spawn-1',
+          depth: 1,
+          spawned_by: 'agent',
+          fs_scope: { root: '/stale' },
+          subagent_display: {
+            name: 'Frontend',
+            icon: 'code',
+            color: 'blue',
+          },
+        },
+      }),
+    )
+
+    expect(next).toEqual({
+      surface: 'console',
+      model: 'provider::current-model',
+      mode: 'agent',
+      parent_session_id: 'console-parent',
+      parent_turn_id: 'turn-parent',
+      function_call_id: 'call-spawn-1',
+      depth: 1,
+      spawned_by: 'agent',
+      subagent_display: {
+        name: 'Frontend',
+        icon: 'code',
+        color: 'blue',
+      },
+    })
   })
 })
 
@@ -249,6 +545,38 @@ describe('markBackgroundedStale', () => {
       conversation({ id: 'never-opened', hydrated: false }),
     ]
     expect(markBackgroundedStale(sessions, 'active')).toBe(sessions)
+  })
+})
+
+describe('markUnwatchedStale', () => {
+  it('keeps every watched panel live while staling only hidden sessions', () => {
+    const sessions = [
+      conversation({ id: 'left-panel', hydrated: true }),
+      conversation({ id: 'right-panel', hydrated: true }),
+      conversation({ id: 'hidden', hydrated: true }),
+      conversation({ id: 'draft', draft: true, hydrated: true }),
+    ]
+
+    const next = markUnwatchedStale(
+      sessions,
+      new Set(['left-panel', 'right-panel']),
+    )
+
+    expect(next.find((c) => c.id === 'left-panel')?.hydrated).toBe(true)
+    expect(next.find((c) => c.id === 'right-panel')?.hydrated).toBe(true)
+    expect(next.find((c) => c.id === 'hidden')?.hydrated).toBe(false)
+    expect(next.find((c) => c.id === 'draft')?.hydrated).toBe(true)
+  })
+
+  it('preserves identity when all hydrated server sessions are watched', () => {
+    const sessions = [
+      conversation({ id: 'left-panel', hydrated: true }),
+      conversation({ id: 'right-panel', hydrated: true }),
+    ]
+
+    expect(
+      markUnwatchedStale(sessions, new Set(['left-panel', 'right-panel'])),
+    ).toBe(sessions)
   })
 })
 

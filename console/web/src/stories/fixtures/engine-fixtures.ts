@@ -596,6 +596,7 @@ export const engineRegisterTriggerSubscribe = base(
     trigger_type: 'state',
     config: { key: 'progress', scope: 'research' },
     label: 'research-progress-watch',
+    metadata: { action: 'research progress changed' },
     once: false,
   },
   wrapHarness({

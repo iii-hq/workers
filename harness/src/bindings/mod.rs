@@ -215,6 +215,18 @@ pub struct Binding {
 }
 
 impl Binding {
+    /// User-facing event text declared at registration time. It lives in the
+    /// canonical request so active rows, retirement records, and fires all
+    /// describe the same event without interpreting source-specific config.
+    pub fn event_action(&self) -> Option<&str> {
+        self.dedup_key
+            .as_ref()
+            .and_then(|key| key.get("metadata"))
+            .and_then(|metadata| metadata.get("action"))
+            .and_then(Value::as_str)
+            .filter(|action| !action.trim().is_empty())
+    }
+
     /// Whether the lifecycle is spent after `fires` deliveries.
     pub fn is_exhausted(&self, now_ms: i64) -> bool {
         if self.lifecycle.once && self.fires >= 1 {
@@ -277,6 +289,19 @@ mod tests {
         assert_eq!(t.event_pointer(), "/event");
         t.event_into = Some("/value".into());
         assert_eq!(t.event_pointer(), "/value");
+    }
+
+    #[test]
+    fn event_action_reads_registration_metadata() {
+        let mut b = binding();
+        b.dedup_key = Some(json!({
+            "trigger_type": "on-message",
+            "config": { "scope": "explorer" },
+            "metadata": { "action": "new Explorer message received" }
+        }));
+        assert_eq!(b.event_action(), Some("new Explorer message received"));
+        b.dedup_key.as_mut().unwrap()["metadata"]["action"] = json!(7);
+        assert_eq!(b.event_action(), None);
     }
 
     #[test]

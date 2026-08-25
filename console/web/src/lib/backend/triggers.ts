@@ -27,6 +27,8 @@ export interface SessionTriggerInfo {
   config?: unknown
   conditions?: unknown[]
   label?: string
+  /** Human-readable event text declared as registration metadata.action. */
+  action?: string
   once?: boolean
   fires?: number
   maxFires?: number
@@ -56,6 +58,7 @@ interface TriggerRow {
   target?: string
   conditions?: unknown[]
   label?: string
+  action?: string
   once: boolean
   max_fires?: number
   expires_at?: number
@@ -93,6 +96,7 @@ export async function listSessionTriggers(
     config: row.config,
     conditions: row.conditions,
     label: row.label ?? undefined,
+    action: row.action ?? undefined,
     once: row.once,
     fires: row.fires,
     maxFires: row.max_fires ?? undefined,
@@ -134,6 +138,7 @@ function firedGhostRow(t: TriggerFiredData): SessionTriggerInfo {
           ? { scope: t.scope, key: t.key }
           : undefined,
     label: t.label,
+    action: t.action,
     once: t.once,
     fires: t.fires,
     outcome: t.outcome,
@@ -153,6 +158,7 @@ function withFiredActivity(
     ...row,
     triggerType: t.trigger_type ?? row.triggerType,
     config: t.config !== undefined ? t.config : row.config,
+    action: t.action ?? row.action,
     fires: t.fires ?? row.fires,
     outcome: t.outcome,
     retirementReason: t.retirement_reason,

@@ -34,6 +34,13 @@
       "TriggerRow": {
         "description": "One binding, as data. `trigger_type`/`config` are read from the canonicalised registration request and absent on records that predate it.",
         "properties": {
+          "action": {
+            "description": "Human-readable event text declared as `metadata.action`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "conditions": {
             "items": {
               "$ref": "#/definitions/ConditionSpec"

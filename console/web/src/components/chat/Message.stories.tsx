@@ -28,6 +28,15 @@ const userWithAttachments: UserMessage = {
   createdAt: Date.now(),
 }
 
+const spawnTask: UserMessage = {
+  id: 'spawn-1',
+  role: 'user',
+  content:
+    'Research the best approach for rendering Mermaid diagrams entirely inside one self-contained HTML file. Compare CDN integration with vendoring and recommend a practical implementation with caveats.',
+  spawn: true,
+  createdAt: Date.now(),
+}
+
 const assistantComplete: AssistantMessage = {
   id: 'a1',
   role: 'assistant',
@@ -81,6 +90,7 @@ const triggerFiredCall: SystemMessage = {
     trigger_id: '00000000-0000-4000-8000-000000000001',
     target: 'example::check_completion',
     label: 'orders watch',
+    action: 'order record changed',
     once: false,
     retired: false,
     fired_at: 1785948999879,
@@ -110,6 +120,7 @@ const triggerFiredOnce: SystemMessage = {
     config: { expression: '0 30 9 * * *' },
     target: 'harness::send',
     label: 'daily report',
+    action: 'daily report became ready',
     once: true,
     retired: true,
     fires: 1,
@@ -170,6 +181,18 @@ export const UserWithAttachments: Story = {
   args: { message: userWithAttachments },
 }
 
+export const SpawnTask: Story = {
+  name: 'spawn, sub-agent task',
+  args: {
+    message: spawnTask,
+    spawnContext: {
+      title: 'Researcher',
+      model: 'codex/gpt-5.6-luna',
+      appearance: { name: 'Researcher', icon: 'search', color: 'purple' },
+    },
+  },
+}
+
 export const AssistantComplete: Story = {
   name: 'assistant, complete',
   args: { message: assistantComplete },
@@ -203,6 +226,7 @@ export const TriggerFiredOnceConsumed: Story = {
         trigger_type: 'cron',
         config: { expression: '0 30 9 * * *' },
         label: 'daily report',
+        metadata: { action: 'daily report became ready' },
       },
     }),
   },

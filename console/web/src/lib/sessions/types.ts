@@ -58,7 +58,7 @@ export type SessionMeta = {
   description: string
   status: SessionStatus
   status_reason?: string
-  /** App-defined; the console stores { surface, model, mode, title_manual }. */
+  /** App-defined; console keys coexist with harness linkage/presentation. */
   metadata?: Record<string, unknown>
   forked_from?: string
   /**

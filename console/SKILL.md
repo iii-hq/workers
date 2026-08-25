@@ -491,7 +491,7 @@ the nav. Its `render` receives:
 | Surface | What it is |
 |---|---|
 | `host.functionTriggers` | Custom chat/trace renderers. Match only the worker's function ids and return `null` to fall through. `message.description` is the harness's short activity label. Set renderer `metadata: { display: true }` only for successful rich artifacts that should remain visible while raw details are collapsed; the hint applies to the renderer that returned the winning node. If raw data contains secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
-| `host.triggerRenderers?` | Source-specific sections for normalized trigger registration, firing, and retirement activities. Match the inner `triggerType`, parse `config` defensively, and return `null` for another type or unsupported shape. The host retains activity chrome, delivery, lifecycle/controls, raw data, and generic fallback. Feature-detect for older consoles. |
+| `host.triggerRenderers?` | Layered trigger presentation. Match the inner `triggerType`. `tryRender` supplies the source section; optional `tryRenderDetails` and `tryRenderDisplay` replace the expanded Terminal content and compact timeline content; `redactRaw` filters raw registration/fire values. Every slot falls through on `null`. Feature-detect for older consoles. |
 | `host.configForms` | Replace one configuration form. Render fields and call `onChange`; the host retains dirty tracking, validation, save, and reset. Honor `focusField`. Pass `{ layout: 'full' }` as the third `register` argument only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
 | `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the chat model picker. Use it for provider-owned OAuth, device flow, or companion-app login. The host retains the provider slice, schema validation, dirty guard, save/reset, and model refresh; the component receives `{ providerId, schema, value, onChange, errors, configured, available, modelCount }`. Feature-detect for older consoles. Never solicit plaintext API keys here—direct operators to the provider's declared environment variable. |
 | `host.chat?` | Optional chat integrations: session chips, turn summaries and transcript renderers, plus `selectConversation?` for explicit worker-driven navigation and `composerModel?` for the live model selection (including unsaved drafts). Feature-detect the namespace and each newer method. |
@@ -508,30 +508,64 @@ extension contribution and appear in the browser console instead of breaking
 the entire console. Scripts still run with full console-origin privileges;
 the wrapper scopes styles but is not a security sandbox.
 
-### Keep trigger activity lifecycle host-owned
+### Give trigger renderers layered ownership
 
-Use a `TriggerActivityRenderer` only to explain a trigger's source-specific
-meaning:
+Use the smallest override that communicates the trigger well. The base hook
+keeps the generic lifecycle/delivery UI; optional hooks provide the same
+compact-display and complete-detail freedom as function renderers:
 
 ```ts
 interface TriggerActivityRenderer {
   id: string
   isMatch(triggerType: string): boolean
   tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  redactRaw?(value: unknown): unknown
 }
 ```
 
 `TriggerActivityMessage.kind` is `registration`, `fired`, or `retirement`;
-the normalized model also carries `triggerType`, opaque `config`, delivery,
-lifecycle, and optional payload/outcome fields. Match `triggerType`, not
-`engine::register_trigger`, because many sources share that registration
-function. Parse opaque worker config without throwing and return `null` to
-reach the next renderer or the generic host view.
+the normalized model also carries `triggerType`, opaque `config`, optional
+`label` and `action`, delivery, lifecycle, and optional payload/outcome fields.
+Match `triggerType`, not `engine::register_trigger`, because many sources
+share that registration function. Parse opaque worker config without throwing
+and return `null` per slot to reach the next renderer or host fallback.
 
-Do not draw **Trigger fired**, the destination, once/consumed/unbound/expired
-state, controls, or raw JSON inside the worker component. One source renderer
-should work across all three kinds while the host turns a once firing and its
-automatic retirement into one coherent activity.
+- `tryRender`: source-specific section inside the generic detail view.
+- `tryRenderDetails`: complete expanded Terminal tab. If provided, include
+  the lifecycle and delivery facts operators need; the host no longer adds
+  its generic terminal content beside it.
+- `tryRenderDisplay`: compact timeline content inside the host's disclosure
+  button. Keep it non-interactive, one-line, and truncation-safe.
+- `redactRaw`: pure, non-mutating, total, cycle-safe filtering applied before
+  registration/notification/fire raw panes and copy actions. A throw fails
+  closed to a withheld-value placeholder.
+
+The host always owns the click target, accessible expanded state, animation,
+renderer isolation, per-slot fallback, and the Raw JSON tab. A once firing and
+automatic retirement remain one activity; never create a duplicate unbind
+notice.
+
+For harness registrations, keep identity and event copy distinct:
+
+```json
+{
+  "trigger_type": "on-message",
+  "config": { "scope": "explorer" },
+  "label": "explorer-messages",
+  "metadata": { "action": "new Explorer message received" }
+}
+```
+
+`label` names the binding. `metadata.action` describes what a future event
+means, is available as binding data before it fires, and becomes
+`activity.action` on durable fire records. Registration and active-binding
+surfaces identify the binding with `label`; show `action` only when
+`activity.kind === 'fired'`. The default fired row is a status mark plus action,
+falling back to label, state scope/key, then source; clicking opens the detail
+already expanded. Keep action short, standalone, and user-facing. It affects
+presentation only, never routing or authorization.
 
 ## The dev loop (hot reload)
 
@@ -587,8 +621,10 @@ Validate all four layers; a successful esbuild run alone is not enough.
    navigation; and worker reconnect.
 
 For `host.triggerRenderers`, additionally cover exact type match, malformed
-config fallthrough, all three activity kinds, worker disable/disconnect
-fallback, and absence of duplicated host delivery/lifecycle content.
+config fallthrough, every implemented slot and activity kind, compact
+non-interactive display, complete-detail lifecycle fidelity, action fallback,
+raw redaction (including thrown-error fail-closed behavior), and worker
+disable/disconnect fallback.
 
 The UI is done only when:
 

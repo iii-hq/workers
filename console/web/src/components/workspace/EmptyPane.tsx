@@ -196,7 +196,7 @@ export function EmptyPane({
                           aria-hidden
                           className={cn(
                             'size-4 shrink-0',
-                            active ? 'stroke-ink' : 'stroke-ink-faint',
+                            active ? 'text-ink' : 'text-ink-faint',
                           )}
                         />
                       </span>

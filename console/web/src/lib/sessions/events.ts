@@ -27,6 +27,7 @@ import type {
 } from './types'
 
 const HANDLER_BASE = 'iii::console::session'
+let transcriptSubscriptionSequence = 0
 
 type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>
 
@@ -113,6 +114,11 @@ export function subscribeSessionTranscript(
   handlers: SessionTranscriptHandlers,
 ): () => void {
   const config = { session_id: sessionId }
+  // Several chat panels can observe different sessions at once. Handler ids
+  // must therefore be unique per binding; reusing the old `live` scope made
+  // the second subscription replace/collide with the first in the browser
+  // SDK even though their engine-side filters differed.
+  const scope = `live_${++transcriptSubscriptionSequence}`
   const guard =
     <P extends { session_id: string }>(fn: (event: P) => void) =>
     (event: P) => {
@@ -125,14 +131,14 @@ export function subscribeSessionTranscript(
       'session::message-added',
       config,
       guard(handlers.onMessageAdded),
-      'live',
+      scope,
     ),
     bind(
       client,
       'session::message-updated',
       config,
       guard(handlers.onMessageUpdated),
-      'live',
+      scope,
     ),
   ]
   return () => {

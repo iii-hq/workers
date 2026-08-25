@@ -13,8 +13,8 @@ pub struct SetStatusRequest {
     /// Target status: `idle` / `working` / `done` / `error`.
     pub status: SessionStatus,
     /// Short cause/phase stored as `status_reason` — kept on `error`
-    /// (failure cause) and `working` (live phase detail), cleared on
-    /// `idle`/`done`.
+    /// (failure cause), `working` (live phase detail), and `done` (for
+    /// terminal detail such as `stopped`); cleared on `idle`.
     pub reason: Option<String>,
 }
 

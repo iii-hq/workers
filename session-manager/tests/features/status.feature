@@ -7,9 +7,10 @@ Feature: session::set-status — the coarse lifecycle status
   a NO-OP (no event) when both the status AND the stored reason are
   unchanged; a reason change alone re-emits so UIs can render live
   phase updates within one "working" stretch. reason is stored as
-  status_reason — kept on "error" (failure cause) and "working" (phase
-  detail), cleared on "idle"/"done" — so a standalone UI can render
-  progress and failures without asking the harness.
+  status_reason — kept on "error" (failure cause), "working" (phase
+  detail), and "done" (terminal detail), cleared on "idle" — so a
+  standalone UI can render progress, stops, and failures without asking the
+  harness.
 
   Background:
     Given a bare session
@@ -153,6 +154,25 @@ Feature: session::set-status — the coarse lifecycle status
     And delivery 0 to "ui::status" has "previous_status" = "idle"
     And delivery 1 to "ui::status" has "previous_status" = "working"
     And delivery 1 to "ui::status" has "status" = "done"
+
+  # Prevents: a user-stopped turn looking identical to a normally completed
+  # turn after reconnect, when the transcript event may have been missed.
+  Scenario: done retains a terminal reason
+    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
+      """
+      {}
+      """
+    When I call "session::set-status" with:
+      """
+      { "session_id": "s_001", "status": "done", "reason": "stopped" }
+      """
+    Then delivery 0 to "ui::status" has "status" = "done"
+    And delivery 0 to "ui::status" has "status_reason" = "stopped"
+    When I call "session::get" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "meta.status_reason" is "stopped"
 
   # Prevents: setting status on sessions that don't exist.
   Scenario: set_status on an unknown session is rejected

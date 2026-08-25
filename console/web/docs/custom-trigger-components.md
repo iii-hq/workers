@@ -1,38 +1,68 @@
 # Custom trigger activity components
 
-How a worker supplies source-specific UI for trigger registration, firing,
-and retirement without moving the activity lifecycle into worker code.
+How a worker customizes trigger registration, firing, and retirement from a
+small source interpretation through a complete timeline/detail presentation.
 
-Use this slot when generic JSON does not explain a trigger source well. A
-cron worker can show a readable schedule, for example, while the Console
-continues to own the surrounding **Trigger fired** activity, destination,
-delivery result, lifecycle state, controls, and raw details.
+Use this slot when generic JSON does not explain a trigger source well. A cron
+worker can show a readable schedule, replace the complete expanded Terminal
+tab, or supply the compact event row shown in chat. The Console continues to
+own the clickable disclosure and a raw-data fallback.
 
 The public contract is declared in
 [`packages/console-ui/index.d.ts`](../../../packages/console-ui/index.d.ts).
 The cron worker is the reference implementation:
 [`cron/ui/src/trigger-activity/`](../../../cron/ui/src/trigger-activity/).
 
-## Ownership boundary
+## Layered ownership
 
-The renderer owns only the source-specific section:
+Choose the smallest hook that expresses the worker's meaning:
 
-- interpret `triggerType` and `config`;
-- explain worker-specific fields and, when useful, source payload details;
-- return `null` for another trigger type or a shape it cannot safely render.
+- `tryRender` interprets the source section inside the generic detail view;
+- `tryRenderDetails` replaces the complete expanded Terminal tab;
+- `tryRenderDisplay` replaces the compact clickable timeline content;
+- `redactRaw` filters registration and fire values before raw display/copy.
+
+Every hook is registration-ordered and may return `null` to fall through. A
+worker that only needs a schedule should keep using `tryRender`; a worker with
+a domain-specific lifecycle or event artifact can own the detail/display
+slots. Do not add interactive children to `tryRenderDisplay`, because the host
+wraps it in the disclosure button.
 
 The host always owns:
 
-- message chrome and the **Trigger fired** label;
-- notify/call delivery and the target function;
-- active, consumed, unbound, expired, invalidated, and failed states;
-- once/max-fire counters and lifecycle controls;
-- raw JSON and the generic source fallback.
+- the click target, expanded/collapsed state, focus behavior, and animation;
+- the compact fallback (status icon plus event text);
+- the generic detail view when no complete override wins;
+- the Raw JSON tab after worker-declared redaction;
+- renderer isolation, ordering, hot-reload disposal, and error boundaries.
 
-Do not reproduce host-owned information in the injected component. In
-particular, a once trigger that fires and retires remains one activity: the
-host renders its consumed state rather than asking the worker to emit a
-second unbind card.
+When overriding the complete detail, the worker becomes responsible for
+showing every lifecycle/delivery fact its operator needs. A once trigger that
+fires and retires remains one activity; never emit a second unbind card.
+
+## Event copy: label versus action
+
+Harness registrations accept both concepts:
+
+```json
+{
+  "trigger_type": "on-message",
+  "config": { "scope": "explorer" },
+  "label": "explorer-messages",
+  "metadata": { "action": "new Explorer message received" }
+}
+```
+
+`label` is the stable identity of the binding. `metadata.action` is the short
+user-facing description of what a future fire means. The harness exposes the
+action as data before anything happens and persists it on the fired record,
+but the default registration and active-binding UI continues to show `label`.
+`action` becomes visible only when the trigger fires: the compact event row
+shows a status mark and `action`, then falls back to `label`, a state scope/key,
+or `triggerType`. Clicking it opens the full card already expanded. Keep action
+concise, standalone, and in the same language as the surrounding product UI.
+Raw JSON still retains the declared metadata for inspection; it is not part of
+the user-facing event copy.
 
 ## Message contract
 
@@ -46,6 +76,7 @@ interface TriggerActivityMessage {
   triggerType: string
   config?: unknown
   label?: string
+  action?: string
   conditions?: readonly unknown[]
   delivery:
     | { kind: 'notify' }
@@ -81,8 +112,7 @@ interface TriggerActivityMessage {
 
 `config` and `payload` remain `unknown` because their schemas belong to the
 trigger worker. Parse them defensively. Fields under `delivery` and
-`lifecycle` are context for source rendering, not permission to replace the
-host's status UI.
+`lifecycle` are available to both source and complete-detail renderers.
 
 Match `triggerType`, not the function used to register the trigger. Several
 sources travel through the same `engine::register_trigger` function; the
@@ -125,6 +155,17 @@ function createRenderer(): TriggerActivityRenderer {
         </section>
       )
     },
+    tryRenderDisplay: (activity) => {
+      const config = readConfig(activity.config)
+      return config && activity.kind === 'fired'
+        ? <span>{activity.action ?? 'schedule became due'}</span>
+        : null
+    },
+    tryRenderDetails: (activity) => {
+      const config = readConfig(activity.config)
+      return config ? <MyCompleteTriggerDetails activity={activity} config={config} /> : null
+    },
+    redactRaw: redactMyTriggerSecrets,
   }
 }
 
@@ -133,20 +174,23 @@ export default function setup(host: Host) {
 }
 ```
 
-Registrations are tried in registration order. The first non-null render
-wins; if all renderers return `null`, the host shows its generic source
-section. A throwing `isMatch` is treated as no match, and rendering failures
-are fenced so one worker cannot break the activity feed.
+Each slot resolves independently in registration order. If every source hook
+returns `null`, the host shows the generic source section; the same fallback
+rule applies to display and details. A throwing `isMatch` is treated as no
+match, and rendering failures are fenced so one worker cannot break the feed.
 
 The loader disposes registrations when the script reloads or the worker
 disconnects. Always register through the supplied `host`; do not keep a
 parallel global registry.
 
-## Design the source section
+## Design source, display, and details
 
-Keep the component compact enough for chat and trace surfaces:
+Keep each surface appropriate to where it appears:
 
-- lead with the human interpretation, then preserve the exact machine value;
+- keep `tryRenderDisplay` to one non-interactive, truncation-safe line;
+- show `activity.action` only for `activity.kind === 'fired'`; registration
+  and active-binding surfaces identify the binding by `label`;
+- in source/details, lead with human interpretation, then preserve exact values;
 - use sans-serif text for labels and prose, mono only for expressions, ids,
   paths, or payload values;
 - state units and timezones explicitly;
@@ -155,6 +199,11 @@ Keep the component compact enough for chat and trace surfaces:
 - avoid buttons unless the action is truly source-owned;
 - prefer an honest raw value over a translation that hides important
   semantics.
+
+If raw data contains a secret, implement `redactRaw` as a pure,
+non-mutating, total, cycle-safe transform. It applies to registration,
+notification, and fire panes as well as their copy actions. A throw fails
+closed to a withheld-value placeholder; it never restores the secret.
 
 For cron, expressions with ranges, extensions, a pinned year, or combined
 day-of-month/day-of-week rules should fall back to a “custom schedule” label
@@ -195,9 +244,10 @@ At minimum, cover:
 - exact trigger-type matching and fallthrough for another type;
 - malformed/missing config returning `null`;
 - common and complex source configurations;
-- the same source section across registration, fired, and retirement kinds;
+- source, compact display, and complete details across the kinds each hook supports;
 - persistent and once lifecycle records without duplicating host status;
-- generic fallback when the worker UI is disabled or disconnected;
+- per-slot fallthrough and generic fallback when worker UI is disabled;
+- `redactRaw` across nested values, copy paths, cycles, and thrown errors;
 - light/dark themes, narrow chat panes, long ids, keyboard navigation, and
   worker reconnect/hot reload;
 - a non-empty ESM bundle, external React, scoped CSS, and clean UI manifest.

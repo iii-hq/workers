@@ -48,6 +48,7 @@ describe('TriggerActivityCard', () => {
           retirement_reason: 'once_consumed',
         }),
         notification: notification('e_fire_sub_1_1'),
+        defaultOpen: true,
       }),
     )
     expect(html).toContain('Trigger fired')
@@ -62,8 +63,8 @@ describe('TriggerActivityCard', () => {
     expect(html).toContain('iii-ui-collapsible-card__trigger')
     expect(html).toContain('p-4 select-none sm:p-3')
     expect(html).toContain('iii-ui-collapsible-card__content')
-    expect(html).toContain('aria-expanded="false"')
-    expect(html).toContain('aria-hidden="true"')
+    expect(html).toContain('aria-expanded="true"')
+    expect(html).toContain('aria-hidden="false"')
     expect(html).not.toContain('<details')
     expect(html).not.toContain('Open details')
     expect(html).not.toContain('data-trigger-activity-status')
@@ -103,6 +104,7 @@ describe('TriggerActivityCard', () => {
           outcome: 'unregistered',
           retirement_reason: 'unregistered',
         }),
+        defaultOpen: true,
       }),
     )
     expect(html).toContain('Binding manually removed')
@@ -127,6 +129,7 @@ describe('TriggerActivityCard', () => {
           outcome: 'delivery_failed',
           payload: { event_type: 'state.created', build: 42 },
         }),
+        defaultOpen: true,
       }),
     )
 
@@ -160,6 +163,7 @@ describe('TriggerActivityCard', () => {
           fired_at: 1,
         }),
         registration,
+        defaultOpen: true,
       }),
     )
     expect(html).toContain('database::row-changed')
@@ -173,6 +177,7 @@ describe('TriggerActivityCard', () => {
     const html = renderToStaticMarkup(
       createElement(TriggerActivityCard, {
         notification: notification('e_fire_sub_1_0'),
+        defaultOpen: true,
       }),
     )
     expect(html).toContain('Trigger fired')
@@ -191,12 +196,45 @@ describe('TriggerActivityCard', () => {
       createElement(TriggerActivityCard, {
         notification: notification('e_fire_sub_1_0'),
         registration,
+        defaultOpen: true,
       }),
     )
     expect(html).toContain('ONCE · consumed')
     expect(html).toContain('automatically unbound')
     expect(html).toContain('fires')
     expect(html).not.toContain('Binding remains active')
+  })
+
+  it('collapses a fire to its metadata action instead of the Trigger fired card', () => {
+    const html = renderToStaticMarkup(
+      createElement(TriggerActivityCard, {
+        record: record('e_trigfired_sub_1_1', {
+          subscription_id: 'sub_1',
+          trigger_type: 'on-message',
+          config: { scope: 'explorer' },
+          label: 'explorer-messages',
+          action: 'new Explorer message received',
+          target: 'harness::send',
+          once: false,
+          fires: 1,
+          retired: false,
+          fired_at: 1,
+          outcome: 'delivered',
+        }),
+      }),
+    )
+    expect(html).toContain('new Explorer message received')
+    expect(html).toContain('lucide-check')
+    expect(html).toContain('data-timeline-activity-kind="trigger"')
+    expect(html).toContain('data-icon="trigger"')
+    expect(html).toContain('lucide-chevron-right')
+    expect(html).toContain('left-full')
+    expect(html.indexOf('lucide-check')).toBeLessThan(
+      html.indexOf('data-timeline-activity-kind="trigger"'),
+    )
+    expect(html).toContain('data-expanded="false"')
+    expect(html).not.toContain('Trigger fired')
+    expect(html).not.toContain('explorer-messages</div>')
   })
 
   it('preserves actionable non-fire notification prose', () => {

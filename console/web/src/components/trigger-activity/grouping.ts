@@ -1,5 +1,10 @@
 import type { MessageListRow } from '@/components/chat/function-trigger-groups'
-import type { SystemMessage, UserMessage } from '@/types/chat'
+import type {
+  AssistantMessage,
+  FunctionTriggerMessage,
+  SystemMessage,
+  UserMessage,
+} from '@/types/chat'
 
 export interface TriggerActivityRow {
   kind: 'trigger-activity'
@@ -9,6 +14,21 @@ export interface TriggerActivityRow {
 }
 
 export type TriggerAwareMessageListRow = MessageListRow | TriggerActivityRow
+
+export type TimelineActivityItem =
+  | { kind: 'function-trigger'; id: string; message: FunctionTriggerMessage }
+  | TriggerActivityRow
+
+export interface TimelineActivityGroupRow {
+  kind: 'activity-group'
+  id: string
+  items: TimelineActivityItem[]
+  summary?: AssistantMessage
+}
+
+export type TimelineMessageListRow =
+  | Extract<MessageListRow, { kind: 'message' }>
+  | TimelineActivityGroupRow
 
 type PairMember =
   | { side: 'notification'; key: string; message: UserMessage }
@@ -132,4 +152,72 @@ export function triggerActivityRows(
     })
   })
   return output
+}
+
+/**
+ * Put paired trigger fires and function calls in the same collapsible phase.
+ * The first pass has already grouped contiguous calls; this pass treats those
+ * groups and trigger activities as one stream, stopping at ordinary prose or
+ * at an intermediate assistant summary. A fire immediately before the calls
+ * it woke therefore participates in the existing "show all" behavior.
+ */
+export function groupTimelineActivities(
+  rows: readonly TriggerAwareMessageListRow[],
+): TimelineMessageListRow[] {
+  const output: TimelineMessageListRow[] = []
+  let items: TimelineActivityItem[] = []
+
+  const flush = (summary?: AssistantMessage) => {
+    if (items.length === 0) return
+    output.push({
+      kind: 'activity-group',
+      id: `activity-group:${items[0].id}`,
+      items,
+      ...(summary ? { summary } : {}),
+    })
+    items = []
+  }
+
+  for (const row of rows) {
+    if (row.kind === 'trigger-activity') {
+      items.push(row)
+      continue
+    }
+    if (row.kind === 'function-trigger-group') {
+      items.push(
+        ...row.calls.map(
+          (message): TimelineActivityItem => ({
+            kind: 'function-trigger',
+            id: message.id,
+            message,
+          }),
+        ),
+      )
+      if (row.summary) flush(row.summary)
+      continue
+    }
+    flush()
+    output.push(row)
+  }
+
+  flush()
+  return output
+}
+
+/** Activity items that stay visible while a phase is collapsed. */
+export function collapsedTimelineActivities(
+  items: readonly TimelineActivityItem[],
+  hasPersistentDisplay: (call: FunctionTriggerMessage) => boolean,
+): TimelineActivityItem[] {
+  const lastIndex = items.length - 1
+  return items.filter((item, index) => {
+    if (index === lastIndex) return true
+    if (item.kind !== 'function-trigger') return false
+    const call = item.message
+    return (
+      call.running === true ||
+      call.pendingApproval === true ||
+      hasPersistentDisplay(call)
+    )
+  })
 }

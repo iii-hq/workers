@@ -14,6 +14,8 @@ export type ChatPanelDensity = 'route' | 'dock'
 
 interface ChatPanelProps {
   density?: ChatPanelDensity
+  /** Session pinned to this workspace pane; leaves the global chat untouched. */
+  conversationId?: string
   /** Outer edge occupied by this pane in a split workspace. */
   panelSide?: PanelSide
   /** Close the hosting pane — the header's standard ✕ when present. */
@@ -43,6 +45,7 @@ const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
  */
 export function ChatPanel({
   density = 'route',
+  conversationId,
   panelSide = 'left',
   onRequestClose,
   commands,
@@ -51,6 +54,7 @@ export function ChatPanel({
     conversations,
     activeId,
     active,
+    watchConversation,
     createNew,
     select,
     rename,
@@ -64,7 +68,21 @@ export function ChatPanel({
     backend,
     modelOptions,
     catalogLoading,
+    connectionState,
+    missingConversationIds,
   } = useConversationsCtx()
+  const pinned = conversationId !== undefined
+  const displayedConversation = pinned
+    ? (conversations.find(
+        (conversation) => conversation.id === conversationId,
+      ) ?? null)
+    : active
+  const displayedId = pinned ? conversationId : activeId
+
+  useEffect(() => {
+    if (!displayedId) return
+    return watchConversation(displayedId)
+  }, [displayedId, watchConversation])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
@@ -77,8 +95,8 @@ export function ChatPanel({
   // Header-level actions can create/select a conversation outside this
   // component. On phones, follow that new active id into the chat page.
   useEffect(() => {
-    if (mobileViewport && activeId) setNarrowView('chat')
-  }, [activeId, mobileViewport])
+    if (mobileViewport && displayedId) setNarrowView('chat')
+  }, [displayedId, mobileViewport])
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -89,38 +107,37 @@ export function ChatPanel({
   )
 
   // The sidebar's verbs, beside the chat's own: both live in the same pane.
-  useEffect(
-    () =>
-      commands?.register([
-        {
-          id: 'new-chat',
-          title: 'New chat',
-          detail: 'Start a conversation',
-          keywords: ['conversation', 'session', 'create'],
-          shortcut: 'N',
-          run: () => {
-            createNew()
-            setNarrowView('chat')
-          },
+  useEffect(() => {
+    if (pinned) return
+    return commands?.register([
+      {
+        id: 'new-chat',
+        title: 'New chat',
+        detail: 'Start a conversation',
+        keywords: ['conversation', 'session', 'create'],
+        shortcut: 'N',
+        run: () => {
+          createNew()
+          setNarrowView('chat')
         },
-        {
-          id: 'search-chats',
-          title: 'Search conversations',
-          detail: 'Put the caret in the sidebar search',
-          keywords: ['find', 'sessions', 'filter'],
-          shortcut: '/',
-          run: () => {
-            setNarrowView('list')
-            window.requestAnimationFrame(() => {
-              surfaceRef.current
-                ?.querySelector<HTMLElement>('[data-conversation-search]')
-                ?.focus()
-            })
-          },
+      },
+      {
+        id: 'search-chats',
+        title: 'Search conversations',
+        detail: 'Put the caret in the sidebar search',
+        keywords: ['find', 'sessions', 'filter'],
+        shortcut: '/',
+        run: () => {
+          setNarrowView('list')
+          window.requestAnimationFrame(() => {
+            surfaceRef.current
+              ?.querySelector<HTMLElement>('[data-conversation-search]')
+              ?.focus()
+          })
         },
-      ]),
-    [commands, createNew],
-  )
+      },
+    ])
+  }, [commands, createNew, pinned])
 
   const handleCreate = useCallback(() => {
     createNew()
@@ -133,8 +150,12 @@ export function ChatPanel({
 
   // Narrow: one page at a time — the session list, or the open chat.
   // With no active conversation the list is the only meaningful page.
-  const showList = !narrow || narrowView === 'list' || !active
-  const showChat = !narrow || (narrowView === 'chat' && Boolean(active))
+  const showList =
+    !pinned && (!narrow || narrowView === 'list' || !displayedConversation)
+  const showChat =
+    pinned ||
+    !narrow ||
+    (narrowView === 'chat' && Boolean(displayedConversation))
 
   return (
     <div
@@ -191,17 +212,18 @@ export function ChatPanel({
         </PageSidebar>
       ) : null}
 
-      {showChat && active ? (
+      {showChat && displayedConversation ? (
         <ChatView
-          key={active.id}
-          conversation={active}
+          key={displayedConversation.id}
+          conversation={displayedConversation}
           backend={backend}
           modelOptions={modelOptions}
           catalogLoading={catalogLoading}
           density={density}
+          panelTitle={pinned ? displayedConversation.title : undefined}
           onRequestClose={onRequestClose}
           commands={commands}
-          onBack={narrow ? handleBack : undefined}
+          onBack={narrow && !pinned ? handleBack : undefined}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
           onUpdateWorkingDir={setWorkingDir}
@@ -209,12 +231,18 @@ export function ChatPanel({
           onPatchMessage={updateMessage}
           onCompactConversation={compactConversation}
         />
-      ) : !narrow ? (
+      ) : !narrow || pinned ? (
         <section className="flex-1 flex flex-col min-w-0 min-h-0">
           <PageHeader title="Chat" onClose={onRequestClose} />
           <div className="flex-1 flex items-center justify-center">
             <div className="font-sans text-base text-ink-faint">
-              No conversation selected.
+              {pinned
+                ? connectionState === 'connected'
+                  ? conversationId && missingConversationIds.has(conversationId)
+                    ? 'Conversation not found.'
+                    : 'Loading conversation…'
+                  : 'Waiting for the session connection…'
+                : 'No conversation selected.'}
             </div>
           </div>
         </section>
