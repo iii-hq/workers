@@ -185,6 +185,9 @@ export async function coderCreateNewFile(
   )
   const result = out.results?.[0]
   if (!result) throw new Error('coder::create-file returned no result')
+  if (!result.success) {
+    throw new Error(result.error?.message ?? `could not create ${path}`)
+  }
   return result
 }
 

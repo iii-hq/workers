@@ -2442,11 +2442,21 @@ export function ShellExplorerPage({
     async (kind: 'file' | 'folder', rel: string) => {
       const currentRoot = rootRef.current
       if (!currentRoot) return
+      const generation = rootGenerationRef.current
       const absPath = joinPath(currentRoot, rel)
       if (kind === 'folder') {
         await shellCreateFolder(host, absPath)
       } else {
         await coderCreateNewFile(host, absPath)
+      }
+      // A root switch during the write: the entry landed on disk, but the
+      // pane now shows another tree — refreshing or pinning would talk to
+      // the wrong root.
+      if (
+        rootGenerationRef.current !== generation ||
+        rootRef.current !== currentRoot
+      ) {
+        return
       }
       refreshTree()
       void refreshGit()

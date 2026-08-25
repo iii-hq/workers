@@ -74,6 +74,12 @@ export function FilesTab({
   const submitCreate = async () => {
     const rel = createName.trim().replace(/^\/+/, '')
     if (!rel || !createKind || !onCreate) return
+    // Paths stay inside the browsed root: a "." or ".." segment is either
+    // noise or an escape attempt, and the jail would reject it anyway.
+    if (rel.split('/').some((part) => part === '.' || part === '..')) {
+      setCreateError('the path cannot contain "." or ".." segments')
+      return
+    }
     try {
       await onCreate(createKind, rel)
       setCreateKind(null)
