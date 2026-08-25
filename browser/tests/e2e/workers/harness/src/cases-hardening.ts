@@ -415,7 +415,7 @@ export const HARDENING_CASES: TestCase[] = [
       const hooked = await call('browser::inject-guidance', { generate: { system_prompt: 'BASE' } })
       expect(
         typeof hooked.mutations?.system_prompt === 'string' &&
-          hooked.mutations.system_prompt.startsWith('BASE\n\n## Scraping and HTML parsing (browser::*)'),
+          hooked.mutations.system_prompt.startsWith('BASE\n\n## Showing a page vs scraping one (browser::*)'),
         `guidance hook did not append: ${JSON.stringify(hooked)}`,
       )
       expectEqual(
