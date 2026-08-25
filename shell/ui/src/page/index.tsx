@@ -77,6 +77,8 @@ import {
   joinPath,
   type TreeNode,
   workspaceValidate,
+  coderCreateNewFile,
+  shellCreateFolder,
 } from './coder'
 import {
   type EditorCache,
@@ -384,6 +386,10 @@ export function ShellExplorerPage({
     'loading',
   )
   const [root, setRoot] = useState<string | null>(null)
+  // The root the picker is validating right now: the select holds this
+  // value so the choice never appears to snap back, and the files pane
+  // says what it is opening instead of sitting empty.
+  const [pendingRoot, setPendingRoot] = useState<string | null>(null)
   const rootRef = useRef(root)
   rootRef.current = root
   const workingDirRef = useRef(workingDir ?? null)
@@ -1361,7 +1367,10 @@ export function ShellExplorerPage({
       .then((turns) => {
         if (cancelled || rootRef.current !== root) return
         setSessionTurns(turns)
-        const latest = turns.find((turn) => turn.file_count > 0) ?? turns[0]
+        // Only a turn that touched files is worth restoring: landing a
+        // chat-switcher on "0 files at 02:55 PM" reads as a broken pane,
+        // where the plain Last Turn default reads as an empty one.
+        const latest = turns.find((turn) => turn.file_count > 0)
         if (!latest || observedReviewKeyRef.current !== null) return
         if (reviewEntriesRef.current.size > 0) return
         const scope = {
@@ -2065,9 +2074,11 @@ export function ShellExplorerPage({
     }
     const request = ++workingDirFollowRequestSeqRef.current
     workingDirFollowPendingRef.current = { path: next, request }
+    setPendingRoot(next)
     const accepted = changeRoot(next, (outcome) => {
       if (workingDirFollowPendingRef.current?.request !== request) return
       workingDirFollowPendingRef.current = null
+      setPendingRoot(null)
       if (outcome === 'validated') {
         acknowledgedWorkingDirRef.current =
           acknowledgeValidatedWorkingDirectory(
@@ -2098,6 +2109,7 @@ export function ShellExplorerPage({
     })
     if (!accepted && workingDirFollowPendingRef.current?.request === request) {
       workingDirFollowPendingRef.current = null
+      setPendingRoot(null)
     }
   }, [workingDir, root, changeRoot, reviewSavePending, workingDirRetryEpoch])
 
@@ -2123,10 +2135,12 @@ export function ShellExplorerPage({
         window.clearTimeout(workingDirRetryTimerRef.current)
         workingDirRetryTimerRef.current = null
       }
+      setPendingRoot(nextRoot)
       const accepted = changeRoot(nextRoot, (outcome) => {
         if (!ownsRequestToken(manualRootActiveRequestRef.current, request))
           return
         manualRootActiveRequestRef.current = null
+        setPendingRoot(null)
         if (outcome === 'validated' && workingDirRef.current === chatDir) {
           acknowledgedWorkingDirRef.current = chatDir
           workingDirRetryRef.current = { path: chatDir, failures: 0 }
@@ -2137,6 +2151,7 @@ export function ShellExplorerPage({
         }
       })
       if (accepted) return
+      setPendingRoot(null)
       if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
         manualRootActiveRequestRef.current = null
         setWorkingDirRetryEpoch((epoch) => epoch + 1)
@@ -2421,12 +2436,45 @@ export function ShellExplorerPage({
   // Chat-synced roots can be subfolders of a base path — surface the
   // current root as an option so the select never holds a value its
   // options don't contain (and the user can always pop back to a base).
+  // "New file" / "New folder" from the Files tree: root-relative path,
+  // parents created, a new file opens in the editor right away.
+  const createTreeEntry = useCallback(
+    async (kind: 'file' | 'folder', rel: string) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const generation = rootGenerationRef.current
+      const absPath = joinPath(currentRoot, rel)
+      if (kind === 'folder') {
+        await shellCreateFolder(host, absPath)
+      } else {
+        await coderCreateNewFile(host, absPath)
+      }
+      // A root switch during the write: the entry landed on disk, but the
+      // pane now shows another tree — refreshing or pinning would talk to
+      // the wrong root.
+      if (
+        rootGenerationRef.current !== generation ||
+        rootRef.current !== currentRoot
+      ) {
+        return
+      }
+      refreshTree()
+      void refreshGit()
+      if (kind === 'file') pinFile(rel)
+    },
+    [host, refreshTree, refreshGit, pinFile],
+  )
+
   const rootOptions = useMemo(() => {
     if (!info || !root) return []
-    return info.base_paths.includes(root)
+    const bases = info.base_paths.includes(root)
       ? info.base_paths
       : [root, ...info.base_paths]
-  }, [info, root])
+    // The console's remembered working directories (the composer's picker
+    // list) are as reachable here as a chat-synced root; offer them too.
+    const remembered = host.workspace?.recentDirectories() ?? []
+    return [...new Set([...bases, ...remembered])]
+  }, [info, root, host])
 
   const changeTerminalDock = useCallback((next: TerminalDock) => {
     setTerminalOpen(true)
@@ -2586,13 +2634,16 @@ export function ShellExplorerPage({
           rootOptions.length > 1 ? (
             <select
               className="shui-header-root-select"
-              value={root}
+              value={pendingRoot ?? root}
               onChange={(event) => changeManualRoot(event.target.value)}
               disabled={reviewSavePending}
               aria-label="browsed root"
-              title={root}
+              title={pendingRoot ?? root}
             >
-              {rootOptions.map((path) => (
+              {(pendingRoot !== null && !rootOptions.includes(pendingRoot)
+                ? [...rootOptions, pendingRoot]
+                : rootOptions
+              ).map((path) => (
                 <option key={path} value={path}>
                   {lastSegments(path)}
                 </option>
@@ -2746,7 +2797,11 @@ export function ShellExplorerPage({
             className="shui-sidebar"
           >
             <div className="shui-side-body">
-              {sideTab === 'files' ? (
+              {sideTab === 'files' && (pendingRoot !== null || tree === null) ? (
+                <div className="shui-side-note">
+                  opening {lastSegments(pendingRoot ?? root ?? '')}…
+                </div>
+              ) : sideTab === 'files' ? (
                 <FilesTab
                   tree={reviewTree}
                   gitStatus={treeGitStatus}
@@ -2759,6 +2814,7 @@ export function ShellExplorerPage({
                   activePath={diff?.change.path ?? tabs.active}
                   onActivateFile={activateFile}
                   onPinFile={pinFile}
+                  onCreate={createTreeEntry}
                 />
               ) : (
                 <SearchTab

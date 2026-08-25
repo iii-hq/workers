@@ -13,7 +13,8 @@
 
 import type { FileTreeDirectoryHandle, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
-import { Search, X } from 'lucide-react'
+import { IconButton } from '@iii-dev/console-ui'
+import { FilePlus, FolderPlus, Search, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import {
@@ -48,6 +49,8 @@ interface FilesTabProps {
   onActivateFile: (relPath: string) => void
   /** Double click on a file — pin clean files; keep changes in review. */
   onPinFile: (relPath: string) => void
+  /** Create a file or folder at a root-relative path; parents are made. */
+  onCreate?: (kind: 'file' | 'folder', rel: string) => Promise<void>
 }
 
 export function FilesTab({
@@ -62,9 +65,31 @@ export function FilesTab({
   activePath,
   onActivateFile,
   onPinFile,
+  onCreate,
 }: FilesTabProps) {
   const filterId = useId()
   const [filter, setFilter] = useState('')
+  const [createKind, setCreateKind] = useState<'file' | 'folder' | null>(null)
+  const [createName, setCreateName] = useState('')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const submitCreate = async () => {
+    const rel = createName.trim().replace(/^\/+/, '')
+    if (!rel || !createKind || !onCreate) return
+    // Paths stay inside the browsed root: a "." or ".." segment is either
+    // noise or an escape attempt, and the jail would reject it anyway.
+    if (rel.split('/').some((part) => part === '.' || part === '..')) {
+      setCreateError('the path cannot contain "." or ".." segments')
+      return
+    }
+    try {
+      await onCreate(createKind, rel)
+      setCreateKind(null)
+      setCreateName('')
+      setCreateError(null)
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    }
+  }
   const [filterMatchCount, setFilterMatchCount] = useState<number | null>(null)
   // The model is created once per component lifetime; data arriving
   // later flows through resetPaths/setGitStatus below. Selection opens
@@ -257,7 +282,61 @@ export function FilesTab({
             </button>
           ) : null}
         </div>
+        {onCreate ? (
+          <div className="shui-tree-new-actions">
+            <IconButton
+              label="New file"
+              aria-pressed={createKind === 'file'}
+              onClick={() => {
+                setCreateKind((kind) => (kind === 'file' ? null : 'file'))
+                setCreateError(null)
+              }}
+            >
+              <FilePlus aria-hidden />
+            </IconButton>
+            <IconButton
+              label="New folder"
+              aria-pressed={createKind === 'folder'}
+              onClick={() => {
+                setCreateKind((kind) => (kind === 'folder' ? null : 'folder'))
+                setCreateError(null)
+              }}
+            >
+              <FolderPlus aria-hidden />
+            </IconButton>
+          </div>
+        ) : null}
       </div>
+      {createKind !== null ? (
+        <div className="shui-tree-new-row">
+          <input
+            type="text"
+            value={createName}
+            onChange={(event) => setCreateName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void submitCreate()
+              if (event.key === 'Escape') {
+                setCreateKind(null)
+                setCreateName('')
+                setCreateError(null)
+              }
+            }}
+            placeholder={
+              createKind === 'file' ? 'new/file/path.txt' : 'new/folder/path'
+            }
+            aria-label={
+              createKind === 'file' ? 'New file path' : 'New folder path'
+            }
+            autoComplete="off"
+            spellCheck={false}
+            // biome-ignore lint/a11y/noAutofocus: the row exists because the user just asked to type a name
+            autoFocus
+          />
+          {createError !== null ? (
+            <div className="shui-tree-new-error">{createError}</div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="shui-tree-stage">
         {!tree ? (

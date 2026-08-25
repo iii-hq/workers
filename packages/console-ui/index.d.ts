@@ -440,6 +440,12 @@ export interface Host {
   path: string
   pages: { register(page: PageRegistration): () => void }
   /**
+   * The console's remembered working directories, most recent first — the
+   * same list its chat composer offers. A page with its own root picker
+   * lists them so both pickers agree on where work happens.
+   */
+  workspace?: { recentDirectories(): string[] }
+  /**
    * Palette rows for a page this script owns, alive exactly as long as the
    * script. For a page that may not be open yet; `run` usually calls
    * `panels.open`. Keys are honoured only through `PageRenderProps.commands`.

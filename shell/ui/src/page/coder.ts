@@ -173,6 +173,32 @@ export function coderReadFileBase64(
   })
 }
 
+/** Create a brand-new empty file, parents included; an existing file at
+    the path is an error rather than silently emptied. */
+export async function coderCreateNewFile(
+  host: Host,
+  path: string,
+): Promise<CreateFileResult> {
+  const out = await host.iii.trigger<{ results: CreateFileResult[] }>(
+    'coder::create-file',
+    { files: [{ path, content: '', parents: true }] },
+  )
+  const result = out.results?.[0]
+  if (!result) throw new Error('coder::create-file returned no result')
+  if (!result.success) {
+    throw new Error(result.error?.message ?? `could not create ${path}`)
+  }
+  return result
+}
+
+/** Create a folder, parents included, through the shell's fs surface. */
+export async function shellCreateFolder(
+  host: Host,
+  path: string,
+): Promise<void> {
+  await host.iii.trigger('shell::fs::mkdir', { path, parents: true })
+}
+
 /** Whole-file save. `mode` (from a prior read) keeps permission bits —
     create-file would otherwise reset them to the 0644 default. */
 export async function coderWriteFile(

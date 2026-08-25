@@ -456,6 +456,7 @@ export interface Host {
   uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  workspace?: { recentDirectories(): string[] }
   pages: {
     register(page: PageRegistration): () => void
   }
