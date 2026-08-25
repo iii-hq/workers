@@ -448,6 +448,23 @@ registration when the worker's assets go. `run` usually calls
 context. Keys are **not** honoured here: the console's global keymap stays
 the console's.
 
+**Typing surfaces that are not form fields must stand down the bare keys.**
+The dispatcher already yields to a caret in an `input`, `textarea`, `select`,
+or contentEditable node. Anything else that consumes raw keystrokes — a code
+editor's gutters and widgets, a read-mode diff, a drawing surface — gives the
+dispatcher a plain element as the event target, and a bare binding like `t`
+(new workspace) fires mid-thought. Declare the surface:
+
+```tsx
+<div className="my-editor-body" data-keybindings-standdown="">…</div>
+```
+
+Every keystroke originating inside a `data-keybindings-standdown` element
+counts as typing: bindings without `firesWhileTyping` stand down, modifier
+chords still work. Put it on the smallest container that holds the whole
+interactive surface (the editor body, the diff card), never on the page root —
+the page chrome around it should keep answering the navigation keys.
+
 **`PageRenderProps.commands.register(commands)`** — render time, page
 level. Lives while the page is mounted in a pane. Keys are honoured and
 scoped to that pane: they fire only while focus is inside it, so two panes
