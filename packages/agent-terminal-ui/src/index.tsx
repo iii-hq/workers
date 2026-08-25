@@ -203,9 +203,20 @@ function encodeB64(text: string): string {
   return btoa(bin)
 }
 
+/**
+ * The lease lives in `localStorage`, not `sessionStorage`: a session outlives
+ * the browser tab that opened it. sessionStorage is cleared when the tab
+ * closes, so closing the console and coming back the next morning left the
+ * running agent unreachable and started a second one beside it — two agents
+ * in one workspace, one of them invisible.
+ *
+ * A lease written by the old build is read once and carried over, so an open
+ * terminal survives this change instead of being abandoned.
+ */
 function readLease(prefix: string, tabId: string): Lease | null {
   try {
-    const raw = sessionStorage.getItem(prefix + tabId)
+    const key = prefix + tabId
+    const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key)
     return raw ? (JSON.parse(raw) as Lease) : null
   } catch {
     return null
@@ -214,11 +225,13 @@ function readLease(prefix: string, tabId: string): Lease | null {
 
 function writeLease(prefix: string, tabId: string, lease: Lease | null): void {
   try {
-    if (lease) sessionStorage.setItem(prefix + tabId, JSON.stringify(lease))
-    else sessionStorage.removeItem(prefix + tabId)
+    const key = prefix + tabId
+    sessionStorage.removeItem(key)
+    if (lease) localStorage.setItem(key, JSON.stringify(lease))
+    else localStorage.removeItem(key)
   } catch {
-    // sessionStorage full or blocked — the terminal still works, only the
-    // reattach across a reload is lost.
+    // Storage full or blocked — the terminal still works, only the reattach
+    // across a reload is lost.
   }
 }
 
@@ -426,6 +439,16 @@ function AgentTerminal({
           sessionId: conn.sessionId,
           reconnectToken: attached.reconnect_token,
         })
+        if (attached.truncated) {
+          // The missing range is already off the end of the ring buffer, so
+          // it will never arrive. Skipping to the newest sequence keeps the
+          // writer from waiting on a gap that cannot close — the stall that
+          // reads as a terminal ignoring the keyboard.
+          const newest = attached.frames.at(-1)?.sequence ?? writer.lastSeq()
+          writer.base(newest)
+          await askForRepaint(conn)
+          return
+        }
         for (const frame of attached.frames) {
           writer.feed(frameToEvent(conn.sessionId, frame))
         }
@@ -445,6 +468,38 @@ function AgentTerminal({
     const handleEvent = (event: PtyOutputEvent) => {
       if (disposed) return
       writer.feed(event)
+    }
+
+    /**
+     * Ask the agent to paint the screen it is on right now.
+     *
+     * A one-row resize and back is a SIGWINCH, which every full-screen TUI
+     * answers with a full redraw. It is the only way to recover a picture the
+     * page cannot reconstruct: the ring buffer is finite and an agent repaints
+     * constantly, so a tab left alone for an hour comes back to a replay that
+     * begins mid-frame. Feeding those bytes paints wreckage; asking for a
+     * repaint paints the truth.
+     */
+    const askForRepaint = async (session: { sessionId: string; accessKey: string }) => {
+      const { cols, rows } = term
+      if (rows < 2) return
+      try {
+        await call('shell::pty::resize', {
+          session_id: session.sessionId,
+          access_key: session.accessKey,
+          cols,
+          rows: rows - 1,
+        })
+        await call('shell::pty::resize', {
+          session_id: session.sessionId,
+          access_key: session.accessKey,
+          cols,
+          rows,
+        })
+      } catch {
+        // A session that will not resize is a session that is gone; the next
+        // frame (or its absence) is the honest signal, not this.
+      }
     }
 
     const connect = async () => {
@@ -484,7 +539,17 @@ function AgentTerminal({
               sessionId: lease.sessionId,
               reconnectToken: attached.reconnect_token,
             })
-            if (attached.truncated) term.write(`\r\n[${options.worker}: replay truncated]\r\n`)
+            if (attached.truncated) {
+              // Partial history is worse than none: it lands inside whatever
+              // the agent was drawing. Start from the newest sequence the
+              // worker still holds and ask for the current screen instead.
+              const newest = attached.frames.at(-1)?.sequence ?? 0
+              term.reset()
+              writer.base(newest)
+              setStatus('running')
+              await askForRepaint(conn)
+              return
+            }
             for (const frame of attached.frames) {
               writer.feed(frameToEvent(lease.sessionId, frame))
             }

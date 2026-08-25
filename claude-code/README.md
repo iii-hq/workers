@@ -180,6 +180,14 @@ iii trigger stream::list stream_name=agent::events
 The page keeps a per-tab lease, so a reload or a pane move reattaches to the
 same live Claude rather than starting a second one.
 
+A session outlives the tab that opened it: the reattach lease is stored per
+browser, so closing the console and coming back finds the same agent instead
+of starting a second one beside it. When the replay would be partial — the
+worker's ring buffer is finite and an agent repaints constantly — the page
+skips the broken history and asks the agent to paint its current screen (a
+one-row resize, which is a SIGWINCH) rather than writing wreckage into the
+pane.
+
 The status bar carries a font-size stepper (8–40 px, 14 by default; Ctrl or ⌘
 + scroll does the same). The size is one value for every terminal in the
 console — shell's panes included — so it is set once, not per page. The

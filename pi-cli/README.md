@@ -51,6 +51,14 @@ The page keeps a per-tab lease, so a reload or a pane move reattaches to the
 same live pi rather than starting a second one. `shell::pty::sessions` lists
 what is actually running.
 
+A session outlives the tab that opened it: the reattach lease is stored per
+browser, so closing the console and coming back finds the same agent instead
+of starting a second one beside it. When the replay would be partial — the
+worker's ring buffer is finite and an agent repaints constantly — the page
+skips the broken history and asks the agent to paint its current screen (a
+one-row resize, which is a SIGWINCH) rather than writing wreckage into the
+pane.
+
 The status bar carries a font-size stepper (8–40 px, 14 by default; Ctrl or ⌘
 + scroll does the same). The size is one value for every terminal in the
 console — shell's panes included — so it is set once, not per page. The
@@ -104,10 +112,16 @@ provider named by `auth_provider`:
 
 | Badge | Means |
 |---|---|
-| `anthropic subscription` | An OAuth (subscription) login pays. |
-| `anthropic API key billing` | An API key pays, per token. |
-| `anthropic: not signed in` | No credentials for that provider yet — run `/login`. |
-| `anthropic ready` | pi has credentials but did not report their kind. |
+| `anthropic (subscription)` | One provider is signed in, with an OAuth login behind it. |
+| `openai (API key)` | One provider is signed in, paying per token. |
+| `2 providers · openai, anthropic` | Several are usable; the tooltip names each one's kind, and which one a turn spends follows the model it runs. |
+| `no provider signed in` | Nothing usable yet — run `/login` in the terminal, or set a provider's API key. |
+
+pi is not one account, so the badge is not one provider. The names come from
+pi's own auth store (`~/.pi/agent/auth.json`, read for NAMES only), and each
+one's state comes from `pi auth check` — never a credential. `auth_provider` in
+the settings is now only the fallback asked about when that store cannot be
+read.
 
 It runs `pi auth check --provider <p> --json` on the terminal host and never
 passes `--credentials`: the page needs the KIND of credential, never the
