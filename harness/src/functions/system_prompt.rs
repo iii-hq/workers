@@ -35,6 +35,7 @@ pub struct SystemPromptRequest {
 pub enum SystemPromptPartKind {
     BuiltIn,
     Selected,
+    Skills,
     Runtime,
     RegistryNotice,
     Injected,
@@ -102,6 +103,10 @@ pub async fn handle(
         ),
         None => None,
     };
+    let skills = record
+        .as_ref()
+        .and_then(|record| record.options.skill_context.as_ref())
+        .and_then(|context| context.baseline.clone());
     let injections = deps
         .hooks
         .pre_generate
@@ -122,6 +127,7 @@ pub async fn handle(
             built_in_name,
             built_in,
             req.selected_prompt,
+            skills,
             runtime,
             registry_notice,
             injections,
@@ -151,6 +157,7 @@ fn build_parts(
     built_in_name: String,
     built_in: Option<String>,
     selected: Option<SelectedSystemPrompt>,
+    skills: Option<String>,
     runtime: String,
     registry_notice: Option<String>,
     injections: Vec<SystemPromptPart>,
@@ -177,6 +184,13 @@ fn build_parts(
             kind: SystemPromptPartKind::Selected,
             name: Some(prompt.name),
             body: prompt.body,
+        });
+    }
+    if let Some(body) = skills.filter(|body| !body.is_empty()) {
+        parts.push(SystemPromptPart {
+            kind: SystemPromptPartKind::Skills,
+            name: None,
+            body,
         });
     }
     parts.push(SystemPromptPart {
@@ -223,6 +237,7 @@ mod tests {
                 body: "selected".into(),
                 strategy: SystemPromptStrategy::Enrich,
             }),
+            Some("skill index".into()),
             "session context".into(),
             None,
             vec![SystemPromptPart {
@@ -236,11 +251,13 @@ mod tests {
             vec![
                 SystemPromptPartKind::BuiltIn,
                 SystemPromptPartKind::Selected,
+                SystemPromptPartKind::Skills,
                 SystemPromptPartKind::Runtime,
                 SystemPromptPartKind::Injected,
             ]
         );
-        assert_eq!(parts[3].name.as_deref(), Some("fp"));
+        assert_eq!(parts[4].name.as_deref(), Some("fp"));
+        assert_eq!(parts[2].body, "skill index");
     }
 
     #[test]
@@ -253,6 +270,7 @@ mod tests {
                 body: "selected".into(),
                 strategy: SystemPromptStrategy::Override,
             }),
+            None,
             "session context".into(),
             None,
             Vec::new(),
@@ -270,6 +288,7 @@ mod tests {
             "session (frozen at send)".into(),
             Some("You are TESTBOT.".into()),
             None,
+            None,
             "session context".into(),
             None,
             Vec::new(),
@@ -281,6 +300,7 @@ mod tests {
         // A prior `disabled` turn resolved to no prompt: no built-in layer.
         let parts = build_parts(
             "session (frozen at send)".into(),
+            None,
             None,
             None,
             "session context".into(),

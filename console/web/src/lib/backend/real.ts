@@ -37,6 +37,7 @@ import {
   isTurnActive,
   sendTurn,
   stopTurn,
+  toSkillOptions,
   toSystemPromptOptions,
 } from './harness-send'
 import {
@@ -210,6 +211,7 @@ async function buildSendRequest(
       mode,
       functions: functionPolicy,
       ...toSystemPromptOptions(opts?.systemPrompt),
+      ...toSkillOptions(opts?.skills),
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
       ...(providerOptions ? { provider_options: providerOptions } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),

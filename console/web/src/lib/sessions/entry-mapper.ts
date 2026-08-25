@@ -544,8 +544,25 @@ export function entrySegments(
             reaction?: unknown
             spawn?: unknown
             validation?: unknown
+            skill_update?: unknown
           }
         | undefined
+      const { text, attachments } = splitUserContent(message.content)
+      if (
+        origin?.skill_update === true ||
+        /^e_.+_skills_\d+$/.test(item.entry_id)
+      ) {
+        return [
+          {
+            id: item.entry_id,
+            role: 'system',
+            kind: 'notice',
+            tone: 'info',
+            content: text,
+            createdAt: message.timestamp,
+          },
+        ]
+      }
       const isNotif =
         origin?.notification === true ||
         /^(?:e_notify_|e_fire_|e_expire_|e_stalespawn_|e_claimfail_|e_condfail_)/.test(
@@ -568,7 +585,6 @@ export function entrySegments(
       // entries are `e_<turn_id>_nudge_<attempt>`.
       const isValidation =
         origin?.validation === true || /_nudge_\d+$/.test(item.entry_id)
-      const { text, attachments } = splitUserContent(message.content)
       const split = isReaction ? splitReactionTask(text) : { task: text }
       const msg: UserMessage = {
         id: item.entry_id,

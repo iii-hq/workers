@@ -279,7 +279,7 @@ fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     };
     format!(
         "<discovery_assist functions_generation={functions_generation}>\n\
-Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include one to six short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. {call_instruction}\
+Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include one to six short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. A call marked pre-verified by a Harness runtime block or update is already verified; use its exact payload directly and do not search for it or fetch its contract. {call_instruction}\
 </discovery_assist>"
     )
 }
@@ -518,6 +518,29 @@ mod tests {
             response.annotations.directory.summary,
             "directory · hint injected"
         );
+    }
+
+    #[tokio::test]
+    async fn discovery_hint_preserves_preverified_system_calls() {
+        let deps = deps();
+        let mut tools = wide_tools();
+        tools.push(tool("directory::skills::get"));
+        let mut request = request_for("use the alpha skill", tools);
+        request.generate.system_prompt = "<available_skills>\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`.\n- **alpha** — Alpha.\n</available_skills>".into();
+
+        let response = pre_generate(&deps, request).await;
+
+        assert_eq!(
+            response.annotations.directory.data.outcome,
+            DiscoveryOutcome::HintInjected
+        );
+        let prompt = &response.mutations.as_ref().unwrap().system_prompt;
+        assert!(prompt.contains("payload `{\"id\":\"<exact id>\"}`"));
+        assert!(prompt.contains("A call marked pre-verified by a Harness runtime block or update"));
+        assert!(prompt.contains("do not search for it or fetch its contract"));
+        assert!(prompt
+            .contains("Before calling any task function whose ID has not already been verified"));
+        assert!(prompt.contains("then BEFORE their first use call engine::functions::info"));
     }
 
     #[tokio::test]

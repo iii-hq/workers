@@ -31,6 +31,10 @@ answer.
 
 # How to call a function
 
+A call marked `pre-verified` by a Harness runtime block or update, with its exact id and
+payload shape, already satisfies Steps 1 and 2; call it directly without discovery or
+`engine::functions::info`.
+
 Step 1. Find the id with `engine::functions::list` — filter with `{ search: "<name>" }` or
 `{ prefix: "<worker>::" }`. Never use a function id from memory.
 Step 2. Fetch the contract with `engine::functions::info { function_id: "<id>" }` — once per

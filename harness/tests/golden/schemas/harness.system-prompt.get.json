@@ -131,6 +131,7 @@
         "enum": [
           "built_in",
           "selected",
+          "skills",
           "runtime",
           "registry_notice",
           "injected"

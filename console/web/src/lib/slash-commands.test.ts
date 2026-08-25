@@ -68,7 +68,9 @@ describe('slashAttachmentBlock', () => {
     ).toBe('<command name="review-pr">\nCheck X.\n</command>')
     expect(
       slashAttachmentBlock({ kind: 'skill', id: 'coder/index' }, 'Skill.'),
-    ).toBe('<skill id="coder/index">\nSkill.\n</skill>')
+    ).toBe(
+      '<skill id="coder/index">\nThis skill is already loaded. Follow it directly; do not search for or reload it.\n\nSkill.\n</skill>',
+    )
   })
 })
 

@@ -318,21 +318,28 @@ pub async fn invoke_target(
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            let (content, is_error) = normalize(&value);
-            ResultData {
-                content,
-                is_error,
-                details: value,
-            }
+            normalized_result(value)
         }
-        Err(e) => {
-            let message = e.message.clone();
-            ResultData {
-                content: vec![ContentBlock::text(message.clone())],
-                is_error: true,
-                details: json!({ "error": { "code": e.code, "message": message } }),
-            }
-        }
+        Err(e) => invocation_error_result(e.code, e.message),
+    }
+}
+
+/// Apply the same function-result normalization to a locally intercepted call
+/// as [`invoke_target`] applies to an engine-dispatched return value.
+pub(crate) fn normalized_result(value: Value) -> ResultData {
+    let (content, is_error) = normalize(&value);
+    ResultData {
+        content,
+        is_error,
+        details: value,
+    }
+}
+
+pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
+    ResultData {
+        content: vec![ContentBlock::text(message.clone())],
+        is_error: true,
+        details: json!({ "error": { "code": code, "message": message } }),
     }
 }
 

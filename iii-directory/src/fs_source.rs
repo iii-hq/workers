@@ -119,6 +119,9 @@ pub struct SkillFrontmatter {
     /// over the body first-paragraph as the teaser text in `list` rows.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether model-facing indexes should omit this skill from invocation candidates.
+    #[serde(default, rename = "disable-model-invocation")]
+    pub disable_model_invocation: bool,
 }
 
 // ───────────────────────── pure helpers ──────────────────────────────

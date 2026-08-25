@@ -12,7 +12,7 @@
  *   session is materialised by `ensureSession` on the first send so empty
  *   chats never litter the store.
  * - rename / model / mode changes write through `session::set-meta`. The
- *   console owns the metadata convention `{ surface, model, mode,
+ *   console owns the metadata convention `{ surface, model, mode, skills,
  *   title_manual }`; metadata replaces WHOLESALE, so the full object is
  *   always sent.
  * - delete writes through `session::delete`; the sidebar prunes on the
@@ -68,6 +68,7 @@ import {
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
   type Conversation,
+  type ConversationMetadataEdits,
   DEFAULT_MODE,
   type Message,
   type MessagePatch,
@@ -111,6 +112,7 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
     // made a chat operate in the wrong directory without the user choosing it.
     workingDir: null,
     messages: [],
+    started: false,
     status: 'idle',
     draft: true,
     hydrated: true,
@@ -246,6 +248,132 @@ function decodeSystemPrompt(v: unknown): SystemPromptState {
   }
 }
 
+function decodeSkills(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const skills = [
+    ...new Set(v.filter((id): id is string => typeof id === 'string' && !!id)),
+  ]
+  return skills.length > 0 ? skills : undefined
+}
+
+function decodeSessionSelections(
+  md: Record<string, unknown>,
+  started: boolean,
+): Pick<Conversation, 'systemPrompt' | 'skills' | 'legacySkillMigration'> {
+  const systemPrompt = decodeSystemPrompt(md.system_prompt)
+  const skills = decodeSkills(md.skills)
+  const hasLegacySkills = systemPrompt.addons.some(
+    (addon) => addon.kind === 'skill',
+  )
+  return {
+    systemPrompt,
+    skills,
+    legacySkillMigration:
+      !started && hasLegacySkills
+        ? { state: 'candidate', metadata: md }
+        : undefined,
+  }
+}
+
+function finalizeLegacySkillMigration(c: Conversation): Conversation {
+  const migration = c.legacySkillMigration
+  if (migration?.state !== 'candidate') return c
+
+  const legacySkills = decodeSystemPrompt(migration.metadata.system_prompt)
+    .addons.filter((addon) => addon.kind === 'skill')
+    .map((addon) => addon.name)
+  const skills = Object.hasOwn(migration.edits ?? {}, 'skills')
+    ? migration.edits?.skills
+    : Array.isArray(migration.metadata.skills)
+      ? decodeSkills(migration.metadata.skills)
+      : legacySkills.length
+        ? [...new Set(legacySkills)]
+        : undefined
+  const systemPrompt = c.systemPrompt
+    ? {
+        ...c.systemPrompt,
+        addons: c.systemPrompt.addons.filter((addon) => addon.kind !== 'skill'),
+      }
+    : undefined
+  const migrated = { ...c, systemPrompt, skills }
+  const metadata = migrationMetadataFor(migrated, migration.metadata)
+
+  return {
+    ...migrated,
+    sessionMetadata: metadata,
+    legacySkillMigration: {
+      state: 'ready',
+      metadata,
+      ...(migration.edits ? { edits: migration.edits } : {}),
+    },
+  }
+}
+
+function reconcileLegacySkillMigration(
+  previous: Conversation | undefined,
+  next: Conversation,
+): Conversation {
+  const migration = previous?.legacySkillMigration
+  if (!migration) return next
+  const edits = migration.edits
+  const current = edits ? { ...next, ...edits } : next
+
+  if (migration.state === 'candidate') {
+    if (!edits) return next
+    const incomingCandidate =
+      next.legacySkillMigration?.state === 'candidate'
+        ? next.legacySkillMigration
+        : undefined
+    const candidate = incomingCandidate
+      ? {
+          ...incomingCandidate,
+          metadata: {
+            ...migration.metadata,
+            ...incomingCandidate.metadata,
+          },
+          edits,
+        }
+      : migration
+    return {
+      ...current,
+      ...(!incomingCandidate && !Object.hasOwn(edits, 'systemPrompt')
+        ? { systemPrompt: previous.systemPrompt }
+        : {}),
+      legacySkillMigration: candidate,
+    }
+  }
+
+  if (next.legacySkillMigration?.state === 'candidate') {
+    return finalizeLegacySkillMigration({
+      ...current,
+      legacySkillMigration: {
+        ...next.legacySkillMigration,
+        metadata: migration.metadata
+          ? {
+              ...migration.metadata,
+              ...next.legacySkillMigration.metadata,
+            }
+          : next.legacySkillMigration.metadata,
+        ...(edits ? { edits } : {}),
+      },
+    })
+  }
+  if (migration.state === 'ready' && edits) {
+    return {
+      ...current,
+      legacySkillMigration: { ...migration, edits },
+    }
+  }
+  return {
+    ...current,
+    legacySkillMigration: {
+      state: 'empty',
+      ...(migration.metadata ? { metadata: migration.metadata } : {}),
+      ...(edits ? { edits } : {}),
+    },
+  }
+}
+
 /** The console's session metadata convention (replaces wholesale on writes). */
 export function metadataFor(
   c: Pick<
@@ -256,6 +384,7 @@ export function metadataFor(
     | 'workingDir'
     | 'memoryBank'
     | 'systemPrompt'
+    | 'skills'
     | 'sessionMetadata'
   >,
 ): Record<string, unknown> {
@@ -272,6 +401,7 @@ export function metadataFor(
     fs_scope: _fsScope,
     memory_bank: _memoryBank,
     system_prompt: _systemPrompt,
+    skills: _skills,
     ...preserved
   } = c.sessionMetadata ?? {}
   return {
@@ -283,11 +413,96 @@ export function metadataFor(
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
     ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
     ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+    ...(c.skills?.length ? { skills: c.skills } : {}),
   }
 }
 
-function conversationFromMeta(meta: SessionMeta): Conversation {
+const CONSOLE_METADATA_KEYS = [
+  'surface',
+  'model',
+  'mode',
+  'title_manual',
+  'fs_scope',
+  'memory_bank',
+  'system_prompt',
+  'skills',
+] as const
+
+function migrationMetadataFor(
+  c: Conversation,
+  base: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata = { ...base }
+  for (const key of CONSOLE_METADATA_KEYS) delete metadata[key]
+  return { ...metadata, ...metadataFor(c) }
+}
+
+export function applyConversationMetadataPatch(
+  c: Conversation,
+  patch: ConversationMetadataEdits,
+  now = Date.now(),
+): Conversation {
+  const normalized: ConversationMetadataEdits = Object.hasOwn(patch, 'skills')
+    ? { ...patch, skills: patch.skills?.length ? patch.skills : undefined }
+    : patch
+  const migration = c.legacySkillMigration
+  return {
+    ...c,
+    ...normalized,
+    legacySkillMigration: migration
+      ? {
+          ...migration,
+          edits: { ...migration.edits, ...normalized },
+        }
+      : undefined,
+    updatedAt: now,
+  }
+}
+
+export function metadataForWrite(c: Conversation): Record<string, unknown> {
+  const migration = c.legacySkillMigration
+  return migration?.metadata
+    ? migrationMetadataFor(c, migration.metadata)
+    : metadataFor(c)
+}
+
+export function preSendMetaUpdate(c: Conversation): {
+  session_id: string
+  metadata: Record<string, unknown>
+} | null {
+  const migration = c.legacySkillMigration
+  return !c.draft && c.started !== true && migration?.state === 'ready'
+    ? {
+        session_id: c.id,
+        metadata: migrationMetadataFor(c, migration.metadata),
+      }
+    : null
+}
+
+export function completePreSendMetaUpdate(
+  c: Conversation,
+  pendingEdits: ConversationMetadataEdits | undefined,
+): Conversation {
+  const migration = c.legacySkillMigration
+  if (migration?.state !== 'ready' || migration.edits !== pendingEdits) return c
+  return {
+    ...c,
+    legacySkillMigration: {
+      state: 'empty',
+      metadata: migration.metadata,
+      ...(migration.edits ? { edits: migration.edits } : {}),
+    },
+  }
+}
+
+function conversationFromMeta(
+  meta: SessionMeta,
+  started = meta.message_count > 0,
+  migrationPending = false,
+): Conversation {
   const md = meta.metadata ?? {}
+  const { systemPrompt, skills, legacySkillMigration } =
+    decodeSessionSelections(md, started && !migrationPending)
   return {
     id: meta.session_id,
     title: meta.title || meta.session_id,
@@ -306,7 +521,10 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
         : null,
-    systemPrompt: decodeSystemPrompt(md.system_prompt),
+    systemPrompt,
+    skills,
+    legacySkillMigration,
+    started,
     sessionMetadata: md,
     serverMetaUpdatedAt: meta.updated_at,
     serverMetadataUpdatedAt: meta.updated_at,
@@ -349,7 +567,12 @@ export function applyConversationMetadataEvent(
     return conversation
   }
   const md = event.metadata ?? {}
-  return {
+  const { systemPrompt, skills, legacySkillMigration } =
+    decodeSessionSelections(
+      md,
+      conversation.started === true && !conversation.legacySkillMigration,
+    )
+  const next: Conversation = {
     ...conversation,
     title: event.title || conversation.title,
     titleManual: md.title_manual === true || conversation.titleManual,
@@ -362,7 +585,9 @@ export function applyConversationMetadataEvent(
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
         : null,
-    systemPrompt: decodeSystemPrompt(md.system_prompt),
+    systemPrompt,
+    skills,
+    legacySkillMigration,
     sessionMetadata: md,
     subagentAppearance: decodeSubagentAppearance(md.subagent_display),
     serverMetaUpdatedAt: Math.max(
@@ -385,6 +610,7 @@ export function applyConversationMetadataEvent(
         : conversation.spawnedBy,
     updatedAt: Math.max(conversation.updatedAt, event.timestamp),
   }
+  return reconcileLegacySkillMigration(conversation, next)
 }
 
 /** Apply one partial lifecycle event without letting an older delivery turn a
@@ -501,7 +727,12 @@ export function mergeConversationMeta(
   existing: Conversation | undefined,
   meta: SessionMeta,
 ): Conversation {
-  const mapped = conversationFromMeta(meta)
+  const started = existing?.started === true || meta.message_count > 0
+  const mapped = conversationFromMeta(
+    meta,
+    started,
+    existing?.legacySkillMigration !== undefined,
+  )
   if (!existing || existing.draft) return mapped
   const metadataIsStale =
     existing.serverMetadataUpdatedAt !== undefined &&
@@ -528,6 +759,8 @@ export function mergeConversationMeta(
       workingDir: existing.workingDir,
       memoryBank: existing.memoryBank,
       systemPrompt: existing.systemPrompt,
+      skills: existing.skills,
+      legacySkillMigration: existing.legacySkillMigration,
       sessionMetadata: existing.sessionMetadata,
       subagentAppearance: existing.subagentAppearance,
       parentId: existing.parentId,
@@ -542,7 +775,7 @@ export function mergeConversationMeta(
     merged.statusReason = existing.statusReason
     merged.serverStatusUpdatedAt = existing.serverStatusUpdatedAt
   }
-  return merged
+  return reconcileLegacySkillMigration(existing, merged)
 }
 
 /** Merge the boot-time session list without dropping sessions discovered by
@@ -662,6 +895,7 @@ export interface ConversationsApi {
    * the composer shows it read-only once the chat has messages.
    */
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
+  setSkills: (id: string, skills: string[] | undefined) => void
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; only meaningful while the chat is a draft. */
   setWorkingDir: (id: string, dir: string) => void
@@ -751,6 +985,52 @@ export function mergeHydratedTranscript(
     }
   }
   return messages
+}
+
+export function markDurableStarted(
+  c: Conversation,
+  turnEstablished: boolean,
+): Conversation {
+  return {
+    ...c,
+    started: true,
+    legacySkillMigration:
+      turnEstablished && c.legacySkillMigration?.state === 'candidate'
+        ? undefined
+        : c.legacySkillMigration,
+  }
+}
+
+export function mergeHydratedConversation(
+  conversation: Conversation,
+  items: TranscriptItem[],
+  upserts: HydrationUpsert[],
+): Conversation {
+  const working = conversation.status === 'working'
+  const started =
+    conversation.started === true || items.length > 0 || upserts.length > 0
+  const hydrated: Conversation = {
+    ...conversation,
+    messages: mergeHydratedTranscript(
+      transcriptToMessages(items, conversation.id, { working }),
+      conversation.messages,
+      upserts,
+      { sessionId: conversation.id, working },
+    ),
+    started,
+    hydrated: true,
+  }
+  const turnEstablished =
+    items.some((item) => item.message?.role === 'assistant') ||
+    upserts.some(({ item }) => item.message?.role === 'assistant') ||
+    hydrated.messages.some((message) => message.role === 'assistant')
+  if (started) return markDurableStarted(hydrated, turnEstablished)
+  if (hydrated.legacySkillMigration?.state === 'candidate') {
+    return finalizeLegacySkillMigration(hydrated)
+  }
+  return hydrated.legacySkillMigration?.state === 'ready'
+    ? hydrated
+    : { ...hydrated, legacySkillMigration: { state: 'empty' } }
 }
 
 /** A failed transcript read is still a terminal hydration outcome. Keep the
@@ -1308,14 +1588,19 @@ export function useConversations(
             hydrationBuffersRef.current
               .get(sessionId)
               ?.push({ item, updated: false })
-            patchConversation(sessionId, (conversation) => ({
-              ...conversation,
-              messages: applyEntryUpsert(conversation.messages, item, {
-                sessionId,
-                working: conversation.status === 'working',
-              }),
-              updatedAt: event.timestamp,
-            }))
+            patchConversation(sessionId, (conversation) =>
+              markDurableStarted(
+                {
+                  ...conversation,
+                  messages: applyEntryUpsert(conversation.messages, item, {
+                    sessionId,
+                    working: conversation.status === 'working',
+                  }),
+                  updatedAt: event.timestamp,
+                },
+                item.message?.role === 'assistant',
+              ),
+            )
           },
           onMessageUpdated: (event) => {
             const revisions = revisionsFor(sessionId)
@@ -1330,15 +1615,20 @@ export function useConversations(
             hydrationBuffersRef.current
               .get(sessionId)
               ?.push({ item, updated: true })
-            patchConversation(sessionId, (conversation) => ({
-              ...conversation,
-              messages: applyEntryUpsert(conversation.messages, item, {
-                sessionId,
-                streaming: conversation.status === 'working',
-                working: conversation.status === 'working',
-              }),
-              updatedAt: event.timestamp,
-            }))
+            patchConversation(sessionId, (conversation) =>
+              markDurableStarted(
+                {
+                  ...conversation,
+                  messages: applyEntryUpsert(conversation.messages, item, {
+                    sessionId,
+                    streaming: conversation.status === 'working',
+                    working: conversation.status === 'working',
+                  }),
+                  updatedAt: event.timestamp,
+                },
+                item.message?.role === 'assistant',
+              ),
+            )
           },
         })
         if (
@@ -1414,19 +1704,9 @@ export function useConversations(
           ) {
             return
           }
-          patchConversation(sessionId, (conversation) => {
-            const working = conversation.status === 'working'
-            return {
-              ...conversation,
-              messages: mergeHydratedTranscript(
-                transcriptToMessages(items, sessionId, { working }),
-                conversation.messages,
-                upserts,
-                { sessionId, working },
-              ),
-              hydrated: true,
-            }
-          })
+          patchConversation(sessionId, (conversation) =>
+            mergeHydratedConversation(conversation, items, upserts),
+          )
           const retryTimer = hydrationRetryTimersRef.current.get(sessionId)
           if (retryTimer) clearTimeout(retryTimer)
           hydrationRetryTimersRef.current.delete(sessionId)
@@ -1660,19 +1940,23 @@ export function useConversations(
   const rename = useCallback(
     (id: string, title: string) => {
       const trimmed = title.trim()
-      patchConversation(id, (c) => ({
-        ...c,
-        title: trimmed || c.title,
-        titleManual: true,
-        updatedAt: Date.now(),
-      }))
+      patchConversation(id, (c) =>
+        applyConversationMetadataPatch(c, {
+          title: trimmed || c.title,
+          titleManual: true,
+        }),
+      )
       if (!serverEnabled || !trimmed) return
       const conv = conversations.find((c) => c.id === id)
       if (!conv || conv.draft) return
+      const updated = applyConversationMetadataPatch(conv, {
+        title: trimmed,
+        titleManual: true,
+      })
       void setSessionMeta({
         session_id: id,
         title: trimmed,
-        metadata: metadataFor({ ...conv, titleManual: true }),
+        metadata: metadataForWrite(updated),
       }).catch((err) => {
         if (import.meta.env.DEV)
           console.warn('[conversations] rename failed', err)
@@ -1729,7 +2013,7 @@ export function useConversations(
       if (!serverEnabled || conv.draft) return
       void setSessionMeta({
         session_id: conv.id,
-        metadata: metadataFor(conv),
+        metadata: metadataForWrite(conv),
       }).catch((err) => {
         if (import.meta.env.DEV)
           console.warn('[conversations] set_meta failed', err)
@@ -1740,63 +2024,72 @@ export function useConversations(
 
   const setModel = useCallback(
     (id: string, model: ModelId) => {
-      patchConversation(id, (c) => ({ ...c, model, updatedAt: Date.now() }))
+      patchConversation(id, (c) => applyConversationMetadataPatch(c, { model }))
       saveLastModel(model)
       const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta({ ...conv, model })
+      if (conv) writeMeta(applyConversationMetadataPatch(conv, { model }))
     },
     [patchConversation, conversations, writeMeta],
   )
 
   const setMode = useCallback(
     (id: string, mode: Mode) => {
-      patchConversation(id, (c) => ({ ...c, mode, updatedAt: Date.now() }))
+      patchConversation(id, (c) => applyConversationMetadataPatch(c, { mode }))
       const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta({ ...conv, mode })
+      if (conv) writeMeta(applyConversationMetadataPatch(conv, { mode }))
     },
     [patchConversation, conversations, writeMeta],
   )
 
   const setMemoryBank = useCallback(
     (id: string, memoryBank: string | null) => {
-      patchConversation(id, (c) => ({
-        ...c,
-        memoryBank,
-        updatedAt: Date.now(),
-      }))
+      patchConversation(id, (c) =>
+        applyConversationMetadataPatch(c, { memoryBank }),
+      )
       const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta({ ...conv, memoryBank })
+      if (conv) writeMeta(applyConversationMetadataPatch(conv, { memoryBank }))
     },
     [patchConversation, conversations, writeMeta],
   )
 
   const setSystemPrompt = useCallback(
     (id: string, systemPrompt: SystemPromptState) => {
-      patchConversation(id, (c) => ({
-        ...c,
-        systemPrompt,
-        updatedAt: Date.now(),
-      }))
+      patchConversation(id, (c) =>
+        applyConversationMetadataPatch(c, { systemPrompt }),
+      )
       const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta({ ...conv, systemPrompt })
+      if (conv)
+        writeMeta(applyConversationMetadataPatch(conv, { systemPrompt }))
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
+  const setSkills = useCallback(
+    (id: string, skills: string[] | undefined) => {
+      const normalized = skills?.length ? skills : undefined
+      patchConversation(id, (c) =>
+        applyConversationMetadataPatch(c, { skills: normalized }),
+      )
+      const conv = conversations.find((c) => c.id === id)
+      if (conv)
+        writeMeta(applyConversationMetadataPatch(conv, { skills: normalized }))
     },
     [patchConversation, conversations, writeMeta],
   )
 
   const setWorkingDir = useCallback(
     (id: string, dir: string) => {
-      patchConversation(id, (c) => ({
-        ...c,
-        workingDir: dir,
-        updatedAt: Date.now(),
-      }))
+      patchConversation(id, (c) =>
+        applyConversationMetadataPatch(c, { workingDir: dir }),
+      )
       saveRecentProject(dir)
       // Moving the working directory away from a console-claimed worktree
       // releases the claim (keepPath guards the pick-this-worktree flow,
       // which records the claim before updating the dir).
       void releaseConsoleClaimIfAny(id, { keepPath: dir })
       const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta({ ...conv, workingDir: dir })
+      if (conv)
+        writeMeta(applyConversationMetadataPatch(conv, { workingDir: dir }))
     },
     [patchConversation, conversations, writeMeta],
   )
@@ -1841,7 +2134,24 @@ export function useConversations(
   const ensureSession = useCallback(
     async (id: string, titleHint?: string) => {
       const conv = conversations.find((c) => c.id === id)
-      if (!serverEnabled || !conv?.draft) return
+      if (!serverEnabled || !conv) return
+      const metaUpdate = preSendMetaUpdate(conv)
+      if (metaUpdate) {
+        const pendingEdits = conv.legacySkillMigration?.edits
+        try {
+          await setSessionMeta(metaUpdate)
+          patchConversation(id, (current) =>
+            completePreSendMetaUpdate(current, pendingEdits),
+          )
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn('[conversations] session::set-meta failed', err)
+          }
+          throw err
+        }
+        return
+      }
+      if (!conv.draft) return
       const title = conv.titleManual
         ? conv.title
         : titleHint
@@ -1960,6 +2270,7 @@ export function useConversations(
     setModel,
     setMemoryBank,
     setSystemPrompt,
+    setSkills,
     setMode,
     setWorkingDir,
     prefillWorkingDir,

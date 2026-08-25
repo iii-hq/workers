@@ -1,6 +1,6 @@
 /**
- * Pure state for the chat system-prompt picker and the prompt/skill addon
- * pickers (`SessionAddonsPicker.tsx`). `SystemPromptPicker.tsx`
+ * Pure state for the chat system-prompt picker and the separate skill-ID
+ * picker (`SessionAddonsPicker.tsx`). `SystemPromptPicker.tsx`
  * renders it on the new-session screen; the chosen value is stored on
  * `Conversation.systemPrompt` (see `use-conversations`), and `ChatView` maps
  * it onto `ChatStreamOptions.systemPrompt` via `selectionForSend` — the
@@ -19,11 +19,13 @@ import type { SystemPromptSelection } from '@/lib/backend/harness-send'
 
 export type PromptStrategy = 'enrich' | 'override'
 
+/** Undefined/empty means every model-invocable skill; otherwise exact IDs. */
+export type SkillSelection = string[] | undefined
+
 /** What the select shows: provider default, a named fs prompt, or free text. */
 export type SystemPromptChoice = 'default' | 'custom' | { named: string }
 
-/** One pre-selected directory prompt or skill whose body is appended to the
- * session's system prompt (welcome-screen "prompts"/"skills" pickers). */
+/** Legacy body addon kept only to decode established pre-ID-filter sessions. */
 export interface SystemPromptAddon {
   kind: 'prompt' | 'skill'
   /** Prompt name (`directory::prompts::*`) or skill id (`directory::skills::*`). */
@@ -42,6 +44,7 @@ export interface SystemPromptState {
   namedBody: string
   /** Custom textarea content; kept while switching choices. */
   customText: string
+  /** Legacy prompt/skill bodies; new skill selections never write here. */
   addons: SystemPromptAddon[]
 }
 
@@ -86,6 +89,26 @@ export function selectionForSend(
   turnEstablished: boolean,
 ): SystemPromptSelection | null {
   return turnEstablished ? null : toSelection(s)
+}
+
+export function toggleSkillSelection(
+  current: SkillSelection,
+  id: string,
+): SkillSelection {
+  if (!current?.length) return [id]
+  const next = current.includes(id)
+    ? current.filter((selected) => selected !== id)
+    : [...current, id]
+  return next.length > 0 ? next : undefined
+}
+
+export function skillSelectionForSend(
+  current: SkillSelection,
+  state: { turnEstablished: boolean; willQueue: boolean },
+): SkillSelection {
+  return state.turnEstablished || state.willQueue || !current?.length
+    ? undefined
+    : current
 }
 
 /** Radix Select needs string values; `named:` prefixes fs prompt names

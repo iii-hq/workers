@@ -65,6 +65,12 @@ pub fn compaction_entry_id(turn_id: &str, step: u64) -> String {
     format!("e_{turn_id}_{step}_compaction")
 }
 
+/// A names-only skill correction for one model generation. Redelivery of the
+/// same generation appends to the same transcript entry.
+pub fn skill_update_entry_id(turn_id: &str, generation: u32) -> String {
+    format!("e_{turn_id}_skills_{generation}")
+}
+
 /// A synthetic validation-nudge user entry for an output-contract retry.
 pub fn validation_nudge_entry_id(turn_id: &str, attempt: u32) -> String {
     format!("e_{turn_id}_nudge_{attempt}")
@@ -118,6 +124,7 @@ mod tests {
         assert_eq!(function_result_entry_id("t_1", "fc_9"), "e_t_1_fc_9");
         assert_eq!(compaction_entry_id("t_1", 4), "e_t_1_4_compaction");
         assert_eq!(queued_entry_id("q_abc"), "e_q_abc");
+        assert_eq!(skill_update_entry_id("t_1", 4), "e_t_1_skills_4");
         assert_eq!(
             transient_resume_nudge_entry_id("t_1", 2),
             "e_t_1_transient_resume_2"

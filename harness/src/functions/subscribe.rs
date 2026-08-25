@@ -212,12 +212,13 @@ impl<'a> CallerModel<'a> {
     }
 }
 
-/// The single per-call invocation chokepoint. Subscription control calls
-/// (`engine::register_trigger` / `engine::unregister_trigger`) are handled inline
-/// with the trusted owning session injected — the model can never widen the
-/// target; everything else invokes the target normally. Every call site (the
-/// turn loop, `harness::function::trigger`, and the hook-held release path) routes
-/// through here so the trusted injection can't be bypassed.
+/// The single per-call invocation chokepoint. Subscription controls and a
+/// locked caller's exact self-targeted `harness::send` are handled inline with
+/// trusted caller context; the model cannot forge session-lock ownership.
+/// Everything else invokes the target normally. Every call site (the turn loop,
+/// `harness::function::trigger`, and the hook-held release path) routes through
+/// here so trusted context cannot be bypassed.
+#[allow(clippy::too_many_arguments)]
 pub async fn invoke(
     deps: &Deps,
     engine: &EngineClient,
@@ -225,8 +226,17 @@ pub async fn invoke(
     function_id: &str,
     arguments: &Value,
     session_id: &str,
+    caller_holds_session_lock: bool,
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
+    if let Some(request) = send_invocation_context(
+        function_id,
+        arguments,
+        session_id,
+        caller_holds_session_lock,
+    ) {
+        return intercept_send(deps, request, session_id).await;
+    }
     match function_id {
         REGISTER_TRIGGER_ID => {
             intercept_register(deps, arguments, session_id, caller, policy).await
@@ -249,6 +259,40 @@ pub async fn invoke(
         // is denial of service, not exfiltration; deny it anyway.
         crate::state::CLAIM_NAMESPACE_ID => trigger::denied_result(function_id),
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+    }
+}
+
+fn send_invocation_context(
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+    caller_holds_session_lock: bool,
+) -> Option<crate::functions::send::SendRequest> {
+    if function_id != crate::functions::SEND_ID || !caller_holds_session_lock {
+        return None;
+    }
+    let request: crate::functions::send::SendRequest =
+        serde_json::from_value(arguments.clone()).ok()?;
+    (request.session_id.as_deref() == Some(session_id)).then_some(request)
+}
+
+async fn intercept_send(
+    deps: &Deps,
+    request: crate::functions::send::SendRequest,
+    caller_session_id: &str,
+) -> ResultData {
+    match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
+        Ok(response) => match serde_json::to_value(response) {
+            Ok(value) => trigger::normalized_result(value),
+            Err(error) => trigger::invocation_error_result(
+                None,
+                format!("{}: {error}", crate::functions::SEND_ID),
+            ),
+        },
+        Err(error) => trigger::invocation_error_result(
+            Some(error.code().to_string()),
+            format!("{}: {error}", crate::functions::SEND_ID),
+        ),
     }
 }
 
@@ -1603,6 +1647,36 @@ mod tests {
             with_caller_session_id(&json!("nope"), "s_me"),
             json!("nope")
         );
+    }
+
+    #[test]
+    fn trusted_self_send_is_intercepted_locally() {
+        let arguments = json!({ "session_id": "s", "message": "hello" });
+        let request = send_invocation_context(crate::functions::SEND_ID, &arguments, "s", true)
+            .expect("trusted self-send should be intercepted");
+        assert_eq!(request.session_id.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn sends_without_trusted_exact_self_target_use_engine_dispatch() {
+        let cases = [
+            json!({ "session_id": "other", "message": "hello" }),
+            json!({ "message": "hello" }),
+            json!({ "session_id": 42, "message": "hello" }),
+            json!({ "session_id": "s", "message": 42 }),
+        ];
+        for arguments in cases {
+            assert!(
+                send_invocation_context(crate::functions::SEND_ID, &arguments, "s", true,)
+                    .is_none()
+            );
+        }
+
+        let self_send = json!({ "session_id": "s", "message": "hello" });
+        assert!(
+            send_invocation_context(crate::functions::SEND_ID, &self_send, "s", false,).is_none()
+        );
+        assert!(send_invocation_context("state::get", &self_send, "s", true).is_none());
     }
 
     #[test]

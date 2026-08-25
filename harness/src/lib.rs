@@ -30,6 +30,7 @@ pub mod manifest;
 pub mod policy;
 pub mod prompt;
 pub mod queue;
+pub mod skills;
 pub mod state;
 pub mod subagent;
 pub mod subscriptions;

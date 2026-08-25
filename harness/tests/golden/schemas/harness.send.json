@@ -515,6 +515,16 @@
               "null"
             ]
           },
+          "skills": {
+            "description": "Exact skill ids advertised to the model. On a fresh session, omitted or empty means all. On an existing session, omitted inherits its filter and empty resets to all. Explicit changes require no active turn. This is index curation, not authorization.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",

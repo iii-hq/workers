@@ -79,7 +79,7 @@ export function slashAttachmentBlock(
 ): string {
   return inv.kind === 'prompt'
     ? `<command name="${inv.name}">\n${body}\n</command>`
-    : `<skill id="${inv.id}">\n${body}\n</skill>`
+    : `<skill id="${inv.id}">\nThis skill is already loaded. Follow it directly; do not search for or reload it.\n\n${body}\n</skill>`
 }
 
 export function invocationCommand(inv: SlashInvocation): string {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   frontmatterBody,
+  frontmatterFieldIsSimpleBoolean,
   readFrontmatterField,
   restoreFrontmatterFields,
   setFrontmatterField,
@@ -56,5 +57,111 @@ test('quoted multiline descriptions decode for the textarea', () => {
   assert.equal(
     readFrontmatterField(next, ['description']).value,
     'first line\nsecond line',
+  )
+})
+
+test('model invocation option writes a bare boolean and stays out of Content', () => {
+  const content = `---
+name: ask-matt
+description: Route to the right skill.
+license: MIT
+---
+Body
+`
+  const enabled = setFrontmatterField(
+    content,
+    'disable-model-invocation',
+    'true',
+    true,
+  )
+  assert.equal(
+    readFrontmatterField(enabled, ['disable-model-invocation']).value,
+    'true',
+  )
+  assert.match(enabled, /^disable-model-invocation: true$/m)
+  assert.match(enabled, /^license: MIT$/m)
+
+  const fields = [
+    readFrontmatterField(enabled, ['name']),
+    readFrontmatterField(enabled, ['description']),
+    {
+      ...readFrontmatterField(enabled, ['disable-model-invocation']),
+      bare: true,
+    },
+  ]
+  const editorSource = withoutFrontmatterFields(
+    enabled,
+    fields.map((field) => field.key),
+  )
+  assert.doesNotMatch(editorSource, /^disable-model-invocation: true$/m)
+  assert.match(editorSource, /^license: MIT$/m)
+
+  const restored = restoreFrontmatterFields(
+    editorSource.replace('Body', 'Updated body'),
+    fields,
+  )
+  assert.match(restored, /^disable-model-invocation: true$/m)
+  assert.match(restored, /^license: MIT$/m)
+  assert.match(restored, /Updated body/)
+
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      '---\ndisable-model-invocation: true\n---\n',
+      'disable-model-invocation',
+    ),
+    true,
+  )
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      '---\ndisable-model-invocation: !!bool |-\n  true\n---\n',
+      'disable-model-invocation',
+    ),
+    false,
+  )
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      '---\ndisable-model-invocation: true\n  trailing\n---\n',
+      'disable-model-invocation',
+    ),
+    false,
+  )
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      "---\n'disable-model-invocation': true\n---\n",
+      'disable-model-invocation',
+    ),
+    false,
+  )
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      '---\n? disable-model-invocation\n: true\n---\n',
+      'disable-model-invocation',
+    ),
+    false,
+  )
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      '---\n{disable-model-invocation: true}\n---\n',
+      'disable-model-invocation',
+    ),
+    false,
+  )
+  assert.equal(
+    frontmatterFieldIsSimpleBoolean(
+      '---\n? !!str disable-model-invocation\n: true\n---\n',
+      'disable-model-invocation',
+    ),
+    false,
+  )
+  const advanced = `---
+name: ask-matt
+disable-model-invocation: !!bool |-
+  true
+---
+Body
+`
+  assert.match(
+    withoutFrontmatterFields(advanced, ['name']),
+    /^disable-model-invocation: !!bool \|-$/m,
   )
 })

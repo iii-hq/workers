@@ -831,6 +831,29 @@
 [data-iii-ui="iii-directory"] .dir-ui-edit-input {
   height: 36px;
 }
+[data-iii-ui="iii-directory"] .dir-ui-model-invocation {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-top: 2px;
+}
+[data-iii-ui="iii-directory"]
+  .dir-ui-checkrow.dir-ui-model-invocation {
+  align-items: flex-start;
+}
+[data-iii-ui="iii-directory"] label.dir-ui-model-invocation {
+  cursor: pointer;
+}
+[data-iii-ui="iii-directory"] .dir-ui-model-invocation > input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  cursor: inherit;
+}
+[data-iii-ui="iii-directory"]
+  label.dir-ui-model-invocation:has(input:disabled) {
+  cursor: not-allowed;
+}
 [data-iii-ui="iii-directory"] .dir-ui-edit-textarea {
   width: 100%;
   min-height: 64px;

@@ -135,6 +135,8 @@ export interface ChatStreamOptions {
    * (provider default identity prompt). Mock backends ignore this.
    */
   systemPrompt?: import('./harness-send').SystemPromptSelection | null
+  /** First-send skill curation. Undefined/empty means all skills. */
+  skills?: string[]
   /**
    * Extra text content blocks appended after the prompt on the outgoing
    * user message — `#file(...)` mention expansions (`<attached-file …>`

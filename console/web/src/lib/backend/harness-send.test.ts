@@ -5,6 +5,7 @@ import {
   predictedUserEntryId,
   sendTurn,
   stopTurn,
+  toSkillOptions,
   toSystemPromptOptions,
 } from './harness-send'
 
@@ -132,6 +133,16 @@ describe('toSystemPromptOptions', () => {
     ).toEqual({
       system_prompt: 'Be terse.',
       system_prompt_strategy: 'enrich',
+    })
+  })
+})
+
+describe('toSkillOptions', () => {
+  it('omits all-skills selections and maps an exact subset to the wire', () => {
+    expect(toSkillOptions(undefined)).toEqual({})
+    expect(toSkillOptions([])).toEqual({})
+    expect(toSkillOptions(['review', 'release'])).toEqual({
+      skills: ['review', 'release'],
     })
   })
 })

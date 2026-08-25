@@ -143,6 +143,26 @@ fn default_discovery_fallback_yields_to_injected_assist() {
 }
 
 #[test]
+fn runtime_preverification_covers_updates_and_subagents() {
+    for out in [variants::DEFAULT, variants::SUBAGENT] {
+        let out = out.replace('\n', " ");
+        assert!(out.contains("marked `pre-verified` by a Harness runtime block or update"));
+        assert!(out.contains("already satisfies Steps 1 and 2"));
+        assert!(out.contains("without discovery or `engine::functions::info`"));
+    }
+
+    let default = default_prompt();
+    let checklist = default
+        .split_once("# Final checklist")
+        .expect("prompt has a final checklist")
+        .1
+        .replace('\n', " ");
+    assert!(checklist.contains("marked `pre-verified`"));
+    assert!(checklist.contains("exact id"));
+    assert!(checklist.contains("and payload"));
+}
+
+#[test]
 fn fn_pill_syntax() {
     let out = default_prompt();
     assert!(out.contains("@fn(<function_id>)"));

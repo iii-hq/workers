@@ -312,6 +312,18 @@ export interface MessagePatch {
 /** Mirrors session-manager's SessionStatus. */
 export type ConversationStatus = 'idle' | 'working' | 'done' | 'error'
 
+export interface ConversationMetadataEdits {
+  title?: string
+  titleManual?: boolean
+  model?: ModelId | null
+  mode?: Mode
+  workingDir?: string | null
+  memoryBank?: string | null
+  systemPrompt?: SystemPromptState
+  /** An own `undefined` value records an explicit All-skills selection. */
+  skills?: string[] | undefined
+}
+
 /** Harness-provided presentation hints for a spawned sub-agent session. */
 export type SubagentIcon =
   | 'agent'
@@ -377,6 +389,28 @@ export interface Conversation {
    * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
    */
   systemPrompt?: SystemPromptState
+  /** Undefined/empty means all model-invocable skills; otherwise exact IDs. */
+  skills?: string[]
+  /**
+   * One-time conversion of legacy skill addons after an authoritative empty
+   * transcript read. `candidate` retains the legacy body while hydration is
+   * pending; `ready` carries the complete body-free metadata replacement.
+   * `empty` remembers a successful empty transcript read so metadata that
+   * arrives later can be finalized immediately.
+   */
+  legacySkillMigration?:
+    | {
+        state: 'empty'
+        metadata?: Record<string, unknown>
+        edits?: ConversationMetadataEdits
+      }
+    | {
+        state: 'candidate' | 'ready'
+        metadata: Record<string, unknown>
+        edits?: ConversationMetadataEdits
+      }
+  /** Whether durable transcript entries already exist for this session. */
+  started?: boolean
   /** Raw SessionMeta.metadata, retained because session::set-meta replaces it. */
   sessionMetadata?: Record<string, unknown>
   /** Last authoritative SessionMeta/event timestamp; excludes local UI edits. */

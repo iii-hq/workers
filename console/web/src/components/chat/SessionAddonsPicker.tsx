@@ -7,34 +7,34 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
-import {
-  getSkill,
-  listSkills,
-  skillBodyWithBaseDir,
-} from '@/lib/backend/directory-prompts'
+import { listSkills } from '@/lib/backend/directory-prompts'
+import type { IiiClient } from '@/lib/iii-client'
 import { getIiiClient } from '@/lib/iii-client'
 import { cn } from '@/lib/utils'
-import type { SystemPromptState } from './system-prompt-selection'
+import {
+  type SkillSelection,
+  toggleSkillSelection,
+} from './system-prompt-selection'
 
 /**
- * Multi-select for the welcome screen's session skills: directory skills
- * whose bodies are appended to the session's system prompt on the first
- * send. A sibling of `SystemPromptPicker`, not a generalization —
+ * Multi-select for the welcome screen's model-invocable skill IDs. A sibling
+ * of `SystemPromptPicker`, not a generalization —
  * multi-select needs checkbox rows, which Radix Select can't do.
- *
- * Skills only: command prompts are user-invoked `/` commands in the
- * composer, not session-start context. The `prompt` addon kind survives in
- * the state model solely so metadata persisted by older builds still
- * decodes and sends.
  */
+export async function loadSessionSkills(client: IiiClient) {
+  return (await listSkills(client)).filter(
+    (skill) => !skill.disable_model_invocation,
+  )
+}
+
 export function SessionAddonsPicker({
   value,
   onChange,
   disabled,
   className,
 }: {
-  value: SystemPromptState
-  onChange: (next: SystemPromptState) => void
+  value: SkillSelection
+  onChange: (next: SkillSelection) => void
   disabled?: boolean
   className?: string
 }) {
@@ -42,9 +42,8 @@ export function SessionAddonsPicker({
     { name: string; description: string }[] | null
   >(null)
 
-  /* The menu stays open across toggles and body resolution awaits the bus,
-     so the post-await state must come from the LATEST value — a closure
-     captured before the await would drop or duplicate concurrent toggles. */
+  /* Radix keeps the menu open across toggles, so update the ref immediately
+     rather than waiting for the parent render between adjacent clicks. */
   const valueRef = useRef(value)
   valueRef.current = value
 
@@ -55,7 +54,7 @@ export function SessionAddonsPicker({
     try {
       const client = await getIiiClient()
       setEntries(
-        (await listSkills(client)).map((s) => ({
+        (await loadSessionSkills(client)).map((s) => ({
           name: s.id,
           description: s.description || s.title,
         })),
@@ -66,44 +65,20 @@ export function SessionAddonsPicker({
   }, [])
 
   const isChecked = useCallback(
-    (name: string) =>
-      value.addons.some((a) => a.kind === 'skill' && a.name === name),
-    [value.addons],
+    (name: string) => value?.includes(name) ?? false,
+    [value],
   )
 
   const toggle = useCallback(
-    async (name: string) => {
-      const cur = valueRef.current
-      if (cur.addons.some((a) => a.kind === 'skill' && a.name === name)) {
-        onChange({
-          ...cur,
-          addons: cur.addons.filter(
-            (a) => !(a.kind === 'skill' && a.name === name),
-          ),
-        })
-        return
-      }
-      /* Resolve the body at selection time — frozen server-side on the
-         first send, same contract as the identity prompt's namedBody. */
-      try {
-        const client = await getIiiClient()
-        const body = skillBodyWithBaseDir(await getSkill(client, name))
-        const latest = valueRef.current
-        if (latest.addons.some((a) => a.kind === 'skill' && a.name === name)) {
-          return
-        }
-        onChange({
-          ...latest,
-          addons: [...latest.addons, { kind: 'skill', name, body }],
-        })
-      } catch {
-        /* Unresolvable body = nothing to add; leave the selection as-is. */
-      }
+    (name: string) => {
+      const next = toggleSkillSelection(valueRef.current, name)
+      valueRef.current = next
+      onChange(next)
     },
     [onChange],
   )
 
-  const count = value.addons.filter((a) => a.kind === 'skill').length
+  const count = value?.length ?? 0
 
   return (
     <DropdownMenu onOpenChange={handleOpenChange}>
@@ -119,7 +94,7 @@ export function SessionAddonsPicker({
         <span className="inline-flex items-center gap-2 min-w-0">
           <Blocks size={16} className="text-ink-faint" aria-hidden />
           <span className="truncate">
-            {count > 0 ? `Skills (${count})` : 'Skills'}
+            {count > 0 ? `Skills (${count})` : 'All skills'}
           </span>
         </span>
         <ChevronDown size={16} aria-hidden />
@@ -133,6 +108,24 @@ export function SessionAddonsPicker({
            edge. The cap is what makes the row-level truncation engage. */
         className="min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(24rem,var(--radix-dropdown-menu-content-available-width))] max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto text-[13px]"
       >
+        <DropdownMenuCheckboxItem
+          checked={count === 0}
+          onSelect={(ev) => ev.preventDefault()}
+          onCheckedChange={() => {
+            valueRef.current = undefined
+            onChange(undefined)
+          }}
+          indicator={
+            <Check
+              size={16}
+              strokeWidth={2.5}
+              className="text-ink"
+              aria-hidden
+            />
+          }
+        >
+          All skills
+        </DropdownMenuCheckboxItem>
         {entries === null ? (
           <DropdownMenuItem disabled>Loading skills…</DropdownMenuItem>
         ) : entries.length === 0 ? (
@@ -144,7 +137,7 @@ export function SessionAddonsPicker({
               checked={isChecked(e.name)}
               /* Keep the menu open across toggles: multi-select. */
               onSelect={(ev) => ev.preventDefault()}
-              onCheckedChange={() => void toggle(e.name)}
+              onCheckedChange={() => toggle(e.name)}
               /* Selection indicators stay neutral across themes. */
               indicator={
                 <Check

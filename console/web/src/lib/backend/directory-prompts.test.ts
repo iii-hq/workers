@@ -81,10 +81,19 @@ describe('client calls', () => {
         title: 'coder',
         description: 'D.',
         modified_at: 't',
+        disable_model_invocation: false,
       },
     ]
     const client = fakeClient(() => ({ skills }))
-    expect(await listSkills(client)).toEqual(skills)
+    expect(await listSkills(client)).toEqual([
+      {
+        id: 'coder/index',
+        title: 'coder',
+        description: 'D.',
+        modified_at: 't',
+        disable_model_invocation: false,
+      },
+    ])
     expect(client.trigger).toHaveBeenCalledWith(
       'directory::skills::list',
       { include_description: true },
@@ -98,8 +107,12 @@ describe('client calls', () => {
       title: 'coder',
       body: 'Skill.',
       modified_at: 't',
+      disable_model_invocation: false,
     }))
-    expect((await getSkill(client, 'coder/index')).body).toBe('Skill.')
+    expect(await getSkill(client, 'coder/index')).toMatchObject({
+      body: 'Skill.',
+      disable_model_invocation: false,
+    })
     expect(client.trigger).toHaveBeenCalledWith(
       'directory::skills::get',
       { id: 'coder/index' },
@@ -113,6 +126,7 @@ describe('skillBodyWithBaseDir', () => {
     id: 'impeccable',
     title: 'Impeccable',
     body: 'Run scripts/context.mjs.',
+    disable_model_invocation: false,
     modified_at: 't',
   }
 

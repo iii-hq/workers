@@ -84,11 +84,13 @@ import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
+import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
+  skillSelectionForSend,
 } from './system-prompt-selection'
 
 /**
@@ -218,8 +220,17 @@ export function ChatView({
   const harnessBlocked = conversationsCtx
     ? isChatBlockedByHarness(conversationsCtx.harnessStatus)
     : false
-  const harnessBlockedRef = useRef(harnessBlocked)
-  harnessBlockedRef.current = harnessBlocked
+  // The session list can render a server session before its transcript read
+  // finishes. Until then, an empty local message list says nothing about
+  // whether this is the first turn, so defer the whole request.
+  const sessionHydrating = isSessionSubmitBlockedByHydration({
+    realBackend: backend.id === 'real',
+    draft: conversation.draft,
+    hydrated: conversation.hydrated,
+  })
+  const submitBlocked = harnessBlocked || sessionHydrating
+  const submitBlockedRef = useRef(submitBlocked)
+  submitBlockedRef.current = submitBlocked
   // This view is keyed by conversation, so mounting IS opening a session:
   // the caret belongs in the composer, on the devices where that is free.
   const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
@@ -1054,7 +1065,7 @@ export function ChatView({
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
-      if (harnessBlockedRef.current) return
+      if (submitBlockedRef.current) return
       const conversationId = conversation.id
       // Steering a discovered/sub-agent session: inherit the model the
       // transcript shows when the conversation carries none of its own.
@@ -1122,6 +1133,10 @@ export function ChatView({
         effectiveSystemPrompt,
         turnEstablished,
       )
+      const skills = skillSelectionForSend(conversation.skills, {
+        turnEstablished,
+        willQueue,
+      })
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1321,6 +1336,7 @@ export function ChatView({
               messageId,
               thinkingLevel,
               systemPrompt,
+              skills,
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1370,6 +1386,7 @@ export function ChatView({
             messageId,
             thinkingLevel,
             systemPrompt,
+            skills,
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
@@ -1653,6 +1670,7 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      conversation.skills,
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
@@ -2246,6 +2264,7 @@ export function ChatView({
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}
+            submitBlocked={submitBlocked}
             autoFocus={focusComposerOnOpen && !harnessBlocked}
             blockedPlaceholder={
               conversationsCtx

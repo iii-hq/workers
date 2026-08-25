@@ -42,6 +42,7 @@ export const directorySkillsListDone = base(
           'Create a fresh sandbox VM. Pair with sandbox::exec to run commands inside it.',
         bytes: 1840,
         modified_at: YESTERDAY_ISO,
+        disable_model_invocation: false,
       },
       {
         id: 'sandbox/skills/sandbox/exec',
@@ -51,6 +52,7 @@ export const directorySkillsListDone = base(
         description: 'Run a single command in an existing sandbox.',
         bytes: 1602,
         modified_at: YESTERDAY_ISO,
+        disable_model_invocation: false,
       },
       {
         id: 'sandbox/index',
@@ -61,6 +63,7 @@ export const directorySkillsListDone = base(
           'Read-write VMs for the agent. Use create to provision one, exec/run to interact.',
         bytes: 920,
         modified_at: LAST_WEEK_ISO,
+        disable_model_invocation: true,
       },
     ],
   }),
@@ -107,6 +110,7 @@ Create a fresh sandbox VM.
 \`\`\`
 `,
     modified_at: YESTERDAY_ISO,
+    disable_model_invocation: false,
   }),
 )
 

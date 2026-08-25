@@ -169,3 +169,31 @@ export function restoreFrontmatterFields(source: string, fields: readonly Frontm
 export function frontmatterBody(content: string): string {
   return splitFrontmatter(content).body
 }
+
+/** Whether a top-level field is absent or a directly editable boolean. */
+export function frontmatterFieldIsSimpleBoolean(
+  content: string,
+  key: string,
+): boolean {
+  const parts = splitFrontmatter(content)
+  if (!parts.hasFrontmatter) return true
+  const lines = parts.yaml.split(/\r?\n/)
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const header = new RegExp(`^${escaped}\\s*:`)
+  const occurrences = parts.yaml.split(key).length - 1
+  if (occurrences === 0) return true
+  if (occurrences !== 1) return false
+  const start = lines.findIndex((line) => header.test(line))
+  if (start < 0) return false
+  if (
+    !new RegExp(
+      `^${escaped}\\s*:\\s*(?:true|True|TRUE|false|False|FALSE)\\s*$`,
+    ).test(lines[start])
+  )
+    return false
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (!lines[index].trim()) continue
+    return !/^[ \t]/.test(lines[index])
+  }
+  return true
+}

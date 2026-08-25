@@ -59,6 +59,8 @@ export interface HarnessSendOptions {
   provider_options?: Record<string, unknown>
   output?: HarnessOutputContract
   functions?: HarnessFunctionPolicy
+  /** Omitted/empty means all model-invocable skills; otherwise exact IDs. */
+  skills?: string[]
   /** Tracing passthrough (session_id / message_id propagate as baggage). */
   metadata?: Record<string, unknown>
 }
@@ -219,6 +221,12 @@ export function toSystemPromptOptions(
 ): Pick<HarnessSendOptions, 'system_prompt' | 'system_prompt_strategy'> {
   if (!sel || !sel.body.trim()) return {}
   return { system_prompt: sel.body, system_prompt_strategy: sel.strategy }
+}
+
+export function toSkillOptions(
+  skills: string[] | undefined,
+): Pick<HarnessSendOptions, 'skills'> {
+  return skills?.length ? { skills } : {}
 }
 
 /**

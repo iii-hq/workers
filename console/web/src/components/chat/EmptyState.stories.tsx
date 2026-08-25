@@ -53,6 +53,7 @@ export const Ready: Story = {
     variant: 'ready',
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
+    onSkillsChange: fn(),
   },
 }
 
@@ -65,6 +66,8 @@ export const ReadyWithNamedPrompt: Story = {
       choice: { named: 'ptbr' },
     },
     onSystemPromptChange: fn(),
+    skills: ['review', 'release'],
+    onSkillsChange: fn(),
   },
 }
 

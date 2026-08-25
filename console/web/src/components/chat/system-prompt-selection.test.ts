@@ -4,6 +4,8 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
   selectionForSend,
+  skillSelectionForSend,
+  toggleSkillSelection,
   toSelection,
   valueToChoice,
 } from './system-prompt-selection'
@@ -131,5 +133,50 @@ describe('choice codec', () => {
       expect(valueToChoice(choiceToValue(choice))).toEqual(choice)
     }
     expect(choiceToValue({ named: 'pirate' })).toBe('named:pirate')
+  })
+})
+
+describe('skill selection', () => {
+  it('treats undefined as all, creates subsets, and resets after clearing the last id', () => {
+    expect(toggleSkillSelection(undefined, 'review')).toEqual(['review'])
+    expect(toggleSkillSelection(['review'], 'release')).toEqual([
+      'review',
+      'release',
+    ])
+    expect(toggleSkillSelection(['review'], 'review')).toBeUndefined()
+  })
+
+  it('sends a non-empty subset only before the session is established', () => {
+    const firstTurn = { turnEstablished: false, willQueue: false }
+    expect(skillSelectionForSend(undefined, firstTurn)).toBeUndefined()
+    expect(skillSelectionForSend([], firstTurn)).toBeUndefined()
+    expect(skillSelectionForSend(['review'], firstTurn)).toEqual(['review'])
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: true,
+        willQueue: false,
+      }),
+    ).toBeUndefined()
+  })
+
+  it('resends the subset after a user-only failed turn, then omits it for established or queued turns', () => {
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: false,
+        willQueue: false,
+      }),
+    ).toEqual(['review'])
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: true,
+        willQueue: false,
+      }),
+    ).toBeUndefined()
+    expect(
+      skillSelectionForSend(['review'], {
+        turnEstablished: false,
+        willQueue: true,
+      }),
+    ).toBeUndefined()
   })
 })

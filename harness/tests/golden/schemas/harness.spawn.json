@@ -508,6 +508,16 @@
             ],
             "description": "The child's deliverable: text / json / json+schema."
           },
+          "skills": {
+            "description": "Exact skill ids advertised to the child. On a fresh child, omitted or empty means all. A reused child inherits when omitted and resets to all when empty. Explicit changes require no active child turn.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
