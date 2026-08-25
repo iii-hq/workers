@@ -2881,26 +2881,6 @@
   display: flex;
   gap: 2px;
 }
-[data-iii-ui="shell"] .shui-tree-new-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="shell"] .shui-tree-new-btn:hover {
-  background: var(--color-surface-active);
-  color: var(--color-ink);
-}
-[data-iii-ui="shell"] .shui-tree-new-btn svg {
-  width: 14px;
-  height: 14px;
-}
 [data-iii-ui="shell"] .shui-tree-new-row {
   padding: 4px 8px 6px;
   border-bottom: 1px solid var(--color-rule-2);

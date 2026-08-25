@@ -13,6 +13,7 @@
 
 import type { FileTreeDirectoryHandle, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
+import { IconButton } from '@iii-dev/console-ui'
 import { FilePlus, FolderPlus, Search, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
@@ -283,30 +284,26 @@ export function FilesTab({
         </div>
         {onCreate ? (
           <div className="shui-tree-new-actions">
-            <button
-              type="button"
-              className="shui-tree-new-btn"
-              aria-label="New file"
-              title="new file"
+            <IconButton
+              label="New file"
+              aria-pressed={createKind === 'file'}
               onClick={() => {
                 setCreateKind((kind) => (kind === 'file' ? null : 'file'))
                 setCreateError(null)
               }}
             >
               <FilePlus aria-hidden />
-            </button>
-            <button
-              type="button"
-              className="shui-tree-new-btn"
-              aria-label="New folder"
-              title="new folder"
+            </IconButton>
+            <IconButton
+              label="New folder"
+              aria-pressed={createKind === 'folder'}
               onClick={() => {
                 setCreateKind((kind) => (kind === 'folder' ? null : 'folder'))
                 setCreateError(null)
               }}
             >
               <FolderPlus aria-hidden />
-            </button>
+            </IconButton>
           </div>
         ) : null}
       </div>
