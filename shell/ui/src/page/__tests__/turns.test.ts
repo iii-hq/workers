@@ -77,6 +77,39 @@ describe('reviewEntriesFromTurn', () => {
     ],
   }
 
+  it('gives an observed creation an empty baseline', () => {
+    const observed: SessionTurn = {
+      turn_id: 't2',
+      started_at: 1,
+      ended_at: 2,
+      files: [
+        {
+          path: '/r/gen/out.txt',
+          kind: 'created',
+          cause: 'observed',
+          first_seen: 1,
+          last_seen: 1,
+        },
+        {
+          path: '/r/gen/tweaked.txt',
+          kind: 'modified',
+          cause: 'observed',
+          first_seen: 1,
+          last_seen: 1,
+        },
+      ],
+    }
+    const { entries } = reviewEntriesFromTurn(observed, '/r')
+    expect(entries.get('gen/out.txt')).toMatchObject({
+      change: { status: 'added' },
+      baseline: '',
+    })
+    expect(entries.get('gen/tweaked.txt')).toMatchObject({
+      change: { status: 'modified' },
+      baseline: null,
+    })
+  })
+
   it('builds review entries under the root and counts the rest', () => {
     const { entries, outside } = reviewEntriesFromTurn(turn, '/r')
     expect(outside).toBe(1)
