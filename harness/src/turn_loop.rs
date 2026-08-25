@@ -2777,6 +2777,7 @@ fn compose_system_prompt(base: Option<&str>, skills: Option<&str>, runtime: &str
     ]
     .into_iter()
     .flatten()
+    .map(|section| section.trim_end_matches('\n'))
     .collect::<Vec<_>>()
     .join("\n\n")
 }
@@ -3396,6 +3397,10 @@ mod tests {
         assert_eq!(
             super::compose_system_prompt(Some("identity"), Some("skill index"), "runtime"),
             "identity\n\nskill index\n\nruntime"
+        );
+        assert_eq!(
+            super::compose_system_prompt(Some("identity\n"), None, "runtime"),
+            "identity\n\nruntime"
         );
         assert_eq!(
             super::compose_system_prompt(None, None, "runtime"),
