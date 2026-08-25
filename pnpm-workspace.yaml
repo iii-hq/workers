@@ -28,6 +28,8 @@ packages:
   - storage/ui
   - cron/ui
   - shell/ui
+  - claude-cli/ui
+  - pi-cli/ui
   - worktree/ui
   - security-scan/ui
   - github/ui

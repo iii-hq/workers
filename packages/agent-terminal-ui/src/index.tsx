@@ -1,0 +1,589 @@
+/**
+ * The console page an agent-CLI worker injects: one full-pane terminal that
+ * always runs that agent, never a shell.
+ *
+ * The session itself belongs to the `shell` worker — `shell::pty::open` with
+ * a `program` is the whole terminal, so this page is the only new part. The
+ * agent worker answers `<worker>::terminal::describe` with what to run and
+ * where; the page never chooses a program, which is what keeps a terminal
+ * page from being a shell in disguise.
+ *
+ * Output arrives through a browser-registered bus handler owned at module
+ * scope (a React-owned subscription would be disposed by Strict Mode).
+ * Delivery over the bus is NOT ordered, so frames apply through an ordered
+ * writer: only contiguous sequences reach xterm, gaps hold in a pending map,
+ * and a stalled gap re-attaches to replay the missing range from the
+ * worker's ring buffer. A per-tab lease in sessionStorage reattaches to the
+ * live agent across remounts and reloads; because a remount builds an empty
+ * xterm, that reattach replays the WHOLE buffer — an agent TUI paints on
+ * change, so a tail replay would leave an empty pane.
+ */
+import { Button, PageBody, PageHeader, PageMain, PageShell } from '@iii-dev/console-ui'
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal } from '@xterm/xterm'
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+const STALL_MS = 250
+const MAX_QUEUED_EVENTS = 4096
+const CALL_TIMEOUT_MS = 10_000
+
+export interface AgentTerminalOptions {
+  /** Worker name: the page id, the handler prefix, and the describe function. */
+  worker: string
+  /** Nav title and the name used in status lines ("claude", "pi"). */
+  title: string
+  description: string
+}
+
+interface PtyOutputEvent {
+  session_id: string
+  sequence: number | null
+  data: string | null
+  eof: boolean
+  exit_code: number | null
+  signal: string | null
+  error: string | null
+}
+
+interface Lease {
+  sessionId: string
+  reconnectToken: string
+}
+
+interface AttachResponse {
+  access_key: string
+  reconnect_token: string
+  frames: { sequence: number; data: string }[]
+  truncated: boolean
+}
+
+interface OpenResponse {
+  session_id: string
+  access_key: string
+  reconnect_token: string
+}
+
+interface TerminalSpec {
+  program: string
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+  detail?: string
+}
+
+type Listener = (event: PtyOutputEvent) => void
+
+interface OutputRouter {
+  outputFunctionId: string
+  subscribe(sessionId: string, listener: Listener): () => void
+  drain(sessionId: string): PtyOutputEvent[]
+  dispose(): void
+}
+
+/** The console injects an untyped host object; this is the boundary. */
+type Host = any
+
+function createRouter(host: Host, handler: string): OutputRouter {
+  const listeners = new Map<string, Set<Listener>>()
+  // Output can arrive before the page subscribes (open() returns after the
+  // program already started printing). Queue unsubscribed events per session.
+  const queues = new Map<string, PtyOutputEvent[]>()
+  const off = host.iii.on(handler, (event: PtyOutputEvent) => {
+    const set = listeners.get(event.session_id)
+    if (set && set.size > 0) {
+      for (const listener of set) listener(event)
+      return
+    }
+    const queue = queues.get(event.session_id) ?? []
+    queue.push(event)
+    if (queue.length > MAX_QUEUED_EVENTS) queue.shift()
+    queues.set(event.session_id, queue)
+  })
+  return {
+    outputFunctionId: `${handler}::${host.iii.browserId}`,
+    subscribe(sessionId, listener) {
+      const set = listeners.get(sessionId) ?? new Set<Listener>()
+      set.add(listener)
+      listeners.set(sessionId, set)
+      return () => {
+        set.delete(listener)
+        if (set.size === 0) listeners.delete(sessionId)
+      }
+    },
+    drain(sessionId) {
+      const queue = queues.get(sessionId) ?? []
+      queues.delete(sessionId)
+      return queue
+    },
+    dispose() {
+      off()
+      listeners.clear()
+      queues.clear()
+    },
+  }
+}
+
+interface OrderedWriterOptions {
+  write(bytes: Uint8Array): void
+  onApplied(sequence: number): void
+  onEof(event: PtyOutputEvent): void
+  onStall(): void
+}
+
+/**
+ * Applies frames to the terminal strictly in sequence order. Out-of-order
+ * frames wait in `pending`; duplicates (sequence already applied) drop. A
+ * gap that persists past STALL_MS calls onStall — the caller re-attaches and
+ * replays the missing range.
+ */
+function createOrderedWriter(opts: OrderedWriterOptions) {
+  let last = 0
+  const pending = new Map<number, PtyOutputEvent>()
+  let timer: number | null = null
+
+  const flush = () => {
+    while (pending.has(last + 1)) {
+      const event = pending.get(last + 1) as PtyOutputEvent
+      pending.delete(last + 1)
+      last += 1
+      if (event.data) opts.write(decodeB64(event.data))
+      opts.onApplied(last)
+      if (event.eof) opts.onEof(event)
+    }
+    if (pending.size > 0) {
+      if (timer === null) {
+        timer = window.setTimeout(() => {
+          timer = null
+          opts.onStall()
+        }, STALL_MS)
+      }
+    } else if (timer !== null) {
+      window.clearTimeout(timer)
+      timer = null
+    }
+  }
+
+  return {
+    /** Set the already-applied base sequence (0 for a fresh session). */
+    base(sequence: number) {
+      last = sequence
+      for (const key of [...pending.keys()]) if (key <= sequence) pending.delete(key)
+      flush()
+    },
+    feed(event: PtyOutputEvent) {
+      // An EOF frame carries no sequence of its own in the shell protocol.
+      const sequence = event.sequence ?? last + 1
+      if (sequence <= last && !event.eof) return
+      pending.set(sequence, { ...event, sequence })
+      flush()
+    },
+    lastSeq: () => last,
+    dispose() {
+      if (timer !== null) window.clearTimeout(timer)
+      pending.clear()
+    },
+  }
+}
+
+function decodeB64(b64: string): Uint8Array {
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+}
+
+function encodeB64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  for (const byte of bytes) bin += String.fromCharCode(byte)
+  return btoa(bin)
+}
+
+function readLease(prefix: string, tabId: string): Lease | null {
+  try {
+    const raw = sessionStorage.getItem(prefix + tabId)
+    return raw ? (JSON.parse(raw) as Lease) : null
+  } catch {
+    return null
+  }
+}
+
+function writeLease(prefix: string, tabId: string, lease: Lease | null): void {
+  try {
+    if (lease) sessionStorage.setItem(prefix + tabId, JSON.stringify(lease))
+    else sessionStorage.removeItem(prefix + tabId)
+  } catch {
+    // sessionStorage full or blocked — the terminal still works, only the
+    // reattach across a reload is lost.
+  }
+}
+
+/**
+ * The bus rejects with plain objects as well as Errors (`{ code, message }`
+ * from the engine, with the worker's text nested inside `message`), so the
+ * whole value is searched rather than just `.message`: reading a stale
+ * lease's failure as "unknown" shows an error pane where a fresh session is
+ * the answer.
+ */
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error) ?? String(error)
+  } catch {
+    return String(error)
+  }
+}
+
+function sessionGone(error: unknown): boolean {
+  const message = `${errorText(error)} ${String(error)}`
+  return (
+    message.includes('terminal session does not exist') ||
+    message.includes('terminal session is closed') ||
+    message.includes('terminal reconnect token is invalid') ||
+    message.includes('terminal session credentials are invalid')
+  )
+}
+
+function frameToEvent(sessionId: string, frame: { sequence: number; data: string }): PtyOutputEvent {
+  return {
+    session_id: sessionId,
+    sequence: frame.sequence,
+    data: frame.data,
+    eof: false,
+    exit_code: null,
+    signal: null,
+    error: null,
+  }
+}
+
+const THEMES = {
+  dark: { background: '#1a1b1e', foreground: '#e6e6e6', cursor: '#e6e6e6' },
+  light: { background: '#ffffff', foreground: '#1a1b1e', cursor: '#1a1b1e' },
+}
+
+function AgentTerminal({
+  host,
+  router,
+  tabId,
+  options,
+  leasePrefix,
+}: {
+  host: Host
+  router: OutputRouter
+  tabId: string
+  options: AgentTerminalOptions
+  leasePrefix: string
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'running' | 'exited' | 'error'>('connecting')
+  const [detail, setDetail] = useState('')
+  const [generation, setGeneration] = useState(0)
+  const theme = host.useTheme()
+  const themeRef = useRef(theme)
+  themeRef.current = theme
+  const termRef = useRef<Terminal | null>(null)
+
+  useEffect(() => {
+    const term = termRef.current
+    if (term) term.options.theme = THEMES[theme === 'dark' ? 'dark' : 'light']
+  }, [theme])
+
+  // `generation` is not read in the effect, it IS the restart signal:
+  // bumping it tears this session down and opens a fresh one.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restart signal
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    let disposed = false
+    let recovering = false
+    let unsubscribe: (() => void) | null = null
+    let conn: { sessionId: string; accessKey: string } | null = null
+
+    const term = new Terminal({
+      fontSize: 13,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      theme: THEMES[themeRef.current === 'dark' ? 'dark' : 'light'],
+      scrollback: 10_000,
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(container)
+    termRef.current = term
+
+    const call = <T,>(fn: string, payload: unknown): Promise<T> =>
+      host.iii.trigger(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
+
+    // Shown next to the status while a session runs: "running · 12 frames,
+    // 4.2 kB". A blank terminal with no frames is a delivery problem; a blank
+    // one with frames counted is a rendering problem. Throttled — output
+    // arrives far faster than a status line needs to change.
+    let seen = 0
+    let applied = 0
+    let progressTimer: number | null = null
+    const showProgress = () => {
+      // Trailing edge, so the line always ends on the true count: a burst of
+      // frames writes one update later, not one per frame.
+      if (progressTimer !== null) return
+      progressTimer = window.setTimeout(() => {
+        progressTimer = null
+        if (!disposed) setDetail(`${seen} frames, ${(applied / 1000).toFixed(1)} kB`)
+      }, 250)
+    }
+
+    const writer = createOrderedWriter({
+      write: (bytes) => {
+        applied += bytes.length
+        term.write(bytes)
+      },
+      onApplied: (sequence) => {
+        seen = sequence
+        showProgress()
+      },
+      onEof: (event) => {
+        conn = null
+        writeLease(leasePrefix, tabId, null)
+        setStatus('exited')
+        setDetail(
+          event.exit_code === null || event.exit_code === 0
+            ? `${options.title} exited`
+            : `${options.title} exited with code ${event.exit_code}`,
+        )
+      },
+      onStall: () => void recover(),
+    })
+
+    // A frame never arrived (fire-and-forget delivery can drop): re-attach
+    // and replay everything after the last applied sequence from the shell
+    // worker's ring buffer.
+    const recover = async () => {
+      if (disposed || recovering || !conn) return
+      recovering = true
+      try {
+        const lease = readLease(leasePrefix, tabId)
+        if (!lease || lease.sessionId !== conn.sessionId) return
+        const attached = await call<AttachResponse>('shell::pty::attach', {
+          session_id: conn.sessionId,
+          reconnect_token: lease.reconnectToken,
+          output_function_id: router.outputFunctionId,
+          after_sequence: writer.lastSeq(),
+          cols: term.cols,
+          rows: term.rows,
+        })
+        if (disposed) return
+        conn.accessKey = attached.access_key
+        writeLease(leasePrefix, tabId, {
+          sessionId: conn.sessionId,
+          reconnectToken: attached.reconnect_token,
+        })
+        for (const frame of attached.frames) {
+          writer.feed(frameToEvent(conn.sessionId, frame))
+        }
+      } catch (error) {
+        if (disposed) return
+        if (sessionGone(error)) {
+          conn = null
+          writeLease(leasePrefix, tabId, null)
+          setStatus('exited')
+          setDetail(`${options.title} session lost`)
+        }
+      } finally {
+        recovering = false
+      }
+    }
+
+    const handleEvent = (event: PtyOutputEvent) => {
+      if (disposed) return
+      writer.feed(event)
+    }
+
+    const connect = async () => {
+      setStatus('connecting')
+      setDetail('')
+      // Let layout settle so the first fit measures the real pane — a session
+      // opened at the default 80x24 and resized a beat later leaves redraw
+      // artifacts in a TUI.
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      if (disposed) return
+      fit.fit()
+      const cols = term.cols
+      const rows = term.rows
+      const lease = readLease(leasePrefix, tabId)
+      try {
+        if (lease) {
+          // A remount builds a NEW xterm with an empty screen, so the whole
+          // buffer has to replay (after_sequence 0), not the tail after what
+          // the previous terminal applied: the agent repaints only on change,
+          // so a tail replay leaves a blank pane until the next keystroke.
+          // Only the mid-session stall recovery, where the same terminal is
+          // still on screen, replays from the last applied sequence.
+          writer.base(0)
+          unsubscribe = router.subscribe(lease.sessionId, handleEvent)
+          for (const event of router.drain(lease.sessionId)) writer.feed(event)
+          try {
+            const attached = await call<AttachResponse>('shell::pty::attach', {
+              session_id: lease.sessionId,
+              reconnect_token: lease.reconnectToken,
+              output_function_id: router.outputFunctionId,
+              after_sequence: 0,
+              cols,
+              rows,
+            })
+            conn = { sessionId: lease.sessionId, accessKey: attached.access_key }
+            writeLease(leasePrefix, tabId, {
+              sessionId: lease.sessionId,
+              reconnectToken: attached.reconnect_token,
+            })
+            if (attached.truncated) term.write(`\r\n[${options.worker}: replay truncated]\r\n`)
+            for (const frame of attached.frames) {
+              writer.feed(frameToEvent(lease.sessionId, frame))
+            }
+            setStatus('running')
+            return
+          } catch (error) {
+            unsubscribe()
+            unsubscribe = null
+            writeLease(leasePrefix, tabId, null)
+            if (!sessionGone(error)) throw error
+            // fall through to a fresh session
+          }
+        }
+
+        // The worker owns the command: the page asks what to run and never
+        // decides. A worker that cannot answer has no terminal to give.
+        const spec = await call<TerminalSpec>(`${options.worker}::terminal::describe`, {})
+        writer.base(0)
+        const opened = await call<OpenResponse>('shell::pty::open', {
+          cwd: spec.cwd,
+          cols,
+          rows,
+          output_function_id: router.outputFunctionId,
+          program: spec.program,
+          args: spec.args ?? [],
+          env: spec.env ?? {},
+        })
+        if (disposed) {
+          void call('shell::pty::detach', {
+            session_id: opened.session_id,
+            access_key: opened.access_key,
+          }).catch(() => undefined)
+          return
+        }
+        conn = { sessionId: opened.session_id, accessKey: opened.access_key }
+        unsubscribe = router.subscribe(opened.session_id, handleEvent)
+        writeLease(leasePrefix, tabId, {
+          sessionId: opened.session_id,
+          reconnectToken: opened.reconnect_token,
+        })
+        for (const event of router.drain(opened.session_id)) writer.feed(event)
+        setStatus('running')
+      } catch (error) {
+        if (disposed) return
+        setStatus('error')
+        setDetail(errorText(error))
+      }
+    }
+
+    const onData = term.onData((data) => {
+      if (!conn) return
+      call('shell::pty::write', {
+        session_id: conn.sessionId,
+        access_key: conn.accessKey,
+        data: encodeB64(data),
+      }).catch(() => undefined)
+    })
+    const onResize = term.onResize(({ cols, rows }) => {
+      if (!conn) return
+      call('shell::pty::resize', {
+        session_id: conn.sessionId,
+        access_key: conn.accessKey,
+        cols,
+        rows,
+      }).catch(() => undefined)
+    })
+    const observer = new ResizeObserver(() => {
+      try {
+        fit.fit()
+      } catch {
+        // container mid-teardown
+      }
+    })
+    observer.observe(container)
+
+    void connect()
+    term.focus()
+
+    return () => {
+      disposed = true
+      observer.disconnect()
+      onData.dispose()
+      onResize.dispose()
+      unsubscribe?.()
+      if (progressTimer !== null) window.clearTimeout(progressTimer)
+      writer.dispose()
+      // Detach, never close: the agent keeps running for the next mount.
+      if (conn) {
+        void call('shell::pty::detach', {
+          session_id: conn.sessionId,
+          access_key: conn.accessKey,
+        }).catch(() => undefined)
+      }
+      term.dispose()
+      termRef.current = null
+    }
+  }, [host, router, tabId, generation, options, leasePrefix])
+
+  const restart = useCallback(() => {
+    writeLease(leasePrefix, tabId, null)
+    setGeneration((n) => n + 1)
+  }, [leasePrefix, tabId])
+
+  return (
+    <div className="agent-terminal">
+      <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" />
+      <div className="agent-terminal-statusbar">
+        {status === 'error' ? (
+          <span className="agent-terminal-status-error">{detail}</span>
+        ) : (
+          <span>{status === 'exited' ? detail : detail ? `${status} · ${detail}` : status}</span>
+        )}
+        {(status === 'exited' || status === 'error') && (
+          <Button size="sm" onClick={restart}>
+            Restart {options.title}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The `setup(host)` an agent-CLI worker's page asset exports. One page, one
+ * output handler for the worker, and a terminal per tab.
+ */
+export function createAgentTerminalPage(options: AgentTerminalOptions) {
+  const handler = `iii::${options.worker}-ui::pty-output`
+  const leasePrefix = `iii::${options.worker}-ui::lease::`
+
+  return function setup(host: Host) {
+    const router = createRouter(host, handler)
+    host.pages.register({
+      id: options.worker,
+      title: options.title,
+      render: (props: { tabId?: string; onRequestClose?: () => void }) => (
+        <PageShell>
+          <PageHeader title={options.title} description={options.description} onClose={props.onRequestClose} />
+          <PageBody>
+            <PageMain>
+              <AgentTerminal
+                host={host}
+                router={router}
+                tabId={props.tabId || 'default'}
+                options={options}
+                leasePrefix={leasePrefix}
+              />
+            </PageMain>
+          </PageBody>
+        </PageShell>
+      ),
+    })
+    return () => router.dispose()
+  }
+}

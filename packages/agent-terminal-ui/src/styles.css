@@ -1,0 +1,39 @@
+@import "@xterm/xterm/css/xterm.css";
+
+/*
+ * The agent terminal page. Every rule is a class on this page's own markup —
+ * an injected page is already scoped by the console's `data-iii-ui` wrapper,
+ * and the class names carry the rest. Theming rides the console's tokens.
+ */
+
+.agent-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-panel);
+}
+
+.agent-terminal-viewport {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 4px 8px 12px;
+}
+
+.agent-terminal-viewport .xterm {
+  height: 100%;
+}
+
+.agent-terminal-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-edge);
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+.agent-terminal-statusbar .agent-terminal-status-error {
+  color: var(--color-alert);
+}

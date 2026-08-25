@@ -1,6 +1,8 @@
 # Build artifacts
 target/
 dist/
+# Console page assets compiled into a Node worker (see <worker>/ui/build.mjs)
+*/src/ui-assets.generated.ts
 .next/
 .vite/
 graphify-out
