@@ -542,14 +542,22 @@ FUNCTIONS: list[dict[str, Any]] = [
     {
         "id": "scrapling::session-open",
         "handler": "session_open",
-        "description": "Open a persistent scraping session (HTTP or headless fetcher) whose session_id reuses cookies and state across fetches. Renders nothing the user can see; to open a page in the visible browser use browser::sessions::start.",
+        "description": (
+            "Open a persistent scraping session (HTTP or headless fetcher) whose session_id reuses "
+            "cookies and state across fetches. Renders nothing the user can see; to open a page in "
+            "the visible browser use browser::sessions::start."
+        ),
         "request": _SESSION_OPEN_REQUEST,
         "response": _SESSION_OPEN_RESPONSE,
     },
     {
         "id": "scrapling::session-fetch",
         "handler": "session_fetch",
-        "description": "Fetch a URL on an open scraping session (reuses its cookies/state); returns page content, shows nothing. For a page the user should see, use browser::sessions::start + browser::navigate.",
+        "description": (
+            "Fetch a URL on an open scraping session (reuses its cookies/state); returns page "
+            "content, shows nothing. For a page the user should see, use browser::sessions::start "
+            "+ browser::navigate."
+        ),
         "request": _SESSION_FETCH_REQUEST,
         "response": _FETCH_RESPONSE,
     },
