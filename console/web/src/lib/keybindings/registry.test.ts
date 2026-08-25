@@ -68,7 +68,7 @@ describe('the registry itself', () => {
 describe('lookup', () => {
   it('finds a definition by id', () => {
     expect(keybinding('palette.toggle').bindings).toEqual(['Mod+K'])
-    expect(bindingsFor('workspace.close', 'mac')).toEqual([])
+    expect(bindingsFor('workspace.close', 'mac')).toEqual(['Ctrl+W'])
   })
 
   it('resolves a per-platform binding list', () => {
@@ -83,13 +83,16 @@ describe('lookup', () => {
 
   it('spells a hover title with the key, or plain text for an unbound action', () => {
     expect(hoverTitle('New workspace', 'workspace.create', 'mac')).toBe(
-      'New workspace',
+      'New workspace (⌃ T)',
     )
-    expect(hoverTitle('Close', 'workspace.close', 'mac')).toBe('Close')
+    expect(hoverTitle('Close', 'workspace.close', 'other')).toBe(
+      'Close (alt W)',
+    )
     expect(hoverTitle('Search', 'palette.toggle', 'other')).toBe(
       'Search (ctrl K)',
     )
-    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat')
+    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (⌃ G then C)')
+    expect(hoverTitle('Panels', 'panel.next', 'mac')).toBe('Panels')
   })
 
   it('says why a page may not take a key, or lets it', () => {
@@ -112,8 +115,9 @@ describe('lookup', () => {
     expect(bindingsFor('panel.previous', 'other')).toEqual([])
   })
 
-  it('lists no chords for unbound actions', () => {
-    expect(sequencesFor('page.workers', 'mac')).toEqual([])
+  it('lists the chords of a go-to sequence, and none for a plain chord', () => {
+    expect(sequencesFor('page.workers', 'mac')).toEqual([['Ctrl+G', 'W']])
+    expect(sequencesFor('page.workers', 'other')).toEqual([['Alt+G', 'W']])
     expect(sequencesFor('workspace.create', 'mac')).toEqual([])
   })
 })
@@ -182,12 +186,19 @@ describe('matchDigitIndex', () => {
     }
   }
 
-  it('selects nothing now that the digits are unbound', () => {
-    expect(bindingsFor('workspace.selectByIndex', 'mac')).toEqual([])
+  it('selects by position through the modifier, never a bare digit', () => {
+    expect(bindingsFor('workspace.selectByIndex', 'mac')).toEqual(['Ctrl+1'])
     for (let value = 1; value <= 9; value++) {
       expect(
         matchDigitIndex('workspace.selectByIndex', digit(String(value)), 'mac'),
       ).toBeNull()
+      expect(
+        matchDigitIndex(
+          'workspace.selectByIndex',
+          { ...digit(String(value)), ctrlKey: true },
+          'mac',
+        ),
+      ).toBe(value - 1)
     }
   })
 

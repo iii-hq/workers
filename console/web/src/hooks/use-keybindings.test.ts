@@ -68,7 +68,7 @@ describe('createKeyDispatcher', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('fires nothing for the retired bare keys, and still opens the palette', () => {
+  it('ignores the bare keys and fires their modifier chords', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(
       () => ({
@@ -81,21 +81,29 @@ describe('createKeyDispatcher', () => {
     dispatcher.onKeyDown(key('t'))
     dispatcher.onKeyDown(key('3'))
     expect(seen).toEqual([])
+    dispatcher.onKeyDown(key('t', { ctrlKey: true }))
+    dispatcher.onKeyDown(key('3', { ctrlKey: true }))
     dispatcher.onKeyDown(key('k', { metaKey: true }))
-    expect(seen).toEqual(['palette'])
+    expect(seen).toEqual(['create', 'select 2', 'palette'])
   })
 
-  it('no longer arms a go-to prefix', () => {
+  it('arms the go-to prefix from its chord, never the bare letter', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(
       () => ({ 'page.chat': () => seen.push('chat') }),
       'mac',
     )
-    const prefix = key('g')
-    dispatcher.onKeyDown(prefix)
-    expect(prefix.defaultPrevented).toBe(false)
+    const bare = key('g')
+    dispatcher.onKeyDown(bare)
+    expect(bare.defaultPrevented).toBe(false)
     dispatcher.onKeyDown(key('c'))
     expect(seen).toEqual([])
+
+    const prefix = key('g', { ctrlKey: true })
+    dispatcher.onKeyDown(prefix)
+    expect(prefix.defaultPrevented).toBe(true)
+    dispatcher.onKeyDown(key('c'))
+    expect(seen).toEqual(['chat'])
   })
 
   it('stands down inside a declared standdown surface', () => {

@@ -101,17 +101,19 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // Windows and Linux, where the same menu item is ⌘N on a Mac and ctrl is
   // free. ctrl+P follows it rather than quietly eating Print on one platform
   // and meaning "previous" on the other.
-  // These actions carry no keys of their own: bare single-key shortcuts kept
-  // firing under people's hands (any surface whose focus target is not
-  // literally an input leaks them), so the palette is the one way in. An
-  // empty bindings list keeps the action searchable in the palette and the
-  // definition addressable, without reserving a key.
+  // Modifier chords, not bare keys: single keys kept firing under people's
+  // hands (any surface whose focus target is not literally an input leaks
+  // them). The Mod tier is the browser's (see BROWSER_RESERVED), so these sit
+  // on the free tier whose `event.key` stays clean on both platforms: Ctrl on
+  // a Mac, Alt everywhere else (Option on a Mac mangles the key value, and
+  // Ctrl+T/W are the browser's own on Windows and Linux).
   {
     id: 'workspace.selectByIndex',
     title: 'Select workspace 1 to 9',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+1'], other: ['Alt+1'] },
+    digitIndex: true,
     keywords: ['tab', 'switch', 'workspace'],
   },
   {
@@ -119,7 +121,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'New workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+T'], other: ['Alt+T'] },
     keywords: ['tab', 'new', 'create'],
   },
   {
@@ -127,7 +129,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Next workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+]'], other: ['Alt+]'] },
     keywords: ['tab', 'switch', 'cycle'],
   },
   {
@@ -135,7 +137,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Previous workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+['], other: ['Alt+['] },
     keywords: ['tab', 'switch', 'cycle'],
   },
   {
@@ -143,7 +145,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Close the workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+W'], other: ['Alt+W'] },
     keywords: ['tab', 'close', 'remove'],
   },
   {
@@ -151,7 +153,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Split the workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+\\'], other: ['Alt+\\'] },
     keywords: ['panel', 'column', 'split'],
   },
   // Go-to chords: a prefix key, then a letter for the place. The prefix never
@@ -162,7 +164,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to chat',
     group: 'Go to',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+G C'], other: ['Alt+G C'] },
     keywords: ['chat', 'conversation', 'go', 'page'],
   },
   {
@@ -170,7 +172,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to workers',
     group: 'Go to',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+G W'], other: ['Alt+G W'] },
     keywords: ['workers', 'functions', 'go', 'page'],
   },
   {
@@ -178,7 +180,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to traces',
     group: 'Go to',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+G T'], other: ['Alt+G T'] },
     keywords: ['traces', 'spans', 'go', 'page'],
   },
   {
@@ -202,7 +204,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Open settings',
     group: 'Console',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+,'], other: ['Alt+,'] },
     keywords: ['configuration', 'preferences'],
   },
   {
