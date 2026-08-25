@@ -218,6 +218,7 @@ impl<'a> CallerModel<'a> {
 /// Everything else invokes the target normally. Every call site (the turn loop,
 /// `harness::function::trigger`, and the hook-held release path) routes through
 /// here so trusted context cannot be bypassed.
+#[allow(clippy::too_many_arguments)]
 pub async fn invoke(
     deps: &Deps,
     engine: &EngineClient,
