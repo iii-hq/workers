@@ -308,8 +308,10 @@ export function CollectionBrowser({
   // A dirty draft asks in the console's own dialog, never window.confirm:
   // the native box blocks the whole tab and cannot say what is at stake
   // when the draft is a new, unnamed entry.
-  const [pendingDiscard, setPendingDiscard] = useState<{
-    label: string
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string
+    description: string
+    confirmLabel: string
     proceed: () => void
   } | null>(null)
   const guardDirty = useCallback((proceed: () => void) => {
@@ -317,8 +319,11 @@ export function CollectionBrowser({
       proceed()
       return
     }
-    setPendingDiscard({
-      label: selectedRef.current ?? 'this new entry',
+    const label = selectedRef.current ?? 'this new entry'
+    setPendingConfirm({
+      title: 'Discard unsaved changes?',
+      description: `The unsaved changes to ${label} will be lost.`,
+      confirmLabel: 'Discard',
       proceed,
     })
   }, [])
@@ -535,15 +540,17 @@ export function CollectionBrowser({
   const remove = useCallback(() => {
     if (readOnly || !adapter.remove || !loaded || creating || saving || deleting) return
     const key = loaded.key
-    const dirtyNote = dirty ? '\n\nYour unsaved changes will also be lost.' : ''
-    if (
-      !window.confirm(
-        `Delete ${adapter.noun} “${key}”? This removes its file and cannot be undone.${dirtyNote}`,
-      )
-    ) {
-      return
-    }
+    const dirtyNote = dirty ? ' Your unsaved changes will also be lost.' : ''
+    setPendingConfirm({
+      title: `Delete ${adapter.noun} “${key}”?`,
+      description: `This removes its file and cannot be undone.${dirtyNote}`,
+      confirmLabel: 'Delete',
+      proceed: () => removeNow(key),
+    })
+  }, [adapter, loaded, creating, saving, deleting, readOnly, dirty])
 
+  const removeNow = useCallback((key: string) => {
+    if (!adapter.remove) return
     setDeleting(true)
     setDeleteError(null)
     setSaveError(null)
@@ -583,16 +590,17 @@ export function CollectionBrowser({
 
   // Narrow-mode drill-out: back to the list, guarding an unsaved draft.
   const goBack = () => {
-    if (dirty && !window.confirm('Discard unsaved changes?')) return
-    removeStored(`${storageKey}:draft`)
-    setSelected(null)
-    setCreating(false)
-    setLoaded(null)
-    setDraft('')
-    setLoadError(null)
-    setSaveError(null)
-    setDeleteError(null)
-    setStaleOnDisk(false)
+    guardDirty(() => {
+      removeStored(`${storageKey}:draft`)
+      setSelected(null)
+      setCreating(false)
+      setLoaded(null)
+      setDraft('')
+      setLoadError(null)
+      setSaveError(null)
+      setDeleteError(null)
+      setStaleOnDisk(false)
+    })
   }
 
   // The collection's primary verbs, for the palette and for the keyboard
@@ -752,20 +760,16 @@ export function CollectionBrowser({
       onKeyDown={onRootKeyDown}
     >
       <ConfirmDialog
-        open={pendingDiscard !== null}
+        open={pendingConfirm !== null}
         onOpenChange={(next) => {
-          if (!next) setPendingDiscard(null)
+          if (!next) setPendingConfirm(null)
         }}
-        title="Discard unsaved changes?"
-        description={
-          pendingDiscard
-            ? `The unsaved changes to ${pendingDiscard.label} will be lost.`
-            : undefined
-        }
-        confirmLabel="Discard"
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
         onConfirm={() => {
-          pendingDiscard?.proceed()
-          setPendingDiscard(null)
+          pendingConfirm?.proceed()
+          setPendingConfirm(null)
         }}
       />
       {showSide ? (
