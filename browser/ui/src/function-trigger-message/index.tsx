@@ -37,7 +37,6 @@ import {
   StylesWriteView,
 } from './BrowserViews'
 import { decodeBrowserResult } from './parsers'
-import { ZoomableImage } from '../lib/image-zoom'
 
 /** The injected page's route — where "open in browser tab" navigates. */
 const BROWSER_PAGE_HASH = '#/ext/browser'
@@ -72,7 +71,7 @@ function ScreenshotBody({ output }: { output: unknown }) {
   if (!screenshot?.dataUrl) return null
   return (
     <div className="br-ui-shot">
-      <ZoomableImage
+      <img
         src={screenshot.dataUrl}
         alt={`capture of ${screenshot.url}`}
         className="br-ui-shot-img"

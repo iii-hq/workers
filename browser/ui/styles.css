@@ -2224,7 +2224,6 @@
   border: 1px solid var(--color-rule-2);
   background: var(--color-paper-2);
   object-fit: contain;
-  cursor: zoom-in;
 }
 [data-iii-ui="browser"] .br-ui-scrape-num {
   font-variant-numeric: tabular-nums;
@@ -2401,7 +2400,6 @@
   max-width: 100%;
   max-height: 320px;
   border: 1px solid var(--color-rule);
-  cursor: zoom-in;
 }
 
 /* --- infra error view ------------------------------------------------ */
