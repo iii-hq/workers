@@ -452,8 +452,8 @@ the console's.
 The dispatcher already yields to a caret in an `input`, `textarea`, `select`,
 or contentEditable node. Anything else that consumes raw keystrokes — a code
 editor's gutters and widgets, a read-mode diff, a drawing surface — gives the
-dispatcher a plain element as the event target, and a bare binding like `t`
-(new workspace) fires mid-thought. Declare the surface:
+dispatcher a plain element as the event target, and a bare page binding
+(a `t`, a digit) fires mid-thought. Declare the surface:
 
 ```tsx
 <div className="my-editor-body" data-keybindings-standdown="">…</div>
