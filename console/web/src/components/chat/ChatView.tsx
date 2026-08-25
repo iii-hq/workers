@@ -47,7 +47,11 @@ import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
-import { expandSlashInvocation, slashChip } from '@/lib/slash-commands'
+import {
+  expandSlashInvocation,
+  loadedSkillIds,
+  slashChip,
+} from '@/lib/slash-commands'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -620,7 +624,10 @@ export function ChatView({
         // the body the queued message already carried with no explanation.
         const slashExpansion =
           backend.id === 'real'
-            ? await expandSlashInvocation(payload.text.trim())
+            ? await expandSlashInvocation(
+                payload.text.trim(),
+                loadedSkillIds(messagesRef.current),
+              )
             : null
         if (slashExpansion?.status === 'attached') {
           attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
@@ -1296,7 +1303,12 @@ export function ChatView({
       // Prose that merely starts with a slash never resolves (the expander
       // is gated on the palette's fetched entries).
       const slashExpansion =
-        backend.id === 'real' ? await expandSlashInvocation(trimmed) : null
+        backend.id === 'real'
+          ? await expandSlashInvocation(
+              trimmed,
+              loadedSkillIds(messagesRef.current),
+            )
+          : null
       if (slashExpansion?.status === 'attached') {
         attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
         // The body travels as a block, never as visible text — show the same
