@@ -9,7 +9,9 @@ type Call = { function_id: string; payload: Record<string, unknown> };
  * A shell worker that answers from a fake filesystem. Everything
  * `prepareWorkspace` does goes over the bus, so this is the whole boundary.
  */
-function fakeShell(options: { files?: Record<string, string>; whichPi?: string } = {}) {
+function fakeShell(
+  options: { files?: Record<string, string>; whichPi?: string; noIiiCli?: boolean } = {},
+) {
   const calls: Call[] = [];
   const files: Record<string, string> = { ...options.files };
   const iii = {
@@ -26,8 +28,11 @@ function fakeShell(options: { files?: Record<string, string>; whichPi?: string }
               ? { stdout: `${options.whichPi}\n`, stderr: '', exit_code: 0 }
               : { stdout: '', stderr: '', exit_code: 1 };
           }
-          if (command === 'command -v iii')
-            return { stdout: '/usr/bin/iii\n', stderr: '', exit_code: 0 };
+          if (command === 'command -v iii') {
+            return options.noIiiCli
+              ? { stdout: '', stderr: '', exit_code: 1 }
+              : { stdout: '/usr/bin/iii\n', stderr: '', exit_code: 0 };
+          }
           return { stdout: '', stderr: '', exit_code: 0 };
         }
         case 'shell::fs::write':
@@ -114,6 +119,18 @@ describe('preparing the terminal host', () => {
     const notes = files['/hostroot/pi-cli/AGENTS.md'];
     expect(notes).toContain('# House rules');
     expect(notes).toContain('keep me');
+  });
+
+  it('says out loud when the extension has no way to reach the bus', async () => {
+    // The terminal host is not necessarily this worker's host, and it will not
+    // be one at all if the worker that owns the terminal is ever virtualized:
+    // then `iii` may be missing there and every event is a silent no-op.
+    const { iii, files } = fakeShell({ whichPi: '/usr/local/bin/pi', noIiiCli: true });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.bridge).toBe('');
+    expect(prepared.detail).toContain('cannot reach the bus');
+    expect(files['/hostroot/pi-cli/.pi/extensions/iii-activity.ts']).toContain('pi-cli::activity');
   });
 
   it('leaves the workspace alone when setup is off', async () => {

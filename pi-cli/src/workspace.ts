@@ -22,6 +22,14 @@ export type Prepared = {
   env: Record<string, string>;
   /** Empty when the terminal is ready; otherwise why it is not. */
   detail: string;
+  /**
+   * The `iii` CLI on the terminal host, which is how the extension reaches the
+   * bus. Empty means the extension is installed but mute: the terminal works
+   * and nothing reaches `agent::events`. Worth knowing, because it is what
+   * breaks first if the worker that owns the terminal moves into a guest of
+   * its own.
+   */
+  bridge: string;
 };
 
 export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<Prepared> {
@@ -29,7 +37,7 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
   // Sessions inherit the engine address, so a worker pi writes registers
   // against the same engine it is talking to.
   const env = { III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134' };
-  const base = { workspace, args: config.args, env };
+  const base = { workspace, args: config.args, env, bridge: '' };
   let detail = '';
 
   try {
@@ -45,13 +53,20 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
       : 'pi is not on the terminal host and auto_install is off';
   }
 
+  let bridge = '';
   if (config.setup_workspace) {
     await installSkills(iii, workspace);
     await writeNotes(iii, workspace);
-    await writeExtension(iii, workspace);
+    bridge = await writeExtension(iii, workspace);
+    if (!bridge) {
+      const mute =
+        'the `iii` CLI is not on the terminal host, so the activity extension cannot reach the bus: the terminal works, but no run will reach agent::events';
+      console.warn(`pi-cli: ${mute}`);
+      detail = detail ? `${detail}; ${mute}` : mute;
+    }
   }
 
-  return { ...base, executable, detail };
+  return { ...base, executable, detail, bridge };
 }
 
 async function resolveExecutable(iii: IIIClient, config: Config): Promise<string> {
@@ -122,10 +137,15 @@ async function writeNotes(iii: IIIClient, workspace: string): Promise<void> {
  * starts by hand in the same workspace then reports its turns too. The `iii`
  * CLI path is resolved on the terminal host and baked in, because the
  * extension runs there.
+ *
+ * Returns the CLI it found, or '' — the extension is written either way (a CLI
+ * installed later then works), but an empty answer means it is mute and the
+ * caller says so out loud.
  */
-export async function writeExtension(iii: IIIClient, workspace: string): Promise<void> {
-  const cli = (await probe(iii, 'command -v iii')) || 'iii';
+export async function writeExtension(iii: IIIClient, workspace: string): Promise<string> {
+  const found = await probe(iii, 'command -v iii');
   const path = `${workspace}/${EXTENSION_PATH}`;
-  const next = extensionSource(cli);
+  const next = extensionSource(found || 'iii');
   if ((await readFile(iii, path)) !== next) await writeFile(iii, path, next);
+  return found;
 }

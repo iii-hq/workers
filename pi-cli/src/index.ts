@@ -40,6 +40,7 @@ let prepared: Prepared = {
   args: config.args,
   env: {},
   detail: 'the terminal host has not been prepared yet',
+  bridge: '',
 };
 
 // The prepare step talks to the shell worker (install, skills, notes, hooks).

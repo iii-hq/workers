@@ -127,6 +127,18 @@ give that one its provider key through `environment` / `env_file` on its
 container. This terminal is unaffected either way: the CLI runs inside the
 `shell` worker, a host process.
 
+### If the worker that owns the terminal is virtualized
+
+Everything above holds because `shell` is a binary payload and therefore a host
+process today. If binary workers get VM-booted too, the terminal keeps working
+— pi, the workspace, and the login move into that guest — but the login belongs
+to that guest's rootfs, the workspace is no longer the operator's checkout, and
+the activity extension calls the `iii` CLI, which may not exist there. The
+worker probes for it and reports the answer as `activity_bridge` on
+`pi-cli::terminal::describe` (empty = the extension is installed but mute, with
+`detail` saying so) — the first thing to check if a terminal works while
+`agent::events` stays empty.
+
 For a terminal host with no one at the keyboard, put the provider's key in the
 environment the `shell` worker starts with. Either way the badge says which one
 won.
@@ -135,7 +147,7 @@ won.
 
 | Function | Purpose |
 |---|---|
-| `pi-cli::terminal::describe` | What a session runs: program, argv, cwd, env. The page passes it straight to `shell::pty::open`. Internal. |
+| `pi-cli::terminal::describe` | What a session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the extension can reach the bus. Internal. |
 | `pi-cli::activity` | One pi extension event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the stream, not the delivery. |
 | `pi-cli::auth::status` | Which plan a session spends (see Billing). Agent-denied. |
 | `pi-cli::ui-content` | Console page assets. Internal. |

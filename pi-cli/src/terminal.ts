@@ -20,6 +20,8 @@ export function registerTerminal(iii: IIIClient, current: () => Prepared): void 
         args: prepared.args,
         cwd: prepared.workspace,
         env: prepared.env,
+        activity_bridge: prepared.bridge,
+        detail: prepared.detail,
       };
     },
     {
@@ -34,6 +36,15 @@ export function registerTerminal(iii: IIIClient, current: () => Prepared): void 
           args: { type: 'array', items: { type: 'string' } },
           cwd: { type: 'string' },
           env: { type: 'object', additionalProperties: { type: 'string' } },
+          activity_bridge: {
+            type: 'string',
+            description:
+              "The `iii` CLI on the terminal host that carries this session's activity to the bus. Empty means nothing will reach the events stream.",
+          },
+          detail: {
+            type: 'string',
+            description: 'Anything wrong that does not stop a session from opening.',
+          },
         },
       },
       metadata: { internal: true, trace_hidden: true },

@@ -31,6 +31,13 @@ export type Prepared = {
   env: Record<string, string>;
   /** Empty when the terminal is ready; otherwise why it is not. */
   detail: string;
+  /**
+   * The `iii` CLI on the terminal host, which is how the hooks reach the bus.
+   * Empty means the hooks are installed but mute: the terminal works and
+   * nothing reaches `agent::events`. Worth knowing, because it is what breaks
+   * first if the worker that owns the terminal moves into a guest of its own.
+   */
+  bridge: string;
 };
 
 export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<Prepared> {
@@ -38,7 +45,7 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
   // Sessions inherit the engine address, so a worker Claude writes registers
   // against the same engine it is talking to.
   const env = { III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134' };
-  const base = { workspace, args: config.args, env };
+  const base = { workspace, args: config.args, env, bridge: '' };
   let detail = '';
 
   try {
@@ -54,13 +61,20 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
       : 'claude is not on the terminal host and auto_install is off';
   }
 
+  let bridge = '';
   if (config.setup_workspace) {
     await installSkills(iii, workspace);
     await writeNotes(iii, workspace);
-    await writeHooks(iii, workspace);
+    bridge = await writeHooks(iii, workspace);
+    if (!bridge) {
+      const mute =
+        'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach agent::events';
+      console.warn(`claude-cli: ${mute}`);
+      detail = detail ? `${detail}; ${mute}` : mute;
+    }
   }
 
-  return { ...base, executable, detail };
+  return { ...base, executable, detail, bridge };
 }
 
 async function resolveExecutable(iii: IIIClient, config: Config): Promise<string> {
@@ -134,9 +148,14 @@ async function writeNotes(iii: IIIClient, workspace: string): Promise<void> {
  *
  * Only this worker's own keys in `.claude/settings.json` are rewritten;
  * everything else in the file is the operator's.
+ *
+ * Returns the CLI it found, or '' — the hooks are written either way (a CLI
+ * installed later then works), but an empty answer means they are mute and the
+ * caller says so out loud.
  */
-export async function writeHooks(iii: IIIClient, workspace: string): Promise<void> {
-  const cli = (await probe(iii, 'command -v iii')) || 'iii';
+export async function writeHooks(iii: IIIClient, workspace: string): Promise<string> {
+  const found = await probe(iii, 'command -v iii');
+  const cli = found || 'iii';
   const command = `${cli} trigger claude-cli::activity --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
   const path = `${workspace}/.claude/settings.json`;
 
@@ -158,4 +177,5 @@ export async function writeHooks(iii: IIIClient, workspace: string): Promise<voi
   }
   const next = `${JSON.stringify({ ...settings, hooks }, null, 2)}\n`;
   if (next !== current) await writeFile(iii, path, next);
+  return found;
 }

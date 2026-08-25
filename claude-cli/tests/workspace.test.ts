@@ -9,7 +9,9 @@ type Call = { function_id: string; payload: Record<string, unknown> };
  * A shell worker that answers from a fake filesystem. Everything
  * `prepareWorkspace` does goes over the bus, so this is the whole boundary.
  */
-function fakeShell(options: { files?: Record<string, string>; whichClaude?: string } = {}) {
+function fakeShell(
+  options: { files?: Record<string, string>; whichClaude?: string; noIiiCli?: boolean } = {},
+) {
   const calls: Call[] = [];
   const files: Record<string, string> = { ...options.files };
   const iii = {
@@ -26,8 +28,11 @@ function fakeShell(options: { files?: Record<string, string>; whichClaude?: stri
               ? { stdout: `${options.whichClaude}\n`, stderr: '', exit_code: 0 }
               : { stdout: '', stderr: '', exit_code: 1 };
           }
-          if (command === 'command -v iii')
-            return { stdout: '/usr/bin/iii\n', stderr: '', exit_code: 0 };
+          if (command === 'command -v iii') {
+            return options.noIiiCli
+              ? { stdout: '', stderr: '', exit_code: 1 }
+              : { stdout: '/usr/bin/iii\n', stderr: '', exit_code: 0 };
+          }
           return { stdout: '', stderr: '', exit_code: 0 };
         }
         case 'shell::fs::write':
@@ -141,6 +146,26 @@ describe('preparing the terminal host', () => {
     const { iii, calls } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
     await prepareWorkspace(iii, { ...DEFAULTS, setup_workspace: false });
     expect(calls.some((c) => c.function_id === 'shell::fs::write')).toBe(false);
+  });
+
+  it('says out loud when the hooks have no way to reach the bus', async () => {
+    // The terminal host is not necessarily this worker's host, and it will not
+    // be one at all if the worker that owns the terminal is ever virtualized:
+    // then `iii` may be missing there and every hook is a silent no-op.
+    const { iii, files } = fakeShell({ whichClaude: '/usr/local/bin/claude', noIiiCli: true });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.bridge).toBe('');
+    expect(prepared.detail).toContain('cannot reach the bus');
+    // Written anyway: a CLI installed later starts working with no rewrite.
+    expect(files['/hostroot/claude-cli/.claude/settings.json']).toContain('claude-cli::activity');
+  });
+
+  it('reports the bridge it found when there is one', async () => {
+    const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+    expect(prepared.bridge).toBe('/usr/bin/iii');
+    expect(prepared.detail).toBe('');
   });
 
   it('uses the configured workspace as given', async () => {

@@ -142,6 +142,24 @@ compose v1 has no volume field, so a VM-booted worker cannot read the host's
   `auth-credentials` vault over the bus — which is exactly why that vault
   exists, and why `provider-claude-code` reads it instead of the file.
 
+### If the worker that owns the terminal is virtualized
+
+Everything above holds because `shell` is a binary payload and therefore a host
+process today. If binary workers get VM-booted too, the terminal keeps working
+— the CLI, the workspace, and the login simply move into that guest, and this
+worker still reaches them over the bus — but three things change, and they are
+worth knowing before that day:
+
+- The login belongs to that guest's rootfs. Nothing on the host shares it, and
+  it survives restarts only as long as the guest's state does.
+- The workspace is inside the guest, so the agent no longer sees the operator's
+  checkout unless the guest is given it.
+- The activity hooks call the `iii` CLI, which may not exist in that guest. The
+  worker probes for it and reports the answer as `activity_bridge` on
+  `claude-cli::terminal::describe` (empty = the hooks are installed but mute,
+  and the `detail` field says so). That is the first thing to check if a
+  terminal works while `agent::events` stays empty.
+
 For a terminal host with no one at the keyboard, the same two options apply:
 `claude setup-token` once (needs a browser once, returns a long-lived
 subscription token) or `ANTHROPIC_API_KEY`, in the environment the `shell`
@@ -151,7 +169,7 @@ worker starts with. Either way the badge says which one won.
 
 | Function | Purpose |
 |---|---|
-| `claude-cli::terminal::describe` | What a session runs: program, argv, cwd, env. The page passes it straight to `shell::pty::open`. Internal. |
+| `claude-cli::terminal::describe` | What a session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the hooks can reach the bus. Internal. |
 | `claude-cli::activity` | One Claude Code hook event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the stream, not the delivery. |
 | `claude-cli::auth::status` | Which plan a session spends (see Billing). Agent-denied. |
 | `claude-cli::ui-content` | Console page assets. Internal. |
