@@ -1,5 +1,5 @@
 {
-  "name": "@iii-workers/claude-cli-ui",
+  "name": "@iii-workers/claude-code-ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",

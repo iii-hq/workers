@@ -9,7 +9,7 @@ import type { Prepared } from './workspace.js';
 
 export function registerTerminal(iii: IIIClient, current: () => Prepared): void {
   iii.registerFunction(
-    'claude-cli::terminal::describe',
+    'claude::terminal::describe',
     async () => {
       const prepared = current();
       if (!prepared.executable) {

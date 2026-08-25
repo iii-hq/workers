@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ActivityTracker, callId, toolFunctionId } from '../src/activity.js';
-import type { AgentEvent } from '../src/types.js';
+import { ActivityTracker, callId, toolFunctionId } from '../../src/terminal/activity.js';
+import type { AgentEvent } from '../../src/terminal/types.js';
 
 function tracker() {
   const emitted: { session: string; event: AgentEvent }[] = [];
@@ -12,9 +12,9 @@ function tracker() {
 
 describe('tool naming', () => {
   it('keeps an MCP tool with its own server and claims the rest', () => {
-    expect(toolFunctionId('Write')).toBe('claude-cli::Write');
+    expect(toolFunctionId('Write')).toBe('claude::Write');
     expect(toolFunctionId('mcp__github__create_issue')).toBe('github::create_issue');
-    expect(toolFunctionId('')).toBe('claude-cli::tool');
+    expect(toolFunctionId('')).toBe('claude::tool');
   });
 
   it('pairs a Pre with its Post even when the CLI sends no tool_use_id', () => {
@@ -74,7 +74,7 @@ describe('a terminal turn becomes AgentEvent frames', () => {
     if (start.type !== 'function_execution_start') throw new Error('expected a call start');
     expect(start).toMatchObject({
       function_call_id: 'toolu_1',
-      function_id: 'claude-cli::Write',
+      function_id: 'claude::Write',
       args: { file_path: '/ws/health.ts' },
     });
 
@@ -132,7 +132,7 @@ describe('a terminal turn becomes AgentEvent frames', () => {
     });
     const end = emitted.at(-1)?.event;
     if (end?.type !== 'function_execution_end') throw new Error('expected a call end');
-    expect(end.function_id).toBe('claude-cli::Read');
+    expect(end.function_id).toBe('claude::Read');
     expect(end.duration_ms).toBe(0);
   });
 

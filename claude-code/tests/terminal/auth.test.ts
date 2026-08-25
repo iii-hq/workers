@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readStatus } from '../src/auth.js';
+import { readStatus } from '../../src/terminal/auth.js';
 
 describe('who pays for a session', () => {
   it('reads a subscription login', () => {

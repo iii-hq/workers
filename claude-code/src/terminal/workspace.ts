@@ -6,7 +6,7 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import type { Config } from './config.js';
+import type { TerminalConfig } from '../config.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
 
@@ -40,8 +40,8 @@ export type Prepared = {
   bridge: string;
 };
 
-export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<Prepared> {
-  const workspace = config.workspace_dir || `${await hostRoot(iii)}/claude-cli`;
+export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): Promise<Prepared> {
+  const workspace = config.workspace_dir || `${await hostRoot(iii)}/claude-code`;
   // Sessions inherit the engine address, so a worker Claude writes registers
   // against the same engine it is talking to.
   const env = { III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134' };
@@ -69,7 +69,7 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
     if (!bridge) {
       const mute =
         'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach agent::events';
-      console.warn(`claude-cli: ${mute}`);
+      console.warn(`claude-code: ${mute}`);
       detail = detail ? `${detail}; ${mute}` : mute;
     }
   }
@@ -77,7 +77,7 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
   return { ...base, executable, detail, bridge };
 }
 
-async function resolveExecutable(iii: IIIClient, config: Config): Promise<string> {
+async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promise<string> {
   if (config.executable) return config.executable;
   const found = await probe(iii, 'command -v claude');
   if (found) return found;
@@ -107,7 +107,7 @@ async function installSkills(iii: IIIClient, workspace: string): Promise<void> {
     await writeFile(
       iii,
       `${workspace}/package.json`,
-      `${JSON.stringify({ name: 'claude-cli-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
+      `${JSON.stringify({ name: 'claude-code-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
     );
   }
   try {
@@ -141,7 +141,7 @@ async function writeNotes(iii: IIIClient, workspace: string): Promise<void> {
 
 /**
  * The hooks that turn a terminal turn into `agent::events` frames. Each event
- * posts the hook JSON to `claude-cli::activity` with the `iii` CLI — the bus
+ * posts the hook JSON to `claude::terminal::activity` with the `iii` CLI — the bus
  * is the only transport that works whether or not the terminal host is this
  * worker's host, and `"$(cat)"` expands the payload exactly once, so a prompt
  * containing shell syntax is data and not a command.
@@ -156,7 +156,7 @@ async function writeNotes(iii: IIIClient, workspace: string): Promise<void> {
 export async function writeHooks(iii: IIIClient, workspace: string): Promise<string> {
   const found = await probe(iii, 'command -v iii');
   const cli = found || 'iii';
-  const command = `${cli} trigger claude-cli::activity --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
+  const command = `${cli} trigger claude::terminal::activity --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
   const path = `${workspace}/.claude/settings.json`;
 
   let settings: Record<string, unknown> = {};

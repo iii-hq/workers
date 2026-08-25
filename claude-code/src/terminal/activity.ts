@@ -14,7 +14,7 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import type { Emit } from './events.js';
+import type { Emit } from '../events.js';
 import type {
   AgentMessage,
   AssistantMessage,
@@ -36,10 +36,10 @@ type SessionState = {
 
 /** `mcp__server__tool` is that server's function; everything else is ours. */
 export function toolFunctionId(name: string): string {
-  if (!name) return 'claude-cli::tool';
+  if (!name) return 'claude::tool';
   return name.startsWith('mcp__')
     ? name.replace(/^mcp__/, '').replace(/__/g, '::')
-    : `claude-cli::${name}`;
+    : `claude::${name}`;
 }
 
 /**
@@ -61,7 +61,7 @@ function assistant(content: ContentBlock[], stop_reason = 'tool_use'): Assistant
     error_message: null,
     usage: null,
     model: 'claude-code',
-    provider: 'claude-cli',
+    provider: 'claude-code',
     timestamp: Date.now(),
   };
 }
@@ -105,7 +105,7 @@ export class ActivityTracker {
 
   async handle(event: HookEvent): Promise<{ ok: true; event: string }> {
     const name = event.hook_event_name ?? 'unknown';
-    const sessionId = event.session_id || 'claude-cli';
+    const sessionId = event.session_id || 'claude-code';
     const state = this.state(sessionId);
 
     switch (name) {
@@ -197,28 +197,32 @@ export class ActivityTracker {
 
 export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
   const tracker = new ActivityTracker(emit);
-  iii.registerFunction('claude-cli::activity', (input: HookEvent) => tracker.handle(input ?? {}), {
-    description:
-      'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the events stream.',
-    request_format: {
-      type: 'object',
-      properties: {
-        hook_event_name: { type: 'string' },
-        session_id: { type: 'string' },
-        cwd: { type: 'string' },
-        prompt: { type: 'string' },
-        tool_name: { type: 'string' },
-        tool_use_id: { type: 'string' },
-        tool_input: { type: 'object' },
-        tool_response: {},
+  iii.registerFunction(
+    'claude::terminal::activity',
+    (input: HookEvent) => tracker.handle(input ?? {}),
+    {
+      description:
+        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the events stream.',
+      request_format: {
+        type: 'object',
+        properties: {
+          hook_event_name: { type: 'string' },
+          session_id: { type: 'string' },
+          cwd: { type: 'string' },
+          prompt: { type: 'string' },
+          tool_name: { type: 'string' },
+          tool_use_id: { type: 'string' },
+          tool_input: { type: 'object' },
+          tool_response: {},
+        },
       },
+      response_format: {
+        type: 'object',
+        required: ['ok', 'event'],
+        properties: { ok: { type: 'boolean' }, event: { type: 'string' } },
+      },
+      metadata: { internal: true, trace_hidden: true },
     },
-    response_format: {
-      type: 'object',
-      required: ['ok', 'event'],
-      properties: { ok: { type: 'boolean' }, event: { type: 'string' } },
-    },
-    metadata: { internal: true, trace_hidden: true },
-  });
+  );
   return tracker;
 }

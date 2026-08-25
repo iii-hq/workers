@@ -117,7 +117,7 @@ export function readStatus(raw: string): AuthStatus {
 
 export function registerAuth(iii: IIIClient, executable: () => string): void {
   iii.registerFunction(
-    'claude-cli::auth::status',
+    'claude::auth::status',
     async () => {
       const binary = executable();
       if (!binary) return UNKNOWN;

@@ -4,6 +4,11 @@
  * config, register claude::* functions, wait for SIGINT/SIGTERM. Config is
  * managed by the `configuration` worker (config.yaml is the seed); the live
  * value hot-reloads. Mirrors the binary-worker lifecycle.
+ *
+ * Two halves, one worker and one login: `claude::run` drives Claude Code
+ * headless from here, and `claude::terminal::*` drives the same CLI in a
+ * `shell::pty` session a person types into. Both report onto the same
+ * `agent::events` stream.
  */
 
 import { parseArgs } from 'node:util';
@@ -18,6 +23,11 @@ import {
 import { makeEmitter } from './events.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { register } from './run.js';
+import { registerActivity } from './terminal/activity.js';
+import { registerAuth } from './terminal/auth.js';
+import { registerTerminal } from './terminal/terminal.js';
+import { registerUi } from './terminal/ui.js';
+import { type Prepared, prepareWorkspace } from './terminal/workspace.js';
 
 const { values } = parseArgs({
   options: {
@@ -53,6 +63,33 @@ try {
 // worker. `claude_executable` is re-resolved on every refresh so a live change
 // to it (or an empty value) re-runs the PATH lookup.
 const holder: ConfigHolder = { current: bootConfig };
+
+// What a terminal session runs. The prepare step talks to the `shell` worker
+// (install the CLI, equip the workspace, write the hooks) and can take minutes
+// on a cold host, so it is chained off the config reload rather than awaited:
+// `claude::*` must register whether or not there is a terminal host to prepare.
+let prepared: Prepared = {
+  workspace: bootConfig.terminal.workspace_dir,
+  executable: '',
+  args: bootConfig.terminal.args,
+  env: {},
+  detail: 'the terminal host has not been prepared yet',
+  bridge: '',
+};
+let preparing: Promise<void> = Promise.resolve();
+const reconcileTerminal = () => {
+  preparing = preparing
+    .then(async () => {
+      prepared = await prepareWorkspace(iii, holder.current.terminal);
+      if (prepared.detail) console.warn(`claude-code terminal: ${prepared.detail}`);
+      else console.log(`claude-code terminal: ${prepared.executable} in ${prepared.workspace}`);
+    })
+    .catch((err) => {
+      prepared = { ...prepared, executable: '', detail: String(err) };
+      console.warn(`claude-code terminal: host is not ready: ${String(err)}`);
+    });
+};
+
 const refresh = async () => {
   const runtime = (await fetchRuntime(iii)) ?? undefined;
   const merged: Config = runtime
@@ -60,6 +97,8 @@ const refresh = async () => {
     : { ...bootConfig };
   merged.claude_executable = resolveClaudeExecutable(merged.claude_executable);
   holder.current = merged;
+  // A new workspace or binary applies to the next session, without a restart.
+  reconcileTerminal();
 };
 
 await bindConfigTrigger(iii, refresh);
@@ -68,6 +107,13 @@ await bindConfigTrigger(iii, refresh);
 const emit = makeEmitter(iii, holder.current.events_stream);
 const emitRaw = makeEmitter(iii, holder.current.raw_events_stream);
 register(iii, () => holder.current, emit, emitRaw);
+
+// The terminal half: the hook sink, what a session runs, who pays for it, and
+// the console page that opens it.
+registerActivity(iii, emit);
+registerTerminal(iii, () => prepared);
+registerAuth(iii, () => prepared.executable);
+registerUi(iii);
 
 console.log(`claude-code worker connected to ${url}`);
 

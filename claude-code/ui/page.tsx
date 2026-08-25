@@ -7,7 +7,7 @@
 import { createAgentTerminalPage } from '@iii-workers/agent-terminal-ui';
 
 export default createAgentTerminalPage({
-  worker: 'claude-cli',
+  worker: 'claude',
   title: 'claude',
   description: 'Claude Code on this engine',
 });

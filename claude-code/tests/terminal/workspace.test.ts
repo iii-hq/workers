@@ -1,7 +1,7 @@
 import type { IIIClient } from 'iii-sdk';
 import { describe, expect, it } from 'vitest';
-import { DEFAULTS, normalize } from '../src/config.js';
-import { prepareWorkspace } from '../src/workspace.js';
+import { TerminalConfigSchema } from '../../src/config.js';
+import { prepareWorkspace } from '../../src/terminal/workspace.js';
 
 type Call = { function_id: string; payload: Record<string, unknown> };
 
@@ -51,10 +51,16 @@ function fakeShell(
   return { iii, calls, files };
 }
 
+/** A stored value an older schema wrote must not reach a session. */
+const DEFAULTS = TerminalConfigSchema.parse({});
+
 describe('config', () => {
   it('drops keys an older schema wrote and keeps the defaults', () => {
-    expect(normalize({ args: ['-p'], nonsense: 1 })).toEqual({ ...DEFAULTS, args: ['-p'] });
-    expect(normalize(null)).toEqual(DEFAULTS);
+    expect(TerminalConfigSchema.parse({ args: ['-p'], nonsense: 1 })).toEqual({
+      ...DEFAULTS,
+      args: ['-p'],
+    });
+    expect(TerminalConfigSchema.parse({})).toEqual(DEFAULTS);
   });
 });
 
@@ -64,27 +70,27 @@ describe('preparing the terminal host', () => {
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
 
     expect(prepared).toMatchObject({
-      workspace: '/hostroot/claude-cli',
+      workspace: '/hostroot/claude-code',
       executable: '/usr/local/bin/claude',
       detail: '',
     });
 
     // The workspace is its own npm project, or the skills CLI installs above it.
-    expect(files['/hostroot/claude-cli/package.json']).toContain('claude-cli-workspace');
+    expect(files['/hostroot/claude-code/package.json']).toContain('claude-code-workspace');
     expect(calls.some((c) => String(c.payload.command ?? '').startsWith('npx -y skills add'))).toBe(
       true,
     );
-    expect(files['/hostroot/claude-cli/.iii/skills-installed']).toBeTruthy();
+    expect(files['/hostroot/claude-code/.iii/skills-installed']).toBeTruthy();
 
     // The notes live in one marked block Claude reads on startup.
-    const notes = files['/hostroot/claude-cli/CLAUDE.md'];
+    const notes = files['/hostroot/claude-code/CLAUDE.md'];
     expect(notes).toContain('<!-- iii:begin');
     expect(notes).toContain('<!-- iii:end -->');
-    expect(notes).toContain('/hostroot/claude-cli');
+    expect(notes).toContain('/hostroot/claude-code');
 
     // Every hook posts the payload to this worker over the bus, exactly once
     // expanded — a prompt containing shell syntax stays data.
-    const settings = JSON.parse(files['/hostroot/claude-cli/.claude/settings.json']);
+    const settings = JSON.parse(files['/hostroot/claude-code/.claude/settings.json']);
     expect(Object.keys(settings.hooks).sort()).toEqual([
       'PostToolUse',
       'PreToolUse',
@@ -94,7 +100,7 @@ describe('preparing the terminal host', () => {
       'UserPromptSubmit',
     ]);
     const command = settings.hooks.PreToolUse[0].hooks[0].command;
-    expect(command).toContain('/usr/bin/iii trigger claude-cli::activity --json "$(cat)"');
+    expect(command).toContain('/usr/bin/iii trigger claude::terminal::activity --json "$(cat)"');
     expect(settings.hooks.PreToolUse[0].matcher).toBe('*');
   });
 
@@ -121,22 +127,22 @@ describe('preparing the terminal host', () => {
     const { iii, files } = fakeShell({
       whichClaude: '/usr/local/bin/claude',
       files: {
-        '/hostroot/claude-cli/.claude/settings.json': JSON.stringify({
+        '/hostroot/claude-code/.claude/settings.json': JSON.stringify({
           model: 'opus',
           hooks: { Notification: [{ hooks: [{ type: 'command', command: 'say hi' }] }] },
         }),
-        '/hostroot/claude-cli/CLAUDE.md': '# My own notes\n\nkeep me\n',
-        '/hostroot/claude-cli/.iii/skills-installed': '2026-01-01',
+        '/hostroot/claude-code/CLAUDE.md': '# My own notes\n\nkeep me\n',
+        '/hostroot/claude-code/.iii/skills-installed': '2026-01-01',
       },
     });
     await prepareWorkspace(iii, { ...DEFAULTS });
 
-    const settings = JSON.parse(files['/hostroot/claude-cli/.claude/settings.json']);
+    const settings = JSON.parse(files['/hostroot/claude-code/.claude/settings.json']);
     expect(settings.model).toBe('opus');
     expect(settings.hooks.Notification[0].hooks[0].command).toBe('say hi');
     expect(settings.hooks.PreToolUse).toBeDefined();
 
-    const notes = files['/hostroot/claude-cli/CLAUDE.md'];
+    const notes = files['/hostroot/claude-code/CLAUDE.md'];
     expect(notes).toContain('# My own notes');
     expect(notes).toContain('keep me');
     expect(notes.indexOf('<!-- iii:begin')).toBeLessThan(notes.indexOf('# My own notes'));
@@ -158,7 +164,9 @@ describe('preparing the terminal host', () => {
     expect(prepared.bridge).toBe('');
     expect(prepared.detail).toContain('cannot reach the bus');
     // Written anyway: a CLI installed later starts working with no rewrite.
-    expect(files['/hostroot/claude-cli/.claude/settings.json']).toContain('claude-cli::activity');
+    expect(files['/hostroot/claude-code/.claude/settings.json']).toContain(
+      'claude::terminal::activity',
+    );
   });
 
   it('reports the bridge it found when there is one', async () => {

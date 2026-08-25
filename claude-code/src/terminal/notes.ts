@@ -5,13 +5,13 @@
  */
 
 export const NOTES_BEGIN =
-  '<!-- iii:begin — written by the claude-cli worker on every boot; edits inside are lost -->';
+  '<!-- iii:begin — written by the claude-code worker on every boot; edits inside are lost -->';
 export const NOTES_END = '<!-- iii:end -->';
 
 export function engineNotes(options: { workspace: string; engineUrl: string }): string {
   return `# You run inside an iii engine
 
-This workspace belongs to the \`claude-cli\` iii worker: a terminal page on the
+This workspace belongs to the \`claude-code\` iii worker: a terminal page on the
 iii console runs you, and the \`shell\` worker owns the session. You have direct
 access to the running engine and can create functions, triggers, and workers
 that outlive this terminal.
@@ -61,7 +61,7 @@ Function ids are \`<worker>::<verb>\`, kebab-case for multi-word segments.
   of every function id it registers, so a repeat collides with the other
   worker's ids. Check \`engine::functions::list\` first and pick something
   specific.
-- **Never stop or reconfigure \`claude-cli\` or \`shell\`** — the first is this
+- **Never stop or reconfigure \`claude-code\` or \`shell\`** — the first is this
   terminal, the second runs it. Restarting either kills the session you are
   typing in, mid-command.
 - **Ask how workers are installed here before you install one.** A registry

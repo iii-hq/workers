@@ -32,3 +32,14 @@ iii_context: true
 # Path to the Claude Code CLI binary. Empty = Agent SDK default resolution;
 # set to an absolute path (or "claude") when running the single-file bundle.
 claude_executable: ""
+
+# The console terminal page: what runs when a person opens `claude` in the
+# console. This is a DIFFERENT host from the settings above — the `shell`
+# worker owns the session, so the binary, the workspace, and the login are
+# shell's, not this worker's.
+terminal:
+  executable: ""        # path to `claude` on the terminal host; empty = resolve on PATH there
+  args: []              # extra argv for every terminal session
+  workspace_dir: ""     # empty = `claude-code` under shell's primary root
+  auto_install: true    # install Claude Code from https://claude.ai/install.sh when missing
+  setup_workspace: true # keep the iii skills, the engine notes, and the activity hooks in place
