@@ -356,10 +356,40 @@ async fn sync_skills(
 }
 
 /// Run one durable loop step.
+enum PreparedStep {
+    Finished(TurnStepResult),
+    Generated(Box<GeneratedStep>),
+}
+
+struct GeneratedStep {
+    payload: TurnStepPayload,
+    cfg: std::sync::Arc<crate::config::WorkerConfig>,
+    session: SessionClient,
+    record: TurnRecord,
+    strategy: crate::contract::OutputStrategy,
+    outcome: crate::clients::router::ChatOutcome,
+    durable_abort: bool,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 pub async fn run_step(
     deps: &Deps,
     payload: TurnStepPayload,
 ) -> Result<TurnStepResult, HarnessError> {
+    // Keep each phase future behind a pointer. Inlining either future into
+    // this dispatcher would merge their async states back into one large
+    // executor stack frame.
+    let generated = match Box::pin(generate_step(deps, payload)).await? {
+        PreparedStep::Finished(result) => return Ok(result),
+        PreparedStep::Generated(generated) => generated,
+    };
+    Box::pin(finish_step(deps, generated)).await
+}
+
+async fn generate_step(
+    deps: &Deps,
+    payload: TurnStepPayload,
+) -> Result<PreparedStep, HarnessError> {
     // Serialize against off-queue resolves/sweeps on the same session.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let cfg = deps.cfg().await;
@@ -373,20 +403,22 @@ pub async fn run_step(
             // transcript alone cannot recover budgets, parent linkage, output
             // contracts, or dispatch policy safely, so an absent record stays
             // a stale delivery and is acknowledged without fabricating state.
-            None => return Ok(skipped(&payload.session_id)),
+            None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
         };
 
     // Stale guards: wrong turn or any non-current step is acked and dropped.
     if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
-        return Ok(skipped(&payload.session_id));
+        return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
     if record.status.is_terminal() {
-        return Ok(skipped(&payload.session_id));
+        return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
 
     // Cooperative cancellation observed between steps.
     if record.abort {
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     // Deliver messages queued while the previous step streamed: append them in
@@ -425,7 +457,8 @@ pub async fn run_step(
                     model: None,
                 },
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
     }
 
@@ -451,7 +484,7 @@ pub async fn run_step(
         // validated (live-caught by the validation_chain e2e: a turn that
         // burned its steps mid-loop finalized "completed" with the goal
         // unmet).
-        return match deps.hooks.run_post_turn(&record, record.step, &text).await {
+        return (match deps.hooks.run_post_turn(&record, record.step, &text).await {
             Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
             Err(deny) => {
                 record.result = Some(text);
@@ -475,7 +508,8 @@ pub async fn run_step(
                 )
                 .await
             }
-        };
+        })
+        .map(PreparedStep::Finished);
     }
 
     let functions = deps.functions().await;
@@ -588,7 +622,8 @@ pub async fn run_step(
                     &reason,
                     CONTEXT_OVERFLOW_FAILURE,
                 )
-                .await;
+                .await
+                .map(PreparedStep::Finished);
             }
             Err(error) => return Err(error),
         };
@@ -628,7 +663,8 @@ pub async fn run_step(
                         model: None,
                     },
                 )
-                .await;
+                .await
+                .map(PreparedStep::Finished);
             }
         };
         // The notice lands after the hooks ran (they must not read it as the
@@ -674,7 +710,8 @@ pub async fn run_step(
                     model: None,
                 },
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
 
         // Hooks and orphan repair can change the assembled request. When nothing
@@ -745,7 +782,8 @@ pub async fn run_step(
                 &reason,
                 CONTEXT_OVERFLOW_FAILURE,
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
         // One-shot recovery: fold the measured post-assembly additions (plus
         // margin for hook variance on the retry — hooks re-run against the
@@ -771,7 +809,9 @@ pub async fn run_step(
     // session lock. Do not reserve budget for a call that will never start.
     if deps.cancels.is_fired(&record.turn_id) {
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     let budget_reservation = match crate::budget::reserve(
@@ -789,7 +829,9 @@ pub async fn run_step(
                 crate::budget::BudgetRejection::Exceeded(_) => BUDGET_EXCEEDED_FAILURE,
                 crate::budget::BudgetRejection::Unavailable(_) => BUDGET_UNAVAILABLE_FAILURE,
             };
-            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure).await;
+            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure)
+                .await
+                .map(PreparedStep::Finished);
         }
     };
 
@@ -870,7 +912,9 @@ pub async fn run_step(
             crate::budget::release(deps, reservation).await?;
         }
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     // Release the per-session lock across the generation RPC. The loop writes no
@@ -1025,6 +1069,37 @@ pub async fn run_step(
             .and_then(|record| record.options.skill_context.as_ref()),
     );
 
+    Ok(PreparedStep::Generated(Box::new(GeneratedStep {
+        payload,
+        cfg,
+        session,
+        record,
+        strategy,
+        outcome,
+        durable_abort,
+        guard: _guard,
+    })))
+}
+
+/// Finish a generated step while the caller holds the session lock.
+///
+/// This phase is separate from context assembly and provider generation so
+/// the executor does not poll one monolithic future with every turn-loop
+/// state in the same stack frame.
+async fn finish_step(
+    deps: &Deps,
+    generated: Box<GeneratedStep>,
+) -> Result<TurnStepResult, HarnessError> {
+    let GeneratedStep {
+        payload,
+        cfg,
+        session,
+        mut record,
+        strategy,
+        outcome,
+        durable_abort,
+        guard: _guard,
+    } = *generated;
     record.turn_count += 1;
 
     // Cancellation during generation finalises the partial as cancelled.
