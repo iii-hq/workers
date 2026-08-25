@@ -34,6 +34,19 @@ export type PaletteGroup = PaletteKind | 'recent'
  * and `/` commands, `#` files, `@` chats. The rest of the query is the
  * search text.
  */
+/**
+ * The bare palette is a navigator: it opens pages, workspaces and chats, and
+ * jumps to a worker's view. Commands, actions, functions and files answer
+ * only behind their prefix (or an explicit filter chip), so typing a page's
+ * name is never buried under everything that mentions it.
+ */
+export const DEFAULT_KINDS: readonly PaletteKind[] = [
+  'page',
+  'workspace',
+  'chat',
+  'worker',
+]
+
 export const PREFIX_MODES: Record<string, readonly PaletteKind[]> = {
   '>': ['command', 'action'],
   '/': ['command', 'action'],
@@ -58,7 +71,7 @@ export function parseQuery(
   }
   return {
     prefix: null,
-    kinds: filter === 'all' ? null : new Set([filter]),
+    kinds: filter === 'all' ? new Set(DEFAULT_KINDS) : new Set([filter]),
     text: raw.trim(),
   }
 }
@@ -287,14 +300,14 @@ export const KIND_LABEL: Record<PaletteGroup, string> = {
 
 /** Group in a fixed order so the list does not reshuffle as scores change. */
 export const KIND_ORDER: PaletteKind[] = [
+  'page',
+  'workspace',
+  'chat',
+  'worker',
   'file',
   'command',
   'action',
-  'workspace',
-  'page',
-  'chat',
   'item',
-  'worker',
   'function',
 ]
 

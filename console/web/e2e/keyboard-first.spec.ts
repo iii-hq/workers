@@ -53,7 +53,7 @@ test('the keyboard reaches the chat, the panes and every page command through âŒ
   // The palette lists the chat's commands under its name, with their keys.
   await page.keyboard.press('ControlOrMeta+k')
   const palette = page.getByRole('dialog')
-  await palette.getByRole('textbox').fill('focus the composer')
+  await palette.getByRole('textbox').fill('>focus the composer')
   const row = palette.getByRole('button', { name: /Chat: Focus the composer/ })
   await expect(row).toBeVisible()
   await expect(row.locator('kbd')).toHaveText('I')
