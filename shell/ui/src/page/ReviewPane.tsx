@@ -1155,6 +1155,7 @@ function ReviewFile({
   return (
     <section
       ref={sectionRef}
+      data-keybindings-standdown=""
       className={`shui-review-file${active ? ' active' : ''}`}
       data-review-path={entry.path}
       aria-busy={saving}
