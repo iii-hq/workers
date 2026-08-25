@@ -42,7 +42,10 @@ const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-trigger";
 const POST_HOOK_FN_ID: &str = "shell::turns::on-post-trigger";
 const STARTED_FN_ID: &str = "shell::turns::on-turn-started";
 const COMPLETED_FN_ID: &str = "shell::turns::on-turn-completed";
-const HOOK_FUNCTIONS: &[&str] = &["shell::fs::*", "coder::*"];
+// Every shell call is hooked, not only the file verbs: calls that name no
+// paths (`shell::exec`, pty writes) still tell the observer which
+// session, turn and root are live so the workspace watch can start.
+const HOOK_FUNCTIONS: &[&str] = &["shell::*", "coder::*"];
 const HOOK_TIMEOUT_MS: u64 = 3_000;
 
 pub const MAX_TURNS_PER_SESSION: usize = 40;
@@ -401,6 +404,37 @@ pub fn record_file(turn: &mut TurnRecord, change: FileRecord) {
     turn.files.push(change);
 }
 
+/// Fold a change the workspace watch saw into the turn. Unlike a hooked
+/// write there is no pre-image and no function id; when the path is already
+/// recorded from a hook, only the freshness and kind move — the hook's
+/// cause, pre-image and after-revision are the better record.
+pub fn record_observed(turn: &mut TurnRecord, path: String, root: &str, kind: &str, at: u64) {
+    if let Some(existing) = turn.files.iter_mut().find(|f| f.path == path) {
+        existing.last_seen = at;
+        existing.kind = match (existing.kind.as_str(), kind) {
+            (_, "deleted") => "deleted".to_string(),
+            ("created", _) => "created".to_string(),
+            ("deleted", "created") | ("deleted", "modified") => "modified".to_string(),
+            (_, next) => next.to_string(),
+        };
+        return;
+    }
+    if turn.files.len() >= MAX_FILES_PER_TURN {
+        return;
+    }
+    turn.files.push(FileRecord {
+        path,
+        root: Some(root.to_string()),
+        kind: kind.to_string(),
+        cause: "observed".to_string(),
+        first_seen: at,
+        last_seen: at,
+        from: None,
+        before: None,
+        after_revision: None,
+    });
+}
+
 /// Newest turns win once a session passes its cap.
 pub fn enforce_budgets(record: &mut SessionRecord) {
     if record.turns.len() > MAX_TURNS_PER_SESSION {
@@ -654,6 +688,28 @@ impl TurnLog {
         .await
     }
 
+    /// Record a batch of watch-observed changes under a turn.
+    pub async fn fold_observed(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        root: &str,
+        changes: Vec<(String, &'static str)>,
+    ) {
+        let at = now_ms();
+        let result = self
+            .update(session_id, |record| {
+                let turn = turn_mut(record, turn_id, at);
+                for (path, kind) in changes {
+                    record_observed(turn, path, root, kind, at);
+                }
+            })
+            .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, session_id, "turn observe: fold not recorded");
+        }
+    }
+
     pub async fn on_turn_completed(&self, session_id: &str, turn_id: &str) -> Result<(), Error> {
         let at = now_ms();
         self.update(session_id, |record| {
@@ -807,18 +863,28 @@ pub struct GetOutput {
 }
 
 pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
+    let data_dir = config.resolved_data_dir();
     let log = Arc::new(TurnLog::new(TurnStore::new(
-        config.resolved_data_dir(),
+        data_dir.clone(),
         config.max_blob_bytes,
     )));
+    let observers = crate::turn_observe::TurnObservers::new(log.clone(), data_dir);
 
     {
         let log = log.clone();
+        let observers = observers.clone();
         iii.register_function(
             PRE_HOOK_FN_ID,
             RegisterFunction::new_async(move |input: HookInput| {
                 let log = log.clone();
+                let observers = observers.clone();
                 async move {
+                    if let (Some(session_id), Some(turn_id)) =
+                        (input.session_id.as_deref(), input.turn_id.as_deref())
+                    {
+                        let root = session_root(input.metadata.as_ref());
+                        observers.ensure(session_id, turn_id, root.as_deref());
+                    }
                     log.on_pre_trigger(input).await;
                     Ok::<HookOutput, Error>(HookOutput::default())
                 }
@@ -886,15 +952,18 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
     }
     {
         let log = log.clone();
+        let observers = observers.clone();
         iii.register_function(
             COMPLETED_FN_ID,
             RegisterFunction::new_async(move |event: TurnEvent| {
                 let log = log.clone();
+                let observers = observers.clone();
                 async move {
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
                         if let Err(e) = log.on_turn_completed(&session_id, &turn_id).await {
                             tracing::warn!(error = %e, "turn log: turn end not recorded");
                         }
+                        observers.complete(&session_id, &turn_id);
                     }
                     Ok::<Ack, Error>(Ack { ok: true })
                 }
@@ -1014,6 +1083,58 @@ mod tests {
             turn_id: Some(turn.to_string()),
             result: Some(HookResult { is_error: failed }),
         }
+    }
+
+    #[test]
+    fn observed_never_overwrites_a_hook_record() {
+        let mut turn = TurnRecord {
+            turn_id: "t1".into(),
+            started_at: 1,
+            ended_at: None,
+            files: vec![FileRecord {
+                path: "/w/a.txt".into(),
+                root: Some("/w".into()),
+                kind: "created".into(),
+                cause: "coder::create-file".into(),
+                first_seen: 1,
+                last_seen: 1,
+                from: None,
+                before: Some(PreImage {
+                    revision: Some("sha256:aa".into()),
+                    content: None,
+                    truncated: false,
+                    missing: false,
+                    binary: false,
+                    stored: true,
+                }),
+                after_revision: Some("sha256:bb".into()),
+            }],
+        };
+        record_observed(&mut turn, "/w/a.txt".into(), "/w", "modified", 9);
+        let file = &turn.files[0];
+        assert_eq!(file.cause, "coder::create-file");
+        assert_eq!(file.kind, "created");
+        assert_eq!(file.after_revision.as_deref(), Some("sha256:bb"));
+        assert!(file.before.is_some());
+        assert_eq!(file.last_seen, 9);
+    }
+
+    #[test]
+    fn observed_records_a_new_path_without_pre_image() {
+        let mut turn = TurnRecord {
+            turn_id: "t1".into(),
+            started_at: 1,
+            ended_at: None,
+            files: Vec::new(),
+        };
+        record_observed(&mut turn, "/w/gen.txt".into(), "/w", "created", 5);
+        record_observed(&mut turn, "/w/gen.txt".into(), "/w", "deleted", 8);
+        let file = &turn.files[0];
+        assert_eq!(file.cause, "observed");
+        assert_eq!(file.kind, "deleted");
+        assert!(file.before.is_none());
+        assert_eq!(file.first_seen, 5);
+        assert_eq!(file.last_seen, 8);
     }
 
     #[test]
