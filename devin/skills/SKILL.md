@@ -2,7 +2,7 @@
 name: devin
 description: >-
   Drive Devin over the iii bus. Run the local Devin CLI agent (SWE-1.6) with the
-  iii runtime context so it discovers and operates your mesh, or start and steer
+  iii runtime context so it discovers and operates your workers, or start and steer
   autonomous Devin cloud sessions through the REST API, with a passthrough to any
   Devin v1/v3 endpoint.
 ---
@@ -36,7 +36,7 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 - Delegate a coding task to the local agent in a chosen directory: `devin::run`
   with `prompt` and `cwd`; follow `devin::events` / `agent::events`; interrupt
   with `devin::stop`.
-- Have Devin operate your iii mesh: with `iii_context` on (default), ask a plain
+- Have Devin operate your iii runtime: with `iii_context` on (default), ask a plain
   question ("what workers are connected and what does each do?") and Devin
   discovers and calls engine functions itself through the iii CLI.
 - Delegate a whole task to Devin's cloud agent ("open a PR that adds X"):

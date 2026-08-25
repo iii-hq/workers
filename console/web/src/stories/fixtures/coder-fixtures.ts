@@ -52,17 +52,17 @@ iii.registerFunction(
 const III_SKILL_MD = `---
 name: iii
 description: >-
-  WebSocket-routed worker mesh — the engine's Function/Trigger/Worker model and
-  the iii-sdk surface for authoring them.
+  Language agnostic runtime where services, agents, and tools are composed of
+  the same things: workers, triggers, and functions.
 ---
 
 # iii
 
-iii is a WebSocket-routed worker mesh. One engine process (default port \`49134\`)
-holds a live registry of every connected worker, every function those workers
-expose, and every trigger bound to them. Workers are independent OS processes
-that open a WebSocket to the engine and register **Functions** (\`service::name\`
-handlers) and **Triggers** (the events that invoke those Functions).
+iii is a language agnostic runtime where services, agents, and tools are composed of the same things:
+workers, triggers, and functions. One engine process (default port \`49134\`) holds a live registry
+of every connected worker, every function those workers expose, and every trigger bound to them.
+Workers are independent OS processes that open a WebSocket to the engine and register **Functions**
+(\`service::name\` handlers) and **Triggers** (the events that invoke those Functions).
 
 \`\`\`ts
 import { registerWorker } from 'iii-sdk'

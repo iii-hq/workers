@@ -90,10 +90,12 @@ workers from the local source tree with `iii compose`.
 
 ## Working with iii
 
-iii is a WebSocket-routed worker mesh. One engine holds a live registry of every
-connected worker, their functions, and the triggers bound to them. Calls route
-worker to engine to worker, so the language, runtime, and location of a worker
-are invisible; the function id is the only contract.
+iii is a language agnostic runtime where services, agents, and tools are
+composed of the same things: workers, triggers, and functions. One engine
+holds a live registry of every connected worker, their functions, and the
+triggers bound to them. Calls route worker to engine to worker, so the
+language, runtime, and location of a worker are invisible; the function id is
+the only contract.
 
 **1. Discover what is already there (the engine is the source of truth)**
 - `engine::functions::list` — every function across all workers (filter with `prefix` / `search` / `worker`)

@@ -1,7 +1,7 @@
 //! Durable binding storage, in the state worker under `harness_binding`.
 //!
 //! No in-memory cache, deliberately. Workers registering the same id
-//! load-balance, so two harness instances can serve the same mesh; a cached
+//! load-balance, so two harness instances can serve the same engine; a cached
 //! "still live" binding in instance B after instance A retired it would
 //! double-fire a `once`. The store IS the authority, and every fire pays one
 //! private state read for it — the same round trip the fire already makes to
