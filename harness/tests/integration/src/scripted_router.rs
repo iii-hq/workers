@@ -450,12 +450,39 @@ async fn wait_for_gate_state(
     }
 }
 
+/// Drop iii-directory's `<discovery_assist>` hint messages from the MATCHED
+/// view of a request. The hint is an ephemeral tail user message whose
+/// presence depends on the booted stack (inject_hint config, worker count,
+/// per-turn gates), so no fixture can pin it deterministically — exactly as
+/// before, when it was an unpinned system-prompt mutation. Only the matched
+/// copy is filtered; call evidence keeps the raw request. The registry-changed
+/// notice is NOT filtered: it is deterministic within a scenario's script and
+/// INT-017 pins it as a message.
+fn without_discovery_hints(input: &Value) -> Value {
+    let mut matched = input.clone();
+    if let Some(messages) = matched.get_mut("messages").and_then(Value::as_array_mut) {
+        messages.retain(|message| {
+            let is_hint = message.get("role").and_then(Value::as_str) == Some("user")
+                && message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .and_then(|blocks| blocks.first())
+                    .and_then(|block| block.get("text"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.starts_with("<discovery_assist"));
+            !is_hint
+        });
+    }
+    matched
+}
+
 async fn chat(
     state: Arc<Mutex<State>>,
     address: String,
     client: Arc<IIIClient>,
     input: Value,
 ) -> Result<Value, Error> {
+    let matched_input = without_discovery_hints(&input);
     // Match under the lock; stream outside it.
     let (generation, writer_ref, request_id) = {
         let mut state = state.lock().expect("router state");
@@ -496,7 +523,7 @@ async fn chat(
                 .match_
                 .fields()
                 .iter()
-                .map(|(field, matcher)| evaluate(field, matcher, input.get(*field)))
+                .map(|(field, matcher)| evaluate(field, matcher, matched_input.get(*field)))
                 .collect();
             if field_results.iter().all(|result| result.passed) {
                 selected = Some((index, generation, field_results));
@@ -820,5 +847,30 @@ mod tests {
             .await
             .expect("gate release should wake the router")
             .expect("router gate task should finish");
+    }
+
+    #[test]
+    fn discovery_hint_messages_are_invisible_to_matchers() {
+        let input = serde_json::json!({ "messages": [
+            { "role": "user", "content": [{ "type": "text", "text": "do the task" }] },
+            { "role": "user", "content": [{ "type": "text",
+                "text": "<discovery_assist functions_generation=3>\nBefore calling..." }] },
+            { "role": "user", "content": [{ "type": "text",
+                "text": "NOTE: the function registry changed during this conversation. ..." }] },
+        ]});
+        let matched = super::without_discovery_hints(&input);
+        let texts: Vec<&str> = matched["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["content"][0]["text"].as_str().unwrap())
+            .collect();
+        // The hint is stripped; the user message and the (deterministic,
+        // INT-017-pinned) registry notice stay.
+        assert_eq!(texts.len(), 2);
+        assert!(texts[0].starts_with("do the task"));
+        assert!(texts[1].starts_with("NOTE: the function registry changed"));
+        // The raw input is untouched.
+        assert_eq!(input["messages"].as_array().unwrap().len(), 3);
     }
 }
