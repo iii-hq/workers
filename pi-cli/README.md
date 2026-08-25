@@ -64,6 +64,7 @@ workspace_dir: ""         # empty = `pi-cli` under shell's primary root
 auto_install: true        # install pi from https://pi.dev/install.sh when missing
 setup_workspace: true     # keep skills, engine notes, and the activity extension in place
 events_stream: agent::events   # where turns land (read once at boot)
+auth_provider: anthropic  # whose credentials the billing badge reports
 ```
 
 `args: ["-a"]` is the default for a reason: pi loads project-local extensions
@@ -88,12 +89,45 @@ On every boot, when `setup_workspace` is on:
   It is discovered from the workspace, so a session an operator starts by hand
   in the same directory reports its turns too.
 
+## Billing: which plan a session spends
+
+The status bar under the terminal says it, and `pi-cli::auth::status` answers
+it on the bus. pi keeps credentials per provider, so the badge reports the
+provider named by `auth_provider`:
+
+| Badge | Means |
+|---|---|
+| `anthropic subscription` | An OAuth (subscription) login pays. |
+| `anthropic API key billing` | An API key pays, per token. |
+| `anthropic: not signed in` | No credentials for that provider yet — run `/login`. |
+| `anthropic ready` | pi has credentials but did not report their kind. |
+
+It runs `pi auth check --provider <p> --json` on the terminal host and never
+passes `--credentials`: the page needs the KIND of credential, never the
+credential. `pi auth check` exits 1 for a provider that is not ready and still
+prints the JSON that says why, so the exit code is not read as the answer.
+
+`pi-cli::auth::status` stays agent-denied in `iii-permissions.yaml`. The
+console page reaches it as a user-initiated call, which is not the agent path.
+
+## Logging in
+
+The simplest flow is the terminal itself: open the page and run `/login`. It
+authenticates the host, so a headless
+[`pi`](https://github.com/iii-hq/workers/tree/main/pi) worker on the same host
+picks up the same credentials.
+
+For a host with no one at the keyboard, put the provider's key in the
+environment the `shell` worker starts with. Either way the badge tells you
+which one won.
+
 ## Functions
 
 | Function | Purpose |
 |---|---|
 | `pi-cli::terminal::describe` | What a session runs: program, argv, cwd, env. The page passes it straight to `shell::pty::open`. Internal. |
 | `pi-cli::activity` | One pi extension event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the stream, not the delivery. |
+| `pi-cli::auth::status` | Which plan a session spends (see Billing). Agent-denied. |
 | `pi-cli::ui-content` | Console page assets. Internal. |
 
 Nothing here is an agent tool: a terminal is opened by a person, from the

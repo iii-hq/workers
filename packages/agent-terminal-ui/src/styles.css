@@ -37,3 +37,32 @@
 .agent-terminal-statusbar .agent-terminal-status-error {
   color: var(--color-alert);
 }
+
+/*
+ * Which plan the session spends. Accent is reserved for actions, so the
+ * subscription case is neutral ink and only the two cases an operator might
+ * not expect — a metered key, or no credentials at all — carry a colour.
+ */
+.agent-terminal-billing {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.agent-terminal-billing-subscription {
+  color: var(--color-ink);
+}
+
+.agent-terminal-billing-api-key {
+  color: var(--color-notice, var(--color-ink));
+  border-color: var(--color-notice, var(--color-edge));
+}
+
+.agent-terminal-billing-none {
+  color: var(--color-alert);
+  border-color: var(--color-alert);
+}

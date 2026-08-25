@@ -42,3 +42,6 @@ and `turn_end` + `agent_end` when the run finishes.
 - pi loads its project-local extension only in a trusted directory, which is
   why sessions run with `-a`. Removing that flag means answering a trust
   prompt every session and losing the activity stream.
+- `pi-cli::auth::status` reports which plan a session spends for the configured
+  provider (subscription login vs API key). The page shows it in the status
+  bar; agents are denied it.

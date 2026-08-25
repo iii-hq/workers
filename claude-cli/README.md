@@ -83,12 +83,53 @@ On every boot, when `setup_workspace` is on:
   whether or not the terminal host is this worker's host. Only these keys are
   rewritten; the rest of the file is left alone.
 
+## Billing: which plan a session spends
+
+The status bar under the terminal says it, and `claude-cli::auth::status`
+answers it on the bus:
+
+| Badge | Means |
+|---|---|
+| `team subscription · you@example.com · org` | A Claude subscription login on the terminal host pays. |
+| `API key billing · ANTHROPIC_API_KEY` | An API key pays, per token. |
+| `not signed in` | No credentials yet — run `/login` in the terminal. |
+
+The rule has a trap in it, which is why the badge exists: **an API key beats a
+subscription login.** With `ANTHROPIC_API_KEY` set, `claude auth status` still
+reports `authMethod: claude.ai` (the account IS signed in) while the CLI bills
+the key — it says so itself ("ANTHROPIC_API_KEY or another auth source is set
+and takes precedence over your claude.ai login") and a bogus key 401s the turn.
+So the badge reads `apiKeySource`, not `authMethod`, and the tooltip spells out
+that the login is signed in but not billed.
+
+The key is read from the environment of the `shell` worker that runs the
+session, so that is where to set or unset it.
+
+`claude-cli::auth::status` stays agent-denied in `iii-permissions.yaml`: it
+carries the operator's account and organization. The console page reaches it as
+a user-initiated call, which is not the agent path.
+
+## Logging in
+
+The simplest flow is the terminal itself: open the page and run `/login`
+(or `claude auth login`, `--console` for API billing instead of the
+subscription). It authenticates the HOST, so a headless
+[`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code) worker
+on the same host and the same `CLAUDE_CONFIG_DIR` picks up the same
+credentials — one login covers both surfaces.
+
+For a host with no one at the keyboard, run `claude setup-token` once (it needs
+a browser once, and returns a long-lived subscription token) and put the result
+in the environment the `shell` worker starts with; or set `ANTHROPIC_API_KEY`
+there for metered billing. Either way the badge tells you which one won.
+
 ## Functions
 
 | Function | Purpose |
 |---|---|
 | `claude-cli::terminal::describe` | What a session runs: program, argv, cwd, env. The page passes it straight to `shell::pty::open`. Internal. |
 | `claude-cli::activity` | One Claude Code hook event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the stream, not the delivery. |
+| `claude-cli::auth::status` | Which plan a session spends (see Billing). Agent-denied. |
 | `claude-cli::ui-content` | Console page assets. Internal. |
 
 Nothing here is an agent tool: a terminal is opened by a person, from the

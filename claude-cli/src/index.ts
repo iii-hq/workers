@@ -11,6 +11,7 @@
 import { parseArgs } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { registerActivity } from './activity.js';
+import { registerAuth } from './auth.js';
 import { bindConfigTrigger, type Config, fetchConfig, registerConfig } from './config.js';
 import { makeEmitter } from './events.js';
 import { registerTerminal } from './terminal.js';
@@ -61,6 +62,7 @@ await bindConfigTrigger(iii, reconcile);
 const emit = makeEmitter(iii, config.events_stream);
 registerActivity(iii, emit);
 registerTerminal(iii, () => prepared);
+registerAuth(iii, () => prepared.executable);
 registerUi(iii);
 
 console.log(`claude-cli worker connected to ${url}`);

@@ -41,3 +41,6 @@ with durations, and `turn_end` + `agent_end` when Claude stops.
 - The command is fixed to Claude Code. Use the `shell` worker for anything
   else — including `shell::pty::sessions` to see what a terminal is doing.
 - The workspace must be reachable by the `shell` worker: it owns the session.
+- `claude-cli::auth::status` reports which plan a session spends (subscription
+  vs API key, and an API key silently outranks a subscription login). The page
+  shows it in the status bar; agents are denied it.

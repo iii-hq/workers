@@ -63,6 +63,12 @@ interface OpenResponse {
   reconnect_token: string
 }
 
+interface AuthStatus {
+  billing: 'subscription' | 'api-key' | 'none' | 'unknown'
+  label: string
+  detail: string
+}
+
 interface TerminalSpec {
   program: string
   args: string[]
@@ -276,6 +282,7 @@ function AgentTerminal({
   const [status, setStatus] = useState<'connecting' | 'running' | 'exited' | 'error'>('connecting')
   const [detail, setDetail] = useState('')
   const [generation, setGeneration] = useState(0)
+  const [auth, setAuth] = useState<AuthStatus | null>(null)
   const theme = host.useTheme()
   const themeRef = useRef(theme)
   themeRef.current = theme
@@ -285,6 +292,27 @@ function AgentTerminal({
     const term = termRef.current
     if (term) term.options.theme = THEMES[theme === 'dark' ? 'dark' : 'light']
   }, [theme])
+
+  // Which plan a session spends is not a question anyone should answer by
+  // reading a config file, so the page asks the worker and shows it. Re-asked
+  // on restart, because a login inside the terminal changes the answer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-ask on restart
+  useEffect(() => {
+    let disposed = false
+    void host.iii
+      .trigger(`${options.worker}::auth::status`, {}, { timeoutMs: CALL_TIMEOUT_MS })
+      .then((status: AuthStatus) => {
+        if (!disposed) setAuth(status)
+      })
+      .catch(() => {
+        // An older worker without the function, or a host that cannot answer:
+        // the terminal is the point, the badge is not.
+        if (!disposed) setAuth(null)
+      })
+    return () => {
+      disposed = true
+    }
+  }, [host, options.worker, generation])
 
   // `generation` is not read in the effect, it IS the restart signal:
   // bumping it tears this session down and opens a fresh one.
@@ -543,6 +571,11 @@ function AgentTerminal({
           <span className="agent-terminal-status-error">{detail}</span>
         ) : (
           <span>{status === 'exited' ? detail : detail ? `${status} · ${detail}` : status}</span>
+        )}
+        {auth && (
+          <span className={`agent-terminal-billing agent-terminal-billing-${auth.billing}`} title={auth.detail}>
+            {auth.label}
+          </span>
         )}
         {(status === 'exited' || status === 'error') && (
           <Button size="sm" onClick={restart}>

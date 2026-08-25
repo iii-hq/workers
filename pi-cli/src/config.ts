@@ -23,6 +23,8 @@ export type Config = {
   setup_workspace: boolean;
   /** Stream that carries the AgentEvent frames a session produces. */
   events_stream: string;
+  /** Provider whose credentials the console page reports as the billing mode. */
+  auth_provider: string;
 };
 
 export const DEFAULTS: Config = {
@@ -35,6 +37,7 @@ export const DEFAULTS: Config = {
   auto_install: true,
   setup_workspace: true,
   events_stream: 'agent::events',
+  auth_provider: 'anthropic',
 };
 
 export function jsonSchema(): Record<string, unknown> {
@@ -71,6 +74,11 @@ export function jsonSchema(): Record<string, unknown> {
         type: 'string',
         description:
           'Stream the AgentEvent frames land on, grouped by session id. Read once at boot.',
+      },
+      auth_provider: {
+        type: 'string',
+        description:
+          "Provider whose credentials the page reports as the billing mode (`pi auth check --provider`). pi keeps credentials per provider, so this names the one this terminal's model comes from.",
       },
     },
   };
