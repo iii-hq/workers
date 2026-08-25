@@ -66,7 +66,9 @@ export function FetchView({
       <BulkPane functionId={functionId} req={req} results={result.results} />
     )
   }
-  return <SinglePane functionId={functionId} req={req} page={result} />
+  return (
+    <SinglePane functionId={functionId} req={req} page={result} host={host} />
+  )
 }
 
 /** Compact read-only summary shown while the call sits in the approval gate. */
@@ -174,10 +176,12 @@ function SinglePane({
   functionId,
   req,
   page,
+  host,
 }: {
   functionId: string
   req: FetchRequest
   page: PageResult
+  host?: Host
 }) {
   const status = page.status ?? null
   const contentType = headerValue(page.headers, 'content-type')
@@ -198,6 +202,9 @@ function SinglePane({
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
         <span className="br-ui-scrape-break">{page.url || req.url || ''}</span>
+        {host && (page.url || req.url) ? (
+          <OpenInBrowser host={host} url={page.url || req.url || ''} />
+        ) : null}
       </ActionLine>
       {page.extracted ? <Extracted extracted={page.extracted} /> : null}
       {page.content != null ? (
