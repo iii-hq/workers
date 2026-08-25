@@ -81,7 +81,7 @@ Bind live views here instead of polling; both are filterable by `bank` in the bi
 ## Storage layout
 
 ```text
-~/.iii/data/memory/
+<III_COMPOSE_DIR>/data/memory/
   main/
     bank.yaml          # description
     rules/style.md     # always-injected markdown

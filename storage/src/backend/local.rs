@@ -149,8 +149,8 @@ impl LocalRuntime {
 
         let data_dir = config
             .map(|value| value.data_dir.as_str())
-            .unwrap_or("./data/storage");
-        let root = absolute_path(data_dir)?;
+            .unwrap_or("data/storage");
+        let root = iii_worker_paths::resolve_path(data_dir);
         tokio::fs::create_dir_all(&root).await.map_err(|error| {
             provider_error(format!("create local data dir {}: {error}", root.display()))
         })?;
@@ -277,8 +277,8 @@ pub async fn prepare(
 ) -> Result<PreparedLocalService, BackendError> {
     let data_dir = config
         .map(|value| value.data_dir.as_str())
-        .unwrap_or("./data/storage");
-    let root = absolute_path(data_dir)?;
+        .unwrap_or("data/storage");
+    let root = iii_worker_paths::resolve_path(data_dir);
     tokio::fs::create_dir_all(&root).await.map_err(|error| {
         provider_error(format!("create local data dir {}: {error}", root.display()))
     })?;
@@ -1284,16 +1284,6 @@ fn reject_version(version_id: Option<&str>) -> Result<(), BackendError> {
         });
     }
     Ok(())
-}
-
-fn absolute_path(input: &str) -> Result<PathBuf, BackendError> {
-    let path = PathBuf::from(input);
-    if path.is_absolute() {
-        return Ok(path);
-    }
-    std::env::current_dir()
-        .map(|cwd| cwd.join(path))
-        .map_err(|error| provider_error(format!("resolve local data dir: {error}")))
 }
 
 fn normalize_public_url(input: &str) -> Result<String, BackendError> {

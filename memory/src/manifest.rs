@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::config::WorkerConfig;
+
 #[derive(Serialize)]
 pub struct ModuleManifest {
     pub name: String,
@@ -18,25 +20,7 @@ pub fn build_manifest() -> ModuleManifest {
         description:
             "Durable cross-session agent memory: named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity recall, pinning, and supersede-never-delete history."
                 .to_string(),
-        // Mirrors config::WorkerConfig::default() field-for-field.
-        default_config: serde_json::json!({
-            "data_dir": "~/.iii/data/memory",
-            "default_bank": "main",
-            "inject_rules": true,
-            "inject_memories": true,
-            "recall_limit": 6,
-            "recall_budget_tokens": 1_200,
-            "extraction_enabled": true,
-            "extraction_model": "",
-            "extraction_window": 12,
-            "extraction_timeout_ms": 60_000,
-            "max_memories_per_turn": 8,
-            "rule_learning_enabled": true,
-            "max_rule_chars": 6_000,
-            "decay_half_life_days": 30,
-            "embeddings_enabled": true,
-            "embedding_model": "",
-        }),
+        default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -44,8 +28,6 @@ pub fn build_manifest() -> ModuleManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WorkerConfig;
-
     #[test]
     fn json_roundtrip_has_required_fields() {
         let m = build_manifest();

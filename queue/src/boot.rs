@@ -174,12 +174,13 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
     let store_method = builtin.store_method.as_deref().unwrap_or(adapter_name);
     match store_method {
         "file_based" => {
-            let path = builtin
+            let configured_path = builtin
                 .file_path
-                .unwrap_or_else(|| "queue_store_data".to_string());
+                .unwrap_or_else(|| iii_worker_paths::default_path("data/queue"));
+            let path = iii_worker_paths::resolve_path(&configured_path);
             let save_interval_ms = builtin.save_interval_ms.unwrap_or(5000);
             let store = FileStore::open(&path, save_interval_ms).await?;
-            tracing::info!(store = "file_based", path = %path, "queue store ready");
+            tracing::info!(store = "file_based", path = %path.display(), "queue store ready");
             Ok(Arc::new(store))
         }
         "builtin" | "in_memory" => {

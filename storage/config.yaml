@@ -12,7 +12,7 @@ providers:
   # Where the worker persists data for `provider: local`
   # buckets. Path is resolved relative to the worker's working directory.
   local:
-    data_dir: ./data/storage
+    data_dir: data/storage
     # Optional direct-transfer server. Port 0 selects a free loopback port;
     # configure public_url when browsers use a LAN/VPN/proxy address.
     http:

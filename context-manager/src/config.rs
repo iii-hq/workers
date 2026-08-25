@@ -67,16 +67,15 @@ pub struct WorkerConfig {
     pub summarizer_timeout_ms: u64,
 
     /// Directory holding compaction-lease files (`<scope>/<key>.json`).
-    /// A leading `~/` expands to the home directory. Mirrors
-    /// session-manager's `data_dir`.
+    /// Relative paths resolve against `III_COMPOSE_DIR` when available.
     #[serde(default = "default_lease_dir")]
     pub lease_dir: String,
 }
 
 impl WorkerConfig {
-    /// The lease directory with a leading `~/` expanded to `$HOME`.
+    /// The lease directory resolved against the Compose project directory.
     pub fn resolved_lease_dir(&self) -> PathBuf {
-        expand_tilde(&self.lease_dir)
+        iii_worker_paths::resolve_path(&self.lease_dir)
     }
 
     /// Parse a seed config from YAML, expanding `${NAME}` against the
@@ -187,20 +186,7 @@ fn default_summarizer_timeout_ms() -> u64 {
 }
 
 fn default_lease_dir() -> String {
-    "~/.iii/data/context-manager".to_string()
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(path)
+    iii_worker_paths::default_path("data/context-manager")
 }
 
 /// Expand `${NAME}` occurrences against the process environment. Unknown
@@ -267,7 +253,7 @@ mod tests {
         assert_eq!(cfg.lease_ttl_secs, 300);
         assert!(cfg.allow_fallback_limits);
         assert_eq!(cfg.summarizer_timeout_ms, 320_000);
-        assert_eq!(cfg.lease_dir, "~/.iii/data/context-manager");
+        assert_eq!(cfg.lease_dir, default_lease_dir());
     }
 
     #[test]
@@ -294,7 +280,10 @@ mod tests {
 
     #[test]
     fn lease_dir_tilde_expands_to_home() {
-        let cfg = WorkerConfig::default();
+        let cfg = WorkerConfig {
+            lease_dir: "~/.iii/data/context-manager".to_string(),
+            ..WorkerConfig::default()
+        };
         let resolved = cfg.resolved_lease_dir();
         if let Some(home) = dirs::home_dir() {
             assert!(resolved.starts_with(home));

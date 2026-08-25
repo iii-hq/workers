@@ -18,6 +18,13 @@ use std::collections::HashMap;
 pub const DEFAULT_DB_NAME: &str = "primary";
 pub const DEFAULT_SQLITE_URL: &str = "sqlite:./data/iii.db";
 
+fn default_sqlite_url() -> String {
+    format!(
+        "sqlite:{}",
+        iii_worker_paths::project_path("data/iii.db").display()
+    )
+}
+
 /// Top-level worker config registered with the `configuration` worker.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[schemars(example = "worker_config_example")]
@@ -242,7 +249,7 @@ impl WorkerConfig {
             databases: HashMap::from([(
                 DEFAULT_DB_NAME.to_string(),
                 DatabaseConfig {
-                    url: DEFAULT_SQLITE_URL.to_string(),
+                    url: default_sqlite_url(),
                     pool: PoolConfig::default(),
                     tls: TlsConfig::default(),
                     capture: CaptureMode::default(),
@@ -320,6 +327,9 @@ impl WorkerConfig {
                     redact_url(&db.url)
                 )
             })?;
+            if matches!(db.driver, DriverKind::Sqlite) {
+                db.url = resolve_sqlite_url(&db.url);
+            }
             if db.capture == CaptureMode::Native {
                 match db.driver {
                     // Postgres captures via LISTEN/NOTIFY; server-side
@@ -358,6 +368,28 @@ impl WorkerConfig {
             }
         }
         Ok(cfg)
+    }
+}
+
+fn resolve_sqlite_url(url: &str) -> String {
+    let Some(path) = url.strip_prefix("sqlite:") else {
+        return url.to_string();
+    };
+    if path.contains(":memory:") {
+        return url.to_string();
+    }
+
+    let (file_prefix, path) = path
+        .strip_prefix("file:")
+        .map_or(("", path), |path| ("file:", path));
+    let (path, query) = path
+        .split_once('?')
+        .map_or((path, ""), |(path, query)| (path, query));
+    let resolved = iii_worker_paths::resolve_path(path);
+    if query.is_empty() {
+        format!("sqlite:{file_prefix}{}", resolved.display())
+    } else {
+        format!("sqlite:{file_prefix}{}?{query}", resolved.display())
     }
 }
 
@@ -478,7 +510,13 @@ mod tests {
         });
         let c = WorkerConfig::from_json(&json).unwrap();
         assert!(matches!(c.databases["primary"].driver, DriverKind::Sqlite));
-        assert_eq!(c.databases["primary"].url, "sqlite:./data/iii.db");
+        assert_eq!(
+            c.databases["primary"].url,
+            format!(
+                "sqlite:{}",
+                iii_worker_paths::project_path("data/iii.db").display()
+            )
+        );
     }
 
     #[test]
@@ -550,7 +588,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         assert_eq!(cfg.databases.len(), 1);
         let db = &cfg.databases[DEFAULT_DB_NAME];
-        assert_eq!(db.url, DEFAULT_SQLITE_URL);
+        assert_eq!(db.url, default_sqlite_url());
         assert!(matches!(db.driver, DriverKind::Sqlite));
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
@@ -563,7 +601,7 @@ mod tests {
         let json = cfg.to_json();
         assert!(json["databases"][DEFAULT_DB_NAME].get("driver").is_none());
         let back = WorkerConfig::from_json(&json).unwrap();
-        assert_eq!(back.databases[DEFAULT_DB_NAME].url, DEFAULT_SQLITE_URL);
+        assert_eq!(back.databases[DEFAULT_DB_NAME].url, default_sqlite_url());
         assert!(matches!(
             back.databases[DEFAULT_DB_NAME].driver,
             DriverKind::Sqlite
@@ -641,7 +679,7 @@ databases:
         assert_eq!(c.databases.len(), 1);
         let db = &c.databases["primary"];
         assert!(matches!(db.driver, DriverKind::Sqlite));
-        assert_eq!(db.url, "sqlite:./data/iii.db");
+        assert_eq!(db.url, default_sqlite_url());
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
         assert_eq!(db.pool.acquire_timeout_ms, 5_000);

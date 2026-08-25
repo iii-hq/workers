@@ -17,19 +17,20 @@
 # auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
-# (skills_folder: ~/.iii/skills, registry_url: https://api.workers.iii.dev).
+# (skills_folder: skills, registry_url: https://api.workers.iii.dev).
 
 # Folder that backs every read (`directory::skills::list`,
 # `directory::skills::get`, `directory::prompts::*`) and every write
 # from `directory::skills::download`. Relative paths are resolved
-# against the process current working directory; absolute paths are
+# against III_COMPOSE_DIR (or the process current working directory when
+# running outside Compose); absolute paths are
 # used as-is.
 skills_folder: ./skills
 
 # Read-only root for system-installed agent skills (one directory per
 # skill, each containing a SKILL.md). Scanned shallowly; a missing
 # directory is treated as empty and the worker never writes here.
-# agents_skills_folder: ~/.agents/skills
+# agents_skills_folder: .agents/skills
 
 # Workers registry base URL — used by `directory::skills::download` and
 # the `directory::registry::*` proxies when a `worker=` source is

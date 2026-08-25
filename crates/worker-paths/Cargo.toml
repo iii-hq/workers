@@ -1,0 +1,10 @@
+[workspace]
+
+[package]
+name = "iii-worker-paths"
+version = "0.1.0"
+edition = "2021"
+description = "Shared project-relative path resolution for iii workers"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false

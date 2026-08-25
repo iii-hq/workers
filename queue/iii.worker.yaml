@@ -30,14 +30,14 @@ description: Durable function queues - registers the `durable:subscriber` trigge
 #     name: builtin
 #     config:
 #       store_method: file_based
-#       file_path: ./data/queue
+#       file_path: data/queue
 #       save_interval_ms: 5000
 config:
   adapter:
     name: builtin
     config:
       store_method: file_based
-      file_path: ./data/queue
+      file_path: data/queue
       save_interval_ms: 5000
 dependencies:
   configuration: "0.x"

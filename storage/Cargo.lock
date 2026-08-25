@@ -1912,6 +1912,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3344,6 +3348,7 @@ dependencies = [
  "hmac 0.12.1",
  "iii-console-ui",
  "iii-sdk",
+ "iii-worker-paths",
  "percent-encoding",
  "rand 0.8.6",
  "reqwest 0.12.28",

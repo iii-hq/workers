@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::config::WorkerConfig;
+
 #[derive(Serialize)]
 pub struct ModuleManifest {
     pub name: String,
@@ -18,20 +20,7 @@ pub fn build_manifest() -> ModuleManifest {
         description:
             "Model-ready context assembly: token counting, function-result pruning, and history compaction over caller-supplied messages."
                 .to_string(),
-        // Mirrors config::WorkerConfig::default() field-for-field.
-        default_config: serde_json::json!({
-            "reserved_tokens_cap": 20_000,
-            "reserved_pct": 10,
-            "tail_turns": 2,
-            "protect_recent_tokens": 40_000,
-            "min_free_tokens": 20_000,
-            "max_output_chars": 2_000,
-            "max_result_tokens": 20_000,
-            "lease_ttl_secs": 300,
-            "allow_fallback_limits": true,
-            "summarizer_timeout_ms": 320_000,
-            "lease_dir": "~/.iii/data/context-manager",
-        }),
+        default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -39,8 +28,6 @@ pub fn build_manifest() -> ModuleManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WorkerConfig;
-
     #[test]
     fn json_roundtrip_has_required_fields() {
         let m = build_manifest();

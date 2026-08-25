@@ -1117,6 +1117,7 @@ dependencies = [
  "iii-config-client",
  "iii-console-ui",
  "iii-sdk",
+ "iii-worker-paths",
  "notify",
  "opentelemetry",
  "reqwest",
@@ -1175,6 +1176,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"

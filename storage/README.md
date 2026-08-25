@@ -166,7 +166,7 @@ RPCs; they just don't fire triggers.
 ```yaml
 providers:
   local:
-    data_dir: ./data/storage           # native object + metadata root
+    data_dir: data/storage             # relative to III_COMPOSE_DIR
     http:
       bind_address: 0.0.0.0:49200      # omit `http` to disable direct transfers
       public_url: http://10.0.0.42:49200 # browser-visible LAN/VPN/proxy URL
@@ -376,7 +376,7 @@ the native store and optional direct-transfer HTTP listener, and registers
 `storage::putObject`, `storage::getObject`, `storage::deleteObject`,
 `storage::presignUrl`, `storage::presignPost`, `storage::headObject`,
 `storage::listBuckets`, and `storage::listObjects`. Files land under
-`./data/storage/` (configurable via
+`data/storage/` under `III_COMPOSE_DIR` (configurable via
 `providers.local.data_dir`).
 
 Running `--manifest` prints the registry-publish JSON without touching the

@@ -128,8 +128,8 @@ pub struct KvAdapterConfig {
     pub store_method: Option<KvStoreMethod>,
 
     /// Directory for file-based storage. Only used when `store_method` is
-    /// `file_based`. Defaults to `./data/state`, resolved against the worker
-    /// process cwd — launchers with different cwds get different stores.
+    /// `file_based`. Defaults to `data/state`, resolved against
+    /// `III_COMPOSE_DIR` when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
 

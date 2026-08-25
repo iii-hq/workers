@@ -38,7 +38,7 @@ pub struct LocalHttpConfig {
 }
 
 fn default_local_data_dir() -> String {
-    "./data/storage".to_string()
+    iii_worker_paths::default_path("data/storage")
 }
 
 fn default_local_http_bind_address() -> String {

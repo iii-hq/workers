@@ -955,6 +955,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1801,6 +1805,7 @@ dependencies = [
  "futures",
  "iii-helpers",
  "iii-sdk",
+ "iii-worker-paths",
  "schemars",
  "serde",
  "serde_json",
