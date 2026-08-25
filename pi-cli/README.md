@@ -112,14 +112,24 @@ console page reaches it as a user-initiated call, which is not the agent path.
 
 ## Logging in
 
-The simplest flow is the terminal itself: open the page and run `/login`. It
-authenticates the host, so a headless
-[`pi`](https://github.com/iii-hq/workers/tree/main/pi) worker on the same host
-picks up the same credentials.
+The simplest flow is the terminal itself: open the page and run `/login`. The
+credentials land in the home directory of whatever runs the session — the
+`shell` worker's — and every later session of this terminal reuses them.
 
-For a host with no one at the keyboard, put the provider's key in the
-environment the `shell` worker starts with. Either way the badge tells you
-which one won.
+**Who else sees that login depends on how the other worker is deployed.**
+Compose runs a `path://` container and a registry **binary** payload as host
+processes, and a registry **bundle** payload (Node `deploy: bundle`, which is
+`pi` and this worker) in a microVM with its own rootfs; only the container's
+config directory is shared in, and compose v1 has no volume field. So a
+headless [`pi`](https://github.com/iii-hq/workers/tree/main/pi) from a local
+checkout shares the login, while one installed from the registry does not —
+give that one its provider key through `environment` / `env_file` on its
+container. This terminal is unaffected either way: the CLI runs inside the
+`shell` worker, a host process.
+
+For a terminal host with no one at the keyboard, put the provider's key in the
+environment the `shell` worker starts with. Either way the badge says which one
+won.
 
 ## Functions
 

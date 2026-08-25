@@ -30,8 +30,9 @@ it the next time it boots.
 | `configuration` (built in) | Holds the settings below. |
 
 Anthropic credentials are not part of the worker: Claude asks how to log in,
-in the terminal, on first use. `ANTHROPIC_API_KEY` in the terminal host's
-environment skips that.
+in the terminal, on first use, and they belong to the machine the `shell`
+worker runs on (see [Logging in](#logging-in) — that is not necessarily this
+worker's machine). `ANTHROPIC_API_KEY` in that environment skips the prompt.
 
 ## Quickstart
 
@@ -111,17 +112,40 @@ a user-initiated call, which is not the agent path.
 
 ## Logging in
 
-The simplest flow is the terminal itself: open the page and run `/login`
-(or `claude auth login`, `--console` for API billing instead of the
-subscription). It authenticates the HOST, so a headless
-[`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code) worker
-on the same host and the same `CLAUDE_CONFIG_DIR` picks up the same
-credentials — one login covers both surfaces.
+The simplest flow is the terminal itself: open the page and run `/login` (or
+`claude auth login`; `--console` for API billing instead of the subscription).
+The credentials land in the home directory of whatever runs the session — the
+`shell` worker's — and every later session of this terminal reuses them.
 
-For a host with no one at the keyboard, run `claude setup-token` once (it needs
-a browser once, and returns a long-lived subscription token) and put the result
-in the environment the `shell` worker starts with; or set `ANTHROPIC_API_KEY`
-there for metered billing. Either way the badge tells you which one won.
+**Who else sees that login depends on how the other worker is deployed, not on
+which machine it is.** Compose starts a container one of two ways
+(`iii-compose/src/lifecycle.rs`):
+
+| Container | Start | Home directory |
+|---|---|---|
+| `path://…` (local checkout), or a registry worker whose payload is a **binary** (Rust `deploy: binary`, e.g. `shell`) | host process | the host's |
+| a registry worker whose payload is a **bundle** (Node `deploy: bundle`, e.g. `claude-code`, and this worker) | microVM, own rootfs | the guest's |
+
+Only the container's own config directory is shared into a VM (virtiofs), and
+compose v1 has no volume field, so a VM-booted worker cannot read the host's
+`~/.claude`. Consequences:
+
+- This terminal is unaffected either way: the CLI runs inside the `shell`
+  worker, which is a host process, so the login is the host's and this worker's
+  own rootfs never matters.
+- A headless [`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code)
+  run from a local checkout is a host process too, and shares the login.
+- A headless `claude-code` installed from the registry is in a microVM and does
+  **not** share it. Give it credentials through the channels a VM has:
+  `environment` / `env_file` on its container (`ANTHROPIC_API_KEY`, or a
+  long-lived subscription token from `claude setup-token`), or the
+  `auth-credentials` vault over the bus — which is exactly why that vault
+  exists, and why `provider-claude-code` reads it instead of the file.
+
+For a terminal host with no one at the keyboard, the same two options apply:
+`claude setup-token` once (needs a browser once, returns a long-lived
+subscription token) or `ANTHROPIC_API_KEY`, in the environment the `shell`
+worker starts with. Either way the badge says which one won.
 
 ## Functions
 
