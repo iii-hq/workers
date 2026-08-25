@@ -298,6 +298,13 @@ export function MessageList({
   const lastTouchYRef = useRef<number | null>(null)
   const tailStateRef = useRef<TailScrollState>('initializing')
   const [tailState, setTailState] = useState<TailScrollState>('initializing')
+  // Any content image in the transcript opens in the viewer on click,
+  // whichever renderer produced it; controls keep their own behaviour.
+  const [zoomedImage, setZoomedImage] = useState<{
+    src: string
+    alt: string
+  } | null>(null)
+
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const reducedMotionRef = useRef(reducedMotion)
   reducedMotionRef.current = reducedMotion
@@ -582,13 +589,6 @@ export function MessageList({
       <EmptyState {...resolveEmptyState(ctx, density, onConfigureProvider)} />
     )
   }
-
-  // Any content image in the transcript opens in the viewer on click,
-  // whichever renderer produced it; controls keep their own behaviour.
-  const [zoomedImage, setZoomedImage] = useState<{
-    src: string
-    alt: string
-  } | null>(null)
 
   const listPad =
     density === 'dock'
