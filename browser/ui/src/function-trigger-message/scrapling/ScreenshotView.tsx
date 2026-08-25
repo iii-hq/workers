@@ -10,7 +10,6 @@ import {
   screenshotRequestSchema,
   screenshotResponseSchema,
 } from './parsers'
-import { ZoomableImage } from '../../lib/image-zoom'
 
 interface ScreenshotViewProps {
   input: unknown
@@ -77,10 +76,11 @@ export function ScreenshotView({
       </ActionLine>
       <div className="br-ui-scrape-gallery">
         {images.map((b, i) => (
-          <ZoomableImage
+          <img
             key={i}
             src={`data:${b.mime || mime};base64,${b.data}`}
             alt={caption || `screenshot of ${url || 'page'}`}
+            loading="lazy"
             className="br-ui-scrape-image"
           />
         ))}

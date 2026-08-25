@@ -10,12 +10,10 @@
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
-    "react-dom": "^19.2.7",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
     "esbuild": "^0.25.0",
     "react": "^19.2.6",
     "typescript": "^5.9.2",
