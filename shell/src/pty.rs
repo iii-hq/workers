@@ -28,9 +28,9 @@ mod session;
 use output_buffer::OutputFrame;
 use output_buffer::{OutputBuffer, MAX_OUTPUT_BUFFER_BYTES};
 pub use protocol::{
-    AttachRequest, AttachResponse, CloseRequest, CloseResponse, DetachRequest, DetachResponse,
-    OpenRequest, OpenResponse, ResizeRequest, ResizeResponse, SessionSummary, SessionsRequest,
-    SessionsResponse, WriteRequest, WriteResponse,
+    AdoptRequest, AttachRequest, AttachResponse, CloseRequest, CloseResponse, DetachRequest,
+    DetachResponse, OpenRequest, OpenResponse, ResizeRequest, ResizeResponse, SessionSummary,
+    SessionsRequest, SessionsResponse, WriteRequest, WriteResponse,
 };
 use session::{SessionControl, SessionStatus};
 
@@ -470,6 +470,67 @@ impl PtyManager {
         })
     }
 
+    /// Take back a session whose reconnect token is gone.
+    ///
+    /// A browser that loses its storage loses the token, and the program keeps
+    /// running with nobody able to reach it — an agent still working in a
+    /// workspace, invisible. Adoption is the way back, under two rules that
+    /// keep it from being a way in:
+    ///
+    /// 1. The session must be unattached. A live viewer's terminal can never
+    ///    be taken; only one nobody is holding.
+    /// 2. The new output handler must name the same console page as the old
+    ///    one, so the claude page adopts claude sessions and nothing else. The
+    ///    browser id may differ — that is the whole point — but the page may
+    ///    not.
+    ///
+    /// Credentials rotate, so whatever the previous owner still held is dead.
+    pub async fn adopt(&self, req: AdoptRequest) -> Result<AttachResponse, String> {
+        validate_size(req.cols, req.rows)?;
+        validate_output_function_id(&req.output_function_id)?;
+        let caller_worker_id = require_caller(req.caller_worker_id.as_deref())?;
+        let session = self.session(&req.session_id).await?;
+        let lifecycle = session.lifecycle.lock().await;
+        ensure_session_open(&lifecycle)?;
+
+        {
+            let control = session.control.lock().await;
+            let wanted = output_ui_name(&req.output_function_id);
+            let held = output_ui_name(control.output_function_id());
+            if wanted.is_none() || wanted != held {
+                return Err("terminal session belongs to another console page".to_string());
+            }
+        }
+
+        resize_session(session.clone(), req.cols, req.rows).await?;
+
+        let mut control = session.control.lock().await;
+        let replay = session
+            .output
+            .lock()
+            .map_err(|_| "terminal output lock poisoned".to_string())?
+            .frames_after(req.after_sequence);
+        let credentials = control.adopt(caller_worker_id, &req.output_function_id)?;
+        let mut status = session
+            .status
+            .lock()
+            .map_err(|_| "terminal status lock poisoned".to_string())?;
+        if !matches!(*status, SessionStatus::Exited { .. }) {
+            *status = SessionStatus::Attached;
+        }
+        let status = status.clone();
+
+        Ok(AttachResponse {
+            access_key: credentials.access_key,
+            reconnect_token: credentials.reconnect_token,
+            frames: replay.frames,
+            truncated: replay.truncated,
+            next_sequence: replay.next_sequence,
+            cwd: session.cwd.clone(),
+            status,
+        })
+    }
+
     /// Read-only view of what the worker holds, for diagnosing a terminal
     /// that shows nothing: how far the sequence got, how much is still
     /// replayable, and where output is going. No credentials.
@@ -494,6 +555,7 @@ impl PtyManager {
                 frame_bytes: stats.frame_bytes,
                 truncated: stats.truncated,
                 output_function_id: attached.then(|| control.output_function_id().to_string()),
+                ui: output_ui_name(control.output_function_id()).map(str::to_string),
             });
         }
         summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
@@ -723,6 +785,20 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
     {
         let manager = manager.clone();
         iii.register_function(
+            "shell::pty::adopt",
+            RegisterFunction::new_async(move |req: AdoptRequest| {
+                let manager = manager.clone();
+                async move { manager.adopt(req).await.map_err(Error::Handler) }
+            })
+            .description(
+                "Take back an unattached PTY session whose reconnect token is gone, from the console page that owns it. Refuses a session someone is attached to, and a page that is not the session's own.",
+            )
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
+        );
+    }
+    {
+        let manager = manager.clone();
+        iii.register_function(
             "shell::pty::sessions",
             RegisterFunction::new_async(move |_req: SessionsRequest| {
                 let manager = manager.clone();
@@ -842,6 +918,16 @@ fn validate_output_function_id(function_id: &str) -> Result<(), String> {
         return Err("terminal output function has an invalid browser id".to_string());
     }
     Ok(())
+}
+
+/// The `<name>` in `iii::<name>-ui::pty-output::console-<browser>`: which
+/// console page a handler belongs to, with the browser it belongs to left out.
+fn output_ui_name(function_id: &str) -> Option<&str> {
+    function_id
+        .strip_prefix("iii::")?
+        .split_once(OUTPUT_FUNCTION_INFIX)?
+        .0
+        .strip_suffix("-ui")
 }
 
 fn require_caller(caller_worker_id: Option<&str>) -> Result<&str, String> {
@@ -2073,6 +2159,97 @@ mod tests {
                 .await
                 .closed
         );
+    }
+
+    #[tokio::test]
+    async fn a_page_adopts_its_own_orphan_without_a_token() {
+        // What a browser that lost its storage looks like from here: the
+        // session is detached, and the caller has no reconnect token to offer.
+        let harness = PtyTestHarness::new("/bin/sh").await;
+        let opened = harness.open().await;
+        harness.detach(&opened).await;
+        let another_browser = format!("{OUTPUT_FUNCTION_PREFIX}{}", Uuid::new_v4());
+
+        let adopted = harness
+            .manager
+            .adopt(AdoptRequest {
+                session_id: opened.session_id.clone(),
+                output_function_id: another_browser.clone(),
+                cols: 80,
+                rows: 24,
+                after_sequence: 0,
+                caller_worker_id: Some(harness.caller_worker_id.clone()),
+            })
+            .await
+            .unwrap();
+
+        assert_ne!(adopted.access_key, opened.access_key);
+        assert_ne!(adopted.reconnect_token, opened.reconnect_token);
+        // The old credentials are dead, so the previous owner cannot write to
+        // a terminal it no longer holds.
+        assert!(harness
+            .manager
+            .attach(AttachRequest {
+                request_id: None,
+                session_id: opened.session_id.clone(),
+                reconnect_token: opened.reconnect_token.clone(),
+                output_function_id: another_browser,
+                cols: 80,
+                rows: 24,
+                after_sequence: 0,
+                caller_worker_id: Some(harness.caller_worker_id.clone()),
+            })
+            .await
+            .is_err());
+        assert!(
+            harness
+                .close(&opened.session_id, &adopted.access_key)
+                .await
+                .closed
+        );
+    }
+
+    #[tokio::test]
+    async fn adoption_refuses_a_live_terminal_and_a_foreign_page() {
+        let harness = PtyTestHarness::new("/bin/sh").await;
+        let opened = harness.open().await;
+        let request = |output: String| AdoptRequest {
+            session_id: opened.session_id.clone(),
+            output_function_id: output,
+            cols: 80,
+            rows: 24,
+            after_sequence: 0,
+            caller_worker_id: Some(harness.caller_worker_id.clone()),
+        };
+
+        // Someone is watching this terminal: it is not up for adoption.
+        let attached = harness
+            .manager
+            .adopt(request(format!(
+                "{OUTPUT_FUNCTION_PREFIX}{}",
+                Uuid::new_v4()
+            )))
+            .await;
+        assert_eq!(
+            attached.unwrap_err(),
+            "terminal session is attached; detach it before adopting"
+        );
+
+        // Detached, but another worker's page may not claim it.
+        harness.detach(&opened).await;
+        let foreign = harness
+            .manager
+            .adopt(request(format!(
+                "iii::pi-cli-ui::pty-output::console-{}",
+                Uuid::new_v4()
+            )))
+            .await;
+        assert_eq!(
+            foreign.unwrap_err(),
+            "terminal session belongs to another console page"
+        );
+
+        harness.close_all().await;
     }
 
     #[tokio::test]

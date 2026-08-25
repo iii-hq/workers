@@ -236,6 +236,25 @@ read by every terminal the console renders, this worker's panes and the
 agent-CLI pages alike. A change refits the pane, which resizes the PTY
 through the ordinary `shell::pty::resize` path.
 
+### Taking a session back (`shell::pty::adopt`)
+
+The reconnect token is what proves a caller opened a session, and a browser
+that loses its storage loses the token while the program keeps running — an
+agent still working in a workspace nobody can reach. `shell::pty::adopt` is
+the way back, under two rules that keep it from being a way in:
+
+- **The session must be unattached.** A terminal someone is watching is never
+  taken from them; only one nobody holds.
+- **The new output handler must name the same console page as the old one.**
+  The browser id may differ — that is the point — but `iii::claude-ui::…`
+  cannot adopt a session whose output went to `iii::pi-cli-ui::…`.
+
+Credentials rotate on adoption, so whatever the previous owner still held
+stops working, and an in-flight retry of the old attach cannot resurrect it.
+`shell::pty::sessions` is how a page finds its orphan: every session reports
+`ui`, the console page it belongs to (a page, never a browser), whether or not
+anyone is attached.
+
 `shell::pty::sessions` lists live sessions with their program, cwd, status,
 last sequence number, replayable frames and bytes, and current output target.
 No credentials: it exists to separate a terminal that shows nothing because

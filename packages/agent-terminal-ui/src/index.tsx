@@ -235,6 +235,45 @@ function writeLease(prefix: string, tabId: string, lease: Lease | null): void {
   }
 }
 
+interface SessionSummary {
+  session_id: string
+  program: string | null
+  status: string | { exited?: unknown }
+  ui: string | null
+}
+
+/**
+ * The session this page left behind, if there is one.
+ *
+ * A lost lease strands a running agent: the program keeps working in the
+ * workspace and no page can reach it. `shell::pty::sessions` is the only view
+ * of what is actually running, and the worker reports which console page each
+ * session belongs to — never a browser id, so this recognises "a claude
+ * terminal" rather than "my claude terminal". The program has to match too,
+ * because one page family can run a session that is no longer what this
+ * worker would start.
+ *
+ * Only an unattached session qualifies: a terminal someone is watching is not
+ * an orphan, and the worker refuses to hand it over anyway.
+ */
+async function findOrphan(
+  call: <T>(fn: string, payload: unknown) => Promise<T>,
+  program: string,
+  ui: string,
+): Promise<string | null> {
+  try {
+    const { sessions } = await call<{ sessions: SessionSummary[] }>('shell::pty::sessions', {})
+    const orphan = sessions.find(
+      (session) => session.ui === ui && session.status === 'detached' && session.program === program,
+    )
+    return orphan?.session_id ?? null
+  } catch {
+    // An older shell worker has no `sessions`/`adopt`; a fresh session is
+    // then the only behaviour available, which is what this page did before.
+    return null
+  }
+}
+
 /**
  * The bus rejects with plain objects as well as Errors (`{ code, message }`
  * from the engine, with the worker's text nested inside `message`), so the
@@ -567,6 +606,46 @@ function AgentTerminal({
         // The worker owns the command: the page asks what to run and never
         // decides. A worker that cannot answer has no terminal to give.
         const spec = await call<TerminalSpec>(`${options.worker}::terminal::describe`, {})
+
+        // Before starting a second agent, look for the first one. A lease can
+        // be lost — cleared storage, a different browser, a token that went
+        // stale — while the program keeps running in the workspace, and the
+        // page has no other way to notice. `shell::pty::adopt` takes back an
+        // unattached session that belongs to this page.
+        const orphan = await findOrphan(call, spec.program, `${options.worker}-ui`)
+        if (orphan) {
+          unsubscribe = router.subscribe(orphan, handleEvent)
+          try {
+            const adopted = await call<AttachResponse>('shell::pty::adopt', {
+              session_id: orphan,
+              output_function_id: router.outputFunctionId,
+              cols,
+              rows,
+              after_sequence: 0,
+            })
+            conn = { sessionId: orphan, accessKey: adopted.access_key }
+            writeLease(leasePrefix, tabId, {
+              sessionId: orphan,
+              reconnectToken: adopted.reconnect_token,
+            })
+            term.reset()
+            if (adopted.truncated) {
+              writer.base(adopted.frames.at(-1)?.sequence ?? 0)
+            } else {
+              writer.base(0)
+              for (const frame of adopted.frames) writer.feed(frameToEvent(orphan, frame))
+            }
+            setStatus('running')
+            await askForRepaint(conn)
+            return
+          } catch {
+            // Someone attached first, or the session ended between the two
+            // calls. A fresh one is the honest answer.
+            unsubscribe()
+            unsubscribe = null
+          }
+        }
+
         writer.base(0)
         const opened = await call<OpenResponse>('shell::pty::open', {
           cwd: spec.cwd,

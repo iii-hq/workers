@@ -119,6 +119,28 @@ pub struct AttachResponse {
     pub status: SessionStatus,
 }
 
+/// Take back a session whose reconnect token is gone.
+///
+/// The token is what proves a caller opened a session, and a browser that
+/// loses its storage loses the token while the program keeps running: an agent
+/// still working in a workspace nobody can reach. Adoption is the way back,
+/// and it is deliberately narrow — see `PtyManager::adopt`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AdoptRequest {
+    pub session_id: String,
+    /// Where output goes next. Must belong to the same console page family as
+    /// the target it replaces, which is what keeps one page's sessions out of
+    /// another page's reach.
+    pub output_function_id: String,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(rename = "_caller_worker_id", default)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DetachRequest {
     pub session_id: String,
@@ -157,6 +179,11 @@ pub struct SessionSummary {
     pub truncated: bool,
     /// Where output is being delivered; absent while detached.
     pub output_function_id: Option<String>,
+    /// The console page family this session belongs to — the `<name>` in
+    /// `iii::<name>-ui::pty-output::console-<browser>`. Present whether or not
+    /// anyone is attached, because it is what a page uses to recognise its own
+    /// orphaned session; it names a page, never a browser.
+    pub ui: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

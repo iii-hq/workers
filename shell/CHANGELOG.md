@@ -4,6 +4,14 @@
 
 ### Added
 
+- **A page can take back its own orphaned session** — `shell::pty::adopt`
+  re-owns an UNATTACHED session without a reconnect token, for the browser
+  that lost its storage while the agent kept working. It refuses a session
+  someone is attached to, and refuses a console page that is not the
+  session's own; credentials rotate, so the previous owner's are dead.
+  `shell::pty::sessions` now reports each session's `ui` — which console page
+  it belongs to, never which browser — so a page can recognise its orphan.
+
 - **The terminal's type size is the reader's choice** — every pane carries a
   stepper (8–40 px, 14 by default; Ctrl or ⌘ + scroll does the same), and the
   size is stored per browser rather than in this worker's configuration: the
