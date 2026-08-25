@@ -1298,7 +1298,7 @@ mod tests {
                 caller_worker_id: "pty-test-worker".to_string(),
                 cwd: workspace.path().display().to_string(),
                 output_function_id: format!(
-                    "iii::claude-cli-ui::pty-output::console-{}",
+                    "iii::claude-ui::pty-output::console-{}",
                     Uuid::new_v4()
                 ),
                 _workspace: workspace,
@@ -2233,7 +2233,7 @@ mod tests {
         // A worker that runs its own program in a session serves its own
         // console page, so its handler prefix is its own.
         assert!(validate_output_function_id(&format!(
-            "iii::claude-cli-ui::pty-output::console-{browser}"
+            "iii::claude-ui::pty-output::console-{browser}"
         ))
         .is_ok());
         assert!(validate_output_function_id(&format!(
@@ -2242,15 +2242,15 @@ mod tests {
         .is_ok());
         // Still a console UI handler and nothing else.
         assert!(validate_output_function_id(&format!(
-            "iii::claude-cli::pty-output::console-{browser}"
+            "iii::claude::pty-output::console-{browser}"
         ))
         .is_err());
         assert!(validate_output_function_id(&format!(
-            "worker::claude-cli-ui::pty-output::console-{browser}"
+            "worker::claude-ui::pty-output::console-{browser}"
         ))
         .is_err());
         assert!(validate_output_function_id(&format!(
-            "iii::Claude_CLI-ui::pty-output::console-{browser}"
+            "iii::Claude_Code-ui::pty-output::console-{browser}"
         ))
         .is_err());
         assert!(validate_output_function_id("iii::-ui::pty-output::console-abc").is_err());

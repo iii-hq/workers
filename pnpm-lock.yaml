@@ -104,6 +104,34 @@ importers:
         specifier: ^4.1.6
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(vite@8.1.5(@types/node@25.9.5)(jiti@2.7.0))
 
+  claude-code/ui:
+    dependencies:
+      '@iii-dev/console-ui':
+        specifier: workspace:*
+        version: link:../../packages/console-ui
+      '@iii-workers/agent-terminal-ui':
+        specifier: workspace:*
+        version: link:../../packages/agent-terminal-ui
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.17
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   code-runner/ui:
     dependencies:
       '@iii-dev/console-ui':
@@ -508,6 +536,28 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/agent-terminal-ui:
+    dependencies:
+      '@iii-dev/console-ui':
+        specifier: workspace:*
+        version: link:../console-ui
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.17
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   packages/console-ui:
     devDependencies:
       '@types/react':
@@ -526,6 +576,34 @@ importers:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  pi-cli/ui:
+    dependencies:
+      '@iii-dev/console-ui':
+        specifier: workspace:*
+        version: link:../../packages/console-ui
+      '@iii-workers/agent-terminal-ui':
+        specifier: workspace:*
+        version: link:../../packages/agent-terminal-ui
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.17
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -5290,11 +5368,11 @@ snapshots:
       lexical: 0.44.0
       yjs: 13.6.31
 
-  '@mdx-js/react@3.1.1(@types/react@19.2.17)(react@19.2.7)':
+  '@mdx-js/react@3.1.1(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
       '@types/mdx': 2.0.14
       '@types/react': 19.2.17
-      react: 19.2.7
+      react: 19.2.8
 
   '@mermaid-js/parser@0.6.3':
     dependencies:
@@ -6376,12 +6454,12 @@ snapshots:
 
   '@storybook/addon-docs@10.5.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))(vite@8.1.5(@types/node@25.9.5)(jiti@2.7.0))':
     dependencies:
-      '@mdx-js/react': 3.1.1(@types/react@19.2.17)(react@19.2.7)
+      '@mdx-js/react': 3.1.1(@types/react@19.2.17)(react@19.2.8)
       '@storybook/csf-plugin': 10.5.3(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))(vite@8.1.5(@types/node@25.9.5)(jiti@2.7.0))
-      '@storybook/icons': 2.1.0(react@19.2.7)
-      '@storybook/react-dom-shim': 10.5.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.7))(react@19.2.7)(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))
-      react: 19.2.7
-      react-dom: 19.2.8(react@19.2.7)
+      '@storybook/icons': 2.1.0(react@19.2.8)
+      '@storybook/react-dom-shim': 10.5.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
       storybook: 10.5.3(@types/react@19.2.17)(react@19.2.7)
       ts-dedent: 2.3.0
     optionalDependencies:
@@ -6417,6 +6495,10 @@ snapshots:
     dependencies:
       react: 19.2.7
 
+  '@storybook/icons@2.1.0(react@19.2.8)':
+    dependencies:
+      react: 19.2.8
+
   '@storybook/react-dom-shim@10.5.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))':
     dependencies:
       react: 19.2.7
@@ -6426,10 +6508,10 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@storybook/react-dom-shim@10.5.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.7))(react@19.2.7)(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))':
+  '@storybook/react-dom-shim@10.5.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(storybook@10.5.3(@types/react@19.2.17)(react@19.2.7))':
     dependencies:
-      react: 19.2.7
-      react-dom: 19.2.8(react@19.2.7)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
       storybook: 10.5.3(@types/react@19.2.17)(react@19.2.7)
     optionalDependencies:
       '@types/react': 19.2.17
@@ -8332,11 +8414,6 @@ snapshots:
       - supports-color
 
   react-dom@19.2.7(react@19.2.7):
-    dependencies:
-      react: 19.2.7
-      scheduler: 0.27.0
-
-  react-dom@19.2.8(react@19.2.7):
     dependencies:
       react: 19.2.7
       scheduler: 0.27.0
