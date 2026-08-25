@@ -76,12 +76,14 @@ jobs:
           schema_version=$(jq -er '.schema_version' target/harness-e2e-contract/execution-contract.json)
           runner_revision=$(jq -r '.runner.revision // ""' target/harness-e2e-contract/execution-contract.json)
           manifest_id=$(jq -r '.plan.definition.manifest.id // ""' target/harness-e2e-contract/execution-contract.json)
-          printf 'contract_sha256=%s\n' "$contract_sha256" >> "$GITHUB_OUTPUT"
-          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
-          printf 'oidc_audience=%s\n' "$oidc_audience" >> "$GITHUB_OUTPUT"
-          printf 'runner_revision=%s\n' "$runner_revision" >> "$GITHUB_OUTPUT"
-          printf 'schema_version=%s\n' "$schema_version" >> "$GITHUB_OUTPUT"
-          printf 'manifest_id=%s\n' "$manifest_id" >> "$GITHUB_OUTPUT"
+          {
+            printf 'contract_sha256=%s\n' "$contract_sha256"
+            printf 'matrix=%s\n' "$matrix"
+            printf 'oidc_audience=%s\n' "$oidc_audience"
+            printf 'runner_revision=%s\n' "$runner_revision"
+            printf 'schema_version=%s\n' "$schema_version"
+            printf 'manifest_id=%s\n' "$manifest_id"
+          } >> "$GITHUB_OUTPUT"
           jq -e \
             --arg campaign '${{ inputs.campaign_id }}' \
             --arg execution '${{ inputs.execution_id }}' \
