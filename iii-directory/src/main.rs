@@ -231,8 +231,8 @@ async fn main() -> Result<()> {
     }
     // The agents root is watched only when it already exists:
     // spawn_fs_watch create_dir_all's its roots, and this worker must
-    // never materialize (or write) `~/.agents/skills` — it's owned by
-    // external agent tooling.
+    // never materialize (or write) the configured agents root — it's owned
+    // by external agent tooling.
     let agents_root = cfg_now.resolved_agents_skills_folder();
     if agents_root.is_dir() && !watch_roots.contains(&agents_root) {
         watch_roots.push(agents_root);

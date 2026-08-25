@@ -60,9 +60,9 @@ pub async fn register_all(iii: &Arc<IIIClient>) -> Result<Arc<Shared>> {
 
     let cfg = Arc::new(SkillsConfig {
         skills_folder: skills_folder.to_string_lossy().into_owned(),
-        // Pin the agents root inside the tempdir: the default resolves to
-        // the developer's REAL ~/.agents/skills, which would leak
-        // machine-dependent skills into list/index assertions.
+        // Pin the agents root inside the tempdir so a real `.agents/skills`
+        // in the test process CWD cannot leak machine-dependent skills into
+        // list/index assertions.
         agents_skills_folder: skills_folder
             .join("agents-empty")
             .to_string_lossy()

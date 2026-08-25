@@ -24,7 +24,7 @@ pub fn build_manifest() -> ModuleManifest {
             "adapter": {
                 "name": "fs",
                 "config": {
-                    "data_dir": "~/.iii/data/session-manager",
+                    "data_dir": "/data/session-manager",
                 },
             },
             "default_list_limit": 50,

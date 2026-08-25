@@ -698,7 +698,7 @@ export const SCHEMA_EXAMPLES: SchemaExample[] = [
           properties: {
             data_dir: {
               type: 'string',
-              default: '~/.iii/data/session-manager',
+              default: '/data/session-manager',
               title: 'data dir',
               description: 'one <session_id>.jsonl per session.',
             },
@@ -752,7 +752,7 @@ export const SCHEMA_EXAMPLES: SchemaExample[] = [
           allOf: [{ $ref: '#/definitions/StorageAdapter' }],
           default: {
             name: 'fs',
-            config: { data_dir: '~/.iii/data/session-manager' },
+            config: { data_dir: '/data/session-manager' },
           },
           title: 'adapter',
           description: 'storage adapter (fs | bridge) plus its settings.',
@@ -772,7 +772,7 @@ export const SCHEMA_EXAMPLES: SchemaExample[] = [
     initial: {
       adapter: {
         name: 'fs',
-        config: { data_dir: '~/.iii/data/session-manager' },
+        config: { data_dir: '/data/session-manager' },
       },
       default_list_limit: 50,
       max_list_limit: 500,

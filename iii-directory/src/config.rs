@@ -24,19 +24,18 @@ pub type SharedConfig = Arc<ArcSwap<SkillsConfig>>;
 /// `registry_url:` in the config so self-hosted deployments can repoint.
 pub const DEFAULT_REGISTRY_URL: &str = "https://api.workers.iii.dev";
 
-/// Default destination for downloaded (global) skills. Uses the `~`
-/// prefix so it expands to the user's home directory at runtime via
-/// `dirs::home_dir()`.
-pub const DEFAULT_SKILLS_FOLDER: &str = "~/.iii/skills";
+/// Default destination for downloaded (global) skills, resolved relative to
+/// the process current working directory.
+pub const DEFAULT_SKILLS_FOLDER: &str = "./skills";
 
 /// Default destination for local (project-scoped) skill overrides.
 /// Resolved relative to the process current working directory.
 pub const DEFAULT_LOCAL_SKILLS_FOLDER: &str = "./.iii/skills";
 
-/// Default root for system-installed agent skills (the `~/.agents/skills`
-/// convention used by external agent tooling: one directory per skill,
-/// each containing a `SKILL.md`). Read-only; never written by this worker.
-pub const DEFAULT_AGENTS_SKILLS_FOLDER: &str = "~/.agents/skills";
+/// Default root for system-installed agent skills (one directory per skill,
+/// each containing a `SKILL.md`), resolved relative to the process current
+/// working directory. Read-only; never written by this worker.
+pub const DEFAULT_AGENTS_SKILLS_FOLDER: &str = "./.agents/skills";
 
 fn default_skills_folder() -> String {
     DEFAULT_SKILLS_FOLDER.to_string()
@@ -89,8 +88,8 @@ pub struct SkillsConfig {
     #[serde(default = "default_local_skills_folder")]
     pub local_skills_folder: String,
 
-    /// Read-only root for system-installed agent skills (the
-    /// `~/.agents/skills` convention: one directory per skill, each
+    /// Read-only root for system-installed agent skills (the agent-skills
+    /// layout: one directory per skill, each
     /// containing a `SKILL.md`). Scanned shallowly — only
     /// `<skill>/SKILL.md`, never the skill's `reference/`/`scripts/`
     /// payload. A missing directory is silently treated as empty; the
@@ -436,7 +435,10 @@ auto_download: false
 
     #[test]
     fn resolved_agents_skills_folder_tilde_expands_home() {
-        let cfg = SkillsConfig::default();
+        let cfg = SkillsConfig {
+            agents_skills_folder: "~/.agents/skills".into(),
+            ..SkillsConfig::default()
+        };
         if let Some(home) = dirs::home_dir() {
             assert_eq!(
                 cfg.resolved_agents_skills_folder(),

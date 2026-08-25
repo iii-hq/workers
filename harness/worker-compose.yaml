@@ -10,9 +10,6 @@ engine:
         name: fs
         config:
           directory: ./config
-    iii-worker-manager:
-      host: 127.0.0.1
-      port: 49134
 
 containers:
   queue:

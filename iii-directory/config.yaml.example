@@ -17,7 +17,7 @@
 # auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
-# (skills_folder: ~/.iii/skills, registry_url: https://api.workers.iii.dev).
+# (skills_folder: ./skills, registry_url: https://api.workers.iii.dev).
 
 # Folder that backs every read (`directory::skills::list`,
 # `directory::skills::get`, `directory::prompts::*`) and every write
@@ -26,10 +26,14 @@
 # used as-is.
 skills_folder: ./skills
 
+# Project-scoped skill overrides. A namespace here shadows the matching
+# namespace under skills_folder.
+local_skills_folder: ./.iii/skills
+
 # Read-only root for system-installed agent skills (one directory per
 # skill, each containing a SKILL.md). Scanned shallowly; a missing
 # directory is treated as empty and the worker never writes here.
-# agents_skills_folder: ~/.agents/skills
+agents_skills_folder: ./.agents/skills
 
 # Workers registry base URL — used by `directory::skills::download` and
 # the `directory::registry::*` proxies when a `worker=` source is

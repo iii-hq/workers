@@ -158,6 +158,18 @@ describe('mergeConversationMeta', () => {
     ).toBe('ask')
   })
 
+  it('restores the session thinking level and defaults older sessions', () => {
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { thinking_level: 'xhigh' } }),
+      ).thinkingLevel,
+    ).toBe('xhigh')
+    expect(
+      mergeConversationMeta(undefined, sessionMeta({})).thinkingLevel,
+    ).toBe('default')
+  })
+
   it('repairs a stale idle row from authoritative session metadata', () => {
     const existing = conversation({
       status: 'idle',
@@ -546,6 +558,7 @@ describe('metadataFor', () => {
           spawned_by: 'agent',
           skills: ['stale'],
           fs_scope: { root: '/stale' },
+          thinking_level: 'low',
           subagent_display: {
             name: 'Frontend',
             icon: 'code',
@@ -570,6 +583,20 @@ describe('metadataFor', () => {
         color: 'blue',
       },
     })
+  })
+
+  it('persists a non-default thinking level and clears a stale one at default', () => {
+    expect(
+      metadataFor(conversation({ thinkingLevel: 'high' })).thinking_level,
+    ).toBe('high')
+    expect(
+      metadataFor(
+        conversation({
+          thinkingLevel: 'default',
+          sessionMetadata: { thinking_level: 'low' },
+        }),
+      ),
+    ).not.toHaveProperty('thinking_level')
   })
 })
 

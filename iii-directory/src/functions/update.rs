@@ -1135,8 +1135,8 @@ mod tests {
             skills_folder: dir.to_string_lossy().into_owned(),
             // Point the local root INSIDE the tempdir so a `.iii/skills`
             // in the test process CWD can't shadow the fixtures — and the
-            // agents root too: its default resolves to the developer's
-            // REAL ~/.agents/skills, which would leak into these tests.
+            // agents root too: a real `.agents/skills` in the test process
+            // CWD would leak into these tests.
             local_skills_folder: dir.join("local-empty").to_string_lossy().into_owned(),
             agents_skills_folder: dir.join("agents-empty").to_string_lossy().into_owned(),
             ..SkillsConfig::default()

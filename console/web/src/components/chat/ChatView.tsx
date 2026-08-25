@@ -168,6 +168,7 @@ interface ChatViewProps {
    */
   onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
+  onUpdateThinkingLevel: (id: string, level: ThinkingLevel) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string) => void
   onAppendMessage: (id: string, message: Message) => void
@@ -186,6 +187,7 @@ export function ChatView({
   commands,
   onBack,
   onUpdateModel,
+  onUpdateThinkingLevel,
   onUpdateMode,
   onUpdateWorkingDir,
   onAppendMessage,
@@ -199,15 +201,17 @@ export function ChatView({
   const [turnPhase, setTurnPhase] = useState<
     'sending' | 'accepted' | 'merged' | 'started' | null
   >(null)
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
-    DEFAULT_THINKING_LEVEL,
-  )
+  const thinkingLevel = conversation.thinkingLevel ?? DEFAULT_THINKING_LEVEL
   const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<
     number | undefined
   >(undefined)
   const handleOpenModelPicker = useCallback(() => {
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [])
+  const handleThinkingLevelChange = useCallback(
+    (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
+    [conversation.id, onUpdateThinkingLevel],
+  )
   /* Lives on the conversation record, not in local state: the interactive
      picker is on the new-session screen, so a reset on a tab switch (ChatPanel
      keys this view by conversation id) would be invisible — no control is left
@@ -2228,7 +2232,7 @@ export function ChatView({
             permissionModeLoading={!approvalSettings.loaded}
             showPermissionMode={approvalEnabled}
             thinkingLevel={thinkingLevel}
-            onThinkingLevelChange={setThinkingLevel}
+            onThinkingLevelChange={handleThinkingLevelChange}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             showWorkingDir={workingDirEnabled}

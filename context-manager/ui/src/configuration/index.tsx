@@ -205,13 +205,13 @@ export function ContextManagerConfigForm(props: ConfigFormProps) {
             className="ctx-cfg-input"
             type="text"
             value={asString(value.lease_dir)}
-            placeholder="~/.iii/data/context-manager"
+            placeholder="/data/context-manager"
             aria-describedby="context-manager-cfg-lease-dir-hint"
             onChange={(event) => commitString('lease_dir', event.target.value)}
           />
           <span className="ctx-cfg-hint" id="context-manager-cfg-lease-dir-hint">
             Compaction lease files live here; a leading ~/ expands to the home
-            directory. Default: ~/.iii/data/context-manager.
+            directory. Default: /data/context-manager.
           </span>
         </div>
       </section>

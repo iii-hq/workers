@@ -13,7 +13,7 @@
 //!     `title` prefers the YAML frontmatter `title:` (then `name:`) over
 //!     the body H1, and `type` is lifted verbatim from frontmatter `type:`.
 //!     System-installed agent skills under the read-only
-//!     `agents_skills_folder` (`~/.agents/skills` convention, shallow
+//!     `agents_skills_folder` (agent-skills layout, shallow
 //!     `<skill>/SKILL.md` scan) are served too, shadowed by the same
 //!     namespace under the global or local root.
 //!   * **Prompts** (`directory::prompts::*`): filesystem-backed

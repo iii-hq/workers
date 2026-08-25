@@ -19,7 +19,7 @@ const ROOT: JsonSchema = {
     FsBackendConfig: {
       type: 'object',
       properties: {
-        data_dir: { type: 'string', default: '~/.iii/data/session-manager' },
+        data_dir: { type: 'string', default: '/data/session-manager' },
       },
     },
     BridgeBackendConfig: {
@@ -91,7 +91,7 @@ describe('variantDefault', () => {
   it('builds a discriminated default with nested config defaults', () => {
     expect(variantDefault(ADAPTER_VARIANTS[0], ROOT)).toEqual({
       name: 'fs',
-      config: { data_dir: '~/.iii/data/session-manager' },
+      config: { data_dir: '/data/session-manager' },
     })
     expect(variantDefault(ADAPTER_VARIANTS[1], ROOT)).toEqual({
       name: 'bridge',

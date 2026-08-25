@@ -11,10 +11,10 @@
  * - "new chat" is a LOCAL DRAFT (`draft: true`, id `console-<uuid>`); the
  *   session is materialised by `ensureSession` on the first send so empty
  *   chats never litter the store.
- * - rename / model / mode changes write through `session::set-meta`. The
- *   console owns the metadata convention `{ surface, model, mode, skills,
- *   title_manual }`; metadata replaces WHOLESALE, so the full object is
- *   always sent.
+ * - rename / model / thinking / mode / skills changes write through
+ *   `session::set-meta`. The console owns the metadata convention
+ *   `{ surface, model, thinking_level, mode, skills, title_manual }`;
+ *   metadata replaces WHOLESALE, so the full object is always sent.
  * - delete writes through `session::delete`; the sidebar prunes on the
  *   `session::deleted` event (and optimistically).
  * - transcript content reconciles `message-added` / `message-updated`
@@ -61,8 +61,10 @@ import type {
 import {
   loadActiveId,
   loadLastModel,
+  loadLastThinkingLevel,
   saveActiveId,
   saveLastModel,
+  saveLastThinkingLevel,
   saveRecentProject,
 } from '@/lib/storage'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
@@ -70,6 +72,7 @@ import {
   type Conversation,
   type ConversationMetadataEdits,
   DEFAULT_MODE,
+  DEFAULT_THINKING_LEVEL,
   type Message,
   type MessagePatch,
   type Mode,
@@ -77,6 +80,7 @@ import {
   type SubagentAppearance,
   type SubagentColor,
   type SubagentIcon,
+  type ThinkingLevel,
 } from '@/types/chat'
 
 function uid(): string {
@@ -98,12 +102,16 @@ function deriveTitle(text: string): string {
   return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
 }
 
-function emptyConversation(defaultModel: ModelId | null): Conversation {
+function emptyConversation(
+  defaultModel: ModelId | null,
+  defaultThinkingLevel: ThinkingLevel,
+): Conversation {
   const now = Date.now()
   return {
     id: newSessionId(),
     title: 'new chat',
     model: defaultModel,
+    thinkingLevel: defaultThinkingLevel,
     mode: DEFAULT_MODE,
     // Drafts start with no working dir; ChatView pre-fills the stack's
     // default folder (harness::filesystem::info, validated against the live
@@ -379,6 +387,7 @@ export function metadataFor(
   c: Pick<
     Conversation,
     | 'model'
+    | 'thinkingLevel'
     | 'mode'
     | 'titleManual'
     | 'workingDir'
@@ -396,6 +405,7 @@ export function metadataFor(
   const {
     surface: _surface,
     model: _model,
+    thinking_level: _thinkingLevel,
     mode: _mode,
     title_manual: _titleManual,
     fs_scope: _fsScope,
@@ -408,6 +418,9 @@ export function metadataFor(
     ...preserved,
     surface: 'console',
     ...(c.model ? { model: c.model } : {}),
+    ...(c.thinkingLevel && c.thinkingLevel !== DEFAULT_THINKING_LEVEL
+      ? { thinking_level: c.thinkingLevel }
+      : {}),
     mode: c.mode,
     ...(c.titleManual ? { title_manual: true } : {}),
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
@@ -420,6 +433,7 @@ export function metadataFor(
 const CONSOLE_METADATA_KEYS = [
   'surface',
   'model',
+  'thinking_level',
   'mode',
   'title_manual',
   'fs_scope',
@@ -509,6 +523,10 @@ function conversationFromMeta(
     titleManual: md.title_manual === true,
     model:
       typeof md.model === 'string' && md.model.length > 0 ? md.model : null,
+    thinkingLevel:
+      typeof md.thinking_level === 'string' && md.thinking_level.length > 0
+        ? md.thinking_level
+        : DEFAULT_THINKING_LEVEL,
     mode: isMode(md.mode) ? md.mode : DEFAULT_MODE,
     workingDir:
       typeof md.fs_scope === 'object' &&
@@ -580,6 +598,10 @@ export function applyConversationMetadataEvent(
       typeof md.model === 'string' && md.model.length > 0
         ? md.model
         : conversation.model,
+    thinkingLevel:
+      typeof md.thinking_level === 'string' && md.thinking_level.length > 0
+        ? md.thinking_level
+        : DEFAULT_THINKING_LEVEL,
     mode: isMode(md.mode) ? md.mode : conversation.mode,
     memoryBank:
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
@@ -755,6 +777,7 @@ export function mergeConversationMeta(
       title: existing.title,
       titleManual: existing.titleManual,
       model: existing.model,
+      thinkingLevel: existing.thinkingLevel,
       mode: existing.mode,
       workingDir: existing.workingDir,
       memoryBank: existing.memoryBank,
@@ -888,6 +911,8 @@ export interface ConversationsApi {
   rename: (id: string, title: string) => void
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
+  /** Persist this session's reasoning effort and remember it for new chats. */
+  setThinkingLevel: (id: string, level: ThinkingLevel) => void
   /** Point this chat at a named memory bank (null = worker default). */
   setMemoryBank: (id: string, memoryBank: string | null) => void
   /**
@@ -1054,7 +1079,10 @@ export function useConversations(
     /* Always boot with one local draft so the chat surface has something to
        render. Done in the initializer so StrictMode's double-invoke can't
        create two. */
-    emptyConversation(loadLastModel()),
+    emptyConversation(
+      loadLastModel(),
+      loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+    ),
   ])
   const conversationsRef = useRef(conversations)
   conversationsRef.current = conversations
@@ -1854,7 +1882,10 @@ export function useConversations(
       requestComposerFocus()
       return current.id
     }
-    const next = emptyConversation(loadLastModel())
+    const next = emptyConversation(
+      loadLastModel(),
+      loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+    )
     setConversations((list) => [next, ...list])
     setActiveId(next.id)
     return next.id
@@ -2028,6 +2059,19 @@ export function useConversations(
       saveLastModel(model)
       const conv = conversations.find((c) => c.id === id)
       if (conv) writeMeta(applyConversationMetadataPatch(conv, { model }))
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
+  const setThinkingLevel = useCallback(
+    (id: string, thinkingLevel: ThinkingLevel) => {
+      patchConversation(id, (c) =>
+        applyConversationMetadataPatch(c, { thinkingLevel }),
+      )
+      saveLastThinkingLevel(thinkingLevel)
+      const conv = conversations.find((c) => c.id === id)
+      if (conv)
+        writeMeta(applyConversationMetadataPatch(conv, { thinkingLevel }))
     },
     [patchConversation, conversations, writeMeta],
   )
@@ -2268,6 +2312,7 @@ export function useConversations(
     rename,
     remove,
     setModel,
+    setThinkingLevel,
     setMemoryBank,
     setSystemPrompt,
     setSkills,
