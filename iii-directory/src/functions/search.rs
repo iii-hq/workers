@@ -235,8 +235,8 @@ user writes in another language; preserve proper names, URLs, and function IDs."
 const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched these capabilities. The \
 `installable` entries are registry workers (verified authors) whose functions WOULD match, \
 but they are NOT installed: calling their functions now FAILS with function_not_found. To \
-use one, run its `install` call exactly as given (worker::add), poll worker::status with \
-the worker's name until it reports running, then call directory::search_functions again \
+use one, run its `install` call exactly as given (compose::add), wait for it to report the \
+new worker ready, then call directory::search_functions again \
 for the newly registered candidates and fetch selected contracts with one batched \
 engine::functions::info call. If none fit, search once more with concrete unmet \
 `capabilities`. Do not search for intrinsic reasoning, summarization, planning, or \
@@ -247,8 +247,8 @@ const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `ins
 `installable` entries are registry workers that are NOT installed: calling their functions now \
 FAILS with function_not_found. Do not pass an `installable` function ID to \
 engine::functions::info. Only when no `workers` entry fits, FIRST call the provided install \
-function with its payload (worker::add), poll worker::status with the worker's name until \
-running, then search again and fetch selected contracts with one batched \
+function with its payload (compose::add), wait for it to report the worker ready, then search \
+again and fetch selected contracts with one batched \
 engine::functions::info call — never call an installable function before installing.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -282,7 +282,7 @@ pub struct SearchWorker {
 }
 
 /// A registry worker that is NOT installed but carries functions matching
-/// the requested capabilities. `name` is the registry slug `worker::add` installs.
+/// the requested capabilities. `name` is the registry slug `compose::add` installs.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct InstallableWorker {
     pub name: String,
@@ -291,11 +291,11 @@ pub struct InstallableWorker {
     /// Compact candidates only. After installation, search again and fetch
     /// selected contracts through `engine::functions::info`.
     pub functions: Vec<FunctionCandidate>,
-    /// The `worker::add` target and payload; agent-trigger callers add `description`.
+    /// The `compose::add` target and payload; agent-trigger callers add `description`.
     pub install: InstallCall,
 }
 
-/// A ready-made `worker::add` target and payload. Under agent-trigger exposure,
+/// A ready-made `compose::add` target and payload. Under agent-trigger exposure,
 /// the caller still supplies the wrapper's user-facing `description`.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct InstallCall {
@@ -305,11 +305,8 @@ pub struct InstallCall {
 
 fn install_call(worker_name: &str) -> InstallCall {
     InstallCall {
-        function: "worker::add".to_string(),
-        payload: json!({
-            "source": { "kind": "registry", "name": worker_name },
-            "wait": false,
-        }),
+        function: "compose::add".to_string(),
+        payload: json!({ "worker": worker_name }),
     }
 }
 
@@ -1558,10 +1555,10 @@ mod tests {
             .guidance
             .find("FIRST call the provided install function")
             .expect("mixed guidance installs before lookup");
-        let status_poll = response
+        let ready_wait = response
             .guidance
-            .find("poll worker::status")
-            .expect("mixed guidance polls installation status");
+            .find("wait for it to report the worker ready")
+            .expect("mixed guidance waits for compose readiness");
         let search_again = response
             .guidance
             .find("then search again")
@@ -1570,16 +1567,13 @@ mod tests {
             .guidance
             .rfind("one batched engine::functions::info call")
             .expect("mixed guidance fetches the installed contract last");
-        assert!(install_call < status_poll);
-        assert!(status_poll < search_again);
+        assert!(install_call < ready_wait);
+        assert!(ready_wait < search_again);
         assert!(search_again < installed_info);
-        assert_eq!(response.installable[0].install.function, "worker::add");
+        assert_eq!(response.installable[0].install.function, "compose::add");
         assert_eq!(
             response.installable[0].install.payload,
-            json!({
-                "source": { "kind": "registry", "name": "mailer" },
-                "wait": false,
-            })
+            json!({ "worker": "mailer" })
         );
         assert!(
             response.guidance.contains(

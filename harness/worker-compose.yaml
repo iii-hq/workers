@@ -1,18 +1,9 @@
-namespace: my-harness-ns
+namespace: my-project #comment if you want to be default
 startup_timeout: 15m
 stop_timeout: 10s
 
 engine:
   url: ws://127.0.0.1:49134
-  workers:
-    configuration:
-      adapter:
-        name: fs
-        config:
-          directory: ./config
-    iii-worker-manager:
-      host: 127.0.0.1
-      port: 49134
 
 containers:
   queue:
@@ -38,7 +29,7 @@ containers:
 
   llm-router:
     worker: path://../llm-router
-    depends_on:
+    start_after:
       - state
     environment:
       RUST_LOG: info
@@ -49,7 +40,7 @@ containers:
 
   provider-openai-codex:
     worker: path://../provider-openai-codex
-    depends_on:
+    start_after:
       - llm-router
       - state
     environment:
@@ -59,7 +50,7 @@ containers:
 
   provider-openai:
     worker: path://../provider-openai
-    depends_on:
+    start_after:
       - llm-router
       - state
     environment:
@@ -69,7 +60,7 @@ containers:
 
   provider-anthropic:
     worker: path://../provider-anthropic
-    depends_on:
+    start_after:
       - llm-router
       - state
     environment:
@@ -79,7 +70,7 @@ containers:
 
   context-manager:
     worker: path://../context-manager
-    depends_on:
+    start_after:
       - llm-router
     environment:
       RUST_LOG: info
@@ -116,7 +107,7 @@ containers:
 
   harness:
     worker: path://.
-    depends_on:
+    start_after:
       - state
       - queue
       - session-manager

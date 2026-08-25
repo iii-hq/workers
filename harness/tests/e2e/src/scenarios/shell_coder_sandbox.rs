@@ -1,4 +1,7 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::bail;
 use serde_json::{json, Value};
@@ -62,7 +65,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
     ScenarioSpec {
         id: ID,
-        version: 3,
+        version: 4,
         prompt: format!(
             "Perform this verification entirely in the current workspace and in the stated order.\n\n\
              1. Add the `shell` worker from the public registry and wait for that add operation to \
@@ -119,16 +122,13 @@ fn evaluate<'a>(
             .iter()
             .map(|invocation| invocation.call.clone())
             .collect::<Vec<_>>();
-        let installed_shell = calls.iter().any(|call| is_registry_install(call, "shell"));
-        let installed_sandbox = calls
-            .iter()
-            .any(|call| is_registry_install(call, "iii-sandbox"));
+        let worker_adds = registry_add_evidence(&observation.transcript, &invocations);
 
         let shell_surface_ready = context.function_exists("shell::exec").await?;
         let coder_surface_ready = context.function_exists("coder::create-file").await?;
         let sandbox_surface_ready = context.function_exists("sandbox::create").await?;
         let surfaces_ready = shell_surface_ready && coder_surface_ready && sandbox_surface_ready;
-        let worker_setup = installed_shell && installed_sandbox && surfaces_ready;
+        let worker_setup = worker_adds.complete() && surfaces_ready;
 
         let root = workspace_root(run_id);
         let coder_info = calls.iter().any(|call| call.function_id == "coder::info");
@@ -204,8 +204,8 @@ fn evaluate<'a>(
         let sandbox_lifecycle = sandbox.complete();
 
         let core_operations = [
-            installed_shell,
-            installed_sandbox,
+            worker_adds.shell_succeeded,
+            worker_adds.sandbox_succeeded,
             coder_info,
             coder_create,
             coder_update,
@@ -229,9 +229,12 @@ fn evaluate<'a>(
             WORKER_SETUP.full_or_zero(
                 worker_setup,
                 format!(
-                    "shell add={installed_shell}, iii-sandbox add={installed_sandbox}, \
+                    "shell add succeeded={}, iii-sandbox add succeeded={}, adds ordered={}, \
                      shell ready={shell_surface_ready}, coder ready={coder_surface_ready}, \
-                     sandbox ready={sandbox_surface_ready}"
+                     sandbox ready={sandbox_surface_ready}",
+                    worker_adds.shell_succeeded,
+                    worker_adds.sandbox_succeeded,
+                    worker_adds.ordered,
                 ),
             ),
             CODER_WORKFLOW.full_or_zero(
@@ -289,17 +292,104 @@ fn execution_quality_award(function_call_errors: u64) -> u8 {
 }
 
 fn is_registry_install(call: &common::ObservedFunctionCall, worker: &str) -> bool {
-    call.function_id == "worker::add"
-        && call
-            .arguments
-            .pointer("/source/kind")
-            .and_then(Value::as_str)
-            == Some("registry")
-        && call
-            .arguments
-            .pointer("/source/name")
+    call.function_id == "compose::add"
+        && call.arguments.get("worker").and_then(Value::as_str) == Some(worker)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RegistryAddEvidence {
+    shell_succeeded: bool,
+    sandbox_succeeded: bool,
+    ordered: bool,
+}
+
+impl RegistryAddEvidence {
+    fn complete(&self) -> bool {
+        self.shell_succeeded && self.sandbox_succeeded && self.ordered
+    }
+}
+
+fn registry_add_evidence(
+    transcript: &Value,
+    invocations: &[common::ObservedFunctionInvocation],
+) -> RegistryAddEvidence {
+    let shell_calls = registry_add_call_ids(invocations, "shell");
+    let sandbox_calls = registry_add_call_ids(invocations, "iii-sandbox");
+    let mut seen_calls = HashSet::new();
+    let mut ordered_sandbox_calls = HashSet::new();
+    let mut evidence = RegistryAddEvidence::default();
+
+    let Some(messages) = transcript.get("messages").and_then(Value::as_array) else {
+        return evidence;
+    };
+    for entry in messages {
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
+        match message.get("role").and_then(Value::as_str) {
+            Some("assistant") => {
+                for call_id in message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    .filter_map(|block| block.get("id").and_then(Value::as_str))
+                {
+                    seen_calls.insert(call_id.to_string());
+                    if evidence.shell_succeeded && sandbox_calls.contains(call_id) {
+                        ordered_sandbox_calls.insert(call_id.to_string());
+                    }
+                }
+            }
+            Some("function_result")
+                if message.get("function_id").and_then(Value::as_str) == Some("compose::add")
+                    && message.get("is_error").and_then(Value::as_bool) == Some(false) =>
+            {
+                let Some(call_id) = message.get("function_call_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !seen_calls.contains(call_id) {
+                    continue;
+                }
+                if shell_calls.contains(call_id) && compose_add_succeeded(message, "shell") {
+                    evidence.shell_succeeded = true;
+                }
+                if sandbox_calls.contains(call_id) && compose_add_succeeded(message, "iii-sandbox")
+                {
+                    evidence.sandbox_succeeded = true;
+                    evidence.ordered |= ordered_sandbox_calls.contains(call_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    evidence
+}
+
+fn registry_add_call_ids(
+    invocations: &[common::ObservedFunctionInvocation],
+    worker: &str,
+) -> HashSet<String> {
+    invocations
+        .iter()
+        .filter(|invocation| is_registry_install(&invocation.call, worker))
+        .filter_map(|invocation| invocation.call_id.clone())
+        .collect()
+}
+
+fn compose_add_succeeded(message: &Value, worker: &str) -> bool {
+    message.pointer("/details/status").and_then(Value::as_str) == Some("ok")
+        && (message
+            .pointer("/details/container")
             .and_then(Value::as_str)
             == Some(worker)
+            || message
+                .pointer("/details/workers")
+                .and_then(Value::as_array)
+                .is_some_and(|workers| workers.iter().any(|value| value.as_str() == Some(worker))))
 }
 
 fn is_exact_create(call: &common::ObservedFunctionCall, root: &Path) -> bool {
@@ -727,4 +817,106 @@ fn workspace_root(run_id: &str) -> PathBuf {
     let base = std::fs::canonicalize(&base).unwrap_or(base);
     base.join("scenario-workspaces")
         .join(format!("{ID}-{run_id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn registry_adds_require_successful_results_in_sequence() {
+        let cases = [
+            (
+                "successful and ordered",
+                transcript(vec![
+                    assistant_calls(vec![add_call("call-shell", "shell")]),
+                    add_result("call-shell", "shell", "ok"),
+                    assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
+                    add_result("call-sandbox", "iii-sandbox", "ok"),
+                ]),
+                RegistryAddEvidence {
+                    shell_succeeded: true,
+                    sandbox_succeeded: true,
+                    ordered: true,
+                },
+            ),
+            (
+                "failed shell result",
+                transcript(vec![
+                    assistant_calls(vec![add_call("call-shell", "shell")]),
+                    add_result("call-shell", "shell", "failed"),
+                    assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
+                    add_result("call-sandbox", "iii-sandbox", "ok"),
+                ]),
+                RegistryAddEvidence {
+                    shell_succeeded: false,
+                    sandbox_succeeded: true,
+                    ordered: false,
+                },
+            ),
+            (
+                "parallel calls",
+                transcript(vec![
+                    assistant_calls(vec![
+                        add_call("call-shell", "shell"),
+                        add_call("call-sandbox", "iii-sandbox"),
+                    ]),
+                    add_result("call-shell", "shell", "ok"),
+                    add_result("call-sandbox", "iii-sandbox", "ok"),
+                ]),
+                RegistryAddEvidence {
+                    shell_succeeded: true,
+                    sandbox_succeeded: true,
+                    ordered: false,
+                },
+            ),
+        ];
+
+        for (name, transcript, expected) in cases {
+            let invocations = common::function_invocations(&transcript);
+            assert_eq!(
+                registry_add_evidence(&transcript, &invocations),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    fn transcript(messages: Vec<Value>) -> Value {
+        json!({ "messages": messages })
+    }
+
+    fn assistant_calls(content: Vec<Value>) -> Value {
+        json!({ "message": { "role": "assistant", "content": content } })
+    }
+
+    fn add_call(call_id: &str, worker: &str) -> Value {
+        json!({
+            "type": "function_call",
+            "id": call_id,
+            "function_id": "agent_trigger",
+            "arguments": {
+                "function": "compose::add",
+                "payload": { "worker": worker }
+            }
+        })
+    }
+
+    fn add_result(call_id: &str, worker: &str, status: &str) -> Value {
+        json!({
+            "message": {
+                "role": "function_result",
+                "function_call_id": call_id,
+                "function_id": "compose::add",
+                "is_error": false,
+                "details": {
+                    "status": status,
+                    "container": worker,
+                    "workers": [worker]
+                }
+            }
+        })
+    }
 }

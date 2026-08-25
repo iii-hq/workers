@@ -42,7 +42,7 @@
         "type": "object"
       },
       "InstallCall": {
-        "description": "A ready-made `worker::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
+        "description": "A ready-made `compose::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
         "properties": {
           "function": {
             "type": "string"
@@ -56,7 +56,7 @@
         "type": "object"
       },
       "InstallableWorker": {
-        "description": "A registry worker that is NOT installed but carries functions matching the requested capabilities. `name` is the registry slug `worker::add` installs.",
+        "description": "A registry worker that is NOT installed but carries functions matching the requested capabilities. `name` is the registry slug `compose::add` installs.",
         "properties": {
           "description": {
             "type": "string"
@@ -74,7 +74,7 @@
                 "$ref": "#/definitions/InstallCall"
               }
             ],
-            "description": "The `worker::add` target and payload; agent-trigger callers add `description`."
+            "description": "The `compose::add` target and payload; agent-trigger callers add `description`."
           },
           "name": {
             "type": "string"

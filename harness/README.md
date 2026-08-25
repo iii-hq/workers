@@ -107,10 +107,10 @@ are invisible; the function id is the only contract.
 **3. Need a capability that is not registered?**
 - `directory::registry::workers::list { search: "<capability>" }`
 - `directory::registry::workers::info { name }` to judge fit
-- `worker::add { source: { kind: "registry", name: "<name>" } }` to install
+- `compose::add { worker: "<name>" }` to declare and start it
 - confirm with `engine::functions::list { prefix: "<worker>::" }` and fetch each contract
 
-**4. Worker lifecycle.** `worker::list`, `worker::add`, `worker::start`, `worker::stop`, `worker::update`, `worker::remove`, `worker::clear`. Destructive ops require exactly `yes: true`.
+**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
 
 **5. Triggers, not polling.** To react to events (HTTP, schedule, webhook, file change), bind a trigger instead of polling. Discover the type with `engine::triggers::list`, copy config from its schema, and confirm the binding fires with a real call (e.g. `web::fetch` to its local URL).
 

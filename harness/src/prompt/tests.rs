@@ -258,7 +258,7 @@ fn registry_flow() {
     let out = default_prompt();
     assert!(out.contains("directory::registry::workers::list { search: \"<capability>\" }"));
     assert!(out.contains("directory::registry::workers::info { name: \"<name>\" }"));
-    assert!(out.contains("{ source: { kind: \"registry\", name: \"<name>\" } }"));
+    assert!(out.contains("compose::add { worker: \"<name>\" }"));
     assert!(out.contains("say what you are about to install and why"));
     assert!(out.contains("confirm the new function ids appear"));
     assert!(out.contains("engine::functions::list { prefix: \"<worker>::\" }"));
@@ -268,7 +268,7 @@ fn registry_flow() {
 #[test]
 fn directory_bootstrap_degrade() {
     let out = default_prompt();
-    assert!(out.contains("name: \"iii-directory\""));
+    assert!(out.contains("worker: \"iii-directory\""));
     assert!(out.contains("continue with what is registered"));
 }
 
@@ -537,6 +537,9 @@ fn capability_ladder_ordering() {
     let out = variants::DEFAULT;
     assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
     assert!(out.find("coder::") < out.find("registerWorker"));
+    assert!(out.contains("compose::add { worker: \"<name>\" }"));
+    assert!(out.contains("compose::schema { function_id: \"compose::<operation>\" }"));
+    assert!(!out.contains("worker::add { source:"));
 }
 
 #[test]
