@@ -1,8 +1,8 @@
 {
   "format": 1,
   "source": {
-    "version": "0.2.7",
-    "sha256": "a9ffef811b02bdaa27c83fb8a5bdff7196adfc73a22827532282ff42851cb081",
+    "version": "0.2.8",
+    "sha256": "70cb988ef589429d0f6137a7884dd9eb4ee12446cb711e69cc808ae0950c5f6b",
     "files": [
       {
         "path": "scrapling/src/__init__.py",
@@ -41,8 +41,8 @@
       },
       {
         "path": "scrapling/src/schemas.py",
-        "size": 19648,
-        "sha256": "623202d3bdb1fe6b9894688d12ba073af00759f14b58468c00f8d3b943fcc2d9"
+        "size": 19877,
+        "sha256": "277c462dd70065eb443926a811243e3a3f658636274a20db8dc9c487823afe2b"
       },
       {
         "path": "scrapling/src/sessions.py",
