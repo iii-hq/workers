@@ -9,6 +9,7 @@ import type {
   Mode,
   ModelId,
   ModelOption,
+  ThinkingLevel,
 } from '@/types/chat'
 
 const PLAYGROUND_MODEL_OPTIONS: ModelOption[] = [
@@ -101,6 +102,13 @@ export function PlaygroundHarness({
     setConvo((c) => ({ ...c, model, updatedAt: Date.now() }))
   }, [])
 
+  const setThinkingLevel = useCallback(
+    (_id: string, thinkingLevel: ThinkingLevel) => {
+      setConvo((c) => ({ ...c, thinkingLevel, updatedAt: Date.now() }))
+    },
+    [],
+  )
+
   const appendMessage = useCallback((_id: string, message: Message) => {
     setConvo((c) => ({
       ...c,
@@ -155,6 +163,7 @@ export function PlaygroundHarness({
           backend={tappedBackend}
           modelOptions={PLAYGROUND_MODEL_OPTIONS}
           onUpdateModel={setModel}
+          onUpdateThinkingLevel={setThinkingLevel}
           onUpdateMode={setMode}
           onUpdateWorkingDir={() => {}}
           onAppendMessage={appendMessage}

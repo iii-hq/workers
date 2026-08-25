@@ -1,4 +1,5 @@
 import * as SelectPrimitive from '@radix-ui/react-select'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import type * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
@@ -136,17 +137,7 @@ export function Select<T extends string>({
         </span>
         <SelectPrimitive.Icon asChild>
           <span aria-hidden className="shrink-0 text-ink-faint">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 8 6"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-              aria-hidden="true"
-            >
-              <path d="M1 1L4 5L7 1" />
-            </svg>
+            <ChevronDown size={16} strokeWidth={1} />
           </span>
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
@@ -162,17 +153,7 @@ export function Select<T extends string>({
             )}
           >
             <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 8 6"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1"
-                aria-hidden="true"
-              >
-                <path d="M1 5L4 1L7 5" />
-              </svg>
+              <ChevronUp size={16} strokeWidth={1} aria-hidden="true" />
             </SelectPrimitive.ScrollUpButton>
             <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
               {allowEmpty ? (
@@ -210,17 +191,7 @@ export function Select<T extends string>({
                   ))}
             </SelectPrimitive.Viewport>
             <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 8 6"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1"
-                aria-hidden="true"
-              >
-                <path d="M1 1L4 5L7 1" />
-              </svg>
+              <ChevronDown size={16} strokeWidth={1} aria-hidden="true" />
             </SelectPrimitive.ScrollDownButton>
           </SelectPrimitive.Content>
         </PortalScope>

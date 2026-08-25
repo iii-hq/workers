@@ -60,6 +60,7 @@ export function ChatPanel({
     rename,
     remove,
     setModel,
+    setThinkingLevel,
     setMode,
     setWorkingDir,
     appendMessage,
@@ -225,6 +226,7 @@ export function ChatPanel({
           commands={commands}
           onBack={narrow && !pinned ? handleBack : undefined}
           onUpdateModel={setModel}
+          onUpdateThinkingLevel={setThinkingLevel}
           onUpdateMode={setMode}
           onUpdateWorkingDir={setWorkingDir}
           onAppendMessage={appendMessage}
