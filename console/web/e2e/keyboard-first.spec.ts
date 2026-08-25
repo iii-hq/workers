@@ -89,9 +89,9 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   // The new pane opens with its search focused, where `}` is a character.
   await pane(page, 0).focus()
   const focusedPane = page.locator('[data-workspace-pane-id]:focus-within')
-  await page.keyboard.press('Alt+Shift+]')
+  await page.keyboard.press('Alt+}')
   await expect(focusedPane).toHaveAttribute('data-workspace-panel', '1')
-  await page.keyboard.press('Alt+Shift+[')
+  await page.keyboard.press('Alt+{')
   await expect(focusedPane).toHaveAttribute('data-workspace-panel', '0')
 
   await page.keyboard.press('ControlOrMeta+k')
