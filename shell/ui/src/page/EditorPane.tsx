@@ -346,7 +346,7 @@ export function EditorPane({
         </button>
       </div>
 
-      <div className="shui-editor-body">
+      <div className="shui-editor-body" data-keybindings-standdown="">
         {pane.phase === 'loading' ? (
           <div className="shui-side-note">loading {relPath}…</div>
         ) : pane.phase === 'error' ? (

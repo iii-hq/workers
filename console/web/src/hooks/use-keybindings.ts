@@ -39,6 +39,15 @@ function isTyping(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null
   if (!element) return false
   if (element.isContentEditable) return true
+  // An editor surface (its gutters, widgets and fallbacks included) can
+  // declare every keystroke inside it content, whatever element focus
+  // happens to sit on.
+  if (
+    typeof element.closest === 'function' &&
+    element.closest('[data-keybindings-standdown]') !== null
+  ) {
+    return true
+  }
   const tag = element.tagName
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
