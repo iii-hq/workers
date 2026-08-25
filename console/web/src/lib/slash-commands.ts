@@ -131,18 +131,56 @@ export type SlashExpansion =
   | { status: 'failed'; command: string }
 
 /**
+ * Skill ids whose full body already rides in this conversation's context:
+ * skill chips on messages after the last compaction marker. Compaction
+ * summarises the earlier block away, so it stops counting as loaded.
+ */
+export function loadedSkillIds(
+  messages: ReadonlyArray<{
+    role: string
+    kind?: string
+    attachments?: ReadonlyArray<{ name: string; type: string }>
+  }>,
+): ReadonlySet<string> {
+  const ids = new Set<string>()
+  for (const m of messages) {
+    if (m.role === 'system' && m.kind === 'compaction') {
+      ids.clear()
+      continue
+    }
+    for (const a of m.attachments ?? []) {
+      if (a.type === 'text/x-skill' && a.name.startsWith('/skill:'))
+        ids.add(a.name.slice('/skill:'.length))
+    }
+  }
+  return ids
+}
+
+/**
  * Shared submit-time expansion for the fresh-send and queued-edit paths: a
  * leading palette-known `/name` / `/skill:<id>` resolves its body into an
  * attachment block; `failed` means the caller should warn and send the text
  * as typed; null means the text is not an invocation (or not palette-known).
+ *
+ * A skill in `loaded` (see `loadedSkillIds`) expands to a short pointer
+ * instead of refetching the body — the full block is already in context, so
+ * a repeat invocation shouldn't cost another copy of it.
  */
 export async function expandSlashInvocation(
   text: string,
+  loaded?: ReadonlySet<string>,
 ): Promise<SlashExpansion | null> {
   const inv = parseSlashInvocation(text)
   if (!inv) return null
   const command = invocationCommand(inv)
   if (!dynamicSlashEntries?.some((e) => e.command === command)) return null
+  if (inv.kind === 'skill' && loaded?.has(inv.id)) {
+    return {
+      status: 'attached',
+      block: `<skill id="${inv.id}">\nThis skill was already loaded by an earlier message in this conversation. Follow that skill block directly; do not reload it.\n</skill>`,
+      inv,
+    }
+  }
   try {
     const client = await getIiiClient()
     const body =

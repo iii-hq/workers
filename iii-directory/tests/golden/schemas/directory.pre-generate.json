@@ -202,12 +202,14 @@
       },
       "PreGenerateMutations": {
         "properties": {
-          "system_prompt": {
-            "type": "string"
+          "append_messages": {
+            "description": "Ephemeral tail messages for this generation only. The hint rides here rather than as a system-prompt mutation: the system prompt is the provider's first input item, and a once-per-turn append there invalidated the entire prompt-cache prefix twice per turn.",
+            "items": true,
+            "type": "array"
           }
         },
         "required": [
-          "system_prompt"
+          "append_messages"
         ],
         "type": "object"
       }

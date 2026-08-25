@@ -897,6 +897,31 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.skills_prompt = prev.skills_prompt.clone();
 }
 
+/// A send whose metadata does not name the `fs_scope` key inherits the prior
+/// turn's working directory — the same omitted-field rule as model, prompt,
+/// and policy. The working-dir line in the system prompt must not flip when a
+/// client omits `fs_scope` on a later send (it invalidates the provider's
+/// prompt-cache prefix). An explicit `fs_scope` — even an empty `{}` — is an
+/// intentional clear and blocks inheritance.
+///
+/// Called from `seed_new` only, with the freshest prior record read under the
+/// delivery guard: an inherited root must never travel into the active-turn
+/// merge path, where `refresh_filesystem_root_from` would let a stale
+/// inherited value overwrite a root the running turn just changed.
+fn inherit_prior_filesystem_root(options: &mut TurnOptions, prev: &TurnOptions) {
+    let names_fs_scope = options
+        .metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .is_some_and(|m| m.contains_key(crate::types::turn::FS_SCOPE_KEY));
+    if names_fs_scope {
+        return;
+    }
+    if let Some(root) = prev.filesystem_root() {
+        options.set_filesystem_root(root);
+    }
+}
+
 /// Default a BRAND-NEW session's working directory (MOT-3897): when the very
 /// first turn arrives without `metadata.fs_scope.root`, scope it to the
 /// configured default (the stack's launch folder). Existing sessions are never
@@ -1051,11 +1076,14 @@ pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
-    options: TurnOptions,
+    mut options: TurnOptions,
     prior: Option<&TurnRecord>,
     message_preview: Option<String>,
     lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
+    if let Some(prior) = prior {
+        inherit_prior_filesystem_root(&mut options, &prior.options);
+    }
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
     let functions_generation = prior.and_then(|record| record.functions_generation);
@@ -1915,6 +1943,53 @@ mod tests {
         apply_default_filesystem_root(&mut opts, true, None);
         assert_eq!(opts.filesystem_root(), None);
         assert!(opts.metadata.is_none());
+    }
+
+    #[test]
+    fn omitted_fs_scope_inherits_prior_root() {
+        let mut prev = bare_options();
+        prev.set_filesystem_root("/work/project");
+
+        let mut opts = bare_options();
+        inherit_prior_filesystem_root(&mut opts, &prev);
+        assert_eq!(opts.filesystem_root(), Some("/work/project"));
+    }
+
+    #[test]
+    fn inheritance_preserves_unrelated_metadata_keys() {
+        let mut prev = bare_options();
+        prev.set_filesystem_root("/work/project");
+
+        let mut opts = bare_options();
+        opts.metadata = Some(serde_json::json!({ "session_id": "s_1" }));
+        inherit_prior_filesystem_root(&mut opts, &prev);
+        assert_eq!(opts.filesystem_root(), Some("/work/project"));
+        assert_eq!(
+            opts.metadata.as_ref().unwrap().get("session_id"),
+            Some(&serde_json::json!("s_1"))
+        );
+    }
+
+    #[test]
+    fn explicit_empty_fs_scope_clears_instead_of_inheriting() {
+        let mut prev = bare_options();
+        prev.set_filesystem_root("/work/project");
+
+        let mut opts = bare_options();
+        opts.metadata = Some(serde_json::json!({ "fs_scope": {} }));
+        inherit_prior_filesystem_root(&mut opts, &prev);
+        assert_eq!(opts.filesystem_root(), None);
+    }
+
+    #[test]
+    fn explicit_root_wins_over_inheritance() {
+        let mut prev = bare_options();
+        prev.set_filesystem_root("/work/project");
+
+        let mut opts = bare_options();
+        opts.metadata = Some(serde_json::json!({ "fs_scope": { "root": "/picked" } }));
+        inherit_prior_filesystem_root(&mut opts, &prev);
+        assert_eq!(opts.filesystem_root(), Some("/picked"));
     }
 
     #[test]

@@ -86,26 +86,17 @@ fn fingerprint_of(functions: &[FunctionDescriptor]) -> u64 {
 }
 
 /// Swap the snapshot under the write lock, bumping the generation only when the
-/// incoming set's fingerprint differs from the current one.
+/// incoming set's fingerprint differs from the current one. Availability events
+/// with a byte-identical set deliberately do NOT bump: the generation feeds the
+/// registry-changed notice and the discovery hint, and a no-op bump invalidates
+/// the provider's prompt-cache prefix for nothing. A response-schema-only
+/// change is fingerprint-invisible and goes un-noticed until a list-visible
+/// field moves — the schema-aware `functions_hash` named at the safety-reload
+/// ponytail comment is the real fix for that.
 pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
-    apply_inner(cell, functions, false).await;
-}
-
-/// Explicit availability events advance the generation even when list-visible
-/// fields stayed equal: the event may represent a response-schema-only change
-/// that native invocation descriptors do not carry.
-async fn apply_on_availability_event(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
-    apply_inner(cell, functions, true).await;
-}
-
-async fn apply_inner(
-    cell: &FunctionsCell,
-    functions: Vec<FunctionDescriptor>,
-    force_generation: bool,
-) {
     let fingerprint = fingerprint_of(&functions);
     let mut guard = cell.write().await;
-    if !force_generation && fingerprint == guard.fingerprint {
+    if fingerprint == guard.fingerprint {
         return;
     }
     let generation = guard.generation + 1;
@@ -204,21 +195,12 @@ async fn hydrate(
 
 /// Fetch the authoritative registry, hydrate schemas, and swap the snapshot;
 /// returns the count.
-async fn reload(
-    iii: &Arc<IIIClient>,
-    cell: &FunctionsCell,
-    timeout_ms: u64,
-    availability_event: bool,
-) -> usize {
+async fn reload(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> usize {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
     let functions = engine.functions_list().await;
     let functions = hydrate(&engine, cell, functions).await;
     let count = functions.len();
-    if availability_event {
-        apply_on_availability_event(cell, functions).await;
-    } else {
-        apply(cell, functions).await;
-    }
+    apply(cell, functions).await;
     count
 }
 
@@ -265,7 +247,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         ticker.tick().await; // consume the immediate first tick
         loop {
             ticker.tick().await;
-            let count = reload(&reload_iii, &reload_cell, timeout_ms, false).await;
+            let count = reload(&reload_iii, &reload_cell, timeout_ms).await;
             tracing::debug!(count, "function-registry cache safety-reloaded");
         }
     });
@@ -277,7 +259,7 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
             let engine = engine.clone();
             let cell = cell.clone();
             async move {
-                let count = reload(&engine, &cell, timeout_ms, true).await;
+                let count = reload(&engine, &cell, timeout_ms).await;
                 tracing::debug!(count, "function-registry cache refreshed");
                 Ok::<OnFunctionsChangeResponse, Error>(OnFunctionsChangeResponse { ok: true })
             }
@@ -361,14 +343,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_availability_event_bumps_generation_for_unchanged_list_shape() {
+    async fn re_applying_an_identical_set_does_not_bump_generation() {
+        // Availability events now route through this same `apply` (the forced
+        // bump was removed), so this covers that path too. A no-op bump would
+        // fire the registry-changed notice and re-arm the discovery hint,
+        // invalidating the provider prompt-cache for nothing.
         let cell = new_cell();
         let fns = vec![desc("a::b", Some(json!({ "type": "object" })))];
         apply(&cell, fns.clone()).await;
 
-        apply_on_availability_event(&cell, fns).await;
+        apply(&cell, fns).await;
 
-        assert_eq!(cell.read().await.generation, 2);
+        assert_eq!(cell.read().await.generation, 1);
     }
 
     #[test]

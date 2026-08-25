@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   expandSlashInvocation,
   fuzzyFilterSlash,
+  loadedSkillIds,
   mergeSlashEntries,
   parseSlashBlockHeader,
   parseSlashInvocation,
@@ -127,6 +128,58 @@ describe('expandSlashInvocation gate', () => {
     expect(await expandSlashInvocation('/compact now')).toBeNull()
     expect(await expandSlashInvocation('/skill:coder/index go')).toBeNull()
     setDynamicSlashEntries(null)
+  })
+
+  /* The dedupe branch also returns before any client is touched. */
+  it('an already-loaded skill expands to a pointer without a refetch', async () => {
+    setDynamicSlashEntries([
+      { command: '/skill:coder/index', description: 'coder', kind: 'skill' },
+    ])
+    const result = await expandSlashInvocation(
+      '/skill:coder/index go',
+      new Set(['coder/index']),
+    )
+    expect(result?.status).toBe('attached')
+    if (result?.status !== 'attached') throw new Error('unreachable')
+    expect(result.block).toContain('already loaded')
+    expect(result.block.length).toBeLessThan(200)
+    // The pointer still collapses to the same chip on hydration.
+    expect(parseSlashBlockHeader(result.block)).toEqual({
+      kind: 'skill',
+      id: 'coder/index',
+    })
+    setDynamicSlashEntries(null)
+  })
+})
+
+describe('loadedSkillIds', () => {
+  const skillMsg = {
+    role: 'user',
+    attachments: [slashChip({ kind: 'skill', id: 'coder/index' }, 7)],
+  }
+
+  it('collects skill chips from prior messages', () => {
+    expect(loadedSkillIds([skillMsg]).has('coder/index')).toBe(true)
+  })
+
+  it('a compaction marker resets what counts as loaded', () => {
+    expect(
+      loadedSkillIds([skillMsg, { role: 'system', kind: 'compaction' }]).size,
+    ).toBe(0)
+  })
+
+  it('prompt chips and plain attachments never count', () => {
+    expect(
+      loadedSkillIds([
+        {
+          role: 'user',
+          attachments: [
+            slashChip({ kind: 'prompt', name: 'review-pr' }, 7),
+            { name: 'a.pdf', type: 'application/pdf' },
+          ],
+        },
+      ]).size,
+    ).toBe(0)
   })
 })
 
