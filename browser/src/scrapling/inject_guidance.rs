@@ -12,6 +12,14 @@ pub const GUIDANCE_HOOK_DESC: &str =
     "Internal: appends browser::* scraping and HTML parsing guidance to the agent system prompt.";
 
 pub const GUIDANCE: &str = "\
+## Showing a page vs scraping one (browser::*)
+To OPEN or SHOW a page — anything the user should watch, a local app to \
+demo, a page to click or screenshot live — use the interactive sessions: \
+`browser::sessions::start` with the url, then `browser::navigate`, \
+`browser::snapshot`, `browser::act`, and `browser::screenshot`. Those \
+sessions render in a real Chromium and appear live in the console's \
+browser page. The scraping surface below fetches content and renders \
+nothing the user can see — never use it to \"open\" something for them.
 ## Scraping and HTML parsing (browser::*)
 Start with `browser::fetch` for static web pages, RSS/Atom feeds, and APIs; \
 its `urls` input fetches concurrently. Do not refetch successful entries, and \
@@ -87,7 +95,7 @@ mod tests {
     fn nonempty_base_appends_guidance() {
         let v = serde_json::to_value(mutations_for("BASE")).unwrap();
         let s = v["mutations"]["system_prompt"].as_str().unwrap();
-        assert!(s.starts_with("BASE\n\n## Scraping and HTML parsing"));
+        assert!(s.starts_with("BASE\n\n## Showing a page vs scraping one"));
     }
 
     /// The guidance is what routes agents to these functions, so it must not

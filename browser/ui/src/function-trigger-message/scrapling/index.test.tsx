@@ -24,6 +24,23 @@ describe('scraping renderer', () => {
     expect(renderer.isMatch('browser::screenshot')).toBe(false)
   })
 
+  it('offers open-in-browser on a fetched url', async () => {
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const withHost = {
+      iii: { trigger: () => Promise.resolve({}) },
+    } as unknown as Host
+    const renderer = createScraplingRenderer(withHost)
+    const done = {
+      functionId: 'browser::fetch',
+      input: { url: 'https://example.com' },
+      output: { status: 200, url: 'https://example.com', content: 'hi' },
+      running: false,
+    } as unknown as FunctionTriggerMessage
+    const html = renderToStaticMarkup(<>{renderer.tryRender?.(done)}</>)
+    expect(html).toContain('Open in browser')
+    expect(html).toContain('br-ui-open-in-browser')
+  })
+
   it('renders approval previews and parse results', () => {
     const renderer = createScraplingRenderer(host)
     const preview = {

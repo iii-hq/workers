@@ -1,3 +1,5 @@
+import type { Host } from '@iii-dev/console-ui'
+import { OpenInBrowser } from '../open-in-browser'
 import { JsonHighlight } from '@iii-dev/console-ui'
 import { cn } from '../../lib/cn'
 import {
@@ -22,6 +24,7 @@ const MAX_TARGET_LINES = 5
 const HTML_PREVIEW_CHARS = 1500
 
 interface FetchViewProps {
+  host?: Host
   functionId: string
   input: unknown
   output: unknown
@@ -35,6 +38,7 @@ export function FetchView({
   input,
   output,
   running,
+  host,
 }: FetchViewProps) {
   const req = safeParseRequest(fetchRequestSchema, input)
   if (!req) return null
@@ -46,7 +50,7 @@ export function FetchView({
           <StatusPill label="fetching…" variant="default" />
           <OptionChips functionId={functionId} req={req} />
         </MetaRow>
-        <TargetLines urls={targetUrls(req)} />
+        <TargetLines urls={targetUrls(req)} host={host} />
         <div className="br-ui-scrape-running">
           · waiting for page…
         </div>
@@ -62,7 +66,9 @@ export function FetchView({
       <BulkPane functionId={functionId} req={req} results={result.results} />
     )
   }
-  return <SinglePane functionId={functionId} req={req} page={result} />
+  return (
+    <SinglePane functionId={functionId} req={req} page={result} host={host} />
+  )
 }
 
 /** Compact read-only summary shown while the call sits in the approval gate. */
@@ -145,13 +151,14 @@ function OptionChips({
   )
 }
 
-function TargetLines({ urls }: { urls: string[] }) {
+function TargetLines({ urls, host }: { urls: string[]; host?: Host }) {
   return (
     <>
       {urls.slice(0, MAX_TARGET_LINES).map((url, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; rows never reorder and urls may repeat
         <ActionLine key={`${i}:${url}`} symbol="→" tone="ink">
           <span className="br-ui-scrape-break">{url}</span>
+          {host ? <OpenInBrowser host={host} url={url} /> : null}
         </ActionLine>
       ))}
       {urls.length > MAX_TARGET_LINES ? (
@@ -169,10 +176,12 @@ function SinglePane({
   functionId,
   req,
   page,
+  host,
 }: {
   functionId: string
   req: FetchRequest
   page: PageResult
+  host?: Host
 }) {
   const status = page.status ?? null
   const contentType = headerValue(page.headers, 'content-type')
@@ -193,6 +202,9 @@ function SinglePane({
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
         <span className="br-ui-scrape-break">{page.url || req.url || ''}</span>
+        {host && (page.url || req.url) ? (
+          <OpenInBrowser host={host} url={page.url || req.url || ''} />
+        ) : null}
       </ActionLine>
       {page.extracted ? <Extracted extracted={page.extracted} /> : null}
       {page.content != null ? (

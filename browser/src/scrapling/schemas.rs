@@ -694,13 +694,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::session-open",
-            description: "Open a persistent HTTP/browser session; returns a session_id that reuses cookies + state.",
+            description: "Open a persistent scraping session (HTTP or headless fetcher) whose session_id reuses cookies and state across fetches. Renders nothing the user can see; to open a page in the visible browser use browser::sessions::start.",
             request: session_open_request(),
             response: session_open_response(),
         },
         FunctionSpec {
             function_id: "browser::session-fetch",
-            description: "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
+            description: "Fetch a URL on an open scraping session (reuses its cookies/state); returns page content, shows nothing. For a page the user should see, use browser::sessions::start + browser::navigate.",
             request: session_fetch_request(),
             response: fetch_response(),
         },

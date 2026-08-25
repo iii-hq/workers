@@ -1,6 +1,6 @@
 {
   "function_id": "browser::session-fetch",
-  "description": "Fetch a URL on an open session (reuses its cookies/browser); same page/extraction output.",
+  "description": "Fetch a URL on an open scraping session (reuses its cookies/state); returns page content, shows nothing. For a page the user should see, use browser::sessions::start + browser::navigate.",
   "request_schema": {
     "type": "object",
     "properties": {

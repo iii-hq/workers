@@ -59,7 +59,10 @@ function redactProxyValues(
   }
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function tryRender(
+  message: FunctionTriggerMessage,
+  host?: Host,
+): React.ReactNode | null {
   if (!isScraplingFunction(message.functionId) || message.pendingApproval) {
     return null
   }
@@ -81,6 +84,7 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
       input,
       output,
       running,
+      host,
     })
   }
   if (ELEMENT_SEARCH_FUNCTION_IDS.has(message.functionId)) {
@@ -114,7 +118,7 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
     case 'browser::session-open':
       return SessionOpenView({ input, output, running })
     case 'browser::session-fetch':
-      return SessionFetchView({ input, output, running })
+      return SessionFetchView({ input, output, running, host })
     case 'browser::session-close':
       return SessionCloseView({ input, output, running })
     case 'browser::session-list':
@@ -152,13 +156,14 @@ function tryRenderPreview(
 }
 
 export function createScraplingRenderer(
-  _host: Host,
+  host: Host,
 ): FunctionTriggerRenderer {
+  const render = (message: FunctionTriggerMessage) => tryRender(message, host)
   return {
     id: 'browser/page.js#scraping-calls',
     isMatch: isScraplingFunction,
-    tryRender,
-    tryRenderRunning: tryRender,
+    tryRender: render,
+    tryRenderRunning: render,
     tryRenderPreview,
     FunctionIdLabel,
     redactRaw: redactProxyValues,
