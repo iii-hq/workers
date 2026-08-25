@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       campaign_id:
-        description: Release Control shadow campaign UUID
+        description: Release Control campaign UUID
         required: true
         type: string
       execution_id:
@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       attempt:
-        description: Explicit Release Control attempt
+        description: Explicit Release Control campaign attempt
         required: true
         type: number
       execution_contract:
@@ -27,17 +27,22 @@ permissions:
   id-token: write
 
 concurrency:
-  group: harness-e2e-shadow-${{ inputs.execution_id }}
+  group: harness-e2e-shadow-${{ inputs.execution_id }}-${{ inputs.attempt }}
   cancel-in-progress: false
 
 jobs:
-  observe:
-    name: Run observe-only plan
+  prepare:
+    name: Validate and admit campaign
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 10
     environment: harness-e2e-trusted
-    env:
-      HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e-shadow
+    outputs:
+      contract_sha256: ${{ steps.contract.outputs.contract_sha256 }}
+      matrix: ${{ steps.contract.outputs.matrix }}
+      oidc_audience: ${{ steps.contract.outputs.oidc_audience }}
+      runner_revision: ${{ steps.contract.outputs.runner_revision }}
+      schema_version: ${{ steps.contract.outputs.schema_version }}
+      manifest_id: ${{ steps.contract.outputs.manifest_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -51,36 +56,40 @@ jobs:
           --operation-id '${{ inputs.campaign_id }}'
           --step-id '${{ inputs.execution_id }}'
 
-      - name: Prepare execution contract
+      - name: Prepare execution contract and group matrix
         id: contract
         env:
           EXECUTION_CONTRACT: ${{ inputs.execution_contract }}
         run: |
           set -euo pipefail
-          mkdir -p target/harness-e2e-shadow
-          printf '%s\n' "$EXECUTION_CONTRACT" > target/harness-e2e-shadow/execution-contract.json
+          mkdir -p target/harness-e2e-contract
+          printf '%s\n' "$EXECUTION_CONTRACT" > target/harness-e2e-contract/execution-contract.json
           python3 .github/scripts/harness_e2e_shadow_contract.py validate \
-            --contract target/harness-e2e-shadow/execution-contract.json >/dev/null
+            --contract target/harness-e2e-contract/execution-contract.json >/dev/null
           contract_sha256=$(python3 .github/scripts/harness_e2e_shadow_contract.py digest \
-            --contract target/harness-e2e-shadow/execution-contract.json)
+            --contract target/harness-e2e-contract/execution-contract.json)
+          matrix=$(python3 .github/scripts/harness_e2e_shadow_contract.py matrix \
+            --contract target/harness-e2e-contract/execution-contract.json)
           oidc_audience=$(jq -er \
-            'if .schema_version == 2 then .security.oidc_audience else "release-control-harness-e2e" end' \
-            target/harness-e2e-shadow/execution-contract.json)
+            'if .schema_version >= 2 then .security.oidc_audience else "release-control-harness-e2e" end' \
+            target/harness-e2e-contract/execution-contract.json)
+          schema_version=$(jq -er '.schema_version' target/harness-e2e-contract/execution-contract.json)
+          runner_revision=$(jq -r '.runner.revision // ""' target/harness-e2e-contract/execution-contract.json)
+          manifest_id=$(jq -r '.plan.definition.manifest.id // ""' target/harness-e2e-contract/execution-contract.json)
           printf 'contract_sha256=%s\n' "$contract_sha256" >> "$GITHUB_OUTPUT"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
           printf 'oidc_audience=%s\n' "$oidc_audience" >> "$GITHUB_OUTPUT"
+          printf 'runner_revision=%s\n' "$runner_revision" >> "$GITHUB_OUTPUT"
+          printf 'schema_version=%s\n' "$schema_version" >> "$GITHUB_OUTPUT"
+          printf 'manifest_id=%s\n' "$manifest_id" >> "$GITHUB_OUTPUT"
           jq -e \
             --arg campaign '${{ inputs.campaign_id }}' \
             --arg execution '${{ inputs.execution_id }}' \
             --argjson attempt '${{ inputs.attempt }}' \
             '.campaign_id == $campaign and .execution_id == $execution and .attempt == $attempt' \
-            target/harness-e2e-shadow/execution-contract.json >/dev/null
-
-      - name: Install stack verification tooling
-        run: python3 -m pip install --quiet pyyaml
+            target/harness-e2e-contract/execution-contract.json >/dev/null
 
       - name: Acquire single-use execution admission
-        id: admission
-        continue-on-error: true
         env:
           RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
           EXECUTION_CONTRACT_SHA256: ${{ steps.contract.outputs.contract_sha256 }}
@@ -103,12 +112,73 @@ jobs:
               --arg workflow_sha '${{ github.sha }}' \
               --arg execution_contract_sha256 "$EXECUTION_CONTRACT_SHA256" \
               '{campaign_id:$campaign_id,run_id:$run_id,run_attempt:$run_attempt,workflow_sha:$workflow_sha,execution_contract_sha256:$execution_contract_sha256}')")
-          printf '%s\n' "$response" > target/harness-e2e-shadow/admission.json
-          jq -e '.admitted == true' target/harness-e2e-shadow/admission.json >/dev/null
+          printf '%s\n' "$response" > target/harness-e2e-contract/admission.json
+          jq -e '.admitted == true' target/harness-e2e-contract/admission.json >/dev/null
 
-      - name: Run ephemeral E2E control plane
-        id: execute
-        if: steps.admission.outcome == 'success'
+      - uses: actions/upload-artifact@v6
+        with:
+          name: e2e-contract-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
+          path: target/harness-e2e-contract/
+          retention-days: 1
+          if-no-files-found: error
+
+  groups:
+    name: ${{ matrix.group_id }}
+    needs: prepare
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 240
+    environment: harness-e2e-trusted
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e-shadow
+      HARNESS_E2E_CAMPAIGN_GROUP_ID: ${{ matrix.group_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: e2e-contract-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
+          path: target/harness-e2e-contract
+
+      - name: Restore execution contract
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e-shadow
+          cp target/harness-e2e-contract/execution-contract.json target/harness-e2e-shadow/execution-contract.json
+
+      - name: Check out exact Harness runner source for fault evaluation
+        if: matrix.execution_kind == 'fault_injection'
+        uses: actions/checkout@v5
+        with:
+          repository: iii-hq/harness-e2e
+          ref: ${{ needs.prepare.outputs.runner_revision }}
+          path: target/harness-source
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        if: matrix.execution_kind == 'fault_injection'
+
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.execution_kind == 'fault_injection'
+        with:
+          workspaces: target/harness-source
+          key: harness-e2e-fault-${{ needs.prepare.outputs.runner_revision }}
+
+      - name: Build exact fault evaluator
+        if: matrix.execution_kind == 'fault_injection'
+        run: cargo build --locked --release --bin harness-e2e
+        working-directory: target/harness-source
+
+      - name: Install stack verification tooling
+        if: matrix.execution_kind != 'fault_injection'
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Execute common campaign group
+        id: common
+        if: matrix.execution_kind != 'fault_injection'
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -118,20 +188,20 @@ jobs:
           HARNESS_E2E_EXECUTION_CONTRACT: ${{ inputs.execution_contract }}
         run: harness/tests/e2e/run-shadow-control-ci.sh
 
-      - name: Record admission failure
-        if: steps.admission.outcome != 'success'
-        run: |
-          set -euo pipefail
-          mkdir -p target/harness-e2e-shadow
-          jq -n \
-            '{schema:"e2e-shadow-failure/v1",phase:"admission",outcome:"infra_failed",error:"execution admission was rejected"}' \
-            > target/harness-e2e-shadow/failure.json
+      - name: Execute protected fault campaign group
+        id: fault
+        if: matrix.execution_kind == 'fault_injection'
+        continue-on-error: true
+        env:
+          HARNESS_E2E_EXECUTION_CONTRACT: ${{ inputs.execution_contract }}
+          HARNESS_E2E_HARNESS_ROOT: ${{ github.workspace }}/target/harness-source
+        run: harness/tests/e2e/run-campaign-fault-ci.sh
 
-      - name: Package factual evidence
+      - name: Package factual group evidence
         if: always()
         env:
           WORKFLOW_IDENTITY: >-
-            {"repository":"${{ github.repository }}","workflow":"harness-e2e-shadow.yml","workflow_sha":"${{ github.sha }}","run_id":${{ github.run_id }},"run_attempt":${{ github.run_attempt }}}
+            {"repository":"${{ github.repository }}","workflow":"harness-e2e-shadow.yml","workflow_sha":"${{ github.sha }}","run_id":${{ github.run_id }},"run_attempt":${{ github.run_attempt }},"group_id":"${{ matrix.group_id }}","job":"${{ github.job }}"}
         run: |
           set -euo pipefail
           python3 .github/scripts/harness_e2e_shadow_contract.py package \
@@ -140,8 +210,17 @@ jobs:
             --workflow "$WORKFLOW_IDENTITY" \
             --output target/harness-e2e-shadow/bundle-manifest.json
 
-      - name: Upload observation bundle
-        if: always()
+      - name: Upload group observation bundle
+        if: always() && needs.prepare.outputs.schema_version == '3'
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-${{ matrix.group_id }}-gh-${{ github.run_attempt }}
+          path: target/harness-e2e-shadow/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload legacy observation bundle
+        if: always() && needs.prepare.outputs.schema_version != '3'
         uses: actions/upload-artifact@v6
         with:
           name: e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
@@ -149,6 +228,70 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      - name: Preserve factual job conclusion
-        if: always() && (steps.admission.outcome != 'success' || steps.execute.outcome != 'success')
+      - name: Preserve factual group conclusion
+        if: always() && (steps.common.outcome == 'failure' || steps.fault.outcome == 'failure')
         run: exit 1
+
+  finalize:
+    name: Sign and aggregate campaign artifacts
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.schema_version == '3'
+    needs: [prepare, groups]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Check out exact Harness aggregator
+        uses: actions/checkout@v5
+        with:
+          repository: iii-hq/harness-e2e
+          ref: ${{ needs.prepare.outputs.runner_revision }}
+          path: target/harness-source
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: e2e-contract-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
+          path: target/harness-e2e-campaign
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-*-gh-${{ github.run_attempt }}
+          path: target/downloaded-groups
+          merge-multiple: false
+
+      - name: Restore deterministic group paths
+        env:
+          EXECUTION_CONTRACT: ${{ inputs.execution_contract }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e-campaign/groups
+          while IFS= read -r group; do
+            source="target/downloaded-groups/e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-${group}-gh-${{ github.run_attempt }}"
+            test -d "$source"
+            mv "$source" "target/harness-e2e-campaign/groups/$group"
+          done < <(jq -r '.plan.definition.groups[].id' <<<"$EXECUTION_CONTRACT")
+
+      - name: Aggregate with exact Harness scoring implementation
+        run: |
+          set -euo pipefail
+          python3 target/harness-source/scripts/run_e2e_campaign.py \
+            "target/harness-source/config/campaigns/${{ needs.prepare.outputs.manifest_id }}.json" \
+            --aggregate-existing-root target/harness-e2e-campaign/groups \
+            --execution-id '${{ inputs.execution_id }}' \
+            --summary target/harness-e2e-campaign/campaign-summary.json \
+            --bundle target/harness-e2e-campaign/campaign-bundle.json
+          python3 .github/scripts/harness_e2e_shadow_contract.py package \
+            --root target/harness-e2e-campaign \
+            --contract target/harness-e2e-campaign/execution-contract.json \
+            --workflow '{"repository":"${{ github.repository }}","workflow":"harness-e2e-shadow.yml","workflow_sha":"${{ github.sha }}","run_id":${{ github.run_id }},"run_attempt":${{ github.run_attempt }},"job":"finalize"}' \
+            --output target/harness-e2e-campaign/bundle-manifest.json
+
+      - name: Upload root observation bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
+          path: target/harness-e2e-campaign/
+          retention-days: 90
+          if-no-files-found: error

@@ -133,6 +133,65 @@ def manual_v2_catalog():
     }
 
 
+def campaign_v3_contract():
+    value = manual_v2_contract()
+    value["schema_version"] = 3
+    value["idempotency_key"] = f"rc:e2e:{'a' * 64}"
+    value["plan"]["revision"] = 3
+    value["plan"]["definition"] = {
+        "mode": "campaign",
+        "entrypoint": "e2e::run",
+        "label": "Daily campaign",
+        "lane": "daily",
+        "failurePolicy": "advisory",
+        "subject": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+        "judge": {"provider": "zai", "model": "glm-5.3"},
+        "manifest": {"id": "daily", "sha256": f"sha256:{'3' * 64}"},
+        "scoring": {
+            "profile": "difficulty-weighted-v1",
+            "sha256": f"sha256:{'4' * 64}",
+        },
+        "catalog": {
+            "revision": "catalog-1",
+            "sha256": f"sha256:{'f' * 64}",
+            "seed": 4404,
+        },
+        "groups": [
+            {
+                "id": "daily-core",
+                "executionKind": "harness_turn",
+                "scenarios": ["direct_answer"],
+                "runs": 1,
+                "technicalRetries": 1,
+                "difficultyTier": "L4",
+                "difficultyWeight": 4,
+            },
+            {
+                "id": "weekly-fault-l2",
+                "executionKind": "fault_injection",
+                "scenarios": [],
+                "runs": 3,
+                "technicalRetries": 0,
+                "difficultyTier": "L2",
+                "difficultyWeight": 2,
+                "faultProfile": "weekly-l2-recovery",
+                "faultScenario": "stateful.2",
+                "soakMinutes": 60,
+            },
+        ],
+    }
+    value["runner"].update(
+        {
+            "revision": "e" * 40,
+            "catalog_sha256": f"sha256:{'f' * 64}",
+            "manifest_sha256": f"sha256:{'3' * 64}",
+            "scoring_profile_sha256": f"sha256:{'4' * 64}",
+            "assets_sha256": f"sha256:{'5' * 64}",
+        }
+    )
+    return value
+
+
 def manual_v2_contract_with_versions(versions: dict[str, str]):
     changed = manual_v2_contract()
     stack_digest = MODULE.canonical_sha256(versions)
@@ -213,6 +272,36 @@ class ShadowContractTest(unittest.TestCase):
         )
         self.assertEqual(request["run_contract"]["runner"]["version"], "0.1.0-experimental")
         self.assertEqual(request["run_contract"]["selected_cases"][0]["scenario_id"], "direct_answer")
+
+    def test_campaign_v3_keeps_legacy_contracts_and_materializes_one_group(self):
+        value = campaign_v3_contract()
+        MODULE.validate_contract(value)
+        request = MODULE.materialize_request(
+            value, manual_v2_catalog(), group_id="daily-core"
+        )
+        self.assertEqual(request["scenarios"], ["direct_answer"])
+        self.assertEqual(request["runs"], 1)
+        self.assertEqual(request["run_contract"]["plan"]["group_id"], "daily-core")
+        self.assertEqual(request["run_contract"]["mode"]["decision"], "observe_only")
+
+    def test_campaign_matrix_isolated_faults_on_the_trusted_runner(self):
+        matrix = MODULE.campaign_matrix(campaign_v3_contract())
+        self.assertEqual(len(matrix["include"]), 2)
+        self.assertEqual(matrix["include"][0]["runs_on"], ["ubuntu-latest"])
+        self.assertEqual(
+            matrix["include"][1]["runs_on"], ["self-hosted", "harness-e2e"]
+        )
+
+    def test_campaign_rejects_fault_retries_and_weight_drift(self):
+        retries = campaign_v3_contract()
+        retries["plan"]["definition"]["groups"][1]["technicalRetries"] = 1
+        with self.assertRaisesRegex(ValueError, "fault injection requires"):
+            MODULE.validate_contract(retries)
+
+        weight = campaign_v3_contract()
+        weight["plan"]["definition"]["groups"][0]["difficultyWeight"] = 3
+        with self.assertRaisesRegex(ValueError, "does not match L4"):
+            MODULE.validate_contract(weight)
 
     def test_rejects_a_manual_v2_contract_when_the_resolved_stack_digest_is_tampered(self):
         changed = manual_v2_contract()

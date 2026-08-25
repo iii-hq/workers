@@ -25,7 +25,9 @@ printf '%s\n' "$HARNESS_E2E_EXECUTION_CONTRACT" >"$contract_path"
 python3 "$contract_tool" validate --contract "$contract_path" >/dev/null
 
 contract_schema=$(jq -r '.schema_version' "$contract_path")
-if [[ "$contract_schema" == 2 ]]; then
+exact_contract=false
+if [[ "$contract_schema" == 2 || "$contract_schema" == 3 ]]; then
+  exact_contract=true
   stack_versions=$(jq -c '.target.stack.resolved_versions' "$contract_path")
   stack_digest=$(jq -r '.target.stack.resolution_sha256' "$contract_path")
   runtime_versions=$(jq -c '.runtime.stack_versions' "$contract_path")
@@ -43,7 +45,15 @@ runner_worker=$(jq -r '.runner.registry_worker' "$contract_path")
 runner_ref=$(jq -r '.runner.registry_ref' "$contract_path")
 subject_provider=$(jq -r '.plan.definition.subject.provider' "$contract_path")
 judge_provider=$(jq -r '.plan.definition.judge.provider' "$contract_path")
-seed=$(jq -r '.plan.definition.seed' "$contract_path")
+campaign_group_id=${HARNESS_E2E_CAMPAIGN_GROUP_ID:-legacy}
+if [[ "$contract_schema" == 3 ]]; then
+  jq -e --arg group "$campaign_group_id" \
+    '.plan.definition.groups | any(.id == $group and .executionKind != "fault_injection")' \
+    "$contract_path" >/dev/null
+  seed=$(jq -r '.plan.definition.catalog.seed' "$contract_path")
+else
+  seed=$(jq -r '.plan.definition.seed' "$contract_path")
+fi
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-e2e-shadow.XXXXXX")
 project_dir="$run_root/project"
@@ -64,7 +74,8 @@ export HARNESS_E2E_STACK_VERSIONS="$stack_versions"
 export HARNESS_E2E_STACK_DIGEST="$stack_digest"
 export HARNESS_E2E_DATA_DIR="$run_root/e2e-data"
 export HARNESS_E2E_RUN_DIR="$project_dir"
-export HARNESS_E2E_LANE=release-control-shadow
+export HARNESS_E2E_LANE=$(jq -r '.plan.definition.lane' "$contract_path")
+export HARNESS_E2E_CAMPAIGN_GROUP="$campaign_group_id"
 
 iii_bin=""
 engine_pid=""
@@ -203,13 +214,13 @@ verify_target_harness_runtime() {
   fail "harness runtime version mismatch: expected $expected, observed ${observed:-unreported}"
 }
 
-if [[ "$contract_schema" == 2 ]]; then
+if [[ "$exact_contract" == true ]]; then
   log "Installing exact iii CLI $cli_version"
 else
   log "Installing iii CLI from $cli_channel"
 fi
 curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 "$install_url" -o "$run_root/install.sh"
-if [[ "$contract_schema" == 2 ]]; then
+if [[ "$exact_contract" == true ]]; then
   VERSION="$cli_version" sh "$run_root/install.sh" 2>&1 | tee "$artifact_dir/logs/install.log"
 elif [[ "$cli_channel" == next ]]; then
   sh "$run_root/install.sh" --next 2>&1 | tee "$artifact_dir/logs/install.log"
@@ -219,7 +230,7 @@ fi
 iii_bin=$(command -v iii)
 observed_cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$observed_cli_version" >"$artifact_dir/iii-version.txt"
-if [[ "$contract_schema" == 2 && "$observed_cli_version" != *"$cli_version"* ]]; then
+if [[ "$exact_contract" == true && "$observed_cli_version" != *"$cli_version"* ]]; then
   fail "iii CLI version mismatch: expected $cli_version, observed $observed_cli_version"
 fi
 export HARNESS_E2E_ENGINE_REVISION="$observed_cli_version"
@@ -231,7 +242,7 @@ engine_pid=$!
 wait_for_engine
 
 failure_phase=registry
-if [[ "$contract_schema" == 2 ]]; then
+if [[ "$exact_contract" == true ]]; then
   # The contract may distinguish runtime and target pins. Resolve their union
   # once before the runner and once after it, rather than waiting for every
   # individual worker to report ready in four serial loops.
@@ -255,7 +266,7 @@ else
   add_with_retry support "${support[@]}"
 fi
 
-if [[ "$contract_schema" != 2 ]]; then
+if [[ "$exact_contract" != true ]]; then
   while IFS=$'\t' read -r worker version; do
     log "Installing exact target stack: $worker@$version"
     # A shadow job always starts with a fresh project directory. Forcing an
@@ -272,7 +283,7 @@ add_with_retry runner "$runner_worker@$runner_ref" --force
 # exact pins without force: force restarts an already-correct target worker
 # while the engine's file watcher can revive its previous executable between
 # removal and download. The lock and runtime checks below remain fail-closed.
-if [[ "$contract_schema" == 2 ]]; then
+if [[ "$exact_contract" == true ]]; then
   install_exact_stack stack-repin "$exact_stack_versions" false
 else
   while IFS=$'\t' read -r worker version; do
@@ -281,7 +292,7 @@ else
 fi
 
 target_harness_version=$(jq -r '.target.version' "$contract_path")
-if [[ "$contract_schema" == 2 ]]; then
+if [[ "$exact_contract" == true ]]; then
   python3 "$contract_tool" verify-lock \
     --contract "$contract_path" \
     --lock "$project_dir/iii.lock" \
@@ -310,10 +321,15 @@ verify_target_harness_runtime
 failure_phase=materialization
 "$iii_bin" trigger e2e::scenarios-list --port "$engine_port" \
   --json "$(jq -cn --argjson seed "$seed" '{seed:$seed}')" >"$artifact_dir/catalog.json"
-python3 "$contract_tool" materialize \
-  --contract "$contract_path" \
-  --catalog "$artifact_dir/catalog.json" \
+materialize_args=(
+  --contract "$contract_path"
+  --catalog "$artifact_dir/catalog.json"
   --output "$artifact_dir/run-request.json"
+)
+if [[ "$contract_schema" == 3 ]]; then
+  materialize_args+=(--group-id "$campaign_group_id")
+fi
+python3 "$contract_tool" materialize "${materialize_args[@]}"
 
 failure_phase=execution
 timeout --signal=TERM --kill-after=30s "$admission_timeout_seconds" \
@@ -340,11 +356,36 @@ while true; do
 done
 
 failure_phase=results
+results_response="$artifact_dir/results.json"
+if [[ "$contract_schema" == 3 ]]; then
+  results_response="$artifact_dir/results-get.json"
+fi
 timeout --signal=TERM --kill-after=30s 120 \
   "$iii_bin" trigger e2e::results-get --port "$engine_port" \
   --json "$(jq -cn --arg execution_id "$remote_execution_id" '{execution_id:$execution_id}')" \
-  >"$artifact_dir/results.json"
-jq -e --arg id "$remote_execution_id" '.execution_id == $id' "$artifact_dir/results.json" >/dev/null
+  >"$results_response"
+jq -e --arg id "$remote_execution_id" '.execution_id == $id' "$results_response" >/dev/null
+
+if [[ "$contract_schema" == 3 ]]; then
+  # Preserve the exact Harness-authored bytes. The API envelope is retained as
+  # results-get.json for transport evidence, but it is never used to rebuild
+  # results.json, manifest.json, or observation.json.
+  native_result_path=$(jq -er '.result_path | select(type == "string" and length > 0)' "$results_response")
+  case "$native_result_path" in
+    /*|*".."*) fail "unsafe native result path: $native_result_path" ;;
+  esac
+  native_dir="$HARNESS_E2E_DATA_DIR/$(dirname -- "$native_result_path")"
+  for native_name in results.json manifest.json observation.json; do
+    test -f "$native_dir/$native_name"
+    cp -- "$native_dir/$native_name" "$artifact_dir/$native_name"
+  done
+  expected_results_sha=$(jq -er '.observation.evidence.results_sha256' "$results_response")
+  expected_manifest_sha=$(jq -er '.observation.evidence.manifest_sha256' "$results_response")
+  observed_results_sha="sha256:$(sha256sum "$artifact_dir/results.json" | cut -d ' ' -f1)"
+  observed_manifest_sha="sha256:$(sha256sum "$artifact_dir/manifest.json" | cut -d ' ' -f1)"
+  [[ "$observed_results_sha" == "$expected_results_sha" ]]
+  [[ "$observed_manifest_sha" == "$expected_manifest_sha" ]]
+fi
 
 # This proves the archive contract while the runner is alive. GitHub Artifact,
 # not this ephemeral local storage, is the D0 retention boundary.

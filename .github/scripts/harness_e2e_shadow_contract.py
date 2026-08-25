@@ -18,6 +18,21 @@ VERSION = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+CAMPAIGN_EXECUTION_KINDS = {
+    "harness_turn",
+    "scripted_dialogue",
+    "composite_flow",
+    "adaptive_flow",
+    "fault_injection",
+}
+DIFFICULTY_WEIGHTS = {
+    "L0": 1,
+    "L1": 1,
+    "L2": 2,
+    "L3": 3,
+    "L4": 4,
+    "L5": 5,
+}
 
 # These workers are hosted by the pinned iii engine rather than installed from
 # the Registry. `iii worker add` intentionally reports them as built-in, so a
@@ -90,6 +105,116 @@ def require_positive_integer(value: Any, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{label} must be a positive integer")
     return value
+
+
+def require_nonnegative_integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
+def validate_identity(definition: dict[str, Any], role: str) -> None:
+    identity = definition.get(role)
+    if not isinstance(identity, dict):
+        raise ValueError(f"plan.definition.{role} must be an object")
+    require_text(identity.get("provider"), f"plan.definition.{role}.provider")
+    require_text(identity.get("model"), f"plan.definition.{role}.model")
+
+
+def validate_campaign_definition(definition: dict[str, Any]) -> None:
+    if definition.get("entrypoint") != "e2e::run":
+        raise ValueError("campaign plan must use e2e::run")
+    require_text(definition.get("label"), "plan.definition.label")
+    lane = require_text(definition.get("lane"), "plan.definition.lane")
+    if lane not in {"manual", "daily", "weekly", "post-release"}:
+        raise ValueError("campaign lane must be manual, daily, weekly, or post-release")
+    if definition.get("failurePolicy") != "advisory":
+        raise ValueError("campaign failurePolicy must be advisory")
+    validate_identity(definition, "subject")
+    validate_identity(definition, "judge")
+
+    manifest = definition.get("manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError("plan.definition.manifest must be an object")
+    require_text(manifest.get("id"), "plan.definition.manifest.id")
+    require_digest(manifest.get("sha256"), "plan.definition.manifest.sha256")
+
+    scoring = definition.get("scoring")
+    if not isinstance(scoring, dict) or scoring.get("profile") != "difficulty-weighted-v1":
+        raise ValueError("campaign scoring profile must be difficulty-weighted-v1")
+    require_digest(scoring.get("sha256"), "plan.definition.scoring.sha256")
+
+    catalog = definition.get("catalog")
+    if not isinstance(catalog, dict):
+        raise ValueError("plan.definition.catalog must be an object")
+    require_text(catalog.get("revision"), "plan.definition.catalog.revision")
+    require_digest(catalog.get("sha256"), "plan.definition.catalog.sha256")
+    require_positive_integer(catalog.get("seed"), "plan.definition.catalog.seed")
+
+    groups = definition.get("groups")
+    if not isinstance(groups, list) or not groups:
+        raise ValueError("campaign groups must be a non-empty array")
+    seen: set[str] = set()
+    for index, group in enumerate(groups):
+        label = f"plan.definition.groups[{index}]"
+        if not isinstance(group, dict):
+            raise ValueError(f"{label} must be an object")
+        group_id = require_text(group.get("id"), f"{label}.id")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", group_id) or group_id in seen:
+            raise ValueError("campaign group ids must be unique kebab-case values")
+        seen.add(group_id)
+        execution_kind = require_text(group.get("executionKind"), f"{label}.executionKind")
+        if execution_kind not in CAMPAIGN_EXECUTION_KINDS:
+            raise ValueError(f"{label}.executionKind is unsupported")
+        runs = require_positive_integer(group.get("runs"), f"{label}.runs")
+        retries = require_nonnegative_integer(
+            group.get("technicalRetries"), f"{label}.technicalRetries"
+        )
+        tier = require_text(group.get("difficultyTier"), f"{label}.difficultyTier")
+        expected_weight = DIFFICULTY_WEIGHTS.get(tier)
+        if expected_weight is None or group.get("difficultyWeight") != expected_weight:
+            raise ValueError(f"{label}.difficultyWeight does not match {tier}")
+        scenarios = group.get("scenarios")
+        if execution_kind == "fault_injection":
+            if scenarios not in (None, []):
+                raise ValueError(f"{label}.scenarios must be empty for fault injection")
+            if retries != 0 or runs < 3 or group.get("soakMinutes") != 60:
+                raise ValueError(
+                    f"{label} fault injection requires runs>=3, technicalRetries=0, and soakMinutes=60"
+                )
+            require_text(group.get("faultProfile"), f"{label}.faultProfile")
+            require_text(group.get("faultScenario"), f"{label}.faultScenario")
+        else:
+            if not isinstance(scenarios, list) or not scenarios or len(set(scenarios)) != len(scenarios):
+                raise ValueError(f"{label}.scenarios must be a non-empty unique array")
+            if not all(isinstance(item, str) and item for item in scenarios):
+                raise ValueError(f"{label}.scenarios must contain non-empty strings")
+
+
+def campaign_matrix(contract: dict[str, Any]) -> dict[str, Any]:
+    validate_contract(contract)
+    definition = contract["plan"]["definition"]
+    if definition["mode"] != "campaign":
+        return {
+            "include": [
+                {
+                    "group_id": "legacy",
+                    "execution_kind": "demonstrative",
+                    "runs_on": ["ubuntu-latest"],
+                }
+            ]
+        }
+    include = []
+    for group in definition["groups"]:
+        is_fault = group["executionKind"] == "fault_injection"
+        include.append(
+            {
+                "group_id": group["id"],
+                "execution_kind": group["executionKind"],
+                "runs_on": ["self-hosted", "harness-e2e"] if is_fault else ["ubuntu-latest"],
+            }
+        )
+    return {"include": include}
 
 
 def v2_target_member(contract: dict[str, Any], target: dict[str, Any], name: str) -> Any:
@@ -218,16 +343,16 @@ def validate_v2_contract(contract: dict[str, Any], target: dict[str, Any], runne
 
 def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     schema_version = contract.get("schema_version")
-    if schema_version not in {1, 2}:
-        raise ValueError("execution contract schema_version must be 1 or 2")
+    if schema_version not in {1, 2, 3}:
+        raise ValueError("execution contract schema_version must be 1, 2, or 3")
     require_uuid(contract.get("campaign_id"), "campaign_id")
     require_uuid(contract.get("execution_id"), "execution_id")
     attempt = contract.get("attempt")
     if not isinstance(attempt, int) or attempt < 1:
         raise ValueError("attempt must be a positive integer")
     key = require_text(contract.get("idempotency_key"), "idempotency_key")
-    if not re.fullmatch(r"rc:d0:[0-9a-f]{64}", key):
-        raise ValueError("idempotency_key must be rc:d0:<sha256>")
+    if not re.fullmatch(r"rc:(?:d0|e2e):[0-9a-f]{64}", key):
+        raise ValueError("idempotency_key must be rc:d0:<sha256> or rc:e2e:<sha256>")
 
     target = contract.get("target")
     if not isinstance(target, dict) or target.get("application") != "harness":
@@ -265,22 +390,23 @@ def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     definition = plan.get("definition")
     if not isinstance(definition, dict):
         raise ValueError("plan.definition must be an object")
-    if definition.get("mode") != "demonstrative" or definition.get("entrypoint") != "e2e::run":
-        raise ValueError("plan must be demonstrative and use e2e::run")
-    scenarios = definition.get("scenarios")
-    if not isinstance(scenarios, list) or not scenarios or len(set(scenarios)) != len(scenarios):
-        raise ValueError("plan scenarios must be a non-empty unique list")
-    if not all(isinstance(item, str) and item for item in scenarios):
-        raise ValueError("plan scenarios must contain non-empty strings")
-    for field in ("runs", "seed", "technicalRetries", "progressIntervalSeconds"):
-        if not isinstance(definition.get(field), int) or definition[field] < 1:
-            raise ValueError(f"plan.definition.{field} must be a positive integer")
-    for role in ("subject", "judge"):
-        identity = definition.get(role)
-        if not isinstance(identity, dict):
-            raise ValueError(f"plan.definition.{role} must be an object")
-        require_text(identity.get("provider"), f"plan.definition.{role}.provider")
-        require_text(identity.get("model"), f"plan.definition.{role}.model")
+    if schema_version == 3:
+        if definition.get("mode") != "campaign":
+            raise ValueError("schema v3 plan mode must be campaign")
+        validate_campaign_definition(definition)
+    else:
+        if definition.get("mode") != "demonstrative" or definition.get("entrypoint") != "e2e::run":
+            raise ValueError("plan must be demonstrative and use e2e::run")
+        scenarios = definition.get("scenarios")
+        if not isinstance(scenarios, list) or not scenarios or len(set(scenarios)) != len(scenarios):
+            raise ValueError("plan scenarios must be a non-empty unique list")
+        if not all(isinstance(item, str) and item for item in scenarios):
+            raise ValueError("plan scenarios must contain non-empty strings")
+        for field in ("runs", "seed", "technicalRetries", "progressIntervalSeconds"):
+            if not isinstance(definition.get(field), int) or definition[field] < 1:
+                raise ValueError(f"plan.definition.{field} must be a positive integer")
+        validate_identity(definition, "subject")
+        validate_identity(definition, "judge")
 
     runner = contract.get("runner")
     if not isinstance(runner, dict):
@@ -290,12 +416,29 @@ def validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     runner_ref = require_text(runner.get("registry_ref"), "runner.registry_ref")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", runner_ref):
         raise ValueError("runner.registry_ref is invalid")
-    if schema_version == 2:
+    if schema_version in {2, 3}:
         validate_v2_contract(contract, target, runner)
+    if schema_version == 3:
+        definition = contract["plan"]["definition"]
+        require_digest(runner.get("catalog_sha256"), "runner.catalog_sha256")
+        require_digest(runner.get("manifest_sha256"), "runner.manifest_sha256")
+        require_digest(
+            runner.get("scoring_profile_sha256"),
+            "runner.scoring_profile_sha256",
+        )
+        require_digest(runner.get("assets_sha256"), "runner.assets_sha256")
+        if runner.get("catalog_sha256") != definition["catalog"]["sha256"]:
+            raise ValueError("runner catalog digest must match the campaign definition")
+        if runner.get("manifest_sha256") != definition["manifest"]["sha256"]:
+            raise ValueError("runner manifest digest must match the campaign definition")
+        if runner.get("scoring_profile_sha256") != definition["scoring"]["sha256"]:
+            raise ValueError("runner scoring digest must match the campaign definition")
     return contract
 
 
-def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> dict[str, Any]:
+def materialize_request(
+    contract: dict[str, Any], catalog: dict[str, Any], group_id: str | None = None
+) -> dict[str, Any]:
     validate_contract(contract)
     if catalog.get("schema") != "e2e-scenario-catalog/v1":
         raise ValueError("unsupported scenario catalog schema")
@@ -305,7 +448,7 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
     for field in ("name", "version", "revision"):
         require_text(runner.get(field), f"catalog.runner.{field}")
     catalog_sha256 = require_digest(catalog.get("catalog_sha256"), "catalog.catalog_sha256")
-    if contract["schema_version"] == 2:
+    if contract["schema_version"] in {2, 3}:
         expected_runner = contract["runner"]
         if runner.get("name") != expected_runner["registry_worker"] or runner.get("version") != expected_runner["registry_ref"]:
             raise ValueError("scenario catalog runner does not match the exact runner pin")
@@ -322,23 +465,42 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
             by_id[item["scenario_id"]] = item
 
     definition = contract["plan"]["definition"]
+    group = None
+    scenarios = definition.get("scenarios")
+    runs = definition.get("runs")
+    technical_retries = definition.get("technicalRetries")
+    plan_seed = definition.get("seed")
+    label = definition["label"]
+    if definition["mode"] == "campaign":
+        group = next(
+            (item for item in definition["groups"] if item["id"] == group_id), None
+        )
+        if group is None:
+            raise ValueError("a valid campaign group id is required")
+        if group["executionKind"] == "fault_injection":
+            raise ValueError("fault injection groups are executed by the protected supervisor")
+        scenarios = group["scenarios"]
+        runs = group["runs"]
+        technical_retries = group["technicalRetries"]
+        plan_seed = definition["catalog"]["seed"]
+        label = f"{definition['label']} · {group['id']}"
     selected_cases: list[dict[str, Any]] = []
-    for scenario_id in definition["scenarios"]:
+    for scenario_id in scenarios:
         descriptor = by_id.get(scenario_id)
         if descriptor is None:
             raise ValueError(f"scenario catalog is missing {scenario_id}")
         scenario_version = descriptor.get("scenario_version")
-        seed = descriptor.get("seed")
+        descriptor_seed = descriptor.get("seed")
         if not isinstance(scenario_version, int) or scenario_version < 1:
             raise ValueError(f"scenario {scenario_id} has an invalid version")
-        if seed != definition["seed"]:
+        if descriptor_seed != plan_seed:
             raise ValueError(f"scenario {scenario_id} seed does not match the plan")
         selected_cases.append(
             {
                 "scenario_id": scenario_id,
                 "scenario_version": scenario_version,
                 "case_id": require_text(descriptor.get("case_id"), f"{scenario_id}.case_id"),
-                "seed": seed,
+                "seed": descriptor_seed,
                 "inputs_sha256": require_digest(
                     descriptor.get("inputs_sha256"), f"{scenario_id}.inputs_sha256"
                 ),
@@ -350,7 +512,7 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
 
     target_stack = contract["target"]["stack_versions"]
     target_stack_digest = contract["target"]["stack_digest"]
-    if contract["schema_version"] == 2:
+    if contract["schema_version"] in {2, 3}:
         stack = v2_target_member(contract, contract["target"], "stack")
         target_stack = stack["resolved_versions"]
         target_stack_digest = stack["resolution_sha256"]
@@ -371,6 +533,9 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
             "revision": str(contract["plan"]["revision"]),
             "sha256": contract["plan"]["sha256"],
             "catalog_sha256": catalog_sha256,
+            "group_id": group_id,
+            "manifest_sha256": definition.get("manifest", {}).get("sha256"),
+            "scoring_profile": definition.get("scoring"),
         },
         "runner": runner,
         "attempt": contract["attempt"],
@@ -382,18 +547,18 @@ def materialize_request(contract: dict[str, Any], catalog: dict[str, Any]) -> di
         },
     }
     request = {
-        "label": f"{definition['label']} · Harness {contract['target']['version']}",
+        "label": f"{label} · Harness {contract['target']['version']}",
         "lane": definition["lane"],
         "model": definition["subject"]["model"],
         "provider": definition["subject"]["provider"],
         "judge_model": definition["judge"]["model"],
         "judge_provider": definition["judge"]["provider"],
-        "scenarios": definition["scenarios"],
-        "runs": definition["runs"],
-        "seed": definition["seed"],
+        "scenarios": scenarios,
+        "runs": runs,
+        "seed": plan_seed,
         "rotating_seeds": [],
-        "technical_retries": definition["technicalRetries"],
-        "progress_interval_seconds": definition["progressIntervalSeconds"],
+        "technical_retries": technical_retries,
+        "progress_interval_seconds": definition.get("progressIntervalSeconds", 15),
         "run_contract": run_contract,
     }
     # The runner validates a D0 key over the fully materialized request,
@@ -439,7 +604,7 @@ def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
     }
 
     target = contract["target"]
-    if contract["schema_version"] == 2:
+    if contract["schema_version"] in {2, 3}:
         stack = v2_target_member(contract, target, "stack")
         expected_target = stack["resolved_versions"]
         target_digest = stack["resolution_sha256"]
@@ -479,7 +644,11 @@ def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
         for worker in sorted(engine_managed)
     }
 
-    target_stack = v2_target_member(contract, target, "stack") if contract["schema_version"] == 2 else None
+    target_stack = (
+        v2_target_member(contract, target, "stack")
+        if contract["schema_version"] in {2, 3}
+        else None
+    )
     return {
         "schema": "e2e-stack-manifest/v1",
         "contract_schema_version": contract["schema_version"],
@@ -517,8 +686,16 @@ def verify_lock(contract: dict[str, Any], lock_path: Path) -> dict[str, Any]:
             "worker_count": len(observed),
             "resolved_versions": dict(sorted(observed.items())),
         },
-        "origin": v2_target_member(contract, target, "origin") if contract["schema_version"] == 2 else None,
-        "base": v2_target_member(contract, target, "base") if contract["schema_version"] == 2 else None,
+        "origin": (
+            v2_target_member(contract, target, "origin")
+            if contract["schema_version"] in {2, 3}
+            else None
+        ),
+        "base": (
+            v2_target_member(contract, target, "base")
+            if contract["schema_version"] in {2, 3}
+            else None
+        ),
     }
 
 
@@ -563,6 +740,9 @@ def main() -> int:
     materialize.add_argument("--contract", type=Path, required=True)
     materialize.add_argument("--catalog", type=Path, required=True)
     materialize.add_argument("--output", type=Path, required=True)
+    materialize.add_argument("--group-id")
+    matrix = commands.add_parser("matrix")
+    matrix.add_argument("--contract", type=Path, required=True)
     lock = commands.add_parser("verify-lock")
     lock.add_argument("--contract", type=Path, required=True)
     lock.add_argument("--lock", type=Path, required=True)
@@ -580,8 +760,14 @@ def main() -> int:
         elif args.command == "digest":
             print(canonical_sha256(contract))
         elif args.command == "materialize":
-            request = materialize_request(contract, load_object(args.catalog, "scenario catalog"))
+            request = materialize_request(
+                contract,
+                load_object(args.catalog, "scenario catalog"),
+                group_id=args.group_id,
+            )
             args.output.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
+        elif args.command == "matrix":
+            print(canonical(campaign_matrix(contract)))
         elif args.command == "verify-lock":
             manifest = verify_lock(contract, args.lock)
             args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

@@ -208,12 +208,19 @@ zero.
 | Deployment shadow observation | Successful Harness deployment | Plan-defined | Never blocks deployment or promotion |
 
 `harness-e2e-shadow.yml` is intentionally separate from the legacy validation
-matrix. It starts an isolated iii engine on a GitHub-hosted runner, installs the
-exact deployment stack, then installs the independent
-`harness-e2e@<plan-ref>` worker from Registry. The job materializes and invokes
-the local `e2e::*` control plane and uploads an
-`e2e-observation-bundle/v1`. Release Control admits the job through GitHub OIDC
-and ingests the Artifact; it does not host the E2E worker.
+matrix. It accepts the historical v1/v2 dispatch contracts and the campaign v3
+contract. A campaign expands to an isolated job per group with
+`fail-fast: false`: common groups start an ephemeral exact deployment stack,
+while fault-injection groups run on the protected trusted runner. Every job
+installs the exact immutable Harness runner, invokes the local `e2e::*` control
+plane, and uploads its native artifacts without rewriting their bytes. A final
+Harness job validates and signs the group outputs into the campaign root
+bundle. Release Control admits the workflow through GitHub OIDC and ingests the
+artifact; it does not host the E2E worker.
+
+Campaign and group identifiers are deterministic, while `run_attempt` remains
+the campaign attempt. This keeps retries correlated without merging attempts
+or turning partial infrastructure failures into product scores.
 
 Release Control owns the schedule, source/Registry choice, exact stack,
 profiles, selected and required scenarios, repetitions, subjects, judge and

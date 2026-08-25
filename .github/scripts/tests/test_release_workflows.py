@@ -209,6 +209,29 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
+def test_harness_campaign_isolates_groups_and_finalizes_partial_evidence() -> None:
+    value = workflow(WORKFLOWS / "harness-e2e-shadow.yml")
+    jobs = value["jobs"]
+    groups = jobs["groups"]
+    assert groups["strategy"]["fail-fast"] == "false"
+    assert groups["runs-on"] == "${{ matrix.runs_on }}"
+    assert "if: always()" in (WORKFLOWS / "harness-e2e-shadow.yml").read_text()
+    assert jobs["finalize"]["needs"] == ["prepare", "groups"]
+    body = (WORKFLOWS / "harness-e2e-shadow.yml").read_text()
+    assert "--aggregate-existing-root target/harness-e2e-campaign/groups" in body
+    assert "repository: iii-hq/harness-e2e" in body
+    assert "ref: ${{ needs.prepare.outputs.runner_revision }}" in body
+
+
+def test_harness_campaign_preserves_native_group_bytes() -> None:
+    script = (ROOT.parent / "harness/tests/e2e/run-shadow-control-ci.sh").read_text()
+    assert 'results_response="$artifact_dir/results-get.json"' in script
+    assert "for native_name in results.json manifest.json observation.json" in script
+    assert 'cp -- "$native_dir/$native_name" "$artifact_dir/$native_name"' in script
+    assert "expected_results_sha" in script
+    assert "expected_manifest_sha" in script
+
+
 def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
     steps = workflow(WORKFLOWS / "candidate-smoke.yml")["jobs"]["smoke"]["steps"]
     prepare = next(step for step in steps if step.get("name") == "Prepare KVM for Scrapling sandbox")
