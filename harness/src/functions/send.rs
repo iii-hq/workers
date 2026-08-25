@@ -264,9 +264,6 @@ async fn start_with_delivery_lock(
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
     }
-    if let Some(prev) = prev.as_ref() {
-        inherit_prior_filesystem_root(&mut options, &prev.options);
-    }
     prepare_skill_context(
         deps,
         &mut options,
@@ -906,6 +903,11 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
 /// client omits `fs_scope` on a later send (it invalidates the provider's
 /// prompt-cache prefix). An explicit `fs_scope` — even an empty `{}` — is an
 /// intentional clear and blocks inheritance.
+///
+/// Called from `seed_new` only, with the freshest prior record read under the
+/// delivery guard: an inherited root must never travel into the active-turn
+/// merge path, where `refresh_filesystem_root_from` would let a stale
+/// inherited value overwrite a root the running turn just changed.
 fn inherit_prior_filesystem_root(options: &mut TurnOptions, prev: &TurnOptions) {
     let names_fs_scope = options
         .metadata
@@ -1074,11 +1076,14 @@ pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
-    options: TurnOptions,
+    mut options: TurnOptions,
     prior: Option<&TurnRecord>,
     message_preview: Option<String>,
     lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
+    if let Some(prior) = prior {
+        inherit_prior_filesystem_root(&mut options, &prior.options);
+    }
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
     let functions_generation = prior.and_then(|record| record.functions_generation);

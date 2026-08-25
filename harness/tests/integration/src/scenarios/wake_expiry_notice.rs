@@ -130,22 +130,27 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("armed and parked", 10, 2)),
     )
     // The expiry-woken turn: a fresh externally initiated turn carrying the
-    // wake-lost notification as its user message. Its prompt is NOT the arm
-    // turn's — the sweep's engine-side unregister is a registry change, so
-    // the staleness notice deterministically joins the prompt; pin the notice
-    // instead of the sha (same drift INT-008 handles).
+    // wake-lost notification as its user message. The sweep's engine-side
+    // unregister is a registry change; the staleness notice now rides as an
+    // ephemeral TAIL user message (never a system-prompt mutation — that
+    // invalidated the provider's prompt-cache prefix), so the prompt keeps
+    // the stable sha and the notice is pinned as the final message.
     .generation(
         Generation::new(3)
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("registry changed during this conversation")
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant" }),
                         json!({ "role": "function_result" }),
                         json!({ "role": "assistant" }),
                         json!({ "role": "user" }),
+                        json!({ "role": "user", "content": [{
+                            "type": "text",
+                            "text": "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again."
+                        }] }),
                     ])
                     .tools_exact_after_controls([REGISTER], [record.tool()]),
             )

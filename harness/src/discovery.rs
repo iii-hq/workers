@@ -343,9 +343,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn availability_event_with_identical_set_does_not_bump_generation() {
-        // A no-op bump would fire the registry-changed notice and re-arm the
-        // discovery hint, invalidating the provider prompt-cache for nothing.
+    async fn re_applying_an_identical_set_does_not_bump_generation() {
+        // Availability events now route through this same `apply` (the forced
+        // bump was removed), so this covers that path too. A no-op bump would
+        // fire the registry-changed notice and re-arm the discovery hint,
+        // invalidating the provider prompt-cache for nothing.
         let cell = new_cell();
         let fns = vec![desc("a::b", Some(json!({ "type": "object" })))];
         apply(&cell, fns.clone()).await;

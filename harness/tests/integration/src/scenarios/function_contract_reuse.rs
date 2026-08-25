@@ -9,7 +9,10 @@ use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const INFO: &str = "engine::functions::info";
-const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","registered_triggers":[],"request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"response_schema":{"$schema":"http://json-schema.org/draft-07/schema#","const":{"content":[{"text":"recorded","type":"text"}],"is_error":false}},"worker_name":"integration-probe"}"#;
+// The MODEL-VISIBLE first result: the raw engine contract minus the
+// response-side schema keys prepare_info_result strips (the raw contract,
+// response_schema included, stays in `details`).
+const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","registered_triggers":[],"request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"worker_name":"integration-probe"}"#;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-025";
@@ -147,7 +150,9 @@ mod tests {
             serde_json::to_string(&fixture.script.generations[1].match_.messages).unwrap();
         assert!(first_gate.contains("\"content\""), "{first_gate}");
         assert!(first_gate.contains("request_schema"), "{first_gate}");
-        assert!(first_gate.contains("response_schema"), "{first_gate}");
+        // Response-side schemas are stripped from the model-visible copy
+        // (they stay in `details`), so the gate must not expect them.
+        assert!(!first_gate.contains("response_schema"), "{first_gate}");
 
         let gate = serde_json::to_string(&fixture.script.generations[2].match_.messages).unwrap();
         assert!(gate.contains("call-info-2"), "{gate}");
