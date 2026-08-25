@@ -1,5 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
-import { AppWindow } from 'lucide-react'
+import { ExternalLink } from '../lib/icons'
 import { useState } from 'react'
 
 /**
@@ -29,7 +29,7 @@ export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
           .catch(() => setState('failed'))
       }}
     >
-      <AppWindow aria-hidden />
+      <ExternalLink aria-hidden />
       <span>{state === 'opening' ? 'Opening…' : 'Open in browser'}</span>
     </button>
   )
