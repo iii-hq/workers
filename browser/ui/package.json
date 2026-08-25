@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
-    "react-dom": "^19.2.8",
+    "react-dom": "^19.2.7",
     "zod": "^4.0.0"
   },
   "devDependencies": {
