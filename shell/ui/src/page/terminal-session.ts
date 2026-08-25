@@ -1,4 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
+import { useTerminalFontSize } from '@iii-workers/terminal-font'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import {
@@ -216,6 +217,13 @@ export function useTerminalSession(
   const [atBottom, setAtBottom] = useState(true)
   const [restartToken, setRestartToken] = useState(0)
   const terminalRef = useRef<Terminal | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
+  // The size every terminal in the console shares, agent pages included. Held
+  // in a ref for the mount effect below: changing the type must not rebuild a
+  // terminal, which would drop the pane's scrollback.
+  const [fontSize] = useTerminalFontSize()
+  const fontSizeRef = useRef(fontSize)
+  fontSizeRef.current = fontSize
   const terminalCleanupRef = useRef<(() => void) | null>(null)
   const activeRef = useRef<ActiveTerminalSession | null>(null)
   const leaseRef = useRef<LocalTerminalLease | null>(null)
@@ -464,7 +472,7 @@ export function useTerminalSession(
         '--font-mono',
         'ui-monospace, SFMono-Regular, Menlo, monospace',
       ),
-      fontSize: 13,
+      fontSize: fontSizeRef.current,
       lineHeight: 1.2,
       scrollback: 10_000,
       scrollOnUserInput: true,
@@ -477,6 +485,7 @@ export function useTerminalSession(
     container.appendChild(terminalHost)
     terminal.open(terminalHost)
     terminalRef.current = terminal
+    fitAddonRef.current = fitAddon
 
     const input = terminal.onData((data) =>
       sendInput(new TextEncoder().encode(data)),
@@ -542,12 +551,26 @@ export function useTerminalSession(
       input.dispose()
       terminal.dispose()
       if (terminalRef.current === terminal) terminalRef.current = null
+      if (fitAddonRef.current === fitAddon) fitAddonRef.current = null
     }
     return () => {
       terminalCleanupRef.current?.()
       terminalCleanupRef.current = null
     }
   }, [container, sendInput, sendResize, visible])
+
+  // New type means new cell metrics: the pane refits, and the PTY learns the
+  // new geometry through the onResize path the session already forwards.
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    terminal.options.fontSize = fontSize
+    try {
+      fitAddonRef.current?.fit()
+    } catch {
+      // Mid-layout a pane measures as a sliver; the ResizeObserver refits.
+    }
+  }, [fontSize])
 
   useEffect(() => {
     void restartToken

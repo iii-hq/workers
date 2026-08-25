@@ -2,7 +2,7 @@
   "name": "@iii-workers/agent-terminal-ui",
   "version": "0.1.0",
   "private": true,
-  "description": "The console terminal page every agent-CLI worker injects: one full-pane xterm bound to a shell::pty session that runs that agent's program. Source-only — each worker bundles it into its own page asset with its own worker name and labels.",
+  "description": "The console terminal page every agent-CLI worker injects: one full-pane xterm bound to a shell::pty session that runs that agent's program. Source-only \u2014 each worker bundles it into its own page asset with its own worker name and labels.",
   "type": "module",
   "main": "./src/index.tsx",
   "exports": {
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
+    "@iii-workers/terminal-font": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0"
   },

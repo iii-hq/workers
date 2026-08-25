@@ -66,3 +66,45 @@
   color: var(--color-alert);
   border-color: var(--color-alert);
 }
+
+/* Font-size stepper: the same 8..40 value every terminal in the console
+   reads, so a change here moves shell's panes too. */
+.agent-terminal-font {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+}
+
+.agent-terminal-font button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-terminal-font button:hover:not(:disabled) {
+  color: var(--color-ink);
+  border-color: var(--color-ink-faint);
+}
+
+.agent-terminal-font button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.agent-terminal-font output {
+  min-width: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

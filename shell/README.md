@@ -228,6 +228,14 @@ program in a session serves its own console page, and therefore its own
 handler — but the shape is enforced, so a session can never be pointed at an
 arbitrary function on the bus.
 
+Each pane carries a font-size stepper (8–40 px, 14 by default; Ctrl or ⌘ +
+scroll does the same). The size is a browser preference rather than a worker
+setting — the same person reading the same engine from a laptop and from a
+wall display wants two different answers — so it is stored per browser and
+read by every terminal the console renders, this worker's panes and the
+agent-CLI pages alike. A change refits the pane, which resizes the PTY
+through the ordinary `shell::pty::resize` path.
+
 `shell::pty::sessions` lists live sessions with their program, cwd, status,
 last sequence number, replayable frames and bytes, and current output target.
 No credentials: it exists to separate a terminal that shows nothing because

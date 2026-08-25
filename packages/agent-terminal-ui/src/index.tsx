@@ -19,9 +19,10 @@
  * change, so a tail replay would leave an empty pane.
  */
 import { Button, PageBody, PageHeader, PageMain, PageShell } from '@iii-dev/console-ui'
+import { MAX_FONT_SIZE, MIN_FONT_SIZE, stepFontSize, useTerminalFontSize } from '@iii-workers/terminal-font'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type WheelEvent } from 'react'
 
 const STALL_MS = 250
 const MAX_QUEUED_EVENTS = 4096
@@ -260,9 +261,20 @@ function frameToEvent(sessionId: string, frame: { sequence: number; data: string
   }
 }
 
-const THEMES = {
-  dark: { background: '#1a1b1e', foreground: '#e6e6e6', cursor: '#e6e6e6' },
-  light: { background: '#ffffff', foreground: '#1a1b1e', cursor: '#1a1b1e' },
+/**
+ * One palette, dark, whatever the console theme is.
+ *
+ * The terminal is not the page: an agent CLI paints its own interface with
+ * ANSI colors chosen for a dark terminal, and it never learns that the
+ * console around it went light. Following the console theme produced exactly
+ * that mismatch — Claude Code's dim gray on white, unreadable, next to pi's
+ * own dark background in the pane beside it. A terminal emulator is allowed
+ * to be dark inside a light application; every one of them is.
+ */
+const TERMINAL_THEME = {
+  background: '#1a1b1e',
+  foreground: '#e6e6e6',
+  cursor: '#e6e6e6',
 }
 
 function AgentTerminal({
@@ -283,15 +295,27 @@ function AgentTerminal({
   const [detail, setDetail] = useState('')
   const [generation, setGeneration] = useState(0)
   const [auth, setAuth] = useState<AuthStatus | null>(null)
-  const theme = host.useTheme()
-  const themeRef = useRef(theme)
-  themeRef.current = theme
   const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const [fontSize, setFontSize] = useTerminalFontSize()
+  // Read inside the session effect, never a dependency of it: resizing the
+  // type must not tear down a live agent.
+  const fontSizeRef = useRef(fontSize)
+  fontSizeRef.current = fontSize
 
+  // A bigger font means fewer columns, so the PTY has to hear about it — the
+  // resize goes out through xterm's onResize, which the session already
+  // forwards to `shell::pty::resize`.
   useEffect(() => {
     const term = termRef.current
-    if (term) term.options.theme = THEMES[theme === 'dark' ? 'dark' : 'light']
-  }, [theme])
+    if (!term) return
+    term.options.fontSize = fontSize
+    try {
+      fitRef.current?.fit()
+    } catch {
+      // A pane mid-layout measures as a sliver; the ResizeObserver refits.
+    }
+  }, [fontSize])
 
   // Which plan a session spends is not a question anyone should answer by
   // reading a config file, so the page asks the worker and shows it. Re-asked
@@ -326,15 +350,16 @@ function AgentTerminal({
     let conn: { sessionId: string; accessKey: string } | null = null
 
     const term = new Terminal({
-      fontSize: 13,
+      fontSize: fontSizeRef.current,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      theme: THEMES[themeRef.current === 'dark' ? 'dark' : 'light'],
+      theme: TERMINAL_THEME,
       scrollback: 10_000,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(container)
     termRef.current = term
+    fitRef.current = fit
 
     const call = <T,>(fn: string, payload: unknown): Promise<T> =>
       host.iii.trigger(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
@@ -555,6 +580,7 @@ function AgentTerminal({
       }
       term.dispose()
       termRef.current = null
+      fitRef.current = null
     }
   }, [host, router, tabId, generation, options, leasePrefix])
 
@@ -563,9 +589,20 @@ function AgentTerminal({
     setGeneration((n) => n + 1)
   }, [leasePrefix, tabId])
 
+  // Ctrl/⌘ + wheel is what every terminal emulator does, and it beats
+  // clicking a stepper 20 times to get from 14 to 34.
+  const onWheel = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      if (!event.ctrlKey && !event.metaKey) return
+      event.preventDefault()
+      setFontSize(stepFontSize(fontSize, event.deltaY < 0 ? 1 : -1))
+    },
+    [fontSize, setFontSize],
+  )
+
   return (
     <div className="agent-terminal">
-      <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" />
+      <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" onWheel={onWheel} />
       <div className="agent-terminal-statusbar">
         {status === 'error' ? (
           <span className="agent-terminal-status-error">{detail}</span>
@@ -577,6 +614,25 @@ function AgentTerminal({
             {auth.label}
           </span>
         )}
+        <span className="agent-terminal-font" title={`Terminal font size (${MIN_FONT_SIZE}–${MAX_FONT_SIZE} px)`}>
+          <button
+            type="button"
+            onClick={() => setFontSize(stepFontSize(fontSize, -1))}
+            disabled={fontSize <= MIN_FONT_SIZE}
+            aria-label="Smaller terminal font"
+          >
+            −
+          </button>
+          <output aria-label="Terminal font size in pixels">{fontSize}</output>
+          <button
+            type="button"
+            onClick={() => setFontSize(stepFontSize(fontSize, 1))}
+            disabled={fontSize >= MAX_FONT_SIZE}
+            aria-label="Larger terminal font"
+          >
+            +
+          </button>
+        </span>
         {(status === 'exited' || status === 'error') && (
           <Button size="sm" onClick={restart}>
             Restart {options.title}

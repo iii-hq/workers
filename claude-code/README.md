@@ -180,6 +180,13 @@ iii trigger stream::list stream_name=agent::events
 The page keeps a per-tab lease, so a reload or a pane move reattaches to the
 same live Claude rather than starting a second one.
 
+The status bar carries a font-size stepper (8–40 px, 14 by default; Ctrl or ⌘
++ scroll does the same). The size is one value for every terminal in the
+console — shell's panes included — so it is set once, not per page. The
+terminal itself stays dark whatever the console theme is: an agent CLI paints
+its own interface in colors chosen for a dark terminal and never learns the
+page went light.
+
 ### What the workspace gets
 
 On every boot, when `terminal.setup_workspace` is on:

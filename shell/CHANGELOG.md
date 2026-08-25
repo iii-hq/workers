@@ -4,6 +4,14 @@
 
 ### Added
 
+- **The terminal's type size is the reader's choice** — every pane carries a
+  stepper (8–40 px, 14 by default; Ctrl or ⌘ + scroll does the same), and the
+  size is stored per browser rather than in this worker's configuration: the
+  same engine read from a laptop and from a wall display wants two different
+  answers. Every terminal the console renders shares the one value, agent-CLI
+  pages included, and a change refits the pane so the PTY hears the new
+  geometry through the ordinary resize path.
+
 - **A PTY session can run one named program** — `shell::pty::open` takes
   `program`, `args`, and `env`. Without them a session is still the user's
   login shell. A caller that can open a login shell can already run any

@@ -541,6 +541,9 @@ importers:
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../console-ui
+      '@iii-workers/terminal-font':
+        specifier: workspace:*
+        version: link:../terminal-font
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -563,6 +566,18 @@ importers:
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17
+
+  packages/terminal-font:
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.17
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   pdf/ui:
     dependencies:
@@ -679,6 +694,9 @@ importers:
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../../packages/console-ui
+      '@iii-workers/terminal-font':
+        specifier: workspace:*
+        version: link:../../packages/terminal-font
       '@pierre/trees':
         specifier: 1.0.0-beta.6
         version: 1.0.0-beta.6(@pierre/theme@1.1.0)(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(shiki@4.3.1)
