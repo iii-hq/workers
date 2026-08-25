@@ -1,4 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
+import { AppWindow } from 'lucide-react'
 import { useState } from 'react'
 
 /**
@@ -14,10 +15,11 @@ export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
       type="button"
       className="br-ui-open-in-browser"
       disabled={state === 'opening'}
+      aria-label={`Open ${url} in the browser page`}
       title={
         state === 'failed'
-          ? 'could not start a session; try again'
-          : `open ${url} in the browser page`
+          ? 'Could not start a session; try again'
+          : `Open ${url} in the browser page`
       }
       onClick={() => {
         setState('opening')
@@ -27,7 +29,8 @@ export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
           .catch(() => setState('failed'))
       }}
     >
-      {state === 'opening' ? 'opening…' : 'open in browser'}
+      <AppWindow aria-hidden />
+      <span>{state === 'opening' ? 'Opening…' : 'Open in browser'}</span>
     </button>
   )
 }

@@ -3005,18 +3005,26 @@
   }
 }
 
-/* open-in-browser action on scrape url lines */
+/* open-in-browser action on scrape url lines — the shell's "View file"
+   anatomy: icon + sans label on a quiet bordered pill */
 [data-iii-ui="browser"] .br-ui-open-in-browser {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-left: 8px;
   padding: 1px 8px;
   border: 1px solid var(--color-rule);
   border-radius: 999px;
   background: transparent;
   color: var(--color-ink-faint);
-  font: inherit;
+  font-family: var(--font-sans, inherit);
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
+}
+[data-iii-ui="browser"] .br-ui-open-in-browser svg {
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="browser"] .br-ui-open-in-browser:hover {
   color: var(--color-ink);
