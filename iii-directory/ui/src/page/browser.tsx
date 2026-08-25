@@ -27,6 +27,7 @@
 import {
   Button,
   CodeEditor,
+  ConfirmDialog,
   type Host,
   Input,
   MarkdownPreview,
@@ -304,6 +305,23 @@ export function CollectionBrowser({
 
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  // A dirty draft asks in the console's own dialog, never window.confirm:
+  // the native box blocks the whole tab and cannot say what is at stake
+  // when the draft is a new, unnamed entry.
+  const [pendingDiscard, setPendingDiscard] = useState<{
+    label: string
+    proceed: () => void
+  } | null>(null)
+  const guardDirty = useCallback((proceed: () => void) => {
+    if (!dirtyRef.current) {
+      proceed()
+      return
+    }
+    setPendingDiscard({
+      label: selectedRef.current ?? 'this new entry',
+      proceed,
+    })
+  }, [])
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const creatingRef = useRef(creating)
@@ -345,43 +363,42 @@ export function CollectionBrowser({
 
   const open = useCallback(
     (key: string, opts?: { reload?: boolean }) => {
-      if (!opts?.reload) {
-        // Re-clicking the open entry must not clobber the draft; switching
-        // away from an unsaved draft asks first.
-        if (key === selectedRef.current) return
-        if (
-          dirtyRef.current &&
-          !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)
-        ) {
-          return
-        }
-      }
       // Discard confirmed (or a reload): the persisted draft dies now, not
       // when the load lands — an unmount in between must not resurrect it.
-      removeStored(`${storageKey}:draft`)
-      setSelected(key)
-      setCreating(false)
-      setLoaded(null)
-      setDraft('')
-      setLoadError(null)
-      setSaveError(null)
-      setDeleteError(null)
-      setStaleOnDisk(false)
-      adapter
-        .load(host, key)
-        .then((content) => {
-          // Stale async result: the user opened another entry (or drilled
-          // out) while this load was in flight — applying it would show A's
-          // content under B's title and risk saving it there.
-          if (selectedRef.current !== key) return
-          setLoaded({ key, content })
-          setDraft(content)
-        })
-        .catch((e) => {
-          if (selectedRef.current === key) setLoadError(String(e))
-        })
+      const proceed = () => {
+        removeStored(`${storageKey}:draft`)
+        setSelected(key)
+        setCreating(false)
+        setLoaded(null)
+        setDraft('')
+        setLoadError(null)
+        setSaveError(null)
+        setDeleteError(null)
+        setStaleOnDisk(false)
+        adapter
+          .load(host, key)
+          .then((content) => {
+            // Stale async result: the user opened another entry (or drilled
+            // out) while this load was in flight — applying it would show A's
+            // content under B's title and risk saving it there.
+            if (selectedRef.current !== key) return
+            setLoaded({ key, content })
+            setDraft(content)
+          })
+          .catch((e) => {
+            if (selectedRef.current === key) setLoadError(String(e))
+          })
+      }
+      if (opts?.reload) {
+        proceed()
+        return
+      }
+      // Re-clicking the open entry must not clobber the draft; switching
+      // away from an unsaved draft asks first.
+      if (key === selectedRef.current) return
+      guardDirty(proceed)
     },
-    [host, adapter, storageKey],
+    [host, adapter, storageKey, guardDirty],
   )
 
   const appliedOpenRef = useRef(0)
@@ -395,22 +412,18 @@ export function CollectionBrowser({
       template, so the scaffold already counts as unsaved work and ⌘S/save is
       live immediately. */
   const startCreate = useCallback(() => {
-    if (
-      dirtyRef.current &&
-      !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)
-    ) {
-      return
-    }
-    removeStored(`${storageKey}:draft`)
-    setCreating(true)
-    setSelected(null)
-    setLoaded({ key: '', content: '' })
-    setDraft(NEW_TEMPLATE)
-    setLoadError(null)
-    setSaveError(null)
-    setDeleteError(null)
-    setStaleOnDisk(false)
-  }, [storageKey])
+    guardDirty(() => {
+      removeStored(`${storageKey}:draft`)
+      setCreating(true)
+      setSelected(null)
+      setLoaded({ key: '', content: '' })
+      setDraft(NEW_TEMPLATE)
+      setLoadError(null)
+      setSaveError(null)
+      setDeleteError(null)
+      setStaleOnDisk(false)
+    })
+  }, [storageKey, guardDirty])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -738,6 +751,23 @@ export function CollectionBrowser({
       ref={rootRef}
       onKeyDown={onRootKeyDown}
     >
+      <ConfirmDialog
+        open={pendingDiscard !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDiscard(null)
+        }}
+        title="Discard unsaved changes?"
+        description={
+          pendingDiscard
+            ? `The unsaved changes to ${pendingDiscard.label} will be lost.`
+            : undefined
+        }
+        confirmLabel="Discard"
+        onConfirm={() => {
+          pendingDiscard?.proceed()
+          setPendingDiscard(null)
+        }}
+      />
       {showSide ? (
         <PageSidebar
           label={`${adapter.noun} list`}

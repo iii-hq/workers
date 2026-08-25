@@ -332,6 +332,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           disabled && 'pointer-events-none opacity-40',
           className,
         )}
+        // Monaco's gutters, widgets and dead space are focus targets that are
+        // not inputs; every keystroke inside the editor is content.
+        data-keybindings-standdown=""
         onKeyDown={onKeyDown}
         onMouseDown={(e) => {
           // A caller-set min-height can leave dead space under the last
