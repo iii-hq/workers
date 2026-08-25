@@ -16,6 +16,7 @@ import {
 import { Code, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
+import { loadErrorMessage } from './load-error'
 import {
   coderReadFile,
   coderReadFileBase64,
@@ -205,7 +206,7 @@ export function EditorPane({
         })
         .catch((err: unknown) => {
           if (seqRef.current !== seq) return
-          setPane({ phase: 'error', message: errorMessage(err) })
+          setPane({ phase: 'error', message: loadErrorMessage(errorMessage(err)) })
         })
       return
     }
@@ -235,7 +236,7 @@ export function EditorPane({
         if (seqRef.current !== seq) return
         setPane({
           phase: 'error',
-          message: errorMessage(err),
+          message: loadErrorMessage(errorMessage(err)),
         })
       })
   }, [host, absPath, relPath, cache])
@@ -346,7 +347,7 @@ export function EditorPane({
         </button>
       </div>
 
-      <div className="shui-editor-body">
+      <div className="shui-editor-body" data-keybindings-standdown="">
         {pane.phase === 'loading' ? (
           <div className="shui-side-note">loading {relPath}…</div>
         ) : pane.phase === 'error' ? (

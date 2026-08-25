@@ -480,7 +480,7 @@ describe('loadReviewContents without a captured baseline', () => {
     )
   })
 
-  it('keeps failing closed when there is no committed body either', async () => {
+  it('returns a no-baseline explanation when there is no committed body either', async () => {
     const { host } = execHost({
       'shell::exec': {
         exit_code: 128,
@@ -492,9 +492,9 @@ describe('loadReviewContents without a captured baseline', () => {
       },
     })
 
-    await expect(loadReviewContents(host, '/root', uncaptured)).rejects.toThrow(
-      'earlier content was not captured for this turn',
-    )
+    await expect(
+      loadReviewContents(host, '/root', uncaptured),
+    ).resolves.toEqual({ oldContents: '', newContents: '', noBaseline: true })
   })
 
   it('compares a deleted file against its committed body', async () => {

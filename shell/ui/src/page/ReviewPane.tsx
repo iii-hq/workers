@@ -320,9 +320,19 @@ function sameLoadDescriptor(
   right: FileLoadDescriptor,
 ): boolean {
   return (
+    left.refreshEpoch === right.refreshEpoch && sameLoadSource(left, right)
+  )
+}
+
+/** Same file from the same place, ignoring the refresh epoch: a newer epoch
+    means reload, not that the old contents stopped being worth showing. */
+function sameLoadSource(
+  left: FileLoadDescriptor,
+  right: FileLoadDescriptor,
+): boolean {
+  return (
     left.host === right.host &&
     left.root === right.root &&
-    left.refreshEpoch === right.refreshEpoch &&
     sameReviewSource(left.entry, right.entry)
   )
 }
@@ -367,6 +377,9 @@ export interface ReviewContents {
   newContents: string
   worktreeRevision?: string
   mode?: number | null
+  /** The turn snapshot missed this file and it has no committed version:
+      usually churn in an uncommitted data file. Nothing to diff. */
+  noBaseline?: true
   /** Raster image rows: data URL of the working copy, `null` once deleted.
       Text fields stay empty because the bytes are not diffable. */
   image?: string | null
@@ -456,9 +469,7 @@ export async function loadReviewContents(
   if (entry.baseline === null) {
     const committed = await loadCommittedFallback(host, root, entry)
     if (committed !== null) return committed
-    throw new Error(
-      'earlier content was not captured for this turn, and this file has no committed version to compare against',
-    )
+    return { oldContents: '', newContents: '', noBaseline: true }
   }
   const { change } = entry
   const oldPath = change.from ?? change.path
@@ -576,8 +587,14 @@ export function ReviewPane({
       }
 
       activeLoadsRef.current.add(path)
-      cacheRef.current.set(path, { ...descriptor, state: { phase: 'loading' } })
-      bumpCache()
+      const existing = cacheRef.current.get(path)
+      if (existing === undefined || existing.state.phase !== 'ready') {
+        cacheRef.current.set(path, {
+          ...descriptor,
+          state: { phase: 'loading' },
+        })
+        bumpCache()
+      }
       void loadReviewContents(descriptor.host, descriptor.root, descriptor.entry)
         .then<FileState>((contents) => ({ phase: 'ready', ...contents }))
         .catch<FileState>((error: unknown) => ({
@@ -625,7 +642,7 @@ export function ReviewPane({
 
     for (const [path, cached] of cacheRef.current) {
       const descriptor = available.get(path)
-      if (descriptor === undefined || !sameLoadDescriptor(cached, descriptor)) {
+      if (descriptor === undefined || !sameLoadSource(cached, descriptor)) {
         cacheRef.current.delete(path)
       }
     }
@@ -1138,6 +1155,7 @@ function ReviewFile({
   return (
     <section
       ref={sectionRef}
+      data-keybindings-standdown=""
       className={`shui-review-file${active ? ' active' : ''}`}
       data-review-path={entry.path}
       aria-busy={saving}
@@ -1258,6 +1276,11 @@ function ReviewFile({
         <div className="shui-review-message">loading diff…</div>
       ) : state.phase === 'error' ? (
         <div className="shui-review-message warn">{state.message}</div>
+      ) : state.noBaseline ? (
+        <div className="shui-review-message">
+          nothing to diff: this file is not committed and the turn snapshot
+          did not include an earlier version
+        </div>
       ) : !editing && options.richPreview && rich !== null ? (
         rich
       ) : !editing && state.imageUnavailable ? (

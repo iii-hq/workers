@@ -129,7 +129,12 @@ export function reviewEntriesFromTurn(turn: SessionTurn, root: string): TurnEntr
         staged: false,
         ...(from ? { from } : {}),
       },
-      baseline: baselineFor(file.before),
+      // An observed creation has no stored pre-image, but its true
+      // baseline is known anyway: the file did not exist before the turn.
+      baseline:
+        file.before == null && file.kind === 'created'
+          ? ''
+          : baselineFor(file.before),
     }
     entries.set(rel, entry)
   }
