@@ -19,6 +19,8 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { formatBytes, formatRelativeTime } from '../lib/format'
 import { MarkdownFileIcon } from '../lib/widgets'
+import { AgentForm } from './agent-fields'
+import { TokenIcon } from './token-icons'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
 
 interface SkillRow {
@@ -32,6 +34,15 @@ interface SkillRow {
 interface PromptRow {
   name: string
   description: string
+  modified_at: string
+}
+
+interface AgentRow {
+  id: string
+  name: string
+  description: string
+  logo: string | null
+  icon: string | null
   modified_at: string
 }
 
@@ -216,18 +227,79 @@ export const systemPromptsAdapter: BrowserAdapter = {
   },
 }
 
-type Collection = 'skills' | 'prompts' | 'system-prompts'
+export const agentsAdapter: BrowserAdapter = {
+  noun: 'agent',
+  crumbRoot: 'agents',
+  // The id (file stem) and the display name are different things for an
+  // agent: "Release Captain" lives in frontmatter `name`, the file is
+  // `release-captain.md`.
+  separateId: {
+    pattern: /^[a-z0-9_-]+$/,
+    hint: 'enter a name containing at least one letter or number — it becomes the file name',
+  },
+  nameRequired: true,
+  newTemplate: '---\nname: \ndescription: ""\n---\n\n',
+  extraManagedKeys: ['logo', 'skills', 'delegates_to', 'leaf', 'model', 'icon'],
+  customForm: (ctx) => <AgentForm {...ctx} />,
+  sourceLabel: 'Instructions · system prompt',
+  onChangeType: 'directory::agents::on-change',
+  emptyTitle: 'Select an agent',
+  emptyBody:
+    'Choose an agent from the sidebar to view and edit its profile. The content below the fields is the system prompt the session runs as; name, logo and skill selection live in the fields above it.',
+  async list(host) {
+    const out = await host.iii.trigger<{ agents: AgentRow[] }>(
+      'directory::agents::list',
+    )
+    return (out.agents ?? []).map((a) => ({
+      key: a.id,
+      // The row glyph is the SAME token glyph the avatar picker and the
+      // console session tree render — one identity, one pictogram.
+      icon: a.icon ? <TokenIcon token={a.icon} size={14} /> : undefined,
+      title: a.name,
+      description: a.description,
+      fine: formatRelativeTime(a.modified_at),
+    }))
+  },
+  async load(host, id) {
+    const out = await host.iii.trigger<{
+      system_prompt: string
+      raw?: string | null
+    }>('directory::agents::get', { id, raw: true })
+    return out.raw ?? out.system_prompt
+  },
+  async save(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>(
+      'directory::agents::update',
+      { id, content },
+    )
+    return out.id ?? id
+  },
+  async create(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>(
+      'directory::agents::create',
+      { id, content },
+    )
+    return out.id ?? id
+  },
+  async remove(host, id) {
+    await host.iii.trigger('directory::agents::delete', { id })
+  },
+}
+
+type Collection = 'skills' | 'prompts' | 'system-prompts' | 'agents'
 
 const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'Skills' },
   { value: 'prompts', label: 'Prompts' },
   { value: 'system-prompts', label: 'System Prompts' },
+  { value: 'agents', label: 'Agents' },
 ]
 
 const ADAPTERS: Record<Collection, BrowserAdapter> = {
   skills: skillsAdapter,
   prompts: promptsAdapter,
   'system-prompts': systemPromptsAdapter,
+  agents: agentsAdapter,
 }
 
 export function DirectoryPage({
@@ -280,7 +352,7 @@ export function DirectoryPage({
       onChange={setCollection}
       options={COLLECTIONS}
       className="dir-ui-collection-tabs"
-      aria-label="Browse skills, prompts or system prompts"
+      aria-label="Browse skills, prompts, system prompts or agents"
     />
   )
 
@@ -289,7 +361,7 @@ export function DirectoryPage({
       <PageHeader
         icon={<MarkdownFileIcon />}
         title="Directory"
-        description="Filesystem-backed skills, prompts and system prompts"
+        description="Filesystem-backed skills, prompts, system prompts and agents"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (

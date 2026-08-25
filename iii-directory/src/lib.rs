@@ -21,6 +21,11 @@
 //!     `<skills_folder>/<ns>/prompts/*.md` files with YAML frontmatter.
 //!     `directory::prompts::list` enumerates them;
 //!     `directory::prompts::get` reads one body + metadata.
+//!   * **Agents** (`directory::agents::*`): filesystem-backed agent
+//!     profiles under an `agents/` path segment — reusable session
+//!     identities whose file body is the system prompt, with display
+//!     name / emoji logo / skill filter / delegation fields in required
+//!     YAML frontmatter (see `harness/architecture/agents.md`).
 //!   * **Registry** (`directory::registry::*`): HTTP proxy over
 //!     `api.workers.iii.dev` with the same `workers::{list,info}` shape
 //!     as the engine's `engine::workers::*` so callers learn one
@@ -37,16 +42,17 @@
 //! defaults to `tag=latest`) or from a GitHub repo (`repo=URL
 //! skill=NAME branch?=main`) and writes the contents into
 //! `<skills_folder>/<namespace>/...`; `directory::skills::update` /
-//! `directory::prompts::update` / `directory::system-prompts::update`
-//! overwrite one existing file with edited full-file content;
-//! `directory::skills::{create,delete}`,
-//! `directory::prompts::{create,delete}` and
-//! `directory::system-prompts::{create,delete}` manage skill/prompt
+//! `directory::prompts::update` / `directory::system-prompts::update` /
+//! `directory::agents::update` overwrite one existing file with edited
+//! full-file content; `directory::skills::{create,delete}`,
+//! `directory::prompts::{create,delete}`,
+//! `directory::system-prompts::{create,delete}` and
+//! `directory::agents::{create,delete}` manage skill/prompt/agent
 //! files (never touching the read-only `agents_skills_folder`). After
-//! every successful write the worker fires `directory::skills::on-change`
-//! and/or `directory::prompts::on-change` and/or
-//! `directory::system-prompts::on-change` so subscribers can forward
-//! change notifications to their clients.
+//! every successful write the worker fires the matching family's
+//! `directory::*::on-change` (skills / prompts / system-prompts /
+//! agents) so subscribers can forward change notifications to their
+//! clients.
 //!
 //! The worker also ships an injectable console UI (see [`ui`]): a
 //! skills & prompts browser/editor page, a `directory::*`

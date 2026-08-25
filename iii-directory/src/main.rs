@@ -245,6 +245,7 @@ async fn main() -> Result<()> {
         skills: registered.skills.clone(),
         prompts: registered.prompts.clone(),
         system_prompts: registered.system_prompts.clone(),
+        agents: registered.agents.clone(),
     };
     let rt = tokio::runtime::Handle::current();
     let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {
@@ -252,6 +253,7 @@ async fn main() -> Result<()> {
             iii_directory::fs_source::SourceKind::Skill => watch_sets.skills.clone(),
             iii_directory::fs_source::SourceKind::Prompt => watch_sets.prompts.clone(),
             iii_directory::fs_source::SourceKind::SystemPrompt => watch_sets.system_prompts.clone(),
+            iii_directory::fs_source::SourceKind::Agent => watch_sets.agents.clone(),
         };
         let iii = watch_iii.clone();
         rt.spawn(async move {
@@ -268,18 +270,18 @@ async fn main() -> Result<()> {
         }
     };
 
-    // 27 unconditional: 3 skills reads (list/get/index) + 6 skills writes
+    // 32 unconditional: 3 skills reads (list/get/index) + 6 skills writes
     // (update/create/delete + download/download_from_registry/download_from_repo)
     // + 5 prompts (get/list/create/update/delete) + 5 system-prompts
-    // (get/list/create/update/delete) + 2 registry proxy + 1
-    // engine-functions-info + 1 configuration-change handler (registered
-    // above, outside functions::register_all_with_cache) + 4 for the
-    // search surface (search_functions + pre-generate + on-functions-change
-    // + hint-preview).
+    // (get/list/create/update/delete) + 5 agents (get/list/create/update/delete)
+    // + 2 registry proxy + 1 engine-functions-info + 1 configuration-change
+    // handler (registered above, outside functions::register_all_with_cache)
+    // + 4 for the search surface (search_functions + pre-generate +
+    // on-functions-change + hint-preview).
     // +1 when auto_download also registers directory::__on_worker_added.
-    let fn_count = if auto_download { 28 } else { 27 };
+    let fn_count = if auto_download { 33 } else { 32 };
     tracing::info!(
-        "iii-directory ready: {} directory::* functions + 3 custom trigger types + \
+        "iii-directory ready: {} directory::* functions + 4 custom trigger types + \
          function search + pre-generate hint + configuration hot-reload",
         fn_count
     );

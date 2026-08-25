@@ -233,6 +233,17 @@ fn copy_recursive(
                         result.prompts_written.push(stem);
                     }
                 }
+                crate::fs_source::SourceKind::Agent
+                    if next_rel.extension().is_some_and(|e| e == "md") =>
+                {
+                    if let Some(stem) = stem_of(&next_rel) {
+                        result.agents_written.push(stem);
+                    }
+                }
+                // Non-md support files under an agents/ dir must not be
+                // reported as written skills — they'd fire the wrong
+                // on-change and pollute the skills bucket.
+                crate::fs_source::SourceKind::Agent => {}
                 _ => result.skills_written.push(rel_str),
             }
         }

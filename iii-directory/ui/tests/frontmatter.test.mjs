@@ -165,3 +165,50 @@ Body
     /^disable-model-invocation: !!bool \|-$/m,
   )
 })
+
+test('string-list fields: flow and block styles round-trip', async () => {
+  const { readFrontmatterStringList, setFrontmatterStringList } = await import(
+    '../src/page/frontmatter.ts'
+  )
+  const flow = '---\nname: X\nskills: [iii-sandbox, agent-memory/observe]\n---\nBody.\n'
+  assert.deepEqual(readFrontmatterStringList(flow, 'skills'), {
+    values: ['iii-sandbox', 'agent-memory/observe'],
+    present: true,
+  })
+
+  const block = '---\nname: X\nskills:\n  - iii-sandbox\n  - "agent memory"\n---\nBody.\n'
+  assert.deepEqual(readFrontmatterStringList(block, 'skills').values, [
+    'iii-sandbox',
+    'agent memory',
+  ])
+
+  // Absent key, empty flow list.
+  assert.deepEqual(readFrontmatterStringList('---\nname: X\n---\nB\n', 'skills'), {
+    values: [],
+    present: false,
+  })
+  assert.deepEqual(
+    readFrontmatterStringList('---\nskills: []\n---\nB\n', 'skills').values,
+    [],
+  )
+
+  // Set writes flow style and replaces a block-style field wholesale.
+  const written = setFrontmatterStringList(block, 'skills', ['a', 'b c'])
+  assert.equal(written, '---\nname: X\nskills: [a, "b c"]\n---\nBody.\n')
+
+  // Empty selection removes the key entirely (absent = every skill).
+  const cleared = setFrontmatterStringList(flow, 'skills', [])
+  assert.equal(cleared, '---\nname: X\n---\nBody.\n')
+})
+
+test('hiding a block-list field never orphans its item lines', () => {
+  const content = '---\nname: X\nskills:\n  - a\n  - b\ndescription: d\n---\nBody.\n'
+  const source = withoutFrontmatterFields(content, ['skills'])
+  assert.equal(source, '---\nname: X\ndescription: d\n---\nBody.\n')
+
+  // Restore puts the raw block back verbatim.
+  const field = readFrontmatterField(content, ['skills'])
+  assert.equal(field.raw, 'skills:\n  - a\n  - b')
+  const restored = restoreFrontmatterFields(source, [field])
+  assert.ok(restored.includes('skills:\n  - a\n  - b'))
+})

@@ -15,6 +15,7 @@
 //! `engine::workers::list`. See the harness `iii` skill for the
 //! recommended composition patterns.
 
+pub mod agents;
 pub mod download;
 pub mod engine_fn;
 pub mod error;
@@ -35,14 +36,15 @@ use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source::{self, SourceKind};
 use crate::trigger_types::{RegisteredTriggerTypes, SubscriberSet};
 
-/// Trio of subscriber sets passed into `download::register` and
-/// `update::register` so those functions can fan out to
-/// `directory::skills::on-change`, `directory::prompts::on-change`, and
-/// `directory::system-prompts::on-change` after a successful write.
+/// Subscriber sets passed into the write modules (`download`, `update`,
+/// `agents`) so they can fan out the matching `directory::*::on-change`
+/// after a successful write.
+#[derive(Clone)]
 pub struct Subscribers {
     pub skills: SubscriberSet,
     pub prompts: SubscriberSet,
     pub system_prompts: SubscriberSet,
+    pub agents: SubscriberSet,
 }
 
 impl From<&RegisteredTriggerTypes> for Subscribers {
@@ -51,6 +53,7 @@ impl From<&RegisteredTriggerTypes> for Subscribers {
             skills: t.skills.clone(),
             prompts: t.prompts.clone(),
             system_prompts: t.system_prompts.clone(),
+            agents: t.agents.clone(),
         }
     }
 }
@@ -68,6 +71,7 @@ pub fn register_all(
     let subs = Subscribers::from(trigger_types);
     download::register(iii, cfg, &subs);
     update::register(iii, cfg, &subs, &cache);
+    agents::register(iii, cfg, &subs, &cache);
     registry::register(iii, cfg);
     engine_fn::register(iii);
     tracing::info!(
@@ -75,6 +79,7 @@ pub fn register_all(
          3 skills writes (update + create + delete), \
          5 directory::prompts::* (list + get + create + update + delete), \
          5 directory::system-prompts::* (list + get + create + update + delete), \
+         5 directory::agents::* (list + get + create + update + delete), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );
@@ -92,6 +97,7 @@ pub fn register_all_with_cache(
     let subs = Subscribers::from(trigger_types);
     download::register(iii, cfg, &subs);
     update::register(iii, cfg, &subs, cache);
+    agents::register(iii, cfg, &subs, cache);
     registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
     tracing::info!(
@@ -99,6 +105,7 @@ pub fn register_all_with_cache(
          3 skills writes (update + create + delete), \
          5 directory::prompts::* (list + get + create + update + delete), \
          5 directory::system-prompts::* (list + get + create + update + delete), \
+         5 directory::agents::* (list + get + create + update + delete), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );
@@ -114,6 +121,7 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
         fs_source::scan_prompts(&folder, fs_source::PromptKind::Command);
     let (system_prompts, system_prompt_skipped) =
         fs_source::scan_prompts(&folder, fs_source::PromptKind::System);
+    let (agent_profiles, agent_skipped) = fs_source::scan_agents(&folder);
     let (agents_skills, agents_skipped) =
         fs_source::scan_agents_skills(&cfg.resolved_agents_skills_folder());
 
@@ -145,21 +153,31 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
             "loaded fs-backed system prompt"
         );
     }
+    for a in &agent_profiles {
+        tracing::info!(
+            id = %a.name,
+            path = %a.abs_path.display(),
+            "loaded fs-backed agent profile"
+        );
+    }
 
     let total_skipped = skill_skipped.len()
         + prompt_skipped.len()
         + system_prompt_skipped.len()
+        + agent_skipped.len()
         + agents_skipped.len();
     for s in skill_skipped
         .iter()
         .chain(prompt_skipped.iter())
         .chain(system_prompt_skipped.iter())
+        .chain(agent_skipped.iter())
         .chain(agents_skipped.iter())
     {
         let kind = match s.kind {
             SourceKind::Skill => "skill",
             SourceKind::Prompt => "prompt",
             SourceKind::SystemPrompt => "system prompt",
+            SourceKind::Agent => "agent",
         };
         tracing::warn!(
             kind,
@@ -174,6 +192,7 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
         agents_skills = agents_skills.len(),
         prompts = prompts.len(),
         system_prompts = system_prompts.len(),
+        agent_profiles = agent_profiles.len(),
         skipped = total_skipped,
         skills_folder = %folder.display(),
         "fs source scan complete"
