@@ -386,6 +386,10 @@ export function ShellExplorerPage({
     'loading',
   )
   const [root, setRoot] = useState<string | null>(null)
+  // The root the picker is validating right now: the select holds this
+  // value so the choice never appears to snap back, and the files pane
+  // says what it is opening instead of sitting empty.
+  const [pendingRoot, setPendingRoot] = useState<string | null>(null)
   const rootRef = useRef(root)
   rootRef.current = root
   const workingDirRef = useRef(workingDir ?? null)
@@ -2070,9 +2074,11 @@ export function ShellExplorerPage({
     }
     const request = ++workingDirFollowRequestSeqRef.current
     workingDirFollowPendingRef.current = { path: next, request }
+    setPendingRoot(next)
     const accepted = changeRoot(next, (outcome) => {
       if (workingDirFollowPendingRef.current?.request !== request) return
       workingDirFollowPendingRef.current = null
+      setPendingRoot(null)
       if (outcome === 'validated') {
         acknowledgedWorkingDirRef.current =
           acknowledgeValidatedWorkingDirectory(
@@ -2103,6 +2109,7 @@ export function ShellExplorerPage({
     })
     if (!accepted && workingDirFollowPendingRef.current?.request === request) {
       workingDirFollowPendingRef.current = null
+      setPendingRoot(null)
     }
   }, [workingDir, root, changeRoot, reviewSavePending, workingDirRetryEpoch])
 
@@ -2128,10 +2135,12 @@ export function ShellExplorerPage({
         window.clearTimeout(workingDirRetryTimerRef.current)
         workingDirRetryTimerRef.current = null
       }
+      setPendingRoot(nextRoot)
       const accepted = changeRoot(nextRoot, (outcome) => {
         if (!ownsRequestToken(manualRootActiveRequestRef.current, request))
           return
         manualRootActiveRequestRef.current = null
+        setPendingRoot(null)
         if (outcome === 'validated' && workingDirRef.current === chatDir) {
           acknowledgedWorkingDirRef.current = chatDir
           workingDirRetryRef.current = { path: chatDir, failures: 0 }
@@ -2142,6 +2151,7 @@ export function ShellExplorerPage({
         }
       })
       if (accepted) return
+      setPendingRoot(null)
       if (ownsRequestToken(manualRootActiveRequestRef.current, request)) {
         manualRootActiveRequestRef.current = null
         setWorkingDirRetryEpoch((epoch) => epoch + 1)
@@ -2614,13 +2624,16 @@ export function ShellExplorerPage({
           rootOptions.length > 1 ? (
             <select
               className="shui-header-root-select"
-              value={root}
+              value={pendingRoot ?? root}
               onChange={(event) => changeManualRoot(event.target.value)}
               disabled={reviewSavePending}
               aria-label="browsed root"
-              title={root}
+              title={pendingRoot ?? root}
             >
-              {rootOptions.map((path) => (
+              {(pendingRoot !== null && !rootOptions.includes(pendingRoot)
+                ? [...rootOptions, pendingRoot]
+                : rootOptions
+              ).map((path) => (
                 <option key={path} value={path}>
                   {lastSegments(path)}
                 </option>
@@ -2774,7 +2787,11 @@ export function ShellExplorerPage({
             className="shui-sidebar"
           >
             <div className="shui-side-body">
-              {sideTab === 'files' ? (
+              {sideTab === 'files' && (pendingRoot !== null || tree === null) ? (
+                <div className="shui-side-note">
+                  opening {lastSegments(pendingRoot ?? root ?? '')}…
+                </div>
+              ) : sideTab === 'files' ? (
                 <FilesTab
                   tree={reviewTree}
                   gitStatus={treeGitStatus}
