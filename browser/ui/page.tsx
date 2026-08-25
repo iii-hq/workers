@@ -25,6 +25,7 @@ import {
   createBrowserScreenshotRenderer,
 } from './src/function-trigger-message'
 import { createScraplingRenderer } from './src/function-trigger-message/scrapling'
+import { shouldOpenBrowserSession } from './src/lib/session-open'
 import { BrowserPage } from './src/page'
 import { registerBrowserPalette } from './src/page/palette'
 
@@ -45,4 +46,36 @@ export default function setup(host: Host) {
   host.functionTriggers.register(createBrowserScreenshotRenderer())
   host.functionTriggers.register(createScraplingRenderer(host))
   host.functionTriggers.register(createBrowserRenderer(host))
+
+  // A session an agent (or anyone) starts pulls the browser page into the
+  // workspace — the old always-visible-page behaviour, restated for
+  // workspaces: opened once, deduped to the tab already showing it, and the
+  // new session lands selected through the panelContext channel. Sessions
+  // pointed at the console itself are tooling and stay quiet.
+  const autoOpenFnId = 'browser-ui::session-auto-open'
+  try {
+    host.iii.on<{ session_id?: string; url?: string }>(
+      autoOpenFnId,
+      (event) => {
+        if (!shouldOpenBrowserSession(event?.url, window.location.origin)) {
+          return
+        }
+        host.panels?.open({
+          pageId: 'browser',
+          context:
+            typeof event?.session_id === 'string' && event.session_id
+              ? { sessionId: event.session_id }
+              : undefined,
+        })
+      },
+    )
+    host.iii.registerTrigger({
+      type: 'browser::session-started',
+      function_id: `${autoOpenFnId}::${host.iii.browserId}`,
+      config: {},
+    })
+  } catch {
+    // Worker restarting or trigger type not yet up; the page still opens
+    // by hand and the next reload rebinds.
+  }
 }
