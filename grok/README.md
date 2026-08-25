@@ -122,7 +122,7 @@ iii trigger grok::run --timeout-ms 300000 \
   --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
 
-With the context on, Grok reaches for `iii trigger engine::workers::list` itself and reports the live runtime — every worker and what it does — instead of guessing from `ps` and config files:
+With the context on, Grok reaches for `iii trigger engine::workers::list` itself and reports the live iii worker functionality — every worker and what it does — instead of guessing from `ps` and config files:
 
 ![Grok answering a live-system question by querying the engine through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/grok/assets/iii-context.png)
 

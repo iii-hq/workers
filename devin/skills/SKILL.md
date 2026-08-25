@@ -36,7 +36,7 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 - Delegate a coding task to the local agent in a chosen directory: `devin::run`
   with `prompt` and `cwd`; follow `devin::events` / `agent::events`; interrupt
   with `devin::stop`.
-- Have Devin operate your iii runtime: with `iii_context` on (default), ask a plain
+- Have Devin operate your iii workers: with `iii_context` on (default), ask a plain
   question ("what workers are connected and what does each do?") and Devin
   discovers and calls engine functions itself through the iii CLI.
 - Delegate a whole task to Devin's cloud agent ("open a PR that adds X"):
