@@ -188,7 +188,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Focus the next panel',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+}'], other: ['Alt+}'] },
     keywords: ['panel', 'pane', 'focus', 'split'],
   },
   {
@@ -196,7 +196,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Focus the previous panel',
     group: 'Workspace',
     scope: 'global',
-    bindings: [],
+    bindings: { mac: ['Ctrl+{'], other: ['Alt+{'] },
     keywords: ['panel', 'pane', 'focus', 'split'],
   },
   {

@@ -92,7 +92,7 @@ describe('lookup', () => {
       'Search (ctrl K)',
     )
     expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (⌃ G then C)')
-    expect(hoverTitle('Panels', 'panel.next', 'mac')).toBe('Panels')
+    expect(hoverTitle('Panels', 'panel.next', 'mac')).toBe('Panels (⌃ })')
   })
 
   it('says why a page may not take a key, or lets it', () => {
@@ -110,9 +110,9 @@ describe('lookup', () => {
     expect(shortcutClaimReason('Q L', 'mac')).toBeNull()
   })
 
-  it('exposes no key for an unbound action', () => {
-    expect(bindingsFor('panel.next', 'mac')).toEqual([])
-    expect(bindingsFor('panel.previous', 'other')).toEqual([])
+  it('steps panel focus with the modifier braces', () => {
+    expect(bindingsFor('panel.next', 'mac')).toEqual(['Ctrl+}'])
+    expect(bindingsFor('panel.previous', 'other')).toEqual(['Alt+{'])
   })
 
   it('lists the chords of a go-to sequence, and none for a plain chord', () => {
