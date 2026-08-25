@@ -269,7 +269,7 @@ fn render(skills: &[Skill], filter: Option<&[String]>) -> RenderedView {
         .filter(|ids| !ids.is_empty())
         .map(|ids| ids.iter().map(String::as_str).collect());
     let mut body = String::from(
-        "<available_skills>\nCall `directory::skills::get` with an exact id before following a skill.",
+        "<available_skills>\nA `<skill id=\"...\">` block is already loaded; follow it directly without searching for or reloading it.\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`. Skip function discovery and `engine::functions::info`.",
     );
     for skill in skills.iter().filter(|skill| {
         selected
@@ -591,11 +591,11 @@ mod tests {
         let rendered = render(&rows, None);
         assert_eq!(
             rendered.body,
-            "<available_skills>\nCall `directory::skills::get` with an exact id before following a skill.\n- **alpha** — Alpha title.\n- **z&lt;&amp;&gt;** — Does zed work.\n</available_skills>"
+            "<available_skills>\nA `<skill id=\"...\">` block is already loaded; follow it directly without searching for or reloading it.\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`. Skip function discovery and `engine::functions::info`.\n- **alpha** — Alpha title.\n- **z&lt;&amp;&gt;** — Does zed work.\n</available_skills>"
         );
         assert_eq!(
             rendered.fingerprint,
-            "sha256:9e5df1c3393287d207e3099686a953f39dbe41e037e3e8b2cf07963ad08cab56"
+            "sha256:655f1be2c82922f76c03a7a0b3ae9c6857f96acdd3e681b38a3c8aac47f4c55b"
         );
 
         assert!(parse_observation(&json!({"skills": [{
@@ -718,11 +718,18 @@ mod tests {
             SyncPlan::None
         );
 
+        let rendered = render(
+            &[Skill {
+                id: "one".into(),
+                description: "First".into(),
+            }],
+            None,
+        );
+        let expected_body = rendered.body.clone();
         let available = EffectiveView::Available(RenderedView {
-            body: "<available_skills>\n- **one** — First.\n</available_skills>".into(),
             fingerprint: "sha256:one".into(),
             generation: 2,
-            unknown: Vec::new(),
+            ..rendered
         });
         assert!(matches!(
             plan_sync(None, false, &available),
@@ -734,8 +741,11 @@ mod tests {
         };
         assert_eq!(
             message,
-            "The available skills have changed. This list supersedes the previous\navailable skills list.\n<available_skills>\n- **one** — First.\n</available_skills>"
+            format!(
+                "The available skills have changed. This list supersedes the previous\navailable skills list.\n{expected_body}"
+            )
         );
+        assert!(message.contains("pre-verified `directory::skills::get`"));
         assert_eq!(ack.generation, 2);
 
         let admitted = SkillAck {

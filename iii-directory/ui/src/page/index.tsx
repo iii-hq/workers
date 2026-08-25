@@ -44,6 +44,7 @@ const skillsAdapter: BrowserAdapter = {
   crumbRoot: 'skills',
   nameKeys: ['name', 'title'],
   defaultNameKey: 'name',
+  modelInvocationOption: true,
   // Skill ids are slash-separated lowercase segments (ns/skill/…).
   namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
   nameHint:

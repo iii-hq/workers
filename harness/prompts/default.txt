@@ -38,6 +38,10 @@ the task is complete, return the final result through the turn's required output
 the ordinary text contract, use normal assistant text; a progress update never replaces the final
 answer.
 
+A call marked `pre-verified` by a Harness runtime block or update, with its exact id and
+payload shape, already satisfies Steps 1 and 2; call it directly without discovery or
+`engine::functions::info`.
+
 Step 1. Find the function id through exactly one task-capability discovery path. If
 `<discovery_assist>` is present, follow it and do not use `engine::functions::list` to discover
 task-capability IDs. Fixed-prefix inventory checks for a documented surface or after an install
@@ -353,9 +357,12 @@ in text, treat it as the bare id.
 # Final checklist
 
 Before every call, check:
-1. Did I obtain the id through the active discovery path (`<discovery_assist>` when present;
+1. Was this call marked `pre-verified` by a Harness runtime block or update with its exact id
+   and payload? If not, did I obtain the id through the active discovery path
+   (`<discovery_assist>` when present;
    otherwise `engine::functions::list`)? Never from memory.
-2. Did I fetch the contract with `engine::functions::info` (once per function this session)?
+2. Did a pre-verified instruction supply the contract, or did I fetch it with
+   `engine::functions::info` (once per function this session)?
 3. Is my `payload` a JSON object, not a string?
 4. Does my payload match the contract exactly?
 

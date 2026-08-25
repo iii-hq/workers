@@ -33,6 +33,7 @@ import {
   type PageCommandsApi,
   PageSidebar,
   SegmentedControl,
+  uiClasses,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
@@ -46,6 +47,7 @@ import {
 import { draftAction, parseStoredDraft } from './draft-storage'
 import {
   frontmatterBody,
+  frontmatterFieldIsSimpleBoolean,
   readFrontmatterField,
   restoreFrontmatterFields,
   setFrontmatterField,
@@ -87,6 +89,8 @@ export interface BrowserAdapter {
   nameHint?: string
   /** Prompt scanners reject an empty description; skills keep it optional. */
   descriptionRequired?: boolean
+  /** Show the skill's model-invocation control. */
+  modelInvocationOption?: boolean
   /** Workspace empty-state copy. */
   emptyTitle: string
   emptyBody: string
@@ -705,14 +709,27 @@ export function CollectionBrowser({
     : creating
       ? ''
       : row?.description || ''
-  const editorSource = withoutFrontmatterFields(draft, [
-    nameField.key,
-    descriptionField.key,
+  const modelInvocationField = readFrontmatterField(draft, [
+    'disable-model-invocation',
   ])
+  const modelInvocationSimple = frontmatterFieldIsSimpleBoolean(
+    draft,
+    'disable-model-invocation',
+  )
+  const modelInvocationDisabled = /:\s*(?:true|True|TRUE)\s*$/.test(
+    modelInvocationField.raw ?? '',
+  )
   const managedFields = [
     { ...nameField, value: nameValue, bare: adapter.slugName },
     { ...descriptionField, value: descriptionValue },
+    ...(adapter.modelInvocationOption && modelInvocationSimple
+      ? [{ ...modelInvocationField, bare: true }]
+      : []),
   ]
+  const editorSource = withoutFrontmatterFields(
+    draft,
+    managedFields.map((field) => field.key),
+  )
 
   const editDraft = (next: string) => {
     if (readOnly) return
@@ -1136,6 +1153,52 @@ export function CollectionBrowser({
                             className="dir-ui-edit-textarea"
                           />
                         </label>
+                        {adapter.modelInvocationOption ? (
+                          modelInvocationSimple ? (
+                            <label className="dir-ui-checkrow dir-ui-model-invocation">
+                              <input
+                                id={`${fieldId}-disable-model-invocation`}
+                                type="checkbox"
+                                checked={modelInvocationDisabled}
+                                disabled={readOnly}
+                                onChange={(event) =>
+                                  editDraft(
+                                    event.currentTarget.checked
+                                      ? setFrontmatterField(
+                                          draft,
+                                          'disable-model-invocation',
+                                          'true',
+                                          true,
+                                        )
+                                      : withoutFrontmatterFields(draft, [
+                                          'disable-model-invocation',
+                                        ]),
+                                  )
+                                }
+                              />
+                              <span className={uiClasses.field}>
+                                <span className={uiClasses.fieldLabel}>
+                                  Require explicit invocation
+                                </span>
+                                <span className={uiClasses.fieldDescription}>
+                                  The model won’t select this skill
+                                  automatically.
+                                </span>
+                              </span>
+                            </label>
+                          ) : (
+                            <div
+                              className={`${uiClasses.field} dir-ui-model-invocation`}
+                            >
+                              <span className={uiClasses.fieldLabel}>
+                                Model invocation
+                              </span>
+                              <span className={uiClasses.fieldDescription}>
+                                Advanced value — edit it in Content.
+                              </span>
+                            </div>
+                          )
+                        ) : null}
                       </div>
                       <div className="dir-ui-source-head" aria-hidden>
                         <span>Content</span>
